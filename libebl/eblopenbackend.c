@@ -1,5 +1,5 @@
 /* Generate ELF backend handle.
-   Copyright (C) 2000-2017 Red Hat, Inc.
+   Copyright (C) 2000-2017, 2026 Red Hat, Inc.
    This file is part of elfutils.
 
    This file is free software; you can redistribute it and/or modify
@@ -271,6 +271,17 @@ fill_defaults (Ebl *result)
   result->sysvhash_entrysize = sizeof (Elf32_Word);
 }
 
+/* Called by the initialization functions for backends which support
+   hook sample_perf_regs_mapping().  */
+void
+internal_function
+__libebl_init_cached_regs_mapping (Ebl *eh)
+{
+  eh->cached_perf_regs_mask = 0;
+  eh->cached_regs_mapping = NULL;
+  eh->cached_n_regs_mapping = SIZE_MAX;
+}
+
 /* Find an appropriate backend for the file associated with ELF.  */
 static Ebl *
 openbackend (Elf *elf, const char *emulation, GElf_Half machine)
@@ -309,17 +320,9 @@ openbackend (Elf *elf, const char *emulation, GElf_Half machine)
 	/* Well, we know the emulation name now.  */
 	result->emulation = machines[cnt].emulation;
 
-	/* We access some data structures directly.  Make sure the 32 and
-	   64 bit variants are laid out the same.  */
-	assert (offsetof (Elf32_Ehdr, e_machine)
-		== offsetof (Elf64_Ehdr, e_machine));
-	assert (sizeof (((Elf32_Ehdr *) 0)->e_machine)
-		== sizeof (((Elf64_Ehdr *) 0)->e_machine));
-	assert (offsetof (Elf, state.elf32.ehdr)
-		== offsetof (Elf, state.elf64.ehdr));
-
 	/* Prefer taking the information from the ELF file.  */
-	if (elf == NULL)
+	GElf_Ehdr ehdr;
+	if (elf == NULL || gelf_getehdr (elf, &ehdr) == NULL)
 	  {
 	    result->machine = machines[cnt].em;
 	    result->class = machines[cnt].class;
@@ -327,9 +330,9 @@ openbackend (Elf *elf, const char *emulation, GElf_Half machine)
 	  }
 	else
 	  {
-	    result->machine = elf->state.elf32.ehdr->e_machine;
-	    result->class = elf->state.elf32.ehdr->e_ident[EI_CLASS];
-	    result->data = elf->state.elf32.ehdr->e_ident[EI_DATA];
+	    result->machine = ehdr.e_machine;
+	    result->class = ehdr.e_ident[EI_CLASS];
+	    result->data = ehdr.e_ident[EI_DATA];
 	  }
 
         if (machines[cnt].init &&

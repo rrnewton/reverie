@@ -82,6 +82,8 @@ const char* debuginfod_get_url (debuginfod_client *c) { return NULL; }
 int debuginfod_add_http_header (debuginfod_client *c,
 				const char *h) { return -ENOSYS; }
 const char* debuginfod_get_headers (debuginfod_client *c) { return NULL; }
+int debuginfod_default_progressfn (debuginfod_client *c, long a, long b)
+				    { return 0; }
 
 void debuginfod_end (debuginfod_client *c) { }
 
@@ -97,7 +99,7 @@ void debuginfod_end (debuginfod_client *c) { }
 #include <regex.h>
 #include <string.h>
 #include <stdbool.h>
-#include <linux/limits.h>
+#include <limits.h>
 #include <time.h>
 #include <utime.h>
 #include <sys/syscall.h>
@@ -107,6 +109,10 @@ void debuginfod_end (debuginfod_client *c) { }
 #include <curl/curl.h>
 #include <fnmatch.h>
 #include <json-c/json.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 /* If fts.h is included before config.h, its indirect inclusions may not
    give us the right LFS aliases of these functions, so map them manually.  */
@@ -569,7 +575,7 @@ debuginfod_clean_cache(debuginfod_client *c,
     return -errno;
 
   regex_t re;
-  const char * pattern = ".*/(metadata.*|[a-f0-9]+(/debuginfo|/executable|/source.*|))$"; /* include dirs */
+  const char * pattern = ".*/(metadata.*|[a-f0-9]+(/hdr.*|/debuginfo|/executable|/source.*|))$"; /* include dirs */
   /* NB: also matches .../section/ subdirs, so extracted section files also get cleaned. */
   if (regcomp (&re, pattern, REG_EXTENDED | REG_NOSUB) != 0)
     return -ENOMEM;
@@ -752,8 +758,8 @@ add_headers_from_file(debuginfod_client *client, const char* filename)
 
 
 /* Offer a basic form of progress tracing */
-static int
-default_progressfn (debuginfod_client *c, long a, long b)
+int
+debuginfod_default_progressfn (debuginfod_client *c, long a, long b)
 {
   const char* url = debuginfod_get_url (c);
   int len = 0;
@@ -847,7 +853,7 @@ metadata_callback (char * buffer, size_t size, size_t numitems, void * userdata)
  * 'metadata', corresponding to the query type. Returns 0 on success
  * and -Posix error on failure.
  */
-int
+static int
 init_server_urls(char* url_subdir, const char* type,
                  char *server_urls, char ***server_url_list, ima_policy_t **url_ima_policies,
                  int *num_urls, int vfd)
@@ -956,7 +962,7 @@ init_server_urls(char* url_subdir, const char* type,
  * Specifically the data[i] within an array of struct handle_data's.
  * Returns 0 on success and -Posix error on failure.
  */
-int
+static int
 init_handle(debuginfod_client *client,
   size_t (*w_callback)(char *buffer, size_t size, size_t nitems, void *userdata),
   size_t (*h_callback)(char *buffer, size_t size, size_t nitems, void *userdata),
@@ -1030,7 +1036,7 @@ init_handle(debuginfod_client *client,
  * once found. If positive maxtime and maxsize dictate the maximum allowed wait times
  * and download sizes respectively. Returns 0 on success and -Posix error on failure.
  */
-int
+static int
 perform_queries(CURLM *curlm, CURL **target_handle, struct handle_data *data, debuginfod_client *c,
                 int num_urls, long maxtime, long maxsize, bool only_one, int vfd, int *committed_to)
 {
@@ -1182,7 +1188,10 @@ perform_queries(CURLM *curlm, CURL **target_handle, struct handle_data *data, de
                 }
               
               if ((*c->progressfn) (c, pa, dl_size == -1 ? 0 : dl_size))
-                break;
+		{
+		  c->progressfn_cancel = true;
+		  break;
+		}
             }
         }
       /* Check to see if we are downloading something which exceeds maxsize, if set.*/
@@ -1777,7 +1786,9 @@ debuginfod_query_server_by_buildid (debuginfod_client *c,
   char *cache_miss_path = NULL;
   char *target_cache_dir = NULL;
   char *target_cache_path = NULL;
+  char *target_cachehdr_path = NULL;
   char *target_cache_tmppath = NULL;
+  char *target_cachehdr_tmppath = NULL;
   char suffix[NAME_MAX];
   char build_id_bytes[MAX_BUILD_ID_BYTES * 2 + 1];
   int vfd = c->verbose_fd;
@@ -1912,6 +1923,8 @@ debuginfod_query_server_by_buildid (debuginfod_client *c,
      target_cache_path: $HOME/.cache/0123abcd/debuginfo
      target_cache_path: $HOME/.cache/0123abcd/executable-.debug_info
      target_cache_path: $HOME/.cache/0123abcd/source-HASH-#PATH#TO#SOURCE
+     target_cachehdr_path: $HOME/.cache/0123abcd/hdr-debuginfo
+     target_cachehdr_path: $HOME/.cache/0123abcd/hdr-executable...
   */
 
   cache_path = make_cache_path();
@@ -1923,11 +1936,15 @@ debuginfod_query_server_by_buildid (debuginfod_client *c,
   xalloc_str (target_cache_dir, "%s/%s", cache_path, build_id_bytes);
   (void) mkdir (target_cache_dir, 0700); // failures with this mkdir would be caught later too
 
-  if (suffix[0] != '\0') /* section, source queries */
+  if (suffix[0] != '\0') { /* section, source queries */ 
     xalloc_str (target_cache_path, "%s/%s-%s", target_cache_dir, type, suffix);
-  else
+    xalloc_str (target_cachehdr_path, "%s/hdr-%s-%s", target_cache_dir, type, suffix);
+  } else {
     xalloc_str (target_cache_path, "%s/%s", target_cache_dir, type);
+    xalloc_str (target_cachehdr_path, "%s/hdr-%s", target_cache_dir, type);
+  }
   xalloc_str (target_cache_tmppath, "%s.XXXXXX", target_cache_path);
+  xalloc_str (target_cachehdr_tmppath, "%s.XXXXXX", target_cachehdr_path);  
 
   /* XXX combine these */
   xalloc_str (interval_path, "%s/%s", cache_path, cache_clean_interval_filename);
@@ -1978,6 +1995,32 @@ debuginfod_query_server_by_buildid (debuginfod_client *c,
           /* Success!!!! */
           update_atime(fd);
           rc = fd;
+
+          /* Attempt to transcribe saved headers. */
+          int fdh = open (target_cachehdr_path, O_RDONLY);
+          if (fdh >= 0)
+            {
+              if (fstat (fdh, &st) == 0 && st.st_size > 0)
+                {
+                  c->winning_headers = malloc(st.st_size);
+                  if (NULL != c->winning_headers)
+                    {
+                      ssize_t bytes_read = pread_retry(fdh, c->winning_headers, st.st_size, 0);
+                      if (bytes_read <= 0)
+                        {
+                          free (c->winning_headers);
+                          c->winning_headers = NULL;
+                          (void) unlink (target_cachehdr_path);
+                        }
+                      if (vfd >= 0)
+                        dprintf (vfd, "found %s (bytes=%ld)\n", target_cachehdr_path, (long)bytes_read);
+                    }
+                }
+
+              update_atime (fdh);
+              close (fdh);
+            }
+ 
           goto out;
         }
       else
@@ -2004,12 +2047,12 @@ debuginfod_query_server_by_buildid (debuginfod_client *c,
             /* TOCTOU non-problem: if another task races, puts a working
                download or an empty file in its place, unlinking here just
                means WE will try to download again as uncached. */
-            unlink(target_cache_path);
+            (void) unlink(target_cache_path);
         }
     }
   else if (errno == EACCES)
     /* Ensure old 000-permission files are not lingering in the cache. */
-    unlink(target_cache_path);
+    (void) unlink(target_cache_path);
 
   if (section != NULL)
     {
@@ -2409,6 +2452,22 @@ debuginfod_query_server_by_buildid (debuginfod_client *c,
       /* Perhaps we need not give up right away; could retry or something ... */
     }
 
+  /* write out the headers, best effort basis */
+  if (c->winning_headers) {
+    int fdh = mkstemp (target_cachehdr_tmppath);
+    if (fdh >= 0) {
+      size_t bytes_to_write = strlen(c->winning_headers)+1; // include \0
+      size_t bytes = pwrite_retry (fdh, c->winning_headers, bytes_to_write, 0);
+      (void) close (fdh);
+      if (bytes == bytes_to_write)
+        (void) rename (target_cachehdr_tmppath, target_cachehdr_path);
+      else
+        (void) unlink (target_cachehdr_tmppath);
+      if (vfd >= 0)
+        dprintf (vfd, "saved %ld bytes of headers to %s\n", (long)bytes, target_cachehdr_path);
+    }
+  }
+  
   /* remove all handles from multi */
   for (int i = 0; i < num_urls; i++)
     {
@@ -2490,8 +2549,11 @@ debuginfod_query_server_by_buildid (debuginfod_client *c,
   if (rc < 0 && target_cache_tmppath != NULL)
     (void)unlink (target_cache_tmppath);
   free (target_cache_tmppath);
-
-  
+  if (rc < 0 && target_cachehdr_tmppath != NULL)
+    (void)unlink (target_cachehdr_tmppath);
+  free (target_cachehdr_tmppath);
+  free (target_cachehdr_path);
+    
   return rc;
 }
 
@@ -2511,7 +2573,7 @@ debuginfod_begin (void)
   if (client != NULL)
     {
       if (getenv(DEBUGINFOD_PROGRESS_ENV_VAR))
-	client->progressfn = default_progressfn;
+	client->progressfn = debuginfod_default_progressfn;
       if (getenv(DEBUGINFOD_VERBOSE_ENV_VAR))
 	client->verbose_fd = STDERR_FILENO;
       else
@@ -2681,6 +2743,8 @@ int debuginfod_find_metadata (debuginfod_client *client,
   int rc = 0, r;
   int vfd = client->verbose_fd;
   struct handle_data *data = NULL;
+
+  client->progressfn_cancel = false;
   
   json_object *json_metadata = json_object_new_object();
   json_bool json_metadata_complete = true;
@@ -3046,7 +3110,7 @@ int debuginfod_add_http_header (debuginfod_client *client, const char* header)
   /* Sanity check header value is of the form Header: Value.
      It should contain at least one colon that isn't the first or
      last character.  */
-  char *colon = strchr (header, ':'); /* first colon */
+  const char *colon = strchr (header, ':'); /* first colon */
   if (colon == NULL /* present */
       || colon == header /* not at beginning - i.e., have a header name */
       || *(colon + 1) == '\0') /* not at end - i.e., have a value */

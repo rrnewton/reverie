@@ -61,15 +61,19 @@ static void
 cu_free (void *arg)
 {
   struct Dwarf_CU *p = (struct Dwarf_CU *) arg;
+
   eu_search_tree_fini (&p->locs_tree, noop_free);
+  rwlock_fini (p->split_lock);
+  mutex_fini (p->abbrev_lock);
+  mutex_fini (p->src_lock);
+  mutex_fini (p->str_off_base_lock);
+  mutex_fini (p->intern_lock);
 
   /* Only free the CU internals if its not a fake CU.  */
   if (p != p->dbg->fake_loc_cu && p != p->dbg->fake_loclists_cu
      && p != p->dbg->fake_addr_cu)
     {
       Dwarf_Abbrev_Hash_free (&p->abbrev_hash);
-      rwlock_fini (p->abbrev_lock);
-      rwlock_fini (p->split_lock);
 
       /* Free split dwarf one way (from skeleton to split).  */
       if (p->unit_type == DW_UT_skeleton
@@ -129,7 +133,8 @@ dwarf_end (Dwarf *dwarf)
       if (dwarf->mem_tails != NULL)
         free (dwarf->mem_tails);
       pthread_rwlock_destroy (&dwarf->mem_rwl);
-      rwlock_fini (dwarf->dwarf_lock);
+      mutex_fini (dwarf->dwarf_lock);
+      mutex_fini (dwarf->macro_lock);
 
       /* Free the pubnames helper structure.  */
       free (dwarf->pubnames_sets);

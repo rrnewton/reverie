@@ -11,6 +11,7 @@
 /arextract
 /arls
 /arsymtest
+/ar-extract-ar
 /asm-tst1
 /asm-tst2
 /asm-tst3
@@ -41,6 +42,7 @@
 /dwarf_default_lower_bound
 /dwarfcfi
 /dwelf_elf_e_machine_string
+/dwarf_language_lower_bound
 /dwelfgnucompressed
 /dwfl-addr-sect
 /dwfl-bug-addr-overflow
@@ -67,6 +69,10 @@
 /elfstrtab
 /elf-print-reloc-syms
 /emptyfile
+/eu_search_cfi
+/eu_search_macros
+/eu_search_lines
+/eu_search_die
 /fillfile
 /find-prologues
 /funcretval
@@ -111,6 +117,7 @@
 /system-elf-gelf-test
 /test-elf_cntl_gelf_getshdr
 /test-flag-nobits
+/test-manyfuncs
 /test-nlist
 /typeiter
 /typeiter2

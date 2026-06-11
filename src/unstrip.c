@@ -570,8 +570,8 @@ adjust_relocs (Elf_Scn *outscn, Elf_Scn *inscn, const GElf_Shdr *shdr,
 
 	/* We don't bother using gelf_update_versym because there is
 	   really no conversion to be done.  */
-	assert (sizeof (Elf32_Versym) == sizeof (GElf_Versym));
-	assert (sizeof (Elf64_Versym) == sizeof (GElf_Versym));
+	eu_static_assert (sizeof (Elf32_Versym) == sizeof (GElf_Versym));
+	eu_static_assert (sizeof (Elf64_Versym) == sizeof (GElf_Versym));
 	GElf_Versym *versym = xcalloc (nent, sizeof versym[0]);
 
 	for (size_t i = 1; i < onent; ++i)
@@ -1447,7 +1447,7 @@ copy_elided_sections (Elf *unstripped, Elf *stripped,
     error_exit (0, _("\
 more sections in stripped file than debug file -- arguments reversed?"));
 
-  if (unlikely (stripped_shnum == 0))
+  if (unlikely (stripped_shnum <= 1))
     error_exit (0, _("no sections in stripped file"));
 
   /* Used as sanity check for allocated section offset, if the section
@@ -1666,6 +1666,7 @@ more sections in stripped file than debug file -- arguments reversed?"));
 	  ELF_CHECK (newdata != NULL && gelf_update_shdr (sec->outscn,
 							  &sec->shdr),
 		     _("cannot add new section: %s"));
+	  unstripped_shnum++;
 
 	  if (strtab == NULL)
 	    strtab = dwelf_strtab_init (true);
@@ -1946,7 +1947,13 @@ more sections in stripped file than debug file -- arguments reversed?"));
 
       /* Now we are ready to write the new symbol table.  */
       symdata = elf_getdata (unstripped_symtab, NULL);
+      if (symdata == NULL)
+        error_exit (0, "Failed to get data from symbol table: %s",
+		    elf_errmsg (-1));
       symstrdata = elf_getdata (unstripped_strtab, NULL);
+      if (symstrdata == NULL)
+        error_exit (0, "Failed to get data from symbol string table: %s",
+		    elf_errmsg (-1));
       Elf_Data *shndxdata = NULL;	/* XXX */
 
       /* If symtab and the section header table share the string table

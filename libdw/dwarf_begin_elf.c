@@ -115,8 +115,10 @@ scn_dwarf_type (Dwarf *result, size_t shstrndx, Elf_Scn *scn)
 	return TYPE_GNU_LTO;
       else if (strcmp (scnname, ".debug_cu_index") == 0
 	       || strcmp (scnname, ".debug_tu_index") == 0
+	       || strcmp (scnname, ".debug_dwp") == 0
 	       || strcmp (scnname, ".zdebug_cu_index") == 0
-	       || strcmp (scnname, ".zdebug_tu_index") == 0)
+	       || strcmp (scnname, ".zdebug_tu_index") == 0
+	       || strcmp (scnname, ".zdebug_dwp") == 0)
 	return TYPE_DWO;
       else if (startswith (scnname, ".debug_") || startswith (scnname, ".zdebug_"))
 	{
@@ -358,7 +360,6 @@ valid_p (Dwarf *result)
 	  result->fake_loc_cu->offset_size = 4;
 	  result->fake_loc_cu->version = 4;
 	  result->fake_loc_cu->split = NULL;
-	  eu_search_tree_init (&result->fake_loc_cu->locs_tree);
 	}
     }
 
@@ -386,7 +387,6 @@ valid_p (Dwarf *result)
 	  result->fake_loclists_cu->offset_size = 4;
 	  result->fake_loclists_cu->version = 5;
 	  result->fake_loclists_cu->split = NULL;
-	  eu_search_tree_init (&result->fake_loclists_cu->locs_tree);
 	}
     }
 
@@ -419,14 +419,62 @@ valid_p (Dwarf *result)
 	  result->fake_addr_cu->offset_size = 4;
 	  result->fake_addr_cu->version = 5;
 	  result->fake_addr_cu->split = NULL;
-	  eu_search_tree_init (&result->fake_addr_cu->locs_tree);
 	}
     }
 
   if (result != NULL)
     {
+      if (pthread_rwlock_init(&result->mem_rwl, NULL) != 0)
+	{
+	  free (result->fake_loc_cu);
+	  free (result->fake_loclists_cu);
+	  free (result->fake_addr_cu);
+	  free (result);
+	  __libdw_seterrno (DWARF_E_NOMEM); /* no memory.  */
+	  return NULL;
+	}
+
       result->elfpath = __libdw_elfpath (result->elf->fildes);
       __libdw_set_debugdir(result);
+
+      /* Initialize locks and search_trees.  */
+      mutex_init (result->dwarf_lock);
+      mutex_init (result->macro_lock);
+      eu_search_tree_init (&result->cu_tree);
+      eu_search_tree_init (&result->tu_tree);
+      eu_search_tree_init (&result->split_tree);
+      eu_search_tree_init (&result->macro_ops_tree);
+      eu_search_tree_init (&result->files_lines_tree);
+
+      if (result->fake_loc_cu != NULL)
+	{
+	  eu_search_tree_init (&result->fake_loc_cu->locs_tree);
+	  rwlock_init (result->fake_loc_cu->split_lock);
+	  mutex_init (result->fake_loc_cu->abbrev_lock);
+	  mutex_init (result->fake_loc_cu->src_lock);
+	  mutex_init (result->fake_loc_cu->str_off_base_lock);
+	  mutex_init (result->fake_loc_cu->intern_lock);
+	}
+
+      if (result->fake_loclists_cu != NULL)
+	{
+	  eu_search_tree_init (&result->fake_loclists_cu->locs_tree);
+	  rwlock_init (result->fake_loclists_cu->split_lock);
+	  mutex_init (result->fake_loclists_cu->abbrev_lock);
+	  mutex_init (result->fake_loclists_cu->src_lock);
+	  mutex_init (result->fake_loclists_cu->str_off_base_lock);
+	  mutex_init (result->fake_loclists_cu->intern_lock);
+	}
+
+      if (result->fake_addr_cu != NULL)
+	{
+	  eu_search_tree_init (&result->fake_addr_cu->locs_tree);
+	  rwlock_init (result->fake_addr_cu->split_lock);
+	  mutex_init (result->fake_addr_cu->abbrev_lock);
+	  mutex_init (result->fake_addr_cu->src_lock);
+	  mutex_init (result->fake_addr_cu->str_off_base_lock);
+	  mutex_init (result->fake_addr_cu->intern_lock);
+	}
     }
 
   return result;
@@ -573,18 +621,6 @@ dwarf_begin_elf (Elf *elf, Dwarf_Cmd cmd, Elf_Scn *scngrp)
      actual allocation.  */
   result->mem_default_size = mem_default_size;
   result->oom_handler = __libdw_oom;
-  if (pthread_rwlock_init(&result->mem_rwl, NULL) != 0)
-    {
-      free (result);
-      __libdw_seterrno (DWARF_E_NOMEM); /* no memory.  */
-      return NULL;
-    }
-  rwlock_init (result->dwarf_lock);
-  eu_search_tree_init (&result->cu_tree);
-  eu_search_tree_init (&result->tu_tree);
-  eu_search_tree_init (&result->split_tree);
-  eu_search_tree_init (&result->macro_ops_tree);
-  eu_search_tree_init (&result->files_lines_tree);
 
   result->mem_stacks = 0;
   result->mem_tails = NULL;

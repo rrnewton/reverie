@@ -1,5 +1,5 @@
 /* Process a stream of stack samples into stack traces.
-   Copyright (C) 2023-2024 Red Hat, Inc.
+   Copyright (C) 2023-2025 Red Hat, Inc.
    This file is part of elfutils.
 
    This file is free software; you can redistribute it and/or modify
@@ -80,22 +80,25 @@
 #include <locale.h>
 
 #include <system.h>
+#include <sys/utsname.h>
 
 #include <linux/perf_event.h>
 
-/* TODO: Need to generalize the code beyond x86 architectures. */
+/* TODO: Need to generalize the code beyond x86/ARM architectures. */
 #include <asm/perf_regs.h>
-#ifndef _ASM_X86_PERF_REGS_H
-#error "eu-stacktrace is currently limited to x86 architectures"
+#if !defined(_ASM_X86_PERF_REGS_H) && !defined(_ASM_ARM_PERF_REGS_H) && !defined(_ASM_ARM64_PERF_REGS_H)
+#error "eu-stacktrace is currently limited to x86/ARM architectures"
 #endif
 
 /*************************************
  * Includes: libdwfl data structures *
  *************************************/
 
+#include ELFUTILS_HEADER(ebl)
 /* #include ELFUTILS_HEADER(dwfl) */
 #include "../libdwfl/libdwflP.h"
-/* XXX: Private header needed for find_procfile, sysprof_init_dwfl */
+/* XXX: Private header needed for find_procfile. */
+#include ELFUTILS_HEADER(dwfl_stacktrace)
 
 /*************************************
  * Includes: sysprof data structures *
@@ -174,11 +177,13 @@ static int processing_mode = MODE_NAIVE;
 static int input_format;
 static int output_format = FORMAT_SYSPROF;
 
+/* XXX Used to decide regs_mask for dwflst_perf_sample_getframes. */
+Ebl *default_ebl = NULL;
+
 /* non-printable argp options.  */
 #define OPT_DEBUG	0x100
 
 /* Diagnostic options. */
-static bool show_memory_reads = false;
 static bool show_frames = false;
 static bool show_samples = false;
 static bool show_failures = false;
@@ -187,9 +192,6 @@ static bool show_summary = true;
 /* Environment vars to drive diagnostic options: */
 #define ELFUTILS_STACKTRACE_VERBOSE_ENV_VAR "ELFUTILS_STACKTRACE_VERBOSE"
 /* Valid values that turn on diagnostics: 'true', 'verbose', 'debug', '1', '2'. */
-
-/* Enables detailed tracing of simulated memory reads: */
-/* #define DEBUG_MEMORY_READ */
 
 /* Enables even more diagnostics on modules: */
 /* #define DEBUG_MODULES */
@@ -467,171 +469,11 @@ sysprof_reader_getframes (SysprofReader *reader,
 
 #endif /* HAVE_SYSPROF_HEADERS */
 
-/*******************************************
- * Memory read interface for stack samples *
- *******************************************/
-
-/* TODO: elfutils (internal) libraries use libNN_set_errno and DWFL_E_WHATEVER;
-   this code fails silently in sample_getthread. */
-
-struct __sample_arg
-{
-  int tid;
-  Dwarf_Addr base_addr;
-  uint64_t size;
-  uint8_t *data;
-  uint64_t n_regs;
-  uint64_t abi; /* PERF_SAMPLE_REGS_ABI_{32,64} */
-  Dwarf_Addr pc;
-  Dwarf_Addr sp;
-  Dwarf_Addr *regs;
-};
-
-/* The next few functions imitate the corefile interface for a single
-   stack sample, with very restricted access to registers and memory. */
-
-/* Just yield the single thread id matching the sample. */
-static pid_t
-sample_next_thread (Dwfl *dwfl __attribute__ ((unused)), void *dwfl_arg,
-		    void **thread_argp)
-{
-  struct __sample_arg *sample_arg = (struct __sample_arg *)dwfl_arg;
-  if (*thread_argp == NULL)
-    {
-      *thread_argp = (void *)0xea7b3375;
-      return sample_arg->tid;
-    }
-  else
-    return 0;
-}
-
-/* Just check that the thread id matches the sample. */
-static bool
-sample_getthread (Dwfl *dwfl __attribute__ ((unused)), pid_t tid,
-		  void *dwfl_arg, void **thread_argp)
-{
-  struct __sample_arg *sample_arg = (struct __sample_arg *)dwfl_arg;
-  *thread_argp = (void *)sample_arg;
-  if (sample_arg->tid != tid)
-    {
-      return false;
-    }
-  return true;
-}
-
-#define copy_word_64(result, d) \
-  if ((((uintptr_t) (d)) & (sizeof (uint64_t) - 1)) == 0) \
-    *(result) = *(uint64_t *)(d); \
-  else \
-    memcpy ((result), (d), sizeof (uint64_t));
-
-#define copy_word_32(result, d) \
-  if ((((uintptr_t) (d)) & (sizeof (uint32_t) - 1)) == 0) \
-    *(result) = *(uint32_t *)(d); \
-  else \
-    memcpy ((result), (d), sizeof (uint32_t));
-
-#define copy_word(result, d, abi) \
-  if ((abi) == PERF_SAMPLE_REGS_ABI_64)	\
-    { copy_word_64((result), (d)); } \
-  else if ((abi) == PERF_SAMPLE_REGS_ABI_32) \
-    { copy_word_32((result), (d)); } \
-  else \
-    *(result) = 0;
-
-static bool
-elf_memory_read (Dwfl *dwfl, Dwarf_Addr addr, Dwarf_Word *result, void *arg)
-{
-  struct __sample_arg *sample_arg = (struct __sample_arg *)arg;
-  Dwfl_Module *mod = dwfl_addrmodule(dwfl, addr);
-  Dwarf_Addr bias;
-  Elf_Scn *section = dwfl_module_address_section(mod, &addr, &bias);
-
-  if (!section)
-    return false;
-
-  Elf_Data *data = elf_getdata(section, NULL);
-  if (data && data->d_buf && data->d_size > addr) {
-    uint8_t *d = ((uint8_t *)data->d_buf) + addr;
-    copy_word(result, d, sample_arg->abi);
-    return true;
-  }
-  return false;
-}
-
-static bool
-sample_memory_read (Dwfl *dwfl, Dwarf_Addr addr, Dwarf_Word *result, void *arg)
-{
-  struct __sample_arg *sample_arg = (struct __sample_arg *)arg;
-  if (show_memory_reads)
-    fprintf(stderr, "* memory_read addr=%lx+(%lx) size=%lx\n",
-	    sample_arg->base_addr, addr - sample_arg->base_addr, sample_arg->size);
-  /* Imitate read_cached_memory() with the stack sample data as the cache. */
-  if (addr < sample_arg->base_addr || addr - sample_arg->base_addr >= sample_arg->size)
-    return elf_memory_read(dwfl, addr, result, arg);
-  uint8_t *d = &sample_arg->data[addr - sample_arg->base_addr];
-  copy_word(result, d, sample_arg->abi);
-  return true;
-}
-
-/* TODO: Need to generalize this code beyond x86 architectures. */
-static bool
-sample_set_initial_registers (Dwfl_Thread *thread, void *thread_arg)
-{
-  /* The following facts are needed to translate x86 registers correctly:
-     - perf register order seen in linux arch/x86/include/uapi/asm/perf_regs.h
-       The registers array is built in the same order as the enum!
-       (See the code in tools/perf/util/intel-pt.c intel_pt_add_gp_regs().)
-     - sysprof libsysprof/perf-event-stream-private.h records all registers
-       except segment and flags.
-       - TODO: Should include the perf regs mask in sysprof data and
-         translate registers in fully-general fashion, removing this assumption.
-     - dwarf register order seen in elfutils backends/{x86_64,i386}_initreg.c;
-       and it's a fairly different register order!
-
-     For comparison, you can study codereview.qt-project.org/gitweb?p=qt-creator/perfparser.git;a=blob;f=app/perfregisterinfo.cpp;hb=HEAD
-     and follow the code which uses those tables of magic numbers.
-     But it's better to follow original sources of truth for this. */
-  struct __sample_arg *sample_arg = (struct __sample_arg *)thread_arg;
-  bool is_abi32 = (sample_arg->abi == PERF_SAMPLE_REGS_ABI_32);
-  static const int regs_i386[] = {0, 2, 3, 1, 7/*sp*/, 6, 4, 5, 8/*ip*/};
-  static const int regs_x86_64[] = {0, 3, 2, 1, 4, 5, 6, 7/*sp*/, 9, 10, 11, 12, 13, 14, 15, 16, 8/*ip*/};
-  const int *reg_xlat = is_abi32 ? regs_i386 : regs_x86_64;
-  int n_regs = is_abi32 ? 9 : 17;
-  dwfl_thread_state_register_pc (thread, sample_arg->pc);
-  if (sample_arg->n_regs < (uint64_t)n_regs && show_failures)
-    fprintf(stderr, N_("sample_set_initial_regs: n_regs=%ld, expected %d\n"),
-	    sample_arg->n_regs, n_regs);
-  for (int i = 0; i < n_regs; i++)
-    {
-      int j = reg_xlat[i];
-      if (j < 0) continue;
-      if (sample_arg->n_regs <= (uint64_t)j) continue;
-      dwfl_thread_state_registers (thread, i, 1, &sample_arg->regs[j]);
-    }
-  return true;
-}
-
-static void
-sample_detach (Dwfl *dwfl __attribute__ ((unused)), void *dwfl_arg)
-{
-  struct __sample_arg *sample_arg = (struct __sample_arg *)dwfl_arg;
-  free (sample_arg);
-}
-
-static const Dwfl_Thread_Callbacks sample_thread_callbacks =
-{
-  sample_next_thread,
-  sample_getthread,
-  sample_memory_read,
-  sample_set_initial_registers,
-  sample_detach,
-  NULL, /* sample_thread_detach */
-};
-
 /****************************************************
  * Dwfl and statistics table for multiple processes *
  ****************************************************/
+
+Dwflst_Process_Tracker *tracker = NULL;
 
 /* This echoes lib/dynamicsizehash.* with some necessary modifications. */
 typedef struct
@@ -865,7 +707,7 @@ static char *debuginfo_path = NULL;
 
 static const Dwfl_Callbacks sample_callbacks =
   {
-    .find_elf = dwfl_linux_proc_find_elf,
+    .find_elf = dwflst_tracker_linux_proc_find_elf,
     .find_debuginfo = dwfl_standard_find_debuginfo,
     .debuginfo_path = &debuginfo_path,
   };
@@ -891,7 +733,7 @@ nop_find_debuginfo (Dwfl_Module *mod __attribute__((unused)),
 
 static const Dwfl_Callbacks sample_callbacks =
 {
-  .find_elf = dwfl_linux_proc_find_elf,
+  .find_elf = dwflst_tracker_linux_proc_find_elf,
   .find_debuginfo = nop_find_debuginfo, /* work with CFI only */
 };
 
@@ -987,34 +829,11 @@ find_procfile (Dwfl *dwfl, pid_t *pid, Elf **elf, int *elf_fd)
 }
 
 Dwfl *
-sysprof_init_dwfl (struct sysprof_unwind_info *sui,
-		   SysprofCaptureStackUser *ev,
-		   SysprofCaptureUserRegs *regs)
+sysprof_init_dwfl_cb (Dwflst_Process_Tracker *cb_tracker,
+		      pid_t pid,
+		      void *arg __attribute__ ((unused)))
 {
-  pid_t pid = ev->frame.pid;
-  /* TODO: Need to generalize this code beyond x86 architectures. */
-  /* XXX: Note that sysprof requesting the x86_64 register file from
-     perf_events will result in an array of 17 regs even for 32-bit
-     applications. */
-#define EXPECTED_REGS 17
-  if (regs->n_regs < EXPECTED_REGS) /* XXX expecting everything except FLAGS */
-    {
-      if (show_failures)
-	fprintf(stderr, N_("sysprof_init_dwfl: n_regs=%d, expected %d\n"),
-		regs->n_regs, EXPECTED_REGS);
-      return NULL;
-    }
-
-  Dwfl *dwfl = pid_find_dwfl(pid);
-  struct __sample_arg *sample_arg;
-  bool cached = false;
-  if (dwfl != NULL)
-    {
-      sample_arg = dwfl->process->callbacks_arg; /* XXX requires libdwflP.h */
-      cached = true;
-      goto reuse;
-    }
-  dwfl = dwfl_begin (&sample_callbacks);
+  Dwfl *dwfl = dwflst_tracker_dwfl_begin (cb_tracker);
 
   int err = dwfl_linux_proc_report (dwfl, pid);
   if (err < 0)
@@ -1033,9 +852,55 @@ sysprof_init_dwfl (struct sysprof_unwind_info *sui,
       return NULL;
     }
 
+  return dwfl;
+}
+
+uint32_t expected_frame_nregs (Ebl *ebl)
+{
+  int m = ebl_get_elfmachine(ebl);
+  /* For aarch64, we use fewer and ebl->frame_nregs to unwind.  */
+  if (m == EM_ARM || m == EM_AARCH64)
+    return 14;
+  if (m == EM_X86_64 || m == EM_386)
+    return ebl_frame_nregs(ebl);
+  /* In general, it's better to be on the permissive side.  */
+  return 1;
+}
+
+int sp_reg_index (Ebl *ebl, bool is_abi32)
+{
+  int m = ebl_get_elfmachine(ebl);
+  if (m == EM_X86_64 || m == EM_386) return is_abi32 ? 4 : 7;
+  else if (m == EM_ARM || m == EM_AARCH64) return is_abi32 ? 13 : 31;
+  else return 0; /* XXX unwinding will likely not continue */
+}
+
+Dwfl *
+sysprof_find_dwfl (struct sysprof_unwind_info *sui,
+		   SysprofCaptureStackUser *ev,
+		   SysprofCaptureUserRegs *regs,
+		   Elf **out_elf)
+{
+  pid_t pid = ev->frame.pid;
+  if (regs->n_regs < expected_frame_nregs(default_ebl))
+    {
+      if (show_failures)
+	fprintf(stderr, N_("sysprof_find_dwfl: n_regs=%d, expected %ld\n"),
+		regs->n_regs, ebl_frame_nregs(default_ebl));
+      return NULL;
+    }
+
   Elf *elf = NULL;
+  Dwfl *dwfl = dwflst_tracker_find_pid (tracker, pid, sysprof_init_dwfl_cb, NULL);
+  bool cached = false;
+  if (dwfl != NULL && dwfl->process != NULL)
+    {
+      cached = true;
+      goto reuse;
+    }
+
   int elf_fd = -1;
-  err = find_procfile (dwfl, &pid, &elf, &elf_fd);
+  int err = find_procfile (dwfl, &pid, &elf, &elf_fd);
   if (err < 0)
     {
       if (show_failures)
@@ -1044,53 +909,21 @@ sysprof_init_dwfl (struct sysprof_unwind_info *sui,
       return NULL;
     }
 
-  sample_arg = malloc (sizeof *sample_arg);
-  if (sample_arg == NULL)
-    {
-      if (elf != NULL) {
-	elf_end (elf);
-	close (elf_fd);
-      }
-      free (sample_arg);
-      return NULL;
-    }
-
  reuse:
-  sample_arg->tid = ev->tid;
-  sample_arg->size = ev->size;
-  sample_arg->data = (uint8_t *)&ev->data;
-  sample_arg->regs = regs->regs;
-  sample_arg->n_regs = (uint64_t)regs->n_regs;
-  sample_arg->abi = (uint64_t)regs->abi;
-  /* TODO: Need to generalize this code beyond x86 architectures. */
-  /* Register ordering cf. linux arch/x86/include/uapi/asm/perf_regs.h enum perf_event_x86_regs: */
-  sample_arg->sp = regs->regs[7];
-  sample_arg->pc = regs->regs[8];
-  sample_arg->base_addr = sample_arg->sp;
-  sui->last_sp = sample_arg->base_addr;
-  sui->last_base = sample_arg->base_addr;
+  bool is_abi32 = (regs->abi == PERF_SAMPLE_REGS_ABI_32);
+  sui->last_sp = regs->regs[sp_reg_index(default_ebl, is_abi32)];
+  sui->last_base = sui->last_sp;
 
   if (show_frames) {
-    bool is_abi32 = (sample_arg->abi == PERF_SAMPLE_REGS_ABI_32);
-    fprintf(stderr, "sysprof_init_dwfl pid %lld%s: size=%ld%s pc=%lx sp=%lx+(%lx)\n",
+    fprintf(stderr, "sysprof_find_dwfl pid %lld%s: size=%ld%s pc=%lx sp=%lx+(%lx)\n",
 	    (long long) pid, cached ? " (cached)" : "",
-	    sample_arg->size, is_abi32 ? " (32-bit)" : "",
-	    sample_arg->pc, sample_arg->base_addr,
-	    sample_arg->sp - sample_arg->base_addr);
+	    ev->size, is_abi32 ? " (32-bit)" : "",
+	    regs->regs[8], sui->last_base, (long)0);
   }
 
-  if (!cached && ! dwfl_attach_state (dwfl, elf, pid, &sample_thread_callbacks, sample_arg))
-    {
-      if (show_failures)
-	fprintf(stderr, "dwfl_attach_state pid %lld: %s\n",
-		(long long)pid, dwfl_errmsg(-1));
-      elf_end (elf);
-      close (elf_fd);
-      free (sample_arg);
-      return NULL;
-    }
   if (!cached)
     pid_store_dwfl (pid, dwfl);
+  *out_elf = elf;
   return dwfl;
 }
 
@@ -1109,11 +942,9 @@ sysprof_unwind_frame_cb (Dwfl_Frame *state, void *arg)
 
   Dwarf_Addr pc_adjusted = pc - (isactivation ? 0 : 1);
   Dwarf_Addr sp;
-  /* TODO: Need to generalize this code beyond x86 architectures. */
   struct sysprof_unwind_info *sui = (struct sysprof_unwind_info *)arg;
   int is_abi32 = (sui->last_abi == PERF_SAMPLE_REGS_ABI_32);
-  /* DWARF register order cf. elfutils backends/{x86_64,i386}_initreg.c: */
-  int user_regs_sp = is_abi32 ? 4 : 7;
+  int user_regs_sp = sp_reg_index(default_ebl, is_abi32);
   int rc = dwfl_frame_reg (state, user_regs_sp, &sp);
   if (rc < 0)
     {
@@ -1233,7 +1064,8 @@ sysprof_unwind_cb (SysprofCaptureFrame *frame, void *arg)
   SysprofCaptureUserRegs *regs = (SysprofCaptureUserRegs *)tail_ptr;
   if (show_frames)
     fprintf(stderr, "\n"); /* extra newline for padding */
-  Dwfl *dwfl = sysprof_init_dwfl (sui, ev, regs);
+  Elf *elf = NULL;
+  Dwfl *dwfl = sysprof_find_dwfl (sui, ev, regs, &elf);
   if (dwfl == NULL)
     {
       if (show_summary)
@@ -1243,7 +1075,7 @@ sysprof_unwind_cb (SysprofCaptureFrame *frame, void *arg)
 	  dwfl_ent->lost_samples++;
 	}
       if (show_failures)
-	fprintf(stderr, "sysprof_init_dwfl pid %lld (%s) (failed)\n",
+	fprintf(stderr, "sysprof_find_dwfl pid %lld (%s) (failed)\n",
 		(long long)frame->pid, comm);
       return SYSPROF_CB_OK;
     }
@@ -1253,11 +1085,16 @@ sysprof_unwind_cb (SysprofCaptureFrame *frame, void *arg)
   sui->last_dwfl = dwfl;
 #endif
   sui->last_pid = frame->pid;
-  int rc = dwfl_getthread_frames (dwfl, ev->tid, sysprof_unwind_frame_cb, sui);
+  uint64_t regs_mask = ebl_perf_frame_regs_mask (default_ebl);
+  int rc = dwflst_perf_sample_getframes (dwfl, elf, frame->pid, ev->tid,
+					 (uint8_t *)&ev->data, ev->size,
+					 regs->regs, regs->n_regs,
+					 regs_mask, regs->abi,
+					 sysprof_unwind_frame_cb, sui);
   if (rc < 0)
     {
       if (show_failures)
-	fprintf(stderr, "dwfl_getthread_frames pid %lld: %s\n",
+	fprintf(stderr, "dwflst_perf_sample_getframes pid %lld: %s\n",
 		(long long)frame->pid, dwfl_errmsg(-1));
     }
   if (show_samples)
@@ -1313,7 +1150,7 @@ sysprof_unwind_cb (SysprofCaptureFrame *frame, void *arg)
  ****************/
 
 /* Required to match our signal handling with that of a sysprof parent process. */
-static void sigint_handler (int /* signo */)
+static void sigint_handler (int signo __attribute__ ((unused)))
 {
   if (signal_count >= 2)
     {
@@ -1373,9 +1210,6 @@ parse_opt (int key, char *arg __attribute__ ((unused)),
       break;
 
     case OPT_DEBUG:
-#ifdef DEBUG_MEMORY_READ
-      show_memory_reads = true;
-#endif
       show_frames = true;
       FALLTHROUGH;
     case 'v':
@@ -1467,9 +1301,6 @@ https://sourceware.org/cgit/elfutils/tree/README.eu-stacktrace?h=users/serhei/eu
   else if (strcmp(env_verbose, "debug") == 0
 	   || strcmp(env_verbose, "2") == 0)
     {
-#ifdef DEBUG_MEMORY_READ
-      show_memory_reads = true;
-#endif
       show_frames = true;
       show_samples = true;
       show_failures = true;
@@ -1508,6 +1339,7 @@ https://sourceware.org/cgit/elfutils/tree/README.eu-stacktrace?h=users/serhei/eu
   (void)maxframes;
 #else
   fprintf(stderr, "\n=== starting eu-stacktrace ===\n");
+  tracker = dwflst_tracker_begin (&sample_callbacks);
 
   /* TODO: For now, code the processing loop for sysprof only; generalize later. */
   assert (input_format == FORMAT_SYSPROF);
@@ -1534,6 +1366,19 @@ https://sourceware.org/cgit/elfutils/tree/README.eu-stacktrace?h=users/serhei/eu
     {
       if (!dwfltab_init())
 	error (EXIT_BAD, errno, N_("Could not initialize Dwfl table"));
+
+      /* TODO: Generalize to other architectures. */
+      struct utsname u;
+      uname(&u);
+      int em = EM_NONE;
+      if (strcmp(u.machine, "x86_64") == 0) em = EM_X86_64;
+      else if (strcmp(u.machine, "i686") == 0 || strcmp(u.machine, "i386") == 0) em = EM_386;
+      else if (strcmp(u.machine, "aarch64") == 0) em = EM_AARCH64;
+      else if (strcmp(u.machine, "armv7l") == 0) em = EM_ARM;
+      else
+	error (EXIT_BAD, errno, N_("Unsupported architecture: %s"), u.machine);
+      default_ebl = ebl_openbackend_machine(em);
+
       struct sysprof_unwind_info sui;
       sui.output_fd = output_fd;
       sui.reader = reader;
@@ -1590,6 +1435,8 @@ https://sourceware.org/cgit/elfutils/tree/README.eu-stacktrace?h=users/serhei/eu
     close (input_fd);
   if (output_fd != -1)
     close (output_fd);
+
+  dwflst_tracker_end (tracker);
 
   return EXIT_OK;
 }

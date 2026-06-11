@@ -148,11 +148,12 @@ libdw_open_elf (int *fdp, Elf **elfp, bool close_on_fail, bool archive_ok,
 	{
 	  /* Pure evil.  libelf needs some better interfaces.  */
 	  elf->kind = ELF_K_AR;
-	  elf->state.ar.elf_ar_hdr.ar_name = "libdwfl is faking you out";
-	  elf->state.ar.elf_ar_hdr.ar_size = elf->maximum_size - offset;
+	  elf->state.ar.cur_ar_hdr.ar_name = "libdwfl is faking you out";
+	  elf->state.ar.cur_ar_hdr.ar_size = elf->maximum_size - offset;
 	  elf->state.ar.offset = offset - sizeof (struct ar_hdr);
 	  Elf *subelf = elf_begin (-1, elf->cmd, elf);
 	  elf->kind = ELF_K_NONE;
+	  elf->state.ar.cur_ar_hdr.ar_name = NULL;
 	  if (unlikely (subelf == NULL))
 	    error = DWFL_E_LIBELF;
 	  else
@@ -188,6 +189,8 @@ libdw_open_elf (int *fdp, Elf **elfp, bool close_on_fail, bool archive_ok,
       close (*fdp);
       *fdp = -1;
     }
+
+  __libdwfl_reset_sh_addr (elf);
 
   *elfp = elf;
   return error;

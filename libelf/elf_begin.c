@@ -62,7 +62,7 @@ file_read_ar (int fildes, void *map_address, off_t offset, size_t maxsize,
 	 happen on demand.  */
       elf->state.ar.offset = offset + SARMAG;
 
-      elf->state.ar.elf_ar_hdr.ar_rawname = elf->state.ar.raw_name;
+      elf->state.ar.cur_ar_hdr.ar_rawname = elf->state.ar.raw_name;
     }
 
   return elf;
@@ -327,8 +327,8 @@ file_read_elf (int fildes, void *map_address, unsigned char *e_ident,
     return NULL;
 
   assert ((unsigned int) scncnt == scncnt);
-  assert (offsetof (struct Elf, state.elf32.scns)
-	  == offsetof (struct Elf, state.elf64.scns));
+  eu_static_assert (offsetof (struct Elf, state.elf32.scns)
+		    == offsetof (struct Elf, state.elf64.scns));
   elf->state.elf32.scns.cnt = scncnt;
   elf->state.elf32.scns.max = scnmax;
 
@@ -412,19 +412,6 @@ file_read_elf (int fildes, void *map_address, unsigned char *e_ident,
 		  ((char *) map_address + offset
 		   + elf->state.elf32.shdr[cnt].sh_offset);
 	      elf->state.elf32.scns.data[cnt].list = &elf->state.elf32.scns;
-
-	      /* If this is a section with an extended index add a
-		 reference in the section which uses the extended
-		 index.  */
-	      if (elf->state.elf32.shdr[cnt].sh_type == SHT_SYMTAB_SHNDX
-		  && elf->state.elf32.shdr[cnt].sh_link < scncnt)
-		elf->state.elf32.scns.data[elf->state.elf32.shdr[cnt].sh_link].shndx_index
-		  = cnt;
-
-	      /* Set the own shndx_index field in case it has not yet
-		 been set.  */
-	      if (elf->state.elf32.scns.data[cnt].shndx_index == 0)
-		elf->state.elf32.scns.data[cnt].shndx_index = -1;
 	    }
 	}
       else
@@ -510,19 +497,6 @@ file_read_elf (int fildes, void *map_address, unsigned char *e_ident,
 		  ((char *) map_address + offset
 		   + elf->state.elf64.shdr[cnt].sh_offset);
 	      elf->state.elf64.scns.data[cnt].list = &elf->state.elf64.scns;
-
-	      /* If this is a section with an extended index add a
-		 reference in the section which uses the extended
-		 index.  */
-	      if (elf->state.elf64.shdr[cnt].sh_type == SHT_SYMTAB_SHNDX
-		  && elf->state.elf64.shdr[cnt].sh_link < scncnt)
-		elf->state.elf64.scns.data[elf->state.elf64.shdr[cnt].sh_link].shndx_index
-		  = cnt;
-
-	      /* Set the own shndx_index field in case it has not yet
-		 been set.  */
-	      if (elf->state.elf64.scns.data[cnt].shndx_index == 0)
-		elf->state.elf64.scns.data[cnt].shndx_index = -1;
 	    }
 	}
       else
@@ -841,6 +815,50 @@ read_long_names (Elf *elf)
 }
 
 
+/* Copy archive header from parent archive ref to member descriptor elf.  */
+static int
+copy_arhdr (Elf_Arhdr *dest, Elf *ref)
+{
+  Elf_Arhdr *hdr;
+
+  hdr = &ref->state.ar.cur_ar_hdr;
+
+  char *ar_name = hdr->ar_name;
+  char *ar_rawname = hdr->ar_rawname;
+  if (ar_name == NULL || ar_rawname == NULL)
+    {
+      /* ref doesn't have an Elf_Arhdr or it was marked as unusable.  */
+      return 0;
+    }
+
+  /* Allocate copies of ar_name and ar_rawname.  */
+  size_t name_len = strlen (ar_name) + 1;
+  char *name_copy = malloc (MAX (name_len, 16));
+  if (name_copy == NULL)
+    {
+      __libelf_seterrno (ELF_E_NOMEM);
+      return -1;
+    }
+  memcpy (name_copy, ar_name, name_len);
+
+  size_t rawname_len = strlen (ar_rawname) + 1;
+  char *rawname_copy = malloc (MAX (rawname_len, 17));
+  if (rawname_copy == NULL)
+    {
+      free (name_copy);
+      __libelf_seterrno (ELF_E_NOMEM);
+      return -1;
+    }
+  memcpy (rawname_copy, ar_rawname, rawname_len);
+
+  *dest = *hdr;
+  dest->ar_name = name_copy;
+  dest->ar_rawname = rawname_copy;
+
+  return 0;
+}
+
+
 /* Read the next archive header.  */
 int
 internal_function
@@ -888,7 +906,7 @@ __libelf_next_arhdr_wrlock (Elf *elf)
   /* Copy the raw name over to a NUL terminated buffer.  */
   *((char *) mempcpy (elf->state.ar.raw_name, ar_hdr->ar_name, 16)) = '\0';
 
-  elf_ar_hdr = &elf->state.ar.elf_ar_hdr;
+  elf_ar_hdr = &elf->state.ar.cur_ar_hdr;
 
   /* Now convert the `struct ar_hdr' into `Elf_Arhdr'.
      Determine whether this is a special entry.  */
@@ -1081,21 +1099,42 @@ dup_elf (int fildes, Elf_Cmd cmd, Elf *ref)
      member the internal pointer of the archive file descriptor is
      pointing to.  First read the header of the next member if this
      has not happened already.  */
-  if (ref->state.ar.elf_ar_hdr.ar_name == NULL
+  if (ref->state.ar.cur_ar_hdr.ar_name == NULL
       && __libelf_next_arhdr_wrlock (ref) != 0)
     /* Something went wrong.  Maybe there is no member left.  */
     return NULL;
 
   /* We have all the information we need about the next archive member.
-     Now create a descriptor for it.  */
-  result = read_file (fildes, ref->state.ar.offset + sizeof (struct ar_hdr),
-		      ref->state.ar.elf_ar_hdr.ar_size, cmd, ref);
+     Now create a descriptor for it. Check parent size can contain member.  */
+  if (ref->state.ar.offset < ref->start_offset)
+    return NULL;
+  size_t max_size = ref->maximum_size;
+  size_t offset = (size_t) (ref->state.ar.offset - ref->start_offset);
+  size_t hdr_size = sizeof (struct ar_hdr);
+  size_t ar_size = (size_t) ref->state.ar.cur_ar_hdr.ar_size;
+  if (max_size < hdr_size || max_size - hdr_size < offset)
+    return NULL;
 
-  /* Enlist this new descriptor in the list of children.  */
+  Elf_Arhdr ar_hdr = {0};
+  if (copy_arhdr (&ar_hdr, ref) != 0)
+    /* Out of memory.  */
+    return NULL;
+
+  result = read_file (fildes, ref->state.ar.offset + sizeof (struct ar_hdr),
+		      MIN (max_size - hdr_size - offset, ar_size), cmd, ref);
+
   if (result != NULL)
     {
+      /* Enlist this new descriptor in the list of children.  */
       result->next = ref->state.ar.children;
       ref->state.ar.children = result;
+
+      result->elf_ar_hdr = ar_hdr;
+    }
+  else
+    {
+      free (ar_hdr.ar_name);
+      free (ar_hdr.ar_rawname);
     }
 
   return result;
@@ -1120,8 +1159,8 @@ write_file (int fd, Elf_Cmd cmd)
       result->state.elf.scnincr = NSCNSALLOC;
 
       /* We have allocated room for some sections.  */
-      assert (offsetof (struct Elf, state.elf32.scns)
-	      == offsetof (struct Elf, state.elf64.scns));
+      eu_static_assert (offsetof (struct Elf, state.elf32.scns)
+			== offsetof (struct Elf, state.elf64.scns));
       result->state.elf.scns_last = &result->state.elf32.scns;
       result->state.elf32.scns.max = NSCNSALLOC;
     }

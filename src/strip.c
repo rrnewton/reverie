@@ -126,13 +126,14 @@ static char *tmp_debug_fname = NULL;
 /* Close debug file descriptor, if opened. And remove temporary debug file.  */
 static void cleanup_debug (void);
 
-#define INTERNAL_ERROR(fname) \
+#define INTERNAL_ERROR_MSG(fname, msg) \
   do { \
     cleanup_debug (); \
     error_exit (0, _("%s: INTERNAL ERROR %d (%s): %s"),			\
-		fname, __LINE__, PACKAGE_VERSION, elf_errmsg (-1));	\
+		fname, __LINE__, PACKAGE_VERSION, msg);	\
   } while (0)
 
+#define INTERNAL_ERROR(fname) INTERNAL_ERROR_MSG(fname, elf_errmsg (-1))
 
 /* Name of the output file.  */
 static const char *output_fname;
@@ -631,7 +632,14 @@ remove_debug_relocations (Ebl *ebl, Elf *elf, GElf_Ehdr *ehdr,
 	     resolve relocation symbol indexes.  */
 	  Elf64_Word symt = shdr->sh_link;
 	  Elf_Data *symdata, *xndxdata;
-	  Elf_Scn * symscn = elf_getscn (elf, symt);
+	  Elf_Scn *symscn = elf_getscn (elf, symt);
+	  GElf_Shdr symshdr_mem;
+	  GElf_Shdr *symshdr = gelf_getshdr (symscn, &symshdr_mem);
+	  if (symshdr == NULL)
+	    INTERNAL_ERROR (fname);
+	  if (symshdr->sh_type == SHT_NOBITS)
+	    INTERNAL_ERROR_MSG (fname, "NOBITS section");
+
 	  symdata = elf_getdata (symscn, NULL);
 	  xndxdata = get_xndxdata (elf, symscn);
 	  if (symdata == NULL)
@@ -2592,10 +2600,12 @@ while computing checksum for debug information"));
 
       if (newehdr->e_ident[EI_CLASS] == ELFCLASS32)
 	{
-	  assert (offsetof (Elf32_Ehdr, e_shentsize) + sizeof (Elf32_Half)
-		  == offsetof (Elf32_Ehdr, e_shnum));
-	  assert (offsetof (Elf32_Ehdr, e_shnum) + sizeof (Elf32_Half)
-		  == offsetof (Elf32_Ehdr, e_shstrndx));
+	  eu_static_assert (offsetof (Elf32_Ehdr, e_shentsize)
+			    + sizeof (Elf32_Half)
+			    == offsetof (Elf32_Ehdr, e_shnum));
+	  eu_static_assert (offsetof (Elf32_Ehdr, e_shnum)
+			    + sizeof (Elf32_Half)
+			    == offsetof (Elf32_Ehdr, e_shstrndx));
 	  const Elf32_Off zero_off = 0;
 	  const Elf32_Half zero[3] = { 0, 0, SHN_UNDEF };
 	  if (pwrite_retry (fd, &zero_off, sizeof zero_off,
@@ -2612,10 +2622,12 @@ while computing checksum for debug information"));
 	}
       else
 	{
-	  assert (offsetof (Elf64_Ehdr, e_shentsize) + sizeof (Elf64_Half)
-		  == offsetof (Elf64_Ehdr, e_shnum));
-	  assert (offsetof (Elf64_Ehdr, e_shnum) + sizeof (Elf64_Half)
-		  == offsetof (Elf64_Ehdr, e_shstrndx));
+	  eu_static_assert (offsetof (Elf64_Ehdr, e_shentsize)
+			    + sizeof (Elf64_Half)
+			    == offsetof (Elf64_Ehdr, e_shnum));
+	  eu_static_assert (offsetof (Elf64_Ehdr, e_shnum)
+			    +sizeof (Elf64_Half)
+			    == offsetof (Elf64_Ehdr, e_shstrndx));
 	  const Elf64_Off zero_off = 0;
 	  const Elf64_Half zero[3] = { 0, 0, SHN_UNDEF };
 	  if (pwrite_retry (fd, &zero_off, sizeof zero_off,

@@ -1,7 +1,7 @@
 ## Process this file with automake to create Makefile.in
 ## Configure input file for elfutils.
 ##
-## Copyright (C) 1996-2006, 2008, 2009, 2015 Red Hat, Inc.
+## Copyright (C) 1996-2006, 2008, 2009, 2015, 2025 Red Hat, Inc.
 ##
 ## This file is part of elfutils.
 ##
@@ -28,8 +28,8 @@ AM_MAKEFLAGS = --no-print-directory
 
 pkginclude_HEADERS = version.h
 
-SUBDIRS = config lib libelf libcpu backends libebl libdwelf libdwfl libdw \
-	  libasm debuginfod src po doc tests
+SUBDIRS = config lib libelf libcpu backends libebl libdwelf libdwfl \
+	  libdwfl_stacktrace libdw libasm debuginfod src po doc tests
 
 EXTRA_DIST = elfutils.spec GPG-KEY NOTES CONTRIBUTING SECURITY \
 	     COPYING COPYING-GPLV2 COPYING-LGPLV3 CONDUCT
@@ -70,7 +70,7 @@ coverage: $(COVERAGE_OUTPUT_INDEX_HTML)
 if LCOV_OLD
 ignore_errors =
 else
-ignore_errors = --ignore-errors empty,negative
+ignore_errors = --ignore-errors empty,negative,inconsistent,corrupt
 endif
 
 $(COVERAGE_OUTPUT_INDEX_HTML): $(COVERAGE_OUTPUT_FILE)

@@ -1,8 +1,8 @@
 dnl Process this file with autoconf to produce a configure script.
 dnl Configure input file for elfutils.                     -*-autoconf-*-
 dnl
-dnl Copyright (C) 1996-2019, 2024 Red Hat, Inc.
-dnl Copyright (C) 2022, 2023 Mark J. Wielaard <mark@klomp.org>
+dnl Copyright (C) 1996-2019, 2025 Red Hat, Inc.
+dnl Copyright (C) 2022, 2023, 2026 Mark J. Wielaard <mark@klomp.org>
 dnl
 dnl This file is part of elfutils.
 dnl
@@ -18,7 +18,7 @@ dnl  GNU General Public License for more details.
 dnl
 dnl  You should have received a copy of the GNU General Public License
 dnl  along with this program.  If not, see <http://www.gnu.org/licenses/>.
-AC_INIT([elfutils],[0.192],[https://sourceware.org/bugzilla],[elfutils],[http://elfutils.org/])
+AC_INIT([elfutils],[0.195],[https://sourceware.org/bugzilla],[elfutils],[http://elfutils.org/])
 
 LIBDEBUGINFOD_SONAME=libdebuginfod.so.1
 AC_SUBST([LIBDEBUGINFOD_SONAME])
@@ -39,7 +39,7 @@ fi
 AC_CONFIG_AUX_DIR([config])
 AC_CONFIG_FILES([config/Makefile])
 
-AC_COPYRIGHT([Copyright (C) 1996-2024 The elfutils developers.])
+AC_COPYRIGHT([Copyright (C) 1996-2026 The elfutils developers.])
 AC_PREREQ(2.69)			dnl Minimum Autoconf version required.
 
 dnl We use GNU make extensions; automake 1.10 defaults to -Wportability.
@@ -228,11 +228,7 @@ AS_IF([test "x$ac_cv_tls" != xyes],
 
 dnl Although we test for C11 above that doesn't mean we have stdatomic.h
 dnl We need at least gcc 4.9+ for that.
-AC_CACHE_CHECK([whether gcc provides stdatomic.h], ac_cv_has_stdatomic,
-  [AC_COMPILE_IFELSE([AC_LANG_SOURCE([[#include <stdatomic.h>]])],
-		     ac_cv_has_stdatomic=yes, ac_cv_has_stdatomic=no)])
-AS_IF([test "x$ac_cv_has_stdatomic" = "xno"],
-      [AC_MSG_ERROR([stdatomic.h required])])
+AC_CHECK_HEADERS([stdatomic.h], [], [AC_MSG_ERROR([stdatomic.h required])])
 
 dnl This test must come as early as possible after the compiler configuration
 dnl tests, because the choice of the file model can (in principle) affect
@@ -282,6 +278,32 @@ case "$CFLAGS" in
     CXXFLAGS="$fortified_cflags $CXXFLAGS"
     ;;
 esac
+
+AC_CACHE_CHECK(
+  [for openat2 with RESOLVE_IN_ROOT support],
+  [eu_cv_openat2_RESOLVE_IN_ROOT],
+  [AC_LINK_IFELSE(
+    [AC_LANG_PROGRAM(
+      [[#define _GNU_SOURCE
+        #include <fcntl.h>
+        #include <stdlib.h>
+        #include <unistd.h>
+        #include <sys/syscall.h>
+        #include <linux/openat2.h>
+        #include <stdio.h>
+      ]], [[
+        struct open_how how = { .flags = O_RDONLY|O_DIRECTORY, .resolve = RESOLVE_IN_ROOT };
+        int dfd = open (".", O_PATH);
+        return syscall (SYS_openat2, dfd, ".", &how, sizeof(how)) < 0;
+      ]]
+    )],
+    [eu_cv_openat2_RESOLVE_IN_ROOT=yes],
+    [eu_cv_openat2_RESOLVE_IN_ROOT=no]
+  )]
+)
+AS_IF([test "x$eu_cv_openat2_RESOLVE_IN_ROOT" = xyes],
+      [AC_DEFINE([HAVE_OPENAT2_RESOLVE_IN_ROOT], [1], [Define if openat2 is available])]
+)
 
 dnl enable debugging of branch prediction.
 AC_ARG_ENABLE([debugpred],
@@ -363,10 +385,15 @@ if test "$use_address" = yes; then
 fi
 AM_CONDITIONAL(USE_ADDRESS_SANITIZER, test "$use_address" = yes)
 
+AC_ARG_ENABLE([helgrind],
+AS_HELP_STRING([--enable-helgrind],[run all tests under the valgrind tool helgrind]),
+[use_helgrind=$enableval], [use_helgrind=no])
+
 AC_ARG_ENABLE([valgrind],
 AS_HELP_STRING([--enable-valgrind],[run all tests under valgrind]),
 [use_valgrind=$enableval], [use_valgrind=no])
-if test "$use_valgrind" = yes; then
+
+if test "$use_valgrind" = yes -o "$use_helgrind" = yes; then
   if test "$use_address" = yes; then
     AC_MSG_ERROR([cannot enable valgrind and sanitize address together])
   fi
@@ -375,7 +402,8 @@ if test "$use_valgrind" = yes; then
     AC_MSG_ERROR([valgrind not found])
   fi
 fi
-AM_CONDITIONAL(USE_VALGRIND, test "$use_valgrind" = yes)
+AM_CONDITIONAL(USE_VALGRIND, test "$use_valgrind" = yes -o "$use_helgrind" = yes)
+AM_CONDITIONAL(USE_HELGRIND, test "$use_helgrind" = yes)
 
 AC_ARG_WITH([valgrind],
 AS_HELP_STRING([--with-valgrind],[include directory for Valgrind headers]),
@@ -394,6 +422,12 @@ fi
 AC_ARG_ENABLE([valgrind-annotations],
 AS_HELP_STRING([--enable-valgrind-annotations],[insert extra annotations for better valgrind support]),
 [use_vg_annotations=$enableval], [use_vg_annotations=no])
+
+# Helgrind requires Valgrind annotations.
+if test "$use_vg_annotations" = no -a "$use_helgrind" = yes; then
+  AC_MSG_ERROR(["--enable-helgrind requires --enable-valgrind-annotations"])
+fi
+
 if test "$use_vg_annotations" = yes; then
     if test "x$HAVE_VALGRIND_HEADERS" != "xyes"; then
       AC_MSG_CHECKING([whether Valgrind headers are available])
@@ -631,6 +665,36 @@ CFLAGS="$old_CFLAGS"])
 AM_CONDITIONAL(HAVE_USE_AFTER_FREE3_WARNING,
 	       [test "x$ac_cv_use_after_free3" != "xno"])
 
+AC_CACHE_CHECK([whether the compiler accepts -Wmissing-parameter-name], ac_cv_missing_parameter_name, [dnl
+old_CFLAGS="$CFLAGS"
+CFLAGS="$CFLAGS -Wmissing-parameter-name -Werror"
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([])],
+		  ac_cv_missing_parameter_name=yes,
+		  ac_cv_missing_parameter_name=no)
+CFLAGS="$old_CFLAGS"])
+AM_CONDITIONAL(HAVE_MISSING_PARAMETER_NAME_WARNING,
+	       [test "x$ac_cv_missing_parameter_name" != "xno"])
+
+AC_CACHE_CHECK([whether the compiler accepts -Wdeprecated-non-prototype], ac_cv_deprecated_non_prototype, [dnl
+old_CFLAGS="$CFLAGS"
+CFLAGS="$CFLAGS -Wdeprecated-non-prototype -Werror"
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([])],
+		  ac_cv_deprecated_non_prototype=yes,
+		  ac_cv_deprecated_non_prototype=no)
+CFLAGS="$old_CFLAGS"])
+AM_CONDITIONAL(HAVE_DEPRECATED_NON_PROTOTYPE_WARNING,
+	       [test "x$ac_cv_deprecated_non_prototype" != "xno"])
+
+AC_CACHE_CHECK([whether the compiler accepts -Wfree_labels], ac_cv_free_labels, [dnl
+old_CFLAGS="$CFLAGS"
+CFLAGS="$CFLAGS -Wfree-labels -Werror"
+AC_COMPILE_IFELSE([AC_LANG_SOURCE([])],
+		  ac_cv_free_labels=yes,
+		  ac_cv_free_labels=no)
+CFLAGS="$old_CFLAGS"])
+AM_CONDITIONAL(HAVE_FREE_LABELS_WARNING,
+	       [test "x$ac_cv_free_labels" != "xno"])
+
 AC_CACHE_CHECK([whether the compiler accepts -fno-addrsig], ac_cv_fno_addrsig, [dnl
 old_CFLAGS="$CFLAGS"
 CFLAGS="$CFLAGS -fno-addrsig -Werror"
@@ -691,6 +755,9 @@ AC_CONFIG_FILES([libdw/Makefile])
 
 dnl Higher-level DWARF support library.
 AC_CONFIG_FILES([libdwfl/Makefile])
+
+dnl Higher-level DWARF stacktrace support library
+AC_CONFIG_FILES([libdwfl_stacktrace/Makefile])
 
 dnl CPU handling library.
 AC_CONFIG_FILES([libcpu/Makefile])
@@ -777,6 +844,14 @@ if test "$sys_user_has_user_regs" = "yes"; then
             [Define to 1 if <sys/user.h> defines struct user_regs_struct])
 fi
 
+AC_CHECK_TYPE([struct user_pac_mask],
+              [has_user_pac_mask=yes], [has_user_pac_mask=no],
+              [[#include <asm/ptrace.h>]])
+if test "$has_user_pac_mask" = "yes"; then
+  AC_DEFINE(HAVE_USER_PACK_MASK, 1,
+            [Defined if struct user_pac_mask exists.])
+fi
+
 # On a 64-bit host where can can use $CC -m32, we'll run two sets of tests.
 utrace_BIARCH
 CC_BIARCH="$CC $utrace_biarch"
@@ -847,7 +922,21 @@ fi
 PKG_CHECK_MODULES([libmicrohttpd],[libmicrohttpd >= 0.9.33],[],[enable_debuginfod=no])
 PKG_CHECK_MODULES([oldlibmicrohttpd],[libmicrohttpd < 0.9.51],[old_libmicrohttpd=yes],[old_libmicrohttpd=no])
 PKG_CHECK_MODULES([sqlite3],[sqlite3 >= 3.7.17],[have_sqlite3=yes],[have_sqlite3=no])
-PKG_CHECK_MODULES([libarchive],[libarchive >= 3.1.2],[have_libarchive=yes],[have_libarchive=no])
+#
+# Check for libarchive unless its usage is disabled.
+AC_ARG_WITH([libarchive],
+  [AS_HELP_STRING([--with-libarchive],
+                  [use libarchive])],
+  [], [with_libarchive=auto])
+have_libarchive=no
+AS_IF([test "x$with_libarchive" != "xno"], [
+  PKG_CHECK_MODULES([libarchive], [libarchive >= 3.1.2],
+    [have_libarchive=yes],
+    [have_libarchive=no])
+])
+AS_IF([test "x$with_libarchive" = "xyes" -a "x$have_libarchive" != "xyes"], [
+  AC_MSG_ERROR([--with-libarchive was given, but libarchive >= 3.1.2 not found])
+])
 #
 # pronounce judgement on ability to build server, overridden by =yes/=no
 if test "x$enable_debuginfod" = "xno"; then
@@ -914,22 +1003,22 @@ AC_CONFIG_FILES([config/profile.sh config/profile.csh config/profile.fish])
 
 # XXX Currently, eu-stacktrace can only work with sysprof/x86, hence:
 AC_ARG_ENABLE([stacktrace],AS_HELP_STRING([--enable-stacktrace], [Enable eu-stacktrace]))
-# check for x86, or more precisely _ASM_X86_PERF_REGS_H
+# check for x86/arm, or more precisely _ASM_{X86,ARM,ARM64}_PERF_REGS_H
 AS_IF([test "x$enable_stacktrace" = "xyes"], [
    enable_stacktrace=no
    AC_LANG([C])
-   AC_CACHE_CHECK([for _ASM_X86_PERF_REGS_H], ac_cv_has_asm_x86_perf_regs_h,
+   AC_CACHE_CHECK([for _ASM_{X86,ARM,ARM64}_PERF_REGS_H], ac_cv_has_compat_asm_perf_regs_h,
       [AC_COMPILE_IFELSE([AC_LANG_SOURCE([
 #include <asm/perf_regs.h>
-#ifndef _ASM_X86_PERF_REGS_H
-#error "_ASM_X86_PERF_REGS_H not found"
+#if !defined(_ASM_X86_PERF_REGS_H) && !defined (_ASM_ARM_PERF_REGS_H) && !defined(_ASM_ARM64_PERF_REGS_H)
+#error "_ASM_{X86,ARM,ARM64}_PERF_REGS_H not found"
 #endif
-])], ac_cv_has_asm_x86_perf_regs_h=yes, ac_cv_has_asm_x86_perf_regs_h=no)])
-   AS_IF([test "x$ac_cv_has_asm_x86_perf_regs_h" = xyes], [
+])], ac_cv_has_compat_asm_perf_regs_h=yes, ac_cv_has_compat_asm_perf_regs_h=no)])
+   AS_IF([test "x$ac_cv_has_compat_asm_perf_regs_h" = xyes], [
       enable_stacktrace=yes
    ])
    if test "x$enable_stacktrace" = "xno"; then
-      AC_MSG_ERROR([${program_prefix}stacktrace currently only supports x86, use --disable-stacktrace to disable.])
+      AC_MSG_ERROR([${program_prefix}stacktrace currently only supports x86/arm, use --disable-stacktrace to disable.])
    fi
 ])
 # check for sysprof headers:

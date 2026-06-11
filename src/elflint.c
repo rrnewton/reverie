@@ -252,6 +252,10 @@ process_file (int fd, Elf *elf, const char *prefix, const char *suffix,
 	char new_suffix[(suffix == NULL ? 0 : strlen (suffix)) + 2];
 	char *cp = new_prefix;
 
+	/* Either both prefix and suffix are NULL or both are non-NULL.  */
+	assert ((prefix == NULL && suffix == NULL)
+		|| (prefix != NULL && suffix != NULL));
+
 	/* Create the full name of the file.  */
 	if (prefix != NULL)
 	  {
@@ -3682,6 +3686,7 @@ static const struct
     { ".data", 6, SHT_PROGBITS, exact, SHF_ALLOC | SHF_WRITE, 0 },
     { ".data1", 7, SHT_PROGBITS, exact, SHF_ALLOC | SHF_WRITE, 0 },
     { ".debug_str", 11, SHT_PROGBITS, exact_or_gnuld, SHF_MERGE | SHF_STRINGS, 0 },
+    { ".debug_str.dwo", 15, SHT_PROGBITS, exact_or_gnuld, SHF_MERGE | SHF_STRINGS, 0 },
     { ".debug_line_str", 16, SHT_PROGBITS, exact_or_gnuld, SHF_MERGE | SHF_STRINGS, 0 },
     { ".debug", 6, SHT_PROGBITS, exact, 0, 0 },
     { ".dynamic", 9, SHT_DYNAMIC, atleast, SHF_ALLOC, SHF_WRITE },
@@ -3699,6 +3704,10 @@ static const struct
     { ".plt", 5, SHT_PROGBITS, unused, 0, 0 }, // XXX more tests
     { ".preinit_array", 15, SHT_PREINIT_ARRAY, exact, SHF_ALLOC | SHF_WRITE, 0 },
     { ".rela", 5, SHT_RELA, atleast, 0, SHF_ALLOC | SHF_INFO_LINK }, // XXX more tests
+
+    /* lld extension.  Added before relr so it doesn't match that entry.  */
+    { ".relro_padding", 15, SHT_NOBITS, exact, SHF_ALLOC | SHF_WRITE, 0 },
+
     { ".relr", 5, SHT_RELR, atleast, 0, SHF_ALLOC }, // XXX more tests
     { ".rel", 4, SHT_REL, atleast, 0, SHF_ALLOC | SHF_INFO_LINK }, // XXX more tests
     { ".rodata", 8, SHT_PROGBITS, atleast, SHF_ALLOC, SHF_MERGE | SHF_STRINGS },
@@ -3725,6 +3734,10 @@ static const struct
   (special_sections[idx].namelen == sizeof string - (prefix ? 1 : 0)  \
    && !memcmp (special_sections[idx].name, string, \
 	       sizeof string - (prefix ? 1 : 0)))
+
+#define IS_DEBUG_DWO(name) \
+  (startswith (name, ".debug_") \
+   && strcmp (name + strlen (name) - 4, ".dwo") == 0)
 
 /* Extra section flags that might or might not be added to the section
    and have to be ignored.  */
@@ -3848,10 +3861,14 @@ section [%2d] '%s' has wrong type: expected %s, is %s\n"),
 		if (special_sections[s].attrflag == exact
 		    || special_sections[s].attrflag == exact_or_gnuld)
 		  {
-		    /* Except for the link order, retain, group bit and
-		       compression flag all the other bits should
-		       match exactly.  */
-		    if ((shdr->sh_flags & ~EXTRA_SHFLAGS)
+		    /* Except for the link order, retain, group bit
+		       and compression flag all the other bits should
+		       match exactly.  .debug.dwo sections can also be
+		       SHF_EXCLUDE. */
+		    GElf_Word extra_shflags = EXTRA_SHFLAGS;
+		    if (IS_DEBUG_DWO (scnname))
+			extra_shflags |= SHF_EXCLUDE;
+		    if ((shdr->sh_flags & ~extra_shflags)
 			!= special_sections[s].attr
 			&& (special_sections[s].attrflag == exact || !gnuld))
 		      ERROR (_("\
@@ -4364,41 +4381,47 @@ check_note_data (Ebl *ebl, const GElf_Ehdr *ehdr,
     {
       last_offset = offset;
 
-      /* Make sure it is one of the note types we know about.  */
-      if (ehdr->e_type == ET_CORE)
-	switch (nhdr.n_type)
-	  {
-	  case NT_PRSTATUS:
-	  case NT_FPREGSET:
-	  case NT_PRPSINFO:
-	  case NT_TASKSTRUCT:		/* NT_PRXREG on Solaris.  */
-	  case NT_PLATFORM:
-	  case NT_AUXV:
-	  case NT_GWINDOWS:
-	  case NT_ASRS:
-	  case NT_PSTATUS:
-	  case NT_PSINFO:
-	  case NT_PRCRED:
-	  case NT_UTSNAME:
-	  case NT_LWPSTATUS:
-	  case NT_LWPSINFO:
-	  case NT_PRFPXREG:
-	    /* Known type.  */
-	    break;
+      /* gelf_getnote verified that this note is aligned and does not extend
+	 outside of DATA.  Now check that the note name is null-terminated
+	 if present.  */
+      if (name_offset != 0
+	  && nhdr.n_namesz > 0
+	  && *((char *) data->d_buf + name_offset + nhdr.n_namesz - 1) != '\0')
+	{
+	  if (ehdr->e_type == ET_CORE)
+	    {
+	      if (shndx == 0)
+		ERROR (_("\
+phdr[%d]: name missing null terminator for core file note with type %" PRIu32
+			    " at offset %" PRIu64 "\n"),
+		       phndx, (uint32_t) nhdr.n_type, start + offset);
+	      else
+		ERROR (_("\
+section [%2d] '%s': name missing null terminator for core file note with "
+			    "type %" PRIu32 " at offset %zu\n"),
+		       shndx, section_name (ebl, shndx),
+		       (uint32_t) nhdr.n_type, offset);
+	    }
+	  else
+	    {
+	      if (shndx == 0)
+		ERROR (_("\
+phdr[%d]: name missing null terminator for object file note with type %" PRIu32
+			    " at offset %zu\n"),
+		       phndx, (uint32_t) nhdr.n_type, offset);
+	      else
+		ERROR (_("\
+section [%2d] '%s': name missing null terminator for object file note with "
+			    "type %" PRIu32 " at offset %zu\n"),
+		       shndx, section_name (ebl, shndx),
+		       (uint32_t) nhdr.n_type, offset);
+	    }
 
-	  default:
-	    if (shndx == 0)
-	      ERROR (_("\
-phdr[%d]: unknown core file note type %" PRIu32 " at offset %" PRIu64 "\n"),
-		     phndx, (uint32_t) nhdr.n_type, start + offset);
-	    else
-	      ERROR (_("\
-section [%2d] '%s': unknown core file note type %" PRIu32
-			      " at offset %zu\n"),
-		     shndx, section_name (ebl, shndx),
-		     (uint32_t) nhdr.n_type, offset);
-	  }
-      else
+	  continue;
+	}
+
+      /* Perform type-specific checks.  */
+      if (ehdr->e_type != ET_CORE)
 	switch (nhdr.n_type)
 	  {
 	  case NT_GNU_ABI_TAG:
@@ -4408,15 +4431,15 @@ section [%2d] '%s': unknown core file note type %" PRIu32
 	  case NT_GNU_PROPERTY_TYPE_0:
 	    if (nhdr.n_namesz == sizeof ELF_NOTE_GNU
 		&& strcmp (data->d_buf + name_offset, ELF_NOTE_GNU) == 0)
-	      break;
+	      continue;
 	    else
 	      {
 		/* NT_VERSION is 1, same as NT_GNU_ABI_TAG.  It has no
 		   descriptor and (ab)uses the name as version string.  */
 		if (nhdr.n_descsz == 0 && nhdr.n_type == NT_VERSION)
-		  break;
+		  continue;
 	      }
-	      goto unknown_note;
+	      goto malformed_note;
 
 	  case NT_GNU_BUILD_ATTRIBUTE_OPEN:
 	  case NT_GNU_BUILD_ATTRIBUTE_FUNC:
@@ -4427,39 +4450,43 @@ section [%2d] '%s': unknown core file note type %" PRIu32
 		&& strncmp (data->d_buf + name_offset,
 			    ELF_NOTE_GNU_BUILD_ATTRIBUTE_PREFIX,
 			    strlen (ELF_NOTE_GNU_BUILD_ATTRIBUTE_PREFIX)) == 0)
-	      break;
+	      continue;
 	    else
-	      goto unknown_note;
+	      goto malformed_note;
 
 	  case NT_FDO_PACKAGING_METADATA:
 	    if (nhdr.n_namesz == sizeof ELF_NOTE_FDO
 		&& strcmp (data->d_buf + name_offset, ELF_NOTE_FDO) == 0)
-	      break;
+	      continue;
 	    else
-	      goto unknown_note;
+	      goto malformed_note;
 
 	  case 0:
 	    /* Linux vDSOs use a type 0 note for the kernel version word.  */
 	    if (nhdr.n_namesz == sizeof "Linux"
 		&& !memcmp (data->d_buf + name_offset, "Linux", sizeof "Linux"))
-	      break;
-	    FALLTHROUGH;
+	      continue;
+	    else
+	      goto malformed_note;
 	  default:
-	    {
-	    unknown_note:
+	    /* n_type not recognized, but no errors found regarding alignment,
+	       overflow or name null terminator.  */
+	    continue;
+
+malformed_note:
 	    if (shndx == 0)
 	      ERROR (_("\
-phdr[%d]: unknown object file note type %" PRIu32 " with owner name '%s' at offset %zu\n"),
+phdr[%d]: malformed object file note type %" PRIu32 " with owner name '%s' "
+			      "at offset %zu\n"),
 		     phndx, (uint32_t) nhdr.n_type,
 		     (char *) data->d_buf + name_offset, offset);
 	    else
 	      ERROR (_("\
-section [%2d] '%s': unknown object file note type %" PRIu32
+section [%2d] '%s': malformed object file note type %" PRIu32
 			      " with owner name '%s' at offset %zu\n"),
 		     shndx, section_name (ebl, shndx),
 		     (uint32_t) nhdr.n_type,
 		     (char *) data->d_buf + name_offset, offset);
-	    }
 	  }
     }
 
@@ -4550,6 +4577,9 @@ only executables, shared objects, and core files can have program headers\n"));
   int num_pt_interp = 0;
   int num_pt_tls = 0;
   int num_pt_relro = 0;
+  int num_pt_phdr = 0;
+  size_t prev_pt_load_vaddr = 0;
+  bool pt_load_sorted = true;
 
   for (unsigned int cnt = 0; cnt < phnum; ++cnt)
     {
@@ -4574,7 +4604,17 @@ program header entry %d: unknown program header entry type %#" PRIx64 "\n"),
 	       cnt, (uint64_t) phdr->p_type);
 
       if (phdr->p_type == PT_LOAD)
-	has_loadable_segment = true;
+	{
+	  if (has_loadable_segment && pt_load_sorted
+	      && prev_pt_load_vaddr >= phdr->p_vaddr)
+	    {
+	      ERROR (_("LOAD segments not sorted by vaddr\n"));
+	      pt_load_sorted = false;
+	    }
+	  else
+	    prev_pt_load_vaddr = phdr->p_vaddr;
+	  has_loadable_segment = true;
+        }
       else if (phdr->p_type == PT_INTERP)
 	{
 	  if (++num_pt_interp != 1)
@@ -4583,6 +4623,9 @@ program header entry %d: unknown program header entry type %#" PRIx64 "\n"),
 		ERROR (_("\
 more than one INTERP entry in program header\n"));
 	    }
+	  else if (has_loadable_segment)
+	    ERROR (_("\
+INTERP entry is preceded by a loadable segment in program header\n"));
 	  has_interp_segment = true;
 	}
       else if (phdr->p_type == PT_TLS)
@@ -4676,7 +4719,13 @@ GNU_RELRO [%u] flags are not a subset of the loadable segment [%u] flags\n"),
 	}
       else if (phdr->p_type == PT_PHDR)
 	{
-	  /* Check that the region is in a writable segment.  */
+	  if (++num_pt_phdr != 1)
+	    {
+	      if (num_pt_phdr == 2)
+		ERROR (_("\
+more than one PHDR entry in program header\n"));
+	    }
+	  /* Check that the region is in a loaded segment.  */
 	  unsigned int inner;
 	  for (inner = 0; inner < phnum; ++inner)
 	    {

@@ -1,6 +1,6 @@
 ## Process this file with automake to create Makefile.in
 ##
-## Copyright (C) 1996-2014, 2016, 2024 Red Hat, Inc.
+## Copyright (C) 1996-2014, 2016, 2024-2025 Red Hat, Inc.
 ## This file is part of elfutils.
 ##
 ## This file is free software; you can redistribute it and/or modify
@@ -23,7 +23,8 @@ DEFS += $(YYDEBUG) -DDEBUGPRED=@DEBUGPRED@ \
 DEFAULT_INCLUDES =
 AM_CPPFLAGS += -I$(srcdir)/../libelf -I$(srcdir)/../libebl \
 	    -I$(srcdir)/../libdw -I$(srcdir)/../libdwelf \
-	    -I$(srcdir)/../libdwfl -I$(srcdir)/../libasm -I../debuginfod
+	    -I$(srcdir)/../libdwfl -I$(srcdir)/../libdwfl_stacktrace \
+	    -I$(srcdir)/../libasm -I../debuginfod
 
 AM_LDFLAGS = -Wl,-rpath-link,../libelf:../libdw $(STACK_USAGE_NO_ERROR)
 
@@ -50,6 +51,19 @@ libar.manifest: $(libar_a_OBJECTS)
 
 MOSTLYCLEANFILES = *.gconv
 CLEANFILES = $(bin_SCRIPTS) $(EXTRA_libar_a_DEPENDENCIES)
+
+if USE_LOCKS
+noinst_LIBRARIES += libthread.a
+noinst_HEADERS = threadlib.h
+libthread_a_SOURCES = threadlib.c
+EXTRA_DIST += threadlib.h
+EXTRA_libthread_a_DEPENDENCIES = libthread.manifest
+
+libthread.manifest: $(libthread_a_OBJECTS)
+	$(AM_V_GEN)echo $^ > $@
+
+CLEANFILES += $(EXTRA_libthread_a_DEPENDENCIES)
+endif
 
 if BUILD_STATIC
 libasm = ../libasm/libasm.a
@@ -90,6 +104,9 @@ ar_no_Wstack_usage = yes
 unstrip_no_Wstack_usage = yes
 
 readelf_LDADD = $(libdw) $(libebl) $(libelf) $(libeu) $(argp_LDADD)
+if USE_LOCKS
+readelf_LDADD += libthread.a
+endif
 nm_LDADD = $(libdw) $(libebl) $(libelf) $(libeu) $(argp_LDADD) $(obstack_LIBS) \
 	   $(demanglelib)
 size_LDADD = $(libelf) $(libeu) $(argp_LDADD)
@@ -105,7 +122,7 @@ ar_LDADD = libar.a $(libelf) $(libeu) $(argp_LDADD) $(obstack_LIBS)
 unstrip_LDADD = $(libebl) $(libelf) $(libdw) $(libeu) $(argp_LDADD)
 stack_LDADD = $(libebl) $(libelf) $(libdw) $(libeu) $(argp_LDADD) $(demanglelib)
 if ENABLE_STACKTRACE
-stacktrace_LDADD = $(libelf) $(libdw) $(libeu) $(argp_LDADD)
+stacktrace_LDADD = $(libebl) $(libelf) $(libdw) $(libeu) $(argp_LDADD)
 endif
 elfcompress_LDADD = $(libebl) $(libelf) $(libdw) $(libeu) $(argp_LDADD)
 elfclassify_LDADD = $(libelf) $(libdw) $(libeu) $(argp_LDADD)

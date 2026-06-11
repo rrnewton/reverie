@@ -1,6 +1,6 @@
 /* Get the default subrange lower bound for a given language.
    Copyright (C) 2016 Red Hat, Inc.
-   Copyright (C) 2024 Mark J. Wielaard <mark@klomp.org>
+   Copyright (C) 2024, 2025 Mark J. Wielaard <mark@klomp.org>
    This file is part of elfutils.
 
    This file is free software; you can redistribute it and/or modify
@@ -88,6 +88,9 @@ dwarf_default_lower_bound (int lang, Dwarf_Sword *result)
     case DW_LANG_Ruby:
     case DW_LANG_Move:
     case DW_LANG_Hylo:
+    case DW_LANG_V:
+    case DW_LANG_Nim:
+    case DW_LANG_Gleam:
       *result = 0;
       return 0;
 
@@ -109,6 +112,9 @@ dwarf_default_lower_bound (int lang, Dwarf_Sword *result)
     case DW_LANG_Ada2005:
     case DW_LANG_Ada2012:
     case DW_LANG_Fortran23:
+    case DW_LANG_Algol68:
+    case DW_LANG_Erlang:
+    case DW_LANG_Elixir:
       *result = 1;
       return 0;
 
@@ -123,3 +129,73 @@ dwarf_default_lower_bound (int lang, Dwarf_Sword *result)
     }
 }
 INTDEF (dwarf_default_lower_bound)
+
+/* Determine default lower bound from language, as per the DWARF6
+   https://dwarfstd.org/languages-v6.html table.  */
+int
+dwarf_language_lower_bound (Dwarf_Word lang, Dwarf_Sword *result)
+{
+  switch (lang)
+    {
+    case DW_LNAME_BLISS:
+    case DW_LNAME_C:
+    case DW_LNAME_C_plus_plus:
+    case DW_LNAME_Crystal:
+    case DW_LNAME_D:
+    case DW_LNAME_Dylan:
+    case DW_LNAME_Go:
+    case DW_LNAME_Haskell:
+    case DW_LNAME_Java:
+    case DW_LNAME_Kotlin:
+    case DW_LNAME_ObjC:
+    case DW_LNAME_ObjC_plus_plus:
+    case DW_LNAME_OCaml:
+    case DW_LNAME_OpenCL_C:
+    case DW_LNAME_Python:
+    case DW_LNAME_RenderScript:
+    case DW_LNAME_Rust:
+    case DW_LNAME_Swift:
+    case DW_LNAME_UPC:
+    case DW_LNAME_Zig:
+    case DW_LNAME_Assembly:
+    case DW_LNAME_C_sharp:
+    case DW_LNAME_Mojo:
+    case DW_LNAME_GLSL:
+    case DW_LNAME_GLSL_ES:
+    case DW_LNAME_HLSL:
+    case DW_LNAME_OpenCL_CPP:
+    case DW_LNAME_CPP_for_OpenCL:
+    case DW_LNAME_SYCL:
+    case DW_LNAME_Ruby:
+    case DW_LNAME_Move:
+    case DW_LNAME_Hylo:
+    case DW_LNAME_HIP:
+    case DW_LNAME_Odin:
+    case DW_LNAME_P4:
+    case DW_LNAME_Metal:
+    case DW_LNAME_V:
+    case DW_LNAME_Nim:
+    case DW_LNAME_Gleam:
+      *result = 0;
+      return 0;
+
+    case DW_LNAME_Ada:
+    case DW_LNAME_Cobol:
+    case DW_LNAME_Fortran:
+    case DW_LNAME_Julia:
+    case DW_LNAME_Modula2:
+    case DW_LNAME_Modula3:
+    case DW_LNAME_Pascal:
+    case DW_LNAME_PLI:
+    case DW_LNAME_Algol68:
+    case DW_LNAME_Erlang:
+    case DW_LNAME_Elixir:
+      *result = 1;
+      return 0;
+
+    default:
+      __libdw_seterrno (DWARF_E_UNKNOWN_LANGUAGE);
+      return -1;
+    }
+}
+INTDEF (dwarf_language_lower_bound)
