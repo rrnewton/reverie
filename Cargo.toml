@@ -1,5 +1,14 @@
 [workspace]
 members = [
+    "experimental/nostd-print",
+    "experimental/reverie-host",
+    "experimental/reverie-rpc-macros",
+    "experimental/reverie-rpc",
+    "experimental/reverie-sabre-macros",
+    "experimental/reverie-sabre",
+    "experimental/riptrace",
+    "experimental/riptrace/rpc",
+    "experimental/riptrace/tool",
     "reverie",
     "reverie-examples",
     "reverie-memory",
