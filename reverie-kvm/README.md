@@ -10,6 +10,12 @@ guest memory. The hypercall passes the frame address to the host, which lets
 the backend inspect pointer arguments without limiting Linux syscalls to the
 five registers left after a transport opcode.
 
+Every valid x86-64 syscall number is decoded through Reverie's complete typed
+syscall table before it reaches the host handler. `install_syscalls` builds a
+small guest program containing consecutive hypercalls, with one page-aligned
+frame per request. The integration test uses that program to route read,
+write, open, close, mmap, munmap, brk, and ioctl in one KVM run.
+
 This crate is not yet a Linux execution backend for arbitrary programs. KVM
 does not provide Linux syscall semantics, process lifecycle, virtual memory,
 signals, or filesystem behavior. Those require a guest kernel or user-space

@@ -18,6 +18,7 @@ use kvm_ioctls::VmFd;
 use crate::Error;
 use crate::GuestMemory;
 use crate::Result;
+use crate::Syscall;
 use crate::SyscallRequest;
 
 /// KVM currently permits userspace exits for this standardized hypercall.
@@ -25,6 +26,7 @@ use crate::SyscallRequest;
 /// address in the first hypercall argument.
 pub const VMCALL_SYSCALL_TRANSPORT: u64 = 12;
 
+const SYSCALL_FRAME_STRIDE: u64 = 4096;
 const VMCALL: [u8; 3] = [0x0f, 0x01, 0xc1];
 const VMMCALL: [u8; 3] = [0x0f, 0x01, 0xd9];
 const HLT: u8 = 0xf4;
@@ -90,21 +92,51 @@ impl KvmBackend {
         &mut self.memory
     }
 
-    /// Installs a syscall frame and a `vmcall`/`vmmcall; hlt` guest program.
+    /// Installs one syscall frame and a `vmcall`/`vmmcall; hlt` guest program.
     pub fn install_syscall(
         &mut self,
         entry_point: u64,
         frame_address: u64,
         request: SyscallRequest,
     ) -> Result<()> {
-        let code = [
-            self.hypercall_instruction[0],
-            self.hypercall_instruction[1],
-            self.hypercall_instruction[2],
-            HLT,
-        ];
+        self.install_syscalls(entry_point, frame_address, &[request])
+    }
+
+    /// Installs a guest program that issues each syscall through a userspace hypercall.
+    ///
+    /// Frames occupy consecutive guest pages because KVM validates this transport
+    /// using the `KVM_HC_MAP_GPA_RANGE` argument shape before exiting to userspace.
+    pub fn install_syscalls(
+        &mut self,
+        entry_point: u64,
+        frame_address: u64,
+        requests: &[SyscallRequest],
+    ) -> Result<()> {
+        if !frame_address.is_multiple_of(SYSCALL_FRAME_STRIDE) {
+            return Err(Error::InvalidSyscallFrameAddress(frame_address));
+        }
+
+        let mut code = Vec::with_capacity(requests.len().saturating_mul(15).saturating_add(1));
+        for (index, request) in requests.iter().copied().enumerate() {
+            let address = SYSCALL_FRAME_STRIDE
+                .checked_mul(index as u64)
+                .and_then(|offset| frame_address.checked_add(offset))
+                .ok_or(Error::InvalidSyscallFrameAddress(frame_address))?;
+            let address =
+                u32::try_from(address).map_err(|_| Error::InvalidSyscallFrameAddress(address))?;
+
+            request.write_to(&mut self.memory, u64::from(address))?;
+
+            // Real mode defaults to 16-bit operands. The 0x66 prefix loads the
+            // complete 32-bit hypercall number and guest-physical frame address.
+            code.extend_from_slice(&[0x66, 0xb8]);
+            code.extend_from_slice(&(VMCALL_SYSCALL_TRANSPORT as u32).to_le_bytes());
+            code.extend_from_slice(&[0x66, 0xbb]);
+            code.extend_from_slice(&address.to_le_bytes());
+            code.extend_from_slice(&self.hypercall_instruction);
+        }
+        code.push(HLT);
         self.memory.write(entry_point, &code)?;
-        request.write_to(&mut self.memory, frame_address)?;
 
         let mut sregs = self.vcpu.get_sregs()?;
         sregs.cs.base = 0;
@@ -114,8 +146,6 @@ impl KvmBackend {
         let mut regs = self.vcpu.get_regs()?;
         regs.rip = entry_point;
         regs.rflags = 2;
-        regs.rax = VMCALL_SYSCALL_TRANSPORT;
-        regs.rbx = frame_address;
         // KVM validates the MAP_GPA_RANGE argument shape before forwarding
         // the enabled hypercall to userspace; describe one page here.
         regs.rcx = 1;
@@ -127,7 +157,7 @@ impl KvmBackend {
     /// Runs until the guest halts, invoking `handler` for each syscall vmcall.
     pub fn run<F>(&mut self, mut handler: F) -> Result<()>
     where
-        F: FnMut(&SyscallRequest, &GuestMemory) -> i64,
+        F: FnMut(Syscall, &GuestMemory) -> i64,
     {
         loop {
             match self.vcpu.run()? {
@@ -135,8 +165,9 @@ impl KvmBackend {
                     if exit.nr != VMCALL_SYSCALL_TRANSPORT {
                         return Err(Error::UnexpectedHypercall(exit.nr));
                     }
-                    let request = SyscallRequest::read_from(&self.memory, exit.args[0])?;
-                    *exit.ret = handler(&request, &self.memory) as u64;
+                    let syscall =
+                        SyscallRequest::read_from(&self.memory, exit.args[0])?.into_syscall()?;
+                    *exit.ret = handler(syscall, &self.memory) as u64;
                 }
                 VcpuExit::Hlt => return Ok(()),
                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),

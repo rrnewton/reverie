@@ -21,6 +21,9 @@ mod vm;
 
 pub use error::Error;
 pub use memory::GuestMemory;
+pub use reverie_syscalls::Syscall;
+pub use reverie_syscalls::SyscallInfo;
+pub use reverie_syscalls::Sysno;
 pub use syscall::SyscallRequest;
 pub use vm::KvmBackend;
 pub use vm::VMCALL_SYSCALL_TRANSPORT;
