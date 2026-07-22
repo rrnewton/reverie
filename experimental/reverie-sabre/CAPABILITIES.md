@@ -12,17 +12,17 @@ the riptrace demo, but it is not a drop-in replacement for
 | Syscalls | Intercepts rewritten syscall instructions and invokes the synchronous in-process `Tool::syscall` callback. The default implementation performs the real syscall. |
 | Guest memory | Exposes direct local-process memory through `LocalMemory`; there is no remote memory or register API. |
 | Threads | Creates backend records lazily when an intercepted thread is first observed. Start and exit callbacks are emitted at most once for a tracked thread. Repeated pthread create/return/join waves are covered by the conformance gate. |
-| Process exit | `exit_group` prevents new thread records, requests exit on tracked threads, and waits for their exit callbacks. Configurable timeout handling is supported. |
-| Signals | Central handlers mediate standard catchable signals. Guest `rt_sigaction` registration and query are virtualized so the central handler remains installed. SIGINT, SIGTERM, and SIGCHLD handler delivery is covered by the conformance gate. |
-| Signal exclusion | Tool and guest signal callbacks run through the per-thread exclusion sequencer. Its bounded queue coalesces overflow instead of panicking in signal context. |
-| Fork and exec | Basic fork/wait and `execve` have smoke coverage. `execve` relaunches the child through SaBRe. |
+| Process exit | `exit_group` requests orderly exit from tracked threads, then issues a real kernel `exit_group` so threads that never reached an interception boundary cannot survive. Configurable timeout handling is supported. |
+| Signals | Central handlers mediate standard catchable signals. Guest `rt_sigaction` registration and query are virtualized, including `SA_RESTART`. Linux default ignore, continue, stop, and terminate dispositions are preserved. |
+| Signal exclusion | The kernel handler only enqueues fixed-size events. Tool and guest callbacks drain from normal runtime context; bounded-queue overflow coalesces standard signals. |
+| Fork and exec | Forked children lazily construct a new Tool and RPC transport. `execve` and `execveat` fail with `ENOSYS` before guest pointers are read or the current image is replaced. |
 | Timing and detours | Supports RDTSC callbacks, selected VDSO callbacks, and macro-generated function detours. |
-| Global state | Uses a synchronous generated RPC client to a host-side service. |
+| Global state | Uses a synchronous generated RPC client to a host-side service. The channel is process-local and recreated after fork. |
 | Loader inputs | Validated with dynamically linked x86-64 guests and the loader revision in `SABRE_UPSTREAM.toml`. |
 
 SIGCHLD keeps children waitable when its guest disposition is `SIG_DFL`.
-Default terminating actions coordinate tracked-thread exit and use the
-conventional `128 + signal` process exit code.
+Default terminating actions are re-raised with `SIG_DFL`, so parent wait status
+reports `WIFSIGNALED` and the original terminating signal.
 
 ## Conformance gate
 
@@ -78,8 +78,8 @@ cargo test -p reverie-sabre
   delivery through a shared backend-neutral contract.
 - There is no tool-facing register, stack, remote injection, subscription,
   CPUID, timer, or PMU interface comparable to `reverie-ptrace`.
-- `execveat`, static binaries, non-x86-64 guests, loader distribution, and
-  broad clone/vfork/exec stress coverage remain unsupported or unverified.
+- `execve`, `execveat`, static binaries, non-x86-64 guests, loader distribution,
+  and broad clone/vfork/exec stress coverage remain unsupported or unverified.
 - RPC is blocking, reserves guest file descriptor 100, and injected-process
   formatting may allocate.
 

@@ -24,8 +24,8 @@ impl ToTokens for Tool {
                 type Target = #ty;
 
                 fn global() -> &'static Self::Target {
-                    use ::reverie_sabre::internal::OnceCell;
-                    static __TOOL_INSTANCE: OnceCell<#ty> = OnceCell::new();
+                    use ::reverie_sabre::internal::ProcessCell;
+                    static __TOOL_INSTANCE: ProcessCell<#ty> = ProcessCell::new();
                     __TOOL_INSTANCE.get_or_init(::reverie_sabre::internal::init_tool)
                 }
             }

@@ -39,7 +39,7 @@ pub type SignalAntiGuard = SequencerAntiGuard<'static, SignalHandlerInput>;
 
 thread_local! {
     pub(crate) static SIGNAL_HANLDER_SEQUENCER: GuardedSequencer<SignalHandlerInput>
-        = GuardedSequencer::with_initial_guard_count(1);
+        = const { GuardedSequencer::with_initial_guard_count(1) };
 }
 
 /// Marker struct that triggers "run-on-drop" behavior for defered invocations.
@@ -138,7 +138,8 @@ impl<T> GuardedSequencer<T> {
     /// thread has no active signal guards. If there are no guards, this
     /// invocation will be run synchronously, otherwise, the invocation will be
     /// stored and run asynchronously when guard count reaches zero
-    pub fn invoke(&self, handler: fn(T), argument: T) -> bool {
+    #[cfg(test)]
+    fn invoke(&self, handler: fn(T), argument: T) -> bool {
         // Increment the guard and queued count in one atomic step
         self.guard_state
             .fetch_add(QUEUED_COUNT_UNIT + GUARD_COUNT_UNIT, SeqCst);
@@ -225,12 +226,10 @@ fn signal_handler_sequencer() -> &'static GuardedSequencer<SignalHandlerInput> {
     SIGNAL_HANLDER_SEQUENCER.with(|sequencer| unsafe { mem::transmute::<_, &'static _>(sequencer) })
 }
 
-/// Execute the given handler with the given argument when the current
-/// thread has no active signal guards. If there are no guards, this
-/// invocation will be run synchronously, otherwise, the invocation will be
-/// stored and run asynchronously when guard count reaches zero
+/// Queue a signal event without executing guest or tool code from the kernel
+/// signal frame. The event is drained only from a runtime callback.
 pub fn invoke_guarded(handler: fn(SignalHandlerInput), siginfo: SignalHandlerInput) {
-    let _ = signal_handler_sequencer().invoke(handler, siginfo);
+    let _ = signal_handler_sequencer().enqueue_deferred(handler, siginfo);
 }
 
 /// Enter a region where signals cannot interrupt invocation of the current
@@ -257,6 +256,7 @@ pub fn reenter_signal_inclusion_zone() -> SignalAntiGuard {
     signal_handler_sequencer().anti_guard()
 }
 
+#[allow(clippy::items_after_test_module)]
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -503,7 +503,7 @@ mod tests {
     }
 
     thread_local! {
-        static INVOKE_COUNT: AtomicU64 = AtomicU64::new(0);
+        static INVOKE_COUNT: AtomicU64 = const { AtomicU64::new(0) };
     }
 
     fn test_signal_handler(_: SignalHandlerInput) {
@@ -546,14 +546,32 @@ mod tests {
                     let _ag1 = reenter_signal_inclusion_zone();
                     assert_eq!(3, INVOKE_COUNT.with(|count| count.load(SeqCst)));
                     invoke_guarded(test_signal_handler, DUMMY_SIGINFO);
-                    assert_eq!(4, INVOKE_COUNT.with(|count| count.load(SeqCst)));
+                    assert_eq!(3, INVOKE_COUNT.with(|count| count.load(SeqCst)));
                 }
 
                 invoke_guarded(test_signal_handler, DUMMY_SIGINFO);
-                assert_eq!(4, INVOKE_COUNT.with(|count| count.load(SeqCst)));
+                assert_eq!(3, INVOKE_COUNT.with(|count| count.load(SeqCst)));
             }
 
             assert_eq!(5, INVOKE_COUNT.with(|count| count.load(SeqCst)));
         })
     }
+}
+
+impl<T> GuardedSequencer<T> {
+    /// Async-signal-safe enqueue path: atomic bookkeeping plus a bounded queue.
+    /// In particular, this never calls the supplied handler.
+    fn enqueue_deferred(&self, handler: fn(T), argument: T) -> bool {
+        self.guard_state.fetch_add(QUEUED_COUNT_UNIT, SeqCst);
+        if self.queue.enqueue((handler, argument)).is_err() {
+            self.guard_state.fetch_sub(QUEUED_COUNT_UNIT, SeqCst);
+            return false;
+        }
+        true
+    }
+}
+
+/// Run pending signal callbacks from a normal SaBRe runtime callback.
+pub fn drain_pending() {
+    signal_handler_sequencer().drain_invocations();
 }

@@ -164,6 +164,8 @@ impl SyscallExt for Syscall {
                 args.arg1 as *const *const libc::c_char,
                 args.arg2 as *const *const libc::c_char,
             )
+        } else if sysno == Sysno::execveat {
+            utils::sys_execveat()
         } else if sysno == Sysno::rt_sigaction {
             utils::sys_rt_sigaction(
                 args.arg0 as libc::c_int,

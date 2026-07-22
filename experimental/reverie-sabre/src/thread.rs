@@ -11,6 +11,7 @@ use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::Ordering::*;
 use core::time::Duration;
+use std::sync::Arc;
 use std::time::Instant;
 
 use atomic::Atomic;
@@ -208,9 +209,11 @@ pub trait EventSink {
     fn on_thread_exit(_pid_tid: PidTid) {}
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Thread<E: EventSink> {
+    #[cfg_attr(not(test), allow(dead_code))]
     slot_key: SlotKey,
+    storage: Arc<ThreadRepr>,
 
     /// True if this is the first time the thread was seen.
     new: bool,
@@ -229,14 +232,12 @@ pub struct Thread<E: EventSink> {
     _phantom: PhantomData<dyn Fn(E) + Send + Sync>,
 }
 
-fn get_threads_for_process<'a>(
+fn get_threads_for_process(
     process_id: u32,
-) -> impl Iterator<Item = (SlotKey, PidTid, &'a AtomicStateRepr)> {
+) -> impl Iterator<Item = (SlotKey, PidTid, Arc<ThreadRepr>)> {
     SLOT_MAP
         .entries()
-        .map(|(slot_key, (atomic_pid_tid, atomic_repr))| {
-            (slot_key, atomic_pid_tid.load(Relaxed), atomic_repr)
-        })
+        .map(|(slot_key, storage)| (slot_key, storage.0.load(Relaxed), storage))
         .filter(move |(_, pid_tid, _)| pid_tid.pid == process_id)
 }
 
@@ -262,7 +263,7 @@ where
                 // Marking this flag is safe even on threads that have
                 // already exited because the exiting and exited flages
                 // take precenence
-                let state: ThreadState = store_needs_to_exit(atomic_repr, SeqCst).into();
+                let state: ThreadState = store_needs_to_exit(&atomic_repr.1, SeqCst).into();
                 (slot_key, pid_tid, state)
             })
             .for_each(|(slot_key, pid_tid, state)| {
@@ -286,7 +287,7 @@ pub fn wait_for_all_to_exit(process_id: u32, timeout_opt: Option<Duration>) -> b
     // Spin until all the given keyed threads have exited or timeout has expired
     loop {
         if !get_threads_for_process(process_id)
-            .map(|(_, _, atomic_repr)| atomic_repr.load(Relaxed))
+            .map(|(_, _, atomic_repr)| atomic_repr.1.load(Relaxed))
             .map(ThreadState::from)
             .any(|state| state != ThreadState::Exited)
         {
@@ -325,9 +326,13 @@ impl<E: EventSink> Thread<E> {
             .try_with(|v| *v)
             .expect("Slot key should always be readable in TLS (Even if it's None)")?;
 
-        let (_, atomic_thread_repr) = SLOT_MAP.get(thread_slot_key)?;
+        let storage = SLOT_MAP.get(thread_slot_key)?;
 
-        let mut result = Thread::new_with_repr(thread_slot_key, atomic_thread_repr.load(Acquire));
+        let mut result = Thread::new_with_repr(
+            thread_slot_key,
+            Arc::clone(&storage),
+            storage.1.load(Acquire),
+        );
 
         // If the thread is marked as new, we need to mark the repr as no longer
         // new but keep the new field marked in the returned instance.
@@ -337,13 +342,13 @@ impl<E: EventSink> Thread<E> {
 
             // Unset the `new` flag in the atomic repr, so no other calls to
             // current can return a "new" thread
-            let mut final_repr = atomic_thread_repr.fetch_and(!NEW_MASK, Relaxed) & !NEW_MASK;
+            let mut final_repr = storage.1.fetch_and(!NEW_MASK, Relaxed) & !NEW_MASK;
 
             // Lastly check the flag that indicates whether we are allowing
             // new threads. If it is true, we need to mark this new thread
             // as `needs_to_exit`.
             if !new_threads_allowed() {
-                final_repr = store_needs_to_exit(atomic_thread_repr, Release);
+                final_repr = store_needs_to_exit(&storage.1, Release);
             }
 
             result.update_from_repr(final_repr);
@@ -363,7 +368,7 @@ impl<E: EventSink> Thread<E> {
                 result.new = true;
             }
 
-            clear_forking_flag(atomic_thread_repr, SeqCst);
+            clear_forking_flag(&storage.1, SeqCst);
             result.forking = false;
         }
 
@@ -371,9 +376,10 @@ impl<E: EventSink> Thread<E> {
     }
 
     /// Creates a new thread with the given id and representation.
-    fn new_with_repr(slot_key: SlotKey, repr: StateRepr) -> Self {
+    fn new_with_repr(slot_key: SlotKey, storage: Arc<ThreadRepr>, repr: StateRepr) -> Self {
         Thread {
             slot_key,
+            storage,
             new: is_new(repr),
             forking: is_forking(repr),
             state: repr.into(),
@@ -385,13 +391,11 @@ impl<E: EventSink> Thread<E> {
 
     /// Get the process and thread ids associated with this thread
     pub fn get_process_and_thread_ids(&self) -> PidTid {
-        unsafe { SLOT_MAP.get_unchecked(self.slot_key).0.load(Relaxed) }
+        self.storage.0.load(Relaxed)
     }
 
     fn get_atomic_repr(&self) -> &AtomicStateRepr {
-        // This is safe because we are using the slot key for the thread that
-        // must have been created by inserting into the slotmap.
-        unsafe { &SLOT_MAP.get_unchecked(self.slot_key).1 }
+        &self.storage.1
     }
 
     /// Updates the thread state to the give value in both this object and the
@@ -524,8 +528,7 @@ impl<E: EventSink> Thread<E> {
     /// Fix the stored pid-tid and thread states after a fork which could have
     /// corrupted both (from the point of view of this process).
     fn fix_stored_state_after_fork(&self, actual_pid_tid: PidTid) {
-        // This is safe because a thread cannot have an invalid slot key
-        let (pid_tid, atomic_repr) = unsafe { SLOT_MAP.get_unchecked(self.slot_key) };
+        let (pid_tid, atomic_repr) = &*self.storage;
 
         // Override whatever the guest state was with a forking guest state
         let new_state = ThreadState::Guest(true).as_u8();
@@ -605,11 +608,9 @@ impl<E: EventSink> Thread<E> {
 mod tests {
     use std::collections::HashSet;
     use std::mem;
-    use std::ptr;
     use std::sync::Arc;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicBool;
-    use std::sync::atomic::fence;
     use std::thread::spawn;
 
     use super::*;
@@ -655,20 +656,10 @@ mod tests {
     {
         let guard = UNIT_TEST_LOCK.lock().unwrap();
 
-        // Here we are replacing the global slot map with a new one for every
-        // test run. This is safe because each test is running inside a single
-        // mutex, so only one test will be accessing the static variable at once
-        unsafe {
-            // FIXME(JakobDegen): This is UB
-            let slot_map_mut = ptr::addr_of!(*SLOT_MAP).cast_mut();
-
-            *slot_map_mut = SlotMap::<ThreadRepr>::new();
-        }
+        SLOT_MAP.clear();
 
         THREADS_STARTED.lock().unwrap().clear();
         THREADS_EXITED.lock().unwrap().clear();
-
-        fence(SeqCst);
 
         let test_result = spawn(t).join();
         mem::drop(guard);

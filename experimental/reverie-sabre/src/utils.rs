@@ -52,53 +52,19 @@ pub fn sys_readlink(
     }
 }
 
-/// `execve` needs to be handled in a special way because, in order to trace
-/// child processes after they call execve, we need to run the child process as
-/// `sabre plugin.so -- child` instead.
+/// SaBRe cannot atomically replace an image and keep its plugin injected. The
+/// previous loader rewrite destroyed the guest image before malformed targets,
+/// bad interpreters, and permission errors were known. Reject exec before
+/// dereferencing guest pointers until the loader can preserve kernel semantics.
 pub fn sys_execve(
-    filename: *const libc::c_char,
-    argv: *const *const libc::c_char,
-    envp: *const *const libc::c_char,
+    _filename: *const libc::c_char,
+    _argv: *const *const libc::c_char,
+    _envp: *const *const libc::c_char,
 ) -> Result<usize, Errno> {
-    // FIXME: This is subject to race conditions!
-    if unsafe { libc::access(filename, libc::F_OK) } != 0 {
-        return Err(Errno::ENOENT);
-    }
-
-    // Count the number of arguments so we only need to do one allocation.
-    let mut argc = 0;
-    while !(unsafe { *argv.add(argc) }).is_null() {
-        argc += 1;
-    }
-
-    let sabre = paths::sabre_path().as_ptr();
-
-    let mut new_argv = Vec::with_capacity(argc + 4);
-    new_argv.push(sabre);
-    new_argv.push(paths::plugin_path().as_ptr());
-    new_argv.push(b"--\0".as_ptr() as *const libc::c_char);
-
-    // FIXME: Overwrite arg0 so it contains an absolute path. Sabre can only
-    // take absolute paths at the moment.
-    new_argv.push(filename);
-
-    // Append the original argv (except arg0)
-    for i in 1..argc {
-        new_argv.push(unsafe { *argv.add(i) });
-    }
-
-    new_argv.push(core::ptr::null());
-
-    // Never returns if successful. Thus, it doesn't matter if our Vec is
-    // dropped.
-    unsafe {
-        syscall3(
-            Sysno::execve,
-            sabre as usize,
-            new_argv.as_ptr() as usize,
-            envp as usize,
-        )
-    }
+    Err(Errno::ENOSYS)
+}
+pub fn sys_execveat() -> Result<usize, Errno> {
+    Err(Errno::ENOSYS)
 }
 
 /// glibc defines this to be much larger than what the kernel accepts. Since we
@@ -269,4 +235,55 @@ pub fn sys_rt_sigprocmask(
 pub fn is_vfork(sys_no: Sysno, arg1: usize) -> bool {
     const VFORK_FLAGS: usize = (libc::CLONE_VM | libc::CLONE_VFORK | libc::SIGCHLD) as usize;
     sys_no == Sysno::vfork || (sys_no == Sysno::clone && (arg1 & VFORK_FLAGS == VFORK_FLAGS))
+}
+
+#[cfg(test)]
+mod exec_tests {
+    use super::*;
+
+    #[test]
+    fn execve_rejects_all_forms_without_dereferencing_guest_pointers() {
+        assert_eq!(
+            sys_execve(core::ptr::null(), core::ptr::null(), core::ptr::null()),
+            Err(Errno::ENOSYS)
+        );
+        assert_eq!(
+            sys_execve(
+                usize::MAX as *const libc::c_char,
+                usize::MAX as *const *const libc::c_char,
+                usize::MAX as *const *const libc::c_char,
+            ),
+            Err(Errno::ENOSYS)
+        );
+        let relative = b"relative-program\0";
+        let custom_arg0 = b"custom-argv-zero\0";
+        let argv = [
+            custom_arg0.as_ptr() as *const libc::c_char,
+            core::ptr::null(),
+        ];
+        assert_eq!(
+            sys_execve(
+                relative.as_ptr() as *const libc::c_char,
+                argv.as_ptr(),
+                core::ptr::null(),
+            ),
+            Err(Errno::ENOSYS)
+        );
+
+        for unsupported in [
+            b"non-executable\0".as_slice(),
+            b"malformed-elf\0".as_slice(),
+        ] {
+            assert_eq!(
+                sys_execve(
+                    unsupported.as_ptr() as *const libc::c_char,
+                    argv.as_ptr(),
+                    core::ptr::null(),
+                ),
+                Err(Errno::ENOSYS)
+            );
+        }
+
+        assert_eq!(sys_execveat(), Err(Errno::ENOSYS));
+    }
 }

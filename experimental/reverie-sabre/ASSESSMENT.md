@@ -61,12 +61,12 @@ out-of-process ptrace backend.
   validated. Static executables are unsupported by upstream SaBRe.
 - The backend has no adapter for the shared Reverie `Tool`/`Guest`
   abstractions, so ptrace tools cannot switch backends by recompiling.
-- Signals, exec, clone/vfork, VDSO calls, detours, and multithreaded shutdown
-  need broader end-to-end regression coverage.
+- Exec is deliberately rejected before image replacement because SaBRe cannot
+  yet preserve kernel failure semantics while reinjecting the loader. Signals,
+  clone/vfork, VDSO calls, and detours still need broader end-to-end coverage.
 - RPC is synchronous and reserves guest file descriptor 100. Trace formatting
   performs allocations and an RPC operation in the injected process.
-- The restored runtime still contains documented correctness concerns around
-  exec synchronization and thread-state initialization. It should not yet be
-  treated as a production isolation boundary.
+- The restored runtime should not yet be treated as a production isolation
+  boundary.
 
 No shared Reverie core abstractions were changed to make this backend run.

@@ -88,6 +88,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
 ) -> Result<usize, GuestTransitionErr> {
     let _guard = guard::enter_signal_exclusion_zone();
     thread.leave_guest_execution()?;
+    guard::drain_pending();
 
     let sys_no = Sysno::from(syscall as i32);
 
@@ -161,6 +162,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
         })?
     };
 
+    guard::drain_pending();
     thread.enter_guest_execution()?;
 
     Ok(result)
@@ -187,13 +189,10 @@ fn exit_group_with_thread<T: ToolGlobal>(thread: &mut Thread<T>, exit_code: usiz
         .expect("Signaling thread failed");
     }) {
         if !thread::wait_for_all_to_exit(exiting_pid, T::global().get_exit_timeout()) {
-            T::global().on_exit_timeout()
-        } else {
-            terminate(exit_code)
+            let _ = T::global().on_exit_timeout();
         }
-    } else {
-        0
     }
+    terminate_group(exit_code)
 }
 
 pub fn exit_group<T: ToolGlobal>(exit_code: usize) -> usize {
@@ -279,4 +278,37 @@ pub extern "C" fn handle_vdso<T: ToolGlobal>(
 
 pub extern "C" fn handle_rdtsc<T: ToolGlobal>() -> u64 {
     T::global().rdtsc()
+}
+
+/// Terminate every thread in the process, including threads that have not yet
+/// crossed a SaBRe interception boundary and therefore are not in our table.
+fn terminate_group(exit_code: usize) -> ! {
+    unsafe {
+        let _ = syscalls::syscall1(Sysno::exit_group, exit_code);
+    }
+    unreachable!("The process should have ended by now");
+}
+
+#[cfg(test)]
+mod exit_group_tests {
+    use super::terminate_group;
+
+    #[test]
+    fn final_exit_group_terminates_untracked_threads() {
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            let _untracked = std::thread::spawn(|| {
+                loop {
+                    core::hint::spin_loop();
+                }
+            });
+            terminate_group(23);
+        }
+
+        let mut status = 0;
+        assert_eq!(child, unsafe { libc::waitpid(child, &mut status, 0) });
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 23);
+    }
 }

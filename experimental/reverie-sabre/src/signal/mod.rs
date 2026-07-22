@@ -236,20 +236,24 @@ macro_rules! generate_signal_handlers {
 
                     T::global().handle_signal_event(signal_values::$signal_name);
 
-                    if let Some(Some(SigActionPair {
-                        internal_action,
-                        ..
-                    })) = handler_keys::$signal_name
+                    if let Some(pair) = handler_keys::$signal_name
                         .load(Relaxed)
                         .and_then(|key| HANDLER_SLOT_MAP.get(key))
+                        .and_then(|pair| *pair)
                     {
-
-                        unsafe {
-                            invoke_signal_handler(
-                                signal_values::$signal_name as libc::c_int,
-                                internal_action,
-                                handler_input,
-                            );
+                        let signal = signal_values::$signal_name as libc::c_int;
+                        match pair.guest_facing_action.sa_sigaction {
+                            libc::SIG_DFL if pair.override_default_handler.is_none() => {
+                                dispatch_default(signal)
+                            }
+                            libc::SIG_IGN => {}
+                            _ => unsafe {
+                                invoke_signal_handler(
+                                    signal,
+                                    &pair.internal_action,
+                                    handler_input,
+                                );
+                            }
                         }
                     }
                 }
@@ -331,7 +335,7 @@ macro_rules! generate_signal_handlers {
                 let action = libc::sigaction {
                     sa_sigaction,
                     sa_mask: sa_mask.assume_init(),
-                    sa_flags: libc::SA_SIGINFO | libc::SA_RESTART,
+                    sa_flags: libc::SA_SIGINFO,
                     sa_restorer: None,
                 };
 
@@ -344,6 +348,11 @@ macro_rules! generate_signal_handlers {
                     original_action.as_mut_ptr(),
                 ), "Failed to register central handler for {}", stringify!($signal_name));
 
+                let original_action = original_action.assume_init();
+                assert!(set_central_restart_flag(
+                    signal_values::$signal_name,
+                    original_action.sa_flags,
+                ));
                 let override_default_handler = None $($(
                     .or(Some(
                         $override_default_handler as *const libc::c_void as libc::sighandler_t)
@@ -351,7 +360,7 @@ macro_rules! generate_signal_handlers {
                 )?)?;
 
                 let handler_key = insert_action(
-                    original_action.assume_init(),
+                    original_action,
                     override_default_handler,
                 );
 
@@ -387,20 +396,20 @@ macro_rules! generate_signal_handlers {
             let override_default_handler = handler_key
                 .load(Relaxed)
                 .and_then(|key| HANDLER_SLOT_MAP.get(key))
-                .and_then(|pair| pair.as_ref())
+                .and_then(|pair| *pair)
                 .and_then(|pair| pair.override_default_handler);
+
+            if !set_central_restart_flag(signal_value, new_action.sa_flags) {
+                return None;
+            }
 
             let new_action_key = insert_action(new_action, override_default_handler);
             let old_action_key_opt = handler_key.swap(Some(new_action_key), Relaxed);
 
-            // The first time this function is called, there won't be a stored
-            // key for every signal action, but if there is return it. It is
-            // safe because the key being used must have come from the same
-            // map, and because no elements are deleted, the get operation
-            // will always succeed
-            old_action_key_opt.map(|old_action_key| unsafe {
-                HANDLER_SLOT_MAP.get_unchecked(old_action_key).unwrap().guest_facing_action
-            })
+            old_action_key_opt
+                .and_then(|key| HANDLER_SLOT_MAP.get(key))
+                .and_then(|pair| *pair)
+                .map(|pair| pair.guest_facing_action)
         }
 
         /// Get the sigaction registered for the given signal if there is one.
@@ -422,13 +431,11 @@ macro_rules! generate_signal_handlers {
                 _ => panic!("Invalid signal {}", signal_value)
             };
 
-            // This is safe because the key being used must have come from the
-            // same map, and because no elements are deleted, the get operation
-            // will always succeed
-            unsafe {
-                HANDLER_SLOT_MAP.get_unchecked(current_action_key)
-                    .unwrap().guest_facing_action
-            }
+            HANDLER_SLOT_MAP
+                .get(current_action_key)
+                .and_then(|pair| *pair)
+                .expect("registered signal action is missing")
+                .guest_facing_action
         }
     };
 }
@@ -480,4 +487,233 @@ generate_signal_handlers! {
         SIGPWR,
         SIGSYS,
     ]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DefaultDisposition {
+    Ignore,
+    Continue,
+    Stop,
+    Terminate,
+}
+
+fn default_disposition(signal: libc::c_int) -> DefaultDisposition {
+    match signal {
+        libc::SIGCHLD | libc::SIGURG | libc::SIGWINCH => DefaultDisposition::Ignore,
+        libc::SIGCONT => DefaultDisposition::Continue,
+        libc::SIGSTOP | libc::SIGTSTP | libc::SIGTTIN | libc::SIGTTOU => DefaultDisposition::Stop,
+        _ => DefaultDisposition::Terminate,
+    }
+}
+
+fn dispatch_default(signal: libc::c_int) {
+    match default_disposition(signal) {
+        DefaultDisposition::Ignore | DefaultDisposition::Continue => return,
+        DefaultDisposition::Stop | DefaultDisposition::Terminate => {}
+    }
+
+    unsafe {
+        let mut central: libc::sigaction = core::mem::zeroed();
+        assert_eq!(0, libc::sigaction(signal, ptr::null(), &mut central));
+
+        let mut default_action: libc::sigaction = core::mem::zeroed();
+        default_action.sa_sigaction = libc::SIG_DFL;
+        assert_eq!(0, libc::sigemptyset(&mut default_action.sa_mask));
+        assert_eq!(0, libc::sigaction(signal, &default_action, ptr::null_mut()));
+
+        let pid = syscalls::raw::syscall0(syscalls::Sysno::getpid);
+        let tid = syscalls::raw::syscall0(syscalls::Sysno::gettid);
+        let _ = syscalls::raw::syscall3(
+            syscalls::Sysno::tgkill,
+            pid as usize,
+            tid as usize,
+            signal as usize,
+        );
+
+        // Stop signals return here after SIGCONT. Terminating signals do not.
+        assert_eq!(0, libc::sigaction(signal, &central, ptr::null_mut()));
+    }
+}
+
+fn set_central_restart_flag(signal: libc::c_int, guest_flags: libc::c_int) -> bool {
+    unsafe {
+        let mut action: libc::sigaction = core::mem::zeroed();
+        if libc::sigaction(signal, ptr::null(), &mut action) != 0 {
+            return false;
+        }
+        action.sa_flags &= !libc::SA_RESTART;
+        action.sa_flags |= guest_flags & libc::SA_RESTART;
+        libc::sigaction(signal, &action, ptr::null_mut()) == 0
+    }
+}
+
+#[cfg(test)]
+mod disposition_tests {
+    use super::*;
+
+    #[test]
+    fn linux_default_dispositions_are_classified() {
+        assert_eq!(
+            default_disposition(libc::SIGURG),
+            DefaultDisposition::Ignore
+        );
+        assert_eq!(
+            default_disposition(libc::SIGWINCH),
+            DefaultDisposition::Ignore
+        );
+        assert_eq!(
+            default_disposition(libc::SIGCONT),
+            DefaultDisposition::Continue
+        );
+        assert_eq!(default_disposition(libc::SIGTSTP), DefaultDisposition::Stop);
+        assert_eq!(
+            default_disposition(libc::SIGTERM),
+            DefaultDisposition::Terminate
+        );
+    }
+
+    #[test]
+    fn terminating_default_action_preserves_signaled_wait_status() {
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            dispatch_default(libc::SIGTERM);
+            unsafe { libc::_exit(99) };
+        }
+
+        let mut status = 0;
+        assert_eq!(child, unsafe { libc::waitpid(child, &mut status, 0) });
+        assert!(libc::WIFSIGNALED(status));
+        assert_eq!(libc::WTERMSIG(status), libc::SIGTERM);
+    }
+
+    #[test]
+    fn stop_default_action_stops_and_continues() {
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            assert_eq!(0, unsafe { libc::setpgid(0, 0) });
+            dispatch_default(libc::SIGTSTP);
+            unsafe { libc::_exit(0) };
+        }
+
+        let mut status = 0;
+        assert_eq!(child, unsafe {
+            libc::waitpid(child, &mut status, libc::WUNTRACED)
+        });
+        assert!(libc::WIFSTOPPED(status));
+        assert_eq!(libc::WSTOPSIG(status), libc::SIGTSTP);
+        assert_eq!(0, unsafe { libc::kill(child, libc::SIGCONT) });
+        assert_eq!(child, unsafe { libc::waitpid(child, &mut status, 0) });
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 0);
+    }
+
+    #[test]
+    fn central_restart_flag_tracks_guest_action() {
+        let signal = libc::SIGUSR2;
+        let mut original: libc::sigaction = unsafe { core::mem::zeroed() };
+        assert_eq!(0, unsafe {
+            libc::sigaction(signal, ptr::null(), &mut original)
+        });
+
+        assert!(set_central_restart_flag(signal, 0));
+        let mut current: libc::sigaction = unsafe { core::mem::zeroed() };
+        assert_eq!(0, unsafe {
+            libc::sigaction(signal, ptr::null(), &mut current)
+        });
+        assert_eq!(current.sa_flags & libc::SA_RESTART, 0);
+
+        assert!(set_central_restart_flag(signal, libc::SA_RESTART));
+        assert_eq!(0, unsafe {
+            libc::sigaction(signal, ptr::null(), &mut current)
+        });
+        assert_ne!(current.sa_flags & libc::SA_RESTART, 0);
+
+        assert_eq!(0, unsafe {
+            libc::sigaction(signal, &original, ptr::null_mut())
+        });
+    }
+}
+
+#[cfg(test)]
+mod blocking_restart_tests {
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use super::*;
+
+    static SIGNAL_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    extern "C" fn noop_handler(_: libc::c_int) {}
+
+    fn blocking_read(restart: bool) -> (libc::ssize_t, Option<i32>) {
+        let _lock = SIGNAL_TEST_LOCK.lock().unwrap();
+        let signal = libc::SIGUSR1;
+        let mut original: libc::sigaction = unsafe { core::mem::zeroed() };
+        let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
+        action.sa_sigaction = noop_handler as *const () as libc::sighandler_t;
+        assert_eq!(0, unsafe { libc::sigemptyset(&mut action.sa_mask) });
+        assert_eq!(0, unsafe {
+            libc::sigaction(signal, &action, &mut original)
+        });
+        assert!(set_central_restart_flag(
+            signal,
+            if restart { libc::SA_RESTART } else { 0 },
+        ));
+
+        let mut pipe = [0; 2];
+        assert_eq!(0, unsafe { libc::pipe(pipe.as_mut_ptr()) });
+        let target = unsafe { libc::pthread_self() };
+        let write_fd = pipe[1];
+        let sender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            assert_eq!(0, unsafe { libc::pthread_kill(target, signal) });
+            std::thread::sleep(Duration::from_millis(20));
+            let byte = 1u8;
+            assert_eq!(1, unsafe {
+                libc::write(write_fd, &byte as *const u8 as *const _, 1)
+            });
+        });
+
+        let mut byte = 0u8;
+        let result = unsafe { libc::read(pipe[0], &mut byte as *mut u8 as *mut _, 1) };
+        let errno = (result == -1).then(|| std::io::Error::last_os_error().raw_os_error().unwrap());
+        sender.join().unwrap();
+        assert_eq!(0, unsafe {
+            libc::sigaction(signal, &original, ptr::null_mut())
+        });
+        unsafe {
+            libc::close(pipe[0]);
+            libc::close(pipe[1]);
+        }
+        (result, errno)
+    }
+
+    #[test]
+    fn blocking_read_observes_guest_restart_flag() {
+        let (result, errno) = blocking_read(false);
+        assert_eq!(result, -1);
+        assert_eq!(errno, Some(libc::EINTR));
+
+        let (result, errno) = blocking_read(true);
+        assert_eq!(result, 1);
+        assert_eq!(errno, None);
+    }
+
+    #[test]
+    fn ignored_and_continue_defaults_return_normally() {
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            dispatch_default(libc::SIGURG);
+            dispatch_default(libc::SIGCONT);
+            unsafe { libc::_exit(17) };
+        }
+
+        let mut status = 0;
+        assert_eq!(child, unsafe { libc::waitpid(child, &mut status, 0) });
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 17);
+    }
 }
