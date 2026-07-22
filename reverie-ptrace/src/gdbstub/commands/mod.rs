@@ -212,6 +212,43 @@ impl WriteResponse for ThreadId {
     }
 }
 
+/// Parse an LLDB register-packet thread suffix.
+///
+/// When the stub answers `QThreadSuffixSupported` with `OK`, LLDB appends a
+/// `;thread:<id>;` suffix to its `g`/`G`/`p`/`P` packets to indicate which
+/// thread the operation applies to. This splits such a suffix off the tail of
+/// `bytes`, returning the remaining payload and the parsed [`ThreadId`], if a
+/// suffix was present.
+///
+/// The `<id>` can be either the multiprocess form (`pPID.TID`) or a bare hex
+/// thread id, matching how LLDB encodes it.
+pub fn split_thread_suffix(mut bytes: BytesMut) -> (BytesMut, Option<ThreadId>) {
+    const PAT: &[u8] = b";thread:";
+    let Some(pos) = bytes
+        .windows(PAT.len())
+        .position(|w| w == PAT)
+    else {
+        return (bytes, None);
+    };
+
+    let suffix = bytes.split_off(pos);
+    let id_bytes: &[u8] = suffix[PAT.len()..]
+        .split(|c| *c == b';')
+        .next()
+        .unwrap_or(&[]);
+
+    let thread = if id_bytes.starts_with(b"p") {
+        ThreadId::decode(id_bytes)
+    } else {
+        // Bare hex thread id (no process component).
+        decode_hex::<i32>(id_bytes)
+            .ok()
+            .map(|tid| ThreadId::pid_tid(-1, tid))
+    };
+
+    (bytes, thread)
+}
+
 macro_rules! commands {
     (
         $(#[$attrs:meta])*
@@ -309,6 +346,12 @@ commands! {
             "qsThreadInfo" => qsThreadInfo,
             "qSupported" => qSupported,
             "qXfer" => qXfer,
+            /* LLDB extensions */
+            "qHostInfo" => qHostInfo,
+            "qProcessInfo" => qProcessInfo,
+            "qRegisterInfo" => qRegisterInfo,
+            "jThreadsInfo" => jThreadsInfo,
+            "QThreadSuffixSupported" => QThreadSuffixSupported,
             "vCont" => vCont,
             "vKill" => vKill,
             "z" => z,
