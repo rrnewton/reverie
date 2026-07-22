@@ -542,13 +542,51 @@ fn rewrite_bind_port<G: Guest<PrototypeTool>>(
     Ok(())
 }
 
-fn run_ready<F: Future>(future: F) -> F::Output {
+/// Drive a Reverie tool handler future to completion on the current (guest)
+/// thread.
+///
+/// DynamoRIO calls the client's syscall hook synchronously on the guest thread,
+/// but the shared `reverie::Tool`/`Guest` contract is `async`: a real tool such
+/// as Detcore *suspends* its `handle_syscall_event` while it waits for a
+/// scheduler turn or a global-state RPC response. The previous implementation
+/// polled once with a no-op waker and panicked on `Poll::Pending`, which
+/// hard-coded the "handlers must not suspend" limitation and made it impossible
+/// to host any tool beyond the trivial in-process `PrototypeTool`.
+///
+/// This is a minimal, dependency-free, single-threaded executor: it polls the
+/// future and, while it is pending, parks the guest thread until the waker is
+/// signalled (e.g. by the I/O thread that delivers a global-state RPC response),
+/// then polls again. This removes the suspension barrier so the DBI backend can
+/// eventually host suspending tools -- the prerequisite for routing syscall
+/// events through Detcore. Non-suspending handlers (like `PrototypeTool`) still
+/// complete on the first poll with no parking.
+fn block_on<F: Future>(future: F) -> F::Output {
+    use std::sync::Arc;
+    use std::task::Wake;
+    use std::thread;
+
+    /// Waker that unparks the thread blocked in `block_on`.
+    struct ThreadWaker(thread::Thread);
+
+    impl Wake for ThreadWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
     let mut future = pin!(future);
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    match future.as_mut().poll(&mut context) {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("the prototype tool handler must not suspend"),
+    let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => return value,
+            // Wait for a wake-up rather than busy-looping. `park` may return
+            // spuriously; we simply re-poll in that case.
+            Poll::Pending => thread::park(),
+        }
     }
 }
 
@@ -627,7 +665,7 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
             invoke_syscall,
             read_registers,
         );
-        let value = match run_ready(PROTOTYPE_TOOL.handle_syscall_event(&mut guest, syscall)) {
+        let value = match block_on(PROTOTYPE_TOOL.handle_syscall_event(&mut guest, syscall)) {
             Ok(value) => value,
             Err(Error::Errno(errno)) => -(errno.into_raw() as i64),
             Err(_) => -(Errno::EIO.into_raw() as i64),
@@ -698,12 +736,49 @@ mod tests {
         );
 
         assert_eq!(
-            run_ready(PROTOTYPE_TOOL.handle_syscall_event(&mut guest, syscall)).unwrap(),
+            block_on(PROTOTYPE_TOOL.handle_syscall_event(&mut guest, syscall)).unwrap(),
             7
         );
         assert_eq!(guest.thread_state().rewritten_syscalls, 1);
         assert_eq!(guest.read_clock().unwrap(), 99);
-        assert_eq!(run_ready(guest.regs()).rip, 0x1234);
+        assert_eq!(block_on(guest.regs()).rip, 0x1234);
+    }
+
+    /// `block_on` must drive a handler that *suspends* to completion instead of
+    /// panicking (the old one-shot poller panicked on `Poll::Pending`). This is
+    /// the prerequisite for hosting suspending tools such as Detcore, whose
+    /// handlers await scheduler turns and global-state RPC responses.
+    #[test]
+    fn block_on_drives_a_suspending_future() {
+        use std::pin::Pin;
+        use std::time::Duration;
+
+        // A future that returns `Pending` on its first poll, arranges to be
+        // woken from another thread, and only then completes -- so `block_on`
+        // must park and resume rather than complete on the first poll.
+        struct SuspendOnce {
+            polled: bool,
+        }
+
+        impl Future for SuspendOnce {
+            type Output = u32;
+
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<u32> {
+                if self.polled {
+                    Poll::Ready(42)
+                } else {
+                    self.polled = true;
+                    let waker = cx.waker().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(10));
+                        waker.wake();
+                    });
+                    Poll::Pending
+                }
+            }
+        }
+
+        assert_eq!(block_on(SuspendOnce { polled: false }), 42);
     }
 
     #[test]
@@ -728,7 +803,7 @@ mod tests {
         );
 
         assert_eq!(
-            run_ready(PROTOTYPE_TOOL.handle_syscall_event(&mut guest, syscall)).unwrap(),
+            block_on(PROTOTYPE_TOOL.handle_syscall_event(&mut guest, syscall)).unwrap(),
             0
         );
         let release = unsafe { std::ffi::CStr::from_ptr(utsname.release.as_ptr()) };
