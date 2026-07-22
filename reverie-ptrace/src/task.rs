@@ -836,14 +836,19 @@ impl<L: Tool + 'static> TracedTask<L> {
         // Try to intercept cpuid instructions on x86_64
         #[cfg(target_arch = "x86_64")]
         if self.global_state.subscriptions.has_cpuid() {
-            self.has_cpuid_interception = self.intercept_cpuid().await.inspect_err(|&err| {
-                match err {
-                    Errno::ENODEV => tracing::warn!(
-                        "Unable to intercept CPUID: Underlying hardware does not support CPUID faulting"
-                    ),
-                    err => tracing::warn!("Unable to intercept CPUID: {}", err),
+            self.has_cpuid_interception = match self.intercept_cpuid().await {
+                Ok(()) => true,
+                Err(Errno::ENODEV) => {
+                    tracing::warn!(
+                        "CPUID faulting not available (AMD CPU with kernel < 6.17?). Upgrade to kernel >= 6.17 for AMD CPUID faulting support; continuing without CPUID interception"
+                    );
+                    false
                 }
-            }).is_ok();
+                Err(err) => {
+                    tracing::warn!("Unable to intercept CPUID: {}", err);
+                    false
+                }
+            };
         }
 
         // Restore registers again after we've injected syscalls so that we
