@@ -1,8 +1,9 @@
 # reverie-kvm
 
 `reverie-kvm` is an x86-64 research backend for driving small KVM guests. It
-creates a VM and vCPU, provides bounded guest-physical memory access, and turns
-a guest `vmcall`/`vmmcall` into a typed Reverie syscall event.
+creates a VM and vCPU, provides bounded guest-physical memory access, turns a
+guest `vmcall`/`vmmcall` into a typed Reverie syscall event, and can run
+minimal static ELF executables in a bare long-mode process personality.
 
 The guest places the syscall number and six arguments in a fixed-size frame in
 guest memory. The hypercall passes the frame address to the host. `run` exposes
@@ -12,6 +13,21 @@ adapter implements the shared `Guest` contracts for memory, registers, stack,
 thread state, global RPC, syscall injection, and tail injection. Until a guest
 kernel supplies Linux syscall semantics, callers provide a `SyscallExecutor`
 for injected and unsubscribed syscalls.
+
+## Static ELF execution
+
+`install_static_elf` accepts little-endian x86-64 `ET_EXEC` images with no
+`PT_INTERP`. It copies `PT_LOAD` segments, zeros BSS, creates a Linux-style
+`argc`/`argv`/auxv stack, and installs an identity-mapped long-mode address
+space. The vCPU starts at CPL3. `EFER.SCE`, `STAR`, `LSTAR`, and
+`SFMASK` direct real `SYSCALL` instructions to a ring-0 trampoline that
+serializes the Linux ABI register frame, exits KVM, then returns with
+`SYSRETQ`.
+
+`run_static_elf` supplies a deliberately small single-process Linux
+personality. It handles process exit, stdout/stderr writes, deterministic
+identity, time, and random queries, FS/GS bases, `brk`, anonymous `mmap`,
+and common startup no-ops. Unsupported syscalls return `ENOSYS`.
 
 ## CPUID policy
 
@@ -37,21 +53,22 @@ trampoline, while `pkg/sentry/platform/kvm/bluepill_unsafe.go` classifies KVM
 exits before returning control to the sentry. This prototype follows the same
 separation on a smaller scale: the VM-exit layer validates and decodes the
 transport once, and the runtime layer presents backend-neutral Reverie types to
-the tool. Unlike gVisor, the prototype does not yet contain a ring-0 Linux
-personality.
+the tool. The static ELF path adds only the ring-0 syscall entry needed by its
+small process personality, not gVisor's complete sentry.
 
 ## Current limits
 
-This crate is not yet a Linux execution backend for arbitrary ELF programs. It
-has one real-mode vCPU and no process lifecycle, virtual memory, signals,
-filesystem, or timer implementation beyond the shared single-thread lifecycle
-used by the test guest. The `/dev/kvm` integration tests run a minimal
-`vmcall; hlt` guest program and a CPUID probe. They verify direct tool
-interception, the default Tool handler's ptrace-compatible `tail_inject`
-behavior, and the installed CPUID feature policy.
+This crate is not a Linux execution backend for arbitrary ELF programs. The
+static path has one vCPU, fixed-address identity mappings, and no threads,
+signals, filesystem, dynamic linker, or page-permission enforcement. Its
+syscall set is sufficient for minimal static programs, not general libc
+workloads. The current hypercall transport also reuses standardized KVM
+hypercall 12 because it is the only hypercall KVM exposes to userspace; that
+prototype ABI must be replaced before running a stock guest kernel.
 
-Running `/bin/true` requires a Linux ABI implementation in the VM. In
-particular, the host binary is a dynamically linked PIE that needs an ELF
-loader, virtual memory, its dynamic interpreter, and Linux syscall semantics.
-Those belong in the planned gVisor Sentry bridge (or a guest kernel), not in
-the raw KVM ioctl layer.
+The host `/bin/true` on typical distributions is a dynamically linked PIE
+with `PT_INTERP`, so it is rejected instead of being partially loaded. The
+static ELF integration test generates an equivalent fixed-address program,
+executes a real `getpid` syscall, checks the returned value in guest code, and
+exits through `exit_group`. Supporting the literal host binary requires
+loading its interpreter and DSOs or booting a guest kernel.

@@ -21,6 +21,13 @@ use crate::Error;
 use crate::GuestMemory;
 use crate::Result;
 use crate::SyscallRequest;
+use crate::bootstrap::SYSCALL_FRAME_ADDRESS;
+use crate::bootstrap::configure_long_mode;
+use crate::bootstrap::set_user_segment_base;
+use crate::elf::LoadedStaticElf;
+use crate::elf::load_static_elf;
+use crate::executor::SyscallAction;
+use crate::executor::execute_basic_syscall;
 
 /// KVM currently permits userspace exits for this standardized hypercall.
 /// The prototype uses it as a transport opcode and places the syscall frame
@@ -39,10 +46,11 @@ pub struct KvmBackend {
     pub(crate) memory: GuestMemory,
     _kvm: Kvm,
     hypercall_instruction: [u8; 3],
+    static_elf: Option<LoadedStaticElf>,
 }
 
 impl KvmBackend {
-    /// Creates a VM with one real-mode vCPU and a memory slot starting at GPA 0x1000.
+    /// Creates a VM with one vCPU and a memory slot starting at GPA zero.
     pub fn new(memory_size: usize) -> Result<Self> {
         Self::new_with_cpuid_policy(memory_size, CpuidPolicy::default())
     }
@@ -65,7 +73,7 @@ impl KvmBackend {
         };
         vm.enable_cap(&cap)?;
 
-        let memory = GuestMemory::new(0x1000, memory_size)?;
+        let memory = GuestMemory::new(0, memory_size)?;
         let region = kvm_userspace_memory_region {
             slot: 0,
             guest_phys_addr: memory.guest_base(),
@@ -87,12 +95,14 @@ impl KvmBackend {
             memory,
             _kvm: kvm,
             hypercall_instruction,
+            static_elf: None,
         })
     }
 
     /// Installs an arbitrary real-mode program and selects it as the vCPU entry point.
     pub fn install_real_mode_program(&mut self, entry_point: u64, code: &[u8]) -> Result<()> {
         self.memory.write(entry_point, code)?;
+        self.static_elf = None;
 
         let mut sregs = self.vcpu.get_sregs()?;
         sregs.cs.base = 0;
@@ -116,6 +126,65 @@ impl KvmBackend {
     /// Returns mutable access to the VM's guest memory.
     pub fn memory_mut(&mut self) -> &mut GuestMemory {
         &mut self.memory
+    }
+
+    /// Loads a static ELF executable and prepares the vCPU to enter it in long mode.
+    ///
+    /// The initial process personality supports x86-64 `ET_EXEC` images without a
+    /// `PT_INTERP` segment. Dynamic executables require a userspace dynamic linker
+    /// and are deliberately rejected.
+    pub fn install_static_elf(&mut self, image: &[u8], argv0: &str) -> Result<()> {
+        let loaded = load_static_elf(&mut self.memory, image, argv0)?;
+        configure_long_mode(
+            &mut self.memory,
+            &self.vcpu,
+            loaded.entry_point,
+            loaded.stack_pointer,
+            self.hypercall_instruction,
+        )?;
+        self.static_elf = Some(loaded);
+        Ok(())
+    }
+
+    /// Runs the installed static ELF until it invokes `exit` or `exit_group`.
+    pub fn run_static_elf(&mut self) -> Result<i32> {
+        let mut state = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+
+        loop {
+            let segment_update = match self.vcpu.run()? {
+                VcpuExit::Hypercall(exit) => {
+                    if exit.nr != VMCALL_SYSCALL_TRANSPORT {
+                        return Err(Error::UnexpectedHypercall(exit.nr));
+                    }
+                    if exit.args[0] != SYSCALL_FRAME_ADDRESS {
+                        return Err(Error::UnexpectedVcpuExit(format!(
+                            "syscall frame is at unexpected address {:#x}",
+                            exit.args[0]
+                        )));
+                    }
+
+                    let request = SyscallRequest::read_from(&self.memory, exit.args[0])?;
+                    match execute_basic_syscall(&mut self.memory, &mut state, &request) {
+                        SyscallAction::Continue { result, segment } => {
+                            SyscallRequest::write_result(&mut self.memory, exit.args[0], result)?;
+                            *exit.ret = 0;
+                            segment
+                        }
+                        SyscallAction::Exit(code) => return Ok(code),
+                    }
+                }
+                VcpuExit::Hlt => {
+                    return Err(Error::UnexpectedVcpuExit(
+                        "static ELF halted without exiting".to_string(),
+                    ));
+                }
+                exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+            };
+
+            if let Some((segment, address)) = segment_update {
+                set_user_segment_base(&self.vcpu, segment, address)?;
+            }
+        }
     }
 
     /// Installs a syscall frame and a `vmcall`/`vmmcall; hlt` guest program.
