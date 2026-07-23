@@ -118,7 +118,16 @@ impl DbiRunner {
         environment: Option<&BTreeMap<OsString, OsString>>,
     ) -> Command {
         let mut command = Command::new(&self.drrun);
-        command.arg("-disable_rseq").arg("-c").arg(&self.client);
+        // `-follow_children` (DynamoRIO's default, made explicit here) instruments
+        // the whole process tree: DR re-injects this client into every forked and
+        // execed child. Multi-process coordination across those independent client
+        // instances then flows through the coordinator directory (see the
+        // `coordinator` module), whose path travels in the inherited environment.
+        command
+            .arg("-disable_rseq")
+            .arg("-follow_children")
+            .arg("-c")
+            .arg(&self.client);
         if self.summary {
             command.arg("-summary");
         }
@@ -293,6 +302,7 @@ mod tests {
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 "-disable_rseq",
+                "-follow_children",
                 "-c",
                 "/opt/reverie/libreverie_dbi_client.so",
                 "--",
@@ -326,6 +336,7 @@ mod tests {
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 OsStr::new("-disable_rseq"),
+                OsStr::new("-follow_children"),
                 OsStr::new("-c"),
                 OsStr::new("/opt/reverie/libreverie_dbi_client.so"),
                 OsStr::new("--"),

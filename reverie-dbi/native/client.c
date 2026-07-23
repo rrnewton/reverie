@@ -104,6 +104,25 @@ extern int32_t reverie_dbi_runtime_pre_syscall(
 extern void reverie_dbi_runtime_totals(uint64_t *branches, uint64_t *syscalls,
                                        uint64_t *rewritten);
 
+// Cross-process coordinator (see reverie-dbi/src/coordinator.rs). Each followed
+// process writes one record at exit; the offline aggregator reconstructs the
+// process tree. The Rust side owns all logic and the record format; the client
+// supplies only this DynamoRIO-safe file write so it never touches libc I/O.
+typedef void (*reverie_write_file_fn_t)(const char *path, const char *buf,
+                                        size_t len);
+extern void reverie_dbi_runtime_process_exit(const char *app_name,
+                                             reverie_write_file_fn_t write_file);
+extern void reverie_dbi_runtime_reset_totals(void);
+
+static void reverie_dbi_write_file(const char *path, const char *buf,
+                                   size_t len) {
+  file_t coord_file = dr_open_file(path, DR_FILE_WRITE_OVERWRITE);
+  if (coord_file == INVALID_FILE)
+    return;
+  dr_write_file(coord_file, buf, len);
+  dr_close_file(coord_file);
+}
+
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
 static int thread_state_index;
@@ -664,12 +683,28 @@ static void event_exit(void) {
         "reverie-dbi: branches=%llu syscalls=%llu rewritten_writes=%llu\n",
         branches, syscalls, rewritten);
   }
+  // Drop this process's coordinator record (no-op unless REVERIE_DBI_COORD_DIR
+  // is set). Runs for every followed process in the tree, so fork/exec children
+  // each contribute their own record.
+  reverie_dbi_runtime_process_exit(dr_get_application_name(),
+                                   reverie_dbi_write_file);
   dr_mutex_destroy(resource_lock);
   drwrap_exit();
   drx_exit();
   drmgr_unregister_tls_field(thread_state_index);
   drreg_exit();
   drmgr_exit();
+}
+
+// Fires once, in the child, after a fork/clone-as-process (Linux-only). The
+// child inherits every process-global counter from the parent via copy-on-write,
+// so reset them here; otherwise a forked child that does not execve would report
+// the parent's syscalls plus its own. A child that immediately execve's is reset
+// again by the fresh dr_client_main in the replacement image.
+static void event_fork_init(void *drcontext) {
+  (void)drcontext;
+  reverie_dbi_runtime_reset_totals();
+  atomic_store(&branch_count, 0);
 }
 
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
@@ -696,6 +731,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     DR_ASSERT(false);
 
   drmgr_register_exit_event(event_exit);
+  dr_register_fork_init_event(event_fork_init);
   if (!drmgr_register_module_load_event(module_load) ||
       !drmgr_register_thread_init_event(thread_init) ||
       !drmgr_register_thread_exit_event(thread_exit) ||
