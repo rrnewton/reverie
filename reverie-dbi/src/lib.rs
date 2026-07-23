@@ -23,6 +23,7 @@ use std::ffi::c_void;
 use std::future::Future;
 use std::path::Path;
 use std::pin::pin;
+use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU16;
@@ -30,7 +31,9 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
+use std::task::Wake;
 use std::task::Waker;
+use std::thread;
 
 pub use launcher::DbiRunner;
 use reverie::Error;
@@ -645,13 +648,47 @@ fn rewrite_bind_port<G: Guest<PrototypeTool>>(
     Ok(())
 }
 
+/// Drives an async tool handler to completion on the calling guest thread.
+///
+/// The DynamoRIO client invokes each handler synchronously on the guest thread
+/// that made the syscall, but Reverie handlers are `async` and may suspend: for
+/// example, Detcore's `send_rpc` awaits the global scheduler and returns
+/// [`Poll::Pending`] until another thread grants this thread its turn. The
+/// previous implementation polled once with a no-op waker and panicked on
+/// `Poll::Pending`, which forbade any suspension.
+///
+/// This is a minimal, dependency-free blocking executor: it polls the future
+/// with a real waker and, while the future is pending, parks the current OS
+/// thread until the waker unparks it, then re-polls. Because each guest thread
+/// runs this on its own OS thread, N guest threads block independently and a
+/// wake from any thread (e.g. the scheduler granting a turn) resumes exactly the
+/// parked thread it targets. Handlers that complete on the first poll (such as
+/// the prototype tool) never park.
 fn run_ready<F: Future>(future: F) -> F::Output {
+    /// Waker that unparks the OS thread blocked inside [`run_ready`].
+    struct ThreadWaker(thread::Thread);
+
+    impl Wake for ThreadWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
     let mut future = pin!(future);
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    match future.as_mut().poll(&mut context) {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("the prototype tool handler must not suspend"),
+    let waker = Waker::from(Arc::new(ThreadWaker(thread::current())));
+    let mut context = Context::from_waker(&waker);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => return value,
+            // `park` may return spuriously; the loop simply re-polls. An unpark
+            // token stored by `wake` before we reach `park` makes `park` return
+            // immediately, so wakeups are never lost.
+            Poll::Pending => thread::park(),
+        }
     }
 }
 
@@ -784,6 +821,54 @@ mod tests {
     unsafe extern "C" fn read_regs(_context: usize, regs: *mut libc::user_regs_struct) -> i32 {
         unsafe { (*regs).rip = 0x1234 };
         1
+    }
+
+    /// A suspending handler (one that returns `Poll::Pending` until another
+    /// thread completes it) must resume rather than panic. This mirrors
+    /// Detcore's `send_rpc` awaiting the global scheduler: the handler parks
+    /// until the scheduler, running on another thread, grants this thread its
+    /// turn and wakes it. Under the old single-poll `run_ready` this panicked.
+    #[test]
+    fn run_ready_resumes_a_cross_thread_woken_future() {
+        use std::sync::Arc;
+        use std::sync::Mutex;
+        use std::task::Waker;
+        use std::time::Duration;
+
+        struct Shared {
+            ready: bool,
+            waker: Option<Waker>,
+        }
+
+        let shared = Arc::new(Mutex::new(Shared {
+            ready: false,
+            waker: None,
+        }));
+        let completer = Arc::clone(&shared);
+
+        // Another thread completes the future after the handler has parked,
+        // then wakes the stored waker (as the scheduler would).
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(25));
+            let mut state = completer.lock().unwrap();
+            state.ready = true;
+            if let Some(waker) = state.waker.take() {
+                waker.wake();
+            }
+        });
+
+        let future = std::future::poll_fn(move |cx| {
+            let mut state = shared.lock().unwrap();
+            if state.ready {
+                Poll::Ready(1234)
+            } else {
+                state.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        });
+
+        assert_eq!(run_ready(future), 1234);
+        handle.join().unwrap();
     }
 
     #[test]
