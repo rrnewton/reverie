@@ -775,6 +775,19 @@ impl HandlerDriver for ParkDriver {
 ///
 /// The caller decides — via its own syscall filter — whether to invoke this at
 /// all.
+///
+/// # Syscall disposition (observe / inject / native passthrough)
+///
+/// A tool that wants the *real* effect of a syscall does so by
+/// [`Guest::inject`]ing it inside the handler and returning that result — the
+/// value installed here then *is* the real outcome. There is no separate
+/// "observe, then let the kernel run the original" return: in Reverie that is
+/// `tail_inject`, which `DbiGuest` does not yet implement (it panics), so a DBI
+/// tool binding must, at its FFI filter, route only *injectable* syscalls here
+/// and let non-injectable / non-returning ones (`execve`, `exit`, `exit_group`,
+/// `clone`/`fork`/`vfork`, `rt_sigreturn`) run natively (return 0 from the C
+/// `pre_syscall`, i.e. do not suppress). Implementing `DbiGuest::tail_inject`
+/// (and `stack`/`set_timer`) is the remaining work to lift that restriction.
 #[allow(clippy::too_many_arguments)]
 pub fn run_tool_pre_syscall<T: Tool, D: HandlerDriver>(
     tool: &T,
@@ -1176,6 +1189,154 @@ mod tests {
         );
         assert_eq!(value, Some(5));
         assert_eq!(driver.0.get(), 1, "the injected driver must be used");
+    }
+
+    // ---- M3 proof-of-concept: real reverie GlobalRPC actor round-trip over
+    // DbiGuest, driven by a multi-threaded Tokio runtime -------------------------
+    //
+    // This is the faithful proxy for the one property the whole Detcore-over-DBI
+    // design hinges on: Detcore's `send_rpc` awaits the `sched_loop` actor and
+    // returns `Poll::Pending` until the actor grants a turn (detcore
+    // tool_global.rs:355,573). `SchedGlobal` below is a genuine
+    // `#[reverie::global_tool]` whose `receive_rpc` blocks on a value produced
+    // ONLY by a spawned actor task — the same shape. With a current-thread
+    // runtime + `ParkDriver` this deadlocks (the parked guest thread is the only
+    // one that could poll the actor); with a MULTI-threaded runtime + a
+    // Tokio-aware `HandlerDriver` (as the F1 review fix prescribes) it completes.
+
+    /// A GlobalTool whose `receive_rpc` blocks on a spawned actor (mirrors
+    /// Detcore's `sched_loop` + per-turn Ivar).
+    #[derive(Default)]
+    struct SchedGlobal {
+        // Wired by `init_global_state`; `None` for the `Default` instance.
+        to_actor: Option<tokio::sync::mpsc::UnboundedSender<tokio::sync::oneshot::Sender<u64>>>,
+    }
+
+    #[reverie::global_tool]
+    impl GlobalTool for SchedGlobal {
+        type Request = ();
+        type Response = u64;
+        type Config = ();
+
+        async fn init_global_state(_: &Self::Config) -> Self {
+            let (tx, mut rx) =
+                tokio::sync::mpsc::unbounded_channel::<tokio::sync::oneshot::Sender<u64>>();
+            // The "scheduler actor": hands out monotonically increasing turns.
+            // It runs on the runtime's worker threads, so it makes progress
+            // while a guest thread is blocked inside the handler's send_rpc.
+            tokio::spawn(async move {
+                let mut turn = 0u64;
+                while let Some(responder) = rx.recv().await {
+                    turn += 1;
+                    let _ = responder.send(turn);
+                }
+            });
+            Self { to_actor: Some(tx) }
+        }
+
+        async fn receive_rpc(&self, _from: Pid, _message: ()) -> u64 {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.to_actor
+                .as_ref()
+                .expect("SchedGlobal must be built via init_global_state")
+                .send(tx)
+                .expect("scheduler actor is alive");
+            // Blocks until the actor grants a turn — exactly Detcore's Ivar wait.
+            rx.await.expect("scheduler actor responded")
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct SchedTool;
+
+    #[reverie::tool]
+    impl Tool for SchedTool {
+        type GlobalState = SchedGlobal;
+        type ThreadState = PrototypeCounters;
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            _syscall: Syscall,
+        ) -> Result<i64, Error> {
+            // Await the global scheduler actor, as Detcore's resource_request does.
+            let turn = guest.send_rpc(()).await;
+            Ok(turn as i64)
+        }
+    }
+
+    /// A Tokio-aware [`HandlerDriver`]: drives the handler with
+    /// `Handle::block_on` on a multi-threaded runtime, so worker threads keep the
+    /// actor running while this (guest) thread blocks. This is what a hermit-side
+    /// Detcore binding must supply instead of [`ParkDriver`].
+    struct TokioDriver(tokio::runtime::Handle);
+
+    impl HandlerDriver for TokioDriver {
+        fn drive<F: Future>(&self, future: F) -> F::Output {
+            self.0.block_on(future)
+        }
+    }
+
+    unsafe extern "C" fn invoke_unused(_context: usize, _sysnum: i64, _args: *const u64) -> i64 {
+        unreachable!("SchedTool does not inject");
+    }
+
+    #[test]
+    fn detcore_style_actor_roundtrip_completes_over_multithread_driver() {
+        // Multi-threaded runtime hosts the scheduler actor on worker threads.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let global = runtime.block_on(SchedGlobal::init_global_state(&()));
+        let driver = TokioDriver(runtime.handle().clone());
+        let tool = SchedTool;
+        let mut thread_state = PrototypeCounters::default();
+        let args = [0u64; 6];
+
+        // Called from the MAIN (non-runtime) thread, as a DBI guest thread would
+        // be. The handler's send_rpc blocks on the actor; because the driver uses
+        // the multi-threaded runtime, the actor runs on a worker and grants a
+        // turn, so this completes instead of deadlocking.
+        let outcome = run_tool_pre_syscall(
+            &tool,
+            &global,
+            &(),
+            &mut thread_state,
+            &driver,
+            0,
+            10,
+            10,
+            libc::SYS_getpid,
+            &args,
+            0,
+            invoke_unused,
+            read_regs,
+        );
+        assert_eq!(
+            outcome,
+            Some(1),
+            "actor granted the first turn via send_rpc"
+        );
+
+        // A second event gets the next turn — the actor keeps making progress.
+        let outcome2 = run_tool_pre_syscall(
+            &tool,
+            &global,
+            &(),
+            &mut thread_state,
+            &driver,
+            0,
+            10,
+            10,
+            libc::SYS_getpid,
+            &args,
+            0,
+            invoke_unused,
+            read_regs,
+        );
+        assert_eq!(outcome2, Some(2));
     }
 
     #[test]
