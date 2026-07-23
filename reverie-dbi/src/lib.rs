@@ -87,8 +87,17 @@ impl<'a, T> DbiGuest<'a, T>
 where
     T: Tool,
 {
+    /// Builds an in-process guest for one syscall event.
+    ///
+    /// This is `pub` so that an out-of-crate tool binding (for example a
+    /// hermit-side crate that wires `Detcore` as the tool `T`, which cannot live
+    /// in this crate because `reverie-dbi` must not depend on `detcore`) can
+    /// construct `DbiGuest<T>` and drive `T::handle_syscall_event` with
+    /// [`run_ready`]. The caller supplies the per-thread `thread_state`,
+    /// `global_state`, and `config` for the concrete tool, plus the DynamoRIO
+    /// context and the syscall-invoke / register-read callbacks.
     #[allow(clippy::too_many_arguments)]
-    fn new(
+    pub fn new(
         context: usize,
         tid: Pid,
         pid: Pid,
@@ -664,7 +673,11 @@ fn rewrite_bind_port<G: Guest<PrototypeTool>>(
 /// wake from any thread (e.g. the scheduler granting a turn) resumes exactly the
 /// parked thread it targets. Handlers that complete on the first poll (such as
 /// the prototype tool) never park.
-fn run_ready<F: Future>(future: F) -> F::Output {
+///
+/// Exposed publicly so an out-of-crate tool binding (e.g. a hermit-side crate
+/// wiring `Detcore`) can drive a handler future the same way the built-in FFI
+/// entry does.
+pub fn run_ready<F: Future>(future: F) -> F::Output {
     /// Waker that unparks the OS thread blocked inside [`run_ready`].
     struct ThreadWaker(thread::Thread);
 
@@ -689,6 +702,68 @@ fn run_ready<F: Future>(future: F) -> F::Output {
             // immediately, so wakeups are never lost.
             Poll::Pending => thread::park(),
         }
+    }
+}
+
+/// Generic per-syscall dispatch for **any** Reverie [`Tool`], factored out of the
+/// prototype FFI entry so an out-of-crate binding can reuse the exact
+/// guest-construction + async-drive path with a different concrete tool.
+///
+/// `reverie-dbi` cannot name `Detcore` (that would make `reverie` depend on
+/// `hermit` — a cross-repo cycle), so wiring Detcore as the tool must happen in
+/// a hermit-side crate. That crate constructs its own tool/global/config/thread
+/// state and calls this function from a thin `#[no_mangle]` FFI wrapper; only
+/// the concrete `PrototypeTool` wrapper lives here (see
+/// [`reverie_dbi_runtime_pre_syscall`]).
+///
+/// Builds a [`DbiGuest<T>`] from the raw DynamoRIO event and drives
+/// `tool.handle_syscall_event` to completion with [`run_ready`] (which supports
+/// suspension). Returns the value to install for the guest: the handler's result
+/// on success, or the negated errno on an error (both suppress the original
+/// syscall). The caller decides — via its own syscall filter — whether to invoke
+/// this at all.
+#[allow(clippy::too_many_arguments)]
+pub fn run_tool_pre_syscall<T: Tool>(
+    tool: &T,
+    global_state: &T::GlobalState,
+    config: &<T::GlobalState as GlobalTool>::Config,
+    thread_state: &mut T::ThreadState,
+    context: usize,
+    tid: i32,
+    pid: i32,
+    sysnum: i64,
+    args: &[u64; 6],
+    branches: u64,
+    invoke_syscall: SyscallInvoker,
+    read_registers: RegisterReader,
+) -> i64 {
+    let syscall = Syscall::from_raw(
+        Sysno::from(sysnum as i32),
+        SyscallArgs::new(
+            args[0] as usize,
+            args[1] as usize,
+            args[2] as usize,
+            args[3] as usize,
+            args[4] as usize,
+            args[5] as usize,
+        ),
+    );
+    let mut guest = DbiGuest::new(
+        context,
+        Pid::from_raw(tid),
+        Pid::from_raw(pid),
+        None,
+        branches,
+        thread_state,
+        global_state,
+        config,
+        invoke_syscall,
+        read_registers,
+    );
+    match run_ready(tool.handle_syscall_event(&mut guest, syscall)) {
+        Ok(value) => value,
+        Err(Error::Errno(errno)) => -(errno.into_raw() as i64),
+        Err(_) => -(Errno::EIO.into_raw() as i64),
     }
 }
 
@@ -744,34 +819,30 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
         }
 
         let raw_args = unsafe { std::slice::from_raw_parts(args, 6) };
-        let syscall = Syscall::from_raw(
-            Sysno::from(sysnum as i32),
-            SyscallArgs::new(
-                raw_args[0] as usize,
-                raw_args[1] as usize,
-                raw_args[2] as usize,
-                raw_args[3] as usize,
-                raw_args[4] as usize,
-                raw_args[5] as usize,
-            ),
-        );
-        let mut guest = DbiGuest::new(
-            context as usize,
-            Pid::from_raw(tid),
-            Pid::from_raw(pid),
-            None,
-            branches,
-            counters,
+        let args6 = [
+            raw_args[0],
+            raw_args[1],
+            raw_args[2],
+            raw_args[3],
+            raw_args[4],
+            raw_args[5],
+        ];
+        // The concrete PrototypeTool binding: dispatch through the generic,
+        // tool-agnostic path so an out-of-crate tool (e.g. Detcore) can reuse it.
+        let value = run_tool_pre_syscall(
+            &PROTOTYPE_TOOL,
             &GLOBAL_STATE,
             &CONFIG,
+            counters,
+            context as usize,
+            tid,
+            pid,
+            sysnum,
+            &args6,
+            branches,
             invoke_syscall,
             read_registers,
         );
-        let value = match run_ready(PROTOTYPE_TOOL.handle_syscall_event(&mut guest, syscall)) {
-            Ok(value) => value,
-            Err(Error::Errno(errno)) => -(errno.into_raw() as i64),
-            Err(_) => -(Errno::EIO.into_raw() as i64),
-        };
         unsafe { result.write(value) };
         TOTAL_REWRITTEN.fetch_add(1, Ordering::Relaxed);
         true
@@ -869,6 +940,94 @@ mod tests {
 
         assert_eq!(run_ready(future), 1234);
         handle.join().unwrap();
+    }
+
+    /// A non-ZST tool whose value carries state (like `Detcore`, which holds a
+    /// `Config` and a record/replay sub-tool) and whose `ThreadState` is a
+    /// non-POD Rust type (a `String` field, unlike the prototype's C-compatible
+    /// counters). Its handler suspends once before forwarding the syscall, as
+    /// Detcore's `send_rpc` would.
+    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    struct StatefulTool {
+        tag: u8,
+    }
+
+    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    struct StatefulThreadState {
+        calls: u64,
+        last: String,
+    }
+
+    /// Yields exactly once: `Pending` on first poll (self-waking so the
+    /// `run_ready` executor re-polls), then `Ready`.
+    struct YieldOnce(bool);
+
+    impl Future for YieldOnce {
+        type Output = ();
+
+        fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 {
+                Poll::Ready(())
+            } else {
+                self.0 = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }
+    }
+
+    #[reverie::tool]
+    impl Tool for StatefulTool {
+        type GlobalState = ();
+        type ThreadState = StatefulThreadState;
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            guest.thread_state_mut().calls += 1;
+            guest.thread_state_mut().last = format!("{}:{}", self.tag, syscall.name());
+            // Suspend once with a real `Poll::Pending`, exercising the async
+            // drive path that the prototype tool never triggers.
+            YieldOnce(false).await;
+            Ok(guest.inject(syscall).await?)
+        }
+    }
+
+    /// Proves the tool-agnostic [`run_tool_pre_syscall`] path constructs
+    /// `DbiGuest<T>` for a parameterized, non-ZST tool with a non-POD
+    /// `ThreadState` and drives a suspending handler to completion without
+    /// panicking. This is the in-repo proxy for "`DbiGuest<Detcore>` compiles
+    /// and doesn't panic on syscall events": `reverie-dbi` cannot name
+    /// `Detcore` (cross-repo cycle), so a stateful mock stands in for it here,
+    /// while a hermit-side crate binds the real `Detcore` through this same
+    /// generic entry point.
+    #[test]
+    fn generic_dispatch_drives_a_stateful_parameterized_tool() {
+        let tool = StatefulTool { tag: 7 };
+        let global = ();
+        let config = ();
+        let mut thread_state = StatefulThreadState::default();
+        // write(fd=1, buf=0x1000, len=5); `invoke` returns args[2] for SYS_write.
+        let args = [1u64, 0x1000, 5, 0, 0, 0];
+        let value = run_tool_pre_syscall(
+            &tool,
+            &global,
+            &config,
+            &mut thread_state,
+            0,
+            10,
+            10,
+            libc::SYS_write,
+            &args,
+            99,
+            invoke,
+            read_regs,
+        );
+        assert_eq!(value, 5);
+        assert_eq!(thread_state.calls, 1);
+        assert_eq!(thread_state.last, "7:write");
     }
 
     #[test]
