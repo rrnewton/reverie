@@ -34,7 +34,8 @@ pub(crate) const SYSCALL_TRAMPOLINE_ADDRESS: u64 = 0x5000;
 pub(crate) const SYSCALL_FRAME_ADDRESS: u64 = 0x6000;
 pub(crate) const PROGRAM_HEADERS_ADDRESS: u64 = 0x7000;
 const TSS_ADDRESS: u64 = 0x8000;
-pub(crate) const BOOT_RESERVED_END: u64 = 0x9000;
+// Includes the 0x9000..0xa000 Tool injection scratch page.
+pub(crate) const BOOT_RESERVED_END: u64 = 0xa000;
 
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const KERNEL_DATA_SELECTOR: u16 = 0x10;

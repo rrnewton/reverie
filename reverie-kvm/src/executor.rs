@@ -6,6 +6,13 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::ffi::OsStr;
+use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::FileExt;
+use std::path::Path;
+
 use crate::GuestMemory;
 use crate::SyscallRequest;
 use crate::bootstrap::BOOT_RESERVED_END;
@@ -14,6 +21,7 @@ use crate::elf::LoadedStaticElf;
 use crate::runtime::SyscallExecutor;
 
 const MAX_HOST_IO: usize = 16 * 1024 * 1024;
+const MAX_CAPTURED_OUTPUT: usize = 64 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
 const ARCH_SET_GS: u64 = 0x1001;
 const ARCH_SET_FS: u64 = 0x1002;
@@ -28,10 +36,34 @@ pub(crate) enum SyscallAction {
     Exit(i32),
 }
 
+#[derive(Default)]
+pub(crate) struct CapturedOutput {
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+impl CapturedOutput {
+    pub(crate) fn take(&mut self) -> (Vec<u8>, Vec<u8>) {
+        (
+            std::mem::take(&mut self.stdout),
+            std::mem::take(&mut self.stderr),
+        )
+    }
+}
+
 pub(crate) fn execute_basic_syscall(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
     request: &SyscallRequest,
+) -> SyscallAction {
+    execute_basic_syscall_with_output(memory, state, request, None)
+}
+
+fn execute_basic_syscall_with_output(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    request: &SyscallRequest,
+    output: Option<&mut CapturedOutput>,
 ) -> SyscallAction {
     let args = request.args();
     let number = request.number();
@@ -41,13 +73,17 @@ pub(crate) fn execute_basic_syscall(
     }
 
     let result = if number == libc::SYS_write as u64 {
-        write(memory, args)
+        write(memory, args, output)
     } else if number == libc::SYS_read as u64 {
-        if args[0] == libc::STDIN_FILENO as u64 {
-            0
-        } else {
-            negative_errno(libc::EBADF)
-        }
+        read(memory, state, args)
+    } else if number == libc::SYS_pread64 as u64 {
+        pread64(memory, state, args)
+    } else if number == libc::SYS_openat as u64 {
+        openat(memory, state, args)
+    } else if number == libc::SYS_fstat as u64 {
+        fstat(memory, state, args)
+    } else if number == libc::SYS_access as u64 {
+        access(memory, args)
     } else if number == libc::SYS_getpid as u64
         || number == libc::SYS_gettid as u64
         || number == libc::SYS_getppid as u64
@@ -93,9 +129,12 @@ pub(crate) fn execute_basic_syscall(
         }
     } else if number == libc::SYS_set_tid_address as u64 {
         1
+    } else if number == libc::SYS_close as u64 {
+        close(state, args[0])
     } else if number == libc::SYS_set_robust_list as u64
         || number == libc::SYS_sigaltstack as u64
-        || number == libc::SYS_close as u64
+        || number == libc::SYS_rseq as u64
+        || number == libc::SYS_futex as u64
     {
         0
     } else {
@@ -116,14 +155,16 @@ pub(crate) fn execute_basic_syscall(
 /// [`crate::KvmBackend::run_static_elf`] uses directly.
 pub(crate) struct ElfExecutor {
     state: LoadedStaticElf,
+    output: Option<CapturedOutput>,
     pending_segment: Option<(SegmentBase, u64)>,
     exit_code: Option<i32>,
 }
 
 impl ElfExecutor {
-    pub(crate) fn new(state: LoadedStaticElf) -> Self {
+    pub(crate) fn new(state: LoadedStaticElf, capture_output: bool) -> Self {
         Self {
             state,
+            output: capture_output.then(CapturedOutput::default),
             pending_segment: None,
             exit_code: None,
         }
@@ -138,6 +179,13 @@ impl ElfExecutor {
     pub(crate) fn take_exit(&mut self) -> Option<i32> {
         self.exit_code.take()
     }
+
+    pub(crate) fn take_output(&mut self) -> (Vec<u8>, Vec<u8>) {
+        self.output
+            .as_mut()
+            .map(CapturedOutput::take)
+            .unwrap_or_default()
+    }
 }
 
 impl SyscallExecutor for ElfExecutor {
@@ -145,7 +193,12 @@ impl SyscallExecutor for ElfExecutor {
         // Clones share the underlying MAP_SHARED mapping, so writes through this
         // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
         let mut memory = memory.clone();
-        match execute_basic_syscall(&mut memory, &mut self.state, request) {
+        match execute_basic_syscall_with_output(
+            &mut memory,
+            &mut self.state,
+            request,
+            self.output.as_mut(),
+        ) {
             SyscallAction::Continue { result, segment } => {
                 if segment.is_some() {
                     self.pending_segment = segment;
@@ -160,7 +213,7 @@ impl SyscallExecutor for ElfExecutor {
     }
 }
 
-fn write(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+fn write(memory: &GuestMemory, args: &[u64; 6], output: Option<&mut CapturedOutput>) -> i64 {
     if args[0] != libc::STDOUT_FILENO as u64 && args[0] != libc::STDERR_FILENO as u64 {
         return negative_errno(libc::EBADF);
     }
@@ -174,6 +227,23 @@ fn write(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     let mut bytes = vec![0; length];
     if memory.read(args[1], &mut bytes).is_err() {
         return negative_errno(libc::EFAULT);
+    }
+
+    if let Some(output) = output {
+        let destination = if args[0] == libc::STDOUT_FILENO as u64 {
+            &mut output.stdout
+        } else {
+            &mut output.stderr
+        };
+        if destination
+            .len()
+            .checked_add(bytes.len())
+            .is_none_or(|length| length > MAX_CAPTURED_OUTPUT)
+        {
+            return negative_errno(libc::EFBIG);
+        }
+        destination.extend_from_slice(&bytes);
+        return bytes.len() as i64;
     }
 
     // SAFETY: bytes is a live host buffer of exactly length bytes and the file
@@ -193,6 +263,134 @@ fn write(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
         )
     } else {
         written as i64
+    }
+}
+
+fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if args[0] == libc::STDIN_FILENO as u64 {
+        return 0;
+    }
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Ok(length) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if length > MAX_HOST_IO {
+        return negative_errno(libc::E2BIG);
+    }
+    let Some(file) = state.files.get_mut(&fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let mut bytes = vec![0; length];
+    match file.read(&mut bytes) {
+        Ok(count) => match memory.write(args[1], &bytes[..count]) {
+            Ok(()) => count as i64,
+            Err(_) => negative_errno(libc::EFAULT),
+        },
+        Err(error) => io_error(error),
+    }
+}
+
+fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Ok(length) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if length > MAX_HOST_IO {
+        return negative_errno(libc::E2BIG);
+    }
+    let Some(file) = state.files.get(&fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let mut bytes = vec![0; length];
+    match file.read_at(&mut bytes, args[3]) {
+        Ok(count) => match memory.write(args[1], &bytes[..count]) {
+            Ok(()) => count as i64,
+            Err(_) => negative_errno(libc::EFAULT),
+        },
+        Err(error) => io_error(error),
+    }
+}
+
+fn openat(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Some(path) = read_c_string(memory, args[1], 4096) else {
+        return negative_errno(libc::EFAULT);
+    };
+    if path.is_empty() {
+        return negative_errno(libc::ENOENT);
+    }
+    let flags = args[2] as libc::c_int;
+    if flags & (libc::O_WRONLY | libc::O_RDWR | libc::O_CREAT | libc::O_TRUNC) != 0 {
+        return negative_errno(libc::EROFS);
+    }
+    if !path.starts_with(b"/") && args[0] as i32 != libc::AT_FDCWD {
+        return negative_errno(libc::EBADF);
+    }
+    let path = Path::new(OsStr::from_bytes(&path));
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) => return io_error(error),
+    };
+    let fd = state.next_fd;
+    state.next_fd = state.next_fd.saturating_add(1);
+    state.files.insert(fd, file);
+    i64::from(fd)
+}
+
+fn fstat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let host_fd = if (0..=2).contains(&fd) {
+        fd
+    } else if let Some(file) = state.files.get(&fd) {
+        file.as_raw_fd()
+    } else {
+        return negative_errno(libc::EBADF);
+    };
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: stat points to writable storage and host_fd is either a standard
+    // descriptor or an owned File descriptor.
+    if unsafe { libc::fstat(host_fd, stat.as_mut_ptr()) } != 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: fstat initialized stat on success.
+    let stat = unsafe { stat.assume_init() };
+    // SAFETY: libc::stat is plain kernel ABI data and the slice is bounded to it.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::from_ref(&stat).cast::<u8>(),
+            std::mem::size_of::<libc::stat>(),
+        )
+    };
+    match memory.write(args[1], bytes) {
+        Ok(()) => 0,
+        Err(_) => negative_errno(libc::EFAULT),
+    }
+}
+
+fn access(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+    let Some(path) = read_c_string(memory, args[0], 4096) else {
+        return negative_errno(libc::EFAULT);
+    };
+    if Path::new(OsStr::from_bytes(&path)).exists() {
+        0
+    } else {
+        negative_errno(libc::ENOENT)
+    }
+}
+
+fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
+    let Ok(fd) = i32::try_from(raw_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    if (0..=2).contains(&fd) || state.files.remove(&fd).is_some() {
+        0
+    } else {
+        negative_errno(libc::EBADF)
     }
 }
 
@@ -226,7 +424,7 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
     if requested == 0 {
         return state.program_break as i64;
     }
-    if requested < BOOT_RESERVED_END || requested >= state.mmap_next {
+    if requested < BOOT_RESERVED_END || requested >= state.brk_limit {
         return state.program_break as i64;
     }
     if requested > state.program_break {
@@ -242,40 +440,86 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
 }
 
 fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if args[1] == 0 {
+        return negative_errno(libc::EINVAL);
+    }
     let flags = args[3];
-    let supported = libc::MAP_PRIVATE as u64 | libc::MAP_ANONYMOUS as u64;
-    if args[0] != 0
-        || args[1] == 0
-        || flags & supported != supported
-        || flags & libc::MAP_FIXED as u64 != 0
-        || args[4] != u64::MAX
-        || args[5] != 0
-    {
+    let is_anonymous = flags & libc::MAP_ANONYMOUS as u64 != 0;
+    let is_private = flags & libc::MAP_PRIVATE as u64 != 0;
+    let is_shared = flags & libc::MAP_SHARED as u64 != 0;
+    if !is_private && !is_shared {
         return negative_errno(libc::EINVAL);
     }
 
     let Some(length) = align_up(args[1], PAGE_SIZE) else {
         return negative_errno(libc::ENOMEM);
     };
-    let address = state.mmap_next;
+    let fixed = flags & libc::MAP_FIXED as u64 != 0;
+    if fixed && !args[0].is_multiple_of(PAGE_SIZE) {
+        return negative_errno(libc::EINVAL);
+    }
+    if !is_anonymous && !args[5].is_multiple_of(PAGE_SIZE) {
+        return negative_errno(libc::EINVAL);
+    }
+    // Linux treats a nonfixed address as a hint. This bounded personality uses
+    // its deterministic allocator rather than risking an occupied mapping.
+    let address = if fixed { args[0] } else { state.mmap_next };
     let Some(end) = address.checked_add(length) else {
         return negative_errno(libc::ENOMEM);
     };
-    if end > state.mmap_limit {
+    if address < BOOT_RESERVED_END || end > state.mmap_limit {
         return negative_errno(libc::ENOMEM);
     }
     let Ok(length) = usize::try_from(length) else {
         return negative_errno(libc::ENOMEM);
     };
+    let file_bytes = if !is_anonymous {
+        let Ok(fd) = i32::try_from(args[4]) else {
+            return negative_errno(libc::EBADF);
+        };
+        let Some(file) = state.files.get(&fd) else {
+            return negative_errno(libc::EBADF);
+        };
+        let mut bytes = vec![0; length];
+        let mut count = 0;
+        while count < length {
+            match file.read_at(&mut bytes[count..], args[5].saturating_add(count as u64)) {
+                Ok(0) => break,
+                Ok(read) => count += read,
+                Err(error) => return io_error(error),
+            }
+        }
+        Some(bytes)
+    } else if args[4] as i32 != -1 {
+        return negative_errno(libc::EINVAL);
+    } else {
+        None
+    };
+
     if memory.zero(address, length).is_err() {
         return negative_errno(libc::ENOMEM);
     }
-    state.mmap_next = end;
+    if let Some(bytes) = file_bytes
+        && memory.write(address, &bytes).is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+
+    if !fixed {
+        state.mmap_next = end;
+    }
     address as i64
 }
 
 fn munmap(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
-    if length == 0 || !range_is_valid(memory, address, length) {
+    let Some(length) = align_up(length, PAGE_SIZE) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if address < BOOT_RESERVED_END
+        || !address.is_multiple_of(PAGE_SIZE)
+        || length == 0
+        || !range_is_valid(memory, address, length)
+    {
         return negative_errno(libc::EINVAL);
     }
     let Ok(length) = usize::try_from(length) else {
@@ -409,6 +653,10 @@ fn continue_with(result: i64) -> SyscallAction {
         result,
         segment: None,
     }
+}
+
+fn io_error(error: std::io::Error) -> i64 {
+    negative_errno(error.raw_os_error().unwrap_or(libc::EIO))
 }
 
 const fn negative_errno(errno: libc::c_int) -> i64 {

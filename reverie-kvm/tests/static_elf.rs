@@ -9,7 +9,6 @@
 #![cfg(target_arch = "x86_64")]
 
 use kvm_ioctls::Kvm;
-use reverie_kvm::Error;
 use reverie_kvm::KvmBackend;
 use reverie_kvm::StraceTool;
 
@@ -32,17 +31,7 @@ fn static_elf_executes_syscall_and_exits() {
         Err(error) => panic!("failed to probe /dev/kvm: {error}"),
     }
 
-    let mut dynamic = static_elf(&[0xf4]);
-    put_u16(&mut dynamic, 16, 3);
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
-    let error = backend
-        .install_static_elf(&dynamic, "/bin/true")
-        .unwrap_err();
-    assert!(matches!(
-        error,
-        Error::UnsupportedElf(message)
-            if message == "only fixed-address ET_EXEC images are supported"
-    ));
 
     backend
         .memory_mut()
@@ -181,10 +170,13 @@ fn strace_tool_logs_syscalls_from_static_elf() {
         .install_static_elf_with_args(&static_elf(&code), &["prog"], &[])
         .unwrap();
 
-    let (log, exit_code) =
-        futures::executor::block_on(backend.run_static_elf_with_tool::<StraceTool>(())).unwrap();
+    let (log, exit_code, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<StraceTool>((), true))
+            .unwrap();
 
     assert_eq!(exit_code, 0);
+    assert_eq!(stdout, b"hi\n");
+    assert!(stderr.is_empty());
     assert_eq!(
         log.syscalls(),
         vec![

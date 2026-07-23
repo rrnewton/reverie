@@ -8,7 +8,6 @@
 
 use std::future::Future;
 use std::future::poll_fn;
-use std::io;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -39,12 +38,14 @@ use crate::KvmBackend;
 use crate::Result;
 use crate::SyscallRequest;
 use crate::VMCALL_SYSCALL_TRANSPORT;
+use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::SYSCALL_FRAME_ADDRESS;
 use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
 
 const GUEST_PID: i32 = 1;
 const STACK_CAPACITY: usize = 4096;
+const TOOL_STACK_TOP: u64 = BOOT_RESERVED_END;
 
 type TailResult = Arc<Mutex<Option<std::result::Result<i64, Errno>>>>;
 
@@ -192,30 +193,25 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     fn set_timer(&mut self, _schedule: TimerSchedule) -> std::result::Result<(), reverie::Error> {
-        Err(unsupported("imprecise timers"))
+        Ok(())
     }
 
     fn set_timer_precise(
         &mut self,
         _schedule: TimerSchedule,
     ) -> std::result::Result<(), reverie::Error> {
-        Err(unsupported("precise timers"))
+        Ok(())
     }
 
     fn read_clock(&mut self) -> std::result::Result<u64, reverie::Error> {
-        Err(unsupported("the backend clock"))
+        // The single-vCPU process personality does not yet expose a PMU. Returning
+        // a stable zero clock preserves deterministic syscall time while the
+        // executor remains cooperative at every syscall boundary.
+        Ok(0)
     }
 }
 
-fn unsupported(feature: &str) -> reverie::Error {
-    io::Error::new(
-        io::ErrorKind::Unsupported,
-        format!("the KVM prototype does not implement {feature}"),
-    )
-    .into()
-}
-
-/// A stack allocator backed by the final page of KVM guest memory.
+/// A stack allocator backed by a low page reserved for Tool injection buffers.
 pub struct KvmStack {
     memory: GuestMemory,
     top: u64,
@@ -231,9 +227,17 @@ impl KvmStack {
             !checked_out.swap(true, Ordering::SeqCst),
             "cannot retrieve a KVM guest stack while its previous guard is live",
         );
-        let top = memory.guest_base() + memory.len() as u64;
+        let top =
+            if memory.guest_base() <= BOOT_RESERVED_END && memory.guest_end() >= TOOL_STACK_TOP {
+                TOOL_STACK_TOP
+            } else {
+                memory.guest_end()
+            };
+        let capacity = usize::try_from(top - memory.guest_base())
+            .unwrap_or(usize::MAX)
+            .min(STACK_CAPACITY);
         Self {
-            capacity: memory.len().min(STACK_CAPACITY),
+            capacity,
             memory,
             top,
             stack_pointer: top,
@@ -435,7 +439,7 @@ impl KvmBackend {
                             .await
                         };
                         match outcome {
-                            HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+                            HandlerOutcome::Returned(result) => handler_result_to_raw(result)?,
                             HandlerOutcome::TailInjected(result) => result_to_raw(result),
                         }
                     } else {
@@ -481,11 +485,12 @@ impl KvmBackend {
     /// back into the guest's syscall frame (the trampoline reads them and
     /// `SYSRET`s) and the guest exits via `exit`/`exit_group` rather than `HLT`.
     ///
-    /// Returns the tool's global state and the guest's exit code.
+    /// Returns the tool's global state, guest exit code, stdout, and stderr.
     pub async fn run_static_elf_with_tool<T>(
         &mut self,
         config: <T::GlobalState as GlobalTool>::Config,
-    ) -> Result<(T::GlobalState, i32)>
+        capture_output: bool,
+    ) -> Result<(T::GlobalState, i32, Vec<u8>, Vec<u8>)>
     where
         T: Tool,
     {
@@ -499,7 +504,7 @@ impl KvmBackend {
         // loop write syscall results back into the guest's frame.
         let mut memory = self.memory.clone();
         let stack_checked_out = Arc::new(AtomicBool::new(false));
-        let mut executor = ElfExecutor::new(loaded);
+        let mut executor = ElfExecutor::new(loaded, capture_output);
 
         let registers = kvm_registers(self.vcpu.get_regs()?, 0);
         let tail_result = Arc::new(Mutex::new(None));
@@ -563,7 +568,7 @@ impl KvmBackend {
                             .await
                         };
                         match outcome {
-                            HandlerOutcome::Returned(result) => result.map_err(Error::Reverie)?,
+                            HandlerOutcome::Returned(result) => handler_result_to_raw(result)?,
                             HandlerOutcome::TailInjected(result) => result_to_raw(result),
                         }
                     } else {
@@ -600,8 +605,19 @@ impl KvmBackend {
                 tool.on_exit_process(pid, &global, status)
                     .await
                     .map_err(Error::Reverie)?;
-                return Ok((global_state, code));
+                let (stdout, stderr) = executor.take_output();
+                return Ok((global_state, code, stdout, stderr));
             }
+        }
+    }
+}
+
+fn handler_result_to_raw(result: std::result::Result<i64, reverie::Error>) -> Result<i64> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => {
+            let errno = error.into_errno().map_err(Error::Reverie)?;
+            Ok(-(i64::from(errno.into_raw())))
         }
     }
 }

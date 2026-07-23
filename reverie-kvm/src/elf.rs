@@ -6,12 +6,15 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::io::Read;
+
 use goblin::elf::Elf;
 use goblin::elf::header::EI_CLASS;
 use goblin::elf::header::EI_DATA;
 use goblin::elf::header::ELFCLASS64;
 use goblin::elf::header::ELFDATA2LSB;
 use goblin::elf::header::EM_X86_64;
+use goblin::elf::header::ET_DYN;
 use goblin::elf::header::ET_EXEC;
 use goblin::elf::program_header::PF_X;
 use goblin::elf::program_header::PT_INTERP;
@@ -27,6 +30,9 @@ const PAGE_SIZE: u64 = 4096;
 const STACK_RESERVE: u64 = 1024 * 1024;
 const MMAP_GAP: u64 = 1024 * 1024;
 const MAX_PROGRAM_HEADERS_SIZE: usize = PAGE_SIZE as usize;
+const MAX_INTERPRETER_BYTES: u64 = 16 * 1024 * 1024;
+const MAIN_LOAD_BIAS: u64 = 2 * 1024 * 1024;
+const INTERPRETER_LOAD_BIAS: u64 = 16 * 1024 * 1024;
 
 const AT_NULL: u64 = 0;
 const AT_PHDR: u64 = 3;
@@ -43,16 +49,19 @@ const AT_SECURE: u64 = 23;
 const AT_RANDOM: u64 = 25;
 const AT_EXECFN: u64 = 31;
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct LoadedStaticElf {
     pub entry_point: u64,
     pub stack_pointer: u64,
     pub program_break: u64,
+    pub brk_limit: u64,
     pub mmap_next: u64,
     pub mmap_limit: u64,
     pub argv0: Vec<u8>,
     pub fs_base: u64,
     pub gs_base: u64,
+    pub files: std::collections::BTreeMap<i32, std::fs::File>,
+    pub next_fd: i32,
 }
 
 pub(crate) fn load_static_elf(
@@ -62,7 +71,7 @@ pub(crate) fn load_static_elf(
     envp: &[&str],
 ) -> Result<LoadedStaticElf> {
     let elf = Elf::parse(image)?;
-    validate_elf(&elf)?;
+    validate_elf(&elf, true)?;
 
     let argv0 = *argv
         .first()
@@ -75,6 +84,209 @@ pub(crate) fn load_static_elf(
         }
     }
 
+    let main_bias = if elf.header.e_type == ET_DYN {
+        MAIN_LOAD_BIAS
+    } else {
+        0
+    };
+    let main_end = load_segments(memory, image, &elf, main_bias)?;
+    let main_entry = main_bias
+        .checked_add(elf.entry)
+        .ok_or_else(|| Error::UnsupportedElf("main entry point overflow".to_string()))?;
+
+    let (entry_point, at_base, image_end) = if let Some(path) = interpreter_path(image, &elf)? {
+        if main_end > INTERPRETER_LOAD_BIAS {
+            return Err(Error::UnsupportedElf(format!(
+                "main image end {main_end:#x} overlaps interpreter base {INTERPRETER_LOAD_BIAS:#x}",
+            )));
+        }
+        let interpreter_image = read_interpreter_image(&path)?;
+        let interpreter = Elf::parse(&interpreter_image)?;
+        validate_elf(&interpreter, false)?;
+        if interpreter.header.e_type != ET_DYN {
+            return Err(Error::UnsupportedElf(
+                "program interpreter must be ET_DYN".to_string(),
+            ));
+        }
+        let interpreter_end = load_segments(
+            memory,
+            &interpreter_image,
+            &interpreter,
+            INTERPRETER_LOAD_BIAS,
+        )?;
+        let interpreter_entry = INTERPRETER_LOAD_BIAS
+            .checked_add(interpreter.entry)
+            .ok_or_else(|| Error::UnsupportedElf("interpreter entry point overflow".to_string()))?;
+        (
+            interpreter_entry,
+            INTERPRETER_LOAD_BIAS,
+            main_end.max(interpreter_end),
+        )
+    } else {
+        (main_entry, 0, main_end)
+    };
+
+    copy_program_headers(memory, image, &elf)?;
+    let program_headers_address = elf
+        .program_headers
+        .iter()
+        .find(|header| header.p_type == goblin::elf::program_header::PT_PHDR)
+        .and_then(|header| main_bias.checked_add(header.p_vaddr))
+        .unwrap_or(PROGRAM_HEADERS_ADDRESS);
+    let stack_pointer = build_initial_stack(
+        memory,
+        &elf,
+        argv,
+        envp,
+        program_headers_address,
+        at_base,
+        main_entry,
+    )?;
+    let program_break = align_up(main_end, PAGE_SIZE)?;
+    let mmap_next = align_up(
+        image_end
+            .checked_add(MMAP_GAP)
+            .ok_or_else(|| Error::UnsupportedElf("initial mmap base overflow".to_string()))?,
+        PAGE_SIZE,
+    )?;
+    let mmap_limit = memory
+        .guest_end()
+        .checked_sub(STACK_RESERVE)
+        .ok_or(Error::LongModeMemoryTooSmall)?;
+    if mmap_next >= mmap_limit {
+        return Err(Error::LongModeMemoryTooSmall);
+    }
+    let brk_limit = if at_base == 0 {
+        mmap_next
+    } else {
+        INTERPRETER_LOAD_BIAS
+    };
+
+    Ok(LoadedStaticElf {
+        entry_point,
+        stack_pointer,
+        program_break,
+        brk_limit,
+        mmap_next,
+        mmap_limit,
+        argv0: argv0.as_bytes().to_vec(),
+        fs_base: 0,
+        gs_base: 0,
+        files: std::collections::BTreeMap::new(),
+        next_fd: 3,
+    })
+}
+
+fn validate_elf(elf: &Elf<'_>, allow_interpreter: bool) -> Result<()> {
+    if elf.header.e_ident[EI_CLASS] != ELFCLASS64
+        || elf.header.e_ident[EI_DATA] != ELFDATA2LSB
+        || elf.header.e_machine != EM_X86_64
+    {
+        return Err(Error::UnsupportedElf(
+            "expected a little-endian ELF64 x86-64 image".to_string(),
+        ));
+    }
+    if elf.header.e_type != ET_EXEC && elf.header.e_type != ET_DYN {
+        return Err(Error::UnsupportedElf(
+            "only ET_EXEC and ET_DYN images are supported".to_string(),
+        ));
+    }
+    if !allow_interpreter
+        && elf
+            .program_headers
+            .iter()
+            .any(|header| header.p_type == PT_INTERP)
+    {
+        return Err(Error::UnsupportedElf(
+            "nested PT_INTERP is not supported".to_string(),
+        ));
+    }
+    if !elf
+        .program_headers
+        .iter()
+        .any(|header| header.p_type == PT_LOAD)
+    {
+        return Err(Error::UnsupportedElf(
+            "image contains no PT_LOAD segments".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn interpreter_path(image: &[u8], elf: &Elf<'_>) -> Result<Option<String>> {
+    let Some(header) = elf
+        .program_headers
+        .iter()
+        .find(|header| header.p_type == PT_INTERP)
+    else {
+        return Ok(None);
+    };
+    let start = usize::try_from(header.p_offset)
+        .map_err(|_| Error::UnsupportedElf("PT_INTERP offset is too large".to_string()))?;
+    let size = usize::try_from(header.p_filesz)
+        .map_err(|_| Error::UnsupportedElf("PT_INTERP size is too large".to_string()))?;
+    let end = start
+        .checked_add(size)
+        .ok_or_else(|| Error::UnsupportedElf("PT_INTERP range overflow".to_string()))?;
+    let bytes = image
+        .get(start..end)
+        .ok_or_else(|| Error::UnsupportedElf("PT_INTERP extends past the image".to_string()))?;
+    let Some(bytes) = bytes.strip_suffix(&[0]) else {
+        return Err(Error::UnsupportedElf(
+            "PT_INTERP path is not NUL-terminated".to_string(),
+        ));
+    };
+    if bytes.contains(&0) {
+        return Err(Error::UnsupportedElf(
+            "PT_INTERP path contains an embedded NUL".to_string(),
+        ));
+    }
+    let path = std::str::from_utf8(bytes)
+        .map_err(|_| Error::UnsupportedElf("PT_INTERP path is not UTF-8".to_string()))?;
+    Ok(Some(path.to_string()))
+}
+
+fn read_interpreter_image(path: &str) -> Result<Vec<u8>> {
+    let file = std::fs::File::open(path).map_err(|error| {
+        Error::UnsupportedElf(format!("cannot open interpreter {path:?}: {error}"))
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        Error::UnsupportedElf(format!("cannot stat interpreter {path:?}: {error}"))
+    })?;
+    if !metadata.is_file() {
+        return Err(Error::UnsupportedElf(format!(
+            "interpreter {path:?} is not a regular file",
+        )));
+    }
+    if metadata.len() > MAX_INTERPRETER_BYTES {
+        return Err(Error::UnsupportedElf(format!(
+            "interpreter {path:?} exceeds {MAX_INTERPRETER_BYTES} bytes",
+        )));
+    }
+
+    let mut image = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_INTERPRETER_BYTES + 1)
+        .read_to_end(&mut image)
+        .map_err(|error| {
+            Error::UnsupportedElf(format!("cannot read interpreter {path:?}: {error}"))
+        })?;
+    if image.len() as u64 > MAX_INTERPRETER_BYTES {
+        return Err(Error::UnsupportedElf(format!(
+            "interpreter {path:?} exceeds {MAX_INTERPRETER_BYTES} bytes",
+        )));
+    }
+    Ok(image)
+}
+
+fn load_segments(
+    memory: &mut GuestMemory,
+    image: &[u8],
+    elf: &Elf<'_>,
+    load_bias: u64,
+) -> Result<u64> {
+    let entry = load_bias
+        .checked_add(elf.entry)
+        .ok_or_else(|| Error::UnsupportedElf("ELF entry point overflow".to_string()))?;
     let mut image_end = 0;
     let mut entry_is_executable = false;
     for header in elf
@@ -89,14 +301,15 @@ pub(crate) fn load_static_elf(
             )));
         }
 
-        let segment_end = header
-            .p_vaddr
+        let segment_start = load_bias
+            .checked_add(header.p_vaddr)
+            .ok_or_else(|| Error::UnsupportedElf("PT_LOAD address overflow".to_string()))?;
+        let segment_end = segment_start
             .checked_add(header.p_memsz)
             .ok_or_else(|| Error::UnsupportedElf("PT_LOAD address overflow".to_string()))?;
-        if header.p_vaddr < BOOT_RESERVED_END && segment_end > 0 {
+        if segment_start < BOOT_RESERVED_END && segment_end > 0 {
             return Err(Error::UnsupportedElf(format!(
-                "PT_LOAD {:#x}..{segment_end:#x} overlaps bootstrap memory",
-                header.p_vaddr
+                "PT_LOAD {segment_start:#x}..{segment_end:#x} overlaps bootstrap memory"
             )));
         }
 
@@ -111,14 +324,14 @@ pub(crate) fn load_static_elf(
             Error::UnsupportedElf("PT_LOAD extends past the ELF image".to_string())
         })?;
 
-        memory.write(header.p_vaddr, contents)?;
-        let zero_start = header.p_vaddr + header.p_filesz;
+        memory.write(segment_start, contents)?;
+        let zero_start = segment_start + header.p_filesz;
         let zero_len = usize::try_from(header.p_memsz - header.p_filesz)
             .map_err(|_| Error::UnsupportedElf("PT_LOAD memsz is too large".to_string()))?;
         memory.zero(zero_start, zero_len)?;
 
         entry_is_executable |=
-            header.p_flags & PF_X != 0 && (header.p_vaddr..segment_end).contains(&elf.entry);
+            header.p_flags & PF_X != 0 && (segment_start..segment_end).contains(&entry);
         image_end = image_end.max(segment_end);
     }
 
@@ -127,69 +340,7 @@ pub(crate) fn load_static_elf(
             "entry point is not inside an executable PT_LOAD segment".to_string(),
         ));
     }
-
-    copy_program_headers(memory, image, &elf)?;
-    let stack_pointer = build_initial_stack(memory, &elf, argv, envp)?;
-    let program_break = align_up(image_end, PAGE_SIZE)?;
-    let mmap_next = align_up(
-        program_break
-            .checked_add(MMAP_GAP)
-            .ok_or_else(|| Error::UnsupportedElf("initial mmap base overflow".to_string()))?,
-        PAGE_SIZE,
-    )?;
-    let mmap_limit = memory
-        .guest_end()
-        .checked_sub(STACK_RESERVE)
-        .ok_or(Error::LongModeMemoryTooSmall)?;
-    if mmap_next >= mmap_limit {
-        return Err(Error::LongModeMemoryTooSmall);
-    }
-
-    Ok(LoadedStaticElf {
-        entry_point: elf.entry,
-        stack_pointer,
-        program_break,
-        mmap_next,
-        mmap_limit,
-        argv0: argv0.as_bytes().to_vec(),
-        fs_base: 0,
-        gs_base: 0,
-    })
-}
-
-fn validate_elf(elf: &Elf<'_>) -> Result<()> {
-    if elf.header.e_ident[EI_CLASS] != ELFCLASS64
-        || elf.header.e_ident[EI_DATA] != ELFDATA2LSB
-        || elf.header.e_machine != EM_X86_64
-    {
-        return Err(Error::UnsupportedElf(
-            "expected a little-endian ELF64 x86-64 image".to_string(),
-        ));
-    }
-    if elf.header.e_type != ET_EXEC {
-        return Err(Error::UnsupportedElf(
-            "only fixed-address ET_EXEC images are supported".to_string(),
-        ));
-    }
-    if elf
-        .program_headers
-        .iter()
-        .any(|header| header.p_type == PT_INTERP)
-    {
-        return Err(Error::UnsupportedElf(
-            "PT_INTERP requires a dynamic linker".to_string(),
-        ));
-    }
-    if !elf
-        .program_headers
-        .iter()
-        .any(|header| header.p_type == PT_LOAD)
-    {
-        return Err(Error::UnsupportedElf(
-            "image contains no PT_LOAD segments".to_string(),
-        ));
-    }
-    Ok(())
+    Ok(image_end)
 }
 
 fn copy_program_headers(memory: &mut GuestMemory, image: &[u8], elf: &Elf<'_>) -> Result<()> {
@@ -217,6 +368,9 @@ fn build_initial_stack(
     elf: &Elf<'_>,
     argv: &[&str],
     envp: &[&str],
+    program_headers_address: u64,
+    at_base: u64,
+    at_entry: u64,
 ) -> Result<u64> {
     // Strings (argv[], envp[], the AT_RANDOM bytes) live in a high region that
     // grows downward from the top of guest memory; the pointer arrays and auxv
@@ -256,7 +410,7 @@ fn build_initial_stack(
     words.push(0);
     words.extend_from_slice(&[
         AT_PHDR,
-        PROGRAM_HEADERS_ADDRESS,
+        program_headers_address,
         AT_PHENT,
         u64::from(elf.header.e_phentsize),
         AT_PHNUM,
@@ -264,9 +418,9 @@ fn build_initial_stack(
         AT_PAGESZ,
         PAGE_SIZE,
         AT_BASE,
-        0,
+        at_base,
         AT_ENTRY,
-        elf.entry,
+        at_entry,
         AT_UID,
         0,
         AT_EUID,
