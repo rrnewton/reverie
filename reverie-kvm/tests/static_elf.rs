@@ -11,6 +11,7 @@
 use kvm_ioctls::Kvm;
 use reverie_kvm::Error;
 use reverie_kvm::KvmBackend;
+use reverie_kvm::StraceTool;
 
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 const LOAD_ADDRESS: u64 = 0x20_0000;
@@ -140,6 +141,58 @@ fn static_elf_receives_argv_and_envp() {
         .unwrap();
 
     assert_eq!(backend.run_static_elf().unwrap(), 0);
+}
+
+#[test]
+fn strace_tool_logs_syscalls_from_static_elf() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM strace-ELF test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    // A static ELF guest that issues getpid, write(1, "hi\n", 3), exit_group(0)
+    // via real SYSCALL instructions. Each traps through the ring0 trampoline and
+    // must be observed by StraceTool, whose tail_inject is serviced by the ELF
+    // guest kernel (so getpid returns 1, the write prints, and exit_group ends
+    // the run).
+    let message = b"hi\n";
+    let mut code: Vec<u8> = Vec::new();
+    code.extend_from_slice(&[0xb8, 0x27, 0x00, 0x00, 0x00, 0x0f, 0x05]); // mov eax,SYS_getpid; syscall
+    code.extend_from_slice(&[0xbf, 0x01, 0x00, 0x00, 0x00]); // mov edi, 1
+    let movabs_operand = code.len() + 2;
+    code.extend_from_slice(&[0x48, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0]); // movabs rsi, <message vaddr>
+    code.push(0xba);
+    code.extend_from_slice(&(message.len() as u32).to_le_bytes()); // mov edx, len
+    code.extend_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00, 0x0f, 0x05]); // mov eax,SYS_write; syscall
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0x00, 0x00, 0x00, 0x31, 0xff, 0x0f, 0x05, 0x0f, 0x0b,
+    ]); // mov eax,SYS_exit_group; xor edi,edi; syscall; ud2
+    let message_offset = code.len();
+    code.extend_from_slice(message);
+    let message_vaddr = LOAD_ADDRESS + message_offset as u64;
+    code[movabs_operand..movabs_operand + 8].copy_from_slice(&message_vaddr.to_le_bytes());
+
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf_with_args(&static_elf(&code), &["prog"], &[])
+        .unwrap();
+
+    let (log, exit_code) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<StraceTool>(())).unwrap();
+
+    assert_eq!(exit_code, 0);
+    assert_eq!(
+        log.syscalls(),
+        vec![
+            "getpid".to_string(),
+            "write".to_string(),
+            "exit_group".to_string(),
+        ],
+    );
 }
 
 fn static_elf(code: &[u8]) -> Vec<u8> {

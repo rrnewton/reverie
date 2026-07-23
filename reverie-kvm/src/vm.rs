@@ -46,7 +46,7 @@ pub struct KvmBackend {
     pub(crate) memory: GuestMemory,
     _kvm: Kvm,
     hypercall_instruction: [u8; 3],
-    static_elf: Option<LoadedStaticElf>,
+    pub(crate) static_elf: Option<LoadedStaticElf>,
 }
 
 impl KvmBackend {

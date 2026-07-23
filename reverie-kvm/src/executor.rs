@@ -11,6 +11,7 @@ use crate::SyscallRequest;
 use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::SegmentBase;
 use crate::elf::LoadedStaticElf;
+use crate::runtime::SyscallExecutor;
 
 const MAX_HOST_IO: usize = 16 * 1024 * 1024;
 const PAGE_SIZE: u64 = 4096;
@@ -102,6 +103,61 @@ pub(crate) fn execute_basic_syscall(
     };
 
     continue_with(result)
+}
+
+/// A [`SyscallExecutor`] that supplies the static-ELF guest-kernel semantics
+/// ([`execute_basic_syscall`]) to the tool-driven run loop
+/// ([`crate::KvmBackend::run_static_elf_with_tool`]).
+///
+/// `execute` returns the raw syscall result and records, as side effects for
+/// the run loop to apply after the tool handler completes, any pending FS/GS
+/// base update (from `arch_prctl`) and the exit code (from `exit`/`exit_group`).
+/// This lets a Reverie tool's `tail_inject` drive the same guest-kernel that
+/// [`crate::KvmBackend::run_static_elf`] uses directly.
+pub(crate) struct ElfExecutor {
+    state: LoadedStaticElf,
+    pending_segment: Option<(SegmentBase, u64)>,
+    exit_code: Option<i32>,
+}
+
+impl ElfExecutor {
+    pub(crate) fn new(state: LoadedStaticElf) -> Self {
+        Self {
+            state,
+            pending_segment: None,
+            exit_code: None,
+        }
+    }
+
+    /// Returns and clears a pending FS/GS base update requested via `arch_prctl`.
+    pub(crate) fn take_segment(&mut self) -> Option<(SegmentBase, u64)> {
+        self.pending_segment.take()
+    }
+
+    /// Returns and clears the exit code once the guest calls `exit`/`exit_group`.
+    pub(crate) fn take_exit(&mut self) -> Option<i32> {
+        self.exit_code.take()
+    }
+}
+
+impl SyscallExecutor for ElfExecutor {
+    fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        // Clones share the underlying MAP_SHARED mapping, so writes through this
+        // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
+        let mut memory = memory.clone();
+        match execute_basic_syscall(&mut memory, &mut self.state, request) {
+            SyscallAction::Continue { result, segment } => {
+                if segment.is_some() {
+                    self.pending_segment = segment;
+                }
+                result
+            }
+            SyscallAction::Exit(code) => {
+                self.exit_code = Some(code);
+                0
+            }
+        }
+    }
 }
 
 fn write(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
