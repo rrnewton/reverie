@@ -40,6 +40,33 @@ outlined on that page and do not file a public issue.
 
 Follow the automatic `rustfmt` configuration.
 
+## Tracking Stubs
+
+Intermediate, intentionally-incomplete code is acceptable, but it must be
+visible and tracked so completeness can be judged. Every stub — an
+`unimplemented!()`/`todo!()`, a placeholder that returns a canned value, or a
+method/crate that does not yet fulfill a contract it advertises — must carry a
+marker of the form:
+
+```rust
+// TODO-STUB(#<issue>): <brief description of what needs implementing>
+```
+
+where `#<issue>` references a tracking issue on
+[`rrnewton/reverie`](https://github.com/rrnewton/reverie/issues). Open the
+issue first, then annotate the code so the stub is greppable and linked to its
+plan.
+
+Enumerate and count the markers with:
+
+```bash
+scripts/count-stubs.sh          # list every TODO-STUB with file:line, then total
+scripts/count-stubs.sh --count  # print only the total count
+```
+
+The count should trend toward zero over time; new stubs are fine only when they
+come with an issue and a marker.
+
 ## License
 
 By contributing to Reverie, you agree that your contributions will be

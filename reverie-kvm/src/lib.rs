@@ -14,6 +14,10 @@
 
 #![cfg(target_arch = "x86_64")]
 
+// TODO-STUB(#26): this crate exposes `KvmBackend` but does not implement the
+// shared `reverie::Guest`/`reverie::Tool` backend contract, so it cannot yet be
+// selected as a Reverie backend for arbitrary programs.
+
 mod error;
 mod memory;
 mod syscall;

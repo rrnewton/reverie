@@ -41,6 +41,8 @@ pub struct KvmBackend {
 
 impl KvmBackend {
     /// Creates a VM with one real-mode vCPU and a memory slot starting at GPA 0x1000.
+    // TODO-STUB(#29): single real-mode vCPU with a flat GPA slot only; no
+    // process/thread lifecycle, no protected/long-mode paging, no signals.
     pub fn new(memory_size: usize) -> Result<Self> {
         let kvm = Kvm::new()?;
         let vm = kvm.create_vm()?;
@@ -91,6 +93,8 @@ impl KvmBackend {
     }
 
     /// Installs a syscall frame and a `vmcall`/`vmmcall; hlt` guest program.
+    // TODO-STUB(#28): installs a single hard-coded one-shot syscall program
+    // rather than loading/executing an arbitrary guest instruction stream (ELF).
     pub fn install_syscall(
         &mut self,
         entry_point: u64,
@@ -136,6 +140,9 @@ impl KvmBackend {
                         return Err(Error::UnexpectedHypercall(exit.nr));
                     }
                     let request = SyscallRequest::read_from(&self.memory, exit.args[0])?;
+                    // TODO-STUB(#27): no built-in Linux syscall semantics; the
+                    // frame is forwarded to a caller-provided handler rather than
+                    // dispatched through a real syscall emulation/delegation layer.
                     *exit.ret = handler(&request, &self.memory) as u64;
                 }
                 VcpuExit::Hlt => return Ok(()),
