@@ -81,6 +81,19 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// Returns the current register values of the guest thread.
     async fn regs(&mut self) -> libc::user_regs_struct;
 
+    /// Overwrites the register values of the guest thread. This is the write
+    /// counterpart to [`Guest::regs`].
+    ///
+    /// The default implementation returns [`Errno::ENOSYS`] for backends that
+    /// cannot write guest registers. (Backported from a later Reverie revision
+    /// so Detcore, which calls this best-effort, compiles against this branch;
+    /// the long-term fix is rebasing the KVM stack onto current Reverie main,
+    /// which carries the full implementation.)
+    async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
+        let _ = regs;
+        Err(Errno::ENOSYS.into())
+    }
+
     /// Returns the current stack pointer with this guest thread.
     async fn stack(&mut self) -> Self::Stack;
 
