@@ -15,11 +15,14 @@
 #![cfg(target_arch = "x86_64")]
 
 mod error;
+mod guest;
 mod memory;
 mod syscall;
 mod vm;
 
 pub use error::Error;
+pub use guest::KvmGuest;
+pub use guest::KvmMemory;
 pub use memory::GuestMemory;
 pub use syscall::SyscallRequest;
 pub use vm::KvmBackend;

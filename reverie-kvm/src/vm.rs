@@ -14,11 +14,21 @@ use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
 use kvm_ioctls::VcpuFd;
 use kvm_ioctls::VmFd;
+use reverie::GlobalTool;
+use reverie::Pid;
+use reverie::Tool;
+use reverie::syscalls::Syscall;
+use reverie::syscalls::SyscallArgs;
+use reverie::syscalls::Sysno;
 
 use crate::Error;
 use crate::GuestMemory;
 use crate::Result;
 use crate::SyscallRequest;
+use crate::guest::KvmGuest;
+use crate::guest::KvmMemory;
+use crate::guest::block_on;
+use crate::guest::regs_from_frame;
 
 /// KVM currently permits userspace exits for this standardized hypercall.
 /// The prototype uses it as a transport opcode and places the syscall frame
@@ -147,6 +157,82 @@ impl KvmBackend {
     /// Exposes the VM fd for future backend setup without transferring ownership.
     pub fn vm_fd(&self) -> &VmFd {
         &self.vm
+    }
+
+    /// Reads the vCPU general-purpose registers via `KVM_GET_REGS`.
+    ///
+    /// This is the raw KVM vCPU register building block. It is not yet wired
+    /// into `Guest::regs` (which currently synthesises registers from the
+    /// intercepted syscall frame) because a KVM exit handle borrows the vCPU for
+    /// the duration of [`Self::run_tool`]; see `guest` module docs.
+    pub fn vcpu_regs(&self) -> Result<kvm_bindings::kvm_regs> {
+        Ok(self.vcpu.get_regs()?)
+    }
+
+    /// Runs the guest, dispatching every intercepted `vmcall` syscall to `tool`
+    /// through a freshly built [`KvmGuest`], until the guest halts.
+    ///
+    /// `thread_state` is owned by the caller so tool state (e.g. a syscall
+    /// count) is observable after the run. `pid` is the synthetic identity
+    /// reported to the tool for the single vCPU.
+    ///
+    /// This is the minimal `TracerBuilder`-style entry point: it makes an
+    /// arbitrary async `reverie::Tool` observe syscalls over the KVM
+    /// interception path. See the `guest` module docs for scope and limitations.
+    pub fn run_tool<T: Tool>(
+        &mut self,
+        tool: &T,
+        global_state: &T::GlobalState,
+        config: &<T::GlobalState as GlobalTool>::Config,
+        thread_state: &mut T::ThreadState,
+        pid: Pid,
+    ) -> Result<()> {
+        loop {
+            // NOTE: `exit` borrows `self.vcpu`; we only touch the disjoint
+            // `self.memory` field while it is live, so registers handed to the
+            // tool are synthesised from the frame rather than read via
+            // `self.vcpu_regs()` (which would re-borrow the vCPU).
+            match self.vcpu.run()? {
+                VcpuExit::Hypercall(exit) => {
+                    if exit.nr != VMCALL_SYSCALL_TRANSPORT {
+                        return Err(Error::UnexpectedHypercall(exit.nr));
+                    }
+                    let request = SyscallRequest::read_from(&self.memory, exit.args[0])?;
+                    let regs = regs_from_frame(&request);
+                    let args = *request.args();
+                    let mut guest = KvmGuest::<T>::new(
+                        KvmMemory::new(&self.memory),
+                        regs,
+                        pid,
+                        pid,
+                        None,
+                        thread_state,
+                        global_state,
+                        config,
+                    );
+                    let syscall = Syscall::from_raw(
+                        Sysno::from(request.number() as u32),
+                        SyscallArgs::new(
+                            args[0] as usize,
+                            args[1] as usize,
+                            args[2] as usize,
+                            args[3] as usize,
+                            args[4] as usize,
+                            args[5] as usize,
+                        ),
+                    );
+                    let value = match block_on(tool.handle_syscall_event(&mut guest, syscall)) {
+                        Ok(value) => value as u64,
+                        // Best-effort error encoding; structured tool errors are
+                        // out of scope for this minimal milestone.
+                        Err(_) => (-libc::EIO as i64) as u64,
+                    };
+                    *exit.ret = value;
+                }
+                VcpuExit::Hlt => return Ok(()),
+                exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+            }
+        }
     }
 }
 
