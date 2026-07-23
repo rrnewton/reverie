@@ -55,6 +55,27 @@ impl SyscallRequest {
         memory.write(guest_address, &frame)
     }
 
+    /// Byte offset, from the frame base, of the 64-bit return-value slot.
+    ///
+    /// The syscall transport's hypercall return *register* is delivered to the
+    /// guest 32-bit-wide (see `KvmBackend::run_with`), which cannot represent a
+    /// 64-bit result or a negative errno faithfully. The full `i64` result is
+    /// therefore also marshalled back through guest memory here, immediately
+    /// after the request words — the same channel the arguments travel on.
+    pub const RETURN_SLOT_OFFSET: u64 = FRAME_SIZE as u64;
+
+    /// Writes the full 64-bit syscall result into the frame's return slot.
+    pub(crate) fn write_return(
+        memory: &mut GuestMemory,
+        frame_address: u64,
+        value: i64,
+    ) -> Result<()> {
+        memory.write(
+            frame_address + Self::RETURN_SLOT_OFFSET,
+            &value.to_le_bytes(),
+        )
+    }
+
     pub(crate) fn read_from(memory: &GuestMemory, guest_address: u64) -> Result<Self> {
         let mut frame = [0; FRAME_SIZE];
         memory.read(guest_address, &mut frame)?;

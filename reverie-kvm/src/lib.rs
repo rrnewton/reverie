@@ -14,11 +14,14 @@
 
 #![cfg(target_arch = "x86_64")]
 
+mod bridge;
 mod error;
 mod memory;
 mod syscall;
 mod vm;
 
+pub use bridge::HostSyscallDispatch;
+pub use bridge::SyscallHandler;
 pub use error::Error;
 pub use memory::GuestMemory;
 pub use syscall::SyscallRequest;

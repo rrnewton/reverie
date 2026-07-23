@@ -18,6 +18,7 @@ use kvm_ioctls::VmFd;
 use crate::Error;
 use crate::GuestMemory;
 use crate::Result;
+use crate::SyscallHandler;
 use crate::SyscallRequest;
 
 /// KVM currently permits userspace exits for this standardized hypercall.
@@ -139,6 +140,56 @@ impl KvmBackend {
                     *exit.ret = handler(&request, &self.memory) as u64;
                 }
                 VcpuExit::Hlt => return Ok(()),
+                exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
+            }
+        }
+    }
+
+    /// Runs the guest, servicing each forwarded syscall with `handler`.
+    ///
+    /// This is the reverie-kvm shape of gVisor's `runApp` loop fused with
+    /// `Context.Switch`: each iteration resumes the guest until it stops, and a
+    /// hypercall exit (the transport) *is* gVisor's "`Switch` returned nil ⇒ a
+    /// syscall was intercepted". The handler's return value is placed in the
+    /// guest's result register (`rax`) exactly as a real kernel would, so the
+    /// guest observes real results — not just a demo callback.
+    ///
+    /// Returns the guest's `rax` at the halting instruction, which lets a caller
+    /// confirm the last serviced syscall's result round-tripped into the guest.
+    ///
+    /// # Return width
+    ///
+    /// This transport's hypercall return *register* is delivered to the guest
+    /// **32-bit-wide** (KVM zero-extends the low 32 bits into `rax`), so the
+    /// `rax` value returned here cannot faithfully represent a 64-bit result or
+    /// a negative errno. The full `i64` result is therefore also written into
+    /// the frame's [`SyscallRequest::RETURN_SLOT_OFFSET`] slot in guest memory,
+    /// which a guest stub (or the host) can read at full width. A real backend
+    /// should treat the frame slot as the source of truth.
+    ///
+    /// Note: with this transport the result must be written while the hypercall
+    /// exit is still borrowed (KVM copies `hypercall.ret` into `rax` on the next
+    /// entry), so a `Switch`/`set_return` split across calls is not expressible
+    /// here — the handler is invoked in-loop instead. See
+    /// `ai_docs/kvm-syscall-bridge-spike.md`.
+    pub fn run_with<H: SyscallHandler>(&mut self, handler: &mut H) -> Result<u64> {
+        loop {
+            match self.vcpu.run()? {
+                VcpuExit::Hypercall(exit) => {
+                    if exit.nr != VMCALL_SYSCALL_TRANSPORT {
+                        return Err(Error::UnexpectedHypercall(exit.nr));
+                    }
+                    let frame_address = exit.args[0];
+                    let request = SyscallRequest::read_from(&self.memory, frame_address)?;
+                    // Disjoint field borrows: `self.memory` is independent of the
+                    // `self.vcpu` borrow held by `exit`.
+                    let result = handler.handle(&request, &mut self.memory);
+                    // Full 64-bit result via the frame; low 32 bits via the
+                    // hypercall return register (see doc comment above).
+                    SyscallRequest::write_return(&mut self.memory, frame_address, result)?;
+                    *exit.ret = result as u64;
+                }
+                VcpuExit::Hlt => return Ok(self.vcpu.get_regs()?.rax),
                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
             }
         }
