@@ -16,14 +16,19 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+pub mod coordinator;
 mod detcore_proof;
 mod launcher;
 mod tools;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ffi::CStr;
+use std::ffi::CString;
+use std::ffi::c_char;
 use std::ffi::c_void;
 use std::future::Future;
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::pin::pin;
 use std::sync::LazyLock;
@@ -812,6 +817,79 @@ pub unsafe extern "C" fn reverie_dbi_runtime_totals(
     // NB: the syscall-counter tool prints its histogram from the guest's own
     // exit_group syscall (see `tools`), not here — this callback runs on the
     // DynamoRIO client's tiny stack, which overflows while formatting.
+}
+
+/// C callback that writes `len` bytes at `buf` to the file `path`, overwriting.
+/// Supplied by the native client so the write uses DynamoRIO-safe file I/O.
+pub type WriteFileFn = unsafe extern "C" fn(path: *const c_char, buf: *const c_char, len: usize);
+
+/// Resets the process-wide counters. Called from the native client's fork-init
+/// event so a forked child (that does not `execve`) starts counting from zero
+/// rather than inheriting the parent's accumulated totals via copy-on-write.
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_dbi_runtime_reset_totals() {
+    TOTAL_BRANCHES.store(0, Ordering::Relaxed);
+    TOTAL_SYSCALLS.store(0, Ordering::Relaxed);
+    TOTAL_REWRITTEN.store(0, Ordering::Relaxed);
+}
+
+/// Writes this process's coordinator record at exit, if `REVERIE_DBI_COORD_DIR`
+/// is set (see [`coordinator`]). This is how per-process instrumentation is
+/// aggregated across a multi-process (fork/exec) tree: each followed process
+/// drops one `proc-<pid>` record into the shared directory, and the offline
+/// aggregator reconstructs the tree with deterministic ids.
+///
+/// All logic lives here (env, pid/ppid, record format via the unit-tested
+/// [`coordinator`] module); only the raw file write is delegated to the C
+/// `write_file` callback so it uses DynamoRIO-safe I/O. No path is a hard error:
+/// coordination is best-effort and must never destabilize the guest.
+///
+/// # Safety
+///
+/// `app_name`, if non-null, must be a valid NUL-terminated C string. `write_file`
+/// must be a valid function pointer for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbi_runtime_process_exit(
+    app_name: *const c_char,
+    write_file: WriteFileFn,
+) {
+    let Some(dir) = coordinator::coord_dir_from_env() else {
+        return;
+    };
+
+    let comm = if app_name.is_null() {
+        String::new()
+    } else {
+        // SAFETY: the caller guarantees a valid NUL-terminated string.
+        let raw = unsafe { CStr::from_ptr(app_name) };
+        let full = String::from_utf8_lossy(raw.to_bytes());
+        full.rsplit('/').next().unwrap_or(&full).to_string()
+    };
+
+    // SAFETY: getpid/getppid are async-signal-safe and take no arguments.
+    let pid = unsafe { libc::getpid() };
+    let ppid = unsafe { libc::getppid() };
+    let syscalls = TOTAL_SYSCALLS.load(Ordering::Relaxed);
+
+    let record = coordinator::ProcessRecord {
+        pid,
+        ppid,
+        syscalls,
+        comm,
+    };
+    let path = dir.join(coordinator::ProcessRecord::file_name(pid));
+    let Ok(path) = CString::new(path.as_os_str().as_bytes()) else {
+        return;
+    };
+    let encoded = record.encode();
+    // SAFETY: `path` and `encoded` outlive the call; the callback copies out.
+    unsafe {
+        write_file(
+            path.as_ptr(),
+            encoded.as_ptr() as *const c_char,
+            encoded.len(),
+        );
+    }
 }
 
 #[cfg(test)]
