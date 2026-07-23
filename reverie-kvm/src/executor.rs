@@ -12,6 +12,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
+use std::path::PathBuf;
 
 use crate::GuestMemory;
 use crate::SyscallRequest;
@@ -83,7 +84,11 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_fstat as u64 {
         fstat(memory, state, args)
     } else if number == libc::SYS_access as u64 {
-        access(memory, args)
+        access(memory, state, args)
+    } else if number == libc::SYS_getcwd as u64 {
+        getcwd(memory, state, args)
+    } else if number == libc::SYS_getdents64 as u64 {
+        getdents64(memory, state, args)
     } else if number == libc::SYS_getpid as u64
         || number == libc::SYS_gettid as u64
         || number == libc::SYS_getppid as u64
@@ -329,8 +334,8 @@ fn openat(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) ->
     if !path.starts_with(b"/") && args[0] as i32 != libc::AT_FDCWD {
         return negative_errno(libc::EBADF);
     }
-    let path = Path::new(OsStr::from_bytes(&path));
-    let file = match std::fs::File::open(path) {
+    let path = resolve_path(state, &path);
+    let file = match std::fs::File::open(&path) {
         Ok(file) => file,
         Err(error) => return io_error(error),
     };
@@ -372,14 +377,76 @@ fn fstat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     }
 }
 
-fn access(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(path) = read_c_string(memory, args[0], 4096) else {
         return negative_errno(libc::EFAULT);
     };
-    if Path::new(OsStr::from_bytes(&path)).exists() {
+    if resolve_path(state, &path).exists() {
         0
     } else {
         negative_errno(libc::ENOENT)
+    }
+}
+
+fn getcwd(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let bytes = state.cwd.as_os_str().as_bytes();
+    let Ok(capacity) = usize::try_from(args[1]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    let Some(required) = bytes.len().checked_add(1) else {
+        return negative_errno(libc::ERANGE);
+    };
+    if capacity < required {
+        return negative_errno(libc::ERANGE);
+    }
+    let mut terminated = Vec::with_capacity(required);
+    terminated.extend_from_slice(bytes);
+    terminated.push(0);
+    match memory.write(args[0], &terminated) {
+        Ok(()) => required as i64,
+        Err(_) => negative_errno(libc::EFAULT),
+    }
+}
+
+fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Ok(length) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if length > MAX_HOST_IO {
+        return negative_errno(libc::E2BIG);
+    }
+    let Some(file) = state.files.get(&fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let mut bytes = vec![0; length];
+    // SAFETY: file owns a live descriptor and bytes is writable for length bytes.
+    let count = unsafe {
+        libc::syscall(
+            libc::SYS_getdents64,
+            file.as_raw_fd(),
+            bytes.as_mut_ptr().cast::<libc::c_void>(),
+            bytes.len(),
+        )
+    };
+    if count < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let count = count as usize;
+    match memory.write(args[1], &bytes[..count]) {
+        Ok(()) => count as i64,
+        Err(_) => negative_errno(libc::EFAULT),
+    }
+}
+
+fn resolve_path(state: &LoadedStaticElf, bytes: &[u8]) -> PathBuf {
+    let path = Path::new(OsStr::from_bytes(bytes));
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        state.cwd.join(path)
     }
 }
 

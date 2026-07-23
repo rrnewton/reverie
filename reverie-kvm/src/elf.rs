@@ -7,6 +7,8 @@
  */
 
 use std::io::Read;
+use std::path::Path;
+use std::path::PathBuf;
 
 use goblin::elf::Elf;
 use goblin::elf::header::EI_CLASS;
@@ -28,6 +30,7 @@ use crate::bootstrap::PROGRAM_HEADERS_ADDRESS;
 
 const PAGE_SIZE: u64 = 4096;
 const STACK_RESERVE: u64 = 1024 * 1024;
+const STACK_STRING_HEADROOM: u64 = 4096;
 const MMAP_GAP: u64 = 1024 * 1024;
 const MAX_PROGRAM_HEADERS_SIZE: usize = PAGE_SIZE as usize;
 const MAX_INTERPRETER_BYTES: u64 = 16 * 1024 * 1024;
@@ -58,6 +61,8 @@ pub(crate) struct LoadedStaticElf {
     pub mmap_next: u64,
     pub mmap_limit: u64,
     pub argv0: Vec<u8>,
+    pub cwd: PathBuf,
+    pub auxv: Vec<(libc::c_ulong, libc::c_ulong)>,
     pub fs_base: u64,
     pub gs_base: u64,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
@@ -69,6 +74,7 @@ pub(crate) fn load_static_elf(
     image: &[u8],
     argv: &[&str],
     envp: &[&str],
+    cwd: &Path,
 ) -> Result<LoadedStaticElf> {
     let elf = Elf::parse(image)?;
     validate_elf(&elf, true)?;
@@ -133,7 +139,7 @@ pub(crate) fn load_static_elf(
         .find(|header| header.p_type == goblin::elf::program_header::PT_PHDR)
         .and_then(|header| main_bias.checked_add(header.p_vaddr))
         .unwrap_or(PROGRAM_HEADERS_ADDRESS);
-    let stack_pointer = build_initial_stack(
+    let (stack_pointer, auxv) = build_initial_stack(
         memory,
         &elf,
         argv,
@@ -170,6 +176,8 @@ pub(crate) fn load_static_elf(
         mmap_next,
         mmap_limit,
         argv0: argv0.as_bytes().to_vec(),
+        cwd: cwd.to_owned(),
+        auxv,
         fs_base: 0,
         gs_base: 0,
         files: std::collections::BTreeMap::new(),
@@ -371,11 +379,11 @@ fn build_initial_stack(
     program_headers_address: u64,
     at_base: u64,
     at_entry: u64,
-) -> Result<u64> {
+) -> Result<(u64, Vec<(libc::c_ulong, libc::c_ulong)>)> {
     // Strings (argv[], envp[], the AT_RANDOM bytes) live in a high region that
     // grows downward from the top of guest memory; the pointer arrays and auxv
     // that reference them are written lower, at the final `rsp`.
-    let mut cursor = memory.guest_end().saturating_sub(16);
+    let mut cursor = memory.guest_end().saturating_sub(STACK_STRING_HEADROOM);
 
     // Push argv/envp strings, recording each guest address. argv[0] is first.
     let mut arg_addresses = Vec::with_capacity(argv.len());
@@ -402,42 +410,32 @@ fn build_initial_stack(
 
     // Build the SysV initial stack image, low to high:
     //   argc, argv[0..], NULL, envp[0..], NULL, auxv pairs.., AT_NULL/0
+    let auxv = vec![
+        (AT_PHDR, program_headers_address),
+        (AT_PHENT, u64::from(elf.header.e_phentsize)),
+        (AT_PHNUM, u64::from(elf.header.e_phnum)),
+        (AT_PAGESZ, PAGE_SIZE),
+        (AT_BASE, at_base),
+        (AT_ENTRY, at_entry),
+        (AT_UID, 0),
+        (AT_EUID, 0),
+        (AT_GID, 0),
+        (AT_EGID, 0),
+        (AT_SECURE, 0),
+        (AT_RANDOM, random_address),
+        (AT_EXECFN, argv0_address),
+    ];
+
     let mut words: Vec<u64> = Vec::new();
     words.push(argv.len() as u64);
     words.extend_from_slice(&arg_addresses);
     words.push(0);
     words.extend_from_slice(&env_addresses);
     words.push(0);
-    words.extend_from_slice(&[
-        AT_PHDR,
-        program_headers_address,
-        AT_PHENT,
-        u64::from(elf.header.e_phentsize),
-        AT_PHNUM,
-        u64::from(elf.header.e_phnum),
-        AT_PAGESZ,
-        PAGE_SIZE,
-        AT_BASE,
-        at_base,
-        AT_ENTRY,
-        at_entry,
-        AT_UID,
-        0,
-        AT_EUID,
-        0,
-        AT_GID,
-        0,
-        AT_EGID,
-        0,
-        AT_SECURE,
-        0,
-        AT_RANDOM,
-        random_address,
-        AT_EXECFN,
-        argv0_address,
-        AT_NULL,
-        0,
-    ]);
+    for (key, value) in &auxv {
+        words.extend_from_slice(&[*key, *value]);
+    }
+    words.extend_from_slice(&[AT_NULL, 0]);
 
     let stack_size = (words.len() * std::mem::size_of::<u64>()) as u64;
     // The kernel enters `_start` with `%rsp` 16-byte aligned and argc at [rsp].
@@ -454,7 +452,7 @@ fn build_initial_stack(
         stack.extend_from_slice(&word.to_le_bytes());
     }
     memory.write(cursor, &stack)?;
-    Ok(cursor)
+    Ok((cursor, auxv))
 }
 
 /// Writes a NUL-terminated copy of `bytes` ending just below `cursor` and

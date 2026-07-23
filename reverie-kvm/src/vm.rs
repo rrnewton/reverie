@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::path::Path;
+
 use kvm_bindings::CpuId;
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use kvm_bindings::kvm_enable_cap;
@@ -151,7 +153,19 @@ impl KvmBackend {
         argv: &[&str],
         envp: &[&str],
     ) -> Result<()> {
-        let loaded = load_static_elf(&mut self.memory, image, argv, envp)?;
+        let cwd = std::env::current_dir()?;
+        self.install_static_elf_with_context(image, argv, envp, &cwd)
+    }
+
+    /// Loads an ELF with explicit arguments, environment, and working directory.
+    pub fn install_static_elf_with_context(
+        &mut self,
+        image: &[u8],
+        argv: &[&str],
+        envp: &[&str],
+        cwd: &Path,
+    ) -> Result<()> {
+        let loaded = load_static_elf(&mut self.memory, image, argv, envp, cwd)?;
         configure_long_mode(
             &mut self.memory,
             &self.vcpu,

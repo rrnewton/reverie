@@ -8,13 +8,62 @@
 
 #![cfg(target_arch = "x86_64")]
 
+use std::sync::Mutex;
+
 use kvm_ioctls::Kvm;
+use reverie::GlobalTool;
+use reverie::Guest;
+use reverie::Pid;
+use reverie::Tool;
+use reverie::syscalls::Errno;
+use reverie::syscalls::MemoryAccess;
 use reverie_kvm::KvmBackend;
 use reverie_kvm::StraceTool;
 
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 const LOAD_ADDRESS: u64 = 0x20_0000;
 const CODE_OFFSET: usize = 0x1000;
+const POST_EXEC_RANDOM: [u8; 16] = *b"kvm-post-exec-ok";
+
+#[derive(Default)]
+struct PostExecLog {
+    at_random: Mutex<Option<usize>>,
+}
+
+impl PostExecLog {
+    fn at_random(&self) -> Option<usize> {
+        *self.at_random.lock().expect("post-exec log lock poisoned")
+    }
+}
+
+#[reverie::global_tool]
+impl GlobalTool for PostExecLog {
+    type Request = usize;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, at_random: usize) {
+        *self.at_random.lock().expect("post-exec log lock poisoned") = Some(at_random);
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct PostExecTool;
+
+#[reverie::tool]
+impl Tool for PostExecTool {
+    type GlobalState = PostExecLog;
+    type ThreadState = ();
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+        let auxv = guest.auxv();
+        let address = auxv.at_random().ok_or(Errno::EINVAL)?;
+        guest.send_rpc(address.as_raw()).await;
+        // This lifecycle hook runs before the ELF entry point, matching execve.
+        let address = unsafe { address.into_mut() };
+        guest.memory().write_value(address, &POST_EXEC_RANDOM)
+    }
+}
 
 fn kvm_is_unavailable(error: &kvm_ioctls::Error) -> bool {
     matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM)
@@ -130,6 +179,41 @@ fn static_elf_receives_argv_and_envp() {
         .unwrap();
 
     assert_eq!(backend.run_static_elf().unwrap(), 0);
+}
+
+#[test]
+fn tool_receives_post_exec_with_guest_auxv() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM post-exec test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let code = [
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ];
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf_with_args(&static_elf(&code), &["prog"], &[])
+        .unwrap();
+
+    let (log, exit_code, _, _) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<PostExecTool>((), true))
+            .unwrap();
+
+    assert_eq!(exit_code, 0);
+    let address = log
+        .at_random()
+        .expect("post-exec hook did not observe AT_RANDOM");
+    let mut random = [0; 16];
+    backend.memory().read(address as u64, &mut random).unwrap();
+    assert_eq!(random, POST_EXEC_RANDOM);
 }
 
 #[test]

@@ -11,6 +11,14 @@ use thiserror::Error;
 /// Errors produced by the KVM backend prototype.
 #[derive(Debug, Error)]
 pub enum Error {
+    /// A host filesystem operation failed while preparing the guest.
+    #[error("host filesystem operation failed: {0}")]
+    HostIo(#[from] std::io::Error),
+
+    /// A post-exec tool hook rejected the new guest image.
+    #[error("Reverie post-exec hook failed: {0}")]
+    PostExec(reverie::syscalls::Errno),
+
     /// A shared Reverie tool callback failed.
     #[error("Reverie tool failed: {0}")]
     Reverie(#[source] reverie::Error),

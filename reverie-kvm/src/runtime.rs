@@ -17,6 +17,7 @@ use std::task::Poll;
 
 use kvm_bindings::kvm_regs;
 use kvm_ioctls::VcpuExit;
+use reverie::Auxv;
 use reverie::ExitStatus;
 use reverie::GlobalRPC;
 use reverie::GlobalTool;
@@ -89,6 +90,7 @@ impl<G: GlobalTool> GlobalRPC<G> for KvmGlobal<'_, G> {
 struct KvmGuest<'a, T: Tool> {
     pid: Pid,
     memory: GuestMemory,
+    auxv: &'a [(libc::c_ulong, libc::c_ulong)],
     registers: libc::user_regs_struct,
     thread_state: &'a mut T::ThreadState,
     executor: &'a mut dyn SyscallExecutor,
@@ -103,6 +105,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
     fn new(
         pid: Pid,
         memory: GuestMemory,
+        auxv: &'a [(libc::c_ulong, libc::c_ulong)],
         registers: libc::user_regs_struct,
         thread_state: &'a mut T::ThreadState,
         executor: &'a mut dyn SyscallExecutor,
@@ -114,6 +117,7 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
         Self {
             pid,
             memory,
+            auxv,
             registers,
             thread_state,
             executor,
@@ -158,6 +162,10 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 
     fn memory(&self) -> Self::Memory {
         self.memory.clone()
+    }
+
+    fn auxv(&self) -> Auxv {
+        Auxv::from_entries(self.auxv.iter().copied())
     }
 
     fn thread_state_mut(&mut self) -> &mut T::ThreadState {
@@ -382,6 +390,7 @@ impl KvmBackend {
         let subscriptions = T::subscriptions(&config);
         let mut thread_state = tool.init_thread_state(pid, None);
         let memory = self.memory.clone();
+        let auxv = Vec::new();
         let stack_checked_out = Arc::new(AtomicBool::new(false));
 
         let registers = kvm_registers(self.vcpu.get_regs()?, 0);
@@ -390,6 +399,7 @@ impl KvmBackend {
             let mut guest = KvmGuest::<T>::new(
                 pid,
                 memory.clone(),
+                &auxv,
                 registers,
                 &mut thread_state,
                 &mut executor,
@@ -424,6 +434,7 @@ impl KvmBackend {
                             let mut guest = KvmGuest::<T>::new(
                                 pid,
                                 memory.clone(),
+                                &auxv,
                                 kvm_registers(registers, request.number()),
                                 &mut thread_state,
                                 &mut executor,
@@ -495,6 +506,7 @@ impl KvmBackend {
         T: Tool,
     {
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+        let auxv = loaded.auxv.clone();
         let pid = Pid::from_raw(GUEST_PID);
         let global_state = T::GlobalState::init_global_state(&config).await;
         let tool = T::new(pid, &config);
@@ -512,6 +524,7 @@ impl KvmBackend {
             let mut guest = KvmGuest::<T>::new(
                 pid,
                 memory.clone(),
+                &auxv,
                 registers,
                 &mut thread_state,
                 &mut executor,
@@ -524,6 +537,34 @@ impl KvmBackend {
         };
         if let HandlerOutcome::Returned(result) = start_outcome {
             result.map_err(Error::Reverie)?;
+        }
+
+        // The ELF image is already installed when this backend begins. Present
+        // the same successful-exec lifecycle boundary as ptrace before running it.
+        let registers = kvm_registers(self.vcpu.get_regs()?, 0);
+        let tail_result = Arc::new(Mutex::new(None));
+        let post_exec_outcome = {
+            let mut guest = KvmGuest::<T>::new(
+                pid,
+                memory.clone(),
+                &auxv,
+                registers,
+                &mut thread_state,
+                &mut executor,
+                &global_state,
+                &config,
+                tail_result.clone(),
+                stack_checked_out.clone(),
+            );
+            drive_handler(tool.handle_post_exec(&mut guest), tail_result).await
+        };
+        match post_exec_outcome {
+            HandlerOutcome::Returned(result) => result.map_err(Error::PostExec)?,
+            HandlerOutcome::TailInjected(_) => {
+                return Err(Error::UnexpectedVcpuExit(
+                    "tool tail-injected a syscall from handle_post_exec".to_string(),
+                ));
+            }
         }
 
         loop {
@@ -553,6 +594,7 @@ impl KvmBackend {
                             let mut guest = KvmGuest::<T>::new(
                                 pid,
                                 memory.clone(),
+                                &auxv,
                                 kvm_registers(registers, request.number()),
                                 &mut thread_state,
                                 &mut executor,
