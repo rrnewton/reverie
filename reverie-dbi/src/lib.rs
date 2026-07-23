@@ -16,6 +16,7 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+mod detcore_proof;
 mod launcher;
 mod tools;
 
@@ -650,7 +651,7 @@ fn rewrite_bind_port<G: Guest<PrototypeTool>>(
 /// driver handles `None` by installing that result and dropping the future. We
 /// return `None` rather than panicking because a panic aborts under the
 /// DynamoRIO client (see [`Guest::tail_inject`]).
-fn run_ready<F: Future>(future: F) -> Option<F::Output> {
+pub(crate) fn run_ready<F: Future>(future: F) -> Option<F::Output> {
     let mut future = pin!(future);
     let waker = Waker::noop();
     let mut context = Context::from_waker(waker);

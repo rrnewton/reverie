@@ -85,7 +85,7 @@ pub fn set_emitter(emit: Emitter) {
 /// Writes one line of tool output through the DynamoRIO emit callback. Using
 /// DynamoRIO I/O (not `eprintln!`) avoids two hazards: the guest closing its own
 /// stderr before exit, and app-level `write(2)`s re-entering the syscall hook.
-fn emit_line(line: &str) {
+pub(crate) fn emit_line(line: &str) {
     let raw = EMITTER.load(Ordering::Relaxed);
     if raw == 0 {
         return;
@@ -245,6 +245,20 @@ pub(crate) fn run_active_tool(
     invoke_syscall: SyscallInvoker,
     read_registers: RegisterReader,
 ) -> Option<i64> {
+    // The Detcore-shaped proof tool takes precedence when selected: it exercises
+    // a real non-`()` GlobalState + RPC + lifecycle through the DBI Guest.
+    if crate::detcore_proof::enabled() {
+        return Some(crate::detcore_proof::run(
+            context,
+            tid,
+            pid,
+            sysnum,
+            raw_args,
+            branches,
+            invoke_syscall,
+            read_registers,
+        ));
+    }
     let tool = active_tool()?;
     let syscall = Syscall::from_raw(
         Sysno::from(sysnum as i32),
