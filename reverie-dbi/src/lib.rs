@@ -44,6 +44,7 @@ use reverie::TimerSchedule;
 use reverie::Tool;
 use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
+use reverie::syscalls::Displayable;
 use reverie::syscalls::Errno;
 use reverie::syscalls::FcntlCmd;
 use reverie::syscalls::PathPtr;
@@ -362,6 +363,57 @@ impl Tool for PrototypeTool {
     }
 }
 
+/// Observation-only tool that prints each syscall it handles (strace style) and
+/// then forwards it to the kernel unchanged via [`Guest::inject`].
+///
+/// This is the Milestone 1 proof that a plain [`reverie::Tool`] runs end to end
+/// over [`DbiGuest`] under DynamoRIO: its `handle_syscall_event` is driven by
+/// the native client through the same [`Guest`] contract as any other backend,
+/// reads guest memory to render arguments, and injects the real syscall. It
+/// performs no determinization; use [`PrototypeTool`] for that.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StraceTool;
+
+#[reverie::tool]
+impl Tool for StraceTool {
+    type GlobalState = ();
+    type ThreadState = PrototypeCounters;
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        guest.thread_state_mut().rewritten_syscalls += 1;
+        // Render arguments before executing the call: input pointers are read
+        // from guest memory directly (LocalMemory is in-process).
+        let rendered = {
+            let memory = guest.memory();
+            format!("{}", syscall.display(&memory))
+        };
+        let result = guest.inject(syscall).await?;
+        strace_line(format_args!("{rendered} = {result}"));
+        Ok(result)
+    }
+}
+
+/// Writes one strace line to stderr using a direct `write(2)`.
+///
+/// This deliberately bypasses buffered stdio so lines are not lost when the
+/// guest exits, and the raw write is issued by the client itself (not the
+/// application), so DynamoRIO does not route it back through the syscall hook.
+fn strace_line(args: std::fmt::Arguments) {
+    let line = format!("[dbi-strace] {args}\n");
+    let bytes = line.as_bytes();
+    unsafe {
+        libc::write(
+            libc::STDERR_FILENO,
+            bytes.as_ptr() as *const c_void,
+            bytes.len(),
+        );
+    }
+}
+
 const RNG_SEED_ENV: &str = "HERMIT_DBI_RNG_SEED";
 
 static RANDOM_FDS: LazyLock<Mutex<HashSet<i32>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -656,8 +708,21 @@ fn run_ready<F: Future>(future: F) -> F::Output {
 }
 
 static PROTOTYPE_TOOL: PrototypeTool = PrototypeTool;
+static STRACE_TOOL: StraceTool = StraceTool;
 static GLOBAL_STATE: () = ();
 static CONFIG: () = ();
+
+/// Environment variable that switches the client into strace mode.
+const STRACE_ENV: &str = "REVERIE_DBI_STRACE";
+
+/// True when the guest environment requests strace observation instead of the
+/// default determinization tool. Read once per process.
+static STRACE_MODE: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var_os(STRACE_ENV).is_some_and(|value| {
+        let value = value.to_string_lossy();
+        !value.is_empty() && value != "0" && value != "false"
+    })
+});
 static TOTAL_BRANCHES: AtomicU64 = AtomicU64::new(0);
 static TOTAL_SYSCALLS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_REWRITTEN: AtomicU64 = AtomicU64::new(0);
@@ -702,7 +767,17 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
         TOTAL_BRANCHES.store(branches, Ordering::Relaxed);
         TOTAL_SYSCALLS.fetch_add(1, Ordering::Relaxed);
 
+        let strace = *STRACE_MODE;
+
         if !should_rewrite_syscall(sysnum) {
+            if strace {
+                // Not in the injectable set: DynamoRIO executes the syscall
+                // natively. Record it in the trace as an observed-only event.
+                strace_line(format_args!(
+                    "{} (observed)",
+                    Sysno::from(sysnum as i32).name()
+                ));
+            }
             return false;
         }
 
@@ -718,19 +793,39 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
                 raw_args[5] as usize,
             ),
         );
-        let mut guest = DbiGuest::new(
-            context as usize,
-            Pid::from_raw(tid),
-            Pid::from_raw(pid),
-            None,
-            branches,
-            counters,
-            &GLOBAL_STATE,
-            &CONFIG,
-            invoke_syscall,
-            read_registers,
-        );
-        let value = match run_ready(PROTOTYPE_TOOL.handle_syscall_event(&mut guest, syscall)) {
+        // Both tools share ThreadState=PrototypeCounters and GlobalState=(), so
+        // the same guest inputs construct either DbiGuest<T>. In strace mode the
+        // syscall is driven through StraceTool to prove the Tool interface E2E.
+        let outcome = if strace {
+            let mut guest = DbiGuest::new(
+                context as usize,
+                Pid::from_raw(tid),
+                Pid::from_raw(pid),
+                None,
+                branches,
+                counters,
+                &GLOBAL_STATE,
+                &CONFIG,
+                invoke_syscall,
+                read_registers,
+            );
+            run_ready(STRACE_TOOL.handle_syscall_event(&mut guest, syscall))
+        } else {
+            let mut guest = DbiGuest::new(
+                context as usize,
+                Pid::from_raw(tid),
+                Pid::from_raw(pid),
+                None,
+                branches,
+                counters,
+                &GLOBAL_STATE,
+                &CONFIG,
+                invoke_syscall,
+                read_registers,
+            );
+            run_ready(PROTOTYPE_TOOL.handle_syscall_event(&mut guest, syscall))
+        };
+        let value = match outcome {
             Ok(value) => value,
             Err(Error::Errno(errno)) => -(errno.into_raw() as i64),
             Err(_) => -(Errno::EIO.into_raw() as i64),

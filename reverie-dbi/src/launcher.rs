@@ -27,6 +27,12 @@ const DYNAMORIO_DIR_ENV: &str = "DynamoRIO_DIR";
 const SUMMARY_ENV: &str = "REVERIE_DBI_SUMMARY";
 const BINPRM_BUF_SIZE: usize = 256;
 
+/// DynamoRIO client stack size. The default (~56K) overflows when the client's
+/// per-syscall handler runs a debug-profile Reverie tool (async future +
+/// argument formatting have large frames), which DynamoRIO reports as a fatal
+/// client stack overflow. A larger stack keeps real tools working.
+const DR_STACK_SIZE: &str = "512K";
+
 /// Launches Linux programs under the Reverie DynamoRIO client.
 ///
 /// The native client is built separately by
@@ -63,6 +69,19 @@ impl DbiRunner {
             !value.is_empty() && value != OsStr::new("0") && value != OsStr::new("false")
         });
         Ok(runner)
+    }
+
+    /// Resolves the runner from artifacts produced by this crate's own build:
+    /// the DynamoRIO `drrun` built by `build.rs` and the native client from the
+    /// workspace target directory. Unlike [`from_env`], this needs no
+    /// `DYNAMORIO_HOME`; it is the convenient entry point for examples and
+    /// tests bundled with the crate.
+    ///
+    /// [`from_env`]: Self::from_env
+    pub fn from_build() -> io::Result<Self> {
+        let drrun = PathBuf::from(env!("REVERIE_DBI_DYNAMORIO_DRRUN"));
+        let client = resolve_client()?;
+        Self::new(drrun, client)
     }
 
     /// Creates a runner from explicit `drrun` and native-client paths.
@@ -118,7 +137,12 @@ impl DbiRunner {
         environment: Option<&BTreeMap<OsString, OsString>>,
     ) -> Command {
         let mut command = Command::new(&self.drrun);
-        command.arg("-disable_rseq").arg("-c").arg(&self.client);
+        command
+            .arg("-disable_rseq")
+            .arg("-stack_size")
+            .arg(DR_STACK_SIZE)
+            .arg("-c")
+            .arg(&self.client);
         if self.summary {
             command.arg("-summary");
         }
@@ -232,14 +256,28 @@ fn resolve_client() -> io::Result<PathBuf> {
         .parent()
         .expect("reverie-dbi must be inside its workspace")
         .join("target");
+    // `scripts/build-client.sh` writes the client under a `<profile>/`
+    // subdirectory (e.g. `target/debug/reverie-dbi-native/`), so search those in
+    // addition to the profile-less location.
+    const CLIENT_RELATIVE: &str = "reverie-dbi-native/libreverie_dbi_client.so";
+    let profile_relatives = [
+        CLIENT_RELATIVE.to_string(),
+        format!("debug/{CLIENT_RELATIVE}"),
+        format!("release/{CLIENT_RELATIVE}"),
+    ];
     let mut candidates = Vec::new();
     if let Some(path) = env::var_os(CLIENT_ENV) {
         candidates.push(PathBuf::from(path));
     }
     if let Some(path) = env::var_os("CARGO_TARGET_DIR") {
-        candidates.push(PathBuf::from(path).join("reverie-dbi-native/libreverie_dbi_client.so"));
+        let target = PathBuf::from(path);
+        candidates.extend(profile_relatives.iter().map(|rel| target.join(rel)));
     }
-    candidates.push(workspace_target.join("reverie-dbi-native/libreverie_dbi_client.so"));
+    candidates.extend(
+        profile_relatives
+            .iter()
+            .map(|rel| workspace_target.join(rel)),
+    );
 
     candidates
         .into_iter()
@@ -293,6 +331,8 @@ mod tests {
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 "-disable_rseq",
+                "-stack_size",
+                "512K",
                 "-c",
                 "/opt/reverie/libreverie_dbi_client.so",
                 "--",
@@ -326,6 +366,8 @@ mod tests {
             wrapped.get_args().collect::<Vec<_>>(),
             [
                 OsStr::new("-disable_rseq"),
+                OsStr::new("-stack_size"),
+                OsStr::new("512K"),
                 OsStr::new("-c"),
                 OsStr::new("/opt/reverie/libreverie_dbi_client.so"),
                 OsStr::new("--"),
