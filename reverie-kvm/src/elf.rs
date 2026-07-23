@@ -58,15 +58,21 @@ pub(crate) struct LoadedStaticElf {
 pub(crate) fn load_static_elf(
     memory: &mut GuestMemory,
     image: &[u8],
-    argv0: &str,
+    argv: &[&str],
+    envp: &[&str],
 ) -> Result<LoadedStaticElf> {
     let elf = Elf::parse(image)?;
     validate_elf(&elf)?;
 
-    if argv0.as_bytes().contains(&0) {
-        return Err(Error::UnsupportedElf(
-            "argv[0] contains an embedded NUL byte".to_string(),
-        ));
+    let argv0 = *argv
+        .first()
+        .ok_or_else(|| Error::UnsupportedElf("argv must contain at least argv[0]".to_string()))?;
+    for entry in argv.iter().chain(envp.iter()) {
+        if entry.as_bytes().contains(&0) {
+            return Err(Error::UnsupportedElf(
+                "an argv/envp entry contains an embedded NUL byte".to_string(),
+            ));
+        }
     }
 
     let mut image_end = 0;
@@ -123,7 +129,7 @@ pub(crate) fn load_static_elf(
     }
 
     copy_program_headers(memory, image, &elf)?;
-    let stack_pointer = build_initial_stack(memory, &elf, argv0)?;
+    let stack_pointer = build_initial_stack(memory, &elf, argv, envp)?;
     let program_break = align_up(image_end, PAGE_SIZE)?;
     let mmap_next = align_up(
         program_break
@@ -206,16 +212,29 @@ fn copy_program_headers(memory: &mut GuestMemory, image: &[u8], elf: &Elf<'_>) -
     memory.write(PROGRAM_HEADERS_ADDRESS, headers)
 }
 
-fn build_initial_stack(memory: &mut GuestMemory, elf: &Elf<'_>, argv0: &str) -> Result<u64> {
+fn build_initial_stack(
+    memory: &mut GuestMemory,
+    elf: &Elf<'_>,
+    argv: &[&str],
+    envp: &[&str],
+) -> Result<u64> {
+    // Strings (argv[], envp[], the AT_RANDOM bytes) live in a high region that
+    // grows downward from the top of guest memory; the pointer arrays and auxv
+    // that reference them are written lower, at the final `rsp`.
     let mut cursor = memory.guest_end().saturating_sub(16);
 
-    let argv0_bytes = argv0.as_bytes();
-    cursor = cursor
-        .checked_sub((argv0_bytes.len() + 1) as u64)
-        .ok_or(Error::LongModeMemoryTooSmall)?;
-    memory.write(cursor, argv0_bytes)?;
-    memory.write(cursor + argv0_bytes.len() as u64, &[0])?;
-    let argv0_address = cursor;
+    // Push argv/envp strings, recording each guest address. argv[0] is first.
+    let mut arg_addresses = Vec::with_capacity(argv.len());
+    for arg in argv {
+        cursor = push_c_string(memory, cursor, arg.as_bytes())?;
+        arg_addresses.push(cursor);
+    }
+    let mut env_addresses = Vec::with_capacity(envp.len());
+    for entry in envp {
+        cursor = push_c_string(memory, cursor, entry.as_bytes())?;
+        env_addresses.push(cursor);
+    }
+    let argv0_address = arg_addresses[0];
 
     let random = [
         0x52, 0x65, 0x76, 0x65, 0x72, 0x69, 0x65, 0x2d, 0x4b, 0x56, 0x4d, 0x2d, 0x45, 0x4c, 0x46,
@@ -227,11 +246,15 @@ fn build_initial_stack(memory: &mut GuestMemory, elf: &Elf<'_>, argv0: &str) -> 
     memory.write(cursor, &random)?;
     let random_address = cursor;
 
-    let words = [
-        1,
-        argv0_address,
-        0,
-        0,
+    // Build the SysV initial stack image, low to high:
+    //   argc, argv[0..], NULL, envp[0..], NULL, auxv pairs.., AT_NULL/0
+    let mut words: Vec<u64> = Vec::new();
+    words.push(argv.len() as u64);
+    words.extend_from_slice(&arg_addresses);
+    words.push(0);
+    words.extend_from_slice(&env_addresses);
+    words.push(0);
+    words.extend_from_slice(&[
         AT_PHDR,
         PROGRAM_HEADERS_ADDRESS,
         AT_PHENT,
@@ -260,9 +283,10 @@ fn build_initial_stack(memory: &mut GuestMemory, elf: &Elf<'_>, argv0: &str) -> 
         argv0_address,
         AT_NULL,
         0,
-    ];
+    ]);
 
     let stack_size = (words.len() * std::mem::size_of::<u64>()) as u64;
+    // The kernel enters `_start` with `%rsp` 16-byte aligned and argc at [rsp].
     cursor = cursor
         .checked_sub(stack_size)
         .ok_or(Error::LongModeMemoryTooSmall)?
@@ -277,6 +301,17 @@ fn build_initial_stack(memory: &mut GuestMemory, elf: &Elf<'_>, argv0: &str) -> 
     }
     memory.write(cursor, &stack)?;
     Ok(cursor)
+}
+
+/// Writes a NUL-terminated copy of `bytes` ending just below `cursor` and
+/// returns the guest address of the first byte (the new, lower cursor).
+fn push_c_string(memory: &mut GuestMemory, cursor: u64, bytes: &[u8]) -> Result<u64> {
+    let start = cursor
+        .checked_sub((bytes.len() + 1) as u64)
+        .ok_or(Error::LongModeMemoryTooSmall)?;
+    memory.write(start, bytes)?;
+    memory.write(start + bytes.len() as u64, &[0])?;
+    Ok(start)
 }
 
 fn align_up(value: u64, alignment: u64) -> Result<u64> {

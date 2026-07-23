@@ -134,7 +134,24 @@ impl KvmBackend {
     /// `PT_INTERP` segment. Dynamic executables require a userspace dynamic linker
     /// and are deliberately rejected.
     pub fn install_static_elf(&mut self, image: &[u8], argv0: &str) -> Result<()> {
-        let loaded = load_static_elf(&mut self.memory, image, argv0)?;
+        self.install_static_elf_with_args(image, &[argv0], &[])
+    }
+
+    /// Loads a static ELF with an explicit `argv` and `envp` and prepares the
+    /// vCPU to enter it in long mode.
+    ///
+    /// `argv` must be non-empty; `argv[0]` becomes the program name reported to
+    /// the guest (initial stack and `AT_EXECFN`/`readlink("/proc/self/exe")`).
+    /// The guest observes a standard System V initial stack: `argc`, the `argv`
+    /// pointer array, a NULL terminator, the `envp` pointer array, a NULL
+    /// terminator, and the auxiliary vector.
+    pub fn install_static_elf_with_args(
+        &mut self,
+        image: &[u8],
+        argv: &[&str],
+        envp: &[&str],
+    ) -> Result<()> {
+        let loaded = load_static_elf(&mut self.memory, image, argv, envp)?;
         configure_long_mode(
             &mut self.memory,
             &self.vcpu,

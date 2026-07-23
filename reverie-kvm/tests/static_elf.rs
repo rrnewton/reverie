@@ -80,6 +80,68 @@ fn static_elf_executes_syscall_and_exits() {
     assert_eq!(backend.run_static_elf().unwrap(), 0);
 }
 
+#[test]
+fn static_elf_receives_argv_and_envp() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM argv/envp test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    // exit_group(42): the failure path taken by every self-check below. Exactly
+    // 12 bytes, so each conditional jump that skips it uses rel8 = 0x0c.
+    const FAIL: [u8; 12] = [
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0xbf, 0x2a, 0x00, 0x00, 0x00, // mov edi, 42
+        0x0f, 0x05, // syscall
+    ];
+
+    // The guest verifies the System V initial stack that the loader built for
+    // argv = ["prog", "second"], envp = ["FOO=bar"]:
+    //   [rsp+0]=argc [rsp+8]=argv0 [rsp+16]=argv1 [rsp+24]=NULL
+    //   [rsp+32]=envp0 [rsp+40]=NULL
+    // Any mismatch takes exit_group(42); success prints and exit_group(0).
+    let message = b"hello from kvm m1\n";
+    let mut code: Vec<u8> = Vec::new();
+    // argc == 2
+    code.extend_from_slice(&[0x48, 0x83, 0x3c, 0x24, 0x02, 0x74, 0x0c]); // cmp qword[rsp],2; je +12
+    code.extend_from_slice(&FAIL);
+    // argv[1] != 0
+    code.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, 0x10, 0x48, 0x85, 0xc0, 0x75, 0x0c]); // mov rax,[rsp+16]; test; jne +12
+    code.extend_from_slice(&FAIL);
+    // envp[0] != 0
+    code.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, 0x20, 0x48, 0x85, 0xc0, 0x75, 0x0c]); // mov rax,[rsp+32]; test; jne +12
+    code.extend_from_slice(&FAIL);
+    // envp[1] == 0 (single environment entry, then the NULL terminator)
+    code.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, 0x28, 0x48, 0x85, 0xc0, 0x74, 0x0c]); // mov rax,[rsp+40]; test; je +12
+    code.extend_from_slice(&FAIL);
+    // write(1, message, message.len())
+    code.extend_from_slice(&[0xbf, 0x01, 0x00, 0x00, 0x00]); // mov edi, 1
+    let movabs_operand = code.len() + 2;
+    code.extend_from_slice(&[0x48, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0]); // movabs rsi, <message vaddr>
+    code.push(0xba);
+    code.extend_from_slice(&(message.len() as u32).to_le_bytes()); // mov edx, len
+    code.extend_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00, 0x0f, 0x05]); // mov eax,SYS_write; syscall
+    // exit_group(0)
+    code.extend_from_slice(&[
+        0xb8, 0xe7, 0x00, 0x00, 0x00, 0x31, 0xff, 0x0f, 0x05, 0x0f, 0x0b,
+    ]); // mov eax,231; xor edi,edi; syscall; ud2
+    let message_offset = code.len();
+    code.extend_from_slice(message);
+    let message_vaddr = LOAD_ADDRESS + message_offset as u64;
+    code[movabs_operand..movabs_operand + 8].copy_from_slice(&message_vaddr.to_le_bytes());
+
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf_with_args(&static_elf(&code), &["prog", "second"], &["FOO=bar"])
+        .unwrap();
+
+    assert_eq!(backend.run_static_elf().unwrap(), 0);
+}
+
 fn static_elf(code: &[u8]) -> Vec<u8> {
     let mut image = vec![0; CODE_OFFSET + code.len()];
 
