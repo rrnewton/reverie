@@ -670,13 +670,20 @@ fn rewrite_bind_port<G: Guest<PrototypeTool>>(
 /// with a real waker and, while the future is pending, parks the current OS
 /// thread until the waker unparks it, then re-polls. Because each guest thread
 /// runs this on its own OS thread, N guest threads block independently and a
-/// wake from any thread (e.g. the scheduler granting a turn) resumes exactly the
-/// parked thread it targets. Handlers that complete on the first poll (such as
-/// the prototype tool) never park.
+/// wake from any thread (e.g. another guest thread completing the future)
+/// resumes exactly the parked thread it targets. Handlers that complete on the
+/// first poll (such as the prototype tool) never park.
 ///
-/// Exposed publicly so an out-of-crate tool binding (e.g. a hermit-side crate
-/// wiring `Detcore`) can drive a handler future the same way the built-in FFI
-/// entry does.
+/// # When this is the WRONG driver
+///
+/// `run_ready` only makes progress from wakes; it cannot advance *other* tasks.
+/// A handler that awaits a separate task — e.g. Detcore's `send_rpc` awaits the
+/// `sched_loop` actor spawned on a Tokio runtime — is completed by that other
+/// task, so parking the guest thread here does not help it run, and on a
+/// current-thread Tokio runtime it **deadlocks** (the parked thread was the only
+/// one that could poll the actor). Such tools must be driven by a Tokio-aware
+/// [`HandlerDriver`] (e.g. `Handle::block_on` on a multi-threaded runtime), not
+/// `run_ready`. See [`HandlerDriver`] and [`ParkDriver`].
 pub fn run_ready<F: Future>(future: F) -> F::Output {
     /// Waker that unparks the OS thread blocked inside [`run_ready`].
     struct ThreadWaker(thread::Thread);
@@ -705,6 +712,42 @@ pub fn run_ready<F: Future>(future: F) -> F::Output {
     }
 }
 
+/// Strategy for driving a tool handler future to completion on the guest thread.
+///
+/// The DynamoRIO client calls handlers synchronously on the guest thread, but
+/// Reverie handlers are `async`. How to drive them safely depends on the tool:
+///
+/// - Handlers that complete without awaiting *other* tasks (e.g.
+///   [`PrototypeTool`]) can use [`ParkDriver`], the built-in std park/unpark
+///   blocking executor.
+/// - Handlers that await another task on a Tokio runtime — e.g. Detcore's
+///   `send_rpc` awaits the `sched_loop` actor — MUST NOT use [`ParkDriver`]:
+///   parking the guest thread cannot advance the actor, and on a current-thread
+///   runtime it deadlocks. Such a tool must run its actor on a **multi-threaded**
+///   Tokio runtime and supply a driver that calls e.g.
+///   `tokio::runtime::Handle::block_on`, so the runtime's worker threads keep the
+///   actor running while this guest thread blocks on the handler.
+///
+/// The driver is injected (rather than hardcoding [`run_ready`]) so the runtime
+/// choice belongs to the caller — `reverie-dbi` is a cdylib loaded into the guest
+/// and deliberately does not depend on Tokio.
+pub trait HandlerDriver {
+    /// Drives `future` to completion on the calling thread and returns its output.
+    fn drive<F: Future>(&self, future: F) -> F::Output;
+}
+
+/// Default [`HandlerDriver`]: a dependency-free std park/unpark blocking executor
+/// ([`run_ready`]). Correct only when the handler does not depend on progress
+/// from other runtime tasks — see [`HandlerDriver`] for the Detcore caveat.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ParkDriver;
+
+impl HandlerDriver for ParkDriver {
+    fn drive<F: Future>(&self, future: F) -> F::Output {
+        run_ready(future)
+    }
+}
+
 /// Generic per-syscall dispatch for **any** Reverie [`Tool`], factored out of the
 /// prototype FFI entry so an out-of-crate binding can reuse the exact
 /// guest-construction + async-drive path with a different concrete tool.
@@ -712,22 +755,33 @@ pub fn run_ready<F: Future>(future: F) -> F::Output {
 /// `reverie-dbi` cannot name `Detcore` (that would make `reverie` depend on
 /// `hermit` — a cross-repo cycle), so wiring Detcore as the tool must happen in
 /// a hermit-side crate. That crate constructs its own tool/global/config/thread
-/// state and calls this function from a thin `#[no_mangle]` FFI wrapper; only
-/// the concrete `PrototypeTool` wrapper lives here (see
+/// state, supplies a [`HandlerDriver`] appropriate for its runtime (see that
+/// trait's Detcore caveat), and calls this function from a thin `#[no_mangle]`
+/// FFI wrapper; only the concrete `PrototypeTool` wrapper lives here (see
 /// [`reverie_dbi_runtime_pre_syscall`]).
 ///
 /// Builds a [`DbiGuest<T>`] from the raw DynamoRIO event and drives
-/// `tool.handle_syscall_event` to completion with [`run_ready`] (which supports
-/// suspension). Returns the value to install for the guest: the handler's result
-/// on success, or the negated errno on an error (both suppress the original
-/// syscall). The caller decides — via its own syscall filter — whether to invoke
-/// this at all.
+/// `tool.handle_syscall_event` to completion with `driver`. The handler is run
+/// inside [`catch_unwind`](std::panic::catch_unwind) so a panicking tool (for
+/// example Detcore, which panics on the not-yet-implemented `DbiGuest::stack()`)
+/// never unwinds across the caller's `extern "C"` boundary (which would be
+/// undefined behavior).
+///
+/// Returns:
+/// - `Some(value)` — suppress the original syscall and install `value` (the
+///   handler's result, or the negated errno on a handler error);
+/// - `None` — the handler panicked; the caller must NOT suppress the syscall
+///   (let the kernel run it), matching the client's existing panic behavior.
+///
+/// The caller decides — via its own syscall filter — whether to invoke this at
+/// all.
 #[allow(clippy::too_many_arguments)]
-pub fn run_tool_pre_syscall<T: Tool>(
+pub fn run_tool_pre_syscall<T: Tool, D: HandlerDriver>(
     tool: &T,
     global_state: &T::GlobalState,
     config: &<T::GlobalState as GlobalTool>::Config,
     thread_state: &mut T::ThreadState,
+    driver: &D,
     context: usize,
     tid: i32,
     pid: i32,
@@ -736,35 +790,38 @@ pub fn run_tool_pre_syscall<T: Tool>(
     branches: u64,
     invoke_syscall: SyscallInvoker,
     read_registers: RegisterReader,
-) -> i64 {
-    let syscall = Syscall::from_raw(
-        Sysno::from(sysnum as i32),
-        SyscallArgs::new(
-            args[0] as usize,
-            args[1] as usize,
-            args[2] as usize,
-            args[3] as usize,
-            args[4] as usize,
-            args[5] as usize,
-        ),
-    );
-    let mut guest = DbiGuest::new(
-        context,
-        Pid::from_raw(tid),
-        Pid::from_raw(pid),
-        None,
-        branches,
-        thread_state,
-        global_state,
-        config,
-        invoke_syscall,
-        read_registers,
-    );
-    match run_ready(tool.handle_syscall_event(&mut guest, syscall)) {
-        Ok(value) => value,
-        Err(Error::Errno(errno)) => -(errno.into_raw() as i64),
-        Err(_) => -(Errno::EIO.into_raw() as i64),
-    }
+) -> Option<i64> {
+    let run = std::panic::AssertUnwindSafe(|| {
+        let syscall = Syscall::from_raw(
+            Sysno::from(sysnum as i32),
+            SyscallArgs::new(
+                args[0] as usize,
+                args[1] as usize,
+                args[2] as usize,
+                args[3] as usize,
+                args[4] as usize,
+                args[5] as usize,
+            ),
+        );
+        let mut guest = DbiGuest::new(
+            context,
+            Pid::from_raw(tid),
+            Pid::from_raw(pid),
+            None,
+            branches,
+            thread_state,
+            global_state,
+            config,
+            invoke_syscall,
+            read_registers,
+        );
+        match driver.drive(tool.handle_syscall_event(&mut guest, syscall)) {
+            Ok(value) => value,
+            Err(Error::Errno(errno)) => -(errno.into_raw() as i64),
+            Err(_) => -(Errno::EIO.into_raw() as i64),
+        }
+    });
+    std::panic::catch_unwind(run).ok()
 }
 
 static PROTOTYPE_TOOL: PrototypeTool = PrototypeTool;
@@ -829,11 +886,15 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
         ];
         // The concrete PrototypeTool binding: dispatch through the generic,
         // tool-agnostic path so an out-of-crate tool (e.g. Detcore) can reuse it.
-        let value = run_tool_pre_syscall(
+        // PrototypeTool handlers complete without awaiting other tasks, so the
+        // park/unpark ParkDriver is correct here. `None` means the handler
+        // panicked (caught inside run_tool_pre_syscall): do not suppress.
+        match run_tool_pre_syscall(
             &PROTOTYPE_TOOL,
             &GLOBAL_STATE,
             &CONFIG,
             counters,
+            &ParkDriver,
             context as usize,
             tid,
             pid,
@@ -842,10 +903,14 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
             branches,
             invoke_syscall,
             read_registers,
-        );
-        unsafe { result.write(value) };
-        TOTAL_REWRITTEN.fetch_add(1, Ordering::Relaxed);
-        true
+        ) {
+            Some(value) => {
+                unsafe { result.write(value) };
+                TOTAL_REWRITTEN.fetch_add(1, Ordering::Relaxed);
+                true
+            }
+            None => false,
+        }
     }));
 
     match handled {
@@ -1016,6 +1081,7 @@ mod tests {
             &global,
             &config,
             &mut thread_state,
+            &ParkDriver,
             0,
             10,
             10,
@@ -1025,9 +1091,91 @@ mod tests {
             invoke,
             read_regs,
         );
-        assert_eq!(value, 5);
+        assert_eq!(value, Some(5));
         assert_eq!(thread_state.calls, 1);
         assert_eq!(thread_state.last, "7:write");
+    }
+
+    /// A tool whose handler panics — as Detcore does today on the unimplemented
+    /// `DbiGuest::stack()` for futex-wait / rt_sigtimedwait. The panic must be
+    /// caught inside `run_tool_pre_syscall` (returning `None`) rather than
+    /// unwinding across the caller's `extern "C"` boundary (undefined behavior).
+    #[derive(Clone, Copy, Debug, Default)]
+    struct PanickingTool;
+
+    #[reverie::tool]
+    impl Tool for PanickingTool {
+        type GlobalState = ();
+        type ThreadState = PrototypeCounters;
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            _guest: &mut G,
+            _syscall: Syscall,
+        ) -> Result<i64, Error> {
+            panic!("simulated tool panic (e.g. DbiGuest::stack() is unimplemented)")
+        }
+    }
+
+    #[test]
+    fn run_tool_pre_syscall_catches_a_panicking_handler() {
+        let mut thread_state = PrototypeCounters::default();
+        let args = [1u64, 0x1000, 5, 0, 0, 0];
+        // Must return None (panic caught) and NOT unwind out of this call.
+        let value = run_tool_pre_syscall(
+            &PanickingTool,
+            &(),
+            &(),
+            &mut thread_state,
+            &ParkDriver,
+            0,
+            10,
+            10,
+            libc::SYS_write,
+            &args,
+            0,
+            invoke,
+            read_regs,
+        );
+        assert_eq!(value, None);
+    }
+
+    /// A [`HandlerDriver`] that records how many times it was asked to drive a
+    /// future, proving the driver is injectable (the mechanism that lets a
+    /// hermit-side Detcore binding substitute a Tokio-aware driver for
+    /// [`ParkDriver`], avoiding the current-thread-runtime deadlock).
+    struct CountingDriver(std::cell::Cell<u32>);
+
+    impl HandlerDriver for CountingDriver {
+        fn drive<F: Future>(&self, future: F) -> F::Output {
+            self.0.set(self.0.get() + 1);
+            run_ready(future)
+        }
+    }
+
+    #[test]
+    fn run_tool_pre_syscall_uses_the_supplied_driver() {
+        let tool = StatefulTool { tag: 3 };
+        let mut thread_state = StatefulThreadState::default();
+        let driver = CountingDriver(std::cell::Cell::new(0));
+        let args = [1u64, 0x1000, 5, 0, 0, 0];
+        let value = run_tool_pre_syscall(
+            &tool,
+            &(),
+            &(),
+            &mut thread_state,
+            &driver,
+            0,
+            10,
+            10,
+            libc::SYS_write,
+            &args,
+            0,
+            invoke,
+            read_regs,
+        );
+        assert_eq!(value, Some(5));
+        assert_eq!(driver.0.get(), 1, "the injected driver must be used");
     }
 
     #[test]
