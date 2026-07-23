@@ -1339,6 +1339,151 @@ mod tests {
         assert_eq!(outcome2, Some(2));
     }
 
+    // ---- M3 thread scheduling: DETERMINISTIC ordering of N concurrent guest
+    // threads through the DBI driver --------------------------------------------
+    //
+    // The essence of M3 is that concurrent guest threads are serialized into a
+    // deterministic order by the scheduler, independent of OS-thread timing.
+    // `DetSchedGlobal` is a faithful proxy for Detcore's `sched_loop`
+    // (detcore scheduler.rs:574): it collects the per-thread turn-requests
+    // (each guest thread's `send_rpc`, carrying its tid via `receive_rpc`'s
+    // `from`) and grants turns in a fixed order (ascending tid), so the
+    // tid->turn mapping is identical every run. The point being proven for DBI:
+    // N native guest threads each blocking inside `run_tool_pre_syscall`
+    // (Handle::block_on on the multi-threaded runtime) are scheduled
+    // deterministically by one actor WITHOUT deadlock — the concurrency shape a
+    // real Detcore-over-DBI binding will use.
+
+    /// Scheduler proxy: grants deterministic turns to `n` guest threads in
+    /// ascending-tid order once all `n` have requested one.
+    #[derive(Default)]
+    struct DetSchedGlobal {
+        to_actor:
+            Option<tokio::sync::mpsc::UnboundedSender<(Pid, tokio::sync::oneshot::Sender<u64>)>>,
+    }
+
+    #[reverie::global_tool]
+    impl GlobalTool for DetSchedGlobal {
+        type Request = ();
+        type Response = u64;
+        /// Number of guest threads the scheduler waits for before granting turns.
+        type Config = usize;
+
+        async fn init_global_state(n: &Self::Config) -> Self {
+            let n = *n;
+            let (tx, mut rx) =
+                tokio::sync::mpsc::unbounded_channel::<(Pid, tokio::sync::oneshot::Sender<u64>)>();
+            tokio::spawn(async move {
+                // Collect all N requests, then grant turns deterministically by
+                // tid — the order does not depend on which thread arrived first.
+                let mut pending = Vec::with_capacity(n);
+                while pending.len() < n {
+                    match rx.recv().await {
+                        Some(item) => pending.push(item),
+                        None => break,
+                    }
+                }
+                pending.sort_by_key(|(tid, _)| tid.as_raw());
+                for (turn, (_tid, responder)) in pending.into_iter().enumerate() {
+                    let _ = responder.send(turn as u64);
+                }
+            });
+            Self { to_actor: Some(tx) }
+        }
+
+        async fn receive_rpc(&self, from: Pid, _message: ()) -> u64 {
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            self.to_actor
+                .as_ref()
+                .expect("DetSchedGlobal must be built via init_global_state")
+                .send((from, tx))
+                .expect("scheduler actor is alive");
+            rx.await.expect("scheduler actor granted a turn")
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct DetSchedTool;
+
+    #[reverie::tool]
+    impl Tool for DetSchedTool {
+        type GlobalState = DetSchedGlobal;
+        type ThreadState = PrototypeCounters;
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            _syscall: Syscall,
+        ) -> Result<i64, Error> {
+            Ok(guest.send_rpc(()).await as i64)
+        }
+    }
+
+    #[test]
+    fn concurrent_guest_threads_are_scheduled_deterministically() {
+        const N: usize = 4;
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+
+        // Repeat: the tid->turn mapping must be identical every round despite
+        // OS-thread timing jitter (that is what "deterministic scheduling" means).
+        for _round in 0..8 {
+            let global = runtime.block_on(DetSchedGlobal::init_global_state(&N));
+            let driver = TokioDriver(handle.clone());
+            let tool = DetSchedTool;
+            let results: std::sync::Mutex<Vec<Option<i64>>> = std::sync::Mutex::new(vec![None; N]);
+
+            std::thread::scope(|scope| {
+                for i in 0..N {
+                    let global = &global;
+                    let driver = &driver;
+                    let tool = &tool;
+                    let results = &results;
+                    scope.spawn(move || {
+                        let tid = 100 + i as i32; // ascending tid with i
+                        let mut thread_state = PrototypeCounters::default();
+                        let args = [0u64; 6];
+                        // A DBI guest thread: synchronous run_tool_pre_syscall on
+                        // its own OS thread, blocking on the scheduler via the
+                        // Tokio driver.
+                        let out = run_tool_pre_syscall(
+                            tool,
+                            global,
+                            &N,
+                            &mut thread_state,
+                            driver,
+                            0,
+                            tid,
+                            tid,
+                            libc::SYS_getpid,
+                            &args,
+                            0,
+                            invoke_unused,
+                            read_regs,
+                        );
+                        results.lock().unwrap()[i] = out;
+                    });
+                }
+            });
+
+            let results = results.into_inner().unwrap();
+            // tid = 100+i is ascending in i, so the deterministic turn granted to
+            // thread i must be exactly i — every round, regardless of scheduling.
+            for (i, turn) in results.iter().enumerate() {
+                assert_eq!(
+                    *turn,
+                    Some(i as i64),
+                    "thread {i} (tid {}) must get deterministic turn {i}",
+                    100 + i
+                );
+            }
+        }
+    }
+
     #[test]
     fn prototype_tool_uses_shared_guest_contract() {
         let mut counters = PrototypeCounters::default();
