@@ -19,6 +19,7 @@ use crate::SyscallRequest;
 use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::SegmentBase;
 use crate::elf::LoadedStaticElf;
+use crate::elf::STACK_LIMIT;
 use crate::runtime::SyscallExecutor;
 
 const MAX_HOST_IO: usize = 16 * 1024 * 1024;
@@ -307,6 +308,9 @@ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
     if length > MAX_HOST_IO {
         return negative_errno(libc::E2BIG);
     }
+    if !range_is_valid(memory, args[1], args[2]) {
+        return negative_errno(libc::EFAULT);
+    }
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -417,6 +421,9 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     };
     if length > MAX_HOST_IO {
         return negative_errno(libc::E2BIG);
+    }
+    if !range_is_valid(memory, args[1], args[2]) {
+        return negative_errno(libc::EFAULT);
     }
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
@@ -669,7 +676,7 @@ fn prlimit64(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     if args[3] == 0 {
         return 0;
     }
-    let limit = 8_u64 * 1024 * 1024;
+    let limit = STACK_LIMIT;
     let mut bytes = [0; 16];
     bytes[..8].copy_from_slice(&limit.to_le_bytes());
     bytes[8..].copy_from_slice(&limit.to_le_bytes());

@@ -368,6 +368,27 @@ async fn drive_handler<T>(
     .await
 }
 
+async fn notify_tool_exit<T: Tool>(
+    tool: T,
+    pid: Pid,
+    global_state: &T::GlobalState,
+    config: &<T::GlobalState as GlobalTool>::Config,
+    thread_state: T::ThreadState,
+    status: ExitStatus,
+) -> Result<()> {
+    let global = KvmGlobal {
+        pid,
+        state: global_state,
+        config,
+    };
+    tool.on_exit_thread(pid, &global, thread_state, status)
+        .await
+        .map_err(Error::Reverie)?;
+    tool.on_exit_process(pid, &global, status)
+        .await
+        .map_err(Error::Reverie)
+}
+
 impl KvmBackend {
     /// Runs the installed guest program through a shared Reverie `Tool`.
     ///
@@ -558,13 +579,41 @@ impl KvmBackend {
             );
             drive_handler(tool.handle_post_exec(&mut guest), tail_result).await
         };
-        match post_exec_outcome {
-            HandlerOutcome::Returned(result) => result.map_err(Error::PostExec)?,
-            HandlerOutcome::TailInjected(_) => {
-                return Err(Error::UnexpectedVcpuExit(
-                    "tool tail-injected a syscall from handle_post_exec".to_string(),
-                ));
-            }
+        let post_exec_error = match post_exec_outcome {
+            HandlerOutcome::Returned(Ok(())) => None,
+            HandlerOutcome::Returned(Err(error)) => Some(Error::PostExec(error)),
+            HandlerOutcome::TailInjected(_) => Some(Error::UnexpectedVcpuExit(
+                "tool tail-injected a syscall from handle_post_exec".to_string(),
+            )),
+        };
+        if let Some(error) = post_exec_error {
+            notify_tool_exit(
+                tool,
+                pid,
+                &global_state,
+                &config,
+                thread_state,
+                ExitStatus::Exited(255),
+            )
+            .await?;
+            return Err(error);
+        }
+
+        if let Some((segment, address)) = executor.take_segment() {
+            set_user_segment_base(&self.vcpu, segment, address)?;
+        }
+        if let Some(code) = executor.take_exit() {
+            notify_tool_exit(
+                tool,
+                pid,
+                &global_state,
+                &config,
+                thread_state,
+                ExitStatus::Exited(code),
+            )
+            .await?;
+            let (stdout, stderr) = executor.take_output();
+            return Ok((global_state, code, stdout, stderr));
         }
 
         loop {
@@ -635,18 +684,15 @@ impl KvmBackend {
                 set_user_segment_base(&self.vcpu, segment, address)?;
             }
             if let Some(code) = pending_exit {
-                let status = ExitStatus::Exited(code);
-                let global = KvmGlobal {
+                notify_tool_exit(
+                    tool,
                     pid,
-                    state: &global_state,
-                    config: &config,
-                };
-                tool.on_exit_thread(pid, &global, thread_state, status)
-                    .await
-                    .map_err(Error::Reverie)?;
-                tool.on_exit_process(pid, &global, status)
-                    .await
-                    .map_err(Error::Reverie)?;
+                    &global_state,
+                    &config,
+                    thread_state,
+                    ExitStatus::Exited(code),
+                )
+                .await?;
                 let (stdout, stderr) = executor.take_output();
                 return Ok((global_state, code, stdout, stderr));
             }

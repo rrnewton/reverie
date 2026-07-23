@@ -9,8 +9,12 @@
 #![cfg(target_arch = "x86_64")]
 
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use kvm_ioctls::Kvm;
+use reverie::ExitStatus;
+use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Pid;
@@ -24,6 +28,7 @@ const MEMORY_SIZE: usize = 16 * 1024 * 1024;
 const LOAD_ADDRESS: u64 = 0x20_0000;
 const CODE_OFFSET: usize = 0x1000;
 const POST_EXEC_RANDOM: [u8; 16] = *b"kvm-post-exec-ok";
+static POST_EXEC_FAILURE_EXITED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Default)]
 struct PostExecLog {
@@ -62,6 +67,30 @@ impl Tool for PostExecTool {
         // This lifecycle hook runs before the ELF entry point, matching execve.
         let address = unsafe { address.into_mut() };
         guest.memory().write_value(address, &POST_EXEC_RANDOM)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct FailingPostExecTool;
+
+#[reverie::tool]
+impl Tool for FailingPostExecTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, _guest: &mut G) -> Result<(), Errno> {
+        Err(Errno::EINVAL)
+    }
+
+    async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+        &self,
+        _tid: Pid,
+        _global: &G,
+        _thread_state: Self::ThreadState,
+        _status: ExitStatus,
+    ) -> Result<(), reverie::Error> {
+        POST_EXEC_FAILURE_EXITED.store(true, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -214,6 +243,35 @@ fn tool_receives_post_exec_with_guest_auxv() {
     let mut random = [0; 16];
     backend.memory().read(address as u64, &mut random).unwrap();
     assert_eq!(random, POST_EXEC_RANDOM);
+}
+
+#[test]
+fn post_exec_failure_runs_tool_exit_lifecycle() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM post-exec failure test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    POST_EXEC_FAILURE_EXITED.store(false, Ordering::SeqCst);
+    let code = [
+        0xb8, 0xe7, 0x00, 0x00, 0x00, 0x31, 0xff, 0x0f, 0x05, 0x0f, 0x0b,
+    ];
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf_with_args(&static_elf(&code), &["prog"], &[])
+        .unwrap();
+
+    let error = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<FailingPostExecTool>((), true),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("post-exec hook failed"));
+    assert!(POST_EXEC_FAILURE_EXITED.load(Ordering::SeqCst));
 }
 
 #[test]

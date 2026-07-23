@@ -29,7 +29,7 @@ use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::PROGRAM_HEADERS_ADDRESS;
 
 const PAGE_SIZE: u64 = 4096;
-const STACK_RESERVE: u64 = 1024 * 1024;
+pub(crate) const STACK_LIMIT: u64 = 8 * 1024 * 1024;
 const STACK_STRING_HEADROOM: u64 = 4096;
 const MMAP_GAP: u64 = 1024 * 1024;
 const MAX_PROGRAM_HEADERS_SIZE: usize = PAGE_SIZE as usize;
@@ -157,7 +157,7 @@ pub(crate) fn load_static_elf(
     )?;
     let mmap_limit = memory
         .guest_end()
-        .checked_sub(STACK_RESERVE)
+        .checked_sub(STACK_LIMIT)
         .ok_or(Error::LongModeMemoryTooSmall)?;
     if mmap_next >= mmap_limit {
         return Err(Error::LongModeMemoryTooSmall);
@@ -443,7 +443,7 @@ fn build_initial_stack(
         .checked_sub(stack_size)
         .ok_or(Error::LongModeMemoryTooSmall)?
         & !0xf;
-    if cursor < memory.guest_end().saturating_sub(STACK_RESERVE) {
+    if cursor < memory.guest_end().saturating_sub(STACK_LIMIT) {
         return Err(Error::LongModeMemoryTooSmall);
     }
 
