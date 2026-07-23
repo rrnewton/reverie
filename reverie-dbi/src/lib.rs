@@ -135,7 +135,7 @@ where
     T: Tool,
 {
     type Memory = LocalMemory;
-    type Stack = UnsupportedStack;
+    type Stack = DbiStack;
 
     fn tid(&self) -> Pid {
         self.tid
@@ -169,7 +169,7 @@ where
     }
 
     async fn stack(&mut self) -> Self::Stack {
-        UnsupportedStack
+        DbiStack::new()
     }
 
     async fn daemonize(&mut self) {}
@@ -189,16 +189,31 @@ where
         Errno::from_ret(result as usize).map(|value| value as i64)
     }
 
-    async fn tail_inject<S: SyscallInfo>(&mut self, _syscall: S) -> Never {
-        panic!("tail injection is not implemented by the DynamoRIO prototype")
+    async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
+        // The reverie-dbi client runs in-process, so injecting exit/exit_group
+        // (Detcore's only tail_inject callers) terminates this thread/process and
+        // `inject` never returns. The `pending().await` is a defensive fallback
+        // that parks the caller if a non-terminating syscall is ever
+        // tail-injected, mirroring the ptrace/KVM backends.
+        let _ = self.inject(syscall).await;
+        std::future::pending().await
     }
 
     fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        Err(Errno::ENOSYS.into())
+        // The DynamoRIO backend has no PMU/RCB counter, so it cannot yet arm a
+        // retired-conditional-branch preemption timer. Report success as a no-op
+        // rather than ENOSYS so tools that unconditionally arm a timeslice timer
+        // (e.g. Detcore's post-event hook) are not forced to panic. The practical
+        // effect is that timing-based preemption is disabled; threads still yield
+        // cooperatively at syscall boundaries via the scheduler. A real
+        // instruction-count quantum (DynamoRIO drx) is the follow-up.
+        Ok(())
     }
 
     fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        Err(Errno::ENOSYS.into())
+        // See `set_timer`: no PMU/RCB counter is available on this backend, so a
+        // precise timeslice timer is a documented no-op for now.
+        Ok(())
     }
 
     fn read_clock(&mut self) -> Result<u64, Error> {
@@ -206,37 +221,98 @@ where
     }
 }
 
-/// Placeholder stack implementation for the initial backend prototype.
-pub struct UnsupportedStack;
+/// Fixed capacity, in bytes, of a [`DbiStack`] arena. Large enough for the small
+/// argument structs (e.g. `timespec`) that tools build for injected syscalls.
+const DBI_STACK_CAPACITY: usize = 512;
 
-/// Guard returned by [`UnsupportedStack`].
-pub struct UnsupportedStackGuard;
+/// Stack arena for the DynamoRIO backend.
+///
+/// Because the reverie-dbi client runs *inside* the guest process, guest virtual
+/// addresses are directly dereferenceable here. This arena hands out pointers
+/// into a client-owned, fixed-capacity buffer; a syscall injected via
+/// [`Guest::inject`] can then read or write through those pointers exactly as it
+/// would a real guest stack allocation. Like the ptrace/KVM backends the arena
+/// grows downward and allocations become valid after [`commit`](Stack::commit),
+/// which hands the backing buffer to a [`DbiStackGuard`] that keeps them alive
+/// until it is dropped.
+pub struct DbiStack {
+    buf: Vec<u8>,
+    /// Bytes allocated so far, measured from the end of `buf` (the arena grows
+    /// downward, like a real stack).
+    used: usize,
+}
 
-impl Drop for UnsupportedStackGuard {
+impl DbiStack {
+    fn new() -> Self {
+        Self {
+            buf: vec![0u8; DBI_STACK_CAPACITY],
+            used: 0,
+        }
+    }
+
+    /// Reserve `size` bytes aligned to `align`, growing downward from the top of
+    /// the buffer, and return the raw address of the slot. The address is stable
+    /// across a later move of `buf` into the guard, since moving a `Vec` leaves
+    /// its heap allocation in place.
+    fn allocate(&mut self, size: usize, align: usize) -> usize {
+        let base = self.buf.as_ptr() as usize;
+        let top = base + self.buf.len();
+        let unaligned = top
+            .checked_sub(self.used + size)
+            .expect("DbiStack overflow");
+        let addr = unaligned & !(align - 1);
+        assert!(addr >= base, "DbiStack overflow");
+        self.used = top - addr;
+        addr
+    }
+}
+
+/// Guard that keeps a [`DbiStack`]'s backing buffer alive while the guest uses
+/// the addresses handed out before [`commit`](Stack::commit).
+pub struct DbiStackGuard {
+    _buf: Vec<u8>,
+}
+
+impl Drop for DbiStackGuard {
     fn drop(&mut self) {}
 }
 
-impl Stack for UnsupportedStack {
-    type StackGuard = UnsupportedStackGuard;
+impl Stack for DbiStack {
+    type StackGuard = DbiStackGuard;
 
     fn size(&self) -> usize {
-        0
+        self.used
     }
 
     fn capacity(&self) -> usize {
-        0
+        self.buf.len()
     }
 
-    fn push<'stack, T>(&mut self, _value: T) -> Addr<'stack, T> {
-        panic!("guest stack allocation is not implemented by the DynamoRIO prototype")
+    fn push<'stack, T>(&mut self, value: T) -> Addr<'stack, T> {
+        let addr = self.allocate(std::mem::size_of::<T>(), std::mem::align_of::<T>());
+        // SAFETY: `addr` points into our own buffer and is sized and aligned for
+        // `T`; the buffer stays alive via the returned guard.
+        unsafe {
+            (addr as *mut T).write(value);
+        }
+        Addr::from_raw(addr).expect("DbiStack address is non-null")
     }
 
     fn reserve<'stack, T>(&mut self) -> AddrMut<'stack, T> {
-        panic!("guest stack allocation is not implemented by the DynamoRIO prototype")
+        let size = std::mem::size_of::<T>();
+        let addr = self.allocate(size, std::mem::align_of::<T>());
+        // SAFETY: `addr` points into our own buffer and is sized for `T`.
+        unsafe {
+            std::ptr::write_bytes(addr as *mut u8, 0, size);
+        }
+        AddrMut::from_raw(addr).expect("DbiStack address is non-null")
     }
 
     fn commit(self) -> Result<Self::StackGuard, Errno> {
-        Err(Errno::ENOSYS)
+        // Values were written directly into the client-owned buffer (in-process),
+        // so there is nothing to flush to a remote address space. Hand the buffer
+        // to the guard so the allocations remain valid for the caller.
+        Ok(DbiStackGuard { _buf: self.buf })
     }
 }
 
@@ -957,5 +1033,89 @@ mod tests {
         assert_eq!(deterministic_port(&next, 0), 32770);
         assert_eq!(deterministic_port(&next, 1200), 1200);
         assert_eq!(deterministic_port(&next, 0), 32771);
+    }
+
+    // A `timespec`-shaped value, the canonical thing Detcore builds on the guest
+    // stack for injected FUTEX_WAIT / nanosleep / rt_sigtimedwait timeouts.
+    #[repr(C)]
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    struct FakeTimespec {
+        secs: i64,
+        nanos: i64,
+    }
+
+    #[test]
+    fn dbi_stack_push_is_readable_in_process() {
+        // push a value, commit, then read it back through LocalMemory exactly as
+        // an injected syscall (or Detcore) would — proving the returned Addr is a
+        // valid, live pointer in this (== guest) address space.
+        let mut stack = DbiStack::new();
+        assert_eq!(stack.size(), 0);
+        assert_eq!(stack.capacity(), DBI_STACK_CAPACITY);
+
+        let value = FakeTimespec { secs: 0, nanos: 0 };
+        let addr = stack.push(value);
+        assert!(stack.size() >= std::mem::size_of::<FakeTimespec>());
+        // Aligned for the type.
+        assert_eq!(addr.as_raw() % std::mem::align_of::<FakeTimespec>(), 0);
+
+        let guard = stack.commit().expect("commit succeeds");
+        // Addr stays valid after commit moved the buffer into the guard.
+        let read: FakeTimespec = LocalMemory::new()
+            .read_value(addr)
+            .expect("read back the pushed value");
+        assert_eq!(read, value);
+        drop(guard);
+    }
+
+    #[test]
+    fn dbi_stack_reserve_is_zeroed_and_writable() {
+        let mut stack = DbiStack::new();
+        let addr = stack.reserve::<u64>();
+        let mut mem = LocalMemory::new();
+        // reserve zero-fills.
+        assert_eq!(mem.read_value::<_, u64>(Addr::from(addr)).unwrap(), 0);
+        // and the slot is writable (kernel would write a result here).
+        mem.write_value(addr, &0xdead_beef_u64).unwrap();
+        let guard = stack.commit().unwrap();
+        assert_eq!(
+            mem.read_value::<_, u64>(Addr::from(addr)).unwrap(),
+            0xdead_beef
+        );
+        drop(guard);
+    }
+
+    #[test]
+    fn dbi_stack_multiple_allocations_do_not_overlap() {
+        let mut stack = DbiStack::new();
+        let a = stack.push(0x1111_1111_1111_1111_u64);
+        let b = stack.push(0x2222_2222_2222_2222_u64);
+        assert_ne!(a.as_raw(), b.as_raw());
+        let guard = stack.commit().unwrap();
+        let mem = LocalMemory::new();
+        assert_eq!(mem.read_value::<_, u64>(a).unwrap(), 0x1111_1111_1111_1111);
+        assert_eq!(mem.read_value::<_, u64>(b).unwrap(), 0x2222_2222_2222_2222);
+        drop(guard);
+    }
+
+    #[test]
+    fn set_timer_is_a_noop_ok_not_enosys() {
+        // Detcore's post-event hook unconditionally arms a timeslice timer and
+        // `.expect()`s Ok; the DynamoRIO backend must not return ENOSYS there.
+        let mut counters = PrototypeCounters::default();
+        let mut guest: DbiGuest<'_, PrototypeTool> = DbiGuest::new(
+            0,
+            Pid::from_raw(10),
+            Pid::from_raw(10),
+            None,
+            99,
+            &mut counters,
+            &GLOBAL_STATE,
+            &CONFIG,
+            invoke,
+            read_regs,
+        );
+        assert!(guest.set_timer(TimerSchedule::Rcbs(1000)).is_ok());
+        assert!(guest.set_timer_precise(TimerSchedule::Rcbs(1000)).is_ok());
     }
 }
