@@ -14,20 +14,14 @@ thread state, global RPC, syscall injection, and tail injection. Until a guest
 kernel supplies Linux syscall semantics, callers provide a `SyscallExecutor`
 for injected and unsubscribed syscalls.
 
-## Static ELF execution
+## ELF execution
 
-`install_static_elf` accepts little-endian x86-64 `ET_EXEC` images with no
-`PT_INTERP`. It copies `PT_LOAD` segments, zeros BSS, creates a Linux-style
-`argc`/`argv`/auxv stack, and installs an identity-mapped long-mode address
-space. The vCPU starts at CPL3. `EFER.SCE`, `STAR`, `LSTAR`, and
+`install_static_elf` accepts little-endian x86-64 `ET_EXEC` and `ET_DYN` images. It copies `PT_LOAD` segments, zeros BSS, loads one `PT_INTERP` image when present, creates a Linux-style `argc`/`argv`/`envp`/auxv stack, and installs an identity-mapped long-mode address space. The vCPU starts at CPL3. `EFER.SCE`, `STAR`, `LSTAR`, and
 `SFMASK` direct real `SYSCALL` instructions to a ring-0 trampoline that
 serializes the Linux ABI register frame, exits KVM, then returns with
 `SYSRETQ`.
 
-`run_static_elf` supplies a deliberately small single-process Linux
-personality. It handles process exit, stdout/stderr writes, deterministic
-identity, time, and random queries, FS/GS bases, `brk`, anonymous `mmap`,
-and common startup no-ops. Unsupported syscalls return `ENOSYS`.
+`run_static_elf` supplies a deliberately small single-process Linux personality. It handles process exit, host-backed filesystem descriptors, stdout/stderr writes, deterministic identity, time and random queries, FS/GS bases, `brk`, anonymous and file-backed `mmap`, and common startup no-ops. Unsupported syscalls return `ENOSYS`.
 
 ## CPUID policy
 
@@ -45,30 +39,18 @@ This is a static vCPU feature policy, not a per-instruction
 `Tool::handle_cpuid_event` callback. The latter still requires the planned
 Linux execution bridge to preserve task-local callback context.
 
-## gVisor model
+## Relationship to gVisor
 
-gVisor's KVM platform keeps syscall policy above the architecture transport:
-`pkg/ring0/entry_amd64.s` saves the user register frame and enters its syscall
-trampoline, while `pkg/sentry/platform/kvm/bluepill_unsafe.go` classifies KVM
-exits before returning control to the sentry. This prototype follows the same
-separation on a smaller scale: the VM-exit layer validates and decodes the
-transport once, and the runtime layer presents backend-neutral Reverie types to
-the tool. The static ELF path adds only the ring-0 syscall entry needed by its
-small process personality, not gVisor's complete sentry.
+gVisor routes Linux filesystem syscalls through its Sentry VFS and the filesystem implementations under `pkg/sentry/fsimpl/`. Those layers own mount-namespace traversal, dentries, file descriptions, metadata, and directory iteration without exposing host descriptors directly. The closest syscall-facing paths are `pkg/sentry/syscalls/linux/sys_file.go` and `sys_getdents.go`.
+
+This backend follows the same separation between the architecture transport and syscall policy: the KVM exit path only carries a Linux register frame, while the executor owns guest descriptor allocation, path resolution, and ABI marshalling. The implementation is intentionally much smaller than gVisor: each opened filesystem descriptor owns a host `File`, relative paths resolve against the captured working directory or an owned directory descriptor, and subscribed calls pass through Detcore, whose tail injection invokes this executor before Detcore post-processes returned metadata; unsubscribed calls invoke the executor directly.
+
+No gVisor code is copied. Unlike the gVisor Sentry VFS and `pkg/sentry/fsimpl/` stack, this crate does not provide a virtual mount namespace, dentry cache, or filesystem implementation. Hermit container setup remains the isolation boundary, not this standalone crate, and a changing host-backed filesystem remains outside the determinism guarantee. Host procfs descriptors are rejected because they would identify the Hermit supervisor rather than a separate guest process.
 
 ## Current limits
 
-This crate is not a Linux execution backend for arbitrary ELF programs. The
-static path has one vCPU, fixed-address identity mappings, and no threads,
-signals, filesystem, dynamic linker, or page-permission enforcement. Its
-syscall set is sufficient for minimal static programs, not general libc
-workloads. The current hypercall transport also reuses standardized KVM
+This crate is not a complete Linux execution backend. The ELF path has one vCPU, fixed-address identity mappings, no threads or signals, and no page-permission enforcement. Filesystem access forwards into the host namespace with bounded memory copies and a guest-owned descriptor table; it does not isolate or snapshot host filesystem changes. The current hypercall transport also reuses standardized KVM
 hypercall 12 because it is the only hypercall KVM exposes to userspace; that
 prototype ABI must be replaced before running a stock guest kernel.
 
-The host `/bin/true` on typical distributions is a dynamically linked PIE
-with `PT_INTERP`, so it is rejected instead of being partially loaded. The
-static ELF integration test generates an equivalent fixed-address program,
-executes a real `getpid` syscall, checks the returned value in guest code, and
-exits through `exit_group`. Supporting the literal host binary requires
-loading its interpreter and DSOs or booting a guest kernel.
+The ELF loader supports one host interpreter and enough file-backed mapping for small dynamically linked programs. General libc coverage remains bounded by the explicit syscall personality; unsupported operations fail with `ENOSYS` rather than silently bypassing the tool.

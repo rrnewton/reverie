@@ -6,7 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::fs::OpenOptions;
 use std::io::Read;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -62,11 +64,12 @@ pub(crate) struct LoadedStaticElf {
     pub mmap_limit: u64,
     pub argv0: Vec<u8>,
     pub cwd: PathBuf,
+    pub cwd_fd: std::fs::File,
     pub auxv: Vec<(libc::c_ulong, libc::c_ulong)>,
     pub fs_base: u64,
     pub gs_base: u64,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
-    pub next_fd: i32,
+    pub closed_standard_fds: std::collections::BTreeSet<i32>,
 }
 
 pub(crate) fn load_static_elf(
@@ -168,6 +171,11 @@ pub(crate) fn load_static_elf(
         INTERPRETER_LOAD_BIAS
     };
 
+    let cwd_fd = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_DIRECTORY)
+        .open(cwd)?;
+
     Ok(LoadedStaticElf {
         entry_point,
         stack_pointer,
@@ -177,11 +185,12 @@ pub(crate) fn load_static_elf(
         mmap_limit,
         argv0: argv0.as_bytes().to_vec(),
         cwd: cwd.to_owned(),
+        cwd_fd,
         auxv,
         fs_base: 0,
         gs_base: 0,
         files: std::collections::BTreeMap::new(),
-        next_fd: 3,
+        closed_standard_fds: std::collections::BTreeSet::new(),
     })
 }
 
