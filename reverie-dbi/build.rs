@@ -71,7 +71,7 @@ fn require_initialized_submodule(source_dir: &Path) {
         return;
     }
     panic!(
-        "DynamoRIO submodule is not initialized at {}. Run: git submodule update --init --recursive",
+        "DynamoRIO submodule is not initialized at {}. Run: scripts/backend-submodule.sh activate dynamorio",
         source_dir.display()
     );
 }

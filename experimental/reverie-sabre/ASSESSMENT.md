@@ -23,7 +23,7 @@ backend with a separate synchronous tool API; it is not interchangeable with
 - Successful `exec`, a fork/wait workload, and nonzero guest exit-status
   propagation have also been exercised through the demo.
 
-The external loader is pinned in `SABRE_UPSTREAM.toml` to
+The opt-in `third-party/sabre` submodule and `SABRE_UPSTREAM.toml` pin
 `srg-imperial/SaBRe` commit
 `05816ee066a7284bee8afd0e73eeb44455b254b4`. That revision builds with CMake,
 Make, and GCC. Its three smoke tests pass. All 72 supported upstream tests pass
@@ -55,7 +55,7 @@ out-of-process ptrace backend.
 
 ## Current limitations
 
-- The SaBRe loader is built and distributed separately; Cargo only builds the
+- The SaBRe loader is activated and built separately; Cargo only builds the
   Reverie plugin and host command.
 - Only the pinned loader revision and dynamically linked x86-64 guests are
   validated. Static executables are unsupported by upstream SaBRe.
