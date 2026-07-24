@@ -69,8 +69,56 @@ pub(crate) struct LoadedStaticElf {
     pub auxv: Vec<(libc::c_ulong, libc::c_ulong)>,
     pub fs_base: u64,
     pub gs_base: u64,
+    pub pid: i32,
+    pub ppid: i32,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
     pub closed_standard_fds: std::collections::BTreeSet<i32>,
+    pub children: std::collections::BTreeMap<i32, i32>,
+}
+
+impl LoadedStaticElf {
+    pub(crate) fn try_clone_for_fork(&self, child_pid: i32) -> Result<Self> {
+        let files = self
+            .files
+            .iter()
+            .map(|(&fd, file)| Ok((fd, file.try_clone()?)))
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            entry_point: self.entry_point,
+            stack_pointer: self.stack_pointer,
+            program_break: self.program_break,
+            brk_limit: self.brk_limit,
+            mmap_next: self.mmap_next,
+            mmap_limit: self.mmap_limit,
+            argv0: self.argv0.clone(),
+            cwd: self.cwd.clone(),
+            cwd_fd: self.cwd_fd.try_clone()?,
+            stdin: self
+                .stdin
+                .as_ref()
+                .map(std::fs::File::try_clone)
+                .transpose()?,
+            auxv: self.auxv.clone(),
+            fs_base: self.fs_base,
+            gs_base: self.gs_base,
+            pid: child_pid,
+            ppid: self.pid,
+            files,
+            closed_standard_fds: self.closed_standard_fds.clone(),
+            children: std::collections::BTreeMap::new(),
+        })
+    }
+
+    pub(crate) fn inherit_process_state(&mut self, previous: Self) {
+        self.cwd = previous.cwd;
+        self.cwd_fd = previous.cwd_fd;
+        self.stdin = previous.stdin;
+        self.pid = previous.pid;
+        self.ppid = previous.ppid;
+        self.files = previous.files;
+        self.closed_standard_fds = previous.closed_standard_fds;
+        self.children = previous.children;
+    }
 }
 
 pub(crate) fn load_static_elf(
@@ -191,8 +239,11 @@ pub(crate) fn load_static_elf(
         auxv,
         fs_base: 0,
         gs_base: 0,
+        pid: 1,
+        ppid: 0,
         files: std::collections::BTreeMap::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
+        children: std::collections::BTreeMap::new(),
     })
 }
 
