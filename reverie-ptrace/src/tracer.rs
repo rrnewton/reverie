@@ -504,10 +504,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         //
         // Normally, we'd rely upon the `exit(1)` following a failed call to
         // `execve`, but that is tricky when ptracing the `execve` call.
-        let program = command
-            .find_program()
-            .with_context(|| format!("Could not execute {:?}", command.get_program()))?;
-        command.program(program);
+        resolve_program(&mut command)?;
 
         // Disable sanitizers that use ptrace from running on tracer.
         command.env("LSAN_OPTIONS", "detect_leaks=0");
@@ -571,6 +568,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             stderr,
         })
     }
+}
+
+fn resolve_program(command: &mut Command) -> Result<(), Error> {
+    let arg0 = command.get_arg0().to_owned();
+    let program = command
+        .find_program()
+        .with_context(|| format!("Could not execute {:?}", command.get_program()))?;
+    command.program(program).arg0(arg0);
+    Ok(())
 }
 
 /// Spawn a *function* to be executed under instrumentation instrumentation
@@ -675,5 +681,19 @@ where
                 stderr: Some(stderr),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolving_program_preserves_explicit_arg0() {
+        let mut command = Command::new("/bin/echo");
+        command.arg0("chosen-name");
+        resolve_program(&mut command).unwrap();
+        assert_eq!(command.get_program(), "/bin/echo");
+        assert_eq!(command.get_arg0(), "chosen-name");
     }
 }
