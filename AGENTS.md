@@ -222,6 +222,22 @@ Commit and push each change immediately; never leave a checkout dirty or claim
 "done" without a pushed commit behind it. A report that work is complete
 implies a clean `git status` and a pushed branch.
 
+## Autonomous Bot Audit Tags
+
+Bot-authored syscall and API changes must leave an explicit audit trail:
+
+- Add the exact marker `// AUTONOMOUS-BOT-IMPLEMENTED` at every syscall
+  match entry added by an autonomous bot. Only a human reviewer removes this
+  marker, and only after reviewing that entry.
+- Add `// TODO-HUMAN-REVIEW(PR-id)` to every bot-added syscall implementation
+  and API change, replacing `PR-id` with the pull request that introduced the
+  change (for example, `// TODO-HUMAN-REVIEW(PR-123)`). Place it on the changed
+  declaration or at the smallest code region it covers; do not use an unscoped
+  file-level marker.
+- A new syscall requires both markers: `// AUTONOMOUS-BOT-IMPLEMENTED` at its
+  dispatch match entry and `// TODO-HUMAN-REVIEW(PR-id)` at its implementation
+  or API surface. Do not remove or rename either marker autonomously.
+
 ## Dirty Checkout Recovery
 
 When a checkout is unexpectedly dirty:
@@ -271,6 +287,16 @@ Use the required proxy for networked Git and GitHub CLI commands:
 HTTPS_PROXY=http://fwdproxy:8080 git fetch origin
 HTTPS_PROXY=http://fwdproxy:8080 gh pr view -R rrnewton/reverie <number>
 ```
+
+## Script Convention
+
+- Project scripts use rust-script as `.rs` files with the shebang
+  `#!/usr/bin/env rust-script`.
+- Prefer rust-script over Python for all new scripts.
+- Scripts are usually single files, but may be split into subdirectories when
+  useful.
+- Install rust-script with `cargo install rust-script` if it is not already
+  available.
 
 ## Repository-Specific Change Guidelines
 
