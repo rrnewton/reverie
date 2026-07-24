@@ -115,6 +115,7 @@ pub fn sys_execve(
     unsafe { syscall!(Sysno::access, filename as usize, libc::F_OK as usize)? };
 
     let arguments = collect_exec_arguments(argv)?;
+    let environment = collect_exec_arguments(envp)?;
     let sabre = paths::sabre_path().as_ptr();
     let mut new_argv = Vec::with_capacity(arguments.len() + 5);
     new_argv.push(sabre);
@@ -124,12 +125,21 @@ pub fn sys_execve(
     new_argv.extend(arguments.into_iter().skip(1));
     new_argv.push(core::ptr::null());
 
+    // Preserve reserved tool settings even when the guest deliberately
+    // supplies an empty environment. Individual tools consume their own
+    // settings before the replacement guest observes them.
+    let tool_environment = paths::tool_env();
+    let mut new_env = Vec::with_capacity(environment.len() + tool_environment.len() + 1);
+    new_env.extend(tool_environment.iter().map(|entry| entry.as_ptr()));
+    new_env.extend(environment);
+    new_env.push(core::ptr::null());
+
     unsafe {
         syscall3(
             Sysno::execve,
             sabre as usize,
             new_argv.as_ptr() as usize,
-            envp as usize,
+            new_env.as_ptr() as usize,
         )
     }
 }

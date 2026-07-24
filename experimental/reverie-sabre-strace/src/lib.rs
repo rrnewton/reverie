@@ -8,6 +8,9 @@
 
 //! SaBRe plugin that runs a shared Reverie strace tool.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+
 use reverie::Error;
 use reverie::Guest;
 use reverie::Tool as ReverieTool;
@@ -16,9 +19,16 @@ use reverie_syscalls::LocalMemory;
 use reverie_syscalls::Syscall;
 use syscalls::Errno;
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+/// Suppress syscall diagnostics while retaining the same shared Tool path.
+pub const QUIET_ENV: &str = "REVERIE_SABRE_STRACE_QUIET";
+static QUIET: AtomicBool = AtomicBool::new(false);
+
 /// Minimal shared Reverie tool that prints every intercepted syscall.
 #[derive(Default)]
-pub struct StraceTool;
+pub struct StraceTool {
+    quiet: bool,
+}
 
 #[reverie::tool]
 impl ReverieTool for StraceTool {
@@ -31,15 +41,19 @@ impl ReverieTool for StraceTool {
         syscall: Syscall,
     ) -> Result<i64, Error> {
         let tid = guest.tid();
-        // Debug formatting prints typed scalar fields and pointer addresses but
-        // never dereferences guest pointers. This avoids crashing on EFAULT
-        // inputs and prevents execve environment contents from leaking.
-        let pretty = format!("{syscall:?}");
-        nostd_print::eprintln!("[{tid}] {pretty}");
+        if !self.quiet {
+            // Debug formatting prints typed scalar fields and pointer addresses but
+            // never dereferences guest pointers. This avoids crashing on EFAULT
+            // inputs and prevents execve environment contents from leaking.
+            let pretty = format!("{syscall:?}");
+            nostd_print::eprintln!("[{tid}] {pretty}");
+        }
         let result = guest.inject(syscall).await;
-        match result {
-            Ok(value) => nostd_print::eprintln!("[{tid}] -> {value}"),
-            Err(errno) => nostd_print::eprintln!("[{tid}] -> {errno}"),
+        if !self.quiet {
+            match result {
+                Ok(value) => nostd_print::eprintln!("[{tid}] -> {value}"),
+                Err(errno) => nostd_print::eprintln!("[{tid}] -> {errno}"),
+            }
         }
         result.map_err(Error::from)
     }
@@ -54,8 +68,14 @@ impl sabre::Tool for Plugin {
     type Client = ();
 
     fn new(_client: Self::Client) -> Self {
+        let quiet = std::env::var_os(QUIET_ENV).is_some() || QUIET.load(Ordering::Acquire);
+        QUIET.store(quiet, Ordering::Release);
+        if quiet {
+            std::env::remove_var(QUIET_ENV);
+        }
+
         Self {
-            adapter: sabre::ReverieAdapter::new(StraceTool, (), ()),
+            adapter: sabre::ReverieAdapter::new(StraceTool { quiet }, (), ()),
         }
     }
 

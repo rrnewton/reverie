@@ -34,6 +34,7 @@ pub fn init_tool<T: Tool>() -> T {
     // potentially many times by nested tools. If this fails (i.e., it failed to
     // connect to the socket), there isn't anything we can do except panic. A
     // client without a connection to the global state isn't very useful.
+    paths::cache_tool_env();
     let channel = rpc::BaseChannel::new().unwrap();
 
     T::new(MakeClient::make_client(Box::new(channel)))
