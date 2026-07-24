@@ -14,6 +14,7 @@ use std::fs::File;
 use std::io;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
@@ -26,6 +27,7 @@ const CLIENT_ENV: &str = "REVERIE_DBI_CLIENT";
 const DYNAMORIO_ENV: &str = "DYNAMORIO_HOME";
 const DYNAMORIO_DIR_ENV: &str = "DynamoRIO_DIR";
 const SUMMARY_ENV: &str = "REVERIE_DBI_SUMMARY";
+const PATH_ENV: &str = "PATH";
 const BINPRM_BUF_SIZE: usize = 256;
 
 /// Launches Linux programs under the Reverie DynamoRIO client.
@@ -170,11 +172,15 @@ impl DbiRunner {
         }
         command.arg("--");
 
-        if let Some((interpreter, interpreter_args)) = shebang(guest.get_program()) {
+        let resolved_program = resolve_program(guest, environment);
+        let inspected_program = resolved_program
+            .as_deref()
+            .unwrap_or_else(|| Path::new(guest.get_program()));
+        if let Some((interpreter, interpreter_args)) = shebang(inspected_program.as_os_str()) {
             command
                 .arg(interpreter)
                 .args(interpreter_args)
-                .arg(guest.get_program());
+                .arg(inspected_program);
         } else {
             command.arg(guest.get_program());
         }
@@ -215,6 +221,53 @@ impl DbiRunner {
         }
         command
     }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#57): Confirm PATH lookup matches Command/execvp semantics.
+fn resolve_program(
+    guest: &Command,
+    environment: Option<&BTreeMap<OsString, OsString>>,
+) -> Option<PathBuf> {
+    let program = guest.get_program();
+    if program.as_bytes().contains(&b'/') {
+        return None;
+    }
+
+    let path = if let Some(environment) = environment {
+        environment.get(OsStr::new(PATH_ENV)).cloned()
+    } else {
+        let mut command_path = None;
+        let mut path_overridden = false;
+        for (key, value) in guest.get_envs() {
+            if key == OsStr::new(PATH_ENV) {
+                path_overridden = true;
+                command_path = value.map(OsStr::to_os_string);
+                break;
+            }
+        }
+        if path_overridden {
+            command_path
+        } else {
+            env::var_os(PATH_ENV)
+        }
+    }?;
+
+    let current_dir = guest.get_current_dir();
+    env::split_paths(&path)
+        .map(|directory| {
+            let directory = match current_dir {
+                Some(current_dir) if directory.is_relative() => current_dir.join(directory),
+                _ => directory,
+            };
+            directory.join(program)
+        })
+        .find(|candidate| is_executable_file(candidate))
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    path.metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
 fn shebang(program: &OsStr) -> Option<(PathBuf, Vec<OsString>)> {
@@ -321,6 +374,15 @@ mod tests {
         }
     }
 
+    fn write_executable_script(path: &Path, contents: &[u8]) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::write(path, contents).unwrap();
+        let mut permissions = std::fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).unwrap();
+    }
+
     #[test]
     fn wraps_guest_program_arguments_directory_and_environment() {
         let mut guest = Command::new("/bin/echo");
@@ -387,6 +449,120 @@ mod tests {
                 OsStr::new("argument"),
             ]
         );
+    }
+
+    #[test]
+    fn resolves_bare_shebang_program_from_command_path() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let script = bin.join("guest-script");
+        write_executable_script(&script, b"#!/bin/sh\necho guest\n");
+
+        let mut guest = Command::new("guest-script");
+        guest.env(PATH_ENV, &bin).arg("argument");
+
+        let wrapped = runner().command(&guest, None);
+        assert_eq!(
+            wrapped.get_args().collect::<Vec<_>>(),
+            [
+                OsStr::new("-quiet"),
+                OsStr::new("-disable_rseq"),
+                OsStr::new("-stack_size"),
+                OsStr::new("2M"),
+                OsStr::new("-c"),
+                OsStr::new("/opt/reverie/libreverie_dbi_client.so"),
+                OsStr::new("--"),
+                OsStr::new("/bin/sh"),
+                script.as_os_str(),
+                OsStr::new("argument"),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolves_bare_shebang_program_from_exact_environment_path() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let script = bin.join("guest-script");
+        write_executable_script(&script, b"#!/usr/bin/env bash\necho guest\n");
+        let environment = BTreeMap::from([(OsString::from(PATH_ENV), bin.into_os_string())]);
+
+        let mut guest = Command::new("guest-script");
+        guest.arg("argument");
+
+        let wrapped = runner().command(&guest, Some(&environment));
+        assert_eq!(
+            wrapped.get_args().collect::<Vec<_>>(),
+            [
+                OsStr::new("-quiet"),
+                OsStr::new("-disable_rseq"),
+                OsStr::new("-stack_size"),
+                OsStr::new("2M"),
+                OsStr::new("-c"),
+                OsStr::new("/opt/reverie/libreverie_dbi_client.so"),
+                OsStr::new("--"),
+                OsStr::new("/usr/bin/env"),
+                OsStr::new("bash"),
+                script.as_os_str(),
+                OsStr::new("argument"),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolves_relative_path_from_guest_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let script = bin.join("guest-script");
+        write_executable_script(&script, b"#!/bin/sh\necho guest\n");
+
+        let mut guest = Command::new("guest-script");
+        guest.current_dir(root.path()).env(PATH_ENV, "bin");
+
+        let wrapped = runner().command(&guest, None);
+        let args = wrapped.get_args().collect::<Vec<_>>();
+        assert_eq!(args[7], OsStr::new("/bin/sh"));
+        assert_eq!(args[8], script.as_os_str());
+        assert_eq!(wrapped.get_current_dir(), Some(root.path()));
+    }
+
+    #[test]
+    fn resolves_symlinked_shebang_program_without_canonicalizing() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let script = bin.join("real-script");
+        let wrapper = bin.join("guest-wrapper");
+        write_executable_script(&script, b"#!/bin/sh\necho guest\n");
+        std::os::unix::fs::symlink(&script, &wrapper).unwrap();
+
+        let mut guest = Command::new("guest-wrapper");
+        guest.env(PATH_ENV, &bin);
+
+        let wrapped = runner().command(&guest, None);
+        let args = wrapped.get_args().collect::<Vec<_>>();
+        assert_eq!(args[7], OsStr::new("/bin/sh"));
+        assert_eq!(args[8], wrapper.as_os_str());
+    }
+
+    #[test]
+    fn preserves_bare_non_script_program_token() {
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let executable = bin.join("guest-elf");
+        write_executable_script(&executable, b"\x7fELFplaceholder");
+
+        let mut guest = Command::new("guest-elf");
+        guest.env(PATH_ENV, &bin).arg("argument");
+
+        let wrapped = runner().command(&guest, None);
+        let args = wrapped.get_args().collect::<Vec<_>>();
+        assert_eq!(args[7], OsStr::new("guest-elf"));
+        assert_eq!(args[8], OsStr::new("argument"));
     }
 
     #[test]
