@@ -1484,6 +1484,34 @@ mod tests {
     }
 
     #[test]
+    fn injected_exec_returns_control_to_dynamorio() {
+        let mut counters = PrototypeCounters::default();
+        let mut guest: DbiGuest<'_, PrototypeTool> = DbiGuest::new(
+            0,
+            Pid::from_raw(10),
+            Pid::from_raw(10),
+            None,
+            0,
+            &mut counters,
+            &GLOBAL_STATE,
+            &CONFIG,
+            invoke,
+            read_regs,
+        );
+        let tail_result = Arc::clone(&guest.tail_inject_result);
+        let exec = Syscall::from_raw(Sysno::execve, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+
+        let polled = run_ready(guest.inject(exec), &tail_result);
+
+        assert!(polled.is_none(), "exec injection must suspend");
+        assert_eq!(
+            tail_result.take(),
+            Some(TailInjectAction::AllowOriginal),
+            "exec injection must return control to DynamoRIO"
+        );
+    }
+
+    #[test]
     fn tail_inject_records_result_and_suspends() {
         let mut counters = PrototypeCounters::default();
         let syscall = Syscall::from_raw(Sysno::write, SyscallArgs::new(1, 0x1000, 7, 0, 0, 0));
