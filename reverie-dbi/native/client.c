@@ -13,7 +13,6 @@
 #include <stdint.h>
 #include <string.h>
 #include <sys/ioctl.h>
-#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -939,12 +938,8 @@ static void runtime_idle(void) { dr_sleep(1); }
 
 static runtime_callbacks_t runtime_callbacks = {reverie_dbi_emit, runtime_idle};
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#77): Confirm the client-thread parent is always the
-// application process.
 static void runtime_background_init(void *argument) {
   (void)argument;
-  DR_ASSERT(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0);
   reverie_dbi_runtime_background_init(&runtime_callbacks);
 }
 
