@@ -705,13 +705,6 @@ static bool syscall_reads_stdin(void *drcontext, int sysnum,
 static bool filter_syscall(void *drcontext, int sysnum) { return true; }
 
 static bool pre_syscall(void *drcontext, int sysnum) {
-  /* AUTONOMOUS-BOT-IMPLEMENTED
-   * TODO-HUMAN-REVIEW(#53): confirm mmap may bypass external Tool policy.
-   * DynamoRIO must execute mmap itself so its post-syscall path registers
-   * newly mapped executable code. Re-injecting it from this callback bypasses
-   * that bookkeeping and can crash when the dynamic loader enters the map. */
-  if (sysnum == SYS_mmap)
-    return true;
   while (!reverie_dbi_runtime_ready())
     dr_sleep(1);
   uint64_t args[6];
