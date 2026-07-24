@@ -245,11 +245,15 @@ where
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
-        // An exiting application thread can invoke DynamoRIO's thread-exit
-        // callback reentrantly from `dr_invoke_syscall_as_app`. Defer those two
-        // syscalls until this Rust callback and all state borrows have returned.
+        // Exit can invoke DynamoRIO's thread-exit callback reentrantly, and
+        // exec must run through DynamoRIO itself so it can reload the client for
+        // the replacement image. Defer all four until this Rust callback and
+        // every state borrow have returned.
         let (number, args) = syscall.into_parts();
-        if matches!(number, Sysno::exit | Sysno::exit_group) {
+        if matches!(
+            number,
+            Sysno::exit | Sysno::exit_group | Sysno::execve | Sysno::execveat
+        ) {
             self.tail_inject_result.set_allow_original();
             std::future::pending().await
         }
@@ -1501,15 +1505,21 @@ mod tests {
         // The injected `write` returns its length argument (see `invoke`).
         assert_eq!(tail_result.take(), Some(TailInjectAction::Return(7)));
 
-        let exit = Syscall::from_raw(Sysno::exit_group, SyscallArgs::new(0, 0, 0, 0, 0, 0));
-        tail_result.clear();
-        let polled = run_ready(guest.tail_inject(exit), &tail_result);
-        assert!(polled.is_none(), "exit tail-inject must suspend");
-        assert_eq!(
-            tail_result.take(),
-            Some(TailInjectAction::AllowOriginal),
-            "exit must run only after Rust callback borrows are released"
-        );
+        for (number, operation) in [
+            (Sysno::exit_group, "exit"),
+            (Sysno::execve, "exec"),
+            (Sysno::execveat, "execveat"),
+        ] {
+            let syscall = Syscall::from_raw(number, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+            tail_result.clear();
+            let polled = run_ready(guest.tail_inject(syscall), &tail_result);
+            assert!(polled.is_none(), "{operation} tail-inject must suspend");
+            assert_eq!(
+                tail_result.take(),
+                Some(TailInjectAction::AllowOriginal),
+                "{operation} must run only after Rust callback borrows are released"
+            );
+        }
     }
 
     #[test]
