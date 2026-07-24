@@ -9,10 +9,11 @@ Third-party components
 ================================================================================
 
 Reverie's optional native backend sources are referenced as git submodules
-under `third-party/`. These submodules use `update = none` and are not fetched
-by a normal clone or Cargo build. No source or binaries from these projects are
+under `third-party/`. A normal clone does not fetch them. SaBRe and e9patch use
+`update = none`; DynamoRIO permits checkout so Cargo Git dependencies containing
+`reverie-dbi` remain buildable. No source or binaries from these projects are
 redistributed in this repository; only pinned submodule commit references are
-stored here. See `docs/BACKEND_SOURCES.md` for explicit activation commands.
+stored here. See `docs/BACKEND_SOURCES.md` for activation details.
 
 Building reverie-dbi after explicitly activating DynamoRIO builds DynamoRIO
 and, transitively, the third-party projects that DynamoRIO itself vendors as
