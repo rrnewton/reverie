@@ -231,6 +231,10 @@ where
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         let (number, args) = syscall.into_parts();
+        if matches!(number, Sysno::execve | Sysno::execveat) {
+            self.tail_inject_result.set_allow_original();
+            return std::future::pending().await;
+        }
         let args = [
             args.arg0 as u64,
             args.arg1 as u64,
