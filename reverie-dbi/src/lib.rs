@@ -1086,6 +1086,7 @@ pub unsafe extern "C" fn reverie_dbi_runtime_exec_failed(
 /// Resumes the synchronous prototype after a fork-like syscall.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
+// TODO-HUMAN-REVIEW(PR-69): Confirm parent scheduler resume callback semantics.
 pub extern "C" fn reverie_dbi_runtime_process_resumed() {}
 
 /// Resets prototype state in an ordinary fork child and returns its generation.
@@ -1095,6 +1096,7 @@ pub extern "C" fn reverie_dbi_runtime_process_resumed() {}
 /// `counters` must point to aligned, writable prototype state.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
+// TODO-HUMAN-REVIEW(PR-69): Confirm fork-child prototype reset ABI.
 pub unsafe extern "C" fn reverie_dbi_runtime_fork_child(
     counters: *mut PrototypeCounters,
     _pid: i32,

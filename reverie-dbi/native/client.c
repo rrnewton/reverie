@@ -731,6 +731,9 @@ static bool is_exec_syscall(int sysnum) {
       ;
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-69): Confirm only ordinary fork-like syscalls reach
+// fork-init.
 static bool is_fork_syscall(int sysnum) {
   return sysnum == SYS_fork || sysnum == SYS_clone || sysnum == SYS_clone3;
 }
@@ -873,6 +876,8 @@ static void event_exit(void) {
   drmgr_exit();
 }
 
+// TODO-HUMAN-REVIEW(PR-69): Confirm fork-child runtime reset is
+// async-fork-safe.
 static void fork_init(void *drcontext) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
