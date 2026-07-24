@@ -459,6 +459,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mount_bind_readonly_rejects_writes() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::write(source.join("data"), "original").unwrap();
+
+        let output = Command::new("sh")
+            .args(["-c", "printf changed > \"$TARGET\""])
+            .env("TARGET", target.join("data"))
+            .map_root()
+            .mount(Mount::bind(&source, &target).readonly())
+            .output()
+            .await
+            .unwrap();
+
+        assert_ne!(output.status, ExitStatus::Exited(0));
+        assert_eq!(fs::read(source.join("data")).unwrap(), b"original");
+    }
+
+    #[tokio::test]
     async fn local_networking_ping() {
         const CHILD_ENV: &str = "REVERIE_PROCESS_LOOPBACK_TEST_CHILD";
 

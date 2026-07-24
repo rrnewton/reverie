@@ -309,6 +309,20 @@ impl Mount {
             )
         })?;
 
+        // Linux ignores MS_RDONLY on the initial bind mount. Apply per-mount flags with the
+        // required bind remount so a read-only bind cannot mutate its source inode.
+        if self.flags.contains(MountFlags::MS_BIND) && self.flags.contains(MountFlags::MS_RDONLY) {
+            Errno::result(unsafe {
+                libc::mount(
+                    ptr::null(),
+                    self.target_ptr(),
+                    ptr::null(),
+                    (self.flags | MountFlags::MS_REMOUNT).bits(),
+                    ptr::null(),
+                )
+            })?;
+        }
+
         Ok(())
     }
 }
