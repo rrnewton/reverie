@@ -7,9 +7,11 @@
  */
 
 use std::ffi::CStr;
+use std::mem::MaybeUninit;
 
 use syscalls::Errno;
 use syscalls::Sysno;
+use syscalls::syscall;
 use syscalls::syscall3;
 
 use super::paths;
@@ -52,17 +54,93 @@ pub fn sys_readlink(
     }
 }
 
-/// SaBRe cannot atomically replace an image and keep its plugin injected. The
-/// previous loader rewrite destroyed the guest image before malformed targets,
-/// bad interpreters, and permission errors were known. Reject exec before
-/// dereferencing guest pointers until the loader can preserve kernel semantics.
-pub fn sys_execve(
-    _filename: *const libc::c_char,
-    _argv: *const *const libc::c_char,
-    _envp: *const *const libc::c_char,
-) -> Result<usize, Errno> {
-    Err(Errno::ENOSYS)
+const MAX_EXEC_ARG_POINTERS: usize = 1 << 18;
+
+/// Read one pointer from guest memory without risking a process-local fault.
+fn read_guest_pointer(address: usize) -> Result<*const libc::c_char, Errno> {
+    let mut pointer = MaybeUninit::<*const libc::c_char>::uninit();
+    let local = libc::iovec {
+        iov_base: pointer.as_mut_ptr().cast(),
+        iov_len: std::mem::size_of::<*const libc::c_char>(),
+    };
+    let remote = libc::iovec {
+        iov_base: address as *mut libc::c_void,
+        iov_len: std::mem::size_of::<*const libc::c_char>(),
+    };
+    let copied = unsafe {
+        syscall!(
+            Sysno::process_vm_readv,
+            std::process::id() as usize,
+            &local as *const libc::iovec as usize,
+            1,
+            &remote as *const libc::iovec as usize,
+            1,
+            0
+        )?
+    };
+    if copied != std::mem::size_of::<*const libc::c_char>() {
+        return Err(Errno::EFAULT);
+    }
+    Ok(unsafe { pointer.assume_init() })
 }
+
+/// Copy the argv pointer list while leaving each argument string in guest memory.
+fn collect_exec_arguments(
+    argv: *const *const libc::c_char,
+) -> Result<Vec<*const libc::c_char>, Errno> {
+    if argv.is_null() {
+        return Ok(Vec::new());
+    }
+
+    let mut arguments = Vec::new();
+    for index in 0..MAX_EXEC_ARG_POINTERS {
+        let offset = index
+            .checked_mul(std::mem::size_of::<*const libc::c_char>())
+            .ok_or(Errno::EFAULT)?;
+        let address = (argv as usize).checked_add(offset).ok_or(Errno::EFAULT)?;
+        let argument = read_guest_pointer(address)?;
+        if argument.is_null() {
+            return Ok(arguments);
+        }
+        arguments.push(argument);
+    }
+    Err(Errno::E2BIG)
+}
+
+/// Re-enter SaBRe around a new guest image so the plugin remains active.
+///
+/// SaBRe expects `sabre plugin.so -- program args...`. The kernel still reads
+/// the guest's strings and environment directly, while `process_vm_readv`
+/// safely copies only the argv pointer list needed to prepend the loader.
+pub fn sys_execve(
+    filename: *const libc::c_char,
+    argv: *const *const libc::c_char,
+    envp: *const *const libc::c_char,
+) -> Result<usize, Errno> {
+    // Ask the kernel to validate the pathname before constructing SaBRe's
+    // argv. This also prevents a null filename from truncating the new list.
+    unsafe { syscall!(Sysno::access, filename as usize, libc::F_OK as usize)? };
+
+    let arguments = collect_exec_arguments(argv)?;
+    let sabre = paths::sabre_path().as_ptr();
+    let mut new_argv = Vec::with_capacity(arguments.len() + 5);
+    new_argv.push(sabre);
+    new_argv.push(paths::plugin_path().as_ptr());
+    new_argv.push(c"--".as_ptr());
+    new_argv.push(filename);
+    new_argv.extend(arguments.into_iter().skip(1));
+    new_argv.push(core::ptr::null());
+
+    unsafe {
+        syscall3(
+            Sysno::execve,
+            sabre as usize,
+            new_argv.as_ptr() as usize,
+            envp as usize,
+        )
+    }
+}
+
 pub fn sys_execveat() -> Result<usize, Errno> {
     Err(Errno::ENOSYS)
 }
@@ -242,10 +320,10 @@ mod exec_tests {
     use super::*;
 
     #[test]
-    fn execve_rejects_all_forms_without_dereferencing_guest_pointers() {
+    fn execve_rejects_invalid_filename_without_replacing_the_process() {
         assert_eq!(
             sys_execve(core::ptr::null(), core::ptr::null(), core::ptr::null()),
-            Err(Errno::ENOSYS)
+            Err(Errno::EFAULT)
         );
         assert_eq!(
             sys_execve(
@@ -253,37 +331,37 @@ mod exec_tests {
                 usize::MAX as *const *const libc::c_char,
                 usize::MAX as *const *const libc::c_char,
             ),
-            Err(Errno::ENOSYS)
+            Err(Errno::EFAULT)
         );
-        let relative = b"relative-program\0";
+        let missing = c"/definitely/missing/reverie-sabre-exec-test";
+        assert_eq!(
+            sys_execve(missing.as_ptr(), core::ptr::null(), core::ptr::null()),
+            Err(Errno::ENOENT)
+        );
+    }
+
+    #[test]
+    fn execve_reads_argv_pointers_without_dereferencing_strings() {
         let custom_arg0 = b"custom-argv-zero\0";
+        let argument = usize::MAX as *const libc::c_char;
         let argv = [
             custom_arg0.as_ptr() as *const libc::c_char,
+            argument,
             core::ptr::null(),
         ];
         assert_eq!(
-            sys_execve(
-                relative.as_ptr() as *const libc::c_char,
-                argv.as_ptr(),
-                core::ptr::null(),
-            ),
-            Err(Errno::ENOSYS)
+            collect_exec_arguments(argv.as_ptr()),
+            Ok(argv[..2].to_vec())
         );
+        assert_eq!(collect_exec_arguments(core::ptr::null()), Ok(Vec::new()));
+        assert_eq!(
+            collect_exec_arguments(usize::MAX as *const *const libc::c_char),
+            Err(Errno::EFAULT)
+        );
+    }
 
-        for unsupported in [
-            b"non-executable\0".as_slice(),
-            b"malformed-elf\0".as_slice(),
-        ] {
-            assert_eq!(
-                sys_execve(
-                    unsupported.as_ptr() as *const libc::c_char,
-                    argv.as_ptr(),
-                    core::ptr::null(),
-                ),
-                Err(Errno::ENOSYS)
-            );
-        }
-
+    #[test]
+    fn execveat_remains_explicitly_unsupported() {
         assert_eq!(sys_execveat(), Err(Errno::ENOSYS));
     }
 }

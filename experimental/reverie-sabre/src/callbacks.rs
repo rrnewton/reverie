@@ -8,6 +8,7 @@
 
 use reverie_syscalls::LocalMemory;
 use reverie_syscalls::Syscall;
+use syscalls::Errno;
 use syscalls::SyscallArgs;
 use syscalls::Sysno;
 use syscalls::syscall;
@@ -24,6 +25,46 @@ use super::vdso;
 use crate::signal::guard;
 
 pub const CONTROLLED_EXIT_SIGNAL: libc::c_int = libc::SIGSTKFLT;
+
+/// Read clone3's stack pointer without directly dereferencing guest memory.
+///
+/// `process_vm_readv` asks the kernel to validate the address, preserving the
+/// syscall's `EFAULT` behavior when the guest supplies an invalid pointer.
+fn read_clone3_stack(pid: u32, args: usize, size: usize) -> Result<u64, Errno> {
+    const CLONE_ARGS_MIN_SIZE: usize = 64;
+    const STACK_OFFSET: usize = 5 * std::mem::size_of::<u64>();
+
+    // Let clone3 itself report EINVAL for undersized argument structures.
+    if size < CLONE_ARGS_MIN_SIZE {
+        return Ok(0);
+    }
+
+    let stack_address = args.checked_add(STACK_OFFSET).ok_or(Errno::EFAULT)?;
+    let mut stack = 0u64;
+    let local = libc::iovec {
+        iov_base: (&mut stack as *mut u64).cast(),
+        iov_len: std::mem::size_of_val(&stack),
+    };
+    let remote = libc::iovec {
+        iov_base: stack_address as *mut libc::c_void,
+        iov_len: std::mem::size_of_val(&stack),
+    };
+    let copied = unsafe {
+        syscall!(
+            Sysno::process_vm_readv,
+            pid as usize,
+            &local as *const libc::iovec as usize,
+            1,
+            &remote as *const libc::iovec as usize,
+            1,
+            0
+        )?
+    };
+
+    (copied == std::mem::size_of_val(&stack))
+        .then_some(stack)
+        .ok_or(Errno::EFAULT)
+}
 
 /// Implement the thread notifier trait for any global tools
 impl<T> thread::EventSink for T
@@ -91,74 +132,95 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
     guard::drain_pending();
 
     let sys_no = Sysno::from(syscall as i32);
+    let args = SyscallArgs::new(arg1, arg2, arg3, arg4, arg5, arg6);
+    let intercepted = Syscall::from_raw(sys_no, args);
+    let wrapper_address = wrapper_sp as usize;
+    let return_address = unsafe { (*wrapper_sp).ret } as usize;
 
     let result = if sys_no == Sysno::clone && arg2 != 0 {
-        thread.maybe_fork_as_guest(|| unsafe {
-            ffi::clone_syscall(
-                arg1,
-                arg2 as *mut libc::c_void,
-                arg3 as *mut i32,
-                arg4 as *mut i32,
-                arg5,
-                (*wrapper_sp).ret,
-            )
-        })?
-    } else if sys_no == Sysno::clone {
         thread.maybe_fork_as_guest(|| {
-            let args = SyscallArgs::new(arg1, arg2, arg3, arg4, arg5, arg6);
-            let syscall = Syscall::from_raw(sys_no, args);
-
             T::global()
-                .syscall(syscall, &LocalMemory::new())
-                .map_or_else(|e| -e.into_raw() as usize, |x| x as usize)
+                .syscall_with_inject(intercepted, &LocalMemory::new(), || unsafe {
+                    ffi::clone_syscall(
+                        arg1,
+                        arg2 as *mut libc::c_void,
+                        arg3 as *mut i32,
+                        arg4 as *mut i32,
+                        arg5,
+                        return_address as *const libc::c_void,
+                    )
+                })
+                .map_or_else(|e| -e.into_raw() as usize, |x| x)
+        })?
+    } else if sys_no == Sysno::clone || sys_no == Sysno::fork {
+        thread.maybe_fork_as_guest(|| {
+            T::global()
+                .syscall_with_inject(intercepted, &LocalMemory::new(), || unsafe {
+                    syscall!(sys_no, arg1, arg2, arg3, arg4, arg5, arg6)
+                        .map_or_else(|e| -e.into_raw() as usize, |x| x)
+                })
+                .map_or_else(|e| -e.into_raw() as usize, |x| x)
         })?
     } else if utils::is_vfork(sys_no, arg1) {
-        thread.maybe_fork_as_guest(|| unsafe {
-            let pid = ffi::vfork_syscall();
-            if pid == 0 {
-                // Child
-
-                // Even though this function doesn't return, this is
-                // safe because the thread is in `Guest` and that state
-                // will be correct in the child application when the
-                // jmp takes it there
-                ffi::vfork_return_from_child(wrapper_sp)
-            } else {
-                // parent
-                pid
-            }
+        thread.maybe_fork_as_guest(|| {
+            T::global()
+                .syscall_with_inject(intercepted, &LocalMemory::new(), || unsafe {
+                    let pid = ffi::vfork_syscall();
+                    if pid == 0 {
+                        // The child is already in Guest state and jumps back to
+                        // SaBRe's trampoline instead of returning through Rust.
+                        ffi::vfork_return_from_child(
+                            wrapper_address as *const ffi::syscall_stackframe,
+                        )
+                    } else {
+                        pid
+                    }
+                })
+                .map_or_else(|e| -e.into_raw() as usize, |x| x)
         })?
     } else if sys_no == Sysno::clone3 {
-        let cl_args = unsafe { &*(arg1 as *const ffi::clone_args) };
-        if cl_args.stack == 0 {
-            thread.maybe_fork_as_guest(|| unsafe {
-                syscall!(sys_no, arg1, arg2, arg3, arg4, arg5, arg6)
-                    .map_or_else(|e| -e.into_raw() as usize, |x| x as usize)
-            })?
-        } else {
-            thread.maybe_fork_as_guest(|| unsafe {
-                ffi::clone3_syscall(arg1, arg2, arg3, 0, arg5, (*wrapper_sp).ret)
-            })?
-        }
+        let stack = read_clone3_stack(thread.get_process_and_thread_ids().pid, arg1, arg2);
+        thread.maybe_fork_as_guest(|| {
+            T::global()
+                .syscall_with_inject(intercepted, &LocalMemory::new(), || match stack {
+                    Err(errno) => -errno.into_raw() as usize,
+                    Ok(0) => unsafe {
+                        syscall!(sys_no, arg1, arg2, arg3, arg4, arg5, arg6)
+                            .map_or_else(|e| -e.into_raw() as usize, |x| x)
+                    },
+                    Ok(_) => unsafe {
+                        ffi::clone3_syscall(
+                            arg1,
+                            arg2,
+                            arg3,
+                            0,
+                            arg5,
+                            return_address as *mut libc::c_void,
+                        )
+                    },
+                })
+                .map_or_else(|e| -e.into_raw() as usize, |x| x)
+        })?
     } else if sys_no == Sysno::exit {
-        // intercept the exit_group syscall and signal all the threads to exit
-        // in a predictable and trackable way
-        if thread.try_exit() {
-            terminate(arg1);
-        }
-        0
+        T::global()
+            .syscall_with_inject(intercepted, &LocalMemory::new(), || {
+                if thread.try_exit() {
+                    terminate(arg1);
+                }
+                0
+            })
+            .map_or_else(|e| -e.into_raw() as usize, |x| x)
     } else if sys_no == Sysno::exit_group {
-        // intercept the exit_group syscall and signal all the threads to exit
-        // in a predictable and trackable way
-        exit_group_with_thread(thread, arg1)
+        T::global()
+            .syscall_with_inject(intercepted, &LocalMemory::new(), || {
+                exit_group_with_thread(thread, arg1)
+            })
+            .map_or_else(|e| -e.into_raw() as usize, |x| x)
     } else {
-        let args = SyscallArgs::new(arg1, arg2, arg3, arg4, arg5, arg6);
-        let syscall = Syscall::from_raw(sys_no, args);
-
         thread.execute_as_guest(|| {
             T::global()
-                .syscall(syscall, &LocalMemory::new())
-                .map_or_else(|e| -e.into_raw() as usize, |x| x as usize)
+                .syscall(intercepted, &LocalMemory::new())
+                .map_or_else(|e| -e.into_raw() as usize, |x| x)
         })?
     };
 
@@ -291,7 +353,18 @@ fn terminate_group(exit_code: usize) -> ! {
 
 #[cfg(test)]
 mod exit_group_tests {
+    use syscalls::Errno;
+
+    use super::read_clone3_stack;
     use super::terminate_group;
+
+    #[test]
+    fn clone3_stack_read_rejects_invalid_guest_pointer() {
+        assert_eq!(
+            read_clone3_stack(std::process::id(), 1, 88),
+            Err(Errno::EFAULT)
+        );
+    }
 
     #[test]
     fn final_exit_group_terminates_untracked_threads() {

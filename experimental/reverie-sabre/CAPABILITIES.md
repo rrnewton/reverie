@@ -15,7 +15,7 @@ the riptrace demo, but it is not a drop-in replacement for
 | Process exit | `exit_group` requests orderly exit from tracked threads, then issues a real kernel `exit_group` so threads that never reached an interception boundary cannot survive. Configurable timeout handling is supported. |
 | Signals | Central handlers mediate standard catchable signals. Guest `rt_sigaction` registration and query are virtualized, including `SA_RESTART`. Linux default ignore, continue, stop, and terminate dispositions are preserved. |
 | Signal exclusion | The kernel handler only enqueues fixed-size events. Tool and guest callbacks drain from normal runtime context; bounded-queue overflow coalesces standard signals. |
-| Fork and exec | Forked children lazily construct a new Tool and RPC transport. `execve` and `execveat` fail with `ENOSYS` before guest pointers are read or the current image is replaced. |
+| Fork and exec | Forked children lazily construct a new Tool and RPC transport. `execve` re-enters the pinned SaBRe loader so the plugin remains active across the new image. `execveat` remains unsupported. |
 | Timing and detours | Supports RDTSC callbacks, selected VDSO callbacks, and macro-generated function detours. |
 | Global state | Uses a synchronous generated RPC client to a host-side service. The channel is process-local and recreated after fork. |
 | Loader inputs | Validated with dynamically linked x86-64 guests and the loader revision in `SABRE_UPSTREAM.toml`. |
@@ -78,8 +78,10 @@ cargo test -p reverie-sabre
   delivery through a shared backend-neutral contract.
 - There is no tool-facing register, stack, remote injection, subscription,
   CPUID, timer, or PMU interface comparable to `reverie-ptrace`.
-- `execve`, `execveat`, static binaries, non-x86-64 guests, loader distribution,
-  and broad clone/vfork/exec stress coverage remain unsupported or unverified.
+- `execveat`, static binaries, non-x86-64 guests, loader distribution, and broad
+  clone/vfork/exec stress coverage remain unsupported or unverified.
+- `execve` validates the pathname and argv pointer list before replacing the
+  image, but loader-time failures after SaBRe starts cannot return to the old image.
 - RPC is blocking, reserves guest file descriptor 100, and injected-process
   formatting may allocate.
 

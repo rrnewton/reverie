@@ -50,6 +50,23 @@ pub trait Tool {
     fn syscall(&self, syscall: Syscall, _memory: &LocalMemory) -> Result<usize, Errno> {
         unsafe { syscall.call() }
     }
+    /// Handles a syscall whose execution needs SaBRe runtime bookkeeping.
+    ///
+    /// The default preserves the legacy behavior by executing the supplied
+    /// operation. Shared Reverie adapters override this so the operation is
+    /// exposed through `Guest::inject` from `Tool::handle_syscall_event`.
+    #[inline]
+    fn syscall_with_inject<F>(
+        &self,
+        _syscall: Syscall,
+        _memory: &LocalMemory,
+        mut inject: F,
+    ) -> Result<usize, Errno>
+    where
+        F: FnMut() -> usize + Send + Sync,
+    {
+        Errno::from_ret(inject())
+    }
 
     /// Called when a thread first starts.
     #[inline]
