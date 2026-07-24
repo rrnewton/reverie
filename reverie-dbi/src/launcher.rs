@@ -223,6 +223,8 @@ impl DbiRunner {
     }
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#57): Confirm PATH lookup matches Command/execvp semantics.
 fn resolve_program(
     guest: &Command,
     environment: Option<&BTreeMap<OsString, OsString>>,
