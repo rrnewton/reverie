@@ -21,6 +21,10 @@ jobs:
       with:
         submodules: false
     - name: Activate DynamoRIO backend source
+      env:
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: safe.directory
+        GIT_CONFIG_VALUE_0: ${{ github.workspace }}
       run: scripts/backend-submodule.sh activate dynamorio
     - name: Dependencies
       run: sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev
@@ -97,6 +101,10 @@ jobs:
       with:
         submodules: false
     - name: Activate DynamoRIO backend source
+      env:
+        GIT_CONFIG_COUNT: "1"
+        GIT_CONFIG_KEY_0: safe.directory
+        GIT_CONFIG_VALUE_0: ${{ github.workspace }}
       run: scripts/backend-submodule.sh activate dynamorio
     - name: Dependencies
       run: |
