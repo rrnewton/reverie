@@ -108,6 +108,10 @@ fn execute_basic_syscall_with_output(
         read(memory, state, args)
     } else if number == libc::SYS_pread64 as u64 {
         pread64(memory, state, args)
+    } else if number == libc::SYS_pipe as u64 {
+        pipe2(memory, state, args[0], 0)
+    } else if number == libc::SYS_pipe2 as u64 {
+        pipe2(memory, state, args[0], args[1])
     } else if number == libc::SYS_fcntl as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         fcntl(state, args)
@@ -142,6 +146,8 @@ fn execute_basic_syscall_with_output(
         || number == libc::SYS_getegid as u64
     {
         0
+    } else if number == libc::SYS_getgroups as u64 {
+        getgroups(memory, args)
     } else if number == libc::SYS_arch_prctl as u64 {
         return arch_prctl(memory, state, args);
     } else if number == libc::SYS_brk as u64 {
@@ -650,6 +656,89 @@ fn insert_file(state: &mut LoadedStaticElf, file: std::fs::File) -> i64 {
     };
     state.files.insert(fd, file);
     i64::from(fd)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+fn pipe2(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    address: u64,
+    raw_flags: u64,
+) -> i64 {
+    let allowed_flags = (libc::O_CLOEXEC | libc::O_DIRECT | libc::O_NONBLOCK) as u64;
+    if raw_flags & !allowed_flags != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let mut host_fds = [-1; 2];
+    // SAFETY: host_fds has room for both descriptors and flags were validated above.
+    if unsafe { libc::pipe2(host_fds.as_mut_ptr(), raw_flags as libc::c_int) } != 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: pipe2 returned two new owned descriptors on success.
+    let read_end = unsafe { std::fs::File::from_raw_fd(host_fds[0]) };
+    // SAFETY: pipe2 returned two new owned descriptors on success.
+    let write_end = unsafe { std::fs::File::from_raw_fd(host_fds[1]) };
+
+    let read_fd = insert_file(state, read_end);
+    if read_fd < 0 {
+        return read_fd;
+    }
+    let write_fd = insert_file(state, write_end);
+    if write_fd < 0 {
+        state.files.remove(&(read_fd as libc::c_int));
+        return write_fd;
+    }
+
+    let read_fd = read_fd as libc::c_int;
+    let write_fd = write_fd as libc::c_int;
+    let mut bytes = [0; std::mem::size_of::<[libc::c_int; 2]>()];
+    bytes[..std::mem::size_of::<libc::c_int>()].copy_from_slice(&read_fd.to_ne_bytes());
+    bytes[std::mem::size_of::<libc::c_int>()..].copy_from_slice(&write_fd.to_ne_bytes());
+    if memory.write(address, &bytes).is_err() {
+        state.files.remove(&read_fd);
+        state.files.remove(&write_fd);
+        return negative_errno(libc::EFAULT);
+    }
+    0
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+fn getgroups(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
+    let size = args[0] as libc::c_int;
+    if size < 0 {
+        return negative_errno(libc::EINVAL);
+    }
+
+    // SAFETY: a zero-sized query does not dereference the list pointer.
+    let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+    if count < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    if size == 0 {
+        return i64::from(count);
+    }
+    if size < count {
+        return negative_errno(libc::EINVAL);
+    }
+
+    let mut groups = vec![0; count as usize];
+    // SAFETY: groups has room for count gid_t values.
+    let actual = unsafe { libc::getgroups(count, groups.as_mut_ptr()) };
+    if actual < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    if actual == 0 {
+        return 0;
+    }
+
+    let mut bytes = Vec::with_capacity(actual as usize * std::mem::size_of::<libc::gid_t>());
+    for group in groups.into_iter().take(actual as usize) {
+        bytes.extend_from_slice(&group.to_ne_bytes());
+    }
+    match memory.write(args[1], &bytes) {
+        Ok(()) => i64::from(actual),
+        Err(_) => negative_errno(libc::EFAULT),
+    }
 }
 
 fn fstat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -1442,6 +1531,215 @@ mod tests {
                 [0, libc::F_GETFL as u64, 0, 0, 0, 0],
             ),
             negative_errno(libc::EBADF)
+        );
+    }
+
+    #[test]
+    fn pipe_syscalls_create_owned_guest_descriptors() {
+        const PIPE_FDS: u64 = 0x100;
+        const PAYLOAD: u64 = 0x200;
+        const READ_BUFFER: u64 = 0x300;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(PAYLOAD, b"pipe-data").unwrap();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, libc::O_APPEND as u64, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert!(state.files.is_empty());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [u64::MAX, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert!(state.files.is_empty());
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [
+                    PIPE_FDS,
+                    (libc::O_CLOEXEC | libc::O_NONBLOCK) as u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        assert_eq!(pipe_fds, [3, 4]);
+
+        let read_flags = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [pipe_fds[0] as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        ) as libc::c_int;
+        let write_flags = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [pipe_fds[1] as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        ) as libc::c_int;
+        assert_eq!(read_flags & libc::O_ACCMODE, libc::O_RDONLY);
+        assert_eq!(write_flags & libc::O_ACCMODE, libc::O_WRONLY);
+        assert_ne!(read_flags & libc::O_NONBLOCK, 0);
+        assert_ne!(write_flags & libc::O_NONBLOCK, 0);
+        for fd in pipe_fds {
+            let host_fd = state.files.get(&fd).unwrap().as_raw_fd();
+            // SAFETY: host_fd is live and F_GETFD takes no third argument.
+            assert_ne!(
+                unsafe { libc::fcntl(host_fd, libc::F_GETFD) } & libc::FD_CLOEXEC,
+                0
+            );
+        }
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [pipe_fds[1] as u64, PAYLOAD, 9, 0, 0, 0],
+            ),
+            9
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [pipe_fds[0] as u64, READ_BUFFER, 9, 0, 0, 0],
+            ),
+            9
+        );
+        let mut payload = [0; 9];
+        memory.read(READ_BUFFER, &mut payload).unwrap();
+        assert_eq!(&payload, b"pipe-data");
+
+        for fd in pipe_fds {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [fd as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+        }
+        assert!(state.files.is_empty());
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        assert_eq!(pipe_fds, [3, 4]);
+        for fd in pipe_fds {
+            let flags = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+            ) as libc::c_int;
+            assert_eq!(flags & libc::O_NONBLOCK, 0);
+        }
+    }
+
+    #[test]
+    fn getgroups_matches_host_credentials_and_validates_output() {
+        const GROUPS: u64 = 0x100;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        // SAFETY: a zero-sized query does not dereference the list pointer.
+        let count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+        assert!(count >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getgroups,
+                [0, u64::MAX, 0, 0, 0, 0],
+            ),
+            i64::from(count)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getgroups,
+                [u64::MAX, GROUPS, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        if count == 0 {
+            return;
+        }
+
+        let mut expected = vec![0; count as usize];
+        // SAFETY: expected has room for count gid_t values.
+        assert_eq!(
+            unsafe { libc::getgroups(count, expected.as_mut_ptr()) },
+            count
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getgroups,
+                [count as u64, GROUPS, 0, 0, 0, 0],
+            ),
+            i64::from(count)
+        );
+        let mut bytes = vec![0; count as usize * std::mem::size_of::<libc::gid_t>()];
+        memory.read(GROUPS, &mut bytes).unwrap();
+        let (groups, remainder) = bytes.as_chunks::<{ std::mem::size_of::<libc::gid_t>() }>();
+        assert!(remainder.is_empty());
+        let actual = groups
+            .iter()
+            .map(|bytes| libc::gid_t::from_ne_bytes(*bytes))
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getgroups,
+                [(count - 1) as u64, GROUPS, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getgroups,
+                [count as u64, u64::MAX, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
         );
     }
 
