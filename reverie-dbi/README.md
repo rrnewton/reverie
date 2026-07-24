@@ -17,8 +17,10 @@ native DynamoRIO client:
   destination address), and follows random descriptors across the `read`/`pread`/
   `readv`/`preadv` family and `dup`/`fcntl(F_DUPFD)` duplication;
 - virtualizes `getrusage` and `sysinfo` process metadata;
-- forwards `write` to a Rust `PrototypeTool`, which executes it through
-  `Guest::inject`, returns its result, and suppresses the original syscall;
+- routes `open`/`openat`/`creat`, `read`/`write`/`close`, the legacy and modern
+  stat variants, `lseek`, and `access`/`faccessat`/`faccessat2` through the Rust
+  `PrototypeTool` and `Guest::inject`, returning the injected result while
+  suppressing the original syscall;
 - launches shebang programs through their interpreter while preserving the exact
   guest environment; and
 - optionally reports process totals when the application exits.
