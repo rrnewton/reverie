@@ -133,6 +133,7 @@ impl<T> Default for ProcessCell<T> {
     }
 }
 
+#[cfg(test)]
 mod process_cell_tests {
     use std::sync::Mutex;
     use std::sync::mpsc;
