@@ -231,6 +231,10 @@ where
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         let (number, args) = syscall.into_parts();
+        if matches!(number, Sysno::execve | Sysno::execveat) {
+            self.tail_inject_result.set_allow_original();
+            return std::future::pending().await;
+        }
         let args = [
             args.arg0 as u64,
             args.arg1 as u64,
@@ -245,11 +249,15 @@ where
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
-        // An exiting application thread can invoke DynamoRIO's thread-exit
-        // callback reentrantly from `dr_invoke_syscall_as_app`. Defer those two
-        // syscalls until this Rust callback and all state borrows have returned.
+        // Exit can invoke DynamoRIO's thread-exit callback reentrantly, and
+        // exec must run through DynamoRIO itself so it can reload the client for
+        // the replacement image. Defer all four until this Rust callback and
+        // every state borrow have returned.
         let (number, args) = syscall.into_parts();
-        if matches!(number, Sysno::exit | Sysno::exit_group) {
+        if matches!(
+            number,
+            Sysno::exit | Sysno::exit_group | Sysno::execve | Sysno::execveat
+        ) {
             self.tail_inject_result.set_allow_original();
             std::future::pending().await
         }
@@ -1010,6 +1018,15 @@ static TOTAL_BRANCHES: AtomicU64 = AtomicU64::new(0);
 static TOTAL_SYSCALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "prototype-runtime")]
 static TOTAL_REWRITTEN: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "prototype-runtime")]
+static IMAGE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Begins a new DynamoRIO application image and returns its generation.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_dbi_runtime_image_init() -> u64 {
+    IMAGE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
+}
 
 /// Initializes the prototype state for the current application thread.
 ///
@@ -1031,6 +1048,19 @@ pub unsafe extern "C" fn reverie_dbi_runtime_thread_init(counters: *mut Prototyp
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_dbi_runtime_thread_exit(_counters: *mut PrototypeCounters) {}
 
+/// Restores prototype state after an exec syscall returns with an error.
+///
+/// # Safety
+///
+/// `counters` must be the pointer initialized for the current application thread.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbi_runtime_exec_failed(
+    _counters: *mut PrototypeCounters,
+    _pid: i32,
+) {
+}
+
 /// Handles a DynamoRIO pre-syscall event.
 ///
 /// Returning one asks the native client to suppress the original syscall and
@@ -1048,6 +1078,7 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
     counters: *mut PrototypeCounters,
     tid: i32,
     pid: i32,
+    _image_generation: u64,
     sysnum: i64,
     args: *const u64,
     branches: u64,
@@ -1154,7 +1185,7 @@ pub extern "C" fn reverie_dbi_runtime_background_init(_argument: *mut c_void) {}
 /// Reports whether the built-in prototype runtime is ready for callbacks.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub extern "C" fn reverie_dbi_runtime_ready() -> i32 {
+pub extern "C" fn reverie_dbi_runtime_ready(_image_generation: u64) -> i32 {
     1
 }
 
@@ -1466,6 +1497,34 @@ mod tests {
     }
 
     #[test]
+    fn injected_exec_returns_control_to_dynamorio() {
+        let mut counters = PrototypeCounters::default();
+        let mut guest: DbiGuest<'_, PrototypeTool> = DbiGuest::new(
+            0,
+            Pid::from_raw(10),
+            Pid::from_raw(10),
+            None,
+            0,
+            &mut counters,
+            &GLOBAL_STATE,
+            &CONFIG,
+            invoke,
+            read_regs,
+        );
+        let tail_result = Arc::clone(&guest.tail_inject_result);
+        let exec = Syscall::from_raw(Sysno::execve, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+
+        let polled = run_ready(guest.inject(exec), &tail_result);
+
+        assert!(polled.is_none(), "exec injection must suspend");
+        assert_eq!(
+            tail_result.take(),
+            Some(TailInjectAction::AllowOriginal),
+            "exec injection must return control to DynamoRIO"
+        );
+    }
+
+    #[test]
     fn tail_inject_records_result_and_suspends() {
         let mut counters = PrototypeCounters::default();
         let syscall = Syscall::from_raw(Sysno::write, SyscallArgs::new(1, 0x1000, 7, 0, 0, 0));
@@ -1491,15 +1550,21 @@ mod tests {
         // The injected `write` returns its length argument (see `invoke`).
         assert_eq!(tail_result.take(), Some(TailInjectAction::Return(7)));
 
-        let exit = Syscall::from_raw(Sysno::exit_group, SyscallArgs::new(0, 0, 0, 0, 0, 0));
-        tail_result.clear();
-        let polled = run_ready(guest.tail_inject(exit), &tail_result);
-        assert!(polled.is_none(), "exit tail-inject must suspend");
-        assert_eq!(
-            tail_result.take(),
-            Some(TailInjectAction::AllowOriginal),
-            "exit must run only after Rust callback borrows are released"
-        );
+        for (number, operation) in [
+            (Sysno::exit_group, "exit"),
+            (Sysno::execve, "exec"),
+            (Sysno::execveat, "execveat"),
+        ] {
+            let syscall = Syscall::from_raw(number, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+            tail_result.clear();
+            let polled = run_ready(guest.tail_inject(syscall), &tail_result);
+            assert!(polled.is_none(), "{operation} tail-inject must suspend");
+            assert_eq!(
+                tail_result.take(),
+                Some(TailInjectAction::AllowOriginal),
+                "{operation} must run only after Rust callback borrows are released"
+            );
+        }
     }
 
     #[test]
@@ -1520,5 +1585,12 @@ mod tests {
         assert_eq!(deterministic_port(&next, 0), 32770);
         assert_eq!(deterministic_port(&next, 1200), 1200);
         assert_eq!(deterministic_port(&next, 0), 32771);
+    }
+
+    #[test]
+    fn image_generations_advance_on_client_reload() {
+        let first = reverie_dbi_runtime_image_init();
+        let second = reverie_dbi_runtime_image_init();
+        assert_eq!(second, first + 1);
     }
 }
