@@ -115,6 +115,15 @@ extern int32_t reverie_dbi_runtime_pre_syscall(
     int64_t sysnum, const uint64_t *args, uint64_t branches, int64_t *result,
     syscall_invoker_t invoke_syscall, register_reader_t read_registers,
     memory_reader_t read_memory, reverie_emit_fn_t emit);
+extern int32_t reverie_dbi_runtime_post_syscall(
+    void *context, prototype_counters_t *counters, int32_t tid, int32_t pid,
+    int64_t sysnum, const uint64_t *args, uint64_t branches,
+    int64_t original_result, int64_t *result, syscall_invoker_t invoke_syscall,
+    register_reader_t read_registers, reverie_emit_fn_t emit);
+extern int32_t reverie_dbi_runtime_signal(
+    void *context, prototype_counters_t *counters, int32_t tid, int32_t pid,
+    int32_t signal, uint64_t branches, syscall_invoker_t invoke_syscall,
+    register_reader_t read_registers, reverie_emit_fn_t emit);
 extern const char *reverie_dbi_runtime_name(void);
 extern void reverie_dbi_runtime_totals(uint64_t *branches, uint64_t *syscalls,
                                        uint64_t *rewritten,
@@ -722,7 +731,27 @@ static void zero_wait_rusage(void *address) {
 }
 
 static void post_syscall(void *drcontext, int sysnum) {
-  if (has_copied_runtime() || (ptr_int_t)dr_syscall_get_result(drcontext) < 0)
+  if (has_copied_runtime())
+    return;
+  uint64_t args[6];
+  int64_t result = (int64_t)(ptr_int_t)dr_syscall_get_result(drcontext);
+  int64_t replacement = result;
+  int i;
+  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
+      drcontext, thread_state_index);
+
+  DR_ASSERT(counters != NULL);
+  for (i = 0; i != 6; ++i)
+    args[i] = (uint64_t)dr_syscall_get_param(drcontext, i);
+  if (reverie_dbi_runtime_post_syscall(
+          drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
+          (int32_t)dr_get_process_id(), (int64_t)sysnum, args,
+          atomic_load_explicit(&branch_count, memory_order_relaxed), result,
+          &replacement, invoke_syscall, read_registers, reverie_dbi_emit)) {
+    dr_syscall_set_result(drcontext, (reg_t)replacement);
+    result = replacement;
+  }
+  if (result < 0)
     return;
   if (sysnum == SYS_wait4) {
     zero_wait_rusage((void *)dr_syscall_get_param(drcontext, 3));
@@ -736,6 +765,26 @@ static void post_syscall(void *drcontext, int sysnum) {
     }
     zero_wait_rusage((void *)dr_syscall_get_param(drcontext, 4));
   }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-pending)
+static dr_signal_action_t signal_event(void *drcontext, dr_siginfo_t *siginfo) {
+  prototype_counters_t *counters;
+  int32_t deliver;
+
+  if (has_copied_runtime())
+    return DR_SIGNAL_DELIVER;
+  counters = (prototype_counters_t *)drmgr_get_tls_field(
+      drcontext, thread_state_index);
+  if (counters == NULL)
+    return DR_SIGNAL_DELIVER;
+  deliver = reverie_dbi_runtime_signal(
+      drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
+      (int32_t)dr_get_process_id(), siginfo->sig,
+      atomic_load_explicit(&branch_count, memory_order_relaxed), invoke_syscall,
+      read_registers, reverie_dbi_emit);
+  return deliver ? DR_SIGNAL_DELIVER : DR_SIGNAL_SUPPRESS;
 }
 
 static bool has_copied_runtime(void) {
@@ -861,7 +910,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
                                (void *)reverie_dbi_emit))
     DR_ASSERT(false);
   drmgr_register_exit_event(event_exit);
-  if (!drmgr_register_module_load_event(module_load) ||
+  if (!drmgr_register_signal_event(signal_event) ||
+      !drmgr_register_module_load_event(module_load) ||
       !drmgr_register_thread_init_event(thread_init) ||
       !drmgr_register_thread_exit_event(thread_exit) ||
       !drmgr_register_bb_app2app_event(rewrite_cpuid, NULL) ||
