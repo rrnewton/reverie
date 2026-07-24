@@ -39,6 +39,7 @@ typedef struct {
   uint64_t rewritten_syscalls;
   void *runtime_state;
   uint64_t runtime_started;
+  uintptr_t runtime_start_pc;
 } prototype_counters_t;
 
 typedef struct {
@@ -219,7 +220,9 @@ static dr_emit_flags_t rewrite_cpuid(void *drcontext, void *tag,
   return DR_EMIT_DEFAULT;
 }
 
-static void ensure_thread_started(void);
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#63): Verify first-fragment register preservation and admission.
+static void ensure_thread_started(app_pc first_pc);
 
 static bool is_counted_branch(instr_t *instruction) {
   return instr_is_cbr(instruction) || instr_is_ubr(instruction) ||
@@ -233,8 +236,10 @@ static dr_emit_flags_t instrument_instruction(void *drcontext, void *tag,
                                               void *user_data) {
   if (instr_is_app(instruction) &&
       drmgr_is_first_instr(drcontext, instruction))
-    dr_insert_clean_call(drcontext, bb, instruction,
-                         (void *)ensure_thread_started, false, 0);
+    dr_insert_clean_call_ex(
+        drcontext, bb, instruction, (void *)ensure_thread_started,
+        DR_CLEANCALL_READS_APP_CONTEXT, 1,
+        OPND_CREATE_INTPTR(instr_get_app_pc(instruction)));
   if (instr_is_app(instruction) &&
       (ptr_uint_t)instr_get_note(instruction) == cpuid_marker_note) {
     dr_insert_clean_call_ex(
@@ -287,8 +292,14 @@ static int32_t copy_registers(const dr_mcontext_t *registers,
 
 static int32_t read_registers(uintptr_t context, struct user_regs_struct *out) {
   dr_mcontext_t registers = {sizeof(registers), DR_MC_ALL};
+  prototype_counters_t *counters;
+
   if (!dr_get_mcontext((void *)context, &registers))
     return 0;
+  counters = (prototype_counters_t *)drmgr_get_tls_field(
+      (void *)context, thread_state_index);
+  if (counters != NULL && counters->runtime_start_pc != 0)
+    registers.xip = (app_pc)counters->runtime_start_pc;
   return copy_registers(&registers, out);
 }
 
@@ -803,6 +814,17 @@ static dr_signal_action_t signal_event(void *drcontext, dr_siginfo_t *siginfo) {
       drcontext, thread_state_index);
   if (counters == NULL)
     dr_abort_with_code(1);
+  if (!counters->runtime_started) {
+    while (!reverie_dbi_runtime_ready())
+      dr_sleep(1);
+    if (reverie_dbi_runtime_thread_start(
+            siginfo, counters, (int32_t)dr_get_thread_id(drcontext),
+            (int32_t)dr_get_process_id(),
+            atomic_load_explicit(&branch_count, memory_order_relaxed),
+            invoke_syscall, read_signal_registers, reverie_dbi_emit))
+      dr_abort_with_code(1);
+    counters->runtime_started = 1;
+  }
   deliver = reverie_dbi_runtime_signal(
       siginfo, counters, (int32_t)dr_get_thread_id(drcontext),
       (int32_t)dr_get_process_id(), siginfo->sig,
@@ -868,7 +890,7 @@ static void thread_init(void *drcontext) {
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
 }
 
-static void ensure_thread_started(void) {
+static void ensure_thread_started(app_pc first_pc) {
   void *drcontext = dr_get_current_drcontext();
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
@@ -877,12 +899,14 @@ static void ensure_thread_started(void) {
     return;
   while (!reverie_dbi_runtime_ready())
     dr_sleep(1);
+  counters->runtime_start_pc = (uintptr_t)first_pc;
   if (reverie_dbi_runtime_thread_start(
           drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
           (int32_t)dr_get_process_id(),
           atomic_load_explicit(&branch_count, memory_order_relaxed),
           invoke_syscall, read_registers, reverie_dbi_emit))
     dr_abort_with_code(1);
+  counters->runtime_start_pc = 0;
   counters->runtime_started = 1;
 }
 

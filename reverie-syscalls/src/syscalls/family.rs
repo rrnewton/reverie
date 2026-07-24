@@ -213,11 +213,17 @@ impl CloneFamily {
             Self::Vfork(_) => CloneFlags::CLONE_VFORK | CloneFlags::CLONE_VM | CloneFlags::SIGCHLD,
             Self::Clone(clone) => clone.flags().into(),
             Self::Clone3(clone) => {
-                // sys_clone3 reads everything from a pointer.
+                // AUTONOMOUS-BOT-IMPLEMENTED
+                // TODO-HUMAN-REVIEW(#63): Confirm bounded legacy clone3 field reads.
+                // clone_args is versioned by clone3's size argument. Read only
+                // the first field so legacy 64-byte values remain page-safe.
+                if clone.size() < std::mem::size_of::<u64>() {
+                    return CloneFlags::empty();
+                }
                 clone
                     .args()
-                    .and_then(|ptr| memory.read_value(ptr).ok())
-                    .map_or_else(CloneFlags::empty, |args| args.flags)
+                    .and_then(|ptr| memory.read_value(ptr.cast::<u64>()).ok())
+                    .map_or_else(CloneFlags::empty, CloneFlags::from_bits_retain)
             }
         }
     }
@@ -236,11 +242,18 @@ impl CloneFamily {
             Self::Vfork(_) => 0,
             Self::Clone(clone) => clone.ctid().map_or(0, |ctid| ctid.as_raw()),
             Self::Clone3(clone) => {
-                // sys_clone3 reads everything from a pointer.
+                const CHILD_TID_END: usize = 3 * std::mem::size_of::<u64>();
+                if clone.size() < CHILD_TID_END {
+                    return 0;
+                }
                 clone
                     .args()
+                    .and_then(|ptr| {
+                        Addr::<u64>::from_raw(ptr.as_raw() + 2 * std::mem::size_of::<u64>())
+                    })
                     .and_then(|ptr| memory.read_value(ptr).ok())
-                    .map_or(0, |args| args.child_tid.try_into().unwrap())
+                    .and_then(|child_tid| child_tid.try_into().ok())
+                    .unwrap_or(0)
             }
         }
     }
@@ -256,6 +269,55 @@ impl From<CloneFamily> for Syscall {
             CloneFamily::Clone(syscall) => Syscall::Clone(syscall),
             CloneFamily::Clone3(syscall) => Syscall::Clone3(syscall),
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod clone_tests {
+    use super::*;
+    use crate::LocalMemory;
+    use crate::args::CloneArgs;
+
+    #[test]
+    fn clone3_v0_fields_do_not_read_past_declared_size() {
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
+        assert!(page_size >= 64);
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                2 * page_size,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        let short_args = unsafe { mapping.cast::<u8>().add(page_size - 64) };
+        let mut args: CloneArgs = unsafe { std::mem::zeroed() };
+        args.flags = CloneFlags::CLONE_VM | CloneFlags::CLONE_THREAD;
+        args.child_tid = 0x1234;
+        unsafe {
+            std::ptr::copy_nonoverlapping((&args as *const CloneArgs).cast::<u8>(), short_args, 64);
+            assert_eq!(
+                libc::mprotect(
+                    mapping.cast::<u8>().add(page_size).cast(),
+                    page_size,
+                    libc::PROT_NONE,
+                ),
+                0,
+            );
+        }
+
+        let call = super::super::Clone3::new()
+            .with_args(AddrMut::from_raw(short_args as usize))
+            .with_size(64);
+        let family = CloneFamily::Clone3(call);
+        let memory = LocalMemory::new();
+        assert_eq!(family.flags(&memory), args.flags);
+        assert_eq!(family.child_tid(&memory), args.child_tid as usize);
+
+        assert_eq!(unsafe { libc::munmap(mapping, 2 * page_size) }, 0);
     }
 }
 
