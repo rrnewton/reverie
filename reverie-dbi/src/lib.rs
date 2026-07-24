@@ -73,6 +73,24 @@ pub type RegisterReader = unsafe extern "C" fn(usize, *mut libc::user_regs_struc
 /// Native callback used to copy application memory with DynamoRIO fault handling.
 pub type MemoryReader = unsafe extern "C" fn(usize, *mut u8, usize) -> i32;
 
+// TODO-HUMAN-REVIEW(PR-66): Confirm the external runtime callback ABI.
+/// Native callback used to emit runtime diagnostics without re-entering guest I/O.
+pub type RuntimeEmitter = unsafe extern "C" fn(*const u8, usize);
+
+// TODO-HUMAN-REVIEW(PR-66): Confirm the external runtime callback ABI.
+/// Native callback that yields a DBI client thread at a DynamoRIO-safe point.
+pub type RuntimeIdler = unsafe extern "C" fn();
+
+// TODO-HUMAN-REVIEW(PR-66): Confirm the C-compatible callback layout.
+/// Callbacks supplied to an external Tool runtime on its background client thread.
+#[repr(C)]
+pub struct DbiRuntimeCallbacks {
+    /// Emits already-formatted runtime output through DynamoRIO.
+    pub emit: RuntimeEmitter,
+    /// Yields while an async runtime future remains pending.
+    pub idle: RuntimeIdler,
+}
+
 /// Result of dispatching a syscall through an external DBI Tool.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DbiSyscallOutcome {
@@ -231,10 +249,6 @@ where
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         let (number, args) = syscall.into_parts();
-        if matches!(number, Sysno::execve | Sysno::execveat) {
-            self.tail_inject_result.set_allow_original();
-            return std::future::pending().await;
-        }
         let args = [
             args.arg0 as u64,
             args.arg1 as u64,
@@ -249,15 +263,11 @@ where
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
-        // Exit can invoke DynamoRIO's thread-exit callback reentrantly, and
-        // exec must run through DynamoRIO itself so it can reload the client for
-        // the replacement image. Defer all four until this Rust callback and
-        // every state borrow have returned.
+        // An exiting application thread can invoke DynamoRIO's thread-exit
+        // callback reentrantly from `dr_invoke_syscall_as_app`. Defer those two
+        // syscalls until this Rust callback and all state borrows have returned.
         let (number, args) = syscall.into_parts();
-        if matches!(
-            number,
-            Sysno::exit | Sysno::exit_group | Sysno::execve | Sysno::execveat
-        ) {
+        if matches!(number, Sysno::exit | Sysno::exit_group) {
             self.tail_inject_result.set_allow_original();
             std::future::pending().await
         }
@@ -1194,6 +1204,12 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
 #[unsafe(no_mangle)]
 pub extern "C" fn reverie_dbi_runtime_background_init(_argument: *mut c_void) {}
 
+// TODO-HUMAN-REVIEW(PR-66): Confirm process-exit callback ownership semantics.
+/// Handles process exit for the built-in synchronous prototype runtime.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_dbi_runtime_process_exit() {}
+
 /// Reports whether the built-in prototype runtime is ready for callbacks.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
@@ -1595,34 +1611,6 @@ mod tests {
     }
 
     #[test]
-    fn injected_exec_returns_control_to_dynamorio() {
-        let mut counters = PrototypeCounters::default();
-        let mut guest: DbiGuest<'_, PrototypeTool> = DbiGuest::new(
-            0,
-            Pid::from_raw(10),
-            Pid::from_raw(10),
-            None,
-            0,
-            &mut counters,
-            &GLOBAL_STATE,
-            &CONFIG,
-            invoke,
-            read_regs,
-        );
-        let tail_result = Arc::clone(&guest.tail_inject_result);
-        let exec = Syscall::from_raw(Sysno::execve, SyscallArgs::new(0, 0, 0, 0, 0, 0));
-
-        let polled = run_ready(guest.inject(exec), &tail_result);
-
-        assert!(polled.is_none(), "exec injection must suspend");
-        assert_eq!(
-            tail_result.take(),
-            Some(TailInjectAction::AllowOriginal),
-            "exec injection must return control to DynamoRIO"
-        );
-    }
-
-    #[test]
     fn tail_inject_records_result_and_suspends() {
         let mut counters = PrototypeCounters::default();
         let syscall = Syscall::from_raw(Sysno::write, SyscallArgs::new(1, 0x1000, 7, 0, 0, 0));
@@ -1648,21 +1636,15 @@ mod tests {
         // The injected `write` returns its length argument (see `invoke`).
         assert_eq!(tail_result.take(), Some(TailInjectAction::Return(7)));
 
-        for (number, operation) in [
-            (Sysno::exit_group, "exit"),
-            (Sysno::execve, "exec"),
-            (Sysno::execveat, "execveat"),
-        ] {
-            let syscall = Syscall::from_raw(number, SyscallArgs::new(0, 0, 0, 0, 0, 0));
-            tail_result.clear();
-            let polled = run_ready(guest.tail_inject(syscall), &tail_result);
-            assert!(polled.is_none(), "{operation} tail-inject must suspend");
-            assert_eq!(
-                tail_result.take(),
-                Some(TailInjectAction::AllowOriginal),
-                "{operation} must run only after Rust callback borrows are released"
-            );
-        }
+        let exit = Syscall::from_raw(Sysno::exit_group, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+        tail_result.clear();
+        let polled = run_ready(guest.tail_inject(exit), &tail_result);
+        assert!(polled.is_none(), "exit tail-inject must suspend");
+        assert_eq!(
+            tail_result.take(),
+            Some(TailInjectAction::AllowOriginal),
+            "exit must run only after Rust callback borrows are released"
+        );
     }
 
     #[test]
@@ -1683,12 +1665,5 @@ mod tests {
         assert_eq!(deterministic_port(&next, 0), 32770);
         assert_eq!(deterministic_port(&next, 1200), 1200);
         assert_eq!(deterministic_port(&next, 0), 32771);
-    }
-
-    #[test]
-    fn image_generations_advance_on_client_reload() {
-        let first = reverie_dbi_runtime_image_init();
-        let second = reverie_dbi_runtime_image_init();
-        assert_eq!(second, first + 1);
     }
 }

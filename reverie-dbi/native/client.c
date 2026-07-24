@@ -7,6 +7,7 @@
  */
 
 #include <errno.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
@@ -95,6 +96,11 @@ static const cpuid_result_t extended_cpuid[] = {
 // rather than writing to fd 2 directly: the guest can close its stderr before
 // exit, and app-level writes re-enter the syscall interception path.
 typedef void (*reverie_emit_fn_t)(const char *buf, size_t len);
+typedef void (*reverie_idle_fn_t)(void);
+typedef struct {
+  reverie_emit_fn_t emit;
+  reverie_idle_fn_t idle;
+} runtime_callbacks_t;
 static void reverie_dbi_emit(const char *buf, size_t len) {
   dr_write_file(STDERR, buf, len);
 }
@@ -106,6 +112,7 @@ extern void reverie_dbi_runtime_exec_failed(prototype_counters_t *counters,
                                             int32_t pid);
 extern void reverie_dbi_runtime_background_init(void *argument);
 extern int32_t reverie_dbi_runtime_ready(uint64_t image_generation);
+extern void reverie_dbi_runtime_process_exit(void);
 extern int32_t reverie_dbi_runtime_pre_syscall(
     void *context, prototype_counters_t *counters, int32_t tid, int32_t pid,
     uint64_t image_generation, int64_t sysnum, const uint64_t *args,
@@ -120,10 +127,11 @@ extern void reverie_dbi_runtime_totals(uint64_t *branches, uint64_t *syscalls,
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
 static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
-static uint64_t image_generation;
+static _Atomic uint64_t image_generation;
 static int thread_state_index;
 static ptr_uint_t cpuid_marker_note;
 static bool report_summary;
+static process_id_t runtime_owner_pid;
 
 typedef struct {
   uint64_t rlim_cur;
@@ -709,6 +717,9 @@ static bool syscall_reads_stdin(void *drcontext, int sysnum,
 
 static bool filter_syscall(void *drcontext, int sysnum) { return true; }
 
+static bool has_copied_runtime(void);
+static void runtime_background_init(void *argument);
+
 static bool is_exec_syscall(int sysnum) {
   return sysnum == SYS_execve
 #ifdef SYS_execveat
@@ -717,8 +728,59 @@ static bool is_exec_syscall(int sysnum) {
       ;
 }
 
+static void zero_wait_rusage(void *address) {
+  if (address != NULL) {
+    struct rusage usage = {0};
+    write_app(address, &usage, sizeof(usage));
+  }
+}
+
+// TODO-HUMAN-REVIEW(PR-66): Confirm wait-result normalization preserves wait
+// semantics.
+static void post_syscall(void *drcontext, int sysnum) {
+  if (has_copied_runtime())
+    return;
+
+  ptr_int_t syscall_result = (ptr_int_t)dr_syscall_get_result(drcontext);
+  if (is_exec_syscall(sysnum)) {
+    prototype_counters_t *counters =
+        (prototype_counters_t *)drmgr_get_tls_field(drcontext,
+                                                    thread_state_index);
+    DR_ASSERT(counters != NULL);
+    reverie_dbi_runtime_exec_failed(counters, (int32_t)dr_get_process_id());
+    if (!dr_create_client_thread(runtime_background_init, NULL))
+      DR_ASSERT(false);
+    return;
+  }
+
+  if (syscall_result < 0)
+    return;
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  if (sysnum == SYS_wait4 && syscall_result > 0) {
+    zero_wait_rusage((void *)dr_syscall_get_param(drcontext, 3));
+    // AUTONOMOUS-BOT-IMPLEMENTED
+  } else if (sysnum == SYS_waitid) {
+    siginfo_t info;
+    void *info_address = (void *)dr_syscall_get_param(drcontext, 2);
+    if (info_address != NULL && read_app(info_address, &info, sizeof(info)) &&
+        info.si_pid != 0) {
+      info.si_utime = 0;
+      info.si_stime = 0;
+      write_app(info_address, &info, sizeof(info));
+      zero_wait_rusage((void *)dr_syscall_get_param(drcontext, 4));
+    }
+  }
+}
+
+static bool has_copied_runtime(void) {
+  return runtime_owner_pid != 0 && dr_get_process_id() != runtime_owner_pid;
+}
+
 static bool pre_syscall(void *drcontext, int sysnum) {
-  while (!reverie_dbi_runtime_ready(image_generation))
+  if (has_copied_runtime())
+    return true;
+  while (!reverie_dbi_runtime_ready(
+      atomic_load_explicit(&image_generation, memory_order_acquire)))
     dr_sleep(1);
   uint64_t args[6];
   int64_t result = 0;
@@ -734,7 +796,9 @@ static bool pre_syscall(void *drcontext, int sysnum) {
 
   if (reverie_dbi_runtime_pre_syscall(
           drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
-          (int32_t)dr_get_process_id(), image_generation, (int64_t)sysnum, args,
+          (int32_t)dr_get_process_id(),
+          atomic_load_explicit(&image_generation, memory_order_acquire),
+          (int64_t)sysnum, args,
           atomic_load_explicit(&branch_count, memory_order_relaxed), &result,
           invoke_syscall, read_registers, read_memory, reverie_dbi_emit)) {
     dr_syscall_set_result(drcontext, (reg_t)result);
@@ -755,19 +819,6 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   return true;
 }
 
-static void post_syscall(void *drcontext, int sysnum) {
-  if (!is_exec_syscall(sysnum))
-    return;
-  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
-      drcontext, thread_state_index);
-  DR_ASSERT(counters != NULL);
-  reverie_dbi_runtime_exec_failed(counters, (int32_t)dr_get_process_id());
-  image_generation = reverie_dbi_runtime_image_init();
-  if (!dr_create_client_thread(reverie_dbi_runtime_background_init,
-                               (void *)reverie_dbi_emit))
-    DR_ASSERT(false);
-}
-
 static void thread_init(void *drcontext) {
   prototype_counters_t *counters =
       (prototype_counters_t *)dr_thread_alloc(drcontext, sizeof(*counters));
@@ -779,20 +830,22 @@ static void thread_init(void *drcontext) {
 static void thread_exit(void *drcontext) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
-  if (counters != NULL) {
+  if (counters != NULL && !has_copied_runtime()) {
     reverie_dbi_runtime_thread_exit(counters);
     dr_thread_free(drcontext, counters, sizeof(*counters));
   }
 }
 
 static void event_exit(void) {
+  if (!has_copied_runtime())
+    reverie_dbi_runtime_process_exit();
   uint64_t branches;
   uint64_t syscalls;
   uint64_t rewritten;
   uint64_t stdin_reads;
   uint64_t memory_hash;
 
-  if (report_summary) {
+  if (report_summary && !has_copied_runtime()) {
     reverie_dbi_runtime_totals(&branches, &syscalls, &rewritten, &memory_hash);
     stdin_reads = atomic_load_explicit(&stdin_read_count, memory_order_relaxed);
     dr_fprintf(STDERR,
@@ -809,14 +862,21 @@ static void event_exit(void) {
   drmgr_exit();
 }
 
+static void runtime_idle(void) { dr_sleep(1); }
+
+static runtime_callbacks_t runtime_callbacks = {reverie_dbi_emit, runtime_idle};
+
+static void runtime_background_init(void *argument) {
+  (void)argument;
+  reverie_dbi_runtime_background_init(&runtime_callbacks);
+}
+
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   drreg_options_t register_options = {sizeof(register_options), 1, false};
 
-  /* DynamoRIO reloads the client and calls dr_client_main after a successful
-   * Linux exec. Obtain the generation synchronously so the first callback in
-   * the new image cannot race the background runtime initialization. */
-  image_generation = reverie_dbi_runtime_image_init();
-
+  runtime_owner_pid = dr_get_process_id();
+  atomic_store_explicit(&image_generation, reverie_dbi_runtime_image_init(),
+                        memory_order_release);
   resource_lock = dr_mutex_create();
   DR_ASSERT(resource_lock != NULL);
   init_virtual_limits();
@@ -837,7 +897,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   if (thread_state_index == -1)
     DR_ASSERT(false);
 
-  if (!dr_create_client_thread(reverie_dbi_runtime_background_init,
+  if (!dr_create_client_thread(runtime_background_init,
                                (void *)reverie_dbi_emit))
     DR_ASSERT(false);
   drmgr_register_exit_event(event_exit);
