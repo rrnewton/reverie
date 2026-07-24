@@ -679,7 +679,7 @@ impl KvmBackend {
                     }
                     (executor.take_segment(), executor.take_exit())
                 }
-                VcpuExit::Hlt => (None, Some(0)),
+                VcpuExit::Hlt => return Err(self.static_elf_halt_error()?),
                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
             };
 

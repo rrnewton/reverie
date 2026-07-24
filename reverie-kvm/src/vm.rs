@@ -28,6 +28,7 @@ use crate::Syscall;
 use crate::SyscallRequest;
 use crate::bootstrap::SYSCALL_FRAME_ADDRESS;
 use crate::bootstrap::configure_long_mode;
+use crate::bootstrap::exception_from_halt;
 use crate::bootstrap::set_user_segment_base;
 use crate::elf::LoadedStaticElf;
 use crate::elf::load_static_elf;
@@ -217,6 +218,23 @@ impl KvmBackend {
         Ok(())
     }
 
+    pub(crate) fn static_elf_halt_error(&self) -> Result<Error> {
+        let registers = self.vcpu.get_regs()?;
+        if let Some((vector, instruction_pointer)) =
+            exception_from_halt(registers.rip, registers.rax, registers.rbx)
+        {
+            return Ok(Error::GuestException {
+                vector,
+                instruction_pointer,
+                fault_address: self.vcpu.get_sregs()?.cr2,
+            });
+        }
+
+        Ok(Error::UnexpectedVcpuExit(
+            "static ELF halted without exiting".to_string(),
+        ))
+    }
+
     /// Runs the installed static ELF until it invokes `exit` or `exit_group`.
     pub fn run_static_elf(&mut self) -> Result<i32> {
         let mut state = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
@@ -244,11 +262,7 @@ impl KvmBackend {
                         SyscallAction::Exit(code) => return Ok(code),
                     }
                 }
-                VcpuExit::Hlt => {
-                    return Err(Error::UnexpectedVcpuExit(
-                        "static ELF halted without exiting".to_string(),
-                    ));
-                }
+                VcpuExit::Hlt => return Err(self.static_elf_halt_error()?),
                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
             };
 

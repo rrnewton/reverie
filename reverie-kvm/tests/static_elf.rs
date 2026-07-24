@@ -21,6 +21,7 @@ use reverie::Pid;
 use reverie::Tool;
 use reverie::syscalls::Errno;
 use reverie::syscalls::MemoryAccess;
+use reverie_kvm::Error;
 use reverie_kvm::KvmBackend;
 use reverie_kvm::StraceTool;
 
@@ -96,6 +97,76 @@ impl Tool for FailingPostExecTool {
 
 fn kvm_is_unavailable(error: &kvm_ioctls::Error) -> bool {
     matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM)
+}
+
+fn assert_invalid_opcode(error: Error) {
+    match error {
+        Error::GuestException {
+            vector,
+            instruction_pointer,
+            ..
+        } => {
+            assert_eq!(vector, 6);
+            assert_eq!(instruction_pointer, LOAD_ADDRESS);
+        }
+        error => panic!("expected invalid-opcode exception, got {error}"),
+    }
+}
+
+fn assert_page_fault(error: Error) {
+    match error {
+        Error::GuestException {
+            vector,
+            instruction_pointer,
+            fault_address,
+        } => {
+            assert_eq!(vector, 14);
+            assert_eq!(instruction_pointer, LOAD_ADDRESS);
+            assert_eq!(fault_address, 0x4000_0000);
+        }
+        error => panic!("expected page-fault exception, got {error}"),
+    }
+}
+
+#[test]
+fn static_elf_faults_are_reported_by_direct_and_tool_runtimes() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM exception test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let image = static_elf(&[0x0f, 0x0b]);
+
+    let mut direct_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    direct_backend
+        .install_static_elf(&image, "/bin/fault")
+        .unwrap();
+    assert_invalid_opcode(direct_backend.run_static_elf().unwrap_err());
+
+    let mut tool_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    tool_backend
+        .install_static_elf(&image, "/bin/fault")
+        .unwrap();
+    let error = match futures::executor::block_on(
+        tool_backend.run_static_elf_with_tool::<StraceTool>((), true),
+    ) {
+        Ok(_) => panic!("tool runtime reported a guest exception as success"),
+        Err(error) => error,
+    };
+    assert_invalid_opcode(error);
+
+    // movabs rax, qword ptr [0x40000000], an address outside the page tables.
+    let page_fault_image =
+        static_elf(&[0x48, 0xa1, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00]);
+    let mut page_fault_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    page_fault_backend
+        .install_static_elf(&page_fault_image, "/bin/fault")
+        .unwrap();
+    assert_page_fault(page_fault_backend.run_static_elf().unwrap_err());
 }
 
 #[test]
