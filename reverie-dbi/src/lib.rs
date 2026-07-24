@@ -45,6 +45,7 @@ use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Never;
 use reverie::Pid;
+use reverie::Signal;
 use reverie::Stack;
 use reverie::TimerSchedule;
 use reverie::Tool;
@@ -246,6 +247,15 @@ where
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         let (number, args) = syscall.into_parts();
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-pending)
+        // A clone child must return through DynamoRIO's application syscall
+        // path. Reissuing clone from this Rust callback would instead resume
+        // the child on the client's callback stack.
+        if matches!(number, Sysno::clone | Sysno::clone3) {
+            self.tail_inject_result.set_allow_original();
+            std::future::pending().await
+        }
         let args = [
             args.arg0 as u64,
             args.arg1 as u64,
@@ -934,6 +944,38 @@ pub fn run_tool_post_exec<T: Tool>(
         .expect("post-exec handler unexpectedly tail-injected")
 }
 
+/// Drives an external tool's signal-delivery hook on a DBI guest.
+#[allow(clippy::too_many_arguments)]
+pub fn run_tool_signal<T: Tool>(
+    tool: &T,
+    context: usize,
+    tid: Pid,
+    pid: Pid,
+    branch_count: u64,
+    thread_state: &mut T::ThreadState,
+    global_state: &T::GlobalState,
+    config: &<T::GlobalState as GlobalTool>::Config,
+    signal: Signal,
+    invoke_syscall: SyscallInvoker,
+    read_registers: RegisterReader,
+) -> Result<Option<Signal>, Errno> {
+    let mut guest = DbiGuest::new(
+        context,
+        tid,
+        pid,
+        None,
+        branch_count,
+        thread_state,
+        global_state,
+        config,
+        invoke_syscall,
+        read_registers,
+    );
+    let tail_result = Arc::clone(&guest.tail_inject_result);
+    run_ready(tool.handle_signal_event(&mut guest, signal), &tail_result)
+        .expect("signal handler unexpectedly tail-injected")
+}
+
 /// Drives an external tool's thread-exit lifecycle hook.
 pub fn run_tool_thread_exit<T: Tool>(
     tool: &T,
@@ -1161,6 +1203,59 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
     }
 }
 
+/// Handles a DynamoRIO post-syscall event for the synchronous prototype runtime.
+///
+/// The prototype has no split syscall lifecycle, so it leaves the result unchanged.
+///
+/// # Safety
+///
+/// The native client must supply pointers matching this exported ABI. The
+/// prototype does not dereference them in this callback.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbi_runtime_post_syscall(
+    _context: *mut c_void,
+    _counters: *mut PrototypeCounters,
+    _tid: i32,
+    _pid: i32,
+    _sysnum: i64,
+    _args: *const u64,
+    _branches: u64,
+    _original_result: i64,
+    _result: *mut i64,
+    _invoke_syscall: SyscallInvoker,
+    _read_registers: RegisterReader,
+    _emit: tools::Emitter,
+) -> i32 {
+    0
+}
+
+/// Handles a DynamoRIO signal event for the synchronous prototype runtime.
+///
+/// The prototype does not schedule signals and therefore always delivers them.
+///
+/// # Safety
+///
+/// The native client must supply pointers matching this exported ABI. The
+/// prototype does not dereference them in this callback.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbi_runtime_signal(
+    _context: *mut c_void,
+    _counters: *mut PrototypeCounters,
+    _tid: i32,
+    _pid: i32,
+    _signal: i32,
+    _branches: u64,
+    _invoke_syscall: SyscallInvoker,
+    _read_registers: RegisterReader,
+    _emit: tools::Emitter,
+) -> i32 {
+    1
+}
+
 /// Initializes the built-in prototype runtime on a native client thread.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
@@ -1280,6 +1375,32 @@ mod tests {
         let tail_result = TailInjectResult::default();
         assert_eq!(run_ready(future, &tail_result), Some(1234));
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn clone_is_deferred_to_dynamorio_application_path() {
+        let mut counters = PrototypeCounters::default();
+        let syscall = Syscall::from_raw(
+            Sysno::clone,
+            SyscallArgs::new(libc::CLONE_THREAD as usize, 0, 0, 0, 0, 0),
+        );
+        assert_eq!(
+            run_tool_syscall(
+                &PROTOTYPE_TOOL,
+                0,
+                Pid::from_raw(10),
+                Pid::from_raw(10),
+                99,
+                &mut counters,
+                &GLOBAL_STATE,
+                &CONFIG,
+                syscall,
+                invoke,
+                read_regs,
+            )
+            .unwrap(),
+            DbiSyscallOutcome::AllowOriginal
+        );
     }
 
     #[test]
