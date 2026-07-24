@@ -2861,7 +2861,7 @@ typed_syscall! {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-pending)
+// TODO-HUMAN-REVIEW(PR-49)
 typed_syscall! {
     pub struct Ppoll {
         fds: Option<AddrMut<libc::pollfd>>,
