@@ -8,25 +8,27 @@ the root directory of this source tree.
 Third-party components
 ================================================================================
 
-Reverie's DynamoRIO-based dynamic binary instrumentation backend (reverie-dbi)
-depends on DynamoRIO. DynamoRIO is referenced as a git submodule at
-`third-party/dynamorio` and is configured, built, and installed on demand by
-`reverie-dbi/build.rs`. No DynamoRIO source or binaries are redistributed in
-this repository; only the submodule commit reference is stored here.
+Reverie's optional native backend sources are referenced as git submodules
+under `third-party/`. These submodules use `update = none` and are not fetched
+by a normal clone or Cargo build. No source or binaries from these projects are
+redistributed in this repository; only pinned submodule commit references are
+stored here. See `docs/BACKEND_SOURCES.md` for explicit activation commands.
 
-Building reverie-dbi therefore fetches and builds DynamoRIO and, transitively,
-the third-party projects that DynamoRIO itself vendors as submodules. The
-licenses of those components are summarized below. This NOTICE is provided for
-attribution and awareness; the authoritative and complete license texts live in
-each upstream project. Anyone who *distributes* binaries produced from this
-build must comply with all of the licenses listed here, including the copyleft
-(LGPL) obligations noted for elfutils and certain DynamoRIO extensions.
+Building reverie-dbi after explicitly activating DynamoRIO builds DynamoRIO
+and, transitively, the third-party projects that DynamoRIO itself vendors as
+submodules. The licenses of those components are summarized below. This NOTICE
+is provided for attribution and awareness; the authoritative and complete
+license texts live in each upstream project. Anyone who *distributes* binaries
+produced from this build must comply with all of the licenses listed here,
+including the copyleft (LGPL) obligations noted for elfutils and certain
+DynamoRIO extensions.
 
 --------------------------------------------------------------------------------
 DynamoRIO
 --------------------------------------------------------------------------------
 Upstream:  https://github.com/DynamoRIO/dynamorio
-Pinned commit: cca42665b014ab109b64d98fdc9d3eecd91273b5
+Fork:      https://github.com/rrnewton/dynamorio
+Pinned commit: 929840ad9190e5086775e8debc0f0b79b4208d59
 License:   BSD-3-Clause (primary), with the additional component licenses below.
            Full text: `third-party/dynamorio/License.txt`.
 
@@ -76,3 +78,18 @@ zlib  (vendored by DynamoRIO at third_party/zlib)
 Upstream:  https://github.com/madler/zlib
 License:   zlib License
            Copyright (c) 1995-present Jean-loup Gailly and Mark Adler.
+
+--------------------------------------------------------------------------------
+SaBRe
+--------------------------------------------------------------------------------
+Upstream:  https://github.com/srg-imperial/SaBRe
+Pinned commit: 05816ee066a7284bee8afd0e73eeb44455b254b4
+License:   GPL-3.0-or-later (primary), with per-file exceptions documented by
+           the upstream project.
+
+--------------------------------------------------------------------------------
+e9patch
+--------------------------------------------------------------------------------
+Upstream:  https://github.com/GJDuck/e9patch
+Pinned commit: 6c2c03c1da74b14daf1788a9f8dccfa354ce04a6 (v1.0.1)
+License:   GPL-3.0

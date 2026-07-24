@@ -34,10 +34,13 @@ ptrace `counter2` example and the SaBRe `riptrace` tool:
   child, verifies SIGCHLD, SIGINT, and SIGTERM delivery, then resets SIGCHLD to
   `SIG_DFL` and confirms the next child remains waitable.
 
-Build upstream SaBRe at the pinned revision, then run:
+Activate and build upstream SaBRe at the pinned revision, then run:
 
 ```bash
-SABRE_BINARY=/path/to/SaBRe/build/sabre \
+scripts/backend-submodule.sh activate sabre
+cmake -S third-party/sabre -B target/sabre
+cmake --build target/sabre
+SABRE_BINARY=target/sabre/sabre \
   experimental/reverie-sabre/conformance/run.sh all
 ```
 

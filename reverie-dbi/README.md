@@ -27,21 +27,19 @@ native DynamoRIO client:
 
 ## Build
 
-DynamoRIO is pinned as a recursive git submodule. Clone Reverie with submodules,
-or initialize them in an existing checkout:
+DynamoRIO is pinned as an opt-in shallow git submodule. A normal clone leaves
+it empty. Activate only this backend source before building:
 
 ```bash
-git clone --recurse-submodules https://github.com/rrnewton/reverie.git
-# Existing checkout:
-git submodule update --init --recursive
-```
-
-A normal package build configures, builds, and installs the pinned DynamoRIO
-source automatically. No external SDK or `DYNAMORIO_HOME` is used:
-
-```bash
+scripts/backend-submodule.sh activate dynamorio
 cargo build -p reverie-dbi
 ```
+
+The helper verifies the checkout against the superproject gitlink. Cargo then
+configures, builds, and installs the pinned source automatically; no external
+SDK or `DYNAMORIO_HOME` is used. See
+[`docs/BACKEND_SOURCES.md`](../docs/BACKEND_SOURCES.md) for the shared backend
+source policy.
 
 The first build compiles DynamoRIO in Cargo's package `OUT_DIR` with its tests,
 samples, and documentation disabled. Cargo reuses that install until the build
