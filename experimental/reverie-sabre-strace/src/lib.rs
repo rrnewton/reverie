@@ -8,6 +8,9 @@
 
 //! SaBRe plugin that runs a shared Reverie strace tool.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
+
 use reverie::Error;
 use reverie::Guest;
 use reverie::Tool as ReverieTool;
@@ -19,6 +22,7 @@ use syscalls::Errno;
 // AUTONOMOUS-BOT-IMPLEMENTED
 /// Suppress syscall diagnostics while retaining the same shared Tool path.
 pub const QUIET_ENV: &str = "REVERIE_SABRE_STRACE_QUIET";
+static QUIET: AtomicBool = AtomicBool::new(false);
 
 /// Minimal shared Reverie tool that prints every intercepted syscall.
 #[derive(Default)]
@@ -64,14 +68,14 @@ impl sabre::Tool for Plugin {
     type Client = ();
 
     fn new(_client: Self::Client) -> Self {
+        let quiet = std::env::var_os(QUIET_ENV).is_some() || QUIET.load(Ordering::Acquire);
+        QUIET.store(quiet, Ordering::Release);
+        if quiet {
+            std::env::remove_var(QUIET_ENV);
+        }
+
         Self {
-            adapter: sabre::ReverieAdapter::new(
-                StraceTool {
-                    quiet: std::env::var_os(QUIET_ENV).is_some(),
-                },
-                (),
-                (),
-            ),
+            adapter: sabre::ReverieAdapter::new(StraceTool { quiet }, (), ()),
         }
     }
 
