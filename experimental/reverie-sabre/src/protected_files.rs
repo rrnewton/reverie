@@ -10,17 +10,14 @@
 
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::RawFd;
+use std::ptr;
+use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::Ordering::AcqRel;
+use std::sync::atomic::Ordering::Acquire;
 
 use parking_lot::Mutex;
 use syscalls::Sysno;
 use syscalls::SysnoSet;
-
-// TODO: Remove this lazy_static after upgrading to parking_lot >= 0.12.1.
-// Mutex::new is a const fn in newer versions.
-lazy_static::lazy_static! {
-    /// A set of file descriptors that should not get closed.
-    static ref PROTECTED_FILES: Mutex<ProtectedFiles> = Mutex::new(ProtectedFiles::new());
-}
 
 struct ProtectedFiles {
     // We have to use Vec here to ensure `new` can be a const fn, which is
@@ -57,6 +54,55 @@ impl ProtectedFiles {
         }
     }
 }
+struct RegistryValue {
+    pid: libc::pid_t,
+    files: Mutex<ProtectedFiles>,
+}
+
+struct ProcessRegistry {
+    current: AtomicPtr<RegistryValue>,
+}
+
+impl ProcessRegistry {
+    const fn new() -> Self {
+        Self {
+            current: AtomicPtr::new(ptr::null_mut()),
+        }
+    }
+
+    fn get(&'static self) -> &'static Mutex<ProtectedFiles> {
+        let pid = unsafe { libc::getpid() };
+        loop {
+            let current = self.current.load(Acquire);
+            if !current.is_null() && unsafe { (*current).pid == pid } {
+                return unsafe { &(*current).files };
+            }
+
+            let candidate = Box::into_raw(Box::new(RegistryValue {
+                pid,
+                files: Mutex::new(ProtectedFiles::new()),
+            }));
+            match self
+                .current
+                .compare_exchange(current, candidate, AcqRel, Acquire)
+            {
+                Ok(_) => return unsafe { &(*candidate).files },
+                Err(actual) => {
+                    unsafe { drop(Box::from_raw(candidate)) };
+                    if !actual.is_null() && unsafe { (*actual).pid == pid } {
+                        return unsafe { &(*actual).files };
+                    }
+                }
+            }
+        }
+    }
+}
+
+static PROTECTED_FILES: ProcessRegistry = ProcessRegistry::new();
+
+fn protected_files() -> &'static Mutex<ProtectedFiles> {
+    PROTECTED_FILES.get()
+}
 
 /// A file descriptor that is internal to the plugin and not visible to the
 /// client. These file descriptors cannot be closed by the client.
@@ -64,7 +110,7 @@ pub struct ProtectedFd<T: AsRawFd>(T);
 
 impl<T: AsRawFd> Drop for ProtectedFd<T> {
     fn drop(&mut self) {
-        PROTECTED_FILES.lock().remove(&self.0);
+        protected_files().lock().remove(&self.0);
     }
 }
 
@@ -88,7 +134,7 @@ where
     F: FnOnce() -> Result<T, E>,
     T: AsRawFd,
 {
-    let mut protected_files = PROTECTED_FILES.lock();
+    let mut protected_files = protected_files().lock();
 
     f().map(|fd| {
         protected_files.insert(&fd);
@@ -98,7 +144,7 @@ where
 
 /// Returns true if a file descriptor is protected and shouldn't be closed.
 pub fn is_protected<Fd: AsRawFd>(fd: &Fd) -> bool {
-    PROTECTED_FILES.lock().contains(fd)
+    protected_files().lock().contains(fd)
 }
 
 /// All of these syscalls take the input file descriptor as the first argument.
@@ -207,4 +253,36 @@ static FD_ARG1_SYSCALLS: SysnoSet = SysnoSet::new(&[Sysno::dup2, Sysno::dup3]);
 pub fn uses_protected_fd(sysno: Sysno, arg0: usize, arg1: usize) -> bool {
     (FD_ARG0_SYSCALLS.contains(sysno) && is_protected(&(arg0 as i32)))
         || (FD_ARG1_SYSCALLS.contains(sysno) && is_protected(&(arg1 as i32)))
+}
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+
+    #[test]
+    fn fork_child_does_not_reuse_locked_registry() {
+        let (locked_tx, locked_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let locker = std::thread::spawn(move || {
+            let _guard = protected_files().lock();
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+        });
+        locked_rx.recv().unwrap();
+
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            unsafe { libc::alarm(5) };
+            let _ = is_protected(&(-1_i32));
+            unsafe { libc::_exit(0) };
+        }
+
+        release_tx.send(()).unwrap();
+        locker.join().unwrap();
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+        assert_eq!(status, 0);
+    }
 }
