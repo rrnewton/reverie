@@ -445,7 +445,7 @@ impl KvmBackend {
                     let return_slot = std::ptr::from_mut(exit.ret) as usize;
                     let registers = self.vcpu.get_regs()?;
                     let request = SyscallRequest::read_from(&memory, frame_address)?;
-                    let syscall = request.into_syscall();
+                    let syscall = request.into_syscall()?;
                     let subscribed = subscriptions
                         .iter_syscalls()
                         .any(|number| number == syscall.number());
@@ -636,7 +636,7 @@ impl KvmBackend {
                     }
                     let registers = self.vcpu.get_regs()?;
                     let request = SyscallRequest::read_from(&memory, frame_address)?;
-                    let syscall = request.into_syscall();
+                    let syscall = request.into_syscall()?;
                     let subscribed = subscriptions
                         .iter_syscalls()
                         .any(|number| number == syscall.number());

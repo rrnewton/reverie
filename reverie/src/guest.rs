@@ -84,11 +84,17 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// Overwrites the register values of the guest thread. This is the write
     /// counterpart to [`Guest::regs`].
     ///
+    /// This is a generic, determinism-agnostic mechanism: it lets a tool control
+    /// the guest's register file at a stop, and the tool decides what values to
+    /// write. For example, a determinism tool can use it to canonicalize
+    /// registers that the syscall instruction clobbers (`%rcx`/`%r11` on
+    /// x86-64) so that even a misbehaving guest observes deterministic state.
+    ///
+    /// Preconditions: the guest is in a stopped state and Reverie is currently
+    /// running a handler on that guest thread's behalf.
+    ///
     /// The default implementation returns [`Errno::ENOSYS`] for backends that
-    /// cannot write guest registers. (Backported from a later Reverie revision
-    /// so Detcore, which calls this best-effort, compiles against this branch;
-    /// the long-term fix is rebasing the KVM stack onto current Reverie main,
-    /// which carries the full implementation.)
+    /// cannot write guest registers.
     async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
         let _ = regs;
         Err(Errno::ENOSYS.into())
@@ -188,7 +194,7 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// Converts this `Guest<T>` such that it implements `Guest<U>`. This is
     /// useful when forwarding callbacks to a "child" tool.
     #[allow(clippy::wrong_self_convention)]
-    fn into_guest(&mut self) -> IntoGuest<Self, T> {
+    fn into_guest(&mut self) -> IntoGuest<'_, Self, T> {
         IntoGuest::new(self)
     }
 
@@ -361,6 +367,10 @@ where
 
     async fn regs(&mut self) -> libc::user_regs_struct {
         self.inner.regs().await
+    }
+
+    async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
+        self.inner.set_regs(regs).await
     }
 
     async fn stack(&mut self) -> Self::Stack {

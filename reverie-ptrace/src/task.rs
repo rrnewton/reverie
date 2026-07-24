@@ -644,9 +644,15 @@ fn restore_context(
     // clone, which accepts different arguments.
     *regs.orig_syscall_mut() = context.orig_syscall();
 
-    // NB: syscall also clobbers %rcx/%r11, but we're not required to restore
-    // them, because the syscall is finished and they're supposed to change.
-    // TL&DR: do not restore %rcx/%r11 here.
+    // The `syscall` instruction clobbers %rcx/%r11. When we injected a syscall
+    // (or a different syscall variant) from the private trampoline page, %rcx
+    // and %r11 now hold the *trampoline's* return RIP / RFLAGS rather than the
+    // guest's. Although the ABI leaves these "undefined" after a syscall, an
+    // injection should be transparent, and leaving Reverie's private trampoline
+    // address in %rcx would leak a tracer-internal (and potentially
+    // nondeterministic) pointer to the guest. Restore them from the guest's own
+    // pre-syscall snapshot. (No-op on aarch64.)
+    regs.restore_syscall_clobbers(&context);
 
     task.setregs(&regs)
 }
@@ -2044,10 +2050,22 @@ impl<L: Tool + 'static> TracedTask<L> {
             Some(resume) => {
                 let is_resume = resume_action == ExpectedGdbResume::Resume || resume.detach;
                 let is_step_only = resume_action == ExpectedGdbResume::StepOnly;
+                // During a step-over, gdb normally single-steps over the
+                // breakpoint installed at the current PC. But if gdb has already
+                // removed that breakpoint it issues a plain continue instead of a
+                // single-step. This happens, for example, after `finish`: gdb
+                // implements it with a temporary breakpoint at the return address
+                // which it deletes as soon as it is hit, so when the user then
+                // resumes there is no breakpoint left to step over. No step-over
+                // is required in that case, so resume normally rather than
+                // treating the continue as an unexpected action (which used to
+                // panic here).
+                let is_step_over = resume_action == ExpectedGdbResume::StepOver;
                 let running = match resume.action {
                     ResumeAction::Step(sig) => task.step(sig)?,
                     ResumeAction::Continue(sig) if is_resume => task.resume(sig)?,
                     ResumeAction::Continue(sig) if is_step_only => task.step(sig)?,
+                    ResumeAction::Continue(sig) if is_step_over => task.resume(sig)?,
                     action => panic!(
                         "[pid = {}] unexpected resume action {:?}, expecting: {:?}",
                         task.pid(),
@@ -2168,6 +2186,20 @@ impl<L: Tool + 'static> TracedTask<L> {
         let running = self
             .await_gdb_resume(task, ExpectedGdbResume::StepOver)
             .await?;
+
+        // If gdb removed the breakpoint at the current PC and issued a plain
+        // continue instead of the usual step-over single-step (e.g. after a
+        // `finish` temporary breakpoint was hit and deleted, and the user then
+        // continues), there is no intermediate single-step stop to report back
+        // to gdb. Just run to the next event and return it directly. The task
+        // may run all the way to exit in this case, so we must not assume it
+        // stops again.
+        if !matches!(self.resumed_by_gdb, Some(ResumeAction::Step(_))) {
+            let wait = running.next_state().await?;
+            self.thaw_all().await?;
+            return Ok(wait);
+        }
+
         let wait = running.next_state().await?.assume_stopped();
         let mut task = wait.0;
         let mut event = wait.1;
@@ -2379,6 +2411,16 @@ impl<L: Tool + 'static> Guest<L> for TracedTask<L> {
             Ok(ret) => ret,
             Err(err) => self.abort(Err(err)).await,
         }
+    }
+
+    async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), reverie::Error> {
+        let task = self.assume_stopped();
+
+        if let Err(err) = task.setregs(&regs) {
+            // Mirror `regs()`: a ptrace register access failure aborts the task.
+            self.abort(Err(err)).await;
+        }
+        Ok(())
     }
 
     async fn stack(&mut self) -> Self::Stack {

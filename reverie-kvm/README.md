@@ -22,6 +22,13 @@ serializes the Linux ABI register frame, exits KVM, then returns with
 `SYSRETQ`.
 
 `run_static_elf` supplies a deliberately small single-process Linux personality. It handles process exit, host-backed filesystem descriptors, stdout/stderr writes, deterministic identity, time and random queries, FS/GS bases, `brk`, anonymous and file-backed `mmap`, and common startup no-ops. Unsupported syscalls return `ENOSYS`.
+## Typed syscall decoding
+
+Every valid x86-64 syscall number is decoded through Reverie's complete typed
+syscall table before it reaches the host handler; a number outside that table
+is rejected instead of being forwarded as an untyped request. `install_syscalls`
+builds a small guest program containing consecutive hypercalls, with one
+page-aligned frame per request, so a single KVM run can route several syscalls.
 
 ## CPUID policy
 
