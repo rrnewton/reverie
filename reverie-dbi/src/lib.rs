@@ -1083,6 +1083,13 @@ pub unsafe extern "C" fn reverie_dbi_runtime_exec_failed(
 ) {
 }
 
+/// Applies copied-child syscall policy for the built-in prototype runtime.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_dbi_runtime_copied_syscall(_sysnum: i64) -> i32 {
+    0
+}
+
 /// Handles a DynamoRIO pre-syscall event.
 ///
 /// Returning one asks the native client to suppress the original syscall and
