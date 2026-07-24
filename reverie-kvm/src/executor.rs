@@ -13,7 +13,11 @@ use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::FileExt;
+use std::sync::Arc;
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::Ordering;
 
 use crate::GuestMemory;
 use crate::SyscallRequest;
@@ -82,6 +86,28 @@ impl CapturedOutput {
     }
 }
 
+pub(crate) enum ProcessAction {
+    Fork {
+        child_pid: i32,
+        child_stack: Option<u64>,
+    },
+    Exec {
+        image: Vec<u8>,
+        argv: Vec<String>,
+        envp: Vec<String>,
+    },
+}
+
+pub(crate) fn is_process_syscall(number: u64) -> bool {
+    number == libc::SYS_fork as u64
+        || number == libc::SYS_vfork as u64
+        || number == libc::SYS_clone as u64
+        || number == libc::SYS_clone3 as u64
+        || number == libc::SYS_execve as u64
+        || number == libc::SYS_execveat as u64
+}
+
+#[cfg(test)]
 pub(crate) fn execute_basic_syscall(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
@@ -146,11 +172,12 @@ fn execute_basic_syscall_with_output(
         getcwd(memory, state, args)
     } else if number == libc::SYS_getdents64 as u64 {
         getdents64(memory, state, args)
-    } else if number == libc::SYS_getpid as u64
-        || number == libc::SYS_gettid as u64
-        || number == libc::SYS_getppid as u64
-    {
-        1
+    } else if number == libc::SYS_getpid as u64 || number == libc::SYS_gettid as u64 {
+        i64::from(state.pid)
+    } else if number == libc::SYS_getppid as u64 {
+        i64::from(state.ppid)
+    } else if number == libc::SYS_wait4 as u64 {
+        wait4(memory, state, args)
     } else if number == libc::SYS_getuid as u64
         || number == libc::SYS_geteuid as u64
         || number == libc::SYS_getgid as u64
@@ -224,6 +251,8 @@ fn execute_basic_syscall_with_output(
 pub(crate) struct ElfExecutor {
     state: LoadedStaticElf,
     output: Option<CapturedOutput>,
+    next_pid: Arc<AtomicI32>,
+    process_action: Option<ProcessAction>,
     pending_segment: Option<(SegmentBase, u64)>,
     exit_code: Option<i32>,
 }
@@ -233,9 +262,160 @@ impl ElfExecutor {
         Self {
             state,
             output: capture_output.then(CapturedOutput::default),
+            next_pid: Arc::new(AtomicI32::new(2)),
+            process_action: None,
             pending_segment: None,
             exit_code: None,
         }
+    }
+
+    fn execute_process_action(
+        &mut self,
+        request: &SyscallRequest,
+        memory: &GuestMemory,
+    ) -> Option<i64> {
+        let number = request.number();
+        let args = request.args();
+        if number == libc::SYS_fork as u64 || number == libc::SYS_vfork as u64 {
+            return Some(self.prepare_fork(None));
+        }
+        if number == libc::SYS_clone as u64 {
+            let flags = args[0];
+            return Some(match validate_process_clone_flags(flags) {
+                Ok(()) => self.prepare_fork((args[1] != 0).then_some(args[1])),
+                Err(error) => error,
+            });
+        }
+        if number == libc::SYS_clone3 as u64 {
+            return Some(match read_clone3(memory, args[0], args[1]) {
+                Ok((flags, child_stack)) => match validate_process_clone_flags(flags) {
+                    Ok(()) => self.prepare_fork(child_stack),
+                    Err(error) => error,
+                },
+                Err(error) => error,
+            });
+        }
+        if number == libc::SYS_execve as u64 {
+            return Some(self.prepare_exec(memory, args[0], args[1], args[2], libc::AT_FDCWD, 0));
+        }
+        if number == libc::SYS_execveat as u64 {
+            return Some(self.prepare_exec(
+                memory,
+                args[1],
+                args[2],
+                args[3],
+                args[0] as i32,
+                args[4],
+            ));
+        }
+        None
+    }
+
+    fn prepare_fork(&mut self, child_stack: Option<u64>) -> i64 {
+        if self.process_action.is_some() {
+            return negative_errno(libc::EBUSY);
+        }
+        let child_pid = self.next_pid.fetch_add(1, Ordering::SeqCst);
+        if child_pid <= 0 {
+            return negative_errno(libc::EAGAIN);
+        }
+        self.process_action = Some(ProcessAction::Fork {
+            child_pid,
+            child_stack,
+        });
+        i64::from(child_pid)
+    }
+
+    fn prepare_exec(
+        &mut self,
+        memory: &GuestMemory,
+        path_address: u64,
+        argv_address: u64,
+        envp_address: u64,
+        dirfd: i32,
+        flags: u64,
+    ) -> i64 {
+        if self.process_action.is_some() {
+            return negative_errno(libc::EBUSY);
+        }
+        if flags != 0 || dirfd != libc::AT_FDCWD {
+            return negative_errno(libc::ENOTSUP);
+        }
+        let path = match read_c_string(memory, path_address, 4096) {
+            Ok(path) if !path.is_empty() => path,
+            Ok(_) => return negative_errno(libc::ENOENT),
+            Err(error) => return read_c_string_errno(error),
+        };
+        let argv = match read_string_array(memory, argv_address) {
+            Ok(argv) => argv,
+            Err(error) => return error,
+        };
+        let envp = match read_string_array(memory, envp_address) {
+            Ok(envp) => envp,
+            Err(error) => return error,
+        };
+        let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(path));
+        let path = if path.is_absolute() {
+            path
+        } else {
+            self.state.cwd.join(path)
+        };
+        let image = match std::fs::read(&path) {
+            Ok(image) => image,
+            Err(error) => return io_error(error),
+        };
+        let argv = if argv.is_empty() {
+            vec![path.to_string_lossy().into_owned()]
+        } else {
+            argv
+        };
+        self.process_action = Some(ProcessAction::Exec { image, argv, envp });
+        0
+    }
+
+    pub(crate) fn fork_child(&self, child_pid: i32) -> crate::Result<Self> {
+        Ok(Self {
+            state: self.state.try_clone_for_fork(child_pid)?,
+            output: self.output.is_some().then(CapturedOutput::default),
+            next_pid: self.next_pid.clone(),
+            process_action: None,
+            pending_segment: None,
+            exit_code: None,
+        })
+    }
+
+    pub(crate) fn take_process_action(&mut self) -> Option<ProcessAction> {
+        self.process_action.take()
+    }
+
+    pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {
+        let previous = std::mem::replace(&mut self.state, state);
+        self.state.inherit_process_state(previous);
+        self.pending_segment = None;
+        self.exit_code = None;
+    }
+
+    pub(crate) fn record_child_exit(&mut self, pid: i32, code: i32) {
+        self.state.children.insert(pid, code);
+    }
+
+    pub(crate) fn append_output(&mut self, stdout: Vec<u8>, stderr: Vec<u8>) {
+        if let Some(output) = self.output.as_mut() {
+            output.stdout.extend(stdout);
+            output.stderr.extend(stderr);
+        }
+    }
+
+    pub(crate) fn cwd(&self) -> &std::path::Path {
+        &self.state.cwd
+    }
+
+    pub(crate) fn auxv(&self) -> &[(libc::c_ulong, libc::c_ulong)] {
+        &self.state.auxv
+    }
+
+    pub(crate) fn segment_bases(&self) -> (u64, u64) {
+        (self.state.fs_base, self.state.gs_base)
     }
 
     /// Returns and clears a pending FS/GS base update requested via `arch_prctl`.
@@ -258,6 +438,9 @@ impl ElfExecutor {
 
 impl SyscallExecutor for ElfExecutor {
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        if let Some(result) = self.execute_process_action(request, memory) {
+            return result;
+        }
         // Clones share the underlying MAP_SHARED mapping, so writes through this
         // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
         let mut memory = memory.clone();
@@ -1622,6 +1805,38 @@ fn prlimit64(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     write_bytes(memory, args[3], &bytes)
 }
 
+fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let requested = args[0] as i64;
+    if args[2] & !(libc::WNOHANG as u64) != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let child_pid = if requested == -1 {
+        state.children.keys().next().copied()
+    } else if requested > 0 {
+        i32::try_from(requested)
+            .ok()
+            .filter(|pid| state.children.contains_key(pid))
+    } else {
+        None
+    };
+    let Some(child_pid) = child_pid else {
+        return negative_errno(libc::ECHILD);
+    };
+    let status = state.children[&child_pid] & 0xff;
+    if args[1] != 0 && memory.write(args[1], &(status << 8).to_le_bytes()).is_err() {
+        return negative_errno(libc::EFAULT);
+    }
+    if args[3] != 0
+        && memory
+            .zero(args[3], std::mem::size_of::<libc::rusage>())
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    state.children.remove(&child_pid);
+    i64::from(child_pid)
+}
+
 fn write_u64(memory: &mut GuestMemory, address: u64, value: u64) -> i64 {
     write_bytes(memory, address, &value.to_le_bytes())
 }
@@ -1677,6 +1892,95 @@ fn read_c_string(
         result.push(byte[0]);
     }
     Err(ReadCStringError::NameTooLong)
+}
+
+fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
+    let signal = flags & 0xff;
+    if signal != 0 && signal != libc::SIGCHLD as u64 {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    let allowed = 0xff | libc::CLONE_VM as u64 | libc::CLONE_VFORK as u64;
+    if flags & !allowed != 0 {
+        return Err(negative_errno(libc::ENOTSUP));
+    }
+    let shared_address_space = flags & (libc::CLONE_VM as u64 | libc::CLONE_VFORK as u64);
+    if shared_address_space != 0
+        && shared_address_space != (libc::CLONE_VM as u64 | libc::CLONE_VFORK as u64)
+    {
+        return Err(negative_errno(libc::ENOTSUP));
+    }
+    Ok(())
+}
+
+fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<(u64, Option<u64>), i64> {
+    const REQUIRED_SIZE: usize = 64;
+    const MAX_SIZE: usize = 88;
+
+    let Ok(size) = usize::try_from(size) else {
+        return Err(negative_errno(libc::E2BIG));
+    };
+    if !(REQUIRED_SIZE..=MAX_SIZE).contains(&size) {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    let mut bytes = [0; MAX_SIZE];
+    memory
+        .read(address, &mut bytes[..size])
+        .map_err(|_| negative_errno(libc::EFAULT))?;
+    let field = |offset: usize| {
+        u64::from_le_bytes(
+            bytes[offset..offset + 8]
+                .try_into()
+                .expect("u64 clone3 field"),
+        )
+    };
+    if field(8) != 0 || field(16) != 0 || field(24) != 0 {
+        return Err(negative_errno(libc::ENOTSUP));
+    }
+    let flags = field(0) | field(32);
+    let stack = field(40);
+    let stack_size = field(48);
+    let child_stack = if stack == 0 {
+        None
+    } else {
+        stack.checked_add(stack_size)
+    };
+    if stack != 0 && child_stack.is_none() {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    Ok((flags, child_stack))
+}
+
+fn read_string_array(memory: &GuestMemory, address: u64) -> Result<Vec<String>, i64> {
+    const MAX_ENTRIES: usize = 4096;
+    const MAX_STRING_BYTES: usize = 128 * 1024;
+
+    if address == 0 {
+        return Ok(Vec::new());
+    }
+    let mut result = Vec::new();
+    let mut total_bytes = 0;
+    for index in 0..MAX_ENTRIES {
+        let pointer_address = address
+            .checked_add((index * std::mem::size_of::<u64>()) as u64)
+            .ok_or_else(|| negative_errno(libc::EFAULT))?;
+        let mut pointer = [0; 8];
+        memory
+            .read(pointer_address, &mut pointer)
+            .map_err(|_| negative_errno(libc::EFAULT))?;
+        let pointer = u64::from_le_bytes(pointer);
+        if pointer == 0 {
+            return Ok(result);
+        }
+        let remaining = MAX_STRING_BYTES
+            .checked_sub(total_bytes)
+            .ok_or_else(|| negative_errno(libc::E2BIG))?;
+        let bytes = read_c_string(memory, pointer, remaining).map_err(read_c_string_errno)?;
+        total_bytes = total_bytes
+            .checked_add(bytes.len() + 1)
+            .ok_or_else(|| negative_errno(libc::E2BIG))?;
+        result.push(String::from_utf8(bytes).map_err(|_| negative_errno(libc::EINVAL))?);
+    }
+    Err(negative_errno(libc::E2BIG))
 }
 
 fn range_is_valid(memory: &GuestMemory, address: u64, length: u64) -> bool {
@@ -1754,8 +2058,11 @@ mod tests {
             auxv: Vec::new(),
             fs_base: 0,
             gs_base: 0,
+            pid: 1,
+            ppid: 0,
             files: BTreeMap::new(),
             closed_standard_fds: BTreeSet::new(),
+            children: BTreeMap::new(),
         }
     }
 

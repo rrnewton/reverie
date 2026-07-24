@@ -13,7 +13,9 @@ use std::path::Path;
 use kvm_bindings::CpuId;
 use kvm_bindings::KVM_MAX_CPUID_ENTRIES;
 use kvm_bindings::kvm_enable_cap;
+use kvm_bindings::kvm_regs;
 use kvm_bindings::kvm_userspace_memory_region;
+use kvm_bindings::kvm_xsave;
 use kvm_ioctls::Cap;
 use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
@@ -26,14 +28,19 @@ use crate::GuestMemory;
 use crate::Result;
 use crate::Syscall;
 use crate::SyscallRequest;
+use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::SYSCALL_FRAME_ADDRESS;
+use crate::bootstrap::SegmentBase;
 use crate::bootstrap::configure_long_mode;
+use crate::bootstrap::configure_process_syscall_return;
 use crate::bootstrap::exception_from_halt;
+use crate::bootstrap::set_syscall_return_park;
 use crate::bootstrap::set_user_segment_base;
 use crate::elf::LoadedStaticElf;
 use crate::elf::load_static_elf;
-use crate::executor::SyscallAction;
-use crate::executor::execute_basic_syscall;
+use crate::executor::ElfExecutor;
+use crate::executor::ProcessAction;
+use crate::runtime::SyscallExecutor;
 
 /// KVM currently permits userspace exits for this standardized hypercall.
 /// The prototype uses it as a transport opcode and places the syscall frame
@@ -68,9 +75,18 @@ pub struct KvmBackend {
     vm: VmFd,
     pub(crate) memory: GuestMemory,
     _kvm: Kvm,
+    cpuid_policy: CpuidPolicy,
     hypercall_instruction: [u8; 3],
     pub(crate) static_elf: Option<LoadedStaticElf>,
     stdin: Option<File>,
+}
+
+struct KvmProcessSnapshot {
+    memory: GuestMemory,
+    registers: kvm_regs,
+    xsave: kvm_xsave,
+    stdin: Option<File>,
+    cpuid_policy: CpuidPolicy,
 }
 
 impl KvmBackend {
@@ -98,6 +114,15 @@ impl KvmBackend {
         cpuid_policy: CpuidPolicy,
         stdin: Option<File>,
     ) -> Result<Self> {
+        let memory = GuestMemory::new(0, memory_size)?;
+        Self::new_with_memory_and_cpuid_policy(memory, cpuid_policy, stdin)
+    }
+
+    fn new_with_memory_and_cpuid_policy(
+        memory: GuestMemory,
+        cpuid_policy: CpuidPolicy,
+        stdin: Option<File>,
+    ) -> Result<Self> {
         let kvm = Kvm::new()?;
         let vm = kvm.create_vm()?;
         if !vm.check_extension(Cap::ExitHypercall) {
@@ -114,7 +139,6 @@ impl KvmBackend {
         };
         vm.enable_cap(&cap)?;
 
-        let memory = GuestMemory::new(0, memory_size)?;
         let region = kvm_userspace_memory_region {
             slot: 0,
             guest_phys_addr: memory.guest_base(),
@@ -135,6 +159,7 @@ impl KvmBackend {
             vm,
             memory,
             _kvm: kvm,
+            cpuid_policy,
             hypercall_instruction,
             static_elf: None,
             stdin,
@@ -218,6 +243,114 @@ impl KvmBackend {
         Ok(())
     }
 
+    fn snapshot_process(&self) -> Result<KvmProcessSnapshot> {
+        Ok(KvmProcessSnapshot {
+            memory: self.memory.snapshot()?,
+            registers: self.vcpu.get_regs()?,
+            xsave: self.vcpu.get_xsave()?,
+            stdin: self.stdin.as_ref().map(File::try_clone).transpose()?,
+            cpuid_policy: self.cpuid_policy,
+        })
+    }
+
+    fn from_process_snapshot(snapshot: KvmProcessSnapshot) -> Result<Self> {
+        let mut child = Self::new_with_memory_and_cpuid_policy(
+            snapshot.memory,
+            snapshot.cpuid_policy,
+            snapshot.stdin,
+        )?;
+        configure_long_mode(
+            &mut child.memory,
+            &child.vcpu,
+            0,
+            snapshot.registers.rsp,
+            child.hypercall_instruction,
+        )?;
+        child.vcpu.set_regs(&snapshot.registers)?;
+        // SAFETY: this guest setup does not enable dynamically sized XSTATE features.
+        unsafe { child.vcpu.set_xsave(&snapshot.xsave)? };
+        Ok(child)
+    }
+
+    fn exec_process(
+        &mut self,
+        executor: &mut ElfExecutor,
+        image: &[u8],
+        argv: &[String],
+        envp: &[String],
+    ) -> Result<()> {
+        let user_length = usize::try_from(self.memory.guest_end() - BOOT_RESERVED_END)
+            .expect("guest memory length must fit usize");
+        self.memory.zero(BOOT_RESERVED_END, user_length)?;
+
+        let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
+        let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
+        let mut loaded = load_static_elf(&mut self.memory, image, &argv, &envp, executor.cwd())?;
+        loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
+        configure_long_mode(
+            &mut self.memory,
+            &self.vcpu,
+            loaded.entry_point,
+            loaded.stack_pointer,
+            self.hypercall_instruction,
+        )?;
+        executor.replace_after_exec(loaded);
+        Ok(())
+    }
+
+    pub(crate) fn run_process_action(
+        &mut self,
+        executor: &mut ElfExecutor,
+        action: ProcessAction,
+    ) -> Result<()> {
+        match action {
+            ProcessAction::Fork {
+                child_pid,
+                child_stack,
+            } => {
+                let mut child_executor = executor.fork_child(child_pid)?;
+                set_syscall_return_park(&mut self.memory, self.hypercall_instruction, true)?;
+                let parked = match self.vcpu.run()? {
+                    VcpuExit::Hlt => Ok(()),
+                    exit => Err(Error::UnexpectedVcpuExit(format!(
+                        "parent did not park at fork: {exit:?}"
+                    ))),
+                };
+                set_syscall_return_park(&mut self.memory, self.hypercall_instruction, false)?;
+                parked?;
+                let child_snapshot = self.snapshot_process()?;
+
+                let mut child = Self::from_process_snapshot(child_snapshot)?;
+                let (fs_base, gs_base) = child_executor.segment_bases();
+                set_user_segment_base(&child.vcpu, SegmentBase::Fs, fs_base)?;
+                set_user_segment_base(&child.vcpu, SegmentBase::Gs, gs_base)?;
+                configure_process_syscall_return(&child.memory, &child.vcpu, 0, child_stack)?;
+                let (code, stdout, stderr) = child.run_static_elf_process(&mut child_executor)?;
+                executor.record_child_exit(child_pid, code);
+                executor.append_output(stdout, stderr);
+                configure_process_syscall_return(
+                    &self.memory,
+                    &self.vcpu,
+                    i64::from(child_pid),
+                    None,
+                )?;
+            }
+            ProcessAction::Exec { image, argv, envp } => {
+                set_syscall_return_park(&mut self.memory, self.hypercall_instruction, true)?;
+                let parked = match self.vcpu.run()? {
+                    VcpuExit::Hlt => Ok(()),
+                    exit => Err(Error::UnexpectedVcpuExit(format!(
+                        "process did not park before exec: {exit:?}"
+                    ))),
+                };
+                set_syscall_return_park(&mut self.memory, self.hypercall_instruction, false)?;
+                parked?;
+                self.exec_process(executor, &image, &argv, &envp)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn static_elf_halt_error(&self) -> Result<Error> {
         let registers = self.vcpu.get_regs()?;
         if let Some((vector, instruction_pointer)) =
@@ -235,32 +368,46 @@ impl KvmBackend {
         ))
     }
 
-    /// Runs the installed static ELF until it invokes `exit` or `exit_group`.
+    /// Runs the installed static ELF and its forked children until the root exits.
     pub fn run_static_elf(&mut self) -> Result<i32> {
-        let mut state = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+        let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+        let mut executor = ElfExecutor::new(loaded, false);
+        let (code, _, _) = self.run_static_elf_process(&mut executor)?;
+        Ok(code)
+    }
 
+    /// Runs the installed ELF process tree and captures its standard output streams.
+    pub fn run_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+        let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+        let mut executor = ElfExecutor::new(loaded, true);
+        self.run_static_elf_process(&mut executor)
+    }
+
+    fn run_static_elf_process(
+        &mut self,
+        executor: &mut ElfExecutor,
+    ) -> Result<(i32, Vec<u8>, Vec<u8>)> {
         loop {
-            let segment_update = match self.vcpu.run()? {
+            let (segment_update, process_action) = match self.vcpu.run()? {
                 VcpuExit::Hypercall(exit) => {
                     if exit.nr != VMCALL_SYSCALL_TRANSPORT {
                         return Err(Error::UnexpectedHypercall(exit.nr));
                     }
-                    if exit.args[0] != SYSCALL_FRAME_ADDRESS {
+                    let frame_address = exit.args[0];
+                    if frame_address != SYSCALL_FRAME_ADDRESS {
                         return Err(Error::UnexpectedVcpuExit(format!(
-                            "syscall frame is at unexpected address {:#x}",
-                            exit.args[0]
+                            "syscall frame is at unexpected address {frame_address:#x}",
                         )));
                     }
-
-                    let request = SyscallRequest::read_from(&self.memory, exit.args[0])?;
-                    match execute_basic_syscall(&mut self.memory, &mut state, &request) {
-                        SyscallAction::Continue { result, segment } => {
-                            SyscallRequest::write_result(&mut self.memory, exit.args[0], result)?;
-                            *exit.ret = 0;
-                            segment
-                        }
-                        SyscallAction::Exit(code) => return Ok(code),
+                    let return_slot = std::ptr::from_mut(exit.ret) as usize;
+                    let request = SyscallRequest::read_from(&self.memory, frame_address)?;
+                    let result = executor.execute(&request, &self.memory);
+                    SyscallRequest::write_result(&mut self.memory, frame_address, result)?;
+                    // SAFETY: return_slot points into this stopped vCPU's stable KVM_RUN mapping.
+                    unsafe {
+                        (return_slot as *mut u64).write(0);
                     }
+                    (executor.take_segment(), executor.take_process_action())
                 }
                 VcpuExit::Hlt => return Err(self.static_elf_halt_error()?),
                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
@@ -268,6 +415,15 @@ impl KvmBackend {
 
             if let Some((segment, address)) = segment_update {
                 set_user_segment_base(&self.vcpu, segment, address)?;
+            }
+
+            if let Some(action) = process_action {
+                self.run_process_action(executor, action)?;
+            }
+
+            if let Some(code) = executor.take_exit() {
+                let (stdout, stderr) = executor.take_output();
+                return Ok((code, stdout, stderr));
             }
         }
     }

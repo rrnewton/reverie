@@ -8,8 +8,10 @@
 
 #![cfg(target_arch = "x86_64")]
 
+use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use kvm_ioctls::Kvm;
@@ -30,6 +32,26 @@ const LOAD_ADDRESS: u64 = 0x20_0000;
 const CODE_OFFSET: usize = 0x1000;
 const POST_EXEC_RANDOM: [u8; 16] = *b"kvm-post-exec-ok";
 static POST_EXEC_FAILURE_EXITED: AtomicBool = AtomicBool::new(false);
+
+static NEXT_TEST_EXECUTABLE: AtomicU64 = AtomicU64::new(0);
+
+struct TestExecutable(PathBuf);
+
+impl TestExecutable {
+    fn new(image: &[u8]) -> Self {
+        let id = NEXT_TEST_EXECUTABLE.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("reverie-kvm-exec-{}-{id}", std::process::id()));
+        std::fs::write(&path, image).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for TestExecutable {
+    fn drop(&mut self) {
+        std::fs::remove_file(&self.0).unwrap();
+    }
+}
 
 #[derive(Default)]
 struct PostExecLog {
@@ -167,6 +189,125 @@ fn static_elf_faults_are_reported_by_direct_and_tool_runtimes() {
         .install_static_elf(&page_fault_image, "/bin/fault")
         .unwrap();
     assert_page_fault(page_fault_backend.run_static_elf().unwrap_err());
+}
+
+#[test]
+fn static_elf_forks_execs_and_waits_for_child() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM multiprocess test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let message = b"hello from fork exec\n";
+    let mut target = vec![0xbf, 0x01, 0x00, 0x00, 0x00]; // mov edi, 1
+    let message_operand = target.len() + 2;
+    target.extend_from_slice(&[0x48, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0]); // movabs rsi, message
+    target.push(0xba);
+    target.extend_from_slice(&(message.len() as u32).to_le_bytes()); // mov edx, len
+    target.extend_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00, 0x0f, 0x05]); // write
+    target.extend_from_slice(&[
+        0xb8, 0xe7, 0x00, 0x00, 0x00, 0x31, 0xff, 0x0f, 0x05, 0x0f, 0x0b,
+    ]); // exit_group(0); ud2
+    let message_address = LOAD_ADDRESS + target.len() as u64;
+    target[message_operand..message_operand + 8].copy_from_slice(&message_address.to_le_bytes());
+    target.extend_from_slice(message);
+    let executable = TestExecutable::new(&static_elf(&target));
+    let path = executable.0.to_str().unwrap().as_bytes();
+
+    let mut root = vec![
+        0x49, 0xc7, 0xc4, 0x78, 0x56, 0x34, 0x12, // mov r12, 0x12345678
+        0xb8, 0x78, 0x56, 0x34, 0x12, // mov eax, 0x12345678
+        0x66, 0x0f, 0x6e, 0xc0, // movd xmm0, eax
+        0xb8, 0x39, 0x00, 0x00, 0x00, // mov eax, SYS_fork
+        0x0f, 0x05, // syscall
+        0x85, 0xc0, // test eax, eax
+        0x74, 0x00, // jz child
+    ];
+    let child_jump = root.len() - 1;
+    root.extend_from_slice(&[
+        0x89, 0xc7, // mov edi, eax
+        0x48, 0x83, 0xec, 0x10, // sub rsp, 16
+        0x48, 0x89, 0xe6, // mov rsi, rsp
+        0x31, 0xd2, // xor edx, edx
+        0x45, 0x31, 0xd2, // xor r10d, r10d
+        0xb8, 0x3d, 0x00, 0x00, 0x00, // mov eax, SYS_wait4
+        0x0f, 0x05, // syscall
+        0x8b, 0x3c, 0x24, // mov edi, dword ptr [rsp]
+        0xc1, 0xef, 0x08, // shr edi, 8
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ]);
+    let child_offset = root.len();
+    let displacement = child_offset as isize - (child_jump + 1) as isize;
+    root[child_jump] = i8::try_from(displacement).unwrap() as u8;
+
+    root.extend_from_slice(&[
+        0x49, 0x81, 0xfc, 0x78, 0x56, 0x34, 0x12, // cmp r12, 0x12345678
+        0x74, 0x0e, // je callee_saved_ok
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0xbf, 0x2a, 0x00, 0x00, 0x00, // mov edi, 42
+        0x0f, 0x05, 0x0f, 0x0b, // syscall; ud2
+        0x66, 0x0f, 0x7e, 0xc0, // movd eax, xmm0
+        0x3d, 0x78, 0x56, 0x34, 0x12, // cmp eax, 0x12345678
+        0x74, 0x0e, // je fpu_ok
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0xbf, 0x2b, 0x00, 0x00, 0x00, // mov edi, 43
+        0x0f, 0x05, 0x0f, 0x0b, // syscall; ud2
+    ]);
+
+    let path_operand = root.len() + 2;
+    root.extend_from_slice(&[0x48, 0xbf, 0, 0, 0, 0, 0, 0, 0, 0]); // movabs rdi, path
+    let argv_operand = root.len() + 2;
+    root.extend_from_slice(&[0x48, 0xbe, 0, 0, 0, 0, 0, 0, 0, 0]); // movabs rsi, argv
+    let envp_operand = root.len() + 2;
+    root.extend_from_slice(&[0x48, 0xba, 0, 0, 0, 0, 0, 0, 0, 0]); // movabs rdx, envp
+    root.extend_from_slice(&[
+        0xb8, 0x3b, 0x00, 0x00, 0x00, 0x0f, 0x05, // execve
+        0xb8, 0xe7, 0x00, 0x00, 0x00, 0xbf, 0x2a, 0x00, 0x00, 0x00, 0x0f, 0x05, 0x0f,
+        0x0b, // exit_group(42); ud2
+    ]);
+
+    let path_address = LOAD_ADDRESS + root.len() as u64;
+    root.extend_from_slice(path);
+    root.push(0);
+    while !root.len().is_multiple_of(8) {
+        root.push(0);
+    }
+    let argv_address = LOAD_ADDRESS + root.len() as u64;
+    root.extend_from_slice(&path_address.to_le_bytes());
+    root.extend_from_slice(&0_u64.to_le_bytes());
+    let envp_address = LOAD_ADDRESS + root.len() as u64;
+    root.extend_from_slice(&0_u64.to_le_bytes());
+    root[path_operand..path_operand + 8].copy_from_slice(&path_address.to_le_bytes());
+    root[argv_operand..argv_operand + 8].copy_from_slice(&argv_address.to_le_bytes());
+    root[envp_operand..envp_operand + 8].copy_from_slice(&envp_address.to_le_bytes());
+
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(&static_elf(&root), "/bin/fork-exec-test")
+        .unwrap();
+    let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
+
+    assert_eq!(code, 0);
+    assert_eq!(stdout, message);
+    assert!(stderr.is_empty());
+
+    let mut tool_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    tool_backend
+        .install_static_elf(&static_elf(&root), "/bin/fork-exec-test")
+        .unwrap();
+    let (_, code, stdout, stderr) =
+        futures::executor::block_on(tool_backend.run_static_elf_with_tool::<StraceTool>((), true))
+            .unwrap();
+
+    assert_eq!(code, 0);
+    assert_eq!(stdout, message);
+    assert!(stderr.is_empty());
 }
 
 #[test]

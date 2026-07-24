@@ -181,6 +181,67 @@ pub(crate) fn set_user_segment_base(
     Ok(())
 }
 
+pub(crate) fn configure_process_syscall_return(
+    memory: &GuestMemory,
+    vcpu: &VcpuFd,
+    result: i64,
+    stack_pointer: Option<u64>,
+) -> Result<()> {
+    let mut sregs = vcpu.get_sregs()?;
+    let fs_base = sregs.fs.base;
+    let gs_base = sregs.gs.base;
+    sregs.cs = code_segment(USER_CODE_SELECTOR, 3);
+    let user_data = data_segment(USER_DATA_SELECTOR, 3);
+    sregs.ds = user_data;
+    sregs.es = user_data;
+    sregs.ss = user_data;
+    sregs.fs = user_data;
+    sregs.fs.base = fs_base;
+    sregs.gs = user_data;
+    sregs.gs.base = gs_base;
+    vcpu.set_sregs(&sregs)?;
+
+    let return_rip = read_u64(memory, frame_word_address_u64(RETURN_RIP_WORD))?;
+    let return_flags = read_u64(memory, frame_word_address_u64(RETURN_FLAGS_WORD))?;
+    let mut regs = vcpu.get_regs()?;
+    regs.rax = result as u64;
+    regs.rdi = read_u64(memory, frame_word_address_u64(1))?;
+    regs.rsi = read_u64(memory, frame_word_address_u64(2))?;
+    regs.rdx = read_u64(memory, frame_word_address_u64(3))?;
+    regs.r10 = read_u64(memory, frame_word_address_u64(4))?;
+    regs.r8 = read_u64(memory, frame_word_address_u64(5))?;
+    regs.r9 = read_u64(memory, frame_word_address_u64(6))?;
+    regs.rbx = read_u64(memory, frame_word_address_u64(SAVED_RBX_WORD))?;
+    regs.rcx = return_rip;
+    regs.r11 = return_flags;
+    regs.rip = return_rip;
+    regs.rflags = return_flags;
+    if let Some(stack_pointer) = stack_pointer {
+        regs.rsp = stack_pointer;
+    }
+    vcpu.set_regs(&regs)?;
+    Ok(())
+}
+
+pub(crate) fn set_syscall_return_park(
+    memory: &mut GuestMemory,
+    hypercall_instruction: [u8; 3],
+    park: bool,
+) -> Result<()> {
+    let trampoline = syscall_trampoline(hypercall_instruction);
+    let return_offset = trampoline
+        .windows(hypercall_instruction.len())
+        .position(|window| window == hypercall_instruction)
+        .expect("syscall trampoline must contain its hypercall")
+        + hypercall_instruction.len();
+    let byte = if park {
+        0xf4
+    } else {
+        trampoline[return_offset]
+    };
+    memory.write(SYSCALL_TRAMPOLINE_ADDRESS + return_offset as u64, &[byte])
+}
+
 fn write_descriptor_tables(memory: &mut GuestMemory) -> Result<()> {
     let tss_low = gdt_entry(0x008b, TSS_ADDRESS, 0x67);
     let entries = [
@@ -282,6 +343,12 @@ fn write_page_tables(memory: &mut GuestMemory) -> Result<()> {
 
 fn write_u64(memory: &mut GuestMemory, address: u64, value: u64) -> Result<()> {
     memory.write(address, &value.to_le_bytes())
+}
+
+fn read_u64(memory: &GuestMemory, address: u64) -> Result<u64> {
+    let mut value = [0; std::mem::size_of::<u64>()];
+    memory.read(address, &mut value)?;
+    Ok(u64::from_le_bytes(value))
 }
 
 fn code_segment(selector: u16, dpl: u8) -> kvm_segment {
@@ -393,8 +460,12 @@ fn load_absolute(code: &mut Vec<u8>, rex: u8, register: u8, word: usize) {
 }
 
 fn frame_word_address(word: usize) -> u32 {
-    u32::try_from(SYSCALL_FRAME_ADDRESS + (word * std::mem::size_of::<u64>()) as u64)
+    u32::try_from(frame_word_address_u64(word))
         .expect("syscall frame must fit in an absolute disp32 address")
+}
+
+fn frame_word_address_u64(word: usize) -> u64 {
+    SYSCALL_FRAME_ADDRESS + (word * std::mem::size_of::<u64>()) as u64
 }
 
 #[cfg(test)]
