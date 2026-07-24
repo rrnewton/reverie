@@ -102,6 +102,8 @@ static void reverie_dbi_emit(const char *buf, size_t len) {
 extern void reverie_dbi_runtime_thread_init(prototype_counters_t *counters);
 extern void reverie_dbi_runtime_thread_exit(prototype_counters_t *counters);
 extern uint64_t reverie_dbi_runtime_image_init(void);
+extern void reverie_dbi_runtime_exec_failed(prototype_counters_t *counters,
+                                            int32_t pid);
 extern void reverie_dbi_runtime_background_init(void *argument);
 extern int32_t reverie_dbi_runtime_ready(uint64_t image_generation);
 extern int32_t reverie_dbi_runtime_pre_syscall(
@@ -707,6 +709,14 @@ static bool syscall_reads_stdin(void *drcontext, int sysnum,
 
 static bool filter_syscall(void *drcontext, int sysnum) { return true; }
 
+static bool is_exec_syscall(int sysnum) {
+  return sysnum == SYS_execve
+#ifdef SYS_execveat
+         || sysnum == SYS_execveat
+#endif
+      ;
+}
+
 static bool pre_syscall(void *drcontext, int sysnum) {
   while (!reverie_dbi_runtime_ready(image_generation))
     dr_sleep(1);
@@ -743,6 +753,19 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     return false;
   }
   return true;
+}
+
+static void post_syscall(void *drcontext, int sysnum) {
+  if (!is_exec_syscall(sysnum))
+    return;
+  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
+      drcontext, thread_state_index);
+  DR_ASSERT(counters != NULL);
+  reverie_dbi_runtime_exec_failed(counters, (int32_t)dr_get_process_id());
+  image_generation = reverie_dbi_runtime_image_init();
+  if (!dr_create_client_thread(reverie_dbi_runtime_background_init,
+                               (void *)reverie_dbi_emit))
+    DR_ASSERT(false);
 }
 
 static void thread_init(void *drcontext) {
@@ -825,6 +848,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       !drmgr_register_bb_instrumentation_event(NULL, instrument_instruction,
                                                NULL) ||
       !drmgr_register_filter_syscall_event(filter_syscall) ||
-      !drmgr_register_pre_syscall_event(pre_syscall))
+      !drmgr_register_pre_syscall_event(pre_syscall) ||
+      !drmgr_register_post_syscall_event(post_syscall))
     DR_ASSERT(false);
 }

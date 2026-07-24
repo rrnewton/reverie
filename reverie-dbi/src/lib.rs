@@ -1048,6 +1048,19 @@ pub unsafe extern "C" fn reverie_dbi_runtime_thread_init(counters: *mut Prototyp
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_dbi_runtime_thread_exit(_counters: *mut PrototypeCounters) {}
 
+/// Restores prototype state after an exec syscall returns with an error.
+///
+/// # Safety
+///
+/// `counters` must be the pointer initialized for the current application thread.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbi_runtime_exec_failed(
+    _counters: *mut PrototypeCounters,
+    _pid: i32,
+) {
+}
+
 /// Handles a DynamoRIO pre-syscall event.
 ///
 /// Returning one asks the native client to suppress the original syscall and
