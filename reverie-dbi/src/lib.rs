@@ -763,7 +763,18 @@ fn should_rewrite_syscall(sysnum: i64) -> bool {
         libc::SYS_bind,
         libc::SYS_open,
         libc::SYS_openat,
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        libc::SYS_creat,
+        libc::SYS_stat,
+        libc::SYS_fstat,
+        libc::SYS_lstat,
+        libc::SYS_newfstatat,
+        libc::SYS_statx,
         libc::SYS_read,
+        libc::SYS_lseek,
+        libc::SYS_access,
+        libc::SYS_faccessat,
+        libc::SYS_faccessat2,
         libc::SYS_pread64,
         libc::SYS_readv,
         libc::SYS_preadv,
@@ -1201,6 +1212,20 @@ mod tests {
         unsafe { *args.add(2) as i64 }
     }
 
+    struct ExpectedInvocation {
+        sysnum: i64,
+        args: [u64; 6],
+        result: i64,
+    }
+
+    unsafe extern "C" fn invoke_expected(context: usize, sysnum: i64, args: *const u64) -> i64 {
+        let expected = unsafe { &*(context as *const ExpectedInvocation) };
+        let actual_args = unsafe { std::slice::from_raw_parts(args, 6) };
+        assert_eq!(sysnum, expected.sysnum);
+        assert_eq!(actual_args, expected.args);
+        expected.result
+    }
+
     unsafe extern "C" fn invoke_uname(_context: usize, sysnum: i64, args: *const u64) -> i64 {
         assert_eq!(sysnum, libc::SYS_uname);
         unsafe { libc::uname(*args as *mut libc::utsname) as i64 }
@@ -1293,6 +1318,78 @@ mod tests {
         assert_eq!(guest.read_clock().unwrap(), 99);
         let tail_result = Arc::clone(&guest.tail_inject_result);
         assert_eq!(run_ready(guest.regs(), &tail_result).unwrap().rip, 0x1234);
+    }
+
+    #[test]
+    fn core_file_io_syscalls_dispatch_through_guest() {
+        let cases = [
+            (libc::SYS_open, [0, 11, 12, 13, 14, 15]),
+            (libc::SYS_openat, [20, 0, 22, 23, 24, 25]),
+            (libc::SYS_creat, [30, 31, 32, 33, 34, 35]),
+            (libc::SYS_read, [50, 51, 52, 53, 54, 55]),
+            (libc::SYS_write, [60, 61, 62, 63, 64, 65]),
+            (libc::SYS_close, [70, 71, 72, 73, 74, 75]),
+            (libc::SYS_stat, [80, 81, 82, 83, 84, 85]),
+            (libc::SYS_fstat, [90, 91, 92, 93, 94, 95]),
+            (libc::SYS_lstat, [100, 101, 102, 103, 104, 105]),
+            (libc::SYS_newfstatat, [110, 111, 112, 113, 114, 115]),
+            (libc::SYS_statx, [120, 121, 122, 123, 124, 125]),
+            (libc::SYS_lseek, [130, 131, 132, 133, 134, 135]),
+            (libc::SYS_access, [140, 141, 142, 143, 144, 145]),
+            (libc::SYS_faccessat, [150, 151, 152, 153, 154, 155]),
+            (libc::SYS_faccessat2, [160, 161, 162, 163, 164, 165]),
+        ];
+        let mut counters = PrototypeCounters::default();
+
+        for (index, (sysnum, raw_args)) in cases.into_iter().enumerate() {
+            assert!(should_rewrite_syscall(sysnum));
+            let result = if index + 1 == cases.len() {
+                -(Errno::EACCES.into_raw() as i64)
+            } else {
+                sysnum
+            };
+            let expected = ExpectedInvocation {
+                sysnum,
+                args: raw_args.map(|arg| arg as u64),
+                result,
+            };
+            let syscall = Syscall::from_raw(
+                Sysno::from(sysnum as i32),
+                SyscallArgs::new(
+                    raw_args[0],
+                    raw_args[1],
+                    raw_args[2],
+                    raw_args[3],
+                    raw_args[4],
+                    raw_args[5],
+                ),
+            );
+            let mut guest = DbiGuest::new(
+                (&expected as *const ExpectedInvocation) as usize,
+                Pid::from_raw(10),
+                Pid::from_raw(10),
+                None,
+                99,
+                &mut counters,
+                &GLOBAL_STATE,
+                &CONFIG,
+                invoke_expected,
+                read_regs,
+            );
+            let tail_result = Arc::clone(&guest.tail_inject_result);
+            let outcome = run_ready(
+                PROTOTYPE_TOOL.handle_syscall_event(&mut guest, syscall),
+                &tail_result,
+            )
+            .unwrap();
+            if result < 0 {
+                assert!(matches!(outcome, Err(Error::Errno(Errno::EACCES))));
+            } else {
+                assert_eq!(outcome.unwrap(), result);
+            }
+        }
+
+        assert_eq!(counters.rewritten_syscalls, cases.len() as u64);
     }
 
     #[test]
