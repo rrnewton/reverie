@@ -1010,6 +1010,15 @@ static TOTAL_BRANCHES: AtomicU64 = AtomicU64::new(0);
 static TOTAL_SYSCALLS: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "prototype-runtime")]
 static TOTAL_REWRITTEN: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "prototype-runtime")]
+static IMAGE_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// Begins a new DynamoRIO application image and returns its generation.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_dbi_runtime_image_init() -> u64 {
+    IMAGE_GENERATION.fetch_add(1, Ordering::SeqCst) + 1
+}
 
 /// Initializes the prototype state for the current application thread.
 ///
@@ -1048,6 +1057,7 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
     counters: *mut PrototypeCounters,
     tid: i32,
     pid: i32,
+    _image_generation: u64,
     sysnum: i64,
     args: *const u64,
     branches: u64,
@@ -1154,7 +1164,7 @@ pub extern "C" fn reverie_dbi_runtime_background_init(_argument: *mut c_void) {}
 /// Reports whether the built-in prototype runtime is ready for callbacks.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub extern "C" fn reverie_dbi_runtime_ready() -> i32 {
+pub extern "C" fn reverie_dbi_runtime_ready(_image_generation: u64) -> i32 {
     1
 }
 
@@ -1520,5 +1530,12 @@ mod tests {
         assert_eq!(deterministic_port(&next, 0), 32770);
         assert_eq!(deterministic_port(&next, 1200), 1200);
         assert_eq!(deterministic_port(&next, 0), 32771);
+    }
+
+    #[test]
+    fn image_generations_advance_on_client_reload() {
+        let first = reverie_dbi_runtime_image_init();
+        let second = reverie_dbi_runtime_image_init();
+        assert_eq!(second, first + 1);
     }
 }

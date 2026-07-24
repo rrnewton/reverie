@@ -101,13 +101,15 @@ static void reverie_dbi_emit(const char *buf, size_t len) {
 
 extern void reverie_dbi_runtime_thread_init(prototype_counters_t *counters);
 extern void reverie_dbi_runtime_thread_exit(prototype_counters_t *counters);
+extern uint64_t reverie_dbi_runtime_image_init(void);
 extern void reverie_dbi_runtime_background_init(void *argument);
-extern int32_t reverie_dbi_runtime_ready(void);
+extern int32_t reverie_dbi_runtime_ready(uint64_t image_generation);
 extern int32_t reverie_dbi_runtime_pre_syscall(
     void *context, prototype_counters_t *counters, int32_t tid, int32_t pid,
-    int64_t sysnum, const uint64_t *args, uint64_t branches, int64_t *result,
-    syscall_invoker_t invoke_syscall, register_reader_t read_registers,
-    memory_reader_t read_memory, reverie_emit_fn_t emit);
+    uint64_t image_generation, int64_t sysnum, const uint64_t *args,
+    uint64_t branches, int64_t *result, syscall_invoker_t invoke_syscall,
+    register_reader_t read_registers, memory_reader_t read_memory,
+    reverie_emit_fn_t emit);
 extern const char *reverie_dbi_runtime_name(void);
 extern void reverie_dbi_runtime_totals(uint64_t *branches, uint64_t *syscalls,
                                        uint64_t *rewritten,
@@ -116,6 +118,7 @@ extern void reverie_dbi_runtime_totals(uint64_t *branches, uint64_t *syscalls,
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
 static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
+static uint64_t image_generation;
 static int thread_state_index;
 static ptr_uint_t cpuid_marker_note;
 static bool report_summary;
@@ -705,7 +708,7 @@ static bool syscall_reads_stdin(void *drcontext, int sysnum,
 static bool filter_syscall(void *drcontext, int sysnum) { return true; }
 
 static bool pre_syscall(void *drcontext, int sysnum) {
-  while (!reverie_dbi_runtime_ready())
+  while (!reverie_dbi_runtime_ready(image_generation))
     dr_sleep(1);
   uint64_t args[6];
   int64_t result = 0;
@@ -721,7 +724,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
 
   if (reverie_dbi_runtime_pre_syscall(
           drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
-          (int32_t)dr_get_process_id(), (int64_t)sysnum, args,
+          (int32_t)dr_get_process_id(), image_generation, (int64_t)sysnum, args,
           atomic_load_explicit(&branch_count, memory_order_relaxed), &result,
           invoke_syscall, read_registers, read_memory, reverie_dbi_emit)) {
     dr_syscall_set_result(drcontext, (reg_t)result);
@@ -785,6 +788,11 @@ static void event_exit(void) {
 
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   drreg_options_t register_options = {sizeof(register_options), 1, false};
+
+  /* DynamoRIO reloads the client and calls dr_client_main after a successful
+   * Linux exec. Obtain the generation synchronously so the first callback in
+   * the new image cannot race the background runtime initialization. */
+  image_generation = reverie_dbi_runtime_image_init();
 
   resource_lock = dr_mutex_create();
   DR_ASSERT(resource_lock != NULL);
