@@ -79,7 +79,7 @@ impl Service {
             let camel_ident = &method.camel_ident;
             let arg_pats = method.args.iter().map(|pat_type| &pat_type.pat).collect::<Vec<_>>();
 
-            if method.method_attrs.no_response {
+            if method.method_attrs.no_response.unwrap_or_default() {
                 quote! {
                     #( #attrs )*
                     #[allow(unused_doc_comments)]
@@ -193,7 +193,7 @@ impl Service {
     /// Expands the associated response type for each method's return type.
     fn expand_response_enum(&self) -> TokenStream {
         let variants = self.methods.iter().filter_map(|method| {
-            if method.method_attrs.no_response {
+            if method.method_attrs.no_response.unwrap_or_default() {
                 // Don't expand this variant if it's a send-only method.
                 return None;
             }
@@ -261,7 +261,7 @@ impl Service {
             let arg_pats = method.args.iter().map(|pat_type| &pat_type.pat);
             let output = &method.output;
 
-            if method.method_attrs.no_response {
+            if method.method_attrs.no_response.unwrap_or_default() {
                 quote! {
                     #( #attrs )*
                     pub fn #ident(&self, #( #args ),*) {

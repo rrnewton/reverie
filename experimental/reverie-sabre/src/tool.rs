@@ -50,6 +50,23 @@ pub trait Tool {
     fn syscall(&self, syscall: Syscall, _memory: &LocalMemory) -> Result<usize, Errno> {
         unsafe { syscall.call() }
     }
+    /// Handles a syscall whose execution needs SaBRe runtime bookkeeping.
+    ///
+    /// The default preserves the legacy behavior by executing the supplied
+    /// operation. Shared Reverie adapters override this so the operation is
+    /// exposed through `Guest::inject` from `Tool::handle_syscall_event`.
+    #[inline]
+    fn syscall_with_inject<F>(
+        &self,
+        _syscall: Syscall,
+        _memory: &LocalMemory,
+        mut inject: F,
+    ) -> Result<usize, Errno>
+    where
+        F: FnMut() -> usize + Send + Sync,
+    {
+        Errno::from_ret(inject())
+    }
 
     /// Called when a thread first starts.
     #[inline]
@@ -142,6 +159,11 @@ pub trait ToolGlobal {
 /// Helper methods for syscalls.
 pub trait SyscallExt {
     /// Executes the syscall, returning the result.
+    ///
+    /// # Safety
+    ///
+    /// Every pointer argument in the syscall must satisfy the kernel ABI for
+    /// the duration of the call.
     unsafe fn call(self) -> Result<usize, Errno>;
 }
 
@@ -156,7 +178,7 @@ impl SyscallExt for Syscall {
             utils::sys_readlink(
                 args.arg0 as *const libc::c_char,
                 args.arg1 as *mut libc::c_char,
-                args.arg2 as usize,
+                args.arg2,
             )
         } else if sysno == Sysno::execve {
             utils::sys_execve(
@@ -178,7 +200,7 @@ impl SyscallExt for Syscall {
                 args.arg0 as libc::c_int,
                 args.arg1 as *const _,
                 args.arg2 as *mut _,
-                args.arg3 as usize,
+                args.arg3,
             )
         } else if sysno == Sysno::close && args.arg0 == libc::STDERR_FILENO as usize {
             // Prevent stderr from getting closed. We need this for logging

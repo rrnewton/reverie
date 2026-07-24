@@ -15,6 +15,7 @@ pub mod ffi;
 pub mod internal;
 mod paths;
 mod protected_files;
+mod reverie_adapter;
 mod rpc;
 mod signal;
 mod slot_map;
@@ -25,6 +26,7 @@ pub mod vdso;
 
 pub use nostd_print::*;
 pub use paths::*;
+pub use reverie_adapter::*;
 pub use reverie_sabre_macros::tool;
 pub use tool::*;
 

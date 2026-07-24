@@ -6,6 +6,7 @@ members = [
     "experimental/reverie-rpc-macros",
     "experimental/reverie-rpc",
     "experimental/reverie-sabre-macros",
+    "experimental/reverie-sabre-strace",
     "experimental/reverie-sabre",
     "experimental/riptrace",
     "experimental/riptrace/rpc",
