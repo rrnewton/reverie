@@ -109,6 +109,16 @@ fn execute_basic_syscall_with_output(
         read(memory, state, args)
     } else if number == libc::SYS_pread64 as u64 {
         pread64(memory, state, args)
+    } else if number == libc::SYS_pwrite64 as u64 {
+        pwrite64(memory, state, args)
+    } else if number == libc::SYS_lseek as u64 {
+        lseek(state, args)
+    } else if number == libc::SYS_ftruncate as u64 {
+        ftruncate(state, args)
+    } else if number == libc::SYS_fsync as u64 {
+        sync_file(state, args[0], false)
+    } else if number == libc::SYS_fdatasync as u64 {
+        sync_file(state, args[0], true)
     } else if number == libc::SYS_pipe as u64 {
         pipe2(memory, state, args[0], 0)
     } else if number == libc::SYS_pipe2 as u64 {
@@ -157,12 +167,16 @@ fn execute_basic_syscall_with_output(
         mmap(memory, state, args)
     } else if number == libc::SYS_munmap as u64 {
         munmap(memory, args[0], args[1])
+    } else if number == libc::SYS_mremap as u64 {
+        mremap(memory, state, args)
     } else if number == libc::SYS_mprotect as u64 || number == libc::SYS_madvise as u64 {
         validate_range(memory, args[0], args[1])
     } else if number == libc::SYS_getrandom as u64 {
         getrandom(memory, args[0], args[1])
     } else if number == libc::SYS_clock_gettime as u64 {
         write_bytes(memory, args[1], &[0; 16])
+    } else if number == libc::SYS_gettimeofday as u64 {
+        gettimeofday(memory, args)
     } else if number == libc::SYS_readlink as u64 {
         readlink(memory, state, args)
     } else if number == libc::SYS_uname as u64 {
@@ -308,7 +322,11 @@ fn ensure_readable(file: &std::fs::File) -> Result<(), i64> {
 }
 
 fn ensure_writable(file: &std::fs::File) -> Result<(), i64> {
-    let flags = file_status_flags(file)?;
+    ensure_writable_fd(file.as_raw_fd())
+}
+
+fn ensure_writable_fd(fd: RawFd) -> Result<(), i64> {
+    let flags = fd_status_flags(fd)?;
     if flags & libc::O_PATH != 0 || flags & libc::O_ACCMODE == libc::O_RDONLY {
         Err(negative_errno(libc::EBADF))
     } else {
@@ -624,6 +642,94 @@ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
             Err(_) => negative_errno(libc::EFAULT),
         },
         Err(error) => io_error(error),
+    }
+}
+
+fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Ok(requested_length) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    let length = requested_length.min(MAX_HOST_IO);
+    let Some(file) = state.files.get(&fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    if let Err(error) = ensure_writable(file) {
+        return error;
+    }
+    if length == 0 {
+        return 0;
+    }
+    let mut bytes = vec![0; length];
+    if memory.read(args[1], &mut bytes).is_err() {
+        return negative_errno(libc::EFAULT);
+    }
+    file.write_at(&bytes, args[3])
+        .map_or_else(io_error, |count| count as i64)
+}
+
+fn lseek(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(host_fd) = host_fd(state, fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Ok(whence) = i32::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    // SAFETY: host_fd names a live descriptor. Linux validates offset and whence.
+    let result = unsafe { libc::lseek(host_fd, args[1] as libc::off_t, whence) };
+    if result < 0 {
+        io_error(std::io::Error::last_os_error())
+    } else {
+        result as i64
+    }
+}
+
+fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(host_fd) = host_fd(state, fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    if let Err(error) = ensure_writable_fd(host_fd) {
+        return error;
+    }
+    let length = args[1] as libc::off_t;
+    if length < 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    // SAFETY: host_fd names a live writable descriptor and length is nonnegative.
+    if unsafe { libc::ftruncate(host_fd, length) } == 0 {
+        0
+    } else {
+        io_error(std::io::Error::last_os_error())
+    }
+}
+
+fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
+    let Ok(fd) = i32::try_from(raw_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(host_fd) = host_fd(state, fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    // SAFETY: host_fd names a live descriptor. The host syscall validates its type.
+    let result = unsafe {
+        if data_only {
+            libc::fdatasync(host_fd)
+        } else {
+            libc::fsync(host_fd)
+        }
+    };
+    if result == 0 {
+        0
+    } else {
+        io_error(std::io::Error::last_os_error())
     }
 }
 
@@ -1293,6 +1399,99 @@ fn munmap(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
     }
 }
 
+fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let old_address = args[0];
+    let Some(old_length) = align_up(args[1], PAGE_SIZE) else {
+        return negative_errno(libc::EINVAL);
+    };
+    let Some(new_length) = align_up(args[2], PAGE_SIZE) else {
+        return negative_errno(libc::ENOMEM);
+    };
+    let flags = args[3];
+    let allowed_flags = (libc::MREMAP_MAYMOVE | libc::MREMAP_FIXED) as u64;
+    if old_length == 0
+        || new_length == 0
+        || !old_address.is_multiple_of(PAGE_SIZE)
+        || flags & !allowed_flags != 0
+        || flags & libc::MREMAP_FIXED as u64 != 0 && flags & libc::MREMAP_MAYMOVE as u64 == 0
+        || !range_is_valid(memory, old_address, old_length)
+    {
+        return negative_errno(libc::EINVAL);
+    }
+
+    if flags & libc::MREMAP_FIXED as u64 == 0 && new_length <= old_length {
+        if new_length < old_length {
+            let tail = old_address + new_length;
+            let Ok(length) = usize::try_from(old_length - new_length) else {
+                return negative_errno(libc::ENOMEM);
+            };
+            if memory.zero(tail, length).is_err() {
+                return negative_errno(libc::EFAULT);
+            }
+        }
+        return old_address as i64;
+    }
+
+    let old_end = old_address + old_length;
+    if flags & libc::MREMAP_FIXED as u64 == 0 && old_end == state.mmap_next {
+        let Some(new_end) = old_address.checked_add(new_length) else {
+            return negative_errno(libc::ENOMEM);
+        };
+        if new_end <= state.mmap_limit {
+            let Ok(extension) = usize::try_from(new_length - old_length) else {
+                return negative_errno(libc::ENOMEM);
+            };
+            if memory.zero(old_end, extension).is_err() {
+                return negative_errno(libc::ENOMEM);
+            }
+            state.mmap_next = new_end;
+            return old_address as i64;
+        }
+    }
+
+    if flags & libc::MREMAP_MAYMOVE as u64 == 0 {
+        return negative_errno(libc::ENOMEM);
+    }
+    let destination = if flags & libc::MREMAP_FIXED as u64 != 0 {
+        args[4]
+    } else {
+        state.mmap_next
+    };
+    let Some(destination_end) = destination.checked_add(new_length) else {
+        return negative_errno(libc::ENOMEM);
+    };
+    if destination < BOOT_RESERVED_END
+        || !destination.is_multiple_of(PAGE_SIZE)
+        || destination_end > state.mmap_limit
+        || destination < old_end && old_address < destination_end
+    {
+        return negative_errno(libc::EINVAL);
+    }
+
+    let copy_length = old_length.min(new_length);
+    let Ok(copy_length) = usize::try_from(copy_length) else {
+        return negative_errno(libc::ENOMEM);
+    };
+    let Ok(old_length_usize) = usize::try_from(old_length) else {
+        return negative_errno(libc::ENOMEM);
+    };
+    let Ok(new_length_usize) = usize::try_from(new_length) else {
+        return negative_errno(libc::ENOMEM);
+    };
+    let mut bytes = vec![0; copy_length];
+    if memory.read(old_address, &mut bytes).is_err()
+        || memory.zero(destination, new_length_usize).is_err()
+        || memory.write(destination, &bytes).is_err()
+        || memory.zero(old_address, old_length_usize).is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    if flags & libc::MREMAP_FIXED as u64 == 0 {
+        state.mmap_next = destination_end;
+    }
+    destination as i64
+}
+
 fn validate_range(memory: &GuestMemory, address: u64, length: u64) -> i64 {
     if length == 0 || !range_is_valid(memory, address, length) {
         negative_errno(libc::EINVAL)
@@ -1315,6 +1514,27 @@ fn getrandom(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
         Ok(()) => length as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
+}
+
+fn gettimeofday(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
+    if args[0] != 0 {
+        let timeval = libc::timeval {
+            tv_sec: 0,
+            tv_usec: 0,
+        };
+        let result = write_struct(memory, args[0], &timeval);
+        if result != 0 {
+            return result;
+        }
+    }
+    if args[1] != 0 {
+        return write_bytes(
+            memory,
+            args[1],
+            &[0; std::mem::size_of::<libc::c_int>() * 2],
+        );
+    }
+    0
 }
 
 fn readlink(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -2784,6 +3004,234 @@ mod tests {
                 negative_errno(libc::EBADF)
             );
         }
+    }
+
+    #[test]
+    fn positioned_write_seek_truncate_and_sync_round_trip() {
+        const PATH_ADDRESS: u64 = 0x100;
+        const PAYLOAD_ADDRESS: u64 = 0x200;
+        const PATCH_ADDRESS: u64 = 0x300;
+        const READ_ADDRESS: u64 = 0x400;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(PATH_ADDRESS, b"positioned\0").unwrap();
+        memory.write(PAYLOAD_ADDRESS, b"abcdef").unwrap();
+        memory.write(PATCH_ADDRESS, b"XY").unwrap();
+
+        let fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_open,
+            [
+                PATH_ADDRESS,
+                (libc::O_CREAT | libc::O_TRUNC | libc::O_RDWR) as u64,
+                0o600,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(fd, 3);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [fd as u64, PAYLOAD_ADDRESS, 6, 0, 0, 0],
+            ),
+            6
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwrite64,
+                [fd as u64, PATCH_ADDRESS, 2, 2, 0, 0],
+            ),
+            2
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lseek,
+                [fd as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0],
+            ),
+            6,
+            "pwrite64 must not change the shared file position"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lseek,
+                [fd as u64, 0, libc::SEEK_SET as u64, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [fd as u64, READ_ADDRESS, 6, 0, 0, 0],
+            ),
+            6
+        );
+        let mut actual = [0; 6];
+        memory.read(READ_ADDRESS, &mut actual).unwrap();
+        assert_eq!(&actual, b"abXYef");
+        for syscall in [libc::SYS_fdatasync, libc::SYS_fsync] {
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, syscall, [fd as u64, 0, 0, 0, 0, 0],),
+                0
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ftruncate,
+                [fd as u64, 4, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(std::fs::read(root.0.join("positioned")).unwrap(), b"abXY");
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwrite64,
+                [99, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ftruncate,
+                [fd as u64, u64::MAX, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+    }
+
+    #[test]
+    fn mremap_grows_moves_and_shrinks_guest_ranges() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let memory_size = BOOT_RESERVED_END + 16 * PAGE_SIZE;
+        let mut memory = GuestMemory::new(0, memory_size as usize).unwrap();
+        state.mmap_next = BOOT_RESERVED_END + PAGE_SIZE;
+        state.mmap_limit = memory_size;
+        let mmap_args = [
+            0,
+            PAGE_SIZE,
+            (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+            -1_i32 as u64,
+            0,
+        ];
+
+        let first = syscall_result(&mut memory, &mut state, libc::SYS_mmap, mmap_args) as u64;
+        memory.write(first, b"mremap-data").unwrap();
+        let blocker = syscall_result(&mut memory, &mut state, libc::SYS_mmap, mmap_args) as u64;
+        assert_eq!(blocker, first + PAGE_SIZE);
+
+        let moved = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_mremap,
+            [
+                first,
+                PAGE_SIZE,
+                2 * PAGE_SIZE,
+                libc::MREMAP_MAYMOVE as u64,
+                0,
+                0,
+            ],
+        ) as u64;
+        assert_eq!(moved, blocker + PAGE_SIZE);
+        let mut payload = [0; 11];
+        memory.read(moved, &mut payload).unwrap();
+        assert_eq!(&payload, b"mremap-data");
+        let mut old = [1; 11];
+        memory.read(first, &mut old).unwrap();
+        assert_eq!(old, [0; 11]);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mremap,
+                [moved, 2 * PAGE_SIZE, PAGE_SIZE, 0, 0, 0],
+            ),
+            moved as i64
+        );
+        let mut released = [1; 16];
+        memory.read(moved + PAGE_SIZE, &mut released).unwrap();
+        assert_eq!(released, [0; 16]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mremap,
+                [
+                    moved,
+                    PAGE_SIZE,
+                    2 * PAGE_SIZE,
+                    libc::MREMAP_FIXED as u64,
+                    0,
+                    0
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+    }
+
+    #[test]
+    fn gettimeofday_is_deterministic_and_validates_outputs() {
+        const TIMEVAL: u64 = 0x100;
+        const TIMEZONE: u64 = 0x200;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_gettimeofday,
+                [TIMEVAL, TIMEZONE, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let timeval: libc::timeval = read_struct(&memory, TIMEVAL);
+        assert_eq!((timeval.tv_sec, timeval.tv_usec), (0, 0));
+        let timezone: [libc::c_int; 2] = read_struct(&memory, TIMEZONE);
+        assert_eq!(timezone, [0, 0]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_gettimeofday,
+                [0, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_gettimeofday,
+                [u64::MAX, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
     }
 
     #[test]
