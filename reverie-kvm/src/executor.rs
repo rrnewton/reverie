@@ -917,7 +917,7 @@ fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
         })
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review KVM guest fcntl compatibility boundaries.
+// TODO-HUMAN-REVIEW(PR-52): Review KVM guest fcntl compatibility boundaries.
 fn fcntl(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Ok(guest_fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
