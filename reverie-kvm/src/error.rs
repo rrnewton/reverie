@@ -100,6 +100,17 @@ pub enum Error {
         actual: usize,
     },
 
+    /// The guest raised an x86 exception while running a loaded ELF image.
+    #[error("guest exception vector {vector} at {instruction_pointer:#x} (CR2={fault_address:#x})")]
+    GuestException {
+        /// Architectural exception vector.
+        vector: u8,
+        /// Guest instruction pointer saved by the exception frame.
+        instruction_pointer: u64,
+        /// Guest CR2 value, meaningful for page faults.
+        fault_address: u64,
+    },
+
     /// The vCPU stopped for an event this prototype does not handle.
     #[error("unexpected vCPU exit: {0}")]
     UnexpectedVcpuExit(String),

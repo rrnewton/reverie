@@ -21,6 +21,11 @@ for injected and unsubscribed syscalls.
 serializes the Linux ABI register frame, exits KVM, then returns with
 `SYSRETQ`.
 
+Architectural exceptions (vectors 0 through 31) enter a ring-0 handler on the
+TSS exception stack and exit KVM as `Error::GuestException`, which reports the
+vector, saved guest instruction pointer, and `CR2`. The backend reports faults
+to its caller; it does not yet translate them into Linux signals.
+
 `run_static_elf` supplies a deliberately small single-process Linux personality. It handles process exit, host-backed filesystem descriptors, stdout/stderr writes, deterministic identity, time and random queries, FS/GS bases, `brk`, anonymous and file-backed `mmap`, and common startup no-ops. Unsupported syscalls return `ENOSYS`.
 ## Typed syscall decoding
 

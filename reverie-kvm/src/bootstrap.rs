@@ -26,7 +26,6 @@ const LARGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;
 const MAX_IDENTITY_MAP: u64 = 1024 * 1024 * 1024;
 
 const GDT_ADDRESS: u64 = 0x1000;
-const IDT_ADDRESS: u64 = 0x1800;
 const PML4_ADDRESS: u64 = 0x2000;
 const PDPT_ADDRESS: u64 = 0x3000;
 const PDE_ADDRESS: u64 = 0x4000;
@@ -34,8 +33,16 @@ pub(crate) const SYSCALL_TRAMPOLINE_ADDRESS: u64 = 0x5000;
 pub(crate) const SYSCALL_FRAME_ADDRESS: u64 = 0x6000;
 pub(crate) const PROGRAM_HEADERS_ADDRESS: u64 = 0x7000;
 const TSS_ADDRESS: u64 = 0x8000;
-// Includes the 0x9000..0xa000 Tool injection scratch page.
-pub(crate) const BOOT_RESERVED_END: u64 = 0xa000;
+const IDT_ADDRESS: u64 = 0xa000;
+const EXCEPTION_STUB_ADDRESS: u64 = 0xb000;
+const EXCEPTION_STACK_BOTTOM: u64 = 0xc000;
+const EXCEPTION_STACK_TOP: u64 = 0xd000;
+// Includes the 0xd000..0xe000 Tool injection scratch page.
+pub(crate) const BOOT_RESERVED_END: u64 = 0xe000;
+
+const EXCEPTION_VECTOR_COUNT: usize = 32;
+const IDT_ENTRY_SIZE: usize = 16;
+const EXCEPTION_STUB_STRIDE: u64 = 16;
 
 const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const KERNEL_DATA_SELECTOR: u16 = 0x10;
@@ -93,7 +100,7 @@ pub(crate) fn configure_long_mode(
     sregs.gdt.base = GDT_ADDRESS;
     sregs.gdt.limit = (7 * std::mem::size_of::<u64>() - 1) as u16;
     sregs.idt.base = IDT_ADDRESS;
-    sregs.idt.limit = (std::mem::size_of::<u64>() - 1) as u16;
+    sregs.idt.limit = (EXCEPTION_VECTOR_COUNT * IDT_ENTRY_SIZE - 1) as u16;
     sregs.cs = code_segment(USER_CODE_SELECTOR, 3);
     let user_data = data_segment(USER_DATA_SELECTOR, 3);
     sregs.ds = user_data;
@@ -190,8 +197,71 @@ fn write_descriptor_tables(memory: &mut GuestMemory) -> Result<()> {
         bytes.extend_from_slice(&entry.to_le_bytes());
     }
     memory.write(GDT_ADDRESS, &bytes)?;
-    memory.zero(IDT_ADDRESS, std::mem::size_of::<u64>())?;
-    memory.zero(TSS_ADDRESS, 0x68)
+    write_exception_tables(memory)?;
+    memory.zero(TSS_ADDRESS, 0x68)?;
+    write_u64(memory, TSS_ADDRESS + 4, EXCEPTION_STACK_TOP)?;
+    memory.write(TSS_ADDRESS + 0x66, &0x68_u16.to_le_bytes())?;
+    memory.zero(EXCEPTION_STACK_BOTTOM, PAGE_SIZE as usize)
+}
+
+fn write_exception_tables(memory: &mut GuestMemory) -> Result<()> {
+    memory.zero(IDT_ADDRESS, PAGE_SIZE as usize)?;
+    memory.zero(EXCEPTION_STUB_ADDRESS, PAGE_SIZE as usize)?;
+
+    for vector in 0..EXCEPTION_VECTOR_COUNT {
+        let handler = EXCEPTION_STUB_ADDRESS + vector as u64 * EXCEPTION_STUB_STRIDE;
+        let gate = idt_gate(handler);
+        memory.write(IDT_ADDRESS + (vector * IDT_ENTRY_SIZE) as u64, &gate)?;
+        let stub = exception_stub(vector as u8);
+        memory.write(handler, &stub)?;
+    }
+    Ok(())
+}
+
+fn idt_gate(handler: u64) -> [u8; IDT_ENTRY_SIZE] {
+    let mut gate = [0; IDT_ENTRY_SIZE];
+    gate[0..2].copy_from_slice(&(handler as u16).to_le_bytes());
+    gate[2..4].copy_from_slice(&KERNEL_CODE_SELECTOR.to_le_bytes());
+    gate[5] = 0x8e;
+    gate[6..8].copy_from_slice(&((handler >> 16) as u16).to_le_bytes());
+    gate[8..12].copy_from_slice(&((handler >> 32) as u32).to_le_bytes());
+    gate
+}
+
+fn exception_stub(vector: u8) -> Vec<u8> {
+    let mut code = Vec::with_capacity(EXCEPTION_STUB_STRIDE as usize);
+    code.push(0xb8);
+    code.extend_from_slice(&u32::from(vector).to_le_bytes());
+    if exception_pushes_error_code(vector) {
+        code.extend_from_slice(&[0x48, 0x8b, 0x5c, 0x24, 0x08]);
+    } else {
+        code.extend_from_slice(&[0x48, 0x8b, 0x1c, 0x24]);
+    }
+    code.push(0xf4);
+    code
+}
+
+fn exception_pushes_error_code(vector: u8) -> bool {
+    matches!(vector, 8 | 10 | 11 | 12 | 13 | 14 | 17 | 21 | 29 | 30)
+}
+
+pub(crate) fn exception_from_halt(
+    rip: u64,
+    vector_register: u64,
+    faulting_instruction_pointer: u64,
+) -> Option<(u8, u64)> {
+    let vector = u8::try_from(vector_register).ok()?;
+    if usize::from(vector) >= EXCEPTION_VECTOR_COUNT {
+        return None;
+    }
+    let stub_length = if exception_pushes_error_code(vector) {
+        11
+    } else {
+        10
+    };
+    let expected_rip =
+        EXCEPTION_STUB_ADDRESS + u64::from(vector) * EXCEPTION_STUB_STRIDE + stub_length;
+    (rip == expected_rip).then_some((vector, faulting_instruction_pointer))
 }
 
 fn write_page_tables(memory: &mut GuestMemory) -> Result<()> {
@@ -338,5 +408,50 @@ mod tests {
         assert!(code.windows(3).any(|window| window == [0x0f, 0x01, 0xc1]));
         assert_eq!(&code[code.len() - 3..], &[0x48, 0x0f, 0x07]);
         assert!(code.len() < PAGE_SIZE as usize);
+    }
+
+    #[test]
+    fn descriptor_tables_install_exception_gates_and_kernel_stack() {
+        let mut memory = GuestMemory::new(0, 0x20_000).unwrap();
+
+        write_descriptor_tables(&mut memory).unwrap();
+
+        let vector = 6_u64;
+        let mut gate = [0; IDT_ENTRY_SIZE];
+        memory
+            .read(IDT_ADDRESS + vector * IDT_ENTRY_SIZE as u64, &mut gate)
+            .unwrap();
+        let handler = u64::from(u16::from_le_bytes([gate[0], gate[1]]))
+            | (u64::from(u16::from_le_bytes([gate[6], gate[7]])) << 16)
+            | (u64::from(u32::from_le_bytes([gate[8], gate[9], gate[10], gate[11]])) << 32);
+        assert_eq!(
+            handler,
+            EXCEPTION_STUB_ADDRESS + vector * EXCEPTION_STUB_STRIDE
+        );
+        assert_eq!(u16::from_le_bytes([gate[2], gate[3]]), KERNEL_CODE_SELECTOR);
+        assert_eq!(gate[5], 0x8e);
+
+        let mut rsp0 = [0; 8];
+        memory.read(TSS_ADDRESS + 4, &mut rsp0).unwrap();
+        assert_eq!(u64::from_le_bytes(rsp0), EXCEPTION_STACK_TOP);
+        let mut io_map_base = [0; 2];
+        memory.read(TSS_ADDRESS + 0x66, &mut io_map_base).unwrap();
+        assert_eq!(u16::from_le_bytes(io_map_base), 0x68);
+    }
+
+    #[test]
+    fn exception_halt_identifies_fault_vector_and_original_rip() {
+        let invalid_opcode_rip = EXCEPTION_STUB_ADDRESS + 6 * EXCEPTION_STUB_STRIDE + 10;
+        assert_eq!(
+            exception_from_halt(invalid_opcode_rip, 6, 0x20_0042),
+            Some((6, 0x20_0042))
+        );
+
+        let page_fault_rip = EXCEPTION_STUB_ADDRESS + 14 * EXCEPTION_STUB_STRIDE + 11;
+        assert_eq!(
+            exception_from_halt(page_fault_rip, 14, 0x20_0080),
+            Some((14, 0x20_0080))
+        );
+        assert_eq!(exception_from_halt(0x1234, 6, 0x20_0042), None);
     }
 }
