@@ -69,6 +69,13 @@ cd reverie-examples
 cargo run --bin strace -- ls
 ```
 
+## Optional Backend Sources
+
+Large native sources for DynamoRIO, SaBRe, and e9patch are pinned but not
+checked out by default. Activate only the backend you need with
+`scripts/backend-submodule.sh`; see [Optional backend sources](docs/BACKEND_SOURCES.md)
+for revisions, build commands, and license notes.
+
 ## Usage
 
 Currently, there is only the `reverie-ptrace` backend which uses `ptrace` to

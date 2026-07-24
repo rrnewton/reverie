@@ -18,8 +18,13 @@ This produces:
 - `target/debug/riptrace`
 - `target/debug/libriptrace_plugin.so`
 
-Build the SaBRe revision pinned in
-`../reverie-sabre/SABRE_UPSTREAM.toml` separately with CMake, Make, and GCC.
+Activate and build the pinned SaBRe source with CMake, Make, and GCC:
+
+```sh
+scripts/backend-submodule.sh activate sabre
+cmake -S third-party/sabre -B target/sabre
+cmake --build target/sabre
+```
 
 ## Run
 
@@ -27,7 +32,7 @@ Pass the loader and plugin explicitly:
 
 ```sh
 target/debug/riptrace \
-  --sabre /path/to/sabre/build/sabre \
+  --sabre target/sabre/sabre \
   --plugin target/debug/libriptrace_plugin.so \
   -- /bin/echo hello
 ```

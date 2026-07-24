@@ -19,7 +19,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        submodules: recursive
+        submodules: false
+    - name: Activate DynamoRIO backend source
+      run: scripts/backend-submodule.sh activate dynamorio
     - name: Dependencies
       run: sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev
     - name: Rust toolchain
@@ -93,7 +95,9 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        submodules: recursive
+        submodules: false
+    - name: Activate DynamoRIO backend source
+      run: scripts/backend-submodule.sh activate dynamorio
     - name: Dependencies
       run: |
         if command -v apt-get >/dev/null; then
