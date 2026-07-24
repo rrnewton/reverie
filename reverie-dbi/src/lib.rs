@@ -1206,6 +1206,11 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
 /// Handles a DynamoRIO post-syscall event for the synchronous prototype runtime.
 ///
 /// The prototype has no split syscall lifecycle, so it leaves the result unchanged.
+///
+/// # Safety
+///
+/// The native client must supply pointers matching this exported ABI. The
+/// prototype does not dereference them in this callback.
 #[allow(clippy::too_many_arguments)]
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
@@ -1229,6 +1234,11 @@ pub unsafe extern "C" fn reverie_dbi_runtime_post_syscall(
 /// Handles a DynamoRIO signal event for the synchronous prototype runtime.
 ///
 /// The prototype does not schedule signals and therefore always delivers them.
+///
+/// # Safety
+///
+/// The native client must supply pointers matching this exported ABI. The
+/// prototype does not dereference them in this callback.
 #[allow(clippy::too_many_arguments)]
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
