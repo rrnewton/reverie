@@ -110,6 +110,9 @@ extern void reverie_dbi_runtime_thread_exit(prototype_counters_t *counters);
 extern uint64_t reverie_dbi_runtime_image_init(void);
 extern void reverie_dbi_runtime_exec_failed(prototype_counters_t *counters,
                                             int32_t pid);
+extern void reverie_dbi_runtime_process_resumed(void);
+extern uint64_t reverie_dbi_runtime_fork_child(prototype_counters_t *counters,
+                                               int32_t pid);
 extern void reverie_dbi_runtime_background_init(void *argument);
 extern int32_t reverie_dbi_runtime_ready(uint64_t image_generation);
 extern void reverie_dbi_runtime_process_exit(void);
@@ -728,6 +731,10 @@ static bool is_exec_syscall(int sysnum) {
       ;
 }
 
+static bool is_fork_syscall(int sysnum) {
+  return sysnum == SYS_fork || sysnum == SYS_clone || sysnum == SYS_clone3;
+}
+
 static void zero_wait_rusage(void *address) {
   if (address != NULL) {
     struct rusage usage = {0};
@@ -748,8 +755,12 @@ static void post_syscall(void *drcontext, int sysnum) {
                                                     thread_state_index);
     DR_ASSERT(counters != NULL);
     reverie_dbi_runtime_exec_failed(counters, (int32_t)dr_get_process_id());
-    if (!dr_create_client_thread(runtime_background_init, NULL))
-      DR_ASSERT(false);
+    return;
+  }
+
+  if (is_fork_syscall(sysnum)) {
+    if (syscall_result != 0)
+      reverie_dbi_runtime_process_resumed();
     return;
   }
 
@@ -862,6 +873,26 @@ static void event_exit(void) {
   drmgr_exit();
 }
 
+static void fork_init(void *drcontext) {
+  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
+      drcontext, thread_state_index);
+  DR_ASSERT(counters != NULL);
+
+  runtime_owner_pid = dr_get_process_id();
+  atomic_store_explicit(&branch_count, 0, memory_order_relaxed);
+  atomic_store_explicit(&stdin_read_count, 0, memory_order_relaxed);
+  atomic_store_explicit(&virtual_time_ns, UINT64_C(1000000000),
+                        memory_order_relaxed);
+  atomic_store_explicit(
+      &image_generation,
+      reverie_dbi_runtime_fork_child(counters, (int32_t)runtime_owner_pid),
+      memory_order_release);
+  resource_lock = dr_mutex_create();
+  DR_ASSERT(resource_lock != NULL);
+  if (!dr_create_client_thread(runtime_background_init, NULL))
+    DR_ASSERT(false);
+}
+
 static void runtime_idle(void) { dr_sleep(1); }
 
 static runtime_callbacks_t runtime_callbacks = {reverie_dbi_emit, runtime_idle};
@@ -901,6 +932,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
                                (void *)reverie_dbi_emit))
     DR_ASSERT(false);
   drmgr_register_exit_event(event_exit);
+  dr_register_fork_init_event(fork_init);
   if (!drmgr_register_module_load_event(module_load) ||
       !drmgr_register_thread_init_event(thread_init) ||
       !drmgr_register_thread_exit_event(thread_exit) ||
