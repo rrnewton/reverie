@@ -118,6 +118,7 @@ extern void reverie_dbi_runtime_exec_failed(prototype_counters_t *counters,
 extern void reverie_dbi_runtime_background_init(void *argument);
 extern int32_t reverie_dbi_runtime_ready(uint64_t image_generation);
 extern void reverie_dbi_runtime_process_exit(void);
+extern int32_t reverie_dbi_runtime_copied_syscall(int64_t sysnum);
 extern int32_t reverie_dbi_runtime_pre_syscall(
     void *context, prototype_counters_t *counters, int32_t tid, int32_t pid,
     uint64_t image_generation, int64_t sysnum, const uint64_t *args,
@@ -844,6 +845,13 @@ static bool has_copied_runtime(void) {
 
 static bool pre_syscall(void *drcontext, int sysnum) {
   if (has_copied_runtime()) {
+    if (reverie_dbi_runtime_copied_syscall((int64_t)sysnum)) {
+      dr_fprintf(STDERR,
+                 "detcore-dbi: unsupported syscall %d in copied child\n",
+                 sysnum);
+      dr_exit_process(101);
+      return false;
+    }
 #ifdef SYS_execveat
     // TODO-HUMAN-REVIEW(PR-587): Fail closed before copied children bypass the
     // Detcore runtime callback.
