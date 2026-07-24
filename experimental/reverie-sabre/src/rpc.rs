@@ -12,6 +12,10 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicI32;
+use std::sync::atomic::Ordering::AcqRel;
+use std::sync::atomic::Ordering::Acquire;
+use std::sync::atomic::Ordering::Release;
 
 use reverie_rpc::Channel;
 use serde::Deserialize;
@@ -25,39 +29,42 @@ use super::protected_files::protect_with;
 /// here because many programs or tests expect to use the early file
 /// descriptors. Using file descriptor 100 also makes this easier to debug.
 const SOCKET_FD: i32 = 100;
+static CHANNEL_FD: AtomicI32 = AtomicI32::new(-1);
 
 struct Inner {
     stream: ProtectedFd<UnixStream>,
 }
 
-fn inherited_or_reconnected_stream() -> io::Result<UnixStream> {
+fn handoff_owner() -> io::Result<Option<i32>> {
     let flags = unsafe { libc::fcntl(SOCKET_FD, libc::F_GETFD) };
     if flags < 0 {
-        return Err(io::Error::last_os_error());
+        let error = io::Error::last_os_error();
+        return if error.raw_os_error() == Some(libc::EBADF) {
+            Ok(None)
+        } else {
+            Err(error)
+        };
     }
 
+    let owner = unsafe { libc::fcntl(SOCKET_FD, libc::F_GETOWN) };
+    if owner < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(Some(owner))
+    }
+}
+
+fn handoff_peer_path() -> io::Result<std::path::PathBuf> {
     let duplicate = unsafe { libc::fcntl(SOCKET_FD, libc::F_DUPFD_CLOEXEC, 3) };
     if duplicate < 0 {
         return Err(io::Error::last_os_error());
     }
     let inherited = unsafe { UnixStream::from_raw_fd(duplicate) };
-    let peer = inherited.peer_addr()?;
-    let peer_path = peer
+    inherited
+        .peer_addr()?
         .as_pathname()
-        .ok_or_else(|| io::Error::other("inherited RPC socket has no peer path"))?
-        .to_owned();
-
-    let owner = unsafe { libc::fcntl(SOCKET_FD, libc::F_GETOWN) };
-    if owner < 0 {
-        return Err(io::Error::last_os_error());
-    }
-
-    if owner == std::process::id() as i32 {
-        drop(inherited);
-        Ok(unsafe { UnixStream::from_raw_fd(SOCKET_FD) })
-    } else {
-        UnixStream::connect(peer_path)
-    }
+        .ok_or_else(|| io::Error::other("inherited RPC socket has no peer path"))
+        .map(std::path::Path::to_owned)
 }
 
 fn reserve_exec_handoff(stream: UnixStream) -> io::Result<UnixStream> {
@@ -80,32 +87,68 @@ fn reserve_exec_handoff(stream: UnixStream) -> io::Result<UnixStream> {
     Ok(handoff)
 }
 
+fn connect_stream(sock_path: Option<&std::ffi::OsStr>) -> io::Result<UnixStream> {
+    let current_pid = std::process::id() as i32;
+    let (stream, forked) = match handoff_owner()? {
+        Some(owner) if owner == current_pid => match handoff_peer_path() {
+            Ok(_) => (unsafe { UnixStream::from_raw_fd(SOCKET_FD) }, false),
+            Err(error) => match sock_path {
+                Some(path) => (UnixStream::connect(path)?, false),
+                None => return Err(error),
+            },
+        },
+        Some(_) => {
+            let stream = match sock_path {
+                Some(path) => UnixStream::connect(path)?,
+                None => UnixStream::connect(handoff_peer_path()?)?,
+            };
+            (stream, true)
+        }
+        None => {
+            let path =
+                sock_path.ok_or_else(|| io::Error::other("$REVERIE_SOCK does not exist!"))?;
+            (UnixStream::connect(path)?, false)
+        }
+    };
+    if forked {
+        let channel_fd = CHANNEL_FD.swap(-1, AcqRel);
+        let owner = unsafe { libc::fcntl(channel_fd, libc::F_GETOWN) };
+        if channel_fd >= 0 && owner >= 0 && owner != current_pid {
+            unsafe { libc::close(channel_fd) };
+        }
+    }
+    Ok(stream)
+}
+
 /// Implements a channel using a UNIX domain socket.
 pub struct BaseChannel {
     inner: Mutex<Inner>,
 }
 
+impl Drop for BaseChannel {
+    fn drop(&mut self) {
+        let channel_fd = self.inner.get_mut().unwrap().stream.as_ref().as_raw_fd();
+        let _ = CHANNEL_FD.compare_exchange(channel_fd, -1, AcqRel, Acquire);
+    }
+}
+
 impl BaseChannel {
     /// Connects to the global state RPC server.
     pub fn new() -> io::Result<Self> {
-        let stream = match std::env::var_os("REVERIE_SOCK") {
-            Some(sock_path) => UnixStream::connect(sock_path)?,
-            None => inherited_or_reconnected_stream()?,
-        };
+        let sock_path = std::env::var_os("REVERIE_SOCK");
+        let stream = connect_stream(sock_path.as_deref())?;
         let handoff = reserve_exec_handoff(stream)?;
         let channel = handoff.try_clone()?;
-        let channel_flags = unsafe { libc::fcntl(channel.as_raw_fd(), libc::F_GETFD) };
+        let channel_fd = channel.as_raw_fd();
+        let channel_flags = unsafe { libc::fcntl(channel_fd, libc::F_GETFD) };
         if channel_flags < 0
-            || unsafe {
-                libc::fcntl(
-                    channel.as_raw_fd(),
-                    libc::F_SETFD,
-                    channel_flags | libc::FD_CLOEXEC,
-                )
-            } < 0
+            || unsafe { libc::fcntl(channel_fd, libc::F_SETFD, channel_flags | libc::FD_CLOEXEC) }
+                < 0
+            || unsafe { libc::fcntl(channel_fd, libc::F_SETOWN, std::process::id() as i32) } < 0
         {
             return Err(io::Error::last_os_error());
         }
+        CHANNEL_FD.store(channel_fd, Release);
 
         // fd 100 is a process-lifetime exec handoff. The channel uses its own
         // close-on-exec duplicate, while this fixed descriptor is closed by
@@ -188,7 +231,7 @@ mod tests {
         );
         std::mem::forget(handoff);
 
-        let adopted = inherited_or_reconnected_stream().unwrap();
+        let adopted = connect_stream(None).unwrap();
         assert_eq!(adopted.as_raw_fd(), SOCKET_FD);
         std::mem::forget(adopted);
 
@@ -196,7 +239,7 @@ mod tests {
             unsafe { libc::fcntl(SOCKET_FD, libc::F_SETOWN, libc::getppid()) },
             0
         );
-        let reconnected = inherited_or_reconnected_stream().unwrap();
+        let reconnected = connect_stream(None).unwrap();
         assert_ne!(reconnected.as_raw_fd(), SOCKET_FD);
         let (_fork_server, _) = listener.accept().unwrap();
         drop(reconnected);

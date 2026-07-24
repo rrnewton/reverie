@@ -11,9 +11,11 @@
 
 #![doc(hidden)]
 use core::ptr;
+use core::sync::atomic::AtomicI32;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::Ordering::AcqRel;
 use core::sync::atomic::Ordering::Acquire;
+use core::sync::atomic::Ordering::Release;
 
 use reverie_rpc::MakeClient;
 
@@ -90,12 +92,14 @@ struct ProcessValue<T> {
 /// space and continues using its original value.
 pub struct ProcessCell<T> {
     current: AtomicPtr<ProcessValue<T>>,
+    initializer: AtomicI32,
 }
 
 impl<T> ProcessCell<T> {
     pub const fn new() -> Self {
         Self {
             current: AtomicPtr::new(ptr::null_mut()),
+            initializer: AtomicI32::new(0),
         }
     }
 
@@ -108,21 +112,27 @@ impl<T> ProcessCell<T> {
                 return unsafe { &(*current).value };
             }
 
-            let candidate = Box::into_raw(Box::new(ProcessValue { pid, value: init() }));
-            match self
-                .current
-                .compare_exchange(current, candidate, AcqRel, Acquire)
+            let initializing = self.initializer.load(Acquire);
+            if initializing == pid
+                || self
+                    .initializer
+                    .compare_exchange(initializing, pid, AcqRel, Acquire)
+                    .is_err()
             {
-                Ok(_) => return unsafe { &(*candidate).value },
-                Err(actual) => {
-                    // This candidate was never published, so it is safe to
-                    // destroy. A competing initialization may have won.
-                    unsafe { drop(Box::from_raw(candidate)) };
-                    if !actual.is_null() && unsafe { (*actual).pid == pid } {
-                        return unsafe { &(*actual).value };
-                    }
-                }
+                std::thread::yield_now();
+                continue;
             }
+
+            let current = self.current.load(Acquire);
+            if !current.is_null() && unsafe { (*current).pid == pid } {
+                self.initializer.store(0, Release);
+                return unsafe { &(*current).value };
+            }
+
+            let candidate = Box::into_raw(Box::new(ProcessValue { pid, value: init() }));
+            self.current.store(candidate, Release);
+            self.initializer.store(0, Release);
+            return unsafe { &(*candidate).value };
         }
     }
 }
@@ -136,6 +146,8 @@ impl<T> Default for ProcessCell<T> {
 #[cfg(test)]
 mod process_cell_tests {
     use std::sync::Mutex;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering::SeqCst;
     use std::sync::mpsc;
 
     use super::ProcessCell;
@@ -199,6 +211,27 @@ mod process_cell_tests {
         let mut status = 0;
         assert_eq!(child, unsafe { libc::waitpid(child, &mut status, 0) });
         assert!(libc::WIFEXITED(status));
+
         assert_eq!(libc::WEXITSTATUS(status), 0);
+    }
+
+    #[test]
+    fn concurrent_initialization_runs_once() {
+        static CELL: ProcessCell<usize> = ProcessCell::new();
+        static INITIALIZATIONS: AtomicUsize = AtomicUsize::new(0);
+
+        fn initialize() -> usize {
+            INITIALIZATIONS.fetch_add(1, SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            42
+        }
+
+        let threads: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(|| *CELL.get_or_init(initialize)))
+            .collect();
+        for thread in threads {
+            assert_eq!(thread.join().unwrap(), 42);
+        }
+        assert_eq!(INITIALIZATIONS.load(SeqCst), 1);
     }
 }
