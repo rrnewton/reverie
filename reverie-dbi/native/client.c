@@ -775,8 +775,17 @@ static bool has_copied_runtime(void) {
 }
 
 static bool pre_syscall(void *drcontext, int sysnum) {
-  if (has_copied_runtime())
+  if (has_copied_runtime()) {
+#ifdef SYS_execveat
+    // TODO-HUMAN-REVIEW(PR-587): Fail closed before copied children bypass the
+    // Detcore runtime callback.
+    if (sysnum == SYS_execveat) {
+      dr_syscall_set_result(drcontext, (reg_t)-ENOSYS);
+      return false;
+    }
+#endif
     return true;
+  }
   while (!reverie_dbi_runtime_ready(
       atomic_load_explicit(&image_generation, memory_order_acquire)))
     dr_sleep(1);
