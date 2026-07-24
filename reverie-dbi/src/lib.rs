@@ -764,6 +764,7 @@ fn should_rewrite_syscall(sysnum: i64) -> bool {
         libc::SYS_open,
         libc::SYS_openat,
         // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#60)
         libc::SYS_creat,
         libc::SYS_stat,
         libc::SYS_fstat,
