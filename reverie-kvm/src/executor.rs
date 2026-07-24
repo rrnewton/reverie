@@ -659,6 +659,7 @@ fn insert_file(state: &mut LoadedStaticElf, file: std::fs::File) -> i64 {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#54): Confirm guest-fd ownership and pipe2 flag boundaries.
 fn pipe2(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
@@ -703,6 +704,7 @@ fn pipe2(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#54): Confirm host supplementary groups define the KVM guest set.
 fn getgroups(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     let size = args[0] as libc::c_int;
     if size < 0 {
