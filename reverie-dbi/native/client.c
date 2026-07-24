@@ -768,7 +768,7 @@ static void post_syscall(void *drcontext, int sysnum) {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-pending)
+// TODO-HUMAN-REVIEW(#63)
 static dr_signal_action_t signal_event(void *drcontext, dr_siginfo_t *siginfo) {
   prototype_counters_t *counters;
   int32_t deliver;

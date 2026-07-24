@@ -248,7 +248,7 @@ where
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         let (number, args) = syscall.into_parts();
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-pending)
+        // TODO-HUMAN-REVIEW(#63)
         // A clone child must return through DynamoRIO's application syscall
         // path. Reissuing clone from this Rust callback would instead resume
         // the child on the client's callback stack.
