@@ -1083,6 +1083,29 @@ pub unsafe extern "C" fn reverie_dbi_runtime_exec_failed(
 ) {
 }
 
+/// Resumes the synchronous prototype after a fork-like syscall.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_dbi_runtime_process_resumed() {}
+
+/// Resets prototype state in an ordinary fork child and returns its generation.
+///
+/// # Safety
+///
+/// `counters` must point to aligned, writable prototype state.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbi_runtime_fork_child(
+    counters: *mut PrototypeCounters,
+    _pid: i32,
+) -> u64 {
+    unsafe { reverie_dbi_runtime_thread_init(counters) };
+    TOTAL_BRANCHES.store(0, Ordering::Relaxed);
+    TOTAL_SYSCALLS.store(0, Ordering::Relaxed);
+    TOTAL_REWRITTEN.store(0, Ordering::Relaxed);
+    reverie_dbi_runtime_image_init()
+}
+
 /// Handles a DynamoRIO pre-syscall event.
 ///
 /// Returning one asks the native client to suppress the original syscall and
