@@ -49,6 +49,10 @@ Callers can count and compare these markers alongside guest output and exit
 status. Arguments and results are omitted because many otherwise compatible
 calls contain host-selected addresses and identifiers.
 
+The `preload-constructor` default feature installs the runtime through the
+DSO's `.init_array`. Embedders that provide their own cdylib wrapper must
+disable default features and install `reverie_liteinst_initialize` exactly once.
+
 `LD_PRELOAD` and the mapped runtime survive `fork`, so fork children remain
 instrumented. The integration test runs a parent and child that both issue
 trapped syscalls and requires trace records from two PIDs.

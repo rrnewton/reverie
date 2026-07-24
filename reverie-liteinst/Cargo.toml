@@ -10,6 +10,10 @@ description = "Experimental in-process syscall instrumentation for Reverie"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["preload-constructor"]
+preload-constructor = []
+
 [[bin]]
 name = "reverie-liteinst-strace"
 path = "src/bin/strace.rs"

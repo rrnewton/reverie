@@ -98,6 +98,7 @@ pub unsafe extern "C" fn reverie_liteinst_initialize() {
     }
 }
 
+#[cfg(feature = "preload-constructor")]
 #[used]
 #[unsafe(link_section = ".init_array")]
 static REVERIE_LITEINST_INIT: unsafe extern "C" fn() = reverie_liteinst_initialize;
