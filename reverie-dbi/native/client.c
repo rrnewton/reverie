@@ -885,8 +885,7 @@ static void thread_init(void *drcontext) {
   DR_ASSERT(counters != NULL);
   memset(counters, 0, sizeof(*counters));
   reverie_dbi_runtime_thread_init(counters);
-  counters->runtime_started =
-      dr_get_thread_id(drcontext) == dr_get_process_id() ? 1 : 0;
+  counters->runtime_started = 0;
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
 }
 
