@@ -667,6 +667,9 @@ static bool fd_matches_stdin(void *drcontext, int fd) {
 #endif
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#77): Confirm pipe EAGAIN retry preserves signal and
+// short-I/O semantics.
 static bool fd_is_pipe(void *drcontext, int fd) {
 #ifdef SYS_fstat
   struct stat value = {0};
