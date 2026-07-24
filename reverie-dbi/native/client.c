@@ -735,6 +735,8 @@ static void zero_wait_rusage(void *address) {
   }
 }
 
+// TODO-HUMAN-REVIEW(PR-66): Confirm wait-result normalization preserves wait
+// semantics.
 static void post_syscall(void *drcontext, int sysnum) {
   if (has_copied_runtime())
     return;
@@ -753,8 +755,10 @@ static void post_syscall(void *drcontext, int sysnum) {
 
   if (syscall_result < 0)
     return;
+  // AUTONOMOUS-BOT-IMPLEMENTED
   if (sysnum == SYS_wait4 && syscall_result > 0) {
     zero_wait_rusage((void *)dr_syscall_get_param(drcontext, 3));
+    // AUTONOMOUS-BOT-IMPLEMENTED
   } else if (sysnum == SYS_waitid) {
     siginfo_t info;
     void *info_address = (void *)dr_syscall_get_param(drcontext, 2);

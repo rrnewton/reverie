@@ -73,12 +73,15 @@ pub type RegisterReader = unsafe extern "C" fn(usize, *mut libc::user_regs_struc
 /// Native callback used to copy application memory with DynamoRIO fault handling.
 pub type MemoryReader = unsafe extern "C" fn(usize, *mut u8, usize) -> i32;
 
+// TODO-HUMAN-REVIEW(PR-66): Confirm the external runtime callback ABI.
 /// Native callback used to emit runtime diagnostics without re-entering guest I/O.
 pub type RuntimeEmitter = unsafe extern "C" fn(*const u8, usize);
 
+// TODO-HUMAN-REVIEW(PR-66): Confirm the external runtime callback ABI.
 /// Native callback that yields a DBI client thread at a DynamoRIO-safe point.
 pub type RuntimeIdler = unsafe extern "C" fn();
 
+// TODO-HUMAN-REVIEW(PR-66): Confirm the C-compatible callback layout.
 /// Callbacks supplied to an external Tool runtime on its background client thread.
 #[repr(C)]
 pub struct DbiRuntimeCallbacks {
@@ -1189,6 +1192,7 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
 #[unsafe(no_mangle)]
 pub extern "C" fn reverie_dbi_runtime_background_init(_argument: *mut c_void) {}
 
+// TODO-HUMAN-REVIEW(PR-66): Confirm process-exit callback ownership semantics.
 /// Handles process exit for the built-in synchronous prototype runtime.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
