@@ -812,6 +812,8 @@ static void post_syscall(void *drcontext, int sysnum) {
                                                     thread_state_index);
     DR_ASSERT(counters != NULL);
     reverie_dbi_runtime_exec_failed(counters, (int32_t)dr_get_process_id());
+    if (!dr_create_client_thread(runtime_background_init, NULL))
+      DR_ASSERT(false);
     return;
   }
 
