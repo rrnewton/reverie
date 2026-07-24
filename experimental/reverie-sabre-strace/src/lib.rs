@@ -16,9 +16,15 @@ use reverie_syscalls::LocalMemory;
 use reverie_syscalls::Syscall;
 use syscalls::Errno;
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+/// Suppress syscall diagnostics while retaining the same shared Tool path.
+pub const QUIET_ENV: &str = "REVERIE_SABRE_STRACE_QUIET";
+
 /// Minimal shared Reverie tool that prints every intercepted syscall.
 #[derive(Default)]
-pub struct StraceTool;
+pub struct StraceTool {
+    quiet: bool,
+}
 
 #[reverie::tool]
 impl ReverieTool for StraceTool {
@@ -31,15 +37,19 @@ impl ReverieTool for StraceTool {
         syscall: Syscall,
     ) -> Result<i64, Error> {
         let tid = guest.tid();
-        // Debug formatting prints typed scalar fields and pointer addresses but
-        // never dereferences guest pointers. This avoids crashing on EFAULT
-        // inputs and prevents execve environment contents from leaking.
-        let pretty = format!("{syscall:?}");
-        nostd_print::eprintln!("[{tid}] {pretty}");
+        if !self.quiet {
+            // Debug formatting prints typed scalar fields and pointer addresses but
+            // never dereferences guest pointers. This avoids crashing on EFAULT
+            // inputs and prevents execve environment contents from leaking.
+            let pretty = format!("{syscall:?}");
+            nostd_print::eprintln!("[{tid}] {pretty}");
+        }
         let result = guest.inject(syscall).await;
-        match result {
-            Ok(value) => nostd_print::eprintln!("[{tid}] -> {value}"),
-            Err(errno) => nostd_print::eprintln!("[{tid}] -> {errno}"),
+        if !self.quiet {
+            match result {
+                Ok(value) => nostd_print::eprintln!("[{tid}] -> {value}"),
+                Err(errno) => nostd_print::eprintln!("[{tid}] -> {errno}"),
+            }
         }
         result.map_err(Error::from)
     }
@@ -55,7 +65,13 @@ impl sabre::Tool for Plugin {
 
     fn new(_client: Self::Client) -> Self {
         Self {
-            adapter: sabre::ReverieAdapter::new(StraceTool, (), ()),
+            adapter: sabre::ReverieAdapter::new(
+                StraceTool {
+                    quiet: std::env::var_os(QUIET_ENV).is_some(),
+                },
+                (),
+                (),
+            ),
         }
     }
 

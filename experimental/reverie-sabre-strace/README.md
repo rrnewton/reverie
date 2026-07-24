@@ -27,6 +27,16 @@ Hermit uses the same artifacts through `HERMIT_SABRE_RUNNER`,
 hermit --backend sabre strace -- /bin/echo hello
 ```
 
+Hermit's generic compatibility path uses the same `StraceTool` and suppresses
+only its diagnostic lines:
+
+```sh
+hermit run --backend sabre --strict --verify -- /bin/echo hello
+```
+
+Set `REVERIE_SABRE_STRACE_QUIET=1` when invoking the host directly to
+suppress syscall diagnostics while retaining syscall interception.
+
 ## M2 boundaries
 
 This is a syscall-tracing milestone, not a deterministic Detcore backend.
