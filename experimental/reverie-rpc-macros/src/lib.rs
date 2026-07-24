@@ -28,9 +28,8 @@ struct Service {
 
 #[derive(Default, Debug, darling::FromMeta)]
 struct MethodAttrs {
-    /// True if `#[rpc(no_response)]` was specified.
-    #[darling(default)]
-    no_response: bool,
+    /// Some(true) if `#[rpc(no_response)]` was specified.
+    no_response: Option<bool>,
 }
 
 struct Method {

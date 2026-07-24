@@ -43,14 +43,7 @@ pub fn sys_readlink(
 
         Ok(len)
     } else {
-        unsafe {
-            syscall3(
-                Sysno::readlink,
-                path as usize,
-                buf as usize,
-                bufsize as usize,
-            )
-        }
+        unsafe { syscall3(Sysno::readlink, path as usize, buf as usize, bufsize) }
     }
 }
 
@@ -166,7 +159,7 @@ impl KernelSigset {
     /// Removes the given signal from the sigset.
     pub fn remove(&mut self, sig: libc::c_int) {
         let mask = sigmask(sig);
-        self.0 &= !(mask as u64)
+        self.0 &= !mask
     }
 }
 
@@ -287,7 +280,7 @@ pub fn sys_rt_sigprocmask(
                 operation as usize,
                 sigset_ptr as usize,
                 prev_sigset_ptr as usize,
-                sigset_size as usize,
+                sigset_size,
             )
         };
     }
@@ -304,7 +297,7 @@ pub fn sys_rt_sigprocmask(
             operation as usize,
             &new_sigset as *const _ as usize,
             prev_sigset_ptr as usize,
-            sigset_size as usize,
+            sigset_size,
         )
     }
 }

@@ -59,13 +59,12 @@ fn parse_method(method: syn::TraitItemMethod, has_ref: &mut bool) -> syn::Result
         None => MethodAttrs::default(),
     };
 
-    if method_attrs.no_response {
-        if method.sig.output != syn::ReturnType::Default {
-            return Err(syn::Error::new(
-                method.sig.output.span(),
-                "#[rpc(no_response)] methods cannot have a return type",
-            ));
-        }
+    if method_attrs.no_response.unwrap_or_default() && method.sig.output != syn::ReturnType::Default
+    {
+        return Err(syn::Error::new(
+            method.sig.output.span(),
+            "#[rpc(no_response)] methods cannot have a return type",
+        ));
     }
 
     let args = method

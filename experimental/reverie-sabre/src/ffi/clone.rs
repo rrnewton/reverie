@@ -19,6 +19,12 @@ extern "C" {
     pub fn vfork_syscall() -> usize;
 }
 
+/// Executes `clone(2)` while preserving the trampoline return path.
+///
+/// # Safety
+///
+/// All pointers and the return address must be valid for the kernel ABI and
+/// SaBRe trampoline used by the current guest thread.
 pub unsafe fn clone_syscall(
     clone_flags: usize,             // rdi
     child_stack: *mut libc::c_void, // rsi
@@ -79,6 +85,12 @@ pub unsafe fn clone_syscall(
     ret
 }
 
+/// Executes `clone3(2)` while preserving the trampoline return path.
+///
+/// # Safety
+///
+/// All pointers and the return address must be valid for the kernel ABI and
+/// SaBRe trampoline used by the current guest thread.
 pub unsafe fn clone3_syscall(
     arg1: usize,                 // rdi
     arg2: usize,                 // rsi
@@ -143,6 +155,11 @@ pub unsafe fn clone3_syscall(
 /// instruction after the syscall.
 ///
 /// This function never actually returns from the perspective of the caller.
+///
+/// # Safety
+///
+/// `wrapper_sp` must point to the live syscall frame created by SaBRe for the
+/// current guest thread.
 pub unsafe extern "C" fn vfork_return_from_child(wrapper_sp: *const syscall_stackframe) -> ! {
     super::exit_plugin();
 

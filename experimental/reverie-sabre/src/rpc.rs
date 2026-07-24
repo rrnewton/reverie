@@ -27,7 +27,30 @@ use super::protected_files::protect_with;
 const SOCKET_FD: i32 = 100;
 
 struct Inner {
-    stream: ProtectedFd<UnixStream>,
+    stream: Option<ProtectedFd<UnixStream>>,
+}
+
+/// Adopt the protected RPC connection inherited across exec, if present.
+fn inherited_stream() -> io::Result<Option<UnixStream>> {
+    let flags = unsafe { libc::fcntl(SOCKET_FD, libc::F_GETFD) };
+    if flags >= 0 {
+        if flags & libc::FD_CLOEXEC != 0
+            && unsafe { libc::fcntl(SOCKET_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) } < 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: F_GETFD proved SOCKET_FD is open. The previous image was
+        // replaced by exec, so no live Rust owner remains in this image.
+        return Ok(Some(unsafe { UnixStream::from_raw_fd(SOCKET_FD) }));
+    }
+
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EBADF) {
+        Ok(None)
+    } else {
+        Err(error)
+    }
 }
 
 /// Implements a channel using a UNIX domain socket.
@@ -38,19 +61,19 @@ pub struct BaseChannel {
 impl BaseChannel {
     /// Connects to the global state RPC server.
     pub fn new() -> io::Result<Self> {
-        // FIXME: We can't rely on this environment variable existing. Instead,
-        // the host should use seccomp-unotify to listen for a special syscall
-        // that returns a file descriptor to the socket connection.
-        let sock_path = std::env::var_os("REVERIE_SOCK")
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "$REVERIE_SOCK does not exist!"))?;
-
         let stream = protect_with(|| -> Result<_, io::Error> {
+            if let Some(stream) = inherited_stream()? {
+                return Ok(stream);
+            }
+
+            let sock_path = std::env::var_os("REVERIE_SOCK")
+                .ok_or_else(|| io::Error::other("$REVERIE_SOCK does not exist!"))?;
             let sock = UnixStream::connect(sock_path)?;
 
             // Move the socket to our desired file descriptor and make sure it
-            // gets closed when execve is called.
-            let fd =
-                Errno::result(unsafe { libc::dup3(sock.as_raw_fd(), SOCKET_FD, libc::O_CLOEXEC) })?;
+            // survives execve so the replacement plugin can adopt it without
+            // changing the target program's environment.
+            let fd = Errno::result(unsafe { libc::dup3(sock.as_raw_fd(), SOCKET_FD, 0) })?;
 
             // Close the old socket file descriptor.
             drop(sock);
@@ -59,8 +82,20 @@ impl BaseChannel {
         })?;
 
         Ok(Self {
-            inner: Mutex::new(Inner { stream }),
+            inner: Mutex::new(Inner {
+                stream: Some(stream),
+            }),
         })
+    }
+}
+
+impl Drop for BaseChannel {
+    fn drop(&mut self) {
+        if let Some(stream) = self.inner.get_mut().unwrap().stream.take() {
+            // The reserved descriptor is the exec handoff channel. Process exit
+            // closes it, while exec must preserve it for the replacement plugin.
+            std::mem::forget(stream);
+        }
     }
 }
 
@@ -73,7 +108,11 @@ impl Inner {
 
         reverie_rpc::encode(item, &mut buf)?;
 
-        self.stream.as_mut().write_all(&buf)?;
+        self.stream
+            .as_mut()
+            .expect("RPC stream is present")
+            .as_mut()
+            .write_all(&buf)?;
 
         Ok(())
     }
@@ -83,7 +122,13 @@ impl Inner {
         T: for<'a> Deserialize<'a>,
     {
         let mut buf = Vec::with_capacity(1024);
-        reverie_rpc::decode_from(self.stream.as_mut(), &mut buf)
+        reverie_rpc::decode_from(
+            self.stream
+                .as_mut()
+                .expect("RPC stream is present")
+                .as_mut(),
+            &mut buf,
+        )
     }
 }
 
@@ -101,5 +146,40 @@ where
         let mut inner = self.inner.lock().unwrap();
         inner.try_send(item).expect("Failed to send RPC");
         inner.try_recv().expect("Failed to recv RPC")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::fd::AsRawFd;
+
+    use super::*;
+
+    #[test]
+    fn adopts_inherited_socket_and_clears_cloexec() {
+        let (stream, _peer) = UnixStream::pair().unwrap();
+        let saved_fd = unsafe { libc::dup(SOCKET_FD) };
+        assert_eq!(
+            unsafe { libc::dup3(stream.as_raw_fd(), SOCKET_FD, libc::O_CLOEXEC) },
+            SOCKET_FD
+        );
+        drop(stream);
+
+        let inherited = inherited_stream().unwrap().unwrap();
+        assert_eq!(inherited.as_raw_fd(), SOCKET_FD);
+        let flags = unsafe { libc::fcntl(SOCKET_FD, libc::F_GETFD) };
+        assert!(flags >= 0);
+        assert_eq!(flags & libc::FD_CLOEXEC, 0);
+        drop(inherited);
+
+        if saved_fd >= 0 {
+            assert_eq!(
+                unsafe { libc::dup3(saved_fd, SOCKET_FD, libc::O_CLOEXEC) },
+                SOCKET_FD
+            );
+            unsafe { libc::close(saved_fd) };
+        } else {
+            unsafe { libc::close(SOCKET_FD) };
+        }
     }
 }

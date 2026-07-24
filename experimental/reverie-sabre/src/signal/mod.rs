@@ -49,7 +49,7 @@ impl SigActionPair {
     /// is provided or if the the sa_sigaction is one of the non-function-
     /// pointer values (`SI_DFL`, `SI_ERR`, `SI_IGN`)
     fn new(original: libc::sigaction, override_handler: Option<libc::sighandler_t>) -> Self {
-        let mut internal_action = original.clone();
+        let mut internal_action = original;
 
         // This is safe because it is only reading from a mut static that is
         // guaranteed to have been completely set before this function

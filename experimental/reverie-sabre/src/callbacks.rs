@@ -115,7 +115,8 @@ pub extern "C" fn handle_syscall<T: ToolGlobal>(
 }
 
 /// Handle the critical section for the given system call on the given thread
-#[allow(clippy::if_same_then_else)]
+// The arguments intentionally mirror SaBRe's raw syscall callback ABI.
+#[allow(clippy::if_same_then_else, clippy::too_many_arguments)]
 fn handle_syscall_with_thread<T: ToolGlobal>(
     thread: &mut Thread<T>,
     syscall: isize,
@@ -150,16 +151,16 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                         return_address as *const libc::c_void,
                     )
                 })
-                .map_or_else(|e| -e.into_raw() as usize, |x| x)
+                .unwrap_or_else(|e| -e.into_raw() as usize)
         })?
     } else if sys_no == Sysno::clone || sys_no == Sysno::fork {
         thread.maybe_fork_as_guest(|| {
             T::global()
                 .syscall_with_inject(intercepted, &LocalMemory::new(), || unsafe {
                     syscall!(sys_no, arg1, arg2, arg3, arg4, arg5, arg6)
-                        .map_or_else(|e| -e.into_raw() as usize, |x| x)
+                        .unwrap_or_else(|e| -e.into_raw() as usize)
                 })
-                .map_or_else(|e| -e.into_raw() as usize, |x| x)
+                .unwrap_or_else(|e| -e.into_raw() as usize)
         })?
     } else if utils::is_vfork(sys_no, arg1) {
         thread.maybe_fork_as_guest(|| {
@@ -176,7 +177,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                         pid
                     }
                 })
-                .map_or_else(|e| -e.into_raw() as usize, |x| x)
+                .unwrap_or_else(|e| -e.into_raw() as usize)
         })?
     } else if sys_no == Sysno::clone3 {
         let stack = read_clone3_stack(thread.get_process_and_thread_ids().pid, arg1, arg2);
@@ -186,7 +187,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                     Err(errno) => -errno.into_raw() as usize,
                     Ok(0) => unsafe {
                         syscall!(sys_no, arg1, arg2, arg3, arg4, arg5, arg6)
-                            .map_or_else(|e| -e.into_raw() as usize, |x| x)
+                            .unwrap_or_else(|e| -e.into_raw() as usize)
                     },
                     Ok(_) => unsafe {
                         ffi::clone3_syscall(
@@ -199,7 +200,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                         )
                     },
                 })
-                .map_or_else(|e| -e.into_raw() as usize, |x| x)
+                .unwrap_or_else(|e| -e.into_raw() as usize)
         })?
     } else if sys_no == Sysno::exit {
         T::global()
@@ -209,18 +210,18 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                 }
                 0
             })
-            .map_or_else(|e| -e.into_raw() as usize, |x| x)
+            .unwrap_or_else(|e| -e.into_raw() as usize)
     } else if sys_no == Sysno::exit_group {
         T::global()
             .syscall_with_inject(intercepted, &LocalMemory::new(), || {
                 exit_group_with_thread(thread, arg1)
             })
-            .map_or_else(|e| -e.into_raw() as usize, |x| x)
+            .unwrap_or_else(|e| -e.into_raw() as usize)
     } else {
         thread.execute_as_guest(|| {
             T::global()
                 .syscall(intercepted, &LocalMemory::new())
-                .map_or_else(|e| -e.into_raw() as usize, |x| x)
+                .unwrap_or_else(|e| -e.into_raw() as usize)
         })?
     };
 
@@ -318,20 +319,30 @@ pub extern "C" fn handle_vdso<T: ToolGlobal>(
     unsafe {
         match Sysno::from(syscall as i32) {
             Sysno::clock_gettime => {
-                vdso::clock_gettime = transmute(actual_fn as *const ());
-                transmute(handle_vdso_clock_gettime::<T> as *const ())
+                vdso::clock_gettime =
+                    transmute::<*const (), ffi::vdso_clock_gettime_fn>(actual_fn as *const ());
+                Some(transmute::<*const (), ffi::void_void_fn>(
+                    handle_vdso_clock_gettime::<T> as *const (),
+                ))
             }
             Sysno::getcpu => {
-                vdso::getcpu = transmute(actual_fn as *const ());
-                transmute(handle_vdso_getcpu::<T> as *const ())
+                vdso::getcpu = transmute::<*const (), ffi::vdso_getcpu_fn>(actual_fn as *const ());
+                Some(transmute::<*const (), ffi::void_void_fn>(
+                    handle_vdso_getcpu::<T> as *const (),
+                ))
             }
             Sysno::gettimeofday => {
-                vdso::gettimeofday = transmute(actual_fn as *const ());
-                transmute(handle_vdso_gettimeofday::<T> as *const ())
+                vdso::gettimeofday =
+                    transmute::<*const (), ffi::vdso_gettimeofday_fn>(actual_fn as *const ());
+                Some(transmute::<*const (), ffi::void_void_fn>(
+                    handle_vdso_gettimeofday::<T> as *const (),
+                ))
             }
             Sysno::time => {
-                vdso::time = transmute(actual_fn as *const ());
-                transmute(handle_vdso_time::<T> as *const ())
+                vdso::time = transmute::<*const (), ffi::vdso_time_fn>(actual_fn as *const ());
+                Some(transmute::<*const (), ffi::void_void_fn>(
+                    handle_vdso_time::<T> as *const (),
+                ))
             }
             _ => None,
         }

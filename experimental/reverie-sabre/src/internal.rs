@@ -43,7 +43,8 @@ fn register_detours<T: ToolGlobal>(fn_icept_reg: ffi::icept_reg_fn) {
     }
 }
 
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
+// This is the fixed initialization ABI exported to the SaBRe loader.
+#[allow(clippy::not_unsafe_ptr_arg_deref, clippy::too_many_arguments)]
 pub fn sbr_init<T: ToolGlobal>(
     argc: *mut i32,
     argv: *mut *mut *mut libc::c_char,
@@ -126,7 +127,6 @@ impl<T> ProcessCell<T> {
     }
 }
 
-#[cfg(test)]
 impl<T> Default for ProcessCell<T> {
     fn default() -> Self {
         Self::new()

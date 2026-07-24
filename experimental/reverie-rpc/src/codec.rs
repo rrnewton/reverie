@@ -47,12 +47,9 @@ where
     T: Serialize + ?Sized,
     W: Write,
 {
-    bincode_options().serialize_into(writer, item).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to encode frame: {}", e),
-        )
-    })
+    bincode_options()
+        .serialize_into(writer, item)
+        .map_err(|e| io::Error::other(format!("failed to encode frame: {}", e)))
 }
 
 /// Decodes a length-delimited frame.
@@ -60,12 +57,9 @@ pub fn decode_frame<'a, T>(frame: &'a [u8]) -> io::Result<T>
 where
     T: Deserialize<'a>,
 {
-    bincode_options().deserialize(frame).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to decode frame: {}", e),
-        )
-    })
+    bincode_options()
+        .deserialize(frame)
+        .map_err(|e| io::Error::other(format!("failed to decode frame: {}", e)))
 }
 
 pub fn decode_from<'a, T, R>(mut reader: R, buf: &'a mut Vec<u8>) -> io::Result<T>
