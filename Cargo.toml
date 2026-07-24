@@ -15,6 +15,7 @@ members = [
     "reverie-dbi",
     "reverie-examples",
     "reverie-kvm",
+    "reverie-liteinst",
     "reverie-memory",
     "reverie-process",
     "reverie-ptrace",
