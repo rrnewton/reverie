@@ -26,7 +26,15 @@ TSS exception stack and exit KVM as `Error::GuestException`, which reports the
 vector, saved guest instruction pointer, and `CR2`. The backend reports faults
 to its caller; it does not yet translate them into Linux signals.
 
-`run_static_elf` supplies a deliberately small single-process Linux personality. It handles process exit, host-backed filesystem descriptors, stdout/stderr writes, deterministic identity, time and random queries, FS/GS bases, `brk`, anonymous and file-backed `mmap`, and common startup no-ops. Unsupported syscalls return `ENOSYS`.
+`run_static_elf` supplies a deliberately small Linux personality. It handles process exit, host-backed filesystem descriptors, stdout/stderr writes, deterministic identity, time and random queries, FS/GS bases, `brk`, anonymous and file-backed `mmap`, and common startup no-ops. Unsupported syscalls return `ENOSYS`.
+
+The process personality implements `fork`, `vfork`, process-only `clone`/`clone3`,
+`execve`/`execveat`, and `wait4`. Forked children receive an independent guest
+RAM snapshot and fresh VM/vCPU, inherit duplicated host file descriptions, and
+run to completion before the parent resumes. The tool runtime keeps the root
+tool's `GlobalState`; child syscalls currently execute through the deterministic
+KVM personality without per-child tool lifecycle callbacks.
+
 ## Typed syscall decoding
 
 Every valid x86-64 syscall number is decoded through Reverie's complete typed
@@ -61,7 +69,9 @@ No gVisor code is copied. Unlike the gVisor Sentry VFS and `pkg/sentry/fsimpl/` 
 
 ## Current limits
 
-This crate is not a complete Linux execution backend. The ELF path has one vCPU, fixed-address identity mappings, no threads or signals, and no page-permission enforcement. Filesystem access forwards into the host namespace with bounded memory copies and a guest-owned descriptor table; it does not isolate or snapshot host filesystem changes. The current hypercall transport also reuses standardized KVM
+This crate is not a complete Linux execution backend. Each process has one vCPU
+and fixed-address identity mappings; thread-clone flags, signals, concurrent
+process scheduling, and page-permission enforcement remain unsupported. Filesystem access forwards into the host namespace with bounded memory copies and a guest-owned descriptor table; it does not isolate or snapshot host filesystem changes. The current hypercall transport also reuses standardized KVM
 hypercall 12 because it is the only hypercall KVM exposes to userspace; that
 prototype ABI must be replaced before running a stock guest kernel.
 

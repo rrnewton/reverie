@@ -43,6 +43,7 @@ use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::SYSCALL_FRAME_ADDRESS;
 use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
+use crate::executor::is_process_syscall;
 
 const GUEST_PID: i32 = 1;
 const STACK_CAPACITY: usize = 4096;
@@ -530,7 +531,7 @@ impl KvmBackend {
         if capture_output {
             loaded.stdin = Some(std::fs::File::open("/dev/null")?);
         }
-        let auxv = loaded.auxv.clone();
+        let mut auxv = loaded.auxv.clone();
         let pid = Pid::from_raw(GUEST_PID);
         let global_state = T::GlobalState::init_global_state(&config).await;
         let tool = T::new(pid, &config);
@@ -620,7 +621,7 @@ impl KvmBackend {
         }
 
         loop {
-            let (pending_segment, pending_exit) = match self.vcpu.run()? {
+            let (pending_segment, pending_exit, pending_process) = match self.vcpu.run()? {
                 VcpuExit::Hypercall(exit) => {
                     if exit.nr != VMCALL_SYSCALL_TRANSPORT {
                         return Err(Error::UnexpectedHypercall(exit.nr));
@@ -637,9 +638,11 @@ impl KvmBackend {
                     let registers = self.vcpu.get_regs()?;
                     let request = SyscallRequest::read_from(&memory, frame_address)?;
                     let syscall = request.into_syscall()?;
-                    let subscribed = subscriptions
-                        .iter_syscalls()
-                        .any(|number| number == syscall.number());
+                    let process_syscall = is_process_syscall(request.number());
+                    let subscribed = !process_syscall
+                        && subscriptions
+                            .iter_syscalls()
+                            .any(|number| number == syscall.number());
                     let result = if subscribed {
                         let tail_result = Arc::new(Mutex::new(None));
                         let outcome = {
@@ -677,7 +680,11 @@ impl KvmBackend {
                     unsafe {
                         (return_slot as *mut u64).write(0);
                     }
-                    (executor.take_segment(), executor.take_exit())
+                    (
+                        executor.take_segment(),
+                        executor.take_exit(),
+                        executor.take_process_action(),
+                    )
                 }
                 VcpuExit::Hlt => return Err(self.static_elf_halt_error()?),
                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
@@ -685,6 +692,10 @@ impl KvmBackend {
 
             if let Some((segment, address)) = pending_segment {
                 set_user_segment_base(&self.vcpu, segment, address)?;
+            }
+            if let Some(action) = pending_process {
+                self.run_process_action(&mut executor, action)?;
+                auxv = executor.auxv().to_vec();
             }
             if let Some(code) = pending_exit {
                 notify_tool_exit(

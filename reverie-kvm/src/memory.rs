@@ -78,6 +78,22 @@ impl GuestMemory {
         })
     }
 
+    pub(crate) fn snapshot(&self) -> Result<Self> {
+        const COPY_CHUNK: usize = 1024 * 1024;
+
+        let mut snapshot = Self::new(self.guest_base(), self.len())?;
+        let mut buffer = vec![0; COPY_CHUNK.min(self.len())];
+        let mut offset = 0;
+        while offset < self.len() {
+            let length = buffer.len().min(self.len() - offset);
+            let address = self.guest_base() + offset as u64;
+            self.read(address, &mut buffer[..length])?;
+            snapshot.write(address, &buffer[..length])?;
+            offset += length;
+        }
+        Ok(snapshot)
+    }
+
     /// Returns the first guest-physical address in the mapping.
     pub fn guest_base(&self) -> u64 {
         self.mapping.guest_base
@@ -321,5 +337,22 @@ mod tests {
         let mut bytes = [0; 3];
         first.read(0x1200, &mut bytes).unwrap();
         assert_eq!(&bytes, b"api");
+    }
+
+    #[test]
+    fn snapshot_copies_without_sharing_memory() {
+        let mut parent = GuestMemory::new(0x1000, PAGE_SIZE * 2).unwrap();
+        parent.write(0x1100, b"parent").unwrap();
+
+        let mut child = parent.snapshot().unwrap();
+        let mut bytes = [0; 6];
+        child.read(0x1100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"parent");
+
+        child.write(0x1100, b"child!").unwrap();
+        parent.read(0x1100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"parent");
+        child.read(0x1100, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"child!");
     }
 }
