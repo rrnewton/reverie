@@ -167,7 +167,7 @@ unsafe extern "C" fn tool_trampoline() {
 
 unsafe fn process_syscall(event: &mut SyscallEvent) {
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-id): exec cannot safely cross an inherited trap filter.
+    // TODO-HUMAN-REVIEW(#61): exec cannot safely cross an inherited trap filter.
     if event.number == libc::SYS_execve || event.number == libc::SYS_execveat {
         event.result = -i64::from(libc::ENOTSUP);
         unsafe {
@@ -177,7 +177,7 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-id): reserve SIGSYS until disposition virtualization exists.
+    // TODO-HUMAN-REVIEW(#61): reserve SIGSYS until disposition virtualization exists.
     if event.number == libc::SYS_rt_sigaction && event.args[0] == libc::SIGSYS as u64 {
         event.result = -i64::from(libc::EPERM);
         unsafe {
@@ -187,7 +187,7 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-id): a non-null clone stack cannot resume this signal frame safely.
+    // TODO-HUMAN-REVIEW(#61): a non-null clone stack cannot resume this signal frame safely.
     if event.number == libc::SYS_clone && event.args[1] != 0 {
         event.result = -i64::from(libc::ENOTSUP);
         unsafe {
@@ -197,7 +197,7 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-id): clone3 and vfork need a controller-owned child bootstrap.
+    // TODO-HUMAN-REVIEW(#61): clone3 and vfork need a controller-owned child bootstrap.
     if event.number == libc::SYS_clone3 || event.number == libc::SYS_vfork {
         event.result = -i64::from(libc::ENOTSUP);
         unsafe {

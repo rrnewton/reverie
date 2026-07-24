@@ -81,7 +81,7 @@ pub fn configure_command(command: &mut Command, tool: PreloadTool) -> io::Result
     Ok(())
 }
 
-// TODO-HUMAN-REVIEW(PR-id): this constructor installs process-wide signal and seccomp state.
+// TODO-HUMAN-REVIEW(#61): this constructor installs process-wide signal and seccomp state.
 /// Initializes the preload runtime when selected by the launcher environment.
 ///
 /// # Safety
