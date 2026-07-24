@@ -1079,6 +1079,30 @@ pub unsafe extern "C" fn reverie_dbi_runtime_thread_init(counters: *mut Prototyp
     unsafe { counters.write(PrototypeCounters::default()) };
 }
 
+/// Starts a newly created prototype application thread.
+///
+/// The synchronous prototype has no global scheduler, so no admission work is needed.
+///
+/// # Safety
+///
+/// The native client must supply pointers matching this exported ABI. The
+/// prototype does not dereference them in this callback.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbi_runtime_thread_start(
+    _context: *mut c_void,
+    _counters: *mut PrototypeCounters,
+    _tid: i32,
+    _pid: i32,
+    _branches: u64,
+    _invoke_syscall: SyscallInvoker,
+    _read_registers: RegisterReader,
+    _emit: tools::Emitter,
+) -> i32 {
+    0
+}
+
 /// Releases prototype state for an exiting application thread.
 ///
 /// # Safety
@@ -1086,7 +1110,11 @@ pub unsafe extern "C" fn reverie_dbi_runtime_thread_init(counters: *mut Prototyp
 /// `counters` must be the pointer previously passed to thread initialization.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn reverie_dbi_runtime_thread_exit(_counters: *mut PrototypeCounters) {}
+pub unsafe extern "C" fn reverie_dbi_runtime_thread_exit(
+    _counters: *mut PrototypeCounters,
+    _tid: i32,
+) {
+}
 
 /// Handles a DynamoRIO pre-syscall event.
 ///
@@ -1291,12 +1319,14 @@ pub unsafe extern "C" fn reverie_dbi_runtime_totals(
     branches: *mut u64,
     syscalls: *mut u64,
     rewritten: *mut u64,
+    signals: *mut u64,
     memory_hash: *mut u64,
 ) {
     unsafe {
         branches.write(TOTAL_BRANCHES.load(Ordering::Relaxed));
         syscalls.write(TOTAL_SYSCALLS.load(Ordering::Relaxed));
         rewritten.write(TOTAL_REWRITTEN.load(Ordering::Relaxed));
+        signals.write(0);
         memory_hash.write(0);
     }
     // NB: the syscall-counter tool prints its histogram from the guest's own

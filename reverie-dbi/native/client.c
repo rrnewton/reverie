@@ -106,7 +106,12 @@ static void reverie_dbi_emit(const char *buf, size_t len) {
 }
 
 extern void reverie_dbi_runtime_thread_init(prototype_counters_t *counters);
-extern void reverie_dbi_runtime_thread_exit(prototype_counters_t *counters);
+extern int32_t reverie_dbi_runtime_thread_start(
+    void *context, prototype_counters_t *counters, int32_t tid, int32_t pid,
+    uint64_t branches, syscall_invoker_t invoke_syscall,
+    register_reader_t read_registers, reverie_emit_fn_t emit);
+extern void reverie_dbi_runtime_thread_exit(prototype_counters_t *counters,
+                                            int32_t tid);
 extern void reverie_dbi_runtime_background_init(void *argument);
 extern int32_t reverie_dbi_runtime_ready(void);
 extern void reverie_dbi_runtime_process_exit(void);
@@ -126,7 +131,7 @@ extern int32_t reverie_dbi_runtime_signal(
     register_reader_t read_registers, reverie_emit_fn_t emit);
 extern const char *reverie_dbi_runtime_name(void);
 extern void reverie_dbi_runtime_totals(uint64_t *branches, uint64_t *syscalls,
-                                       uint64_t *rewritten,
+                                       uint64_t *rewritten, uint64_t *signals,
                                        uint64_t *memory_hash);
 
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
@@ -248,32 +253,44 @@ static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
                                            args[4], args[5]);
 }
 
+static int32_t copy_registers(const dr_mcontext_t *registers,
+                              struct user_regs_struct *out) {
+  memset(out, 0, sizeof(*out));
+  out->r15 = registers->r15;
+  out->r14 = registers->r14;
+  out->r13 = registers->r13;
+  out->r12 = registers->r12;
+  out->rbp = registers->xbp;
+  out->rbx = registers->xbx;
+  out->r11 = registers->r11;
+  out->r10 = registers->r10;
+  out->r9 = registers->r9;
+  out->r8 = registers->r8;
+  out->rax = registers->xax;
+  out->rcx = registers->xcx;
+  out->rdx = registers->xdx;
+  out->rsi = registers->xsi;
+  out->rdi = registers->xdi;
+  out->orig_rax = registers->xax;
+  out->rip = (uint64_t)registers->xip;
+  out->eflags = registers->xflags;
+  out->rsp = registers->xsp;
+  return 1;
+}
+
 static int32_t read_registers(uintptr_t context, struct user_regs_struct *out) {
   dr_mcontext_t registers = {sizeof(registers), DR_MC_ALL};
-  memset(out, 0, sizeof(*out));
   if (!dr_get_mcontext((void *)context, &registers))
     return 0;
+  return copy_registers(&registers, out);
+}
 
-  out->r15 = registers.r15;
-  out->r14 = registers.r14;
-  out->r13 = registers.r13;
-  out->r12 = registers.r12;
-  out->rbp = registers.xbp;
-  out->rbx = registers.xbx;
-  out->r11 = registers.r11;
-  out->r10 = registers.r10;
-  out->r9 = registers.r9;
-  out->r8 = registers.r8;
-  out->rax = registers.xax;
-  out->rcx = registers.xcx;
-  out->rdx = registers.xdx;
-  out->rsi = registers.xsi;
-  out->rdi = registers.xdi;
-  out->orig_rax = registers.xax;
-  out->rip = (uint64_t)registers.xip;
-  out->eflags = registers.xflags;
-  out->rsp = registers.xsp;
-  return 1;
+static int32_t read_signal_registers(uintptr_t context,
+                                     struct user_regs_struct *out) {
+  const dr_siginfo_t *siginfo = (const dr_siginfo_t *)context;
+  if (siginfo == NULL || siginfo->mcontext == NULL)
+    return 0;
+  return copy_registers(siginfo->mcontext, out);
 }
 
 static int32_t read_memory(uintptr_t address, uint8_t *out, size_t size) {
@@ -773,17 +790,19 @@ static dr_signal_action_t signal_event(void *drcontext, dr_siginfo_t *siginfo) {
   prototype_counters_t *counters;
   int32_t deliver;
 
-  if (has_copied_runtime())
+  if (has_copied_runtime() || siginfo->blocked)
     return DR_SIGNAL_DELIVER;
   counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
   if (counters == NULL)
-    return DR_SIGNAL_DELIVER;
+    dr_abort_with_code(1);
   deliver = reverie_dbi_runtime_signal(
-      drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
+      siginfo, counters, (int32_t)dr_get_thread_id(drcontext),
       (int32_t)dr_get_process_id(), siginfo->sig,
       atomic_load_explicit(&branch_count, memory_order_relaxed), invoke_syscall,
-      read_registers, reverie_dbi_emit);
+      read_signal_registers, reverie_dbi_emit);
+  if (deliver < 0)
+    dr_abort_with_code(1);
   return deliver ? DR_SIGNAL_DELIVER : DR_SIGNAL_SUPPRESS;
 }
 
@@ -837,13 +856,23 @@ static void thread_init(void *drcontext) {
   DR_ASSERT(counters != NULL);
   reverie_dbi_runtime_thread_init(counters);
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
+  if (!has_copied_runtime() && dr_get_thread_id(drcontext) != dr_get_process_id()) {
+    while (!reverie_dbi_runtime_ready())
+      dr_sleep(1);
+    if (reverie_dbi_runtime_thread_start(
+            drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
+            (int32_t)dr_get_process_id(),
+            atomic_load_explicit(&branch_count, memory_order_relaxed),
+            invoke_syscall, read_registers, reverie_dbi_emit))
+      dr_abort_with_code(1);
+  }
 }
 
 static void thread_exit(void *drcontext) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
   if (counters != NULL && !has_copied_runtime()) {
-    reverie_dbi_runtime_thread_exit(counters);
+    reverie_dbi_runtime_thread_exit(counters, (int32_t)dr_get_thread_id(drcontext));
     dr_thread_free(drcontext, counters, sizeof(*counters));
   }
 }
@@ -853,17 +882,20 @@ static void event_exit(void) {
   uint64_t branches;
   uint64_t syscalls;
   uint64_t rewritten;
+  uint64_t signals;
   uint64_t stdin_reads;
   uint64_t memory_hash;
 
   if (report_summary && !has_copied_runtime()) {
-    reverie_dbi_runtime_totals(&branches, &syscalls, &rewritten, &memory_hash);
+    reverie_dbi_runtime_totals(&branches, &syscalls, &rewritten, &signals,
+                               &memory_hash);
     stdin_reads = atomic_load_explicit(&stdin_read_count, memory_order_relaxed);
     dr_fprintf(STDERR,
                "reverie-dbi: tool=%s branches=%llu syscalls=%llu "
-               "rewritten=%llu stdin_reads=%llu memory_hash=%016llx\n",
+               "rewritten=%llu signals=%llu stdin_reads=%llu "
+               "memory_hash=%016llx\n",
                reverie_dbi_runtime_name(), branches, syscalls, rewritten,
-               stdin_reads, memory_hash);
+               signals, stdin_reads, memory_hash);
   }
   dr_mutex_destroy(resource_lock);
   drwrap_exit();
