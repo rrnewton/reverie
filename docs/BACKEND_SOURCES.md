@@ -1,9 +1,10 @@
 # Optional backend sources
 
-Reverie's large native backend dependencies are pinned as Git submodules under
-`third-party/`. They are intentionally absent from a normal clone and from a
-plain `git submodule update --init`: each entry uses `update = none` and a
-shallow checkout policy.
+Reverie's large native backend dependencies are pinned as shallow Git
+submodules under `third-party/`. They are intentionally absent from a normal
+clone. SaBRe and e9patch also use `update = none`, so a plain
+`git submodule update --init` skips them. DynamoRIO permits checkout because
+Cargo must initialize it when Reverie is consumed as a Git dependency.
 
 | Backend | Path | Pinned revision | License |
 | --- | --- | --- | --- |
@@ -17,7 +18,8 @@ backend work and is not part of a default Rust build.
 
 ## Activate one backend
 
-Use the repository helper to override `update = none` for exactly one source:
+Use the repository helper to initialize and verify exactly one source. For SaBRe
+and e9patch, it explicitly overrides `update = none`:
 
 ```bash
 scripts/backend-submodule.sh activate dynamorio
@@ -45,8 +47,10 @@ make -C third-party/e9patch
 ```
 
 The SaBRe and e9patch build commands require the system dependencies documented
-by those upstream projects. Cargo does not perform network access implicitly;
-source activation remains a visible, reproducible step.
+by those upstream projects. Cargo never fetches those two sources implicitly. A
+Cargo Git checkout does initialize pinned DynamoRIO so `reverie-dbi` remains
+buildable; a normal repository clone still leaves it absent until explicitly
+initialized.
 
 ## Inspect or remove sources
 
