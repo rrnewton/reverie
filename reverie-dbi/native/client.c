@@ -38,6 +38,7 @@ typedef struct {
   uint64_t observed_syscalls;
   uint64_t rewritten_syscalls;
   void *runtime_state;
+  uint64_t runtime_started;
 } prototype_counters_t;
 
 typedef struct {
@@ -218,6 +219,8 @@ static dr_emit_flags_t rewrite_cpuid(void *drcontext, void *tag,
   return DR_EMIT_DEFAULT;
 }
 
+static void ensure_thread_started(void);
+
 static bool is_counted_branch(instr_t *instruction) {
   return instr_is_cbr(instruction) || instr_is_ubr(instruction) ||
          instr_is_call(instruction) || instr_is_return(instruction);
@@ -228,6 +231,10 @@ static dr_emit_flags_t instrument_instruction(void *drcontext, void *tag,
                                               instr_t *instruction,
                                               bool for_trace, bool translating,
                                               void *user_data) {
+  if (instr_is_app(instruction) &&
+      drmgr_is_first_instr(drcontext, instruction))
+    dr_insert_clean_call(drcontext, bb, instruction,
+                         (void *)ensure_thread_started, false, 0);
   if (instr_is_app(instruction) &&
       (ptr_uint_t)instr_get_note(instruction) == cpuid_marker_note) {
     dr_insert_clean_call_ex(
@@ -854,18 +861,29 @@ static void thread_init(void *drcontext) {
   prototype_counters_t *counters =
       (prototype_counters_t *)dr_thread_alloc(drcontext, sizeof(*counters));
   DR_ASSERT(counters != NULL);
+  memset(counters, 0, sizeof(*counters));
   reverie_dbi_runtime_thread_init(counters);
+  counters->runtime_started =
+      dr_get_thread_id(drcontext) == dr_get_process_id() ? 1 : 0;
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
-  if (!has_copied_runtime() && dr_get_thread_id(drcontext) != dr_get_process_id()) {
-    while (!reverie_dbi_runtime_ready())
-      dr_sleep(1);
-    if (reverie_dbi_runtime_thread_start(
-            drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
-            (int32_t)dr_get_process_id(),
-            atomic_load_explicit(&branch_count, memory_order_relaxed),
-            invoke_syscall, read_registers, reverie_dbi_emit))
-      dr_abort_with_code(1);
-  }
+}
+
+static void ensure_thread_started(void) {
+  void *drcontext = dr_get_current_drcontext();
+  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
+      drcontext, thread_state_index);
+
+  if (has_copied_runtime() || counters == NULL || counters->runtime_started)
+    return;
+  while (!reverie_dbi_runtime_ready())
+    dr_sleep(1);
+  if (reverie_dbi_runtime_thread_start(
+          drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
+          (int32_t)dr_get_process_id(),
+          atomic_load_explicit(&branch_count, memory_order_relaxed),
+          invoke_syscall, read_registers, reverie_dbi_emit))
+    dr_abort_with_code(1);
+  counters->runtime_started = 1;
 }
 
 static void thread_exit(void *drcontext) {
