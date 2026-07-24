@@ -6,6 +6,8 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::fs::File;
+use std::os::fd::FromRawFd;
 use std::path::Path;
 
 use kvm_bindings::CpuId;
@@ -40,6 +42,22 @@ const VMCALL: [u8; 3] = [0x0f, 0x01, 0xc1];
 const VMMCALL: [u8; 3] = [0x0f, 0x01, 0xd9];
 const HLT: u8 = 0xf4;
 
+fn duplicate_stdin() -> Result<Option<File>> {
+    // Duplicate before opening /dev/kvm so internal descriptors can never alias
+    // a logically open guest stdin.
+    let fd = unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_DUPFD_CLOEXEC, 3) };
+    if fd >= 0 {
+        // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+        return Ok(Some(unsafe { File::from_raw_fd(fd) }));
+    }
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(libc::EBADF) {
+        Ok(None)
+    } else {
+        Err(error.into())
+    }
+}
+
 /// A single-vCPU KVM backend used to exercise the syscall transport.
 pub struct KvmBackend {
     // Field order ensures the vCPU and VM are dropped before registered memory.
@@ -49,6 +67,7 @@ pub struct KvmBackend {
     _kvm: Kvm,
     hypercall_instruction: [u8; 3],
     pub(crate) static_elf: Option<LoadedStaticElf>,
+    stdin: Option<File>,
 }
 
 impl KvmBackend {
@@ -57,8 +76,25 @@ impl KvmBackend {
         Self::new_with_cpuid_policy(memory_size, CpuidPolicy::default())
     }
 
+    /// Creates a VM with an explicitly reserved supervisor standard input.
+    ///
+    /// Callers that initialize async runtimes before KVM should reserve stdin
+    /// first so an originally closed descriptor cannot be reused internally.
+    pub fn new_with_stdin(memory_size: usize, stdin: Option<File>) -> Result<Self> {
+        Self::new_with_cpuid_policy_and_stdin(memory_size, CpuidPolicy::default(), stdin)
+    }
+
     /// Creates a VM with a caller-selected CPUID feature policy.
     pub fn new_with_cpuid_policy(memory_size: usize, cpuid_policy: CpuidPolicy) -> Result<Self> {
+        let stdin = duplicate_stdin()?;
+        Self::new_with_cpuid_policy_and_stdin(memory_size, cpuid_policy, stdin)
+    }
+
+    fn new_with_cpuid_policy_and_stdin(
+        memory_size: usize,
+        cpuid_policy: CpuidPolicy,
+        stdin: Option<File>,
+    ) -> Result<Self> {
         let kvm = Kvm::new()?;
         let vm = kvm.create_vm()?;
         if !vm.check_extension(Cap::ExitHypercall) {
@@ -98,6 +134,7 @@ impl KvmBackend {
             _kvm: kvm,
             hypercall_instruction,
             static_elf: None,
+            stdin,
         })
     }
 
@@ -165,7 +202,8 @@ impl KvmBackend {
         envp: &[&str],
         cwd: &Path,
     ) -> Result<()> {
-        let loaded = load_static_elf(&mut self.memory, image, argv, envp, cwd)?;
+        let mut loaded = load_static_elf(&mut self.memory, image, argv, envp, cwd)?;
+        loaded.stdin = self.stdin.as_ref().map(File::try_clone).transpose()?;
         configure_long_mode(
             &mut self.memory,
             &self.vcpu,

@@ -277,11 +277,16 @@ fn file_mode(file: &std::fs::File) -> Result<libc::mode_t, i64> {
     Ok(unsafe { stat.assume_init() }.st_mode)
 }
 
-fn ensure_readable(file: &std::fs::File) -> Result<(), i64> {
+fn ensure_read_access(file: &std::fs::File) -> Result<(), i64> {
     let flags = file_status_flags(file)?;
     if flags & libc::O_PATH != 0 || flags & libc::O_ACCMODE == libc::O_WRONLY {
         return Err(negative_errno(libc::EBADF));
     }
+    Ok(())
+}
+
+fn ensure_readable(file: &std::fs::File) -> Result<(), i64> {
+    ensure_read_access(file)?;
     if file_mode(file)? & libc::S_IFMT == libc::S_IFDIR {
         return Err(negative_errno(libc::EISDIR));
     }
@@ -307,6 +312,18 @@ fn ensure_directory(file: &std::fs::File) -> Result<(), i64> {
     Ok(())
 }
 
+fn ensure_read_capable(file: &std::fs::File) -> Result<(), i64> {
+    ensure_read_access(file)?;
+    // A zero-iovec readv tests FMODE_CAN_READ without consuming input or
+    // invoking the descriptor's file-specific read implementation.
+    let result = unsafe { libc::readv(file.as_raw_fd(), std::ptr::null::<libc::iovec>(), 0) };
+    if result < 0 {
+        Err(io_error(std::io::Error::last_os_error()))
+    } else {
+        Ok(())
+    }
+}
+
 fn write(
     memory: &GuestMemory,
     state: &mut LoadedStaticElf,
@@ -324,9 +341,15 @@ fn write(
     if !standard && !state.files.contains_key(&fd) {
         return negative_errno(libc::EBADF);
     }
-    if !standard
-        && let Err(error) =
-            ensure_writable(state.files.get(&fd).expect("owned descriptor disappeared"))
+    let descriptor = if standard && fd == libc::STDIN_FILENO {
+        state.stdin.as_ref()
+    } else if standard {
+        None
+    } else {
+        state.files.get(&fd)
+    };
+    if let Some(descriptor) = descriptor
+        && let Err(error) = ensure_writable(descriptor)
     {
         return error;
     }
@@ -359,7 +382,12 @@ fn write(
         return host_write(fd, &bytes);
     }
     if standard {
-        return host_write(fd, &bytes);
+        return state
+            .stdin
+            .as_mut()
+            .expect("open standard input disappeared")
+            .write(&bytes)
+            .map_or_else(io_error, |count| count as i64);
     }
 
     state
@@ -384,6 +412,26 @@ fn host_write(fd: RawFd, bytes: &[u8]) -> i64 {
     }
 }
 
+fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -> i64 {
+    if !range_is_valid(memory, address, length as u64) {
+        return negative_errno(libc::EFAULT);
+    }
+    let mut bytes = vec![0; length];
+    // SAFETY: bytes is writable for length bytes and fd is a live host descriptor.
+    let count = unsafe { libc::read(fd, bytes.as_mut_ptr().cast::<libc::c_void>(), bytes.len()) };
+    if count < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let count = count as usize;
+    if count == 0 {
+        return 0;
+    }
+    match memory.write(address, &bytes[..count]) {
+        Ok(()) => count as i64,
+        Err(_) => negative_errno(libc::EFAULT),
+    }
+}
+
 fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
@@ -393,24 +441,34 @@ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     };
     let length = requested_length.min(MAX_HOST_IO);
     if is_open_standard(state, fd) {
-        return if fd == libc::STDIN_FILENO {
-            0
-        } else {
-            negative_errno(libc::EBADF)
+        if fd != libc::STDIN_FILENO {
+            return negative_errno(libc::EBADF);
+        }
+        let Some(stdin) = state.stdin.as_ref() else {
+            return negative_errno(libc::EBADF);
         };
+        if let Err(error) = ensure_read_capable(stdin) {
+            return error;
+        }
+        if !range_is_valid(memory, args[1], args[2]) {
+            return negative_errno(libc::EFAULT);
+        }
+        return host_read(memory, stdin.as_raw_fd(), args[1], length);
     }
-    if !state.files.contains_key(&fd) {
+    let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
-    }
-    if let Err(error) = ensure_readable(state.files.get(&fd).expect("owned descriptor disappeared"))
-    {
+    };
+    if let Err(error) = ensure_read_capable(file) {
         return error;
     }
-    if length == 0 {
-        return 0;
-    }
-    if !range_is_valid(memory, args[1], length as u64) {
+    if !range_is_valid(memory, args[1], args[2]) {
         return negative_errno(libc::EFAULT);
+    }
+    if let Err(error) = ensure_readable(file) {
+        return error;
+    }
+    if requested_length == 0 {
+        return 0;
     }
     let mut bytes = vec![0; length];
     match state
@@ -831,6 +889,7 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
 
 fn is_open_standard(state: &LoadedStaticElf, guest_fd: libc::c_int) -> bool {
     (0..=2).contains(&guest_fd)
+        && (guest_fd != libc::STDIN_FILENO || state.stdin.is_some())
         && !state.closed_standard_fds.contains(&guest_fd)
         && !state.files.contains_key(&guest_fd)
 }
@@ -840,7 +899,15 @@ fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
         .files
         .get(&guest_fd)
         .map(AsRawFd::as_raw_fd)
-        .or_else(|| is_open_standard(state, guest_fd).then_some(guest_fd))
+        .or_else(|| {
+            if !is_open_standard(state, guest_fd) {
+                None
+            } else if guest_fd == libc::STDIN_FILENO {
+                state.stdin.as_ref().map(AsRawFd::as_raw_fd)
+            } else {
+                Some(guest_fd)
+            }
+        })
 }
 
 fn host_dirfd_and_path(
@@ -874,6 +941,9 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         return 0;
     }
     if is_open_standard(state, fd) {
+        if fd == libc::STDIN_FILENO {
+            state.stdin.take();
+        }
         state.closed_standard_fds.insert(fd);
         return 0;
     }
@@ -1215,6 +1285,7 @@ const fn negative_errno(errno: libc::c_int) -> i64 {
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
+    use std::os::unix::net::UnixStream;
     use std::path::Path;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicU64;
@@ -1253,6 +1324,7 @@ mod tests {
             argv0: b"test".to_vec(),
             cwd: cwd.to_owned(),
             cwd_fd: std::fs::File::open(cwd).unwrap(),
+            stdin: Some(std::fs::File::open("/dev/null").unwrap()),
             auxv: Vec::new(),
             fs_base: 0,
             gs_base: 0,
@@ -1791,6 +1863,34 @@ mod tests {
             std::fs::read(root.0.join("stdout-file")).unwrap(),
             b"redirected"
         );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [libc::STDIN_FILENO as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let reused_stdin = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_open,
+            [PATH_ADDRESS, libc::O_RDONLY as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(reused_stdin, libc::STDIN_FILENO as i64);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [reused_stdin as u64, 0x500, 10, 0, 0, 0],
+            ),
+            10
+        );
+        let mut reopened_input = [0; 10];
+        memory.read(0x500, &mut reopened_input).unwrap();
+        assert_eq!(&reopened_input, b"redirected");
     }
 
     #[test]
@@ -1944,6 +2044,171 @@ mod tests {
         let mut actual = [0; 8];
         memory.read(READ_ADDRESS, &mut actual).unwrap();
         assert_eq!(&actual, b"original");
+    }
+
+    #[test]
+    fn host_read_forwards_input_without_consuming_on_guest_fault() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(b"hello\n").unwrap();
+        drop(writer);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        assert_eq!(
+            host_read(&mut memory, reader.as_raw_fd(), u64::MAX, 1),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            host_read(&mut memory, reader.as_raw_fd(), u64::MAX, 0),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(host_read(&mut memory, reader.as_raw_fd(), 0x100, 32), 6);
+        let mut actual = [0; 6];
+        memory.read(0x100, &mut actual).unwrap();
+        assert_eq!(&actual, b"hello\n");
+        assert_eq!(host_read(&mut memory, reader.as_raw_fd(), 0x200, 32), 0);
+
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        let delayed_writer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            writer.write_all(b"hi").unwrap();
+        });
+        assert_eq!(host_read(&mut memory, reader.as_raw_fd(), 0x300, 32), 2);
+        delayed_writer.join().unwrap();
+        let mut delayed = [0; 2];
+        memory.read(0x300, &mut delayed).unwrap();
+        assert_eq!(&delayed, b"hi");
+    }
+
+    #[test]
+    fn inherited_special_stdin_matches_linux_read_precedence() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        state.stdin = Some(std::fs::File::open(&root.0).unwrap());
+        for (address, length, expected) in [
+            (u64::MAX, 1, negative_errno(libc::EFAULT)),
+            (0x100, 1, negative_errno(libc::EISDIR)),
+            (u64::MAX, 0, negative_errno(libc::EFAULT)),
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [libc::STDIN_FILENO as u64, address, length, 0, 0, 0],
+                ),
+                expected
+            );
+        }
+
+        // SAFETY: successful descriptor creation transfers ownership to File.
+        let epoll = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+        assert!(epoll >= 0);
+        state.stdin = Some(unsafe { std::fs::File::from_raw_fd(epoll) });
+        for length in [0, 1] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [libc::STDIN_FILENO as u64, u64::MAX, length, 0, 0, 0],
+                ),
+                negative_errno(libc::EINVAL)
+            );
+        }
+
+        // SAFETY: pidfd_open either returns a new descriptor or a negative error.
+        let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, libc::getpid(), 0) as i32 };
+        if pidfd >= 0 {
+            // SAFETY: successful pidfd_open transfers descriptor ownership to File.
+            state.stdin = Some(unsafe { std::fs::File::from_raw_fd(pidfd) });
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [libc::STDIN_FILENO as u64, u64::MAX, 1, 0, 0, 0],
+                ),
+                negative_errno(libc::EINVAL)
+            );
+        }
+
+        // SAFETY: successful descriptor creation transfers ownership to File.
+        let event = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC) };
+        assert!(event >= 0);
+        state.stdin = Some(unsafe { std::fs::File::from_raw_fd(event) });
+        for (address, length, expected) in [
+            (u64::MAX, 1, negative_errno(libc::EFAULT)),
+            (0x100, 1, negative_errno(libc::EINVAL)),
+            (u64::MAX, 0, negative_errno(libc::EFAULT)),
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [libc::STDIN_FILENO as u64, address, length, 0, 0, 0],
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn standard_input_access_checks_precede_memory_validation() {
+        const PAYLOAD: u64 = 0x100;
+
+        let root = TestDir::new();
+        let path = root.0.join("stdin");
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(PAYLOAD, b"x").unwrap();
+
+        state.stdin = Some(std::fs::File::create(&path).unwrap());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [libc::STDIN_FILENO as u64, u64::MAX, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [libc::STDIN_FILENO as u64, u64::MAX, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [libc::STDIN_FILENO as u64, PAYLOAD, 1, 0, 0, 0],
+            ),
+            1
+        );
+        drop(state);
+        assert_eq!(std::fs::read(&path).unwrap(), b"x");
+
+        let mut state = test_state(&root.0);
+        state.stdin = Some(std::fs::File::open(&path).unwrap());
+        for length in [0, 1] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_write,
+                    [libc::STDIN_FILENO as u64, u64::MAX, length, 0, 0, 0],
+                ),
+                negative_errno(libc::EBADF)
+            );
+        }
     }
 
     #[test]

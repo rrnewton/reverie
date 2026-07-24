@@ -526,7 +526,10 @@ impl KvmBackend {
     where
         T: Tool,
     {
-        let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+        let mut loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
+        if capture_output {
+            loaded.stdin = Some(std::fs::File::open("/dev/null")?);
+        }
         let auxv = loaded.auxv.clone();
         let pid = Pid::from_raw(GUEST_PID);
         let global_state = T::GlobalState::init_global_state(&config).await;
