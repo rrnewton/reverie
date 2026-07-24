@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <signal.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/resource.h>
@@ -95,6 +96,11 @@ static const cpuid_result_t extended_cpuid[] = {
 // rather than writing to fd 2 directly: the guest can close its stderr before
 // exit, and app-level writes re-enter the syscall interception path.
 typedef void (*reverie_emit_fn_t)(const char *buf, size_t len);
+typedef void (*reverie_idle_fn_t)(void);
+typedef struct {
+  reverie_emit_fn_t emit;
+  reverie_idle_fn_t idle;
+} runtime_callbacks_t;
 static void reverie_dbi_emit(const char *buf, size_t len) {
   dr_write_file(STDERR, buf, len);
 }
@@ -103,6 +109,7 @@ extern void reverie_dbi_runtime_thread_init(prototype_counters_t *counters);
 extern void reverie_dbi_runtime_thread_exit(prototype_counters_t *counters);
 extern void reverie_dbi_runtime_background_init(void *argument);
 extern int32_t reverie_dbi_runtime_ready(void);
+extern void reverie_dbi_runtime_process_exit(void);
 extern int32_t reverie_dbi_runtime_pre_syscall(
     void *context, prototype_counters_t *counters, int32_t tid, int32_t pid,
     int64_t sysnum, const uint64_t *args, uint64_t branches, int64_t *result,
@@ -119,6 +126,7 @@ static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
 static int thread_state_index;
 static ptr_uint_t cpuid_marker_note;
 static bool report_summary;
+static process_id_t runtime_owner_pid;
 
 typedef struct {
   uint64_t rlim_cur;
@@ -704,7 +712,39 @@ static bool syscall_reads_stdin(void *drcontext, int sysnum,
 
 static bool filter_syscall(void *drcontext, int sysnum) { return true; }
 
+static bool has_copied_runtime(void);
+
+static void zero_wait_rusage(void *address) {
+  if (address != NULL) {
+    struct rusage usage = {0};
+    write_app(address, &usage, sizeof(usage));
+  }
+}
+
+static void post_syscall(void *drcontext, int sysnum) {
+  if (has_copied_runtime() || (ptr_int_t)dr_syscall_get_result(drcontext) < 0)
+    return;
+  if (sysnum == SYS_wait4) {
+    zero_wait_rusage((void *)dr_syscall_get_param(drcontext, 3));
+  } else if (sysnum == SYS_waitid) {
+    siginfo_t info;
+    void *info_address = (void *)dr_syscall_get_param(drcontext, 2);
+    if (info_address != NULL && read_app(info_address, &info, sizeof(info))) {
+      info.si_utime = 0;
+      info.si_stime = 0;
+      write_app(info_address, &info, sizeof(info));
+    }
+    zero_wait_rusage((void *)dr_syscall_get_param(drcontext, 4));
+  }
+}
+
+static bool has_copied_runtime(void) {
+  return runtime_owner_pid != 0 && dr_get_process_id() != runtime_owner_pid;
+}
+
 static bool pre_syscall(void *drcontext, int sysnum) {
+  if (has_copied_runtime())
+    return true;
   while (!reverie_dbi_runtime_ready())
     dr_sleep(1);
   uint64_t args[6];
@@ -753,20 +793,21 @@ static void thread_init(void *drcontext) {
 static void thread_exit(void *drcontext) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
-  if (counters != NULL) {
+  if (counters != NULL && !has_copied_runtime()) {
     reverie_dbi_runtime_thread_exit(counters);
     dr_thread_free(drcontext, counters, sizeof(*counters));
   }
 }
 
 static void event_exit(void) {
+  reverie_dbi_runtime_process_exit();
   uint64_t branches;
   uint64_t syscalls;
   uint64_t rewritten;
   uint64_t stdin_reads;
   uint64_t memory_hash;
 
-  if (report_summary) {
+  if (report_summary && !has_copied_runtime()) {
     reverie_dbi_runtime_totals(&branches, &syscalls, &rewritten, &memory_hash);
     stdin_reads = atomic_load_explicit(&stdin_read_count, memory_order_relaxed);
     dr_fprintf(STDERR,
@@ -783,9 +824,19 @@ static void event_exit(void) {
   drmgr_exit();
 }
 
+static void runtime_idle(void) { dr_sleep(1); }
+
+static runtime_callbacks_t runtime_callbacks = {reverie_dbi_emit, runtime_idle};
+
+static void runtime_background_init(void *argument) {
+  (void)argument;
+  reverie_dbi_runtime_background_init(&runtime_callbacks);
+}
+
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   drreg_options_t register_options = {sizeof(register_options), 1, false};
 
+  runtime_owner_pid = dr_get_process_id();
   resource_lock = dr_mutex_create();
   DR_ASSERT(resource_lock != NULL);
   init_virtual_limits();
@@ -806,7 +857,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   if (thread_state_index == -1)
     DR_ASSERT(false);
 
-  if (!dr_create_client_thread(reverie_dbi_runtime_background_init,
+  if (!dr_create_client_thread(runtime_background_init,
                                (void *)reverie_dbi_emit))
     DR_ASSERT(false);
   drmgr_register_exit_event(event_exit);
@@ -817,6 +868,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       !drmgr_register_bb_instrumentation_event(NULL, instrument_instruction,
                                                NULL) ||
       !drmgr_register_filter_syscall_event(filter_syscall) ||
-      !drmgr_register_pre_syscall_event(pre_syscall))
+      !drmgr_register_pre_syscall_event(pre_syscall) ||
+      !drmgr_register_post_syscall_event(post_syscall))
     DR_ASSERT(false);
 }

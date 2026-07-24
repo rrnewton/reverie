@@ -73,6 +73,21 @@ pub type RegisterReader = unsafe extern "C" fn(usize, *mut libc::user_regs_struc
 /// Native callback used to copy application memory with DynamoRIO fault handling.
 pub type MemoryReader = unsafe extern "C" fn(usize, *mut u8, usize) -> i32;
 
+/// Native callback used to emit runtime diagnostics without re-entering guest I/O.
+pub type RuntimeEmitter = unsafe extern "C" fn(*const u8, usize);
+
+/// Native callback that yields a DBI client thread at a DynamoRIO-safe point.
+pub type RuntimeIdler = unsafe extern "C" fn();
+
+/// Callbacks supplied to an external Tool runtime on its background client thread.
+#[repr(C)]
+pub struct DbiRuntimeCallbacks {
+    /// Emits already-formatted runtime output through DynamoRIO.
+    pub emit: RuntimeEmitter,
+    /// Yields while an async runtime future remains pending.
+    pub idle: RuntimeIdler,
+}
+
 /// Result of dispatching a syscall through an external DBI Tool.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DbiSyscallOutcome {
@@ -1150,6 +1165,11 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
 pub extern "C" fn reverie_dbi_runtime_background_init(_argument: *mut c_void) {}
+
+/// Handles process exit for the built-in synchronous prototype runtime.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_dbi_runtime_process_exit() {}
 
 /// Reports whether the built-in prototype runtime is ready for callbacks.
 #[cfg(feature = "prototype-runtime")]
