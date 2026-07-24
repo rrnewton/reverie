@@ -7,10 +7,13 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
@@ -112,6 +115,16 @@ extern const char *reverie_dbi_runtime_name(void);
 extern void reverie_dbi_runtime_totals(uint64_t *branches, uint64_t *syscalls,
                                        uint64_t *rewritten,
                                        uint64_t *memory_hash);
+
+static void pipe_eof_background_init(void *argument) {
+  /*
+   * DynamoRIO's Linux client thread has its own process id and private file
+   * table. It must not outlive the application across exec or exit because its
+   * inherited stdout/stderr descriptors would keep captured pipes open.
+   */
+  DR_ASSERT(prctl(PR_SET_PDEATHSIG, SIGKILL) == 0);
+  reverie_dbi_runtime_background_init(argument);
+}
 
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
@@ -652,6 +665,64 @@ static bool fd_matches_stdin(void *drcontext, int fd) {
 #endif
 }
 
+static bool fd_is_pipe(void *drcontext, int fd) {
+#ifdef SYS_fstat
+  struct stat value = {0};
+  uint64_t stat_args[6] = {(uint64_t)fd, (uint64_t)(uintptr_t)&value};
+  return invoke_syscall((uintptr_t)drcontext, SYS_fstat, stat_args) == 0 &&
+      S_ISFIFO(value.st_mode);
+#else
+  return false;
+#endif
+}
+
+static bool handle_pipe_io(void *drcontext, int sysnum, const uint64_t *args,
+                           int64_t *result) {
+  int fd;
+  switch (sysnum) {
+#ifdef SYS_read
+  case SYS_read:
+#endif
+#ifdef SYS_readv
+  case SYS_readv:
+#endif
+#ifdef SYS_write
+  case SYS_write:
+#endif
+#ifdef SYS_writev
+  case SYS_writev:
+#endif
+    fd = (int)args[0];
+    break;
+  default:
+    return false;
+  }
+  if (!fd_is_pipe(drcontext, fd))
+    return false;
+
+#ifdef SYS_fcntl
+  uint64_t fcntl_args[6] = {(uint64_t)fd, F_GETFL};
+  int64_t flags = invoke_syscall((uintptr_t)drcontext, SYS_fcntl, fcntl_args);
+  bool restore_nonblocking = flags >= 0 && (flags & O_NONBLOCK) != 0;
+  if (restore_nonblocking) {
+    fcntl_args[1] = F_SETFL;
+    fcntl_args[2] = (uint64_t)(flags & ~O_NONBLOCK);
+    if (invoke_syscall((uintptr_t)drcontext, SYS_fcntl, fcntl_args) < 0)
+      return false;
+  }
+#endif
+
+  *result = invoke_syscall((uintptr_t)drcontext, sysnum, args);
+
+#ifdef SYS_fcntl
+  if (restore_nonblocking) {
+    fcntl_args[2] = (uint64_t)flags;
+    (void)invoke_syscall((uintptr_t)drcontext, SYS_fcntl, fcntl_args);
+  }
+#endif
+  return true;
+}
+
 static bool syscall_reads_stdin(void *drcontext, int sysnum,
                                 const uint64_t *args) {
   int fd;
@@ -718,6 +789,12 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     args[i] = (uint64_t)dr_syscall_get_param(drcontext, i);
   if (syscall_reads_stdin(drcontext, sysnum, args))
     atomic_fetch_add_explicit(&stdin_read_count, 1, memory_order_relaxed);
+  if (handle_pipe_io(drcontext, sysnum, args, &result)) {
+    counters->observed_syscalls += 1;
+    counters->rewritten_syscalls += 1;
+    dr_syscall_set_result(drcontext, (reg_t)result);
+    return false;
+  }
 
   if (reverie_dbi_runtime_pre_syscall(
           drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
@@ -806,7 +883,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   if (thread_state_index == -1)
     DR_ASSERT(false);
 
-  if (!dr_create_client_thread(reverie_dbi_runtime_background_init,
+  if (!dr_create_client_thread(pipe_eof_background_init,
                                (void *)reverie_dbi_emit))
     DR_ASSERT(false);
   drmgr_register_exit_event(event_exit);
