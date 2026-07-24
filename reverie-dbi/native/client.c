@@ -705,7 +705,9 @@ static bool syscall_reads_stdin(void *drcontext, int sysnum,
 static bool filter_syscall(void *drcontext, int sysnum) { return true; }
 
 static bool pre_syscall(void *drcontext, int sysnum) {
-  /* DynamoRIO must execute mmap itself so its post-syscall path registers
+  /* AUTONOMOUS-BOT-IMPLEMENTED
+   * TODO-HUMAN-REVIEW(#53): confirm mmap may bypass external Tool policy.
+   * DynamoRIO must execute mmap itself so its post-syscall path registers
    * newly mapped executable code. Re-injecting it from this callback bypasses
    * that bookkeeping and can crash when the dynamic loader enters the map. */
   if (sysnum == SYS_mmap)
