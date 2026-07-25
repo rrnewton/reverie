@@ -877,13 +877,18 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   if (syscall_reads_stdin(drcontext, sysnum, args))
     atomic_fetch_add_explicit(&stdin_read_count, 1, memory_order_relaxed);
 
-  if (reverie_dbi_runtime_pre_syscall(
-          drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
-          (int32_t)dr_get_process_id(),
-          atomic_load_explicit(&image_generation, memory_order_acquire),
-          (int64_t)sysnum, args,
-          atomic_load_explicit(&branch_count, memory_order_relaxed), &result,
-          invoke_syscall, read_registers, read_memory, reverie_dbi_emit)) {
+  int32_t action = reverie_dbi_runtime_pre_syscall(
+      drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
+      (int32_t)dr_get_process_id(),
+      atomic_load_explicit(&image_generation, memory_order_acquire),
+      (int64_t)sysnum, args,
+      atomic_load_explicit(&branch_count, memory_order_relaxed), &result,
+      invoke_syscall, read_registers, read_memory, reverie_dbi_emit);
+  if (action < 0) {
+    dr_exit_process(101);
+    return false;
+  }
+  if (action > 0) {
     retry_pipe_eagain(drcontext, sysnum, args, &result);
     dr_syscall_set_result(drcontext, (reg_t)result);
     return false;
