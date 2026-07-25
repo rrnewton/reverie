@@ -8,9 +8,14 @@
 
 //! Correctness-first hybrid backend for e9patch syscall events.
 
+use std::ffi::CString;
 use std::io;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::path::PathBuf;
+use std::ptr;
 
 use reverie::Backend;
 use reverie::Error;
@@ -23,7 +28,103 @@ use reverie_ptrace::Tracer;
 use reverie_ptrace::TracerBuilder;
 
 use crate::E9PATCH_SYSCALL_TRAP_MARKER;
+use crate::E9PATCH_SYSCALL_TRAP_RIP;
 use crate::E9patchRewriter;
+
+enum ExecutableResource {
+    Temporary(tempfile::TempPath),
+    Overlay(ExecutableOverlay),
+    Original,
+}
+
+impl ExecutableResource {
+    fn cleanup(self) -> io::Result<()> {
+        match self {
+            Self::Temporary(path) => path.close(),
+            Self::Overlay(mut overlay) => overlay.unmount(),
+            Self::Original => Ok(()),
+        }
+    }
+}
+
+struct ExecutableOverlay {
+    target: CString,
+    target_path: PathBuf,
+    mounted: bool,
+}
+
+impl ExecutableOverlay {
+    fn mount(source: &Path, target: &Path) -> io::Result<Self> {
+        let source = path_cstring(source)?;
+        let target_cstring = path_cstring(target)?;
+        let target_path = target.to_owned();
+
+        syscall_result(unsafe {
+            libc::mount(
+                source.as_ptr(),
+                target_cstring.as_ptr(),
+                ptr::null(),
+                libc::MS_BIND as libc::c_ulong,
+                ptr::null(),
+            )
+        })?;
+
+        let mut overlay = Self {
+            target: target_cstring,
+            target_path,
+            mounted: true,
+        };
+        if let Err(error) = syscall_result(unsafe {
+            libc::mount(
+                ptr::null(),
+                overlay.target.as_ptr(),
+                ptr::null(),
+                (libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY) as libc::c_ulong,
+                ptr::null(),
+            )
+        }) {
+            let _ = overlay.unmount();
+            return Err(error);
+        }
+        Ok(overlay)
+    }
+
+    fn unmount(&mut self) -> io::Result<()> {
+        if self.mounted {
+            syscall_result(unsafe { libc::umount2(self.target.as_ptr(), libc::MNT_DETACH) })?;
+            self.mounted = false;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ExecutableOverlay {
+    fn drop(&mut self) {
+        if let Err(error) = self.unmount() {
+            eprintln!(
+                "warning: failed to remove e9patch executable overlay {}: {error}",
+                self.target_path.display()
+            );
+        }
+    }
+}
+
+fn path_cstring(path: &Path) -> io::Result<CString> {
+    CString::new(path.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("path contains an interior NUL: {}", path.display()),
+        )
+    })
+}
+
+fn syscall_result(result: libc::c_int) -> io::Result<()> {
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
 
 /// Hybrid e9patch backend with ptrace lifecycle and full `Guest` semantics.
 ///
@@ -39,17 +140,38 @@ impl E9patchBackend {
     async fn spawn<T>(
         mut command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
-    ) -> Result<(Tracer<T::GlobalState>, tempfile::TempPath), Error>
+        preserve_executable: bool,
+    ) -> Result<(Tracer<T::GlobalState>, ExecutableResource), Error>
     where
         T: Tool + 'static,
     {
         let source = command.find_program()?;
         let arg0 = command.get_arg0().to_owned();
         let prepared = E9patchRewriter::from_env()?.prepare(&source)?;
+        let report = prepared.report();
+        // TODO-HUMAN-REVIEW(PR-103): Review the stable backend coverage diagnostic.
+        eprintln!(
+            ":: Backend: e9patch hybrid; recovered_sites={}; patched_sites={}; b0_sites={}; event_source=injected-trap; controller=ptrace",
+            report.recovered_sites(),
+            report.patched_sites(),
+            report.b0_sites(),
+        );
+
+        // TODO-HUMAN-REVIEW(PR-103): Review zero-site original-image execution.
+        if report.patched_sites() == 0 {
+            command.program(&source).arg0(arg0);
+            let tracer = TracerBuilder::<T>::new(command)
+                .config(config)
+                .injected_syscall_trap(E9PATCH_SYSCALL_TRAP_MARKER, E9PATCH_SYSCALL_TRAP_RIP)
+                .spawn()
+                .await?;
+            return Ok((tracer, ExecutableResource::Original));
+        }
 
         // E9patch's loader reopens the executable, so an anonymous memfd is not
-        // sufficient. Keep its path alive through tracer wait, but close the
-        // writable descriptor before execve to avoid ETXTBSY.
+        // sufficient. Close the writable descriptor before execve to avoid
+        // ETXTBSY. Namespace callers may bind the artifact over the original
+        // path to retain executable identity.
         let mut executable = tempfile::Builder::new()
             .prefix("reverie-e9patch-guest-")
             .tempfile()?;
@@ -61,13 +183,28 @@ impl E9patchBackend {
         executable.as_file().set_permissions(permissions)?;
         let executable = executable.into_temp_path();
 
-        command.program(&executable).arg0(arg0);
-        let tracer = TracerBuilder::<T>::new(command)
+        let resource = if preserve_executable {
+            let overlay = ExecutableOverlay::mount(&executable, &source)?;
+            executable.close()?;
+            command.program(&source).arg0(arg0);
+            ExecutableResource::Overlay(overlay)
+        } else {
+            command.program(&executable).arg0(arg0);
+            ExecutableResource::Temporary(executable)
+        };
+
+        let spawn_result = TracerBuilder::<T>::new(command)
             .config(config)
-            .injected_syscall_trap(E9PATCH_SYSCALL_TRAP_MARKER)
+            .injected_syscall_trap(E9PATCH_SYSCALL_TRAP_MARKER, E9PATCH_SYSCALL_TRAP_RIP)
             .spawn()
-            .await?;
-        Ok((tracer, executable))
+            .await;
+        match spawn_result {
+            Ok(tracer) => Ok((tracer, resource)),
+            Err(error) => {
+                let _ = resource.cleanup();
+                Err(error)
+            }
+        }
     }
 
     /// Runs a tool and captures the rewritten guest's stdout and stderr.
@@ -79,10 +216,58 @@ impl E9patchBackend {
     where
         T: Tool + 'static,
     {
-        let (tracer, executable) = Self::spawn::<T>(command, config).await?;
+        let (tracer, resource) = Self::spawn::<T>(command, config, false).await?;
         let result = tracer.wait_with_output().await;
-        drop(executable);
-        result
+        let cleanup = resource.cleanup();
+        match (result, cleanup) {
+            (Ok(result), Ok(())) => Ok(result),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+        }
+    }
+
+    /// Runs a tool with the rewritten ELF mounted at its original path.
+    ///
+    /// The caller must already be in a private mount namespace with permission
+    /// to create a read-only bind mount at the resolved executable path.
+    // TODO-HUMAN-REVIEW(PR-103): Review the namespace executable-identity API.
+    pub async fn run_preserving_executable<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(ExitStatus, T::GlobalState), Error>
+    where
+        T: Tool + 'static,
+    {
+        let (tracer, resource) = Self::spawn::<T>(command, config, true).await?;
+        let result = tracer.wait().await;
+        let cleanup = resource.cleanup();
+        match (result, cleanup) {
+            (Ok(result), Ok(())) => Ok(result),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+        }
+    }
+
+    /// Runs a tool with original executable identity and captures its output.
+    ///
+    /// The caller must already be in a private mount namespace with permission
+    /// to create a read-only bind mount at the resolved executable path.
+    // TODO-HUMAN-REVIEW(PR-103): Review the captured namespace identity API.
+    pub async fn run_with_output_preserving_executable<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(Output, T::GlobalState), Error>
+    where
+        T: Tool + 'static,
+    {
+        let (tracer, resource) = Self::spawn::<T>(command, config, true).await?;
+        let result = tracer.wait_with_output().await;
+        let cleanup = resource.cleanup();
+        match (result, cleanup) {
+            (Ok(result), Ok(())) => Ok(result),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+        }
     }
 }
 
@@ -95,9 +280,13 @@ impl Backend for E9patchBackend {
     where
         T: Tool + 'static,
     {
-        let (tracer, executable) = Self::spawn::<T>(command, config).await?;
+        let (tracer, resource) = Self::spawn::<T>(command, config, false).await?;
         let result = tracer.wait().await;
-        drop(executable);
-        result
+        let cleanup = resource.cleanup();
+        match (result, cleanup) {
+            (Ok(result), Ok(())) => Ok(result),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+        }
     }
 }
