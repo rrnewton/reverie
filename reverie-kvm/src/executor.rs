@@ -379,12 +379,21 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_sched_setparam as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         sched_setparam(state, args)
+    } else if number == libc::SYS_sched_getattr as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sched_getattr(memory, state, args)
     } else if number == libc::SYS_sched_get_priority_min as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         sched_priority_bound(args[0], false)
     } else if number == libc::SYS_sched_get_priority_max as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         sched_priority_bound(args[0], true)
+    } else if number == libc::SYS_getpriority as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        getpriority(state, args)
+    } else if number == libc::SYS_setpriority as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        setpriority(state, args)
     } else if number == libc::SYS_ioprio_get as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         GUEST_IOPRIO_DEFAULT
@@ -3396,6 +3405,73 @@ fn sched_setparam(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
         return negative_errno(libc::ESRCH);
     }
     0
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SchedAttr {
+    size: u32,
+    sched_policy: u32,
+    sched_flags: u64,
+    sched_nice: i32,
+    sched_priority: u32,
+    sched_runtime: u64,
+    sched_deadline: u64,
+    sched_period: u64,
+    sched_util_min: u32,
+    sched_util_max: u32,
+}
+
+// The pid/target argument must name the guest process (0 or its own pid).
+fn is_self_target(raw_pid: u64, state: &LoadedStaticElf) -> bool {
+    raw_pid == 0 || raw_pid as i64 == i64::from(state.pid)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#92): Review the fixed KVM priority and scheduling persona.
+fn getpriority(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if args[0] != libc::PRIO_PROCESS as u64 {
+        return negative_errno(libc::EINVAL);
+    }
+    if !is_self_target(args[1], state) {
+        return negative_errno(libc::ESRCH);
+    }
+    20
+}
+
+fn setpriority(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if args[0] != libc::PRIO_PROCESS as u64 {
+        return negative_errno(libc::EINVAL);
+    }
+    if !is_self_target(args[1], state) {
+        return negative_errno(libc::ESRCH);
+    }
+    0
+}
+
+fn sched_getattr(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if !is_self_target(args[0], state) {
+        return negative_errno(libc::ESRCH);
+    }
+    if args[3] != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    if args[2] < 48 {
+        return negative_errno(libc::E2BIG);
+    }
+    let attr = SchedAttr {
+        size: std::mem::size_of::<SchedAttr>() as u32,
+        sched_policy: libc::SCHED_OTHER as u32,
+        sched_flags: 0,
+        sched_nice: 0,
+        sched_priority: 0,
+        sched_runtime: 2_800_000,
+        sched_deadline: 0,
+        sched_period: 0,
+        sched_util_min: 0,
+        sched_util_max: 0,
+    };
+    write_struct(memory, args[1], &attr)
 }
 
 fn getrandom(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
@@ -7310,6 +7386,95 @@ mod tests {
         assert_eq!(executor.execute_process_action(&request, &memory), Some(1));
         executor.replace_after_exec(test_state(&root.0));
         assert_eq!(executor.take_clear_child_tid(), None);
+    }
+
+    #[test]
+    fn priority_and_scheduler_queries_use_fixed_guest_persona() {
+        const PARAM: u64 = 0x100;
+        const ATTR: u64 = 0x200;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpriority,
+                [libc::PRIO_PROCESS as u64, 0, 0, 0, 0, 0],
+            ),
+            20
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_setpriority,
+                [libc::PRIO_PROCESS as u64, 0, 1, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_get,
+                [IOPRIO_WHO_PROCESS, 0, 0, 0, 0, 0],
+            ),
+            ((IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 4) as i64
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_set,
+                [
+                    IOPRIO_WHO_PROCESS,
+                    0,
+                    IOPRIO_CLASS_IDLE << IOPRIO_CLASS_SHIFT,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getscheduler,
+                [0, 0, 0, 0, 0, 0],
+            ),
+            i64::from(libc::SCHED_OTHER)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getparam,
+                [0, PARAM, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            read_struct::<libc::sched_param>(&memory, PARAM).sched_priority,
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getattr,
+                [0, ATTR, std::mem::size_of::<SchedAttr>() as u64, 0, 0, 0],
+            ),
+            0
+        );
+        let attr: SchedAttr = read_struct(&memory, ATTR);
+        assert_eq!(attr.size as usize, std::mem::size_of::<SchedAttr>());
+        assert_eq!(attr.sched_policy, libc::SCHED_OTHER as u32);
+        assert_eq!(attr.sched_priority, 0);
+        assert_eq!(attr.sched_nice, 0);
     }
 
     #[test]
