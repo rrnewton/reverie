@@ -348,6 +348,25 @@ fn static_elf_forks_execs_and_waits_for_child() {
 }
 
 #[test]
+fn real_bash_pipeline_uses_process_clone_tid_flags() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM Bash pipeline test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let root = TestDirectory::new();
+    run_host_program(
+        "/bin/bash",
+        &["bash", "-c", "printf abc | /usr/bin/wc -c"],
+        &root.0,
+    );
+}
+
+#[test]
 fn real_coreutils_complete_file_mutation_workflow() {
     match Kvm::new() {
         Ok(_) => {}

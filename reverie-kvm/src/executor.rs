@@ -104,6 +104,9 @@ pub(crate) enum ProcessAction {
     Fork {
         child_pid: i32,
         child_stack: Option<u64>,
+        parent_tid: Option<u64>,
+        child_tid: Option<u64>,
+        clear_child_tid: Option<u64>,
     },
     Exec {
         image: Vec<u8>,
@@ -392,21 +395,26 @@ impl ElfExecutor {
         let number = request.number();
         let args = request.args();
         if number == libc::SYS_fork as u64 || number == libc::SYS_vfork as u64 {
-            return Some(self.prepare_fork(None));
+            return Some(self.prepare_fork(None, None, None, None));
         }
         if number == libc::SYS_clone as u64 {
-            let flags = args[0];
-            return Some(match validate_process_clone_flags(flags) {
-                Ok(()) => self.prepare_fork((args[1] != 0).then_some(args[1])),
-                Err(error) => error,
-            });
+            return Some(self.prepare_clone(
+                memory,
+                args[0],
+                (args[1] != 0).then_some(args[1]),
+                args[2],
+                args[3],
+            ));
         }
         if number == libc::SYS_clone3 as u64 {
             return Some(match read_clone3(memory, args[0], args[1]) {
-                Ok((flags, child_stack)) => match validate_process_clone_flags(flags) {
-                    Ok(()) => self.prepare_fork(child_stack),
-                    Err(error) => error,
-                },
+                Ok(request) => self.prepare_clone(
+                    memory,
+                    request.flags,
+                    request.child_stack,
+                    request.parent_tid_address,
+                    request.child_tid_address,
+                ),
                 Err(error) => error,
             });
         }
@@ -426,7 +434,50 @@ impl ElfExecutor {
         None
     }
 
-    fn prepare_fork(&mut self, child_stack: Option<u64>) -> i64 {
+    fn prepare_clone(
+        &mut self,
+        memory: &GuestMemory,
+        flags: u64,
+        child_stack: Option<u64>,
+        parent_tid_address: u64,
+        child_tid_address: u64,
+    ) -> i64 {
+        if let Err(error) = validate_process_clone_flags(flags) {
+            return error;
+        }
+        let parent_tid = if flags & libc::CLONE_PARENT_SETTID as u64 != 0 {
+            if !range_is_valid(
+                memory,
+                parent_tid_address,
+                std::mem::size_of::<i32>() as u64,
+            ) {
+                return negative_errno(libc::EFAULT);
+            }
+            Some(parent_tid_address)
+        } else {
+            None
+        };
+        let child_tid = if flags & libc::CLONE_CHILD_SETTID as u64 != 0 {
+            if !range_is_valid(memory, child_tid_address, std::mem::size_of::<i32>() as u64) {
+                return negative_errno(libc::EFAULT);
+            }
+            Some(child_tid_address)
+        } else {
+            None
+        };
+        let clear_child_tid = (flags & libc::CLONE_CHILD_CLEARTID as u64 != 0
+            && child_tid_address != 0)
+            .then_some(child_tid_address);
+        self.prepare_fork(child_stack, parent_tid, child_tid, clear_child_tid)
+    }
+
+    fn prepare_fork(
+        &mut self,
+        child_stack: Option<u64>,
+        parent_tid: Option<u64>,
+        child_tid: Option<u64>,
+        clear_child_tid: Option<u64>,
+    ) -> i64 {
         if self.process_action.is_some() {
             return negative_errno(libc::EBUSY);
         }
@@ -437,6 +488,9 @@ impl ElfExecutor {
         self.process_action = Some(ProcessAction::Fork {
             child_pid,
             child_stack,
+            parent_tid,
+            child_tid,
+            clear_child_tid,
         });
         i64::from(child_pid)
     }
@@ -2847,7 +2901,12 @@ fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
     if signal != 0 && signal != libc::SIGCHLD as u64 {
         return Err(negative_errno(libc::EINVAL));
     }
-    let allowed = 0xff | libc::CLONE_VM as u64 | libc::CLONE_VFORK as u64;
+    let allowed = 0xff
+        | libc::CLONE_VM as u64
+        | libc::CLONE_VFORK as u64
+        | libc::CLONE_PARENT_SETTID as u64
+        | libc::CLONE_CHILD_SETTID as u64
+        | libc::CLONE_CHILD_CLEARTID as u64;
     if flags & !allowed != 0 {
         return Err(negative_errno(libc::ENOTSUP));
     }
@@ -2860,7 +2919,14 @@ fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
     Ok(())
 }
 
-fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<(u64, Option<u64>), i64> {
+struct ProcessCloneRequest {
+    flags: u64,
+    child_stack: Option<u64>,
+    parent_tid_address: u64,
+    child_tid_address: u64,
+}
+
+fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<ProcessCloneRequest, i64> {
     const REQUIRED_SIZE: usize = 64;
     const MAX_SIZE: usize = 88;
 
@@ -2881,7 +2947,7 @@ fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<(u64, Op
                 .expect("u64 clone3 field"),
         )
     };
-    if field(8) != 0 || field(16) != 0 || field(24) != 0 {
+    if field(8) != 0 || field(56) != 0 || field(64) != 0 || field(72) != 0 || field(80) != 0 {
         return Err(negative_errno(libc::ENOTSUP));
     }
     let flags = field(0) | field(32);
@@ -2895,7 +2961,12 @@ fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<(u64, Op
     if stack != 0 && child_stack.is_none() {
         return Err(negative_errno(libc::EINVAL));
     }
-    Ok((flags, child_stack))
+    Ok(ProcessCloneRequest {
+        flags,
+        child_stack,
+        parent_tid_address: field(24),
+        child_tid_address: field(16),
+    })
 }
 
 fn read_string_array(memory: &GuestMemory, address: u64) -> Result<Vec<String>, i64> {
@@ -5369,6 +5440,74 @@ mod tests {
         );
         assert!(!replacement.signal_actions.contains_key(&libc::SIGUSR2));
         assert!(replacement.signal_alt_stack.is_none());
+    }
+
+    #[test]
+    fn process_clone_accepts_process_tid_flags() {
+        const CHILD_TID: u64 = 0x100;
+        const PARENT_TID: u64 = 0x108;
+
+        let root = TestDir::new();
+        let state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut executor = ElfExecutor::new(state, false);
+        let flags = libc::SIGCHLD as u64
+            | libc::CLONE_PARENT_SETTID as u64
+            | libc::CLONE_CHILD_SETTID as u64
+            | libc::CLONE_CHILD_CLEARTID as u64;
+        let request = SyscallRequest::new(
+            libc::SYS_clone as u64,
+            [flags, 0, PARENT_TID, CHILD_TID, 0, 0],
+        );
+        assert_eq!(executor.execute_process_action(&request, &memory), Some(2));
+        match executor.take_process_action() {
+            Some(ProcessAction::Fork {
+                child_pid,
+                child_stack,
+                parent_tid,
+                child_tid,
+                clear_child_tid,
+            }) => {
+                assert_eq!(child_pid, 2);
+                assert_eq!(child_stack, None);
+                assert_eq!(parent_tid, Some(PARENT_TID));
+                assert_eq!(child_tid, Some(CHILD_TID));
+                assert_eq!(clear_child_tid, Some(CHILD_TID));
+            }
+            _ => panic!("clone did not produce a fork action"),
+        }
+
+        let state = test_state(&root.0);
+        let mut executor = ElfExecutor::new(state, false);
+        let bad_pointer = memory.guest_end() - 1;
+        let request = SyscallRequest::new(
+            libc::SYS_clone as u64,
+            [
+                libc::SIGCHLD as u64 | libc::CLONE_CHILD_SETTID as u64,
+                0,
+                0,
+                bad_pointer,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(
+            executor.execute_process_action(&request, &memory),
+            Some(negative_errno(libc::EFAULT))
+        );
+        assert!(executor.take_process_action().is_none());
+
+        const CLONE3_ARGS: u64 = 0x200;
+        let mut clone3 = [0_u8; 88];
+        clone3[0..8].copy_from_slice(&flags.to_le_bytes());
+        clone3[16..24].copy_from_slice(&CHILD_TID.to_le_bytes());
+        clone3[24..32].copy_from_slice(&PARENT_TID.to_le_bytes());
+        memory.write(CLONE3_ARGS, &clone3).unwrap();
+        let request = read_clone3(&memory, CLONE3_ARGS, clone3.len() as u64).unwrap();
+        assert_eq!(request.flags, flags);
+        assert_eq!(request.child_stack, None);
+        assert_eq!(request.parent_tid_address, PARENT_TID);
+        assert_eq!(request.child_tid_address, CHILD_TID);
     }
 
     #[test]

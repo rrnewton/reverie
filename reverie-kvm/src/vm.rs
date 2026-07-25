@@ -307,6 +307,9 @@ impl KvmBackend {
             ProcessAction::Fork {
                 child_pid,
                 child_stack,
+                parent_tid,
+                child_tid,
+                clear_child_tid,
             } => {
                 let mut child_executor = executor.fork_child(child_pid)?;
                 set_syscall_return_park(&mut self.memory, self.hypercall_instruction, true)?;
@@ -319,13 +322,24 @@ impl KvmBackend {
                 set_syscall_return_park(&mut self.memory, self.hypercall_instruction, false)?;
                 parked?;
                 let child_snapshot = self.snapshot_process()?;
+                if let Some(address) = parent_tid {
+                    self.memory.write(address, &child_pid.to_le_bytes())?;
+                }
 
                 let mut child = Self::from_process_snapshot(child_snapshot)?;
+                if let Some(address) = child_tid {
+                    child.memory.write(address, &child_pid.to_le_bytes())?;
+                }
                 let (fs_base, gs_base) = child_executor.segment_bases();
                 set_user_segment_base(&child.vcpu, SegmentBase::Fs, fs_base)?;
                 set_user_segment_base(&child.vcpu, SegmentBase::Gs, gs_base)?;
                 configure_process_syscall_return(&child.memory, &child.vcpu, 0, child_stack)?;
                 let (code, stdout, stderr) = child.run_static_elf_process(&mut child_executor)?;
+                if let Some(address) = clear_child_tid {
+                    // A process clone has a private snapshot, so no surviving
+                    // task can observe this clear; preserve the child-side ABI.
+                    let _ = child.memory.zero(address, std::mem::size_of::<i32>());
+                }
                 executor.record_child_exit(child_pid, code);
                 executor.append_output(stdout, stderr);
                 configure_process_syscall_return(
