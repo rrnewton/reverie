@@ -247,6 +247,58 @@ fn compatibility_event_fd_backpressure_fails_without_hanging() {
 }
 
 #[test]
+fn compatibility_event_fd_recovers_when_delayed_reader_drains() {
+    let mut descriptors = [0; 2];
+    assert_eq!(
+        unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) },
+        0
+    );
+    let read_fd = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
+    let write_fd = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
+    let inherited_write_fd = write_fd.as_raw_fd();
+    assert_eq!(
+        unsafe { libc::fcntl(inherited_write_fd, libc::F_SETPIPE_SZ, 4096) },
+        4096
+    );
+
+    let mut command = Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "i=0; while [ \"$i\" -lt 1000 ]; do : > /dev/null; i=$((i + 1)); done",
+        ])
+        .env(COMPAT_EVENT_FD_ENV, inherited_write_fd.to_string())
+        .env(COMPAT_EVENT_COOKIE_ENV, TEST_EVENT_COOKIE.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_command(&mut command, PreloadTool::Compatibility).unwrap();
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(inherited_write_fd, libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = command.spawn().unwrap();
+    drop(write_fd);
+    thread::sleep(Duration::from_millis(250));
+    let reader = thread::spawn(move || {
+        let mut events = Vec::new();
+        File::from(read_fd).read_to_end(&mut events).unwrap();
+        events
+    });
+    let status = child.wait().unwrap();
+    let events = reader.join().unwrap();
+    assert!(status.success(), "{status:?}");
+    assert!(
+        events.len() > 4096,
+        "delayed reader did not drain a full pipe"
+    );
+}
+
+#[test]
 fn compatibility_event_fd_rejects_read_only_descriptor() {
     let mut descriptors = [0; 2];
     assert_eq!(
