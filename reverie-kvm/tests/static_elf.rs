@@ -493,10 +493,15 @@ fn real_bash_redirects_builtin_output_through_f_dupfd() {
     let root = TestDirectory::new();
     let (stdout, stderr) = run_host_program_captured(
         "/bin/bash",
-        &["bash", "--norc", "-c", "printf redirected > output"],
+        &[
+            "bash",
+            "--norc",
+            "-c",
+            "printf redirected > output; printf visible",
+        ],
         &root.0,
     );
-    assert!(stdout.is_empty());
+    assert_eq!(stdout, b"visible");
     assert!(stderr.is_empty());
     assert_eq!(std::fs::read(root.0.join("output")).unwrap(), b"redirected");
 }
