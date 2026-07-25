@@ -13,6 +13,7 @@ use std::ffi::OsString;
 use std::fs::File;
 use std::io;
 use std::io::Read;
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -23,6 +24,9 @@ use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Output;
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 const CLIENT_ENV: &str = "REVERIE_DBI_CLIENT";
 const DYNAMORIO_ENV: &str = "DYNAMORIO_HOME";
@@ -277,18 +281,23 @@ impl DbiRunner {
             }
         };
 
+        if let Err(error) = set_nonblocking(&stdout).and_then(|_| set_nonblocking(&stderr)) {
+            self.terminate_and_reap(&mut child);
+            return Err(error);
+        }
+
         std::thread::scope(|scope| {
-            let stdout_reader = scope.spawn(move || {
-                let mut bytes = Vec::new();
-                stdout.read_to_end(&mut bytes)?;
-                Ok::<_, io::Error>(bytes)
-            });
-            let stderr_reader = scope.spawn(move || {
-                let mut bytes = Vec::new();
-                stderr.read_to_end(&mut bytes)?;
-                Ok::<_, io::Error>(bytes)
-            });
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let stdout_cancelled = Arc::clone(&cancelled);
+            let stderr_cancelled = Arc::clone(&cancelled);
+            let stdout_reader =
+                scope.spawn(move || read_cancellable(&mut stdout, &stdout_cancelled));
+            let stderr_reader =
+                scope.spawn(move || read_cancellable(&mut stderr, &stderr_cancelled));
             let status = self.wait_for_status(child);
+            if status.is_err() {
+                cancelled.store(true, Ordering::Release);
+            }
             let stdout = stdout_reader
                 .join()
                 .map_err(|_| io::Error::other("DBI stdout reader thread panicked"));
@@ -437,6 +446,48 @@ fn resolve_program(
 fn is_executable_file(path: &Path) -> bool {
     path.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+fn set_nonblocking(stream: &impl AsRawFd) -> io::Result<()> {
+    let fd = stream.as_raw_fd();
+    // SAFETY: fd is owned by the live ChildStdout/ChildStderr value.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: F_SETFL updates status flags on the same live descriptor.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn read_cancellable(reader: &mut impl Read, cancelled: &AtomicBool) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "DBI output capture cancelled after process-group cleanup failed",
+            ));
+        }
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(bytes),
+            Ok(read) => bytes.extend_from_slice(&buffer[..read]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "DBI output capture cancelled after process-group cleanup failed",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 // Wait for the group leader to exit without releasing its PID/PGID identity.
@@ -868,6 +919,26 @@ mod tests {
             .output_with_input(&Command::new("/bin/true"), &output.stdout)
             .unwrap();
         assert!(output.status.success());
+    }
+
+    #[test]
+    fn cancellable_output_reader_stops_with_a_live_writer() {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+
+        let (mut reader, mut writer) = UnixStream::pair().unwrap();
+        set_nonblocking(&reader).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(move || while writer.write_all(&[b'x'; 4096]).is_ok() {});
+            let reader_cancelled = Arc::clone(&cancelled);
+            let handle = scope.spawn(move || read_cancellable(&mut reader, &reader_cancelled));
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            cancelled.store(true, Ordering::Release);
+            let error = handle.join().unwrap().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+            writer.join().unwrap();
+        });
     }
 
     #[test]
