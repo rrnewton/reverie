@@ -264,6 +264,12 @@ fn execute_basic_syscall_with_output(
         symlink_at(memory, state, args[0], args[1] as libc::c_int, args[2])
     } else if number == libc::SYS_getcwd as u64 {
         getcwd(memory, state, args)
+    } else if number == libc::SYS_chdir as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        chdir(memory, state, args)
+    } else if number == libc::SYS_fchdir as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        fchdir(state, args)
     } else if number == libc::SYS_getdents64 as u64 {
         getdents64(memory, state, args)
     } else if number == libc::SYS_getpid as u64 || number == libc::SYS_gettid as u64 {
@@ -2180,6 +2186,122 @@ fn getcwd(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
     }
 }
 
+// TODO-HUMAN-REVIEW(reverie-kvm): Review KVM guest chdir/fchdir cwd semantics.
+//
+// `chdir`/`fchdir` update the emulated working directory that `getcwd` reports
+// and that relative-path resolution (`host_dirfd_and_path`) resolves against.
+// Both replace `state.cwd_fd` with a fresh `O_PATH|O_DIRECTORY` handle so cwd
+// identity survives host renames (the same invariant `cwd_fd` had at load), and
+// canonicalize `state.cwd` from that handle so `getcwd` returns a stable, real
+// host path -- deterministic given the same external filesystem.
+fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let path = match read_c_string(memory, args[0], 4096) {
+        Ok(path) => path,
+        Err(error) => return read_c_string_errno(error),
+    };
+    if path.is_empty() {
+        return negative_errno(libc::ENOENT);
+    }
+    let (host_dirfd, path) = match host_dirfd_and_path(state, libc::AT_FDCWD, &path) {
+        Ok(resolved) => resolved,
+        Err(error) => return error,
+    };
+    let directory = match open_cwd_directory(host_dirfd, &path) {
+        Ok(directory) => directory,
+        Err(error) => return error,
+    };
+    set_cwd(state, directory)
+}
+
+fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(file) = state.files.get(&fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    // Rejects non-directories (ENOTDIR) and O_PATH descriptors (EBADF), matching
+    // the kernel's fchdir precondition that the fd be a readable directory.
+    if let Err(error) = ensure_directory(file) {
+        return error;
+    }
+    // Reopen the directory itself ("." relative to the guest's own descriptor)
+    // as an independent O_PATH cwd handle so a later guest `close(fd)` cannot
+    // invalidate the working directory.
+    let directory = match open_cwd_directory(file.as_raw_fd(), c".") {
+        Ok(directory) => directory,
+        Err(error) => return error,
+    };
+    set_cwd(state, directory)
+}
+
+/// Open `path` (relative to `host_dirfd`) as an `O_PATH|O_DIRECTORY` handle
+/// suitable for use as `state.cwd_fd`. `O_DIRECTORY` yields `ENOTDIR` for a
+/// non-directory and procfs is refused, keeping cwd within the same isolation
+/// boundary as [`open_file`].
+fn open_cwd_directory(host_dirfd: RawFd, path: &CStr) -> Result<std::fs::File, i64> {
+    let how = OpenHow {
+        flags: (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS,
+    };
+    // SAFETY: path and how are live for the call; Linux validates host_dirfd.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            host_dirfd,
+            path.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if fd < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: openat2 returned a new owned descriptor on success.
+    let file = unsafe { std::fs::File::from_raw_fd(fd as RawFd) };
+    ensure_not_procfs(&file)?;
+    Ok(file)
+}
+
+/// Commit `directory` as the new working directory, deriving the canonical
+/// `state.cwd` string from the descriptor so `getcwd` stays consistent with it.
+fn set_cwd(state: &mut LoadedStaticElf, directory: std::fs::File) -> i64 {
+    match canonical_fd_path(directory.as_raw_fd()) {
+        Ok(path) => {
+            state.cwd = path;
+            state.cwd_fd = directory;
+            0
+        }
+        Err(error) => error,
+    }
+}
+
+/// Resolve the canonical absolute path a descriptor refers to via the
+/// supervisor's own `/proc/self/fd`. This is a host-side operation on a
+/// supervisor descriptor (like the existing `link_at`/`utimensat` fallbacks),
+/// not a guest-visible procfs access.
+fn canonical_fd_path(fd: RawFd) -> Result<std::path::PathBuf, i64> {
+    let proc_path =
+        CString::new(format!("/proc/self/fd/{fd}")).map_err(|_| negative_errno(libc::EINVAL))?;
+    let mut buffer = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: proc_path is NUL-terminated and buffer is writable for its length.
+    let count = unsafe {
+        libc::readlink(
+            proc_path.as_ptr(),
+            buffer.as_mut_ptr().cast::<libc::c_char>(),
+            buffer.len(),
+        )
+    };
+    if count < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    buffer.truncate(count as usize);
+    Ok(std::path::PathBuf::from(std::ffi::OsString::from_vec(
+        buffer,
+    )))
+}
+
 fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
@@ -3348,6 +3470,207 @@ mod tests {
         let mut bytes = value.as_bytes().to_vec();
         bytes.push(0);
         memory.write(address, &bytes).unwrap();
+    }
+
+    /// Read the emulated working directory back through `getcwd`.
+    fn current_directory(memory: &mut GuestMemory, state: &mut LoadedStaticElf) -> PathBuf {
+        let buffer_address = 0x800;
+        let result = syscall_result(
+            memory,
+            state,
+            libc::SYS_getcwd,
+            [buffer_address, 0x400, 0, 0, 0, 0],
+        );
+        assert!(result > 0, "getcwd failed: {result}");
+        let mut bytes = vec![0u8; result as usize];
+        memory.read(buffer_address, &mut bytes).unwrap();
+        // getcwd includes the trailing NUL in its returned length.
+        assert_eq!(bytes.pop(), Some(0));
+        PathBuf::from(std::ffi::OsString::from_vec(bytes))
+    }
+
+    #[test]
+    fn chdir_updates_cwd_and_resolves_relative_paths() {
+        let root = TestDir::new();
+        std::fs::create_dir(root.0.join("sub")).unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+
+        // Relative chdir into an existing subdirectory.
+        write_c_string(&mut memory, 0x100, "sub");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let expected = std::fs::canonicalize(root.0.join("sub")).unwrap();
+        assert_eq!(current_directory(&mut memory, &mut state), expected);
+
+        // A relative create now resolves against the new working directory.
+        write_c_string(&mut memory, 0x100, "created");
+        let fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                0x100,
+                (libc::O_CREAT | libc::O_WRONLY) as u64,
+                0o644,
+                0,
+                0,
+            ],
+        );
+        assert!(fd >= 0, "openat failed: {fd}");
+        assert!(root.0.join("sub").join("created").exists());
+
+        // Absolute chdir back to the root.
+        let root_path = std::fs::canonicalize(&root.0).unwrap();
+        write_c_string(&mut memory, 0x100, root_path.to_str().unwrap());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(current_directory(&mut memory, &mut state), root_path);
+    }
+
+    #[test]
+    fn chdir_rejects_missing_and_nondirectory_targets() {
+        let root = TestDir::new();
+        std::fs::write(root.0.join("file"), b"x").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        write_c_string(&mut memory, 0x100, "missing");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+
+        write_c_string(&mut memory, 0x100, "file");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOTDIR)
+        );
+
+        // chdir("") is ENOENT, matching Linux.
+        write_c_string(&mut memory, 0x100, "");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+    }
+
+    #[test]
+    fn fchdir_follows_open_directory_descriptor() {
+        let root = TestDir::new();
+        std::fs::create_dir(root.0.join("sub")).unwrap();
+        std::fs::write(root.0.join("sub").join("inside"), b"y").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+
+        // fchdir onto a regular-file descriptor is ENOTDIR; a stale fd is EBADF.
+        write_c_string(&mut memory, 0x100, "sub/inside");
+        let file_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+        );
+        assert!(file_fd >= 0, "openat file failed: {file_fd}");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchdir,
+                [file_fd as u64, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOTDIR)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchdir,
+                [9999, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+
+        // Open the subdirectory as a guest directory descriptor and fchdir to it.
+        write_c_string(&mut memory, 0x100, "sub");
+        let dir_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                0x100,
+                (libc::O_RDONLY | libc::O_DIRECTORY) as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(dir_fd >= 0, "openat dir failed: {dir_fd}");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchdir,
+                [dir_fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let expected = std::fs::canonicalize(root.0.join("sub")).unwrap();
+        assert_eq!(current_directory(&mut memory, &mut state), expected);
+
+        // The cwd handle is independent of the source fd: closing it leaves the
+        // working directory usable for later relative resolution.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [dir_fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        write_c_string(&mut memory, 0x100, "inside");
+        let reopened = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+        );
+        assert!(
+            reopened >= 0,
+            "relative open after close failed: {reopened}"
+        );
     }
 
     #[test]
