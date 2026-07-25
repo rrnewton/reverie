@@ -379,6 +379,39 @@ fn fork_child_inherits_preload_instrumentation() {
 }
 
 #[test]
+fn compatibility_fork_reports_clone_only_from_parent() {
+    let (output, events) =
+        run_compat_guest_with_event_pipe(env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest"), &[]);
+    assert!(
+        output.status.success(),
+        "status={:?}\nstdout={}\nstderr={}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let events = String::from_utf8(events).unwrap();
+    let clone_suffix = format!(" syscall={}", libc::SYS_clone);
+    assert_eq!(
+        events
+            .lines()
+            .filter(|line| line.ends_with(&clone_suffix))
+            .count(),
+        1,
+        "successful clone must have one parent-owned compatibility event:\n{events}"
+    );
+    let pids: BTreeSet<_> = events
+        .lines()
+        .filter_map(|line| line.split_once(" pid=")?.1.split_once(" syscall="))
+        .map(|(pid, _)| pid)
+        .collect();
+    assert!(
+        pids.len() >= 2,
+        "child instrumentation events are missing: {pids:?}\n{events}"
+    );
+}
+
+#[test]
 fn exec_fails_closed_before_runtime_is_replaced() {
     let output = run_guest(env!("CARGO_BIN_EXE_reverie-liteinst-exec-guest"), &[]);
     assert!(
