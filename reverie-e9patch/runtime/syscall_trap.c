@@ -17,4 +17,3 @@ reverie_e9patch_syscall(void *state __attribute__((unused))) {
                    "int3\n\t"
                    "ret\n\t");
 }
-

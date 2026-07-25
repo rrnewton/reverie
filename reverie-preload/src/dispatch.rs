@@ -142,7 +142,7 @@ impl PassthroughDispatcher {
     /// These mirror the boundaries established by `research-ldpreload-derisking`:
     /// an inherited TRAP filter cannot safely cross `execve`, cannot resume a
     /// non-null-stack `clone`, and must keep `SIGSYS` reserved.
-    fn apply_guards(event: &mut SyscallEvent) -> bool {
+    pub(crate) fn apply_guards(event: &mut SyscallEvent) -> bool {
         let number = event.number();
         let args = event.args();
 
@@ -157,6 +157,19 @@ impl PassthroughDispatcher {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // Keep SIGSYS reserved for the runtime until disposition is virtualized.
         if number == libc::SYS_rt_sigaction && signal::is_reserved(args[0] as i32) {
+            event.fail(libc::EPERM);
+            return true;
+        }
+
+        // The SIGSYS trap depends on the runtime-owned alternate stack and on
+        // SIGSYS remaining unblocked. Queries are harmless, as is explicitly
+        // unblocking signals; reject mutations that could displace either.
+        if number == libc::SYS_sigaltstack && args[0] != 0 {
+            event.fail(libc::EPERM);
+            return true;
+        }
+        if number == libc::SYS_rt_sigprocmask && args[1] != 0 && args[0] as i32 != libc::SIG_UNBLOCK
+        {
             event.fail(libc::EPERM);
             return true;
         }
@@ -225,6 +238,38 @@ mod tests {
         let mut event = SyscallEvent::new(libc::SYS_rt_sigaction, args, 0);
         assert!(PassthroughDispatcher::apply_guards(&mut event));
         assert_eq!(event.result(), Some(-i64::from(libc::EPERM)));
+    }
+
+    #[test]
+    fn signal_mask_mutation_is_guarded_but_unblock_and_query_are_not() {
+        let mut mutation_args = [0; 6];
+        mutation_args[0] = libc::SIG_BLOCK as u64;
+        mutation_args[1] = 0xdead_beef;
+        let mut mutation = SyscallEvent::new(libc::SYS_rt_sigprocmask, mutation_args, 0);
+        assert!(PassthroughDispatcher::apply_guards(&mut mutation));
+        assert_eq!(mutation.result(), Some(-i64::from(libc::EPERM)));
+
+        let mut unblock_args = mutation_args;
+        unblock_args[0] = libc::SIG_UNBLOCK as u64;
+        let mut unblock = SyscallEvent::new(libc::SYS_rt_sigprocmask, unblock_args, 0);
+        assert!(!PassthroughDispatcher::apply_guards(&mut unblock));
+
+        let mut query_args = mutation_args;
+        query_args[1] = 0;
+        let mut query = SyscallEvent::new(libc::SYS_rt_sigprocmask, query_args, 0);
+        assert!(!PassthroughDispatcher::apply_guards(&mut query));
+    }
+
+    #[test]
+    fn alternate_stack_mutation_is_guarded_but_query_is_not() {
+        let mut mutation_args = [0; 6];
+        mutation_args[0] = 0xdead_beef;
+        let mut mutation = SyscallEvent::new(libc::SYS_sigaltstack, mutation_args, 0);
+        assert!(PassthroughDispatcher::apply_guards(&mut mutation));
+        assert_eq!(mutation.result(), Some(-i64::from(libc::EPERM)));
+
+        let mut query = SyscallEvent::new(libc::SYS_sigaltstack, [0; 6], 0);
+        assert!(!PassthroughDispatcher::apply_guards(&mut query));
     }
 
     #[test]
