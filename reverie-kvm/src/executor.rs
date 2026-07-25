@@ -1132,6 +1132,18 @@ fn open_file(
     if path.is_empty() {
         return negative_errno(libc::ENOENT);
     }
+    // Serve the synthetic /proc surface before touching the host filesystem, so
+    // deterministic content replaces the deliberately-refused real procfs.
+    if let Some(content) = synthetic_proc_content(state, &path) {
+        let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
+        if flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64 {
+            return negative_errno(libc::EACCES);
+        }
+        let normalized =
+            normalize_proc_path(state, &path).expect("a synthesized /proc path always normalizes");
+        let close_on_exec = flags & libc::O_CLOEXEC as u64 != 0;
+        return open_synthetic_proc(state, &normalized, &content, close_on_exec);
+    }
     let Ok((host_dirfd, path)) = host_dirfd_and_path(state, guest_dirfd, &path) else {
         return negative_errno(libc::EBADF);
     };
@@ -1569,7 +1581,11 @@ fn fstat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         return io_error(std::io::Error::last_os_error());
     }
     // SAFETY: fstat initialized stat on success.
-    write_struct(memory, args[1], &unsafe { stat.assume_init() })
+    let mut stat = unsafe { stat.assume_init() };
+    if let Some(&inode) = state.proc_files.get(&fd) {
+        sanitize_proc_stat(&mut stat, inode);
+    }
+    write_struct(memory, args[1], &stat)
 }
 
 fn path_stat(
@@ -1611,6 +1627,15 @@ fn fstatat_impl(
     if path.is_empty() && flags & libc::AT_EMPTY_PATH == 0 {
         return negative_errno(libc::ENOENT);
     }
+    // Path-addressed synthetic /proc file: synthesize deterministic metadata.
+    // synthetic_proc_content returns None for an empty path, so no explicit
+    // AT_EMPTY_PATH guard is needed here.
+    if let Some(content) = synthetic_proc_content(state, &path) {
+        let normalized =
+            normalize_proc_path(state, &path).expect("a synthesized /proc path always normalizes");
+        let stat = synthetic_proc_stat(synthetic_proc_inode(&normalized), content.len());
+        return write_struct(memory, output_address, &stat);
+    }
 
     let opened_file;
     let host_fd = if path.is_empty() {
@@ -1640,7 +1665,16 @@ fn fstatat_impl(
         return io_error(std::io::Error::last_os_error());
     }
     // SAFETY: fstat initialized stat on success.
-    write_struct(memory, output_address, &unsafe { stat.assume_init() })
+    let mut stat = unsafe { stat.assume_init() };
+    // AT_EMPTY_PATH stat of a synthetic /proc descriptor (path is empty here).
+    let empty_path_proc_inode = path
+        .is_empty()
+        .then(|| state.proc_files.get(&guest_dirfd).copied())
+        .flatten();
+    if let Some(inode) = empty_path_proc_inode {
+        sanitize_proc_stat(&mut stat, inode);
+    }
+    write_struct(memory, output_address, &stat)
 }
 
 fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -1658,6 +1692,32 @@ fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     }
     if path.is_empty() && flags & libc::AT_EMPTY_PATH == 0 {
         return negative_errno(libc::ENOENT);
+    }
+    // Path-addressed synthetic /proc file: synthesize deterministic metadata.
+    if !path.is_empty() {
+        if let Some(content) = synthetic_proc_content(state, &path) {
+            let normalized = normalize_proc_path(state, &path)
+                .expect("a synthesized /proc path always normalizes");
+            let stx = synthetic_proc_statx(synthetic_proc_inode(&normalized), content.len() as u64);
+            return write_struct(memory, args[4], &stx);
+        }
+    } else if let Some(&inode) = state.proc_files.get(&(args[0] as libc::c_int)) {
+        // AT_EMPTY_PATH statx of a synthetic /proc descriptor: report the memfd's
+        // (deterministic) size with synthesized identity.
+        let size = match host_fd(state, args[0] as libc::c_int) {
+            Some(host_fd) => {
+                let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+                // SAFETY: stat is writable and host_fd is a live memfd descriptor.
+                if unsafe { libc::fstat(host_fd, stat.as_mut_ptr()) } != 0 {
+                    return io_error(std::io::Error::last_os_error());
+                }
+                // SAFETY: fstat initialized stat on success.
+                unsafe { stat.assume_init() }.st_size as u64
+            }
+            None => return negative_errno(libc::EBADF),
+        };
+        let stx = synthetic_proc_statx(inode, size);
+        return write_struct(memory, args[4], &stx);
     }
 
     let opened_file;
@@ -1751,6 +1811,14 @@ fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
     };
     if path.is_empty() {
         return negative_errno(libc::ENOENT);
+    }
+    // Synthetic /proc files exist and are world-readable but never writable or
+    // executable, matching the read-only surface open_file serves.
+    if synthetic_proc_content(state, &path).is_some() {
+        if mode & (libc::W_OK | libc::X_OK) != 0 {
+            return negative_errno(libc::EACCES);
+        }
+        return 0;
     }
     let file = match open_metadata_path(state, libc::AT_FDCWD, &path, false) {
         Ok(file) => file,
@@ -2302,6 +2370,261 @@ fn canonical_fd_path(fd: RawFd) -> Result<std::path::PathBuf, i64> {
     )))
 }
 
+// ===== Synthetic /proc surface =====
+//
+// TODO-HUMAN-REVIEW(reverie-kvm): Review synthetic /proc content and determinism.
+//
+// Real procfs is refused (see `ensure_not_procfs`) because its contents are
+// host-specific and would break `--verify`. To still support programs that read
+// a few well-known /proc files (uptime, diagnostics, self-inspection), a small
+// allowlist is synthesized with DETERMINISTIC content and served from a memfd,
+// so the ordinary read/lseek/close/dup/fork paths apply unchanged. `fstat`,
+// `newfstatat`, and `statx` on such a descriptor report synthesized, run-stable
+// metadata, because the backing memfd's own inode varies per run and would
+// otherwise perturb determinism. Directory enumeration of /proc itself is not
+// provided, so tools that scan every PID (e.g. `ps`) are out of scope here.
+const SYNTHETIC_PROC_DEV: u64 = 0x00ff_0001;
+
+/// Deterministic inode for a normalized synthetic /proc path (FNV-1a). Stable
+/// across runs so `--verify` sees identical `stat` results.
+fn synthetic_proc_inode(path: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in path {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    // Keep clear of low, conventionally-reserved inode numbers.
+    hash | 0x1000
+}
+
+/// Rewrite a `/proc/<pid>` path (for this guest's own pid) to the canonical
+/// `/proc/self` form so both spellings resolve to the same synthetic content.
+fn normalize_proc_path(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> {
+    if path != b"/proc" && !path.starts_with(b"/proc/") {
+        return None;
+    }
+    let pid = format!("/proc/{}", state.pid).into_bytes();
+    if path == pid.as_slice() {
+        return Some(b"/proc/self".to_vec());
+    }
+    let mut pid_dir = pid;
+    pid_dir.push(b'/');
+    if let Some(rest) = path.strip_prefix(pid_dir.as_slice()) {
+        let mut normalized = b"/proc/self/".to_vec();
+        normalized.extend_from_slice(rest);
+        return Some(normalized);
+    }
+    Some(path.to_vec())
+}
+
+/// Synthesize deterministic content for a recognized /proc path, or `None` when
+/// the path is not part of the supported surface.
+fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> {
+    let normalized = normalize_proc_path(state, path)?;
+    let content = match normalized.as_slice() {
+        b"/proc/uptime" => b"0.00 0.00\n".to_vec(),
+        b"/proc/loadavg" => b"0.00 0.00 0.00 1/1 1\n".to_vec(),
+        b"/proc/version" => b"Linux version 6.0.0 (reverie-kvm) #1 SMP x86_64\n".to_vec(),
+        b"/proc/filesystems" => b"nodev\tproc\nnodev\ttmpfs\n\text4\n".to_vec(),
+        b"/proc/mounts" | b"/proc/self/mounts" => b"rootfs / rootfs rw 0 0\n".to_vec(),
+        b"/proc/stat" => concat!(
+            "cpu  0 0 0 0 0 0 0 0 0 0\n",
+            "cpu0 0 0 0 0 0 0 0 0 0 0\n",
+            "intr 0\n",
+            "ctxt 0\n",
+            "btime 0\n",
+            "processes 1\n",
+            "procs_running 1\n",
+            "procs_blocked 0\n",
+        )
+        .as_bytes()
+        .to_vec(),
+        b"/proc/meminfo" => concat!(
+            "MemTotal:        2097152 kB\n",
+            "MemFree:         1048576 kB\n",
+            "MemAvailable:    1572864 kB\n",
+            "Buffers:               0 kB\n",
+            "Cached:                0 kB\n",
+            "SwapTotal:             0 kB\n",
+            "SwapFree:              0 kB\n",
+        )
+        .as_bytes()
+        .to_vec(),
+        b"/proc/cpuinfo" => concat!(
+            "processor\t: 0\n",
+            "vendor_id\t: GenuineIntel\n",
+            "cpu family\t: 6\n",
+            "model\t\t: 0\n",
+            "model name\t: reverie-kvm virtual CPU\n",
+            "cpu MHz\t\t: 1000.000\n",
+            "cache size\t: 0 KB\n",
+            "physical id\t: 0\n",
+            "siblings\t: 1\n",
+            "core id\t\t: 0\n",
+            "cpu cores\t: 1\n",
+            "flags\t\t: fpu\n",
+            "\n",
+        )
+        .as_bytes()
+        .to_vec(),
+        b"/proc/self/stat" => proc_self_stat_content(state),
+        b"/proc/self/status" => proc_self_status_content(state),
+        b"/proc/self/cmdline" => proc_self_cmdline_content(state),
+        _ => return None,
+    };
+    Some(content)
+}
+
+/// The kernel's `comm`: the program basename, capped at 15 bytes.
+fn proc_comm(state: &LoadedStaticElf) -> String {
+    let base = state
+        .argv0
+        .rsplit(|byte| *byte == b'/')
+        .next()
+        .unwrap_or(&state.argv0);
+    String::from_utf8_lossy(&base.iter().copied().take(15).collect::<Vec<u8>>()).into_owned()
+}
+
+fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
+    // Minimal: argv[0] followed by a NUL. reverie-kvm does not retain the full
+    // guest argv here, so consumers needing the complete command line get only
+    // argv[0]; the common "who am I" use is satisfied and the file is
+    // NUL-terminated like the kernel's.
+    let mut content = state.argv0.clone();
+    content.push(0);
+    content
+}
+
+fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
+    // pid (comm) state ppid ... The fields after ppid are process-accounting
+    // values reported as zero so no nondeterministic host state leaks. The real
+    // file has 52 fields; pad with zeros so field-counting parsers are satisfied.
+    let mut line = format!(
+        "{} ({}) R {} 0 0 0 -1 0",
+        state.pid,
+        proc_comm(state),
+        state.ppid
+    );
+    for _ in 0..44 {
+        line.push_str(" 0");
+    }
+    line.push('\n');
+    line.into_bytes()
+}
+
+fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
+    format!(
+        "Name:\t{comm}\n\
+         Umask:\t{umask:04o}\n\
+         State:\tR (running)\n\
+         Tgid:\t{pid}\n\
+         Ngid:\t0\n\
+         Pid:\t{pid}\n\
+         PPid:\t{ppid}\n\
+         TracerPid:\t0\n\
+         Uid:\t0\t0\t0\t0\n\
+         Gid:\t0\t0\t0\t0\n\
+         FDSize:\t64\n\
+         Threads:\t1\n",
+        comm = proc_comm(state),
+        umask = state.umask,
+        pid = state.pid,
+        ppid = state.ppid,
+    )
+    .into_bytes()
+}
+
+/// Back a synthesized /proc file with a memfd holding `content` and record it in
+/// `proc_files` so `fstat`/`statx` report deterministic metadata.
+fn open_synthetic_proc(
+    state: &mut LoadedStaticElf,
+    normalized_path: &[u8],
+    content: &[u8],
+    close_on_exec: bool,
+) -> i64 {
+    // SAFETY: the name is a valid NUL-terminated C string.
+    let raw = unsafe {
+        libc::memfd_create(
+            c"reverie-kvm-proc".as_ptr(),
+            libc::MFD_CLOEXEC as libc::c_uint,
+        )
+    };
+    if raw < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: memfd_create returned a new owned descriptor on success.
+    let mut file = unsafe { std::fs::File::from_raw_fd(raw as RawFd) };
+    if file.write_all(content).is_err() {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: file owns a live descriptor; rewind so the guest reads from zero.
+    if unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_SET) } < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let inode = synthetic_proc_inode(normalized_path);
+    let guest_fd = insert_file_with_flags(state, file, close_on_exec, None);
+    if guest_fd >= 0 {
+        state.proc_files.insert(guest_fd as i32, inode);
+    }
+    guest_fd
+}
+
+/// Overwrite the nondeterministic fields of a memfd `stat` with the stable
+/// synthetic identity of a /proc file, keeping the (deterministic) size.
+fn sanitize_proc_stat(stat: &mut libc::stat, inode: u64) {
+    stat.st_dev = SYNTHETIC_PROC_DEV;
+    stat.st_ino = inode;
+    stat.st_mode = libc::S_IFREG | 0o444;
+    stat.st_nlink = 1;
+    stat.st_uid = 0;
+    stat.st_gid = 0;
+    stat.st_rdev = 0;
+    stat.st_blksize = PAGE_SIZE as libc::blksize_t;
+    // 512-byte blocks, rounded up. A shift avoids the still-unstable
+    // int_roundings `div_ceil` on the pinned toolchain (512 == 1 << 9).
+    stat.st_blocks = (stat.st_size + 511) >> 9;
+    stat.st_atime = 0;
+    stat.st_atime_nsec = 0;
+    stat.st_mtime = 0;
+    stat.st_mtime_nsec = 0;
+    stat.st_ctime = 0;
+    stat.st_ctime_nsec = 0;
+}
+
+/// A fully synthetic `stat` for a path-addressed /proc file of `size` bytes.
+fn synthetic_proc_stat(inode: u64, size: usize) -> libc::stat {
+    // SAFETY: libc::stat is plain-old-data; a zeroed value is valid.
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    stat.st_size = size as libc::off_t;
+    sanitize_proc_stat(&mut stat, inode);
+    stat
+}
+
+/// A synthetic `statx` mirroring [`synthetic_proc_stat`].
+fn synthetic_proc_statx(inode: u64, size: u64) -> libc::statx {
+    // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
+    let mut stx = unsafe { std::mem::zeroed::<libc::statx>() };
+    stx.stx_mask = libc::STATX_TYPE
+        | libc::STATX_MODE
+        | libc::STATX_NLINK
+        | libc::STATX_UID
+        | libc::STATX_GID
+        | libc::STATX_INO
+        | libc::STATX_SIZE
+        | libc::STATX_BLOCKS;
+    stx.stx_blksize = PAGE_SIZE as u32;
+    stx.stx_nlink = 1;
+    stx.stx_uid = 0;
+    stx.stx_gid = 0;
+    stx.stx_mode = (libc::S_IFREG | 0o444) as u16;
+    stx.stx_ino = inode;
+    stx.stx_size = size;
+    stx.stx_blocks = (size + 511) >> 9;
+    stx.stx_dev_major = 0;
+    stx.stx_dev_minor = SYNTHETIC_PROC_DEV as u32;
+    stx
+}
+
 fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
@@ -2429,6 +2752,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
     };
     if state.files.remove(&fd).is_some() {
         state.cloexec_fds.remove(&fd);
+        state.proc_files.remove(&fd);
         set_output_alias(state, fd, None);
         return 0;
     }
@@ -2788,6 +3112,15 @@ fn readlink(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     if path == b"/proc/self/exe" {
         let count = capacity.min(state.argv0.len());
         return match memory.write(args[1], &state.argv0[..count]) {
+            Ok(()) => count as i64,
+            Err(_) => negative_errno(libc::EFAULT),
+        };
+    }
+    // /proc/self (and /proc/<pid>) is a symlink to the numeric pid directory.
+    if path == b"/proc/self" || path == format!("/proc/{}", state.pid).as_bytes() {
+        let target = state.pid.to_string().into_bytes();
+        let count = capacity.min(target.len());
+        return match memory.write(args[1], &target[..count]) {
             Ok(()) => count as i64,
             Err(_) => negative_errno(libc::EFAULT),
         };
@@ -3429,6 +3762,7 @@ mod tests {
             cloexec_fds: BTreeSet::new(),
             closed_standard_fds: BTreeSet::new(),
             children: BTreeMap::new(),
+            proc_files: BTreeMap::new(),
         }
     }
 
@@ -3671,6 +4005,182 @@ mod tests {
             reopened >= 0,
             "relative open after close failed: {reopened}"
         );
+    }
+
+    fn open_readonly(memory: &mut GuestMemory, state: &mut LoadedStaticElf, path: &str) -> i64 {
+        write_c_string(memory, 0x100, path);
+        syscall_result(
+            memory,
+            state,
+            libc::SYS_openat,
+            [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+        )
+    }
+
+    fn read_fd_to_end(memory: &mut GuestMemory, state: &mut LoadedStaticElf, fd: i64) -> Vec<u8> {
+        let buffer = 0x1000;
+        let mut content = Vec::new();
+        loop {
+            let n = syscall_result(
+                memory,
+                state,
+                libc::SYS_read,
+                [fd as u64, buffer, 0x400, 0, 0, 0],
+            );
+            assert!(n >= 0, "read failed: {n}");
+            if n == 0 {
+                break;
+            }
+            let mut chunk = vec![0u8; n as usize];
+            memory.read(buffer, &mut chunk).unwrap();
+            content.extend_from_slice(&chunk);
+        }
+        content
+    }
+
+    #[test]
+    fn synthetic_proc_files_serve_deterministic_content() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert!(fd >= 0, "open /proc/uptime failed: {fd}");
+        assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"0.00 0.00\n");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // The descriptor is no longer tracked once closed.
+        assert!(state.proc_files.is_empty());
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/meminfo");
+        assert!(fd >= 0);
+        let content = read_fd_to_end(&mut memory, &mut state, fd);
+        assert!(
+            content.starts_with(b"MemTotal:"),
+            "{}",
+            String::from_utf8_lossy(&content)
+        );
+    }
+
+    #[test]
+    fn synthetic_proc_self_reflects_guest_identity() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0); // pid=1, ppid=0, argv0="test"
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/self/stat");
+        let stat = read_fd_to_end(&mut memory, &mut state, fd);
+        assert!(
+            String::from_utf8_lossy(&stat).starts_with("1 (test) R 0 "),
+            "{}",
+            String::from_utf8_lossy(&stat)
+        );
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/self/cmdline");
+        assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"test\0");
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/self/status");
+        let status = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
+        assert!(status.contains("Pid:\t1\n"), "{status}");
+        assert!(status.contains("PPid:\t0\n"), "{status}");
+
+        // /proc/<pid> aliases /proc/self for this guest's own pid.
+        let fd = open_readonly(&mut memory, &mut state, "/proc/1/cmdline");
+        assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"test\0");
+    }
+
+    #[test]
+    fn synthetic_proc_metadata_is_synthetic_and_stable() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        // fstat of an open synthetic descriptor reports synthesized identity.
+        let fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        let stat_address = 0x1000;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fstat,
+                [fd as u64, stat_address, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let stat: libc::stat = read_struct(&memory, stat_address);
+        assert_eq!(stat.st_mode, libc::S_IFREG | 0o444);
+        assert_eq!(stat.st_ino, synthetic_proc_inode(b"/proc/uptime"));
+        assert_eq!(stat.st_dev, SYNTHETIC_PROC_DEV);
+        assert_eq!(stat.st_size, b"0.00 0.00\n".len() as libc::off_t);
+        assert_eq!(stat.st_uid, 0);
+        assert_eq!(stat.st_mtime, 0);
+
+        // A path-addressed newfstatat yields the identical synthetic identity.
+        write_c_string(&mut memory, 0x100, "/proc/uptime");
+        let path_stat_address = 0x1200;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_newfstatat,
+                [libc::AT_FDCWD as u64, 0x100, path_stat_address, 0, 0, 0]
+            ),
+            0
+        );
+        let path_stat: libc::stat = read_struct(&memory, path_stat_address);
+        assert_eq!(path_stat.st_ino, stat.st_ino);
+        assert_eq!(path_stat.st_size, stat.st_size);
+        assert_eq!(path_stat.st_mode, stat.st_mode);
+    }
+
+    #[test]
+    fn synthetic_proc_rejects_writes_and_ignores_unlisted_paths() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // A writable open of a synthetic file is refused.
+        write_c_string(&mut memory, 0x100, "/proc/uptime");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_openat,
+                [libc::AT_FDCWD as u64, 0x100, libc::O_WRONLY as u64, 0, 0, 0]
+            ),
+            negative_errno(libc::EACCES)
+        );
+
+        // access() reports the read-only surface.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_access,
+                [0x100, libc::R_OK as u64, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_access,
+                [0x100, libc::W_OK as u64, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EACCES)
+        );
+
+        // An unlisted /proc path is not part of the synthesized surface.
+        assert!(synthetic_proc_content(&state, b"/proc/self/maps").is_none());
+        assert!(synthetic_proc_content(&state, b"/etc/passwd").is_none());
     }
 
     #[test]
