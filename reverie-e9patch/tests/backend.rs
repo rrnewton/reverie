@@ -19,6 +19,7 @@ use reverie::Subscription;
 use reverie::Tid;
 use reverie::Tool;
 use reverie::process::Command;
+use reverie::process::Stdio;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
@@ -101,12 +102,13 @@ impl Tool for InjectGetpid {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires a built e9tool/e9patch pair and direct-syscall guest"]
 async fn rewritten_syscall_is_delivered_and_emulated() {
-    let (status, global) =
-        E9patchBackend::run::<EmulateGetpid>(Command::new(direct_syscall_guest()), ())
-            .await
-            .unwrap();
+    let mut command = Command::new(direct_syscall_guest());
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let (output, global) = E9patchBackend::run_with_output::<EmulateGetpid>(command, ())
+        .await
+        .unwrap();
     assert_eq!(global.delivered.load(Ordering::SeqCst), 1);
-    assert_eq!(status, ExitStatus::Exited(0));
+    assert_eq!(output.status, ExitStatus::Exited(0));
 }
 
 #[tokio::test(flavor = "current_thread")]

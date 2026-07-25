@@ -18,6 +18,8 @@ use reverie::ExitStatus;
 use reverie::GlobalTool;
 use reverie::Tool;
 use reverie::process::Command;
+use reverie::process::Output;
+use reverie_ptrace::Tracer;
 use reverie_ptrace::TracerBuilder;
 
 use crate::E9PATCH_SYSCALL_TRAP_MARKER;
@@ -33,12 +35,11 @@ use crate::E9patchRewriter;
 // TODO-HUMAN-REVIEW(PR-102): Review the public hybrid backend contract.
 pub struct E9patchBackend;
 
-#[reverie::backend(?Send)]
-impl Backend for E9patchBackend {
-    async fn run<T>(
+impl E9patchBackend {
+    async fn spawn<T>(
         mut command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
-    ) -> Result<(ExitStatus, T::GlobalState), Error>
+    ) -> Result<(Tracer<T::GlobalState>, tempfile::TempPath), Error>
     where
         T: Tool + 'static,
     {
@@ -66,6 +67,35 @@ impl Backend for E9patchBackend {
             .injected_syscall_trap(E9PATCH_SYSCALL_TRAP_MARKER)
             .spawn()
             .await?;
+        Ok((tracer, executable))
+    }
+
+    /// Runs a tool and captures the rewritten guest's stdout and stderr.
+    // TODO-HUMAN-REVIEW(PR-102): Review the public captured-output backend API.
+    pub async fn run_with_output<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(Output, T::GlobalState), Error>
+    where
+        T: Tool + 'static,
+    {
+        let (tracer, executable) = Self::spawn::<T>(command, config).await?;
+        let result = tracer.wait_with_output().await;
+        drop(executable);
+        result
+    }
+}
+
+#[reverie::backend(?Send)]
+impl Backend for E9patchBackend {
+    async fn run<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(ExitStatus, T::GlobalState), Error>
+    where
+        T: Tool + 'static,
+    {
+        let (tracer, executable) = Self::spawn::<T>(command, config).await?;
         let result = tracer.wait().await;
         drop(executable);
         result
