@@ -375,7 +375,13 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
 
     event.result = unsafe { raw_syscall6(event.number, event.args) };
 
-    if event.number != libc::SYS_exit && event.number != libc::SYS_exit_group {
+    let compatibility_child_clone = TOOL_MODE.load(Ordering::Relaxed) == TOOL_COMPAT
+        && event.number == libc::SYS_clone
+        && event.result == 0;
+    if event.number != libc::SYS_exit
+        && event.number != libc::SYS_exit_group
+        && !compatibility_child_clone
+    {
         unsafe {
             trace_event(event, Some(event.result));
         }
