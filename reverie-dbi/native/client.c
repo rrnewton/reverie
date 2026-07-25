@@ -107,12 +107,13 @@ typedef struct {
   reverie_emit_fn_t emit;
   reverie_idle_fn_t idle;
   int32_t panic_on_unsupported_syscalls;
+  int32_t unsupported_report_fd;
 } runtime_callbacks_t;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#90): Confirm diagnostic fd ownership across exec.
 // Inherited from the launcher so guest stderr redirections cannot capture it.
 static file_t diagnostic_file;
-static int unsupported_report_app_fd = -1;
+static char unsupported_report_path[4096];
 static file_t unsupported_report_file = INVALID_FILE;
 static void reverie_dbi_emit(const char *buf, size_t len) {
   dr_write_file(diagnostic_file, buf, len);
@@ -899,63 +900,7 @@ static void report_copied_unsupported_syscall(int sysnum) {
     dr_fprintf(unsupported_report_file, "@%d\n", sysnum);
 }
 
-static bool protect_unsupported_report_transport(void *drcontext, int sysnum) {
-  if (unsupported_report_app_fd < 0)
-    return false;
-  if (sysnum == SYS_close &&
-      (int)dr_syscall_get_param(drcontext, 0) == unsupported_report_app_fd) {
-    dr_syscall_set_result(drcontext, 0);
-    return true;
-  }
-#if defined(SYS_dup2) || defined(SYS_dup3)
-  if (
-#ifdef SYS_dup2
-      sysnum == SYS_dup2 ||
-#endif
-#ifdef SYS_dup3
-      sysnum == SYS_dup3 ||
-#endif
-      false) {
-    int target = (int)dr_syscall_get_param(drcontext, 1);
-    if (target == unsupported_report_app_fd) {
-      dr_syscall_set_result(drcontext, (reg_t)target);
-      return true;
-    }
-  }
-#endif
-  if (sysnum == SYS_fcntl &&
-      (int)dr_syscall_get_param(drcontext, 0) == unsupported_report_app_fd &&
-      (int)dr_syscall_get_param(drcontext, 1) == F_SETFD) {
-    dr_syscall_set_result(drcontext, 0);
-    return true;
-  }
-#ifdef SYS_close_range
-  if (sysnum == SYS_close_range) {
-    uint64_t first = (uint64_t)dr_syscall_get_param(drcontext, 0);
-    uint64_t last = (uint64_t)dr_syscall_get_param(drcontext, 1);
-    uint64_t flags = (uint64_t)dr_syscall_get_param(drcontext, 2);
-    uint64_t report = (uint64_t)unsupported_report_app_fd;
-    if (first <= report && report <= last) {
-      int64_t result = 0;
-      uint64_t args[6] = {first, report - 1, flags, 0, 0, 0};
-      if (first < report)
-        result = invoke_syscall((uintptr_t)drcontext, SYS_close_range, args);
-      if (result >= 0 && report < last) {
-        args[0] = report + 1;
-        args[1] = last;
-        result = invoke_syscall((uintptr_t)drcontext, SYS_close_range, args);
-      }
-      dr_syscall_set_result(drcontext, (reg_t)result);
-      return true;
-    }
-  }
-#endif
-  return false;
-}
-
 static bool pre_syscall(void *drcontext, int sysnum) {
-  if (protect_unsupported_report_transport(drcontext, sysnum))
-    return false;
   if (((uint32_t)sysnum & X32_SYSCALL_BIT) != 0) {
     dr_fprintf(diagnostic_file,
                "reverie-dbi: x32-marked syscalls are unsupported\n");
@@ -1132,10 +1077,11 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       DR_ASSERT(fd >= 0);
       diagnostic_file = (file_t)fd;
     }
-    else if (strcmp(argv[i], "-unsupported-report-fd") == 0) {
+    else if (strcmp(argv[i], "-unsupported-report-path") == 0) {
       DR_ASSERT(++i < argc);
-      DR_ASSERT(dr_sscanf(argv[i], "%d", &unsupported_report_app_fd) == 1);
-      DR_ASSERT(unsupported_report_app_fd >= 0);
+      DR_ASSERT(strlen(argv[i]) < sizeof(unsupported_report_path));
+      dr_snprintf(unsupported_report_path, sizeof(unsupported_report_path),
+                  "%s", argv[i]);
     }
     else if (strcmp(argv[i], "-panic-on-unsupported-syscalls") == 0)
       runtime_callbacks.panic_on_unsupported_syscalls = 1;
@@ -1143,15 +1089,14 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       runtime_process_group = (process_id_t)getpgrp();
   }
 
-  if (unsupported_report_app_fd >= 0) {
-    char report_path[64];
-    dr_snprintf(report_path, sizeof(report_path), "/proc/self/fd/%d",
-                unsupported_report_app_fd);
-    unsupported_report_file = dr_open_file(report_path, DR_FILE_WRITE_ONLY);
+  if (unsupported_report_path[0] != 0) {
+    unsupported_report_file =
+        dr_open_file(unsupported_report_path, DR_FILE_WRITE_ONLY);
     if (unsupported_report_file == INVALID_FILE)
       dr_fprintf(diagnostic_file,
                  "reverie-dbi: failed to open private unsupported-syscall report\n");
   }
+  runtime_callbacks.unsupported_report_fd = (int32_t)unsupported_report_file;
 
   dr_set_client_name("Reverie DynamoRIO backend prototype",
                      "https://github.com/rrnewton/reverie");
