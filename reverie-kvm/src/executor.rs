@@ -104,6 +104,8 @@ pub(crate) enum ProcessAction {
     Fork {
         child_pid: i32,
         child_stack: Option<u64>,
+        // AUTONOMOUS-BOT-IMPLEMENTED: Model process-only clone TID bookkeeping.
+        // TODO-HUMAN-REVIEW(#89): Review clone TID timing and clone3 ABI boundaries.
         parent_tid: Option<u64>,
         child_tid: Option<u64>,
         clear_child_tid: Option<u64>,
