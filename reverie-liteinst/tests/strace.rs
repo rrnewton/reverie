@@ -392,16 +392,40 @@ fn compatibility_fork_reports_clone_only_from_parent() {
 
     let events = String::from_utf8(events).unwrap();
     let clone_suffix = format!(" syscall={}", libc::SYS_clone);
+    let lines: Vec<_> = events.lines().collect();
     assert_eq!(
-        events
-            .lines()
+        lines
+            .iter()
             .filter(|line| line.ends_with(&clone_suffix))
             .count(),
         1,
         "successful clone must have one parent-owned compatibility event:\n{events}"
     );
-    let pids: BTreeSet<_> = events
-        .lines()
+    let clone_position = lines
+        .iter()
+        .position(|line| line.ends_with(&clone_suffix))
+        .unwrap();
+    let parent_pid = lines[clone_position]
+        .split_once(" pid=")
+        .unwrap()
+        .1
+        .split_once(" syscall=")
+        .unwrap()
+        .0;
+    let child_position = lines
+        .iter()
+        .position(|line| {
+            line.split_once(" pid=")
+                .and_then(|(_, record)| record.split_once(" syscall="))
+                .is_some_and(|(pid, _)| pid != parent_pid)
+        })
+        .expect("child instrumentation event is missing");
+    assert!(
+        clone_position < child_position,
+        "clone marker must precede child activity:\n{events}"
+    );
+    let pids: BTreeSet<_> = lines
+        .iter()
         .filter_map(|line| line.split_once(" pid=")?.1.split_once(" syscall="))
         .map(|(pid, _)| pid)
         .collect();
