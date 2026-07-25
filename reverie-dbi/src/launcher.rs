@@ -134,11 +134,49 @@ impl DbiRunner {
 
     /// Runs `guest` with captured output and supplies `input` on standard input.
     pub fn output_with_input(&self, guest: &Command, input: &[u8]) -> io::Result<Output> {
-        self.output_with_reader(guest, io::Cursor::new(input.to_vec()))
+        self.output_with_reader(guest, io::Cursor::new(input))
     }
 
     /// Runs `guest` with captured output while streaming its standard input.
     pub fn output_with_reader<R>(&self, guest: &Command, mut input: R) -> io::Result<Output>
+    where
+        R: Read + Send,
+    {
+        let mut child = self
+            .command(guest, None)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "failed to open DBI guest stdin")
+        })?;
+
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(move || io::copy(&mut input, &mut stdin));
+            let output = child.wait_with_output();
+            let write_result = writer
+                .join()
+                .map_err(|_| io::Error::other("DBI guest stdin writer thread panicked"))?;
+            if let Err(error) = write_result
+                && error.kind() != io::ErrorKind::BrokenPipe
+            {
+                return Err(error);
+            }
+            output
+        })
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-84): Review the owned, detachable input-pump API.
+    /// Streams owned standard input without waiting for a source-blocked pump after child exit.
+    ///
+    /// A pump still blocked on its source is detached until that source unblocks or the caller exits.
+    pub fn output_with_detached_reader<R>(
+        &self,
+        guest: &Command,
+        mut input: R,
+    ) -> io::Result<Output>
     where
         R: Read + Send + 'static,
     {
@@ -698,7 +736,7 @@ mod tests {
         let started = std::time::Instant::now();
 
         let output = runner
-            .output_with_reader(&Command::new("/bin/true"), BlockingReader(receiver))
+            .output_with_detached_reader(&Command::new("/bin/true"), BlockingReader(receiver))
             .unwrap();
         assert!(output.status.success());
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
