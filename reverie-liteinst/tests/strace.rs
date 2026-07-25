@@ -388,6 +388,24 @@ fn compatibility_raw_fork_reports_once_before_child() {
     assert_compatibility_fork_event(&["--raw-fork"], libc::SYS_fork);
 }
 
+#[test]
+fn unsafe_clone_is_rejected_in_compatibility_and_strace_modes() {
+    let guest = env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest");
+    let compatibility = run_compat_guest(guest, &["--unsafe-clone"]);
+    assert!(compatibility.status.success(), "{compatibility:?}");
+    assert_eq!(
+        compatibility.stdout,
+        format!("unsafe clone rejected: {}\n", libc::EPERM).as_bytes()
+    );
+
+    let strace = run_guest(guest, &["--unsafe-clone"]);
+    assert!(strace.status.success(), "{strace:?}");
+    assert_eq!(
+        strace.stdout,
+        format!("unsafe clone rejected: {}\n", libc::ENOTSUP).as_bytes()
+    );
+}
+
 fn assert_compatibility_fork_event(arguments: &[&str], syscall: i64) {
     let (output, events) = run_compat_guest_with_event_pipe(
         env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest"),
