@@ -380,8 +380,19 @@ fn fork_child_inherits_preload_instrumentation() {
 
 #[test]
 fn compatibility_fork_reports_clone_only_from_parent() {
-    let (output, events) =
-        run_compat_guest_with_event_pipe(env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest"), &[]);
+    assert_compatibility_fork_event(&[], libc::SYS_clone);
+}
+
+#[test]
+fn compatibility_raw_fork_reports_once_before_child() {
+    assert_compatibility_fork_event(&["--raw-fork"], libc::SYS_fork);
+}
+
+fn assert_compatibility_fork_event(arguments: &[&str], syscall: i64) {
+    let (output, events) = run_compat_guest_with_event_pipe(
+        env!("CARGO_BIN_EXE_reverie-liteinst-fork-guest"),
+        arguments,
+    );
     assert!(
         output.status.success(),
         "status={:?}\nstdout={}\nstderr={}",
@@ -391,19 +402,19 @@ fn compatibility_fork_reports_clone_only_from_parent() {
     );
 
     let events = String::from_utf8(events).unwrap();
-    let clone_suffix = format!(" syscall={}", libc::SYS_clone);
+    let fork_suffix = format!(" syscall={syscall}");
     let lines: Vec<_> = events.lines().collect();
     assert_eq!(
         lines
             .iter()
-            .filter(|line| line.ends_with(&clone_suffix))
+            .filter(|line| line.ends_with(&fork_suffix))
             .count(),
         1,
-        "successful clone must have one parent-owned compatibility event:\n{events}"
+        "successful fork must have one parent-owned compatibility event:\n{events}"
     );
     let clone_position = lines
         .iter()
-        .position(|line| line.ends_with(&clone_suffix))
+        .position(|line| line.ends_with(&fork_suffix))
         .unwrap();
     let parent_pid = lines[clone_position]
         .split_once(" pid=")
