@@ -206,6 +206,14 @@ fn execute_basic_syscall_with_output(
         mkdir_at(memory, state, args[0] as libc::c_int, args[1], args[2])
     } else if number == libc::SYS_unlink as u64 {
         unlink_at(memory, state, libc::AT_FDCWD, args[0], 0)
+    } else if number == libc::SYS_rmdir as u64 {
+        unlink_at(
+            memory,
+            state,
+            libc::AT_FDCWD,
+            args[0],
+            libc::AT_REMOVEDIR as u64,
+        )
     } else if number == libc::SYS_unlinkat as u64 {
         unlink_at(memory, state, args[0] as libc::c_int, args[1], args[2])
     } else if number == libc::SYS_rename as u64 {

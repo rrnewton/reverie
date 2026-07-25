@@ -38,6 +38,7 @@ const MAX_PROGRAM_HEADERS_SIZE: usize = PAGE_SIZE as usize;
 const MAX_INTERPRETER_BYTES: u64 = 16 * 1024 * 1024;
 const MAIN_LOAD_BIAS: u64 = 2 * 1024 * 1024;
 const INTERPRETER_LOAD_BIAS: u64 = 16 * 1024 * 1024;
+const INTERPRETER_LOAD_ALIGNMENT: u64 = 2 * 1024 * 1024;
 
 const AT_NULL: u64 = 0;
 const AT_PHDR: u64 = 3;
@@ -220,11 +221,6 @@ pub(crate) fn load_static_elf(
         .ok_or_else(|| Error::UnsupportedElf("main entry point overflow".to_string()))?;
 
     let (entry_point, at_base, image_end) = if let Some(path) = interpreter_path(image, &elf)? {
-        if main_end > INTERPRETER_LOAD_BIAS {
-            return Err(Error::UnsupportedElf(format!(
-                "main image end {main_end:#x} overlaps interpreter base {INTERPRETER_LOAD_BIAS:#x}",
-            )));
-        }
         let interpreter_image = read_interpreter_image(&path)?;
         let interpreter = Elf::parse(&interpreter_image)?;
         validate_elf(&interpreter, false)?;
@@ -233,18 +229,19 @@ pub(crate) fn load_static_elf(
                 "program interpreter must be ET_DYN".to_string(),
             ));
         }
+        let interpreter_load_bias = interpreter_load_bias(main_end)?;
         let interpreter_end = load_segments(
             memory,
             &interpreter_image,
             &interpreter,
-            INTERPRETER_LOAD_BIAS,
+            interpreter_load_bias,
         )?;
-        let interpreter_entry = INTERPRETER_LOAD_BIAS
+        let interpreter_entry = interpreter_load_bias
             .checked_add(interpreter.entry)
             .ok_or_else(|| Error::UnsupportedElf("interpreter entry point overflow".to_string()))?;
         (
             interpreter_entry,
-            INTERPRETER_LOAD_BIAS,
+            interpreter_load_bias,
             main_end.max(interpreter_end),
         )
     } else {
@@ -281,11 +278,7 @@ pub(crate) fn load_static_elf(
     if mmap_next >= mmap_limit {
         return Err(Error::LongModeMemoryTooSmall);
     }
-    let brk_limit = if at_base == 0 {
-        mmap_next
-    } else {
-        INTERPRETER_LOAD_BIAS
-    };
+    let brk_limit = if at_base == 0 { mmap_next } else { at_base };
 
     let cwd_fd = OpenOptions::new()
         .read(true)
@@ -607,4 +600,29 @@ fn align_up(value: u64, alignment: u64) -> Result<u64> {
         .checked_add(alignment - 1)
         .map(|value| value & !(alignment - 1))
         .ok_or_else(|| Error::UnsupportedElf("address alignment overflow".to_string()))
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#92): Review deterministic interpreter placement above large main images.
+fn interpreter_load_bias(main_end: u64) -> Result<u64> {
+    align_up(
+        main_end.max(INTERPRETER_LOAD_BIAS),
+        INTERPRETER_LOAD_ALIGNMENT,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::INTERPRETER_LOAD_BIAS;
+    use super::interpreter_load_bias;
+
+    #[test]
+    fn interpreter_bias_keeps_floor_and_moves_above_large_images() {
+        assert_eq!(
+            interpreter_load_bias(0x20_0000).unwrap(),
+            INTERPRETER_LOAD_BIAS
+        );
+        assert_eq!(interpreter_load_bias(0x015b_bb30).unwrap(), 0x0160_0000);
+        assert_eq!(interpreter_load_bias(0x01ea_95e8).unwrap(), 0x0200_0000);
+    }
 }

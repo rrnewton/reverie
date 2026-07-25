@@ -560,9 +560,10 @@ fn real_coreutils_complete_file_mutation_workflow() {
         &root.0,
     );
     run_host_program("/bin/rm", &["rm", "renamed"], &root.0);
+    run_host_program("/bin/rmdir", &["rmdir", "directory/nested"], &root.0);
 
     assert!(root.0.join("directory").is_dir());
-    assert!(root.0.join("directory/nested").is_dir());
+    assert!(!root.0.join("directory/nested").exists());
     assert_eq!(std::fs::read(root.0.join("source")).unwrap(), b"payload\n");
     assert!(root.0.join("touched").is_file());
     assert_eq!(
