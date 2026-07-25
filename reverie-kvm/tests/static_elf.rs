@@ -382,6 +382,7 @@ fn static_elf_clone_tid_side_effects_reach_guest_memory() {
     const PARENT_TID: u64 = LOAD_ADDRESS + 0x1800;
     const CHILD_TID: u64 = LOAD_ADDRESS + 0x1808;
     const REPLACEMENT_CLEAR_TID: u64 = LOAD_ADDRESS + 0x1810;
+    const INVALID_TID: u64 = MEMORY_SIZE as u64 - 1;
     let flags = libc::SIGCHLD as u32
         | libc::CLONE_PARENT_SETTID as u32
         | libc::CLONE_CHILD_SETTID as u32
@@ -420,14 +421,18 @@ fn static_elf_clone_tid_side_effects_reach_guest_memory() {
     code.extend_from_slice(&[0xb8, 0x38, 0x00, 0x00, 0x00]);
     code.push(0xbf);
     code.extend_from_slice(&flags.to_le_bytes());
+    code.extend_from_slice(&[0x31, 0xf6]); // xor esi, esi
+    code.extend_from_slice(&[0x48, 0xba]); // movabs rdx, invalid parent_tid
+    code.extend_from_slice(&INVALID_TID.to_le_bytes());
+    code.extend_from_slice(&[0x49, 0xba]); // movabs r10, invalid child_tid
+    code.extend_from_slice(&INVALID_TID.to_le_bytes());
     code.extend_from_slice(&[
-        0x31, 0xf6, // xor esi, esi
-        0xba, 0x01, 0x00, 0x00, 0x00, // mov edx, 1
-        0x41, 0xba, 0x01, 0x00, 0x00, 0x00, // mov r10d, 1
         0x0f, 0x05, // syscall
         0x85, 0xc0, // test eax, eax
-        0x0f, 0x84, 0x00, 0x00, 0x00, 0x00, // jz invalid_store_child
+        0x79, 0x0e, // jns clone_returned_pid_or_child
     ]);
+    append_exit(&mut code, 65);
+    code.extend_from_slice(&[0x0f, 0x84, 0x00, 0x00, 0x00, 0x00]); // jz child
     let invalid_child_jump = code.len() - 4;
     code.extend_from_slice(&[
         0x89, 0xc7, // mov edi, eax
@@ -436,6 +441,11 @@ fn static_elf_clone_tid_side_effects_reach_guest_memory() {
         0x45, 0x31, 0xd2, // xor r10d, r10d
         0xb8, 0x3d, 0x00, 0x00, 0x00, // mov eax, SYS_wait4
         0x0f, 0x05, // syscall
+        0x39, 0xf8, // cmp eax, edi
+        0x74, 0x0e, // je waited_for_second_child
+    ]);
+    append_exit(&mut code, 66);
+    code.extend_from_slice(&[
         0x8b, 0x3c, 0x24, // mov edi, dword ptr [rsp]
         0xc1, 0xef, 0x08, // shr edi, 8
         0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group

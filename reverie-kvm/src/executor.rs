@@ -416,10 +416,15 @@ impl ElfExecutor {
         }
         if number == libc::SYS_clone3 as u64 {
             return Some(match read_clone3(memory, args[0], args[1]) {
-                Ok((flags, child_stack)) => match validate_process_clone_flags(flags) {
+                Ok(request) => match validate_process_clone_flags(request.flags) {
                     Err(error) => error,
-                    Ok(()) if flags & PROCESS_CLONE_TID_FLAGS != 0 => negative_errno(libc::ENOTSUP),
-                    Ok(()) => self.prepare_fork(child_stack, None, None, None),
+                    Ok(())
+                        if request.flags & PROCESS_CLONE_TID_FLAGS != 0
+                            || request.tid_fields_present =>
+                    {
+                        negative_errno(libc::ENOTSUP)
+                    }
+                    Ok(()) => self.prepare_fork(request.child_stack, None, None, None),
                 },
                 Err(error) => error,
             });
@@ -2920,7 +2925,13 @@ fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
     Ok(())
 }
 
-fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<(u64, Option<u64>), i64> {
+struct ProcessCloneRequest {
+    flags: u64,
+    child_stack: Option<u64>,
+    tid_fields_present: bool,
+}
+
+fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<ProcessCloneRequest, i64> {
     const REQUIRED_SIZE: usize = 64;
     const MAX_SIZE: usize = 88;
 
@@ -2941,9 +2952,10 @@ fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<(u64, Op
                 .expect("u64 clone3 field"),
         )
     };
-    if field(8) != 0 || field(16) != 0 || field(24) != 0 {
+    if field(8) != 0 {
         return Err(negative_errno(libc::ENOTSUP));
     }
+    let tid_fields_present = field(16) != 0 || field(24) != 0;
     let flags = field(0) | field(32);
     let stack = field(40);
     let stack_size = field(48);
@@ -2955,7 +2967,11 @@ fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<(u64, Op
     if stack != 0 && child_stack.is_none() {
         return Err(negative_errno(libc::EINVAL));
     }
-    Ok((flags, child_stack))
+    Ok(ProcessCloneRequest {
+        flags,
+        child_stack,
+        tid_fields_present,
+    })
 }
 
 fn read_string_array(memory: &GuestMemory, address: u64) -> Result<Vec<String>, i64> {
@@ -5526,6 +5542,7 @@ mod tests {
         );
         assert!(executor.take_process_action().is_none());
 
+        clone3[16..24].copy_from_slice(&1_u64.to_le_bytes());
         clone3[32..40].copy_from_slice(&255_u64.to_le_bytes());
         memory.write(CLONE3_ARGS, &clone3).unwrap();
         let request = SyscallRequest::new(
@@ -5536,6 +5553,19 @@ mod tests {
             executor.execute_process_action(&request, &memory),
             Some(negative_errno(libc::EINVAL)),
             "malformed exit_signal takes precedence over unsupported TID flags"
+        );
+        assert!(executor.take_process_action().is_none());
+
+        clone3[32..40].copy_from_slice(&(libc::SIGCHLD as u64).to_le_bytes());
+        memory.write(CLONE3_ARGS, &clone3).unwrap();
+        let request = SyscallRequest::new(
+            libc::SYS_clone3 as u64,
+            [CLONE3_ARGS, clone3.len() as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(
+            executor.execute_process_action(&request, &memory),
+            Some(negative_errno(libc::ENOTSUP)),
+            "a TID field remains explicitly unsupported after validation"
         );
         assert!(executor.take_process_action().is_none());
     }
