@@ -39,17 +39,17 @@ use sha2::Digest;
 use sha2::Sha256;
 
 /// Environment variable that selects the e9tool executable.
-// TODO-HUMAN-REVIEW(PR-96): Review the public external-tool override.
+// TODO-HUMAN-REVIEW(PR-101): Review the public external-tool override.
 pub const E9TOOL_ENV: &str = "REVERIE_E9TOOL";
 
 /// Environment variable that selects the e9patch backend executable.
-// TODO-HUMAN-REVIEW(PR-96): Review the public external-tool override.
+// TODO-HUMAN-REVIEW(PR-101): Review the public external-tool override.
 pub const E9PATCH_BACKEND_ENV: &str = "REVERIE_E9PATCH_BACKEND";
 
 const E9PATCH_LOADER_BASE: u64 = 0x20e9_e9000;
 
 /// Auditable, digest-bound information about one e9patch preparation.
-// TODO-HUMAN-REVIEW(PR-96): Review the public rewrite report.
+// TODO-HUMAN-REVIEW(PR-101): Review the public rewrite report.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RewriteReport {
     source: PathBuf,
@@ -64,49 +64,49 @@ pub struct RewriteReport {
 
 impl RewriteReport {
     /// Returns the canonical source executable.
-    // TODO-HUMAN-REVIEW(PR-96): Review the public rewrite report API.
+    // TODO-HUMAN-REVIEW(PR-101): Review the public rewrite report API.
     pub fn source(&self) -> &Path {
         &self.source
     }
 
     /// Returns the SHA-256 digest of the snapshotted input.
-    // TODO-HUMAN-REVIEW(PR-96): Review the public rewrite report API.
+    // TODO-HUMAN-REVIEW(PR-101): Review the public rewrite report API.
     pub fn input_sha256(&self) -> &str {
         &self.input_sha256
     }
 
     /// Returns the SHA-256 digest of the sealed output.
-    // TODO-HUMAN-REVIEW(PR-96): Review the public rewrite report API.
+    // TODO-HUMAN-REVIEW(PR-101): Review the public rewrite report API.
     pub fn output_sha256(&self) -> &str {
         &self.output_sha256
     }
 
     /// Returns the SHA-256 digest of the snapshotted e9tool executable.
-    // TODO-HUMAN-REVIEW(PR-96): Review the public rewrite report API.
+    // TODO-HUMAN-REVIEW(PR-101): Review the public rewrite report API.
     pub fn e9tool_sha256(&self) -> &str {
         &self.e9tool_sha256
     }
 
     /// Returns the SHA-256 digest of the snapshotted e9patch backend.
-    // TODO-HUMAN-REVIEW(PR-96): Review the public rewrite report API.
+    // TODO-HUMAN-REVIEW(PR-101): Review the public rewrite report API.
     pub fn e9patch_sha256(&self) -> &str {
         &self.e9patch_sha256
     }
 
     /// Returns the number of sites rewritten by e9tool.
-    // TODO-HUMAN-REVIEW(PR-96): Review the public rewrite report API.
+    // TODO-HUMAN-REVIEW(PR-101): Review the public rewrite report API.
     pub fn patched_sites(&self) -> usize {
         self.patched_sites
     }
 
     /// Returns the number of sites recovered by e9tool.
-    // TODO-HUMAN-REVIEW(PR-96): Review the public rewrite report API.
+    // TODO-HUMAN-REVIEW(PR-101): Review the public rewrite report API.
     pub fn recovered_sites(&self) -> usize {
         self.recovered_sites
     }
 
     /// Returns the number of signal-based B0 sites.
-    // TODO-HUMAN-REVIEW(PR-96): Review the public rewrite report API.
+    // TODO-HUMAN-REVIEW(PR-101): Review the public rewrite report API.
     pub fn b0_sites(&self) -> usize {
         self.b0_sites
     }
@@ -116,7 +116,7 @@ impl RewriteReport {
 ///
 /// Values can only be produced by E9patchRewriter. The kernel seals prevent
 /// modification through this value or any duplicated descriptor.
-// TODO-HUMAN-REVIEW(PR-96): Review the prepared-artifact API.
+// TODO-HUMAN-REVIEW(PR-101): Review the prepared-artifact API.
 #[derive(Debug)]
 pub struct PreparedBinary {
     report: RewriteReport,
@@ -125,13 +125,13 @@ pub struct PreparedBinary {
 
 impl PreparedBinary {
     /// Returns the digest-bound preparation report.
-    // TODO-HUMAN-REVIEW(PR-96): Review the prepared-artifact API.
+    // TODO-HUMAN-REVIEW(PR-101): Review the prepared-artifact API.
     pub fn report(&self) -> &RewriteReport {
         &self.report
     }
 
     /// Opens an independent read-only handle to the sealed artifact.
-    // TODO-HUMAN-REVIEW(PR-96): Review the public prepared-artifact API.
+    // TODO-HUMAN-REVIEW(PR-101): Review the public prepared-artifact API.
     pub fn artifact(&self) -> Result<File, Error> {
         File::open(format!("/proc/self/fd/{}", self.artifact.as_raw_fd())).map_err(Into::into)
     }
@@ -141,7 +141,7 @@ impl PreparedBinary {
 ///
 /// The GPL-3.0 e9patch executables remain separate programs. This BSD-licensed
 /// crate does not link or copy their runtime code into its own binary.
-// TODO-HUMAN-REVIEW(PR-96): Review the external rewriter API and license boundary.
+// TODO-HUMAN-REVIEW(PR-101): Review the external rewriter API and license boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct E9patchRewriter {
     e9tool: PathBuf,
@@ -150,7 +150,7 @@ pub struct E9patchRewriter {
 
 impl E9patchRewriter {
     /// Creates a rewriter for explicit tool paths.
-    // TODO-HUMAN-REVIEW(PR-96): Review this public e9patch preparation API.
+    // TODO-HUMAN-REVIEW(PR-101): Review this public e9patch preparation API.
     pub fn new(e9tool: impl Into<PathBuf>, e9patch_backend: impl Into<PathBuf>) -> Self {
         Self {
             e9tool: e9tool.into(),
@@ -159,7 +159,7 @@ impl E9patchRewriter {
     }
 
     /// Resolves the external tools from the process environment.
-    // TODO-HUMAN-REVIEW(PR-96): Review this public e9patch preparation API.
+    // TODO-HUMAN-REVIEW(PR-101): Review this public e9patch preparation API.
     pub fn from_env() -> Result<Self, Error> {
         let e9tool = resolve_requested_executable(E9TOOL_ENV, OsStr::new("e9tool"))?;
         let backend_default = e9tool.with_file_name("e9patch");
@@ -172,7 +172,7 @@ impl E9patchRewriter {
     ///
     /// Preparation is synchronous and may be expensive. Callers should invoke
     /// it outside an async executor worker when blocking is undesirable.
-    // TODO-HUMAN-REVIEW(PR-96): Review this public e9patch preparation API.
+    // TODO-HUMAN-REVIEW(PR-101): Review this public e9patch preparation API.
     pub fn prepare(&self, source: impl AsRef<Path>) -> Result<PreparedBinary, Error> {
         self.prepare_program(source.as_ref())
     }
