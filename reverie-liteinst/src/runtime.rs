@@ -310,21 +310,16 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
         return;
     }
 
-    if TOOL_MODE.load(Ordering::Relaxed) == TOOL_COMPAT && event.number == libc::SYS_clone {
-        let namespace_flags = (libc::CLONE_NEWCGROUP
-            | libc::CLONE_NEWIPC
-            | libc::CLONE_NEWNET
-            | libc::CLONE_NEWNS
-            | libc::CLONE_NEWPID
-            | libc::CLONE_NEWUSER
-            | libc::CLONE_NEWUTS) as u64;
-        if event.args[0] & namespace_flags != 0 {
-            event.result = -i64::from(libc::EPERM);
-            unsafe {
-                trace_event(event, Some(event.result));
-            }
-            return;
+    if event.number == libc::SYS_clone && !clone_is_fork_like(event.args[0], event.args[1]) {
+        event.result = if TOOL_MODE.load(Ordering::Relaxed) == TOOL_COMPAT {
+            -i64::from(libc::EPERM)
+        } else {
+            -i64::from(libc::ENOTSUP)
+        };
+        unsafe {
+            trace_event(event, Some(event.result));
         }
+        return;
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -341,16 +336,6 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
     // TODO-HUMAN-REVIEW(#61): reserve SIGSYS until disposition virtualization exists.
     if event.number == libc::SYS_rt_sigaction && event.args[0] == libc::SIGSYS as u64 {
         event.result = -i64::from(libc::EPERM);
-        unsafe {
-            trace_event(event, Some(event.result));
-        }
-        return;
-    }
-
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(#61): a non-null clone stack cannot resume this signal frame safely.
-    if event.number == libc::SYS_clone && event.args[1] != 0 {
-        event.result = -i64::from(libc::ENOTSUP);
         unsafe {
             trace_event(event, Some(event.result));
         }
@@ -388,6 +373,15 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
             trace_event(event, Some(event.result));
         }
     }
+}
+
+fn clone_is_fork_like(flags: u64, child_stack: u64) -> bool {
+    const SIGNAL_MASK: u64 = 0xff;
+    let allowed_flags =
+        (libc::CLONE_CHILD_CLEARTID | libc::CLONE_CHILD_SETTID | libc::CLONE_PARENT_SETTID) as u64;
+    child_stack == 0
+        && flags & SIGNAL_MASK == libc::SIGCHLD as u64
+        && flags & !(SIGNAL_MASK | allowed_flags) == 0
 }
 
 unsafe fn protect_compatibility_event_channel(event: &mut SyscallEvent) -> bool {
@@ -763,6 +757,7 @@ impl StackLine {
 #[cfg(test)]
 mod tests {
     use super::StackLine;
+    use super::clone_is_fork_like;
 
     #[test]
     fn stack_line_formats_signed_and_hex_values() {
@@ -771,5 +766,40 @@ mod tests {
         line.push_bytes(b" ");
         line.push_hex(0xdead_beef);
         assert_eq!(&line.bytes[..line.len], b"-123 deadbeef");
+    }
+
+    #[test]
+    fn clone_accepts_only_fork_like_flags() {
+        let bookkeeping = (libc::CLONE_CHILD_CLEARTID
+            | libc::CLONE_CHILD_SETTID
+            | libc::CLONE_PARENT_SETTID) as u64;
+        assert!(clone_is_fork_like(libc::SIGCHLD as u64, 0));
+        assert!(clone_is_fork_like(libc::SIGCHLD as u64 | bookkeeping, 0));
+        assert!(!clone_is_fork_like(libc::SIGCHLD as u64, 1));
+        assert!(!clone_is_fork_like(0, 0));
+        assert!(!clone_is_fork_like(libc::SIGUSR1 as u64, 0));
+
+        for rejected in [
+            libc::CLONE_VM,
+            libc::CLONE_VFORK,
+            libc::CLONE_THREAD,
+            libc::CLONE_SETTLS,
+            libc::CLONE_SIGHAND,
+            libc::CLONE_FILES,
+            libc::CLONE_FS,
+            libc::CLONE_PARENT,
+            libc::CLONE_NEWCGROUP,
+            libc::CLONE_NEWIPC,
+            libc::CLONE_NEWNET,
+            libc::CLONE_NEWNS,
+            libc::CLONE_NEWPID,
+            libc::CLONE_NEWUSER,
+            libc::CLONE_NEWUTS,
+        ] {
+            assert!(
+                !clone_is_fork_like(libc::SIGCHLD as u64 | rejected as u64, 0),
+                "accepted unsafe clone flag {rejected:#x}"
+            );
+        }
     }
 }
