@@ -416,12 +416,10 @@ impl ElfExecutor {
         }
         if number == libc::SYS_clone3 as u64 {
             return Some(match read_clone3(memory, args[0], args[1]) {
-                Ok((flags, _child_stack)) if flags & PROCESS_CLONE_TID_FLAGS != 0 => {
-                    negative_errno(libc::ENOTSUP)
-                }
                 Ok((flags, child_stack)) => match validate_process_clone_flags(flags) {
-                    Ok(()) => self.prepare_fork(child_stack, None, None, None),
                     Err(error) => error,
+                    Ok(()) if flags & PROCESS_CLONE_TID_FLAGS != 0 => negative_errno(libc::ENOTSUP),
+                    Ok(()) => self.prepare_fork(child_stack, None, None, None),
                 },
                 Err(error) => error,
             });
@@ -5525,6 +5523,19 @@ mod tests {
         assert_eq!(
             executor.execute_process_action(&request, &memory),
             Some(negative_errno(libc::ENOTSUP))
+        );
+        assert!(executor.take_process_action().is_none());
+
+        clone3[32..40].copy_from_slice(&255_u64.to_le_bytes());
+        memory.write(CLONE3_ARGS, &clone3).unwrap();
+        let request = SyscallRequest::new(
+            libc::SYS_clone3 as u64,
+            [CLONE3_ARGS, clone3.len() as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(
+            executor.execute_process_action(&request, &memory),
+            Some(negative_errno(libc::EINVAL)),
+            "malformed exit_signal takes precedence over unsupported TID flags"
         );
         assert!(executor.take_process_action().is_none());
     }
