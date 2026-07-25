@@ -142,13 +142,18 @@ impl LoadedStaticElf {
         let signal_actions = previous
             .signal_actions
             .into_iter()
-            .filter(|(_, action)| {
+            .filter_map(|(signal, action)| {
                 let handler = usize::from_ne_bytes(
                     action[..std::mem::size_of::<usize>()]
                         .try_into()
                         .expect("signal handler field size"),
                 );
-                handler == libc::SIG_IGN
+                (handler == libc::SIG_IGN).then(|| {
+                    let mut ignored = [0; 32];
+                    ignored[..std::mem::size_of::<usize>()]
+                        .copy_from_slice(&libc::SIG_IGN.to_ne_bytes());
+                    (signal, ignored)
+                })
             })
             .collect();
 
