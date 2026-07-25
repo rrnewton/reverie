@@ -2178,6 +2178,8 @@ fn getcwd(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
     }
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#92): Review descriptor-backed cwd identity and procfs canonicalization.
 fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, path_address: u64) -> i64 {
     let path = match read_c_string(memory, path_address, 4096) {
         Ok(path) if !path.is_empty() => path,
