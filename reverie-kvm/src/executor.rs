@@ -1961,7 +1961,9 @@ fn fstat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         return io_error(std::io::Error::last_os_error());
     }
     // SAFETY: fstat initialized stat on success.
-    write_struct(memory, args[1], &unsafe { stat.assume_init() })
+    let mut stat = unsafe { stat.assume_init() };
+    sanitize_stat_timestamps(&mut stat);
+    write_struct(memory, args[1], &stat)
 }
 
 fn path_stat(
@@ -2032,7 +2034,9 @@ fn fstatat_impl(
         return io_error(std::io::Error::last_os_error());
     }
     // SAFETY: fstat initialized stat on success.
-    write_struct(memory, output_address, &unsafe { stat.assume_init() })
+    let mut stat = unsafe { stat.assume_init() };
+    sanitize_stat_timestamps(&mut stat);
+    write_struct(memory, output_address, &stat)
 }
 
 fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -2093,7 +2097,26 @@ fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         return io_error(std::io::Error::last_os_error());
     }
     // SAFETY: statx initialized stat on success.
-    write_struct(memory, args[4], &unsafe { stat.assume_init() })
+    let mut stat = unsafe { stat.assume_init() };
+    for timestamp in [
+        &mut stat.stx_atime,
+        &mut stat.stx_btime,
+        &mut stat.stx_ctime,
+        &mut stat.stx_mtime,
+    ] {
+        timestamp.tv_sec = 0;
+        timestamp.tv_nsec = 0;
+    }
+    write_struct(memory, args[4], &stat)
+}
+
+fn sanitize_stat_timestamps(stat: &mut libc::stat) {
+    stat.st_atime = 0;
+    stat.st_atime_nsec = 0;
+    stat.st_mtime = 0;
+    stat.st_mtime_nsec = 0;
+    stat.st_ctime = 0;
+    stat.st_ctime_nsec = 0;
 }
 
 fn statfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
