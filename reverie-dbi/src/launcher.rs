@@ -49,6 +49,7 @@ const DIAGNOSTIC_FD: libc::c_int = 198;
 pub struct DbiRunner {
     drrun: PathBuf,
     client: PathBuf,
+    client_arguments: Vec<OsString>,
     summary: bool,
     isolated_process_group: bool,
 }
@@ -82,6 +83,7 @@ impl DbiRunner {
         Ok(Self {
             drrun,
             client,
+            client_arguments: Vec::new(),
             summary: false,
             isolated_process_group: false,
         })
@@ -90,6 +92,14 @@ impl DbiRunner {
     /// Enables or disables the instrumentation summary written at process exit.
     pub fn summary(mut self, enabled: bool) -> Self {
         self.summary = enabled;
+        self
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-84): Review persistent DynamoRIO client argument propagation.
+    /// Adds an argument passed to the native client in every instrumented process image.
+    pub fn client_argument(mut self, argument: impl Into<OsString>) -> Self {
+        self.client_arguments.push(argument.into());
         self
     }
 
@@ -128,13 +138,13 @@ impl DbiRunner {
 
     /// Runs `guest` with captured output and supplies `input` on standard input.
     pub fn output_with_input(&self, guest: &Command, input: &[u8]) -> io::Result<Output> {
-        self.output_with_reader(guest, io::Cursor::new(input))
+        self.output_with_reader(guest, io::Cursor::new(input.to_vec()))
     }
 
     /// Runs `guest` with captured output while streaming its standard input.
     pub fn output_with_reader<R>(&self, guest: &Command, mut input: R) -> io::Result<Output>
     where
-        R: Read + Send,
+        R: Read + Send + 'static,
     {
         let mut child = self
             .command(guest, None)
@@ -146,19 +156,20 @@ impl DbiRunner {
             io::Error::new(io::ErrorKind::BrokenPipe, "failed to open DBI guest stdin")
         })?;
 
-        std::thread::scope(|scope| {
-            let writer = scope.spawn(move || io::copy(&mut input, &mut stdin));
-            let output = child.wait_with_output();
-            let write_result = writer
-                .join()
-                .map_err(|_| io::Error::other("DBI guest stdin writer thread panicked"))?;
-            if let Err(error) = write_result
-                && error.kind() != io::ErrorKind::BrokenPipe
-            {
-                return Err(error);
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-84): Review detaching a source-blocked input pump at child exit.
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        std::thread::spawn(move || {
+            let _ = sender.send(io::copy(&mut input, &mut stdin));
+        });
+        let output = child.wait_with_output()?;
+        match receiver.try_recv() {
+            Ok(Err(error)) if error.kind() != io::ErrorKind::BrokenPipe => Err(error),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(io::Error::other("DBI guest stdin writer thread panicked"))
             }
-            output
-        })
+            Ok(_) | Err(std::sync::mpsc::TryRecvError::Empty) => Ok(output),
+        }
     }
 
     /// Captures `guest` output while supplying an exact guest environment.
@@ -184,6 +195,10 @@ impl DbiRunner {
             .arg(&self.client)
             .arg("-diagnostic_fd")
             .arg(DIAGNOSTIC_FD.to_string());
+        command.args(&self.client_arguments);
+        if self.isolated_process_group {
+            command.arg("-isolated-process-group");
+        }
         if self.summary {
             command.arg("-summary");
         }
@@ -394,6 +409,7 @@ mod tests {
         DbiRunner {
             drrun: PathBuf::from("/opt/dynamorio/bin64/drrun"),
             client: PathBuf::from("/opt/reverie/libreverie_dbi_client.so"),
+            client_arguments: Vec::new(),
             summary: false,
             isolated_process_group: false,
         }
@@ -408,6 +424,15 @@ mod tests {
         std::fs::set_permissions(path, permissions).unwrap();
     }
 
+    struct BlockingReader(std::sync::mpsc::Receiver<()>);
+
+    impl Read for BlockingReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            let _ = self.0.recv();
+            Ok(0)
+        }
+    }
+
     #[test]
     fn process_group_isolation_is_opt_in() {
         let runner = runner();
@@ -415,6 +440,29 @@ mod tests {
         assert!(runner.isolated_process_group(true).isolated_process_group);
     }
 
+    #[test]
+    fn client_arguments_and_isolation_flag_precede_guest_separator() {
+        let wrapped = runner()
+            .client_argument("-panic-on-unsupported-syscalls")
+            .isolated_process_group(true)
+            .command(&Command::new("/bin/true"), None);
+        assert_eq!(
+            wrapped.get_args().collect::<Vec<_>>(),
+            [
+                "-quiet",
+                "-disable_rseq",
+                "-stack_size",
+                "2M",
+                "-c",
+                "/opt/reverie/libreverie_dbi_client.so",
+                "-panic-on-unsupported-syscalls",
+                "-isolated-process-group",
+                "--",
+                "/bin/true",
+            ]
+            .map(OsStr::new)
+        );
+    }
     #[test]
     fn wraps_guest_program_arguments_directory_and_environment() {
         let mut guest = Command::new("/bin/echo");
@@ -676,6 +724,28 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"captured=<guest-stderr>\n");
         assert_eq!(output.stderr, b"backend-diagnostic");
+    }
+
+    #[test]
+    fn returns_when_child_exits_while_input_source_is_blocked() {
+        let root = tempfile::tempdir().unwrap();
+        let drrun = root.path().join("drrun");
+        let client = root.path().join("client.so");
+        write_executable_script(
+            &drrun,
+            b"#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+        );
+        std::fs::write(&client, b"placeholder").unwrap();
+        let runner = DbiRunner::new(drrun, client).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+
+        let output = runner
+            .output_with_reader(&Command::new("/bin/true"), BlockingReader(receiver))
+            .unwrap();
+        assert!(output.status.success());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        drop(sender);
     }
 
     #[test]
