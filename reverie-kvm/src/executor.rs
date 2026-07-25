@@ -171,6 +171,8 @@ fn execute_basic_syscall_with_output(
         pipe2(memory, state, args[0], 0)
     } else if number == libc::SYS_pipe2 as u64 {
         pipe2(memory, state, args[0], args[1])
+    } else if number == libc::SYS_poll as u64 {
+        poll(memory, state, args)
     } else if number == libc::SYS_dup as u64 {
         duplicate_fd(state, args[0], None, 0, false)
     } else if number == libc::SYS_dup2 as u64 {
@@ -1528,6 +1530,86 @@ fn pipe2(
         return negative_errno(libc::EFAULT);
     }
     0
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#92): Review guest descriptor translation and blocking poll semantics.
+fn poll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(count) = usize::try_from(args[1]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if count > GUEST_NOFILE_LIMIT as usize {
+        return negative_errno(libc::EINVAL);
+    }
+    let Some(byte_length) = count.checked_mul(std::mem::size_of::<libc::pollfd>()) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if byte_length > MAX_HOST_IO {
+        return negative_errno(libc::EINVAL);
+    }
+
+    let mut poll_fds = vec![
+        libc::pollfd {
+            fd: -1,
+            events: 0,
+            revents: 0,
+        };
+        count
+    ];
+    {
+        // SAFETY: poll_fds is initialized plain ABI data and the byte view is
+        // exactly bounded to the vector allocation.
+        let bytes = unsafe {
+            std::slice::from_raw_parts_mut(poll_fds.as_mut_ptr().cast::<u8>(), byte_length)
+        };
+        if memory.read(args[0], bytes).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+    }
+
+    let guest_fds = poll_fds
+        .iter()
+        .map(|poll_fd| poll_fd.fd)
+        .collect::<Vec<_>>();
+    let mut invalid = vec![false; count];
+    for (index, poll_fd) in poll_fds.iter_mut().enumerate() {
+        poll_fd.revents = 0;
+        if poll_fd.fd < 0 {
+            continue;
+        }
+        match host_fd(state, poll_fd.fd) {
+            Some(host_fd) => poll_fd.fd = host_fd,
+            None => {
+                poll_fd.fd = -1;
+                invalid[index] = true;
+            }
+        }
+    }
+
+    // SAFETY: poll_fds is writable for count entries and timeout is passed
+    // through with the Linux signed 32-bit ABI.
+    let ready = unsafe { libc::poll(poll_fds.as_mut_ptr(), count as libc::nfds_t, args[2] as i32) };
+    if ready < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let mut invalid_count = 0;
+    for (index, poll_fd) in poll_fds.iter_mut().enumerate() {
+        poll_fd.fd = guest_fds[index];
+        if invalid[index] {
+            poll_fd.revents = libc::POLLNVAL;
+            invalid_count += 1;
+        }
+    }
+    {
+        // SAFETY: poll_fds remains initialized ABI data and the byte view is
+        // exactly bounded to the vector allocation.
+        let bytes =
+            unsafe { std::slice::from_raw_parts(poll_fds.as_ptr().cast::<u8>(), byte_length) };
+        if memory.write(args[0], bytes).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+    }
+    i64::from(ready + invalid_count)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -3348,6 +3430,7 @@ mod tests {
         const PIPE_FDS: u64 = 0x100;
         const PAYLOAD: u64 = 0x200;
         const READ_BUFFER: u64 = 0x300;
+        const POLL_FD: u64 = 0x400;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -3476,6 +3559,25 @@ mod tests {
             );
         }
 
+        let poll_fd = libc::pollfd {
+            fd: pipe_fds[0],
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &poll_fd), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_poll,
+                [POLL_FD, 1, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let poll_fd: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(poll_fd.fd, pipe_fds[0]);
+        assert_eq!(poll_fd.revents, 0);
+
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -3485,6 +3587,24 @@ mod tests {
             ),
             9
         );
+        let poll_fd = libc::pollfd {
+            fd: pipe_fds[0],
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        assert_eq!(write_struct(&mut memory, POLL_FD, &poll_fd), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_poll,
+                [POLL_FD, 1, 0, 0, 0, 0],
+            ),
+            1
+        );
+        let poll_fd: libc::pollfd = read_struct(&memory, POLL_FD);
+        assert_eq!(poll_fd.fd, pipe_fds[0]);
+        assert_eq!(poll_fd.revents, libc::POLLIN);
         assert_eq!(
             syscall_result(
                 &mut memory,
