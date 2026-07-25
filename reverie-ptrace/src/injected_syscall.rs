@@ -16,6 +16,7 @@ use reverie::syscalls::Sysno;
 ///
 /// The frame is private to the ptrace controller. Backends opt into the event
 /// ABI with [`crate::TracerBuilder::injected_syscall_trap`].
+// TODO-HUMAN-REVIEW(PR-102): Review the e9tool state-frame syscall ABI.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
 pub(crate) struct InjectedSyscallFrame {

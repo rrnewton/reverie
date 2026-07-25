@@ -1093,6 +1093,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         None
     }
 
+    // TODO-HUMAN-REVIEW(PR-102): Review rewritten-syscall dispatch and result handling.
     async fn handle_injected_syscall(
         &mut self,
         task: Stopped,
