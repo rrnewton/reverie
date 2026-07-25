@@ -350,6 +350,18 @@ fn execute_basic_syscall_with_output(
             args[1],
             args[4] as libc::c_int,
         )
+    } else if number == libc::SYS_getxattr as u64 {
+        path_xattr_absent(memory, state, args[0], args[1], false)
+    } else if number == libc::SYS_lgetxattr as u64 {
+        path_xattr_absent(memory, state, args[0], args[1], true)
+    } else if number == libc::SYS_fgetxattr as u64 {
+        fd_xattr_absent(memory, state, args[0], args[1])
+    } else if number == libc::SYS_listxattr as u64 {
+        path_xattr_list(state, memory, args[0], false)
+    } else if number == libc::SYS_llistxattr as u64 {
+        path_xattr_list(state, memory, args[0], true)
+    } else if number == libc::SYS_flistxattr as u64 {
+        fd_xattr_list(state, args[0])
     } else if number == libc::SYS_umask as u64 {
         let previous = state.umask;
         state.umask = args[0] as libc::mode_t & 0o777;
@@ -2023,6 +2035,69 @@ fn fchownat(
     ) {
         Ok(_) => 0,
         Err(error) => error,
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#92): Review the deterministic no-xattr KVM filesystem view.
+fn path_xattr_absent(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    path_address: u64,
+    name_address: u64,
+    no_follow: bool,
+) -> i64 {
+    let path = match read_c_string(memory, path_address, 4096) {
+        Ok(path) if !path.is_empty() => path,
+        Ok(_) => return negative_errno(libc::ENOENT),
+        Err(error) => return read_c_string_errno(error),
+    };
+    if let Err(error) = read_c_string(memory, name_address, 255) {
+        return read_c_string_errno(error);
+    }
+    match open_metadata_path(state, libc::AT_FDCWD, &path, no_follow) {
+        Ok(_) => negative_errno(libc::ENODATA),
+        Err(error) => error,
+    }
+}
+
+fn fd_xattr_absent(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    raw_fd: u64,
+    name_address: u64,
+) -> i64 {
+    if host_fd(state, raw_fd as libc::c_int).is_none() {
+        return negative_errno(libc::EBADF);
+    }
+    if let Err(error) = read_c_string(memory, name_address, 255) {
+        return read_c_string_errno(error);
+    }
+    negative_errno(libc::ENODATA)
+}
+
+fn path_xattr_list(
+    state: &LoadedStaticElf,
+    memory: &GuestMemory,
+    path_address: u64,
+    no_follow: bool,
+) -> i64 {
+    let path = match read_c_string(memory, path_address, 4096) {
+        Ok(path) if !path.is_empty() => path,
+        Ok(_) => return negative_errno(libc::ENOENT),
+        Err(error) => return read_c_string_errno(error),
+    };
+    match open_metadata_path(state, libc::AT_FDCWD, &path, no_follow) {
+        Ok(_) => 0,
+        Err(error) => error,
+    }
+}
+
+fn fd_xattr_list(state: &LoadedStaticElf, raw_fd: u64) -> i64 {
+    if host_fd(state, raw_fd as libc::c_int).is_some() {
+        0
+    } else {
+        negative_errno(libc::EBADF)
     }
 }
 
