@@ -72,7 +72,11 @@ impl Drop for TestDirectory {
     }
 }
 
-fn run_host_program(program: &str, argv: &[&str], cwd: &std::path::Path) {
+fn run_host_program_captured(
+    program: &str,
+    argv: &[&str],
+    cwd: &std::path::Path,
+) -> (Vec<u8>, Vec<u8>) {
     const REAL_PROGRAM_MEMORY_SIZE: usize = 256 * 1024 * 1024;
 
     let image = std::fs::read(program).unwrap();
@@ -88,6 +92,11 @@ fn run_host_program(program: &str, argv: &[&str], cwd: &std::path::Path) {
         String::from_utf8_lossy(&stdout),
         String::from_utf8_lossy(&stderr),
     );
+    (stdout, stderr)
+}
+
+fn run_host_program(program: &str, argv: &[&str], cwd: &std::path::Path) {
+    let _ = run_host_program_captured(program, argv, cwd);
 }
 
 #[derive(Default)]
@@ -348,7 +357,7 @@ fn static_elf_forks_execs_and_waits_for_child() {
 }
 
 #[test]
-fn real_bash_pipeline_uses_process_clone_tid_flags() {
+fn real_bash_small_pipeline_uses_legacy_process_clone_tid_flags() {
     match Kvm::new() {
         Ok(_) => {}
         Err(error) if kvm_is_unavailable(&error) => {
@@ -359,10 +368,18 @@ fn real_bash_pipeline_uses_process_clone_tid_flags() {
     }
 
     let root = TestDirectory::new();
-    run_host_program(
+    // The child runs to completion before the parent resumes, so this covers a
+    // bounded pipeline without claiming concurrent producer/consumer support.
+    let (stdout, stderr) = run_host_program_captured(
         "/bin/bash",
-        &["bash", "-c", "printf abc | /usr/bin/wc -c"],
+        &["bash", "--norc", "-c", "printf abc | /usr/bin/wc -c"],
         &root.0,
+    );
+    assert_eq!(stdout, b"3\n");
+    assert!(
+        stderr.is_empty(),
+        "unexpected Bash stderr: {}",
+        String::from_utf8_lossy(&stderr)
     );
 }
 

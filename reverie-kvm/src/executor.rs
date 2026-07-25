@@ -35,6 +35,9 @@ const MAX_GUEST_FD: libc::c_int = 1 << 20;
 const KERNEL_SIGACTION_SIZE: usize = 32;
 const KERNEL_SIGSET_SIZE: usize = 8;
 const MEMBARRIER_SUPPORTED: libc::c_int = 0x1;
+const PROCESS_CLONE_TID_FLAGS: u64 = libc::CLONE_PARENT_SETTID as u64
+    | libc::CLONE_CHILD_SETTID as u64
+    | libc::CLONE_CHILD_CLEARTID as u64;
 const ARCH_SET_GS: u64 = 0x1001;
 const ARCH_SET_FS: u64 = 0x1002;
 const ARCH_GET_FS: u64 = 0x1003;
@@ -104,8 +107,8 @@ pub(crate) enum ProcessAction {
     Fork {
         child_pid: i32,
         child_stack: Option<u64>,
-        // AUTONOMOUS-BOT-IMPLEMENTED: Model process-only clone TID bookkeeping.
-        // TODO-HUMAN-REVIEW(#89): Review clone TID timing and clone3 ABI boundaries.
+        // AUTONOMOUS-BOT-IMPLEMENTED: Model legacy process-clone TID bookkeeping.
+        // TODO-HUMAN-REVIEW(#89): Review clone TID timing and clear-pointer lifecycle.
         parent_tid: Option<u64>,
         child_tid: Option<u64>,
         clear_child_tid: Option<u64>,
@@ -343,8 +346,6 @@ fn execute_basic_syscall_with_output(
         rt_sigprocmask(memory, state, args)
     } else if number == libc::SYS_sigaltstack as u64 {
         sigaltstack(memory, state, args)
-    } else if number == libc::SYS_set_tid_address as u64 {
-        1
     } else if number == libc::SYS_close as u64 {
         close(state, args[0])
     } else if number == libc::SYS_set_robust_list as u64
@@ -375,6 +376,7 @@ pub(crate) struct ElfExecutor {
     process_action: Option<ProcessAction>,
     pending_segment: Option<(SegmentBase, u64)>,
     exit_code: Option<i32>,
+    clear_child_tid: Option<u64>,
 }
 
 impl ElfExecutor {
@@ -386,6 +388,7 @@ impl ElfExecutor {
             process_action: None,
             pending_segment: None,
             exit_code: None,
+            clear_child_tid: None,
         }
     }
 
@@ -396,12 +399,15 @@ impl ElfExecutor {
     ) -> Option<i64> {
         let number = request.number();
         let args = request.args();
+        if number == libc::SYS_set_tid_address as u64 {
+            self.clear_child_tid = (args[0] != 0).then_some(args[0]);
+            return Some(i64::from(self.state.pid));
+        }
         if number == libc::SYS_fork as u64 || number == libc::SYS_vfork as u64 {
             return Some(self.prepare_fork(None, None, None, None));
         }
         if number == libc::SYS_clone as u64 {
             return Some(self.prepare_clone(
-                memory,
                 args[0],
                 (args[1] != 0).then_some(args[1]),
                 args[2],
@@ -410,13 +416,13 @@ impl ElfExecutor {
         }
         if number == libc::SYS_clone3 as u64 {
             return Some(match read_clone3(memory, args[0], args[1]) {
-                Ok(request) => self.prepare_clone(
-                    memory,
-                    request.flags,
-                    request.child_stack,
-                    request.parent_tid_address,
-                    request.child_tid_address,
-                ),
+                Ok((flags, _child_stack)) if flags & PROCESS_CLONE_TID_FLAGS != 0 => {
+                    negative_errno(libc::ENOTSUP)
+                }
+                Ok((flags, child_stack)) => match validate_process_clone_flags(flags) {
+                    Ok(()) => self.prepare_fork(child_stack, None, None, None),
+                    Err(error) => error,
+                },
                 Err(error) => error,
             });
         }
@@ -438,7 +444,6 @@ impl ElfExecutor {
 
     fn prepare_clone(
         &mut self,
-        memory: &GuestMemory,
         flags: u64,
         child_stack: Option<u64>,
         parent_tid_address: u64,
@@ -447,26 +452,9 @@ impl ElfExecutor {
         if let Err(error) = validate_process_clone_flags(flags) {
             return error;
         }
-        let parent_tid = if flags & libc::CLONE_PARENT_SETTID as u64 != 0 {
-            if !range_is_valid(
-                memory,
-                parent_tid_address,
-                std::mem::size_of::<i32>() as u64,
-            ) {
-                return negative_errno(libc::EFAULT);
-            }
-            Some(parent_tid_address)
-        } else {
-            None
-        };
-        let child_tid = if flags & libc::CLONE_CHILD_SETTID as u64 != 0 {
-            if !range_is_valid(memory, child_tid_address, std::mem::size_of::<i32>() as u64) {
-                return negative_errno(libc::EFAULT);
-            }
-            Some(child_tid_address)
-        } else {
-            None
-        };
+        let parent_tid =
+            (flags & libc::CLONE_PARENT_SETTID as u64 != 0).then_some(parent_tid_address);
+        let child_tid = (flags & libc::CLONE_CHILD_SETTID as u64 != 0).then_some(child_tid_address);
         let clear_child_tid = (flags & libc::CLONE_CHILD_CLEARTID as u64 != 0
             && child_tid_address != 0)
             .then_some(child_tid_address);
@@ -552,7 +540,16 @@ impl ElfExecutor {
             process_action: None,
             pending_segment: None,
             exit_code: None,
+            clear_child_tid: None,
         })
+    }
+
+    pub(crate) fn set_clear_child_tid(&mut self, address: Option<u64>) {
+        self.clear_child_tid = address;
+    }
+
+    pub(crate) fn take_clear_child_tid(&mut self) -> Option<u64> {
+        self.clear_child_tid.take()
     }
 
     pub(crate) fn take_process_action(&mut self) -> Option<ProcessAction> {
@@ -564,6 +561,7 @@ impl ElfExecutor {
         self.state.inherit_process_state(previous);
         self.pending_segment = None;
         self.exit_code = None;
+        self.clear_child_tid = None;
     }
 
     pub(crate) fn record_child_exit(&mut self, pid: i32, code: i32) {
@@ -2918,17 +2916,13 @@ fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
     {
         return Err(negative_errno(libc::ENOTSUP));
     }
+    if shared_address_space != 0 && flags & PROCESS_CLONE_TID_FLAGS != 0 {
+        return Err(negative_errno(libc::ENOTSUP));
+    }
     Ok(())
 }
 
-struct ProcessCloneRequest {
-    flags: u64,
-    child_stack: Option<u64>,
-    parent_tid_address: u64,
-    child_tid_address: u64,
-}
-
-fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<ProcessCloneRequest, i64> {
+fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<(u64, Option<u64>), i64> {
     const REQUIRED_SIZE: usize = 64;
     const MAX_SIZE: usize = 88;
 
@@ -2949,7 +2943,7 @@ fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<ProcessC
                 .expect("u64 clone3 field"),
         )
     };
-    if field(8) != 0 || field(56) != 0 || field(64) != 0 || field(72) != 0 || field(80) != 0 {
+    if field(8) != 0 || field(16) != 0 || field(24) != 0 {
         return Err(negative_errno(libc::ENOTSUP));
     }
     let flags = field(0) | field(32);
@@ -2963,12 +2957,7 @@ fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<ProcessC
     if stack != 0 && child_stack.is_none() {
         return Err(negative_errno(libc::EINVAL));
     }
-    Ok(ProcessCloneRequest {
-        flags,
-        child_stack,
-        parent_tid_address: field(24),
-        child_tid_address: field(16),
-    })
+    Ok((flags, child_stack))
 }
 
 fn read_string_array(memory: &GuestMemory, address: u64) -> Result<Vec<String>, i64> {
@@ -5445,14 +5434,13 @@ mod tests {
     }
 
     #[test]
-    fn process_clone_accepts_process_tid_flags() {
+    fn process_clone_accepts_legacy_tid_flags_without_prevalidating_pointers() {
         const CHILD_TID: u64 = 0x100;
         const PARENT_TID: u64 = 0x108;
 
         let root = TestDir::new();
-        let state = test_state(&root.0);
-        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-        let mut executor = ElfExecutor::new(state, false);
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
         let flags = libc::SIGCHLD as u64
             | libc::CLONE_PARENT_SETTID as u64
             | libc::CLONE_CHILD_SETTID as u64
@@ -5479,8 +5467,7 @@ mod tests {
             _ => panic!("clone did not produce a fork action"),
         }
 
-        let state = test_state(&root.0);
-        let mut executor = ElfExecutor::new(state, false);
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
         let bad_pointer = memory.guest_end() - 1;
         let request = SyscallRequest::new(
             libc::SYS_clone as u64,
@@ -5493,23 +5480,76 @@ mod tests {
                 0,
             ],
         );
+        assert_eq!(executor.execute_process_action(&request, &memory), Some(2));
+        match executor.take_process_action() {
+            Some(ProcessAction::Fork {
+                child_pid,
+                child_tid,
+                ..
+            }) => {
+                assert_eq!(child_pid, 2);
+                assert_eq!(child_tid, Some(bad_pointer));
+            }
+            _ => panic!("clone with an invalid TID pointer did not create a child"),
+        }
+
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let shared_flags = flags | libc::CLONE_VM as u64 | libc::CLONE_VFORK as u64;
+        let request = SyscallRequest::new(
+            libc::SYS_clone as u64,
+            [shared_flags, 0, PARENT_TID, CHILD_TID, 0, 0],
+        );
         assert_eq!(
             executor.execute_process_action(&request, &memory),
-            Some(negative_errno(libc::EFAULT))
+            Some(negative_errno(libc::ENOTSUP))
         );
         assert!(executor.take_process_action().is_none());
+    }
 
+    #[test]
+    fn clone3_tid_flags_remain_explicitly_unsupported() {
         const CLONE3_ARGS: u64 = 0x200;
-        let mut clone3 = [0_u8; 88];
-        clone3[0..8].copy_from_slice(&flags.to_le_bytes());
-        clone3[16..24].copy_from_slice(&CHILD_TID.to_le_bytes());
-        clone3[24..32].copy_from_slice(&PARENT_TID.to_le_bytes());
+
+        let root = TestDir::new();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut clone3 = [0_u8; 64];
+        clone3[0..8].copy_from_slice(&(libc::CLONE_CHILD_CLEARTID as u64).to_le_bytes());
+        clone3[32..40].copy_from_slice(&(libc::SIGCHLD as u64).to_le_bytes());
         memory.write(CLONE3_ARGS, &clone3).unwrap();
-        let request = read_clone3(&memory, CLONE3_ARGS, clone3.len() as u64).unwrap();
-        assert_eq!(request.flags, flags);
-        assert_eq!(request.child_stack, None);
-        assert_eq!(request.parent_tid_address, PARENT_TID);
-        assert_eq!(request.child_tid_address, CHILD_TID);
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let request = SyscallRequest::new(
+            libc::SYS_clone3 as u64,
+            [CLONE3_ARGS, clone3.len() as u64, 0, 0, 0, 0],
+        );
+
+        assert_eq!(
+            executor.execute_process_action(&request, &memory),
+            Some(negative_errno(libc::ENOTSUP))
+        );
+        assert!(executor.take_process_action().is_none());
+    }
+
+    #[test]
+    fn set_tid_address_tracks_current_pid_and_clear_pointer() {
+        const CLEAR_TID: u64 = 0x100;
+
+        let root = TestDir::new();
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let request =
+            SyscallRequest::new(libc::SYS_set_tid_address as u64, [CLEAR_TID, 0, 0, 0, 0, 0]);
+        assert_eq!(executor.execute_process_action(&request, &memory), Some(1));
+        assert_eq!(executor.take_clear_child_tid(), Some(CLEAR_TID));
+
+        let request = SyscallRequest::new(libc::SYS_set_tid_address as u64, [0; 6]);
+        assert_eq!(executor.execute_process_action(&request, &memory), Some(1));
+        assert_eq!(executor.take_clear_child_tid(), None);
+
+        let request =
+            SyscallRequest::new(libc::SYS_set_tid_address as u64, [CLEAR_TID, 0, 0, 0, 0, 0]);
+        assert_eq!(executor.execute_process_action(&request, &memory), Some(1));
+        executor.replace_after_exec(test_state(&root.0));
+        assert_eq!(executor.take_clear_child_tid(), None);
     }
 
     #[test]
