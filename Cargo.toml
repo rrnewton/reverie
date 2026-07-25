@@ -18,9 +18,12 @@ members = [
     "reverie-kvm",
     "reverie-liteinst",
     "reverie-memory",
+    "reverie-multibackend-tools",
     "reverie-process",
     "reverie-ptrace",
     "reverie-syscalls",
+    "reverie-tool-riptrace",
+    "reverie-tool-sysctr",
     "reverie-util",
     "safeptrace",
 ]

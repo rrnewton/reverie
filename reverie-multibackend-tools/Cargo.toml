@@ -1,0 +1,79 @@
+[package]
+name = "reverie-multibackend-tools"
+version = "0.1.0"
+authors = ["Meta Platforms"]
+edition = "2024"
+repository = "https://github.com/facebookexperimental/reverie"
+license = "BSD-2-Clause"
+publish = false
+
+# Same tool code, one binary per (tool x backend). Backends are feature-gated
+# because they have very different build requirements:
+#   * ptrace  - builds anywhere; the mature general-purpose backend.
+#   * kvm     - builds anywhere; runs a single static ELF (bounded prototype).
+#   * dbi     - requires the DynamoRIO submodule + a from-source CMake build
+#               (scripts/backend-submodule.sh activate dynamorio), so it is NOT
+#               a default feature.
+#
+# Default builds the ptrace and kvm binaries:
+#   cargo build -p reverie-multibackend-tools
+# Add the DBI binaries once DynamoRIO is activated:
+#   cargo build -p reverie-multibackend-tools --features dbi
+[features]
+default = ["ptrace", "kvm"]
+ptrace = ["dep:reverie-ptrace", "dep:reverie-util", "dep:clap", "dep:tokio"]
+kvm = ["dep:reverie-kvm", "dep:futures", "dep:anyhow"]
+dbi = ["dep:reverie-dbi", "dep:anyhow"]
+
+[dependencies]
+reverie = { version = "0.1.0", path = "../reverie" }
+reverie-tool-sysctr = { version = "0.1.0", path = "../reverie-tool-sysctr" }
+reverie-tool-riptrace = { version = "0.1.0", path = "../reverie-tool-riptrace" }
+
+# ptrace backend
+reverie-ptrace = { version = "0.1.0", path = "../reverie-ptrace", optional = true }
+reverie-util = { version = "0.1.0", path = "../reverie-util", optional = true }
+clap = { version = "4.6.2", features = ["derive", "env", "string", "unicode", "wrap_help"], optional = true }
+tokio = { version = "1.52.4", features = ["full"], optional = true }
+
+# kvm backend
+reverie-kvm = { version = "0.1.0", path = "../reverie-kvm", optional = true }
+futures = { version = "0.3.33", optional = true }
+
+# dbi backend
+reverie-dbi = { version = "0.1.0", path = "../reverie-dbi", optional = true }
+
+# shared by kvm + dbi adapters
+anyhow = { version = "1.0.103", optional = true }
+
+# ---- sysctr binaries ----
+[[bin]]
+name = "reverie-sysctr-ptrace"
+path = "src/bin/reverie-sysctr-ptrace.rs"
+required-features = ["ptrace"]
+
+[[bin]]
+name = "reverie-sysctr-kvm"
+path = "src/bin/reverie-sysctr-kvm.rs"
+required-features = ["kvm"]
+
+[[bin]]
+name = "reverie-sysctr-dbi"
+path = "src/bin/reverie-sysctr-dbi.rs"
+required-features = ["dbi"]
+
+# ---- riptrace binaries ----
+[[bin]]
+name = "reverie-riptrace-ptrace"
+path = "src/bin/reverie-riptrace-ptrace.rs"
+required-features = ["ptrace"]
+
+[[bin]]
+name = "reverie-riptrace-kvm"
+path = "src/bin/reverie-riptrace-kvm.rs"
+required-features = ["kvm"]
+
+[[bin]]
+name = "reverie-riptrace-dbi"
+path = "src/bin/reverie-riptrace-dbi.rs"
+required-features = ["dbi"]
