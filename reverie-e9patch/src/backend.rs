@@ -196,11 +196,17 @@ impl E9patchBackend {
         let prepared = E9patchRewriter::from_env()?.prepare(&source)?;
         let report = prepared.report();
         // TODO-HUMAN-REVIEW(PR-103): Review the stable backend coverage diagnostic.
+        let event_source = if report.patched_sites() == 0 {
+            "ptrace"
+        } else {
+            "injected-trap"
+        };
         eprintln!(
-            ":: Backend: e9patch hybrid; recovered_sites={}; patched_sites={}; b0_sites={}; event_source=injected-trap; controller=ptrace",
+            ":: Backend: e9patch hybrid; recovered_sites={}; patched_sites={}; b0_sites={}; event_source={}; controller=ptrace",
             report.recovered_sites(),
             report.patched_sites(),
             report.b0_sites(),
+            event_source,
         );
 
         // TODO-HUMAN-REVIEW(PR-103): Review zero-site original-image execution.
@@ -270,8 +276,13 @@ impl E9patchBackend {
     ///
     /// The caller must already be in a private mount namespace with permission
     /// to create a read-only bind mount at the resolved executable path.
+    ///
+    /// # Safety
+    ///
+    /// The current process must be disposable and isolated in a private mount
+    /// namespace. Otherwise this call can overlay a host executable path.
     // TODO-HUMAN-REVIEW(PR-103): Review the namespace executable-identity API.
-    pub async fn run_preserving_executable<T>(
+    pub async unsafe fn run_preserving_executable<T>(
         command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
     ) -> Result<(ExitStatus, T::GlobalState), Error>
@@ -292,8 +303,13 @@ impl E9patchBackend {
     ///
     /// The caller must already be in a private mount namespace with permission
     /// to create a read-only bind mount at the resolved executable path.
+    ///
+    /// # Safety
+    ///
+    /// The current process must be disposable and isolated in a private mount
+    /// namespace. Otherwise this call can overlay a host executable path.
     // TODO-HUMAN-REVIEW(PR-103): Review the captured namespace identity API.
-    pub async fn run_with_output_preserving_executable<T>(
+    pub async unsafe fn run_with_output_preserving_executable<T>(
         command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
     ) -> Result<(Output, T::GlobalState), Error>
