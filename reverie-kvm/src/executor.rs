@@ -1317,6 +1317,8 @@ fn insert_file_with_flags(
     i64::from(fd)
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED: Model fcntl descriptor duplication in the guest table.
+// TODO-HUMAN-REVIEW(#91): Review minimum/error precedence and standard-fd ownership.
 fn duplicate_fd_at_or_above(
     state: &mut LoadedStaticElf,
     old_host_fd: RawFd,
