@@ -30,6 +30,7 @@ const SUMMARY_ENV: &str = "REVERIE_DBI_SUMMARY";
 const PATH_ENV: &str = "PATH";
 const BINPRM_BUF_SIZE: usize = 256;
 // AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#90): Confirm the reserved descriptor across followed execs.
 // Keep client diagnostics on launcher stderr across guest fd 2 redirects and execs.
 const DIAGNOSTIC_FD: libc::c_int = 198;
 

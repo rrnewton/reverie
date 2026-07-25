@@ -103,6 +103,7 @@ typedef struct {
   reverie_idle_fn_t idle;
 } runtime_callbacks_t;
 // AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#90): Confirm diagnostic fd ownership across exec.
 // Inherited from the launcher so guest stderr redirections cannot capture it.
 static file_t diagnostic_file;
 static void reverie_dbi_emit(const char *buf, size_t len) {
