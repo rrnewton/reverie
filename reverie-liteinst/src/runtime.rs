@@ -373,18 +373,16 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
         }
     }
 
-    let compatibility_clone =
-        TOOL_MODE.load(Ordering::Relaxed) == TOOL_COMPAT && event.number == libc::SYS_clone;
-    if compatibility_clone {
+    let compatibility_fork = TOOL_MODE.load(Ordering::Relaxed) == TOOL_COMPAT
+        && matches!(event.number, libc::SYS_clone | libc::SYS_fork);
+    if compatibility_fork {
         unsafe {
             trace_event(event, None);
         }
     }
     event.result = unsafe { raw_syscall6(event.number, event.args) };
 
-    if event.number != libc::SYS_exit
-        && event.number != libc::SYS_exit_group
-        && !compatibility_clone
+    if event.number != libc::SYS_exit && event.number != libc::SYS_exit_group && !compatibility_fork
     {
         unsafe {
             trace_event(event, Some(event.result));

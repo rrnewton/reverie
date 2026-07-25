@@ -3,7 +3,14 @@ use std::process;
 const CHILD_MESSAGE: &[u8] = b"fork child reached guest code\n";
 
 fn main() {
-    let child = unsafe { libc::fork() };
+    let raw_fork = std::env::args_os().any(|argument| argument == "--raw-fork");
+    let child = unsafe {
+        if raw_fork {
+            libc::syscall(libc::SYS_fork) as libc::pid_t
+        } else {
+            libc::fork()
+        }
+    };
     if child < 0 {
         eprintln!("fork failed: {}", std::io::Error::last_os_error());
         process::exit(1);
