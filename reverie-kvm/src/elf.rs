@@ -76,6 +76,7 @@ pub(crate) struct LoadedStaticElf {
     pub signal_mask: [u8; 8],
     pub signal_alt_stack: Option<Vec<u8>>,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
+    pub cloexec_fds: std::collections::BTreeSet<i32>,
     pub closed_standard_fds: std::collections::BTreeSet<i32>,
     pub children: std::collections::BTreeMap<i32, i32>,
 }
@@ -112,21 +113,54 @@ impl LoadedStaticElf {
             signal_mask: self.signal_mask,
             signal_alt_stack: self.signal_alt_stack.clone(),
             files,
+            cloexec_fds: self.cloexec_fds.clone(),
             closed_standard_fds: self.closed_standard_fds.clone(),
             children: std::collections::BTreeMap::new(),
         })
     }
 
     pub(crate) fn inherit_process_state(&mut self, previous: Self) {
+        let cloexec_fds = previous.cloexec_fds;
+        let mut stdin = previous.stdin;
+        let files = previous
+            .files
+            .into_iter()
+            .filter(|(fd, _)| !cloexec_fds.contains(fd))
+            .collect();
+        let mut closed_standard_fds = previous.closed_standard_fds;
+        if cloexec_fds.contains(&libc::STDIN_FILENO) {
+            stdin = None;
+            closed_standard_fds.insert(libc::STDIN_FILENO);
+        }
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            if cloexec_fds.contains(&fd) {
+                closed_standard_fds.insert(fd);
+            }
+        }
+        let signal_actions = previous
+            .signal_actions
+            .into_iter()
+            .filter(|(_, action)| {
+                let handler = usize::from_ne_bytes(
+                    action[..std::mem::size_of::<usize>()]
+                        .try_into()
+                        .expect("signal handler field size"),
+                );
+                handler == libc::SIG_IGN
+            })
+            .collect();
+
         self.cwd = previous.cwd;
         self.cwd_fd = previous.cwd_fd;
-        self.stdin = previous.stdin;
+        self.stdin = stdin;
         self.pid = previous.pid;
         self.ppid = previous.ppid;
         self.umask = previous.umask;
+        self.signal_actions = signal_actions;
         self.signal_mask = previous.signal_mask;
-        self.files = previous.files;
-        self.closed_standard_fds = previous.closed_standard_fds;
+        self.files = files;
+        self.cloexec_fds = std::collections::BTreeSet::new();
+        self.closed_standard_fds = closed_standard_fds;
         self.children = previous.children;
     }
 }
@@ -256,6 +290,7 @@ pub(crate) fn load_static_elf(
         signal_mask: [0; 8],
         signal_alt_stack: None,
         files: std::collections::BTreeMap::new(),
+        cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: std::collections::BTreeMap::new(),
     })
