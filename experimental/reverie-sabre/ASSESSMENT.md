@@ -1,72 +1,117 @@
 # reverie-sabre backend assessment
 
-Status as of 2026-07-21: the restored backend builds and runs a syscall-tracing
-demo on dynamically linked Linux x86-64 programs. This remains an experimental
-backend with a separate synchronous tool API; it is not interchangeable with
-`reverie-ptrace`.
+Status as of 2026-07-24, measured at Reverie commit
+`d0bf6cc8dd70c9218853ed992a6a3b63d14ff007`: the backend builds and runs
+dynamically linked Linux x86-64 programs through both the native synchronous
+`reverie_sabre::Tool` API and the constrained adapter for the shared
+`reverie::Tool` API. It remains experimental and is not a deterministic
+Detcore backend or a drop-in replacement for `reverie-ptrace`.
 
-## Verified functionality
+## Build and test evidence
 
-- `recursion_protector.c` and `vfork_syscall.S` are vendored as regular files
-  from the MIT-licensed SaBRe plugin API and compiled through Cargo.
-- `reverie-sabre` links on the current Rust toolchain and its 17 library tests
-  pass.
-- `riptrace-tool` builds both an `rlib` and the
-  `libriptrace_plugin.so` cdylib expected by SaBRe.
-- The plugin exports `sbr_init` and handles syscalls, including synchronous RPC
-  trace output and summary counts.
-- The host command launches the pinned SaBRe loader, serves global-state RPC,
-  propagates the guest exit status, and accepts explicit or environment-based
-  loader and plugin paths.
-- End-to-end runs of `/bin/true` and `/bin/echo` complete successfully. The
-  `/bin/echo` check produced guest output plus an 86-line syscall trace.
-- Successful `exec`, a fork/wait workload, and nonzero guest exit-status
-  propagation have also been exercised through the demo.
+The following commands completed on x86-64 Linux with rustc
+`1.99.0-nightly (be8e82435 2026-07-11)`, CMake 3.31.8, and GCC 11.5.0:
 
-The opt-in `third-party/sabre` submodule and `SABRE_UPSTREAM.toml` pin
-`srg-imperial/SaBRe` commit
-`05816ee066a7284bee8afd0e73eeb44455b254b4`. That revision builds with CMake,
-Make, and GCC. Its three smoke tests pass. All 72 supported upstream tests pass
-after test-only portability adjustments for explicit PIE output and current
-`dumpkeys`/`fgconsole` exit codes; three host-dependent tests are unsupported.
+```sh
+cargo build -p reverie-sabre -p reverie-sabre-strace \
+  -p riptrace -p riptrace-tool
+cmake -S third-party/sabre -B target/sabre -DCMAKE_BUILD_TYPE=Release
+cmake --build target/sabre --parallel 4
+cargo test -p reverie-sabre -p reverie-sabre-strace \
+  -p riptrace -p riptrace-tool -- --test-threads=1
+SABRE_BINARY=target/sabre/sabre SABRE_CONFORMANCE_TIMEOUT=60 \
+  experimental/reverie-sabre/conformance/run.sh all
+```
 
-See `../riptrace/README.md` for build and run commands.
+The focused Cargo run passed 41 `reverie-sabre` tests with zero failures;
+the other three selected packages currently contain no tests. The conformance
+gate passed `thread_lifecycle` and `signal_forwarding` under both the ptrace
+counter example and SaBRe `riptrace`. The SaBRe legs observed 1,126 and 25
+syscalls respectively.
+
+The pinned upstream source is
+`srg-imperial/SaBRe@05816ee066a7284bee8afd0e73eeb44455b254b4`. Its tests are
+custom `smoketests` and `tests` build targets, not CTest tests. They were not
+run in this assessment because the host does not provide the `lit` executable;
+`ctest` reported no tests and the `smoketests` target stopped with
+`lit: command not found`.
+
+No Hermit assurance level is established by these Reverie-only checks. They
+exercise runtime compatibility, not deterministic repeat execution.
+
+## Program matrix
+
+The shared-adapter column used `reverie-sabre-strace` with
+`REVERIE_SABRE_STRACE_QUIET=1`. The native column used `riptrace --quiet
+--summary`. Both used the pinned loader and their debug plugin artifacts.
+
+| Guest or behavior | Shared `reverie::Tool` adapter | Native synchronous tool |
+| --- | --- | --- |
+| `/bin/true` | exit 0 | exit 0 |
+| `/bin/false` | exit 1 propagated | exit 1 propagated |
+| `/bin/echo sabre-hello` | exit 0, stdout `sabre-hello` | exit 0, stdout `sabre-hello`, 86 syscalls |
+| `/bin/cat` on a two-line file | exit 0, exact contents | exit 0, exact contents |
+| `/bin/sh -c 'exec /bin/echo exec-ok'` | exit 0, stdout `exec-ok` | exit 0, stdout `exec-ok` |
+| `/bin/sh -c '/bin/echo child-ok; wait'` | exit 0, stdout `child-ok` | exit 0, stdout `child-ok` |
+| Executable `#!/bin/sh` script | exit 0, stdout `script-ok` | exit 0, stdout `script-ok` |
+| `/usr/bin/python3 -c 'print(6*7)'` (Python 3.9.25) | exit 0, stdout `42` | exit 0, stdout `42`, 747 syscalls |
+
+Without quiet mode, the shared adapter also completed `/bin/echo` and emitted
+173 syscall diagnostic lines. This confirms that quiet mode suppresses output,
+not interception.
+
+Two loader boundaries were reproduced independently of Reverie's plugin:
+
+- `python3` on this host resolves to Meta's custom `fbpython` with
+  `/usr/local/fbcode/platform010/lib/ld.so`. It exited 139 before either
+  Reverie tool observed a syscall. The same binary also exited 139 under
+  upstream SaBRe's `sbr-id` identity plugin, while `/usr/bin/python3.9` passed.
+- A statically linked Go executable aborted with exit 134 in upstream
+  `loader.c` at the explicit unsupported-static-ELF assertion. Both Reverie
+  front ends fail at the same loader boundary before observing a syscall.
 
 ## Backend model
 
-SaBRe rewrites the guest and loads the tool into the guest process. The tool's
-syscall callback is synchronous and operates directly on local guest memory.
-Process-global state is hosted out of process and reached through a blocking
-Unix-socket RPC client. This is materially different from the async,
-out-of-process ptrace backend.
+SaBRe loads a plugin into the guest and rewrites syscall instructions in the
+main executable, dynamic loader, and selected libraries. The callback is
+synchronous and operates on local guest memory. The repository currently has
+two tool surfaces:
 
-| Capability | `reverie-ptrace` | `reverie-sabre` |
-| --- | --- | --- |
-| Tool interface | Shared async `reverie::Tool` and `Guest` | Separate synchronous `reverie_sabre::Tool` |
-| Syscall execution | Guest injection and tail injection | Direct in-process syscall execution |
-| Guest memory | Remote memory abstraction | Direct `LocalMemory` access |
-| Registers and stack | Read/write APIs | No tool-facing equivalent |
-| Global state | Async typed global tool | Blocking generated RPC client/service |
-| Thread state | Typed tool-defined state | Internal runtime records and lifecycle IDs |
-| Signals | Tool can influence delivery | Notification only |
-| Event selection | Subscription filters | No shared subscription contract |
-| CPU and lifecycle events | CPUID, RDTSC, exec, timers, exits | RDTSC, VDSO, function detours, partial lifecycle |
-| Architecture | x86-64 and aarch64 paths | x86-64 only |
+- The native `reverie_sabre::Tool` API used by `riptrace` supports synchronous
+  callbacks and reaches process-global state through a blocking Unix-socket
+  RPC service.
+- `ReverieAdapter<T>` runs a shared `reverie::Tool` inside the plugin. It keeps
+  shared global and per-thread state in process. A handler must finish on its
+  first poll; `tail_inject` is the only supported pending future. Other pending
+  futures fail closed with `EIO`.
+
+`execve` re-enters the pinned SaBRe loader around the replacement image so the
+plugin remains installed. `execveat` returns `ENOSYS`. Forked native-tool
+children recreate their tool and RPC transport lazily. Thread observation is
+callback-driven, so a thread that never crosses an intercepted boundary is not
+represented.
 
 ## Current limitations
 
-- The SaBRe loader is activated and built separately; Cargo only builds the
-  Reverie plugin and host command.
-- Only the pinned loader revision and dynamically linked x86-64 guests are
-  validated. Static executables are unsupported by upstream SaBRe.
-- The backend has no adapter for the shared Reverie `Tool`/`Guest`
-  abstractions, so ptrace tools cannot switch backends by recompiling.
-- Exec is deliberately rejected before image replacement because SaBRe cannot
-  yet preserve kernel failure semantics while reinjecting the loader. Signals,
-  clone/vfork, VDSO calls, and detours still need broader end-to-end coverage.
-- RPC is synchronous and reserves guest file descriptor 100. Trace formatting
-  performs allocations and an RPC operation in the injected process.
-- The restored runtime should not yet be treated as a production isolation
-  boundary.
+- Cargo builds the host and plugin artifacts, but the SaBRe loader is an
+  opt-in submodule with a separate CMake build.
+- The validated envelope is dynamically linked x86-64 Linux ELF programs.
+  Static programs are unsupported, and nonstandard dynamic loaders such as the
+  tested `fbpython` loader can crash before plugin initialization.
+- The shared adapter supports only immediately-ready handlers and
+  `tail_inject`; it does not make arbitrary async Reverie tools backend-neutral.
+- There is no Detcore scheduler, deterministic time/randomness policy, PMU
+  preemption, CPUID emulation, or deterministic signal delivery.
+- SaBRe has no ptrace-equivalent tool-facing full-register, remote-memory,
+  subscription, timer, or PMU interface. See `CAPABILITIES.md` for the detailed
+  event and signal envelope.
+- Signal mediation is intentionally incomplete: synchronous faults, precise
+  `ucontext_t`, alternate stacks, realtime-signal guarantees, and several
+  `sigaction` flags are not reproduced.
+- `execveat`, static binaries, non-x86-64 guests, loader distribution, and
+  broad clone/vfork/exec stress coverage remain unsupported or unverified.
+- The native RPC path is blocking and reserves guest file descriptor 100.
 
-No shared Reverie core abstractions were changed to make this backend run.
+The backend is suitable for experimental low-overhead syscall tracing within
+this envelope. It should not be treated as a production isolation boundary or
+as evidence of deterministic execution.
