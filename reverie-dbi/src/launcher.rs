@@ -18,6 +18,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Child;
 use std::process::Command;
 use std::process::ExitStatus;
 use std::process::Output;
@@ -114,7 +115,8 @@ impl DbiRunner {
 
     /// Runs `guest` with inherited standard streams and waits for it to exit.
     pub fn status(&self, guest: &Command) -> io::Result<ExitStatus> {
-        self.command(guest, None).status()
+        let child = self.command(guest, None).spawn()?;
+        self.wait_for_status(child)
     }
 
     /// Runs `guest` with an exact environment instead of inheriting the launcher environment.
@@ -123,17 +125,30 @@ impl DbiRunner {
         guest: &Command,
         environment: &BTreeMap<OsString, OsString>,
     ) -> io::Result<ExitStatus> {
-        self.command(guest, Some(environment)).status()
+        let child = self.command(guest, Some(environment)).spawn()?;
+        self.wait_for_status(child)
     }
 
     /// Runs `guest` and captures its standard output and standard error.
     pub fn output(&self, guest: &Command) -> io::Result<Output> {
-        self.command(guest, None).output()
+        let child = self
+            .command(guest, None)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        self.wait_with_output(child)
     }
 
     /// Captures guest output while preserving an inherited terminal stdin.
     pub fn output_with_inherited_stdin(&self, guest: &Command) -> io::Result<Output> {
-        self.command(guest, None).stdin(Stdio::inherit()).output()
+        let child = self
+            .command(guest, None)
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        self.wait_with_output(child)
     }
 
     /// Runs `guest` with captured output and supplies `input` on standard input.
@@ -158,7 +173,7 @@ impl DbiRunner {
 
         std::thread::scope(|scope| {
             let writer = scope.spawn(move || io::copy(&mut input, &mut stdin));
-            let output = child.wait_with_output();
+            let output = self.wait_with_output(child);
             let write_result = writer
                 .join()
                 .map_err(|_| io::Error::other("DBI guest stdin writer thread panicked"))?;
@@ -200,7 +215,7 @@ impl DbiRunner {
         std::thread::spawn(move || {
             let _ = sender.send(io::copy(&mut input, &mut stdin));
         });
-        let output = child.wait_with_output()?;
+        let output = self.wait_with_output(child)?;
         match receiver.try_recv() {
             Ok(Err(error)) if error.kind() != io::ErrorKind::BrokenPipe => Err(error),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -216,7 +231,78 @@ impl DbiRunner {
         guest: &Command,
         environment: &BTreeMap<OsString, OsString>,
     ) -> io::Result<Output> {
-        self.command(guest, Some(environment)).output()
+        let child = self
+            .command(guest, Some(environment))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        self.wait_with_output(child)
+    }
+
+    fn wait_for_status(&self, mut child: Child) -> io::Result<ExitStatus> {
+        let process_group = self.isolated_process_group.then_some(child.id() as i32);
+        let status = child.wait()?;
+        self.terminate_process_group(process_group)?;
+        Ok(status)
+    }
+
+    fn wait_with_output(&self, mut child: Child) -> io::Result<Output> {
+        let process_group = self.isolated_process_group.then_some(child.id() as i32);
+        let mut stdout = child.stdout.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "failed to capture DBI guest stdout",
+            )
+        })?;
+        let mut stderr = child.stderr.take().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "failed to capture DBI guest stderr",
+            )
+        })?;
+
+        std::thread::scope(|scope| {
+            let stdout_reader = scope.spawn(move || {
+                let mut bytes = Vec::new();
+                stdout.read_to_end(&mut bytes)?;
+                Ok::<_, io::Error>(bytes)
+            });
+            let stderr_reader = scope.spawn(move || {
+                let mut bytes = Vec::new();
+                stderr.read_to_end(&mut bytes)?;
+                Ok::<_, io::Error>(bytes)
+            });
+            let status = child.wait()?;
+            self.terminate_process_group(process_group)?;
+            let stdout = stdout_reader
+                .join()
+                .map_err(|_| io::Error::other("DBI stdout reader thread panicked"))??;
+            let stderr = stderr_reader
+                .join()
+                .map_err(|_| io::Error::other("DBI stderr reader thread panicked"))??;
+            Ok(Output {
+                status,
+                stdout,
+                stderr,
+            })
+        })
+    }
+
+    fn terminate_process_group(&self, process_group: Option<i32>) -> io::Result<()> {
+        let Some(process_group) = process_group else {
+            return Ok(());
+        };
+        // SAFETY: the launcher created a distinct process group whose id is the
+        // child pid. The negative id targets only that isolated group.
+        let result = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+        if result == -1 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 
     fn command(
@@ -764,6 +850,29 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"captured=<guest-stderr>\n");
         assert_eq!(output.stderr, b"backend-diagnostic");
+    }
+
+    #[test]
+    fn isolated_output_terminates_descendants_after_root_exit() {
+        let root = tempfile::tempdir().unwrap();
+        let drrun = root.path().join("drrun");
+        let client = root.path().join("client.so");
+        write_executable_script(
+            &drrun,
+            b"#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+        );
+        std::fs::write(&client, b"placeholder").unwrap();
+        let runner = DbiRunner::new(drrun, client)
+            .unwrap()
+            .isolated_process_group(true);
+        let mut guest = Command::new("/bin/sh");
+        guest.args(["-c", "sleep 60 & printf descendant-started; exit 7"]);
+        let started = std::time::Instant::now();
+
+        let output = runner.output(&guest).unwrap();
+        assert_eq!(output.status.code(), Some(7));
+        assert_eq!(output.stdout, b"descendant-started");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
     }
 
     #[test]

@@ -1097,7 +1097,8 @@ pub extern "C" fn reverie_dbi_runtime_copied_syscall(_sysnum: i64) -> i32 {
 /// Handles a DynamoRIO pre-syscall event.
 ///
 /// Returning one asks the native client to suppress the original syscall and
-/// install `result`; returning zero leaves the syscall unchanged.
+/// install `result`; returning zero leaves the syscall unchanged. A negative
+/// return terminates the isolated runtime with an enforcement failure.
 ///
 /// # Safety
 ///
