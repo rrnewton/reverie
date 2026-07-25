@@ -76,6 +76,8 @@ pub(crate) struct LoadedStaticElf {
     pub signal_mask: [u8; 8],
     pub signal_alt_stack: Option<Vec<u8>>,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
+    // AUTONOMOUS-BOT-IMPLEMENTED: Model guest close-on-exec state independently.
+    // TODO-HUMAN-REVIEW(#86): Review descriptor and signal inheritance across exec.
     pub cloexec_fds: std::collections::BTreeSet<i32>,
     pub closed_standard_fds: std::collections::BTreeSet<i32>,
     pub children: std::collections::BTreeMap<i32, i32>,

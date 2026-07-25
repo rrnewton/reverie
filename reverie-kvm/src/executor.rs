@@ -1174,6 +1174,8 @@ fn open_metadata_path(
     Ok(file)
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED: Resolve mutation targets without host magic links.
+// TODO-HUMAN-REVIEW(#86): Review procfs isolation and Linux mutation semantics.
 fn open_host_metadata_path(
     host_dirfd: RawFd,
     path: &CStr,
