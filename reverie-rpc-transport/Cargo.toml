@@ -20,4 +20,7 @@ thiserror = "2.0.18"
 tokio = { version = "1.52.4", features = ["io-util", "net", "rt", "sync", "macros"] }
 
 [dev-dependencies]
+# `libc` is used only by tests/fork_aggregation.rs to fork real child
+# processes, reproducing the cross-process scenario the transport fixes.
+libc = "0.2.186"
 tokio = { version = "1.52.4", features = ["full", "test-util"] }
