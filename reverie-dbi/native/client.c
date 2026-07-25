@@ -988,7 +988,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
         reverie_dbi_runtime_copied_syscall((int64_t)sysnum);
     if (copied_action == 1) {
       dr_fprintf(diagnostic_file,
-                 "detcore-dbi: unsafe syscall %d in copied child\n", sysnum);
+                 "detcore-dbi: unsupported syscall %d in copied child\n", sysnum);
       exit_runtime_tree(101);
       return false;
     }
