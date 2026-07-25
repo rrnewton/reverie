@@ -82,7 +82,7 @@ fn run_host_program_captured(
     let image = std::fs::read(program).unwrap();
     let mut backend = KvmBackend::new(REAL_PROGRAM_MEMORY_SIZE).unwrap();
     backend
-        .install_static_elf_with_context(&image, argv, &[], cwd)
+        .install_static_elf_with_context(&image, argv, &["PATH=/usr/bin:/bin"], cwd)
         .unwrap();
     let (code, stdout, stderr) = backend.run_static_elf_captured().unwrap();
     assert_eq!(
@@ -835,6 +835,42 @@ fn real_make_runs_a_shell_recipe_through_clone3_vfork() {
         std::fs::read(root.0.join("result.txt")).unwrap(),
         b"make:42\n"
     );
+}
+
+#[test]
+fn real_gcc_compiles_an_object_through_child_processes() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM gcc test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+    let root = TestDirectory::new();
+    std::fs::write(
+        root.0.join("fixture.c"),
+        b"int hermit_compat(void) { return 42; }\n",
+    )
+    .unwrap();
+    run_host_program(
+        "/usr/bin/gcc",
+        &[
+            "gcc",
+            "-std=c11",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-fno-ident",
+            "-frandom-seed=hermit-gcc",
+            "-c",
+            "fixture.c",
+            "-o",
+            "fixture.o",
+        ],
+        &root.0,
+    );
+    assert!(root.0.join("fixture.o").is_file());
 }
 
 fn static_elf(code: &[u8]) -> Vec<u8> {
