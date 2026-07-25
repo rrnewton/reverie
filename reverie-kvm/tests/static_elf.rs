@@ -925,6 +925,34 @@ fn real_gcc_compiles_an_object_through_child_processes() {
     assert!(root.0.join("fixture.o").is_file());
 }
 
+#[test]
+fn real_patch_applies_exact_hunk_with_absent_xattrs() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM patch test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let root = TestDirectory::new();
+    std::fs::write(root.0.join("file"), b"old\n").unwrap();
+    std::fs::write(
+        root.0.join("change.patch"),
+        b"--- file\n+++ file\n@@ -1 +1 @@\n-old\n+new\n",
+    )
+    .unwrap();
+    let (stdout, stderr) = run_host_program_captured(
+        "/usr/bin/patch",
+        &["patch", "--quiet", "--input=change.patch", "file"],
+        &root.0,
+    );
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(std::fs::read(root.0.join("file")).unwrap(), b"new\n");
+}
+
 fn static_elf(code: &[u8]) -> Vec<u8> {
     let mut image = vec![0; CODE_OFFSET + code.len()];
 

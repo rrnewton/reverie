@@ -206,8 +206,6 @@ fn execute_basic_syscall_with_output(
         fcntl(state, args)
     } else if number == libc::SYS_open as u64 {
         open(memory, state, args)
-    } else if number == libc::SYS_creat as u64 {
-        open_file(memory, state, libc::AT_FDCWD, args[0], 0o1101, args[1])
     } else if number == libc::SYS_openat as u64 {
         openat(memory, state, args)
     } else if number == libc::SYS_creat as u64 {
@@ -366,6 +364,12 @@ fn execute_basic_syscall_with_output(
             args[1],
             args[4] as libc::c_int,
         )
+    } else if number == libc::SYS_listxattr as u64 {
+        path_xattr_list(state, memory, args[0], false)
+    } else if number == libc::SYS_llistxattr as u64 {
+        path_xattr_list(state, memory, args[0], true)
+    } else if number == libc::SYS_flistxattr as u64 {
+        fd_xattr_list(state, args[0])
     } else if number == libc::SYS_umask as u64 {
         let previous = state.umask;
         state.umask = args[0] as libc::mode_t & 0o777;
@@ -2174,6 +2178,33 @@ fn fchownat(
     ) {
         Ok(_) => 0,
         Err(error) => error,
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#92): Review the deterministic no-xattr KVM filesystem view.
+fn path_xattr_list(
+    state: &LoadedStaticElf,
+    memory: &GuestMemory,
+    path_address: u64,
+    no_follow: bool,
+) -> i64 {
+    let path = match read_c_string(memory, path_address, 4096) {
+        Ok(path) if !path.is_empty() => path,
+        Ok(_) => return negative_errno(libc::ENOENT),
+        Err(error) => return read_c_string_errno(error),
+    };
+    match open_metadata_path(state, libc::AT_FDCWD, &path, no_follow) {
+        Ok(_) => 0,
+        Err(error) => error,
+    }
+}
+
+fn fd_xattr_list(state: &LoadedStaticElf, raw_fd: u64) -> i64 {
+    if host_fd(state, raw_fd as libc::c_int).is_some() {
+        0
+    } else {
+        negative_errno(libc::EBADF)
     }
 }
 
@@ -7873,6 +7904,13 @@ mod tests {
     fn priority_and_scheduler_queries_use_fixed_guest_persona() {
         const PARAM: u64 = 0x100;
         const ATTR: u64 = 0x200;
+        // ioprio encoding (whoami=PROCESS, class shift, IDLE class). The
+        // getxattr-style constants moved out with #92's ioprio helper; the
+        // dispatch now uses main's inline GUEST_IOPRIO_DEFAULT, so this test
+        // keeps them local and asserts against that source of truth.
+        const IOPRIO_WHO_PROCESS: u64 = 1;
+        const IOPRIO_CLASS_SHIFT: u32 = 13;
+        const IOPRIO_CLASS_IDLE: u64 = 3;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -7902,7 +7940,7 @@ mod tests {
                 libc::SYS_ioprio_get,
                 [IOPRIO_WHO_PROCESS, 0, 0, 0, 0, 0],
             ),
-            ((IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 4) as i64
+            GUEST_IOPRIO_DEFAULT
         );
         assert_eq!(
             syscall_result(
