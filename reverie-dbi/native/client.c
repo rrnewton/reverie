@@ -849,6 +849,16 @@ static bool has_copied_runtime(void) {
 }
 
 static bool pre_syscall(void *drcontext, int sysnum) {
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-84): Review virtualized setsid containment for isolated runtimes.
+  if (runtime_process_group != 0 && sysnum == SYS_setsid) {
+    pid_t pid = (pid_t)dr_get_process_id();
+    pid_t current_group = getpgrp();
+    reg_t result = pid == current_group ? (reg_t)-EPERM : (reg_t)pid;
+    dr_syscall_set_result(drcontext, result);
+    return false;
+  }
+
   if (has_copied_runtime()) {
     if (reverie_dbi_runtime_copied_syscall((int64_t)sysnum)) {
       dr_fprintf(STDERR,
