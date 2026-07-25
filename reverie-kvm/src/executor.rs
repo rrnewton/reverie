@@ -173,6 +173,22 @@ fn execute_basic_syscall_with_output(
         pipe2(memory, state, args[0], args[1])
     } else if number == libc::SYS_poll as u64 {
         poll(memory, state, args)
+    } else if number == libc::SYS_epoll_create1 as u64 {
+        epoll_create1(state, args[0])
+    } else if number == libc::SYS_epoll_ctl as u64 {
+        epoll_ctl(memory, state, args)
+    } else if number == libc::SYS_epoll_wait as u64 || number == libc::SYS_epoll_pwait as u64 {
+        epoll_wait(memory, state, args)
+    } else if number == libc::SYS_eventfd as u64 {
+        eventfd2(state, args[0], 0)
+    } else if number == libc::SYS_eventfd2 as u64 {
+        eventfd2(state, args[0], args[1])
+    } else if number == libc::SYS_socket as u64 {
+        socket(state, args)
+    } else if number == libc::SYS_connect as u64 {
+        connect(memory, state, args)
+    } else if number == libc::SYS_ioctl as u64 {
+        ioctl(state, args)
     } else if number == libc::SYS_dup as u64 {
         duplicate_fd(state, args[0], None, 0, false)
     } else if number == libc::SYS_dup2 as u64 {
@@ -202,6 +218,17 @@ fn execute_basic_syscall_with_output(
         fstatfs(memory, state, args)
     } else if number == libc::SYS_access as u64 {
         access(memory, state, args)
+    } else if number == libc::SYS_faccessat as u64 {
+        access_at(memory, state, args[0] as libc::c_int, args[1], args[2], 0)
+    } else if number == libc::SYS_faccessat2 as u64 {
+        access_at(
+            memory,
+            state,
+            args[0] as libc::c_int,
+            args[1],
+            args[2],
+            args[3],
+        )
     } else if number == libc::SYS_mkdir as u64 {
         mkdir_at(memory, state, libc::AT_FDCWD, args[0], args[1])
     } else if number == libc::SYS_mkdirat as u64 {
@@ -284,6 +311,8 @@ fn execute_basic_syscall_with_output(
         i64::from(state.pid)
     } else if number == libc::SYS_getppid as u64 {
         i64::from(state.ppid)
+    } else if number == libc::SYS_getpgrp as u64 {
+        i64::from(state.pid)
     } else if number == libc::SYS_wait4 as u64 {
         wait4(memory, state, args)
     } else if number == libc::SYS_getuid as u64
@@ -1681,6 +1710,159 @@ fn poll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#92): Review deterministic event-loop and AF_UNIX syscall boundaries.
+fn epoll_create1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
+    let flags = raw_flags as libc::c_int;
+    if flags & !libc::EPOLL_CLOEXEC != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    // Keep the supervisor descriptor private even when the guest did not ask
+    // for close-on-exec; guest descriptor flags are modeled separately.
+    let host_fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+    if host_fd < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: epoll_create1 returned a new owned descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+    insert_file_with_flags(state, file, flags & libc::EPOLL_CLOEXEC != 0, None)
+}
+
+fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Some(epoll_fd) = host_fd(state, args[0] as libc::c_int) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(target_fd) = host_fd(state, args[2] as libc::c_int) else {
+        return negative_errno(libc::EBADF);
+    };
+    let operation = args[1] as libc::c_int;
+    let mut event = if operation == libc::EPOLL_CTL_DEL && args[3] == 0 {
+        libc::epoll_event { events: 0, u64: 0 }
+    } else {
+        match read_guest_struct::<libc::epoll_event>(memory, args[3]) {
+            Ok(event) => event,
+            Err(error) => return error,
+        }
+    };
+    // SAFETY: both descriptors were translated from live guest descriptors;
+    // event is initialized and Linux validates the requested operation.
+    zero_or_errno(unsafe { libc::epoll_ctl(epoll_fd, operation, target_fd, &mut event) })
+}
+
+fn epoll_wait(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Some(epoll_fd) = host_fd(state, args[0] as libc::c_int) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Ok(max_events) = libc::c_int::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if max_events <= 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let Ok(count) = usize::try_from(max_events) else {
+        return negative_errno(libc::EINVAL);
+    };
+    let Some(byte_length) = count.checked_mul(std::mem::size_of::<libc::epoll_event>()) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if byte_length > MAX_HOST_IO || !range_is_valid(memory, args[1], byte_length as u64) {
+        return negative_errno(libc::EFAULT);
+    }
+    let mut events = vec![libc::epoll_event { events: 0, u64: 0 }; count];
+    // A real-time host timeout is not a deterministic guest clock. Readiness
+    // for already-available descriptor events is preserved with a zero timeout.
+    let ready = unsafe { libc::epoll_wait(epoll_fd, events.as_mut_ptr(), max_events, 0) };
+    if ready < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let ready = ready as usize;
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            events.as_ptr().cast::<u8>(),
+            ready * std::mem::size_of::<libc::epoll_event>(),
+        )
+    };
+    match memory.write(args[1], bytes) {
+        Ok(()) => ready as i64,
+        Err(_) => negative_errno(libc::EFAULT),
+    }
+}
+
+fn eventfd2(state: &mut LoadedStaticElf, initial: u64, raw_flags: u64) -> i64 {
+    let flags = raw_flags as libc::c_int;
+    let allowed = libc::EFD_CLOEXEC | libc::EFD_NONBLOCK | libc::EFD_SEMAPHORE;
+    if flags & !allowed != 0 || initial > u64::from(u32::MAX) {
+        return negative_errno(libc::EINVAL);
+    }
+    let host_fd = unsafe { libc::eventfd(initial as libc::c_uint, flags | libc::EFD_CLOEXEC) };
+    if host_fd < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: eventfd returned a new owned descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+    insert_file_with_flags(state, file, flags & libc::EFD_CLOEXEC != 0, None)
+}
+
+fn socket(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if args[0] as libc::c_int != libc::AF_UNIX || args[2] != 0 {
+        return negative_errno(libc::EAFNOSUPPORT);
+    }
+    let socket_type = args[1] as libc::c_int;
+    let base_type = socket_type & !(libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK);
+    if base_type != libc::SOCK_DGRAM && base_type != libc::SOCK_STREAM {
+        return negative_errno(libc::EPROTONOSUPPORT);
+    }
+    let host_fd = unsafe { libc::socket(libc::AF_UNIX, socket_type | libc::SOCK_CLOEXEC, 0) };
+    if host_fd < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: socket returned a new owned descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+    insert_file_with_flags(state, file, socket_type & libc::SOCK_CLOEXEC != 0, None)
+}
+
+fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if host_fd(state, args[0] as libc::c_int).is_none() {
+        return negative_errno(libc::EBADF);
+    }
+    let Ok(length) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if length < std::mem::size_of::<libc::sa_family_t>()
+        || length > std::mem::size_of::<libc::sockaddr_un>()
+    {
+        return negative_errno(libc::EINVAL);
+    }
+    let mut address = vec![0; length];
+    if memory.read(args[1], &mut address).is_err() {
+        return negative_errno(libc::EFAULT);
+    }
+    let family = libc::sa_family_t::from_ne_bytes(
+        address[..std::mem::size_of::<libc::sa_family_t>()]
+            .try_into()
+            .expect("family slice has exact size"),
+    );
+    if family != libc::AF_UNIX as libc::sa_family_t {
+        return negative_errno(libc::EAFNOSUPPORT);
+    }
+    let path = &address[std::mem::size_of::<libc::sa_family_t>()..];
+    let path = path.split(|byte| *byte == 0).next().unwrap_or(path);
+    if path == b"/dev/log" {
+        return 0;
+    }
+    negative_errno(libc::ECONNREFUSED)
+}
+
+fn ioctl(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if host_fd(state, args[0] as libc::c_int).is_none() {
+        return negative_errno(libc::EBADF);
+    }
+    match args[1] as libc::c_ulong {
+        libc::TCGETS | libc::TIOCGWINSZ | libc::TIOCGPGRP => negative_errno(libc::ENOTTY),
+        _ => negative_errno(libc::ENOTTY),
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#54): Confirm the fixed root-plus-overflow-group KVM persona.
 fn getgroups(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     let size = args[0] as libc::c_int;
@@ -1891,18 +2073,39 @@ fn fstatfs_host(memory: &mut GuestMemory, host_fd: RawFd, output: u64) -> i64 {
 }
 
 fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let mode = args[1] as libc::c_int;
+    access_at(memory, state, libc::AT_FDCWD, args[0], args[1], 0)
+}
+
+fn access_at(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
+    path_address: u64,
+    raw_mode: u64,
+    raw_flags: u64,
+) -> i64 {
+    let mode = raw_mode as libc::c_int;
     if mode & !(libc::R_OK | libc::W_OK | libc::X_OK) != 0 {
         return negative_errno(libc::EINVAL);
     }
-    let path = match read_c_string(memory, args[0], 4096) {
+    let flags = raw_flags as libc::c_int;
+    let allowed_flags = libc::AT_EACCESS | libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH;
+    if flags & !allowed_flags != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let path = match read_c_string(memory, path_address, 4096) {
         Ok(path) => path,
         Err(error) => return read_c_string_errno(error),
     };
-    if path.is_empty() {
+    if path.is_empty() && flags & libc::AT_EMPTY_PATH == 0 {
         return negative_errno(libc::ENOENT);
     }
-    let file = match open_metadata_path(state, libc::AT_FDCWD, &path, false) {
+    let file = match open_metadata_path(
+        state,
+        guest_dirfd,
+        &path,
+        flags & libc::AT_SYMLINK_NOFOLLOW != 0,
+    ) {
         Ok(file) => file,
         Err(error) => return error,
     };
@@ -1914,7 +2117,7 @@ fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
             file.as_raw_fd(),
             empty_path.as_ptr(),
             mode,
-            libc::AT_EMPTY_PATH,
+            libc::AT_EMPTY_PATH | (flags & libc::AT_EACCESS),
         )
     };
     if result == 0 {
