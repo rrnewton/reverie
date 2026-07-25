@@ -857,7 +857,28 @@ static bool has_copied_runtime(void) {
   return runtime_owner_pid != 0 && dr_get_process_id() != runtime_owner_pid;
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-84): Review fail-closed compat-syscall gateway policy.
+static bool used_compat_syscall_gateway(void *drcontext) {
+  dr_mcontext_t registers = {sizeof(registers), DR_MC_CONTROL};
+  byte gateway[2];
+  if (!dr_get_mcontext(drcontext, &registers))
+    return true;
+  const byte *pc = (const byte *)registers.xip;
+  if ((ptr_uint_t)pc >= 2 && read_app(pc - 2, gateway, sizeof(gateway)) &&
+      gateway[0] == 0xcd && gateway[1] == 0x80)
+    return true;
+  return read_app(pc, gateway, sizeof(gateway)) && gateway[0] == 0xcd &&
+         gateway[1] == 0x80;
+}
+
 static bool pre_syscall(void *drcontext, int sysnum) {
+  if (used_compat_syscall_gateway(drcontext)) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbi: compat int 0x80 syscalls are unsupported\n");
+    exit_runtime_tree(102);
+    return false;
+  }
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-84): Review process-group mutation refusal in isolated runtimes.
   if (runtime_process_group != 0 &&
