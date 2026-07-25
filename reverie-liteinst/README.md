@@ -59,7 +59,7 @@ includes the cookie in each marker, and prevents ordinary descriptor syscalls
 from closing, duplicating, or writing to the reserved descriptor. It terminates
 the compatibility run if the descriptor identity changes or an atomic marker
 write cannot complete. Standalone launchers retain the standard-error default.
-Dedicated-channel records also identify the emitting host PID. Compatibility
+Dedicated-channel records also identify the emitting runtime-visible Linux PID. Compatibility
 mode rejects process-group/session and PID-namespace escape operations so an
 external controller can clean up fork descendants as one process group.
 
