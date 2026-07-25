@@ -29,6 +29,7 @@ use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
@@ -66,6 +67,30 @@ pub type SyscallInvoker = unsafe extern "C" fn(usize, i64, *const u64) -> i64;
 
 /// Native callback used to translate DynamoRIO's machine context.
 pub type RegisterReader = unsafe extern "C" fn(usize, *mut libc::user_regs_struct) -> i32;
+
+/// Native callback used to overwrite DynamoRIO's machine context (the write
+/// counterpart to [`RegisterReader`]). Returns non-zero on success. Installed
+/// once by the native client via [`reverie_dbi_runtime_set_register_writer`].
+pub type RegisterWriter = unsafe extern "C" fn(usize, *const libc::user_regs_struct) -> i32;
+
+/// Process-global register-writer callback (a C function pointer stored as a
+/// `usize`), installed once by the native client (or a unit test). Zero means
+/// "no writer installed", in which case [`Guest::set_regs`] reports `ENOSYS`.
+/// A single global (rather than a per-[`DbiGuest`] field) keeps the FFI
+/// dispatch signature unchanged; the writer is one fixed native function and
+/// only the per-call `context` varies, which `DbiGuest` already carries.
+static REGISTER_WRITER: AtomicUsize = AtomicUsize::new(0);
+
+/// Records the native register-writer callback so [`Guest::set_regs`] can write
+/// guest registers via `dr_set_mcontext`. Called once during client startup.
+///
+/// # Safety
+///
+/// `writer` must be a valid `RegisterWriter` for the lifetime of the process.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbi_runtime_set_register_writer(writer: RegisterWriter) {
+    REGISTER_WRITER.store(writer as usize, Ordering::Release);
+}
 
 /// In-process guest state passed to a Reverie tool handler.
 pub struct DbiGuest<'a, T>
@@ -179,6 +204,33 @@ where
         regs
     }
 
+    async fn set_regs(&mut self, regs: libc::user_regs_struct) -> Result<(), Error> {
+        // Write counterpart to `regs`. Detcore uses this (best-effort) to
+        // canonicalize the syscall-clobbered `%rcx`/`%r11` so even a misbehaving
+        // guest observes deterministic state (see detcore
+        // `canonicalize_syscall_clobbers`; reverie #36 added the trait method +
+        // ptrace impl). The DynamoRIO backend shares the guest address space, so
+        // the write goes straight through `dr_set_mcontext` in the native client.
+        //
+        // The writer is a process-global function pointer installed once by the
+        // native client (`reverie_dbi_runtime_set_register_writer`), mirroring
+        // the emit-callback registration. Off-DR (unit tests) it is installed by
+        // the test. When absent, report `ENOSYS` like any backend that cannot
+        // write registers, which Detcore treats as a tolerated best-effort miss.
+        let raw = REGISTER_WRITER.load(Ordering::Acquire);
+        if raw == 0 {
+            return Err(Errno::ENOSYS.into());
+        }
+        // SAFETY: `raw` is non-zero only after the native client (or a test)
+        // stored a valid `RegisterWriter` via `set_register_writer`.
+        let writer: RegisterWriter = unsafe { std::mem::transmute::<usize, RegisterWriter>(raw) };
+        let wrote = unsafe { writer(self.context, &regs) };
+        if wrote == 0 {
+            return Err(Errno::EIO.into());
+        }
+        Ok(())
+    }
+
     async fn stack(&mut self) -> Self::Stack {
         DbiStack::new()
     }
@@ -242,6 +294,22 @@ where
         // TODO-STUB(#31): expose a continuously updated RCB read from the
         // native client for sub-syscall resolution.
         Ok(self.branch_count)
+    }
+
+    fn has_cpuid_interception(&self) -> bool {
+        // The DynamoRIO client unconditionally rewrites every `cpuid` to a
+        // deterministic identity via app2app instrumentation (`rewrite_cpuid` /
+        // `emulate_cpuid` in native/client.c), independent of host hardware or
+        // PMU support. So — unlike the ptrace backend, which probes the host —
+        // the DBI backend always intercepts CPUID. The trait default of `false`
+        // therefore under-reports this backend's capability.
+        //
+        // NB: interception here is applied in the native client with a fixed
+        // table; it is not yet routed to `Tool::handle_cpuid_event`. Reconciling
+        // that (route to the tool, or keep the C table) is a separate
+        // Detcore-integration decision, not gated by this predicate today (no
+        // consumer reads it on the DBI path).
+        true
     }
 }
 
@@ -988,6 +1056,17 @@ mod tests {
         1
     }
 
+    /// Captures the register file handed to the register-writer callback, so
+    /// [`set_regs_writes_through_the_register_writer`] can assert the values
+    /// `Guest::set_regs` forwarded (off-DR stand-in for `dr_set_mcontext`).
+    static CAPTURED_REGS: Mutex<Option<libc::user_regs_struct>> = Mutex::new(None);
+
+    unsafe extern "C" fn capture_regs(_context: usize, regs: *const libc::user_regs_struct) -> i32 {
+        let captured = unsafe { *regs };
+        *CAPTURED_REGS.lock().unwrap() = Some(captured);
+        1
+    }
+
     /// A suspending handler (one that returns `Poll::Pending` until another
     /// thread completes it) must resume rather than panic. This mirrors
     /// Detcore's `send_rpc` awaiting the global scheduler: the handler parks
@@ -1066,6 +1145,71 @@ mod tests {
         assert_eq!(guest.thread_state().rewritten_syscalls, 1);
         assert_eq!(guest.read_clock().unwrap(), 99);
         assert_eq!(run_ready(guest.regs()).unwrap().rip, 0x1234);
+    }
+
+    /// `Guest::set_regs` forwards the register file to the installed native
+    /// writer (in production `dr_set_mcontext`). This is the write counterpart
+    /// to the `regs()` read exercised above, and backs Detcore's best-effort
+    /// `%rcx`/`%r11` canonicalization on the DBI backend.
+    #[test]
+    fn set_regs_writes_through_the_register_writer() {
+        // Install the writer process-globally, mirroring the native client's
+        // one-time `reverie_dbi_runtime_set_register_writer(write_registers)`.
+        unsafe { reverie_dbi_runtime_set_register_writer(capture_regs) };
+        *CAPTURED_REGS.lock().unwrap() = None;
+
+        let mut counters = PrototypeCounters::default();
+        let mut guest: DbiGuest<'_, PrototypeTool> = DbiGuest::new(
+            0,
+            Pid::from_raw(10),
+            Pid::from_raw(10),
+            None,
+            0,
+            &mut counters,
+            &GLOBAL_STATE,
+            &CONFIG,
+            invoke,
+            read_regs,
+        );
+
+        let mut regs: libc::user_regs_struct = unsafe { std::mem::zeroed() };
+        regs.rcx = 0xdead_beef;
+        regs.r11 = 0x1234;
+        regs.rip = 0xcafe;
+
+        let result = run_ready(guest.set_regs(regs)).expect("set_regs must not suspend");
+        assert!(
+            result.is_ok(),
+            "set_regs should succeed with a writer installed"
+        );
+
+        let captured = CAPTURED_REGS
+            .lock()
+            .unwrap()
+            .expect("the writer should have captured the register file");
+        assert_eq!(captured.rcx, 0xdead_beef);
+        assert_eq!(captured.r11, 0x1234);
+        assert_eq!(captured.rip, 0xcafe);
+    }
+
+    /// The DBI backend always intercepts CPUID in the native client, so the
+    /// guest reports `true` rather than the trait's conservative `false`.
+    #[test]
+    fn dbi_guest_reports_cpuid_interception() {
+        let mut counters = PrototypeCounters::default();
+        let guest: DbiGuest<'_, PrototypeTool> = DbiGuest::new(
+            0,
+            Pid::from_raw(1),
+            Pid::from_raw(1),
+            None,
+            0,
+            &mut counters,
+            &GLOBAL_STATE,
+            &CONFIG,
+            invoke,
+            read_regs,
+        );
+        assert!(guest.has_cpuid_interception());
     }
 
     #[test]

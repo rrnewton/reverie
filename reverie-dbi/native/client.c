@@ -28,6 +28,7 @@
 
 typedef int64_t (*syscall_invoker_t)(uintptr_t, int64_t, const uint64_t *);
 typedef int32_t (*register_reader_t)(uintptr_t, struct user_regs_struct *);
+typedef int32_t (*register_writer_t)(uintptr_t, const struct user_regs_struct *);
 
 typedef struct {
   uint64_t branches;
@@ -103,6 +104,7 @@ extern int32_t reverie_dbi_runtime_pre_syscall(
     reverie_emit_fn_t emit);
 extern void reverie_dbi_runtime_totals(uint64_t *branches, uint64_t *syscalls,
                                        uint64_t *rewritten);
+extern void reverie_dbi_runtime_set_register_writer(register_writer_t writer);
 
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
@@ -246,6 +248,41 @@ static int32_t read_registers(uintptr_t context, struct user_regs_struct *out) {
   out->rip = (uint64_t)registers.xip;
   out->eflags = registers.xflags;
   out->rsp = registers.xsp;
+  return 1;
+}
+
+// Write counterpart to read_registers: overwrite the guest's general-purpose
+// register file from `in`. Fetches the full machine context first so DynamoRIO
+// gets a valid, complete dr_mcontext_t (matching emulate_cpuid's get/modify/set
+// pattern), overwrites the fields exposed by user_regs_struct, then commits.
+// Returns 1 on success, 0 on failure. Backing store for Guest::set_regs.
+static int32_t write_registers(uintptr_t context,
+                               const struct user_regs_struct *in) {
+  dr_mcontext_t registers = {sizeof(registers), DR_MC_ALL};
+  if (!dr_get_mcontext((void *)context, &registers))
+    return 0;
+
+  registers.r15 = in->r15;
+  registers.r14 = in->r14;
+  registers.r13 = in->r13;
+  registers.r12 = in->r12;
+  registers.xbp = in->rbp;
+  registers.xbx = in->rbx;
+  registers.r11 = in->r11;
+  registers.r10 = in->r10;
+  registers.r9 = in->r9;
+  registers.r8 = in->r8;
+  registers.xax = in->rax;
+  registers.xcx = in->rcx;
+  registers.xdx = in->rdx;
+  registers.xsi = in->rsi;
+  registers.xdi = in->rdi;
+  registers.xip = (app_pc)in->rip;
+  registers.xflags = in->eflags;
+  registers.xsp = in->rsp;
+
+  if (!dr_set_mcontext((void *)context, &registers))
+    return 0;
   return 1;
 }
 
@@ -705,4 +742,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       !drmgr_register_filter_syscall_event(filter_syscall) ||
       !drmgr_register_pre_syscall_event(pre_syscall))
     DR_ASSERT(false);
+
+  // Hand the runtime the register-writer so Guest::set_regs can commit register
+  // changes via dr_set_mcontext (read counterpart flows through pre_syscall).
+  reverie_dbi_runtime_set_register_writer(write_registers);
 }
