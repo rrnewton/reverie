@@ -10,10 +10,16 @@ use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
 use std::thread;
+use std::time::Duration;
+use std::time::Instant;
 
+use reverie_liteinst::COMPAT_EVENT_COOKIE_ENV;
 use reverie_liteinst::COMPAT_EVENT_FD_ENV;
 use reverie_liteinst::PreloadTool;
 use reverie_liteinst::configure_command;
+
+const TEST_EVENT_COOKIE: u64 = 7_915_913_731_959_187_131;
+const TEST_EVENT_FD_ENV: &str = "REVERIE_LITEINST_TEST_EVENT_FD";
 
 fn run_guest(program: &str, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-strace"))
@@ -45,6 +51,8 @@ fn run_compat_guest_with_event_pipe(program: &str, arguments: &[&str]) -> (Outpu
     command
         .args(arguments)
         .env(COMPAT_EVENT_FD_ENV, inherited_write_fd.to_string())
+        .env(COMPAT_EVENT_COOKIE_ENV, TEST_EVENT_COOKIE.to_string())
+        .env(TEST_EVENT_FD_ENV, inherited_write_fd.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     configure_command(&mut command, PreloadTool::Compatibility).unwrap();
@@ -125,7 +133,7 @@ fn compatibility_event_fd_separates_guest_stderr() {
         "/bin/sh",
         &[
             "-c",
-            "printf 'reverie-liteinst: tool=compat syscall=999999\\n' >&2",
+            "test -z \"$REVERIE_LITEINST_EVENT_FD\"; test -z \"$REVERIE_LITEINST_EVENT_COOKIE\"; printf 'reverie-liteinst: tool=compat syscall=999999\\n' >&2",
         ],
     );
     assert!(
@@ -138,14 +146,104 @@ fn compatibility_event_fd_separates_guest_stderr() {
     assert_eq!(output.stderr, spoof.as_bytes());
 
     let events = String::from_utf8(events).unwrap();
+    let prefix = format!("reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} syscall=");
     assert!(
         events.lines().all(|line| line
-            .strip_prefix("reverie-liteinst: tool=compat syscall=")
+            .strip_prefix(&prefix)
             .is_some_and(|number| number.parse::<i64>().is_ok())),
         "unexpected events: {events}"
     );
     assert!(!events.contains("999999"), "guest stderr leaked: {events}");
     assert!(events.lines().count() > 1, "missing events: {events}");
+}
+
+#[test]
+fn compatibility_event_fd_survives_guest_close() {
+    let (output, events) = run_compat_guest_with_event_pipe(
+        "/bin/sh",
+        &[
+            "-c",
+            "eval \"exec ${REVERIE_LITEINST_TEST_EVENT_FD}>&-\"; printf 'channel-survived\\n'",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"channel-survived\n");
+    let events = String::from_utf8(events).unwrap();
+    assert!(
+        events.contains(&format!(
+            "reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} syscall="
+        )),
+        "missing dedicated events: {events}"
+    );
+}
+
+#[test]
+fn compatibility_event_fd_rejects_guest_spoof_write() {
+    let forged = format!("reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} syscall=999999");
+    let script = format!(
+        "eval \"printf '{forged}\\n' >&${{REVERIE_LITEINST_TEST_EVENT_FD}}\" 2>/dev/null; result=$?; test $result -ne 0; printf 'spoof-rejected\\n'"
+    );
+    let (output, events) = run_compat_guest_with_event_pipe("/bin/sh", &["-c", &script]);
+    assert!(
+        output.status.success(),
+        "{output:?}; events={}",
+        String::from_utf8_lossy(&events)
+    );
+    assert_eq!(output.stdout, b"spoof-rejected\n");
+    let events = String::from_utf8(events).unwrap();
+    assert!(
+        !events.contains(&forged),
+        "forged event was accepted: {events}"
+    );
+}
+
+#[test]
+fn compatibility_event_fd_backpressure_fails_without_hanging() {
+    let mut descriptors = [0; 2];
+    assert_eq!(
+        unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) },
+        0
+    );
+    let read_fd = unsafe { OwnedFd::from_raw_fd(descriptors[0]) };
+    let write_fd = unsafe { OwnedFd::from_raw_fd(descriptors[1]) };
+    let inherited_write_fd = write_fd.as_raw_fd();
+
+    let mut command = Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "i=0; while [ \"$i\" -lt 100000 ]; do : > /dev/null; i=$((i + 1)); done",
+        ])
+        .env(COMPAT_EVENT_FD_ENV, inherited_write_fd.to_string())
+        .env(COMPAT_EVENT_COOKIE_ENV, TEST_EVENT_COOKIE.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    configure_command(&mut command, PreloadTool::Compatibility).unwrap();
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(inherited_write_fd, libc::F_SETFD, 0) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = command.spawn().unwrap();
+    drop(write_fd);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            let _ = child.wait();
+            panic!("dedicated event channel blocked on a full pipe");
+        }
+        thread::sleep(Duration::from_millis(10));
+    };
+    drop(read_fd);
+    assert_eq!(status.code(), Some(121), "{status:?}");
 }
 
 #[test]
@@ -160,7 +258,9 @@ fn compatibility_event_fd_rejects_read_only_descriptor() {
     let inherited_read_fd = read_fd.as_raw_fd();
 
     let mut command = Command::new("/bin/true");
-    command.env(COMPAT_EVENT_FD_ENV, inherited_read_fd.to_string());
+    command
+        .env(COMPAT_EVENT_FD_ENV, inherited_read_fd.to_string())
+        .env(COMPAT_EVENT_COOKIE_ENV, TEST_EVENT_COOKIE.to_string());
     configure_command(&mut command, PreloadTool::Compatibility).unwrap();
     unsafe {
         command.pre_exec(move || {

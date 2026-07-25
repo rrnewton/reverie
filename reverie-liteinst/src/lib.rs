@@ -21,6 +21,13 @@ mod runtime;
 /// standard error.
 pub const COMPAT_EVENT_FD_ENV: &str = "REVERIE_LITEINST_EVENT_FD";
 
+/// Environment variable selecting a per-launch compatibility-event cookie.
+///
+/// A controller that sets [`COMPAT_EVENT_FD_ENV`] must also set this to a
+/// nonzero decimal `u64`. The runtime removes both variables before guest code
+/// starts and includes the cookie in every dedicated-channel record.
+pub const COMPAT_EVENT_COOKIE_ENV: &str = "REVERIE_LITEINST_EVENT_COOKIE";
+
 /// Built-in synchronous tool executed by the preload runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreloadTool {
