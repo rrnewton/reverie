@@ -241,26 +241,41 @@ impl DbiRunner {
     }
 
     fn wait_for_status(&self, mut child: Child) -> io::Result<ExitStatus> {
-        let process_group = self.isolated_process_group.then_some(child.id() as i32);
-        let status = child.wait()?;
-        self.terminate_process_group(process_group)?;
-        Ok(status)
+        if !self.isolated_process_group {
+            return child.wait();
+        }
+
+        let process_group = child.id() as i32;
+        let observed = wait_for_exit_without_reaping(child.id());
+        let terminated = terminate_process_group(process_group);
+        let status = child.wait();
+
+        observed?;
+        terminated?;
+        status
     }
 
     fn wait_with_output(&self, mut child: Child) -> io::Result<Output> {
-        let process_group = self.isolated_process_group.then_some(child.id() as i32);
-        let mut stdout = child.stdout.take().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "failed to capture DBI guest stdout",
-            )
-        })?;
-        let mut stderr = child.stderr.take().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "failed to capture DBI guest stderr",
-            )
-        })?;
+        let mut stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                self.terminate_and_reap(&mut child);
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "failed to capture DBI guest stdout",
+                ));
+            }
+        };
+        let mut stderr = match child.stderr.take() {
+            Some(stderr) => stderr,
+            None => {
+                self.terminate_and_reap(&mut child);
+                return Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "failed to capture DBI guest stderr",
+                ));
+            }
+        };
 
         std::thread::scope(|scope| {
             let stdout_reader = scope.spawn(move || {
@@ -273,36 +288,27 @@ impl DbiRunner {
                 stderr.read_to_end(&mut bytes)?;
                 Ok::<_, io::Error>(bytes)
             });
-            let status = child.wait()?;
-            self.terminate_process_group(process_group)?;
+            let status = self.wait_for_status(child);
             let stdout = stdout_reader
                 .join()
-                .map_err(|_| io::Error::other("DBI stdout reader thread panicked"))??;
+                .map_err(|_| io::Error::other("DBI stdout reader thread panicked"));
             let stderr = stderr_reader
                 .join()
-                .map_err(|_| io::Error::other("DBI stderr reader thread panicked"))??;
+                .map_err(|_| io::Error::other("DBI stderr reader thread panicked"));
+
             Ok(Output {
-                status,
-                stdout,
-                stderr,
+                status: status?,
+                stdout: stdout??,
+                stderr: stderr??,
             })
         })
     }
 
-    fn terminate_process_group(&self, process_group: Option<i32>) -> io::Result<()> {
-        let Some(process_group) = process_group else {
-            return Ok(());
-        };
-        // SAFETY: the launcher created a distinct process group whose id is the
-        // child pid. The negative id targets only that isolated group.
-        let result = unsafe { libc::kill(-process_group, libc::SIGKILL) };
-        if result == -1 {
-            let error = io::Error::last_os_error();
-            if error.raw_os_error() != Some(libc::ESRCH) {
-                return Err(error);
-            }
+    fn terminate_and_reap(&self, child: &mut Child) {
+        if self.isolated_process_group {
+            let _ = terminate_process_group(child.id() as i32);
         }
-        Ok(())
+        let _ = child.wait();
     }
 
     fn command(
@@ -431,6 +437,44 @@ fn resolve_program(
 fn is_executable_file(path: &Path) -> bool {
     path.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+// Wait for the group leader to exit without releasing its PID/PGID identity.
+// This prevents a cleanup signal from reaching a newly reused process group.
+fn wait_for_exit_without_reaping(pid: u32) -> io::Result<()> {
+    loop {
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        // SAFETY: info points to writable siginfo_t storage, and P_PID selects
+        // the child identified by pid. WNOWAIT deliberately leaves it waitable.
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn terminate_process_group(process_group: i32) -> io::Result<()> {
+    // SAFETY: the launcher created a distinct process group whose id is the
+    // still-unreaped child pid. The negative id targets only that group.
+    let result = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+    if result == -1 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(libc::ESRCH) {
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 fn shebang(program: &OsStr) -> Option<(PathBuf, Vec<OsString>)> {

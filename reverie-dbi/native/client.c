@@ -19,6 +19,7 @@
 #include <sys/time.h>
 #include <sys/user.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "dr_api.h"
 #include "drmgr.h"
@@ -144,11 +145,11 @@ static process_id_t runtime_owner_pid;
 static process_id_t runtime_process_group;
 static void exit_runtime_tree(int exit_code) {
   // A copied child cannot kill its own process group and then run DynamoRIO
-  // cleanup. Kill the root instead; the out-of-group launcher reaps it and
+  // cleanup. Kill the launch-group leader instead; the out-of-group launcher reaps it and
   // terminates the remaining isolated group after preserving its exit status.
   if (runtime_process_group != 0 &&
-      runtime_owner_pid != dr_get_process_id())
-    kill((pid_t)runtime_owner_pid, SIGKILL);
+      runtime_process_group != dr_get_process_id())
+    kill((pid_t)runtime_process_group, SIGKILL);
   dr_exit_process(exit_code);
 }
 
@@ -858,8 +859,9 @@ static bool has_copied_runtime(void) {
 
 static bool pre_syscall(void *drcontext, int sysnum) {
   // AUTONOMOUS-BOT-IMPLEMENTED
-  // TODO-HUMAN-REVIEW(PR-84): Review explicit setsid refusal in isolated runtimes.
-  if (runtime_process_group != 0 && sysnum == SYS_setsid) {
+  // TODO-HUMAN-REVIEW(PR-84): Review process-group mutation refusal in isolated runtimes.
+  if (runtime_process_group != 0 &&
+      (sysnum == SYS_setsid || sysnum == SYS_setpgid)) {
     dr_syscall_set_result(drcontext, (reg_t)-EPERM);
     return false;
   }
