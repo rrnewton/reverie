@@ -251,7 +251,10 @@ impl DbiRunner {
 
         let process_group = child.id() as i32;
         let observed = wait_for_exit_without_reaping(child.id());
-        let terminated = terminate_process_group(process_group);
+        let terminated = match observed {
+            Ok(()) => terminate_process_group(process_group),
+            Err(_) => Ok(()),
+        };
         let status = child.wait();
 
         observed?;
