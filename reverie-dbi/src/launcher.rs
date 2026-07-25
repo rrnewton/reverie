@@ -493,6 +493,8 @@ mod tests {
                 "2M",
                 "-c",
                 "/opt/reverie/libreverie_dbi_client.so",
+                "-diagnostic_fd",
+                "198",
                 "-panic-on-unsupported-syscalls",
                 "-isolated-process-group",
                 "--",
