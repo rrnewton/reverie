@@ -1317,6 +1317,44 @@ fn insert_file_with_flags(
     i64::from(fd)
 }
 
+fn duplicate_fd_at_or_above(
+    state: &mut LoadedStaticElf,
+    old_host_fd: RawFd,
+    raw_minimum: u64,
+    close_on_exec: bool,
+) -> i64 {
+    let minimum = raw_minimum as libc::c_int;
+    if !(0..=MAX_GUEST_FD).contains(&minimum) {
+        return negative_errno(libc::EINVAL);
+    }
+    let Some(fd) = (minimum..=MAX_GUEST_FD)
+        .find(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
+    else {
+        return negative_errno(libc::EMFILE);
+    };
+
+    // SAFETY: old_host_fd is live. F_DUPFD_CLOEXEC returns an owned
+    // descriptor; guest CLOEXEC is modeled independently in cloexec_fds.
+    let duplicated = unsafe { libc::fcntl(old_host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicated < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: fcntl returned a new owned descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+    state.files.insert(fd, file);
+    if close_on_exec {
+        state.cloexec_fds.insert(fd);
+    } else {
+        state.cloexec_fds.remove(&fd);
+    }
+    if (0..=2).contains(&fd) {
+        state.closed_standard_fds.insert(fd);
+    } else {
+        state.closed_standard_fds.remove(&fd);
+    }
+    i64::from(fd)
+}
+
 fn duplicate_fd(
     state: &mut LoadedStaticElf,
     raw_old_fd: u64,
@@ -2162,6 +2200,8 @@ fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
         return negative_errno(libc::EBADF);
     };
     match args[1] as libc::c_int {
+        libc::F_DUPFD => duplicate_fd_at_or_above(state, host_fd, args[2], false),
+        libc::F_DUPFD_CLOEXEC => duplicate_fd_at_or_above(state, host_fd, args[2], true),
         libc::F_GETFL => match fd_status_flags(host_fd) {
             Ok(flags) => flags as i64,
             Err(error) => error,
@@ -5173,6 +5213,65 @@ mod tests {
             ),
             i64::from(libc::FD_CLOEXEC)
         );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [4, libc::F_DUPFD as u64, 10, 0, 0, 0],
+            ),
+            10
+        );
+        assert!(state.files.contains_key(&10));
+        assert!(!state.cloexec_fds.contains(&10));
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [4, libc::F_DUPFD_CLOEXEC as u64, 10, 0, 0, 0],
+            ),
+            11
+        );
+        assert!(state.cloexec_fds.contains(&11));
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [4, libc::F_DUPFD as u64, u64::MAX, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [4, libc::F_DUPFD as u64, MAX_GUEST_FD as u64 + 1, 0, 0, 0,],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [u64::MAX, libc::F_DUPFD as u64, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        for fd in [10, 11] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [fd, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+        }
         assert_eq!(
             syscall_result(&mut memory, &mut state, libc::SYS_close, [0, 0, 0, 0, 0, 0],),
             0
