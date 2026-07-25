@@ -1733,6 +1733,12 @@ fn mknod_at(
     zero_or_errno(unsafe { libc::fchmodat(host_dirfd, path.as_ptr(), mode & 0o7777, 0) })
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#80): Confirm the fixed timestamp against supported host filesystems.
+// Keep synthetic "now" inside the timestamp range supported by common host
+// filesystems while remaining independent of host wall time.
+const DETERMINISTIC_UTIME_SECONDS: libc::time_t = 1_640_995_199;
+
 fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let raw_flags = args[3];
     let allowed_flags = (libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH) as u64;
@@ -1759,11 +1765,11 @@ fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     let mut times = if args[2] == 0 {
         [
             libc::timespec {
-                tv_sec: 0,
+                tv_sec: DETERMINISTIC_UTIME_SECONDS,
                 tv_nsec: 0,
             },
             libc::timespec {
-                tv_sec: 0,
+                tv_sec: DETERMINISTIC_UTIME_SECONDS,
                 tv_nsec: 0,
             },
         ]
@@ -1775,7 +1781,7 @@ fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     };
     for time in &mut times {
         if time.tv_nsec == libc::UTIME_NOW {
-            time.tv_sec = 0;
+            time.tv_sec = DETERMINISTIC_UTIME_SECONDS;
             time.tv_nsec = 0;
         } else if time.tv_nsec != libc::UTIME_OMIT && !(0..1_000_000_000).contains(&time.tv_nsec) {
             return negative_errno(libc::EINVAL);
@@ -4387,7 +4393,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::metadata(root.0.join("renamed")).unwrap().mtime(),
-            0
+            DETERMINISTIC_UTIME_SECONDS
         );
         assert_eq!(
             syscall_result(
