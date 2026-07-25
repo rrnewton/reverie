@@ -6,10 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-// TODO-HUMAN-REVIEW(PR-PENDING): New cross-process RPC transport crate authored
-// by an autonomous bot. Replace PR-PENDING with the pull request number once
-// opened. This is transport/API scaffolding; no guest-visible syscall behavior
-// changes here.
+// TODO-HUMAN-REVIEW(PR-98): New cross-process RPC transport crate authored by an
+// autonomous bot (https://github.com/rrnewton/reverie/pull/98). This is
+// transport/API scaffolding; no guest-visible syscall behavior changes here.
 
 //! Cross-process transport for the Reverie [`GlobalTool`] RPC.
 //!
