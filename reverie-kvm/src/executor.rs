@@ -132,6 +132,7 @@ pub(crate) fn is_process_syscall(number: u64) -> bool {
         || number == libc::SYS_clone3 as u64
         || number == libc::SYS_execve as u64
         || number == libc::SYS_execveat as u64
+        || number == libc::SYS_wait4 as u64
 }
 
 #[cfg(test)]
