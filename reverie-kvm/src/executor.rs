@@ -3384,16 +3384,14 @@ fn sigaltstack(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u6
 }
 
 fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let requested = args[0] as i64;
+    let requested = args[0] as libc::pid_t;
     if args[2] & !(libc::WNOHANG as u64) != 0 {
         return negative_errno(libc::EINVAL);
     }
     let child_pid = if requested == -1 {
         state.children.keys().next().copied()
     } else if requested > 0 {
-        i32::try_from(requested)
-            .ok()
-            .filter(|pid| state.children.contains_key(pid))
+        Some(requested).filter(|pid| state.children.contains_key(pid))
     } else {
         None
     };
@@ -6695,6 +6693,28 @@ mod tests {
             ),
             negative_errno(libc::EINVAL)
         );
+    }
+
+    #[test]
+    fn wait4_decodes_zero_extended_negative_one_and_reports_exit_status() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state.children.insert(7, 3);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let status_address = 0x100;
+
+        assert_eq!(
+            wait4(
+                &mut memory,
+                &mut state,
+                &[u64::from(u32::MAX), status_address, 0, 0, 0, 0],
+            ),
+            7
+        );
+        let mut status = [0; std::mem::size_of::<libc::c_int>()];
+        memory.read(status_address, &mut status).unwrap();
+        assert_eq!(libc::c_int::from_le_bytes(status), 3 << 8);
+        assert!(state.children.is_empty());
     }
 
     #[test]
