@@ -167,9 +167,7 @@ impl Stack for GuestStack {
         // success we transfer the token into the guard, which keeps the flag set
         // until the caller drops the guard.
         self.task.write_exact(remote_sp, from)?;
-        Ok(StackGuard {
-            _token: self.token,
-        })
+        Ok(StackGuard { _token: self.token })
     }
 }
 
