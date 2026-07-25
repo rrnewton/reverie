@@ -11,8 +11,8 @@ and validates full recovered-site coverage. The result is a `PreparedBinary`
 whose exact output bytes are held in an anonymous file with Linux write, grow,
 shrink, and further-seal protections. `PreparedBinary::artifact` opens an
 independent read-only handle to those sealed bytes for a future runtime to read
-and materialize. Patched e9patch
-output cannot execute directly from an anonymous memfd because its loader
+and materialize. Patched e9patch output cannot execute directly from an
+anonymous memfd because its loader
 reopens `/proc/self/exe`; a runtime must provide a stable named image.
 
 The accompanying `RewriteReport` records SHA-256 digests for the input, output,
