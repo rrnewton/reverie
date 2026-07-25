@@ -26,14 +26,16 @@ backend with a synchronous native API and a first-poll adapter for shared
 The opt-in `third-party/sabre` submodule and `SABRE_UPSTREAM.toml` pin
 `rrnewton/SaBRe` commit
 `34065e7ddae6f1c90db7e0bf5c22a9aa89f9d605`, proposed upstream in
-`srg-imperial/SaBRe#93`. That revision builds with CMake, Make, and GCC. On
-CentOS Stream 9, its loader-name regression passes; the complete upstream
-suite has 70 passes, three unsupported tests, and the same three host-dependent
-failures as the pristine upstream base. At Hermit
+`srg-imperial/SaBRe#93`. That revision builds with CMake, Make, and GCC.
+From `third-party/sabre`,
+`PATH=/tmp/sabre-lit-venv/bin:$PATH cmake --build build-default --target tests -j2`
+produced 70 passes, three unsupported tests, and the same three baseline failures:
+`dumpkeys.sh`, `fgconsole.sh`, and `test_sigill.S`. At Hermit
 `7ceec9d5263fb8e0af975f1099d098178db54510`, the L0 SaBRe gate (default log
 level, no relaxations) passed all 147 strict compatibility probes with:
 
 ```bash
+cd /home/newton/work/dev-hermit/worktrees/slot126
 env HERMIT_SABRE_RUNNER=/home/newton/work/dev-hermit/worktrees_reverie/slot126/target/release/reverie-sabre-strace \
   HERMIT_SABRE_BINARY=/home/newton/work/dev-hermit/worktrees_reverie/slot126/third-party/sabre/build-default/sabre \
   HERMIT_SABRE_PLUGIN=/home/newton/work/dev-hermit/worktrees_reverie/slot126/target/release/libreverie_sabre_strace_plugin.so \
@@ -57,7 +59,7 @@ out-of-process ptrace backend.
 | Guest memory | Remote memory abstraction | Direct `LocalMemory` access |
 | Registers and stack | Read/write APIs | No tool-facing equivalent |
 | Global state | Async typed global tool | Blocking generated RPC client/service |
-| Thread state | Typed tool-defined state | Internal runtime records and lifecycle IDs |
+| Thread state | Typed tool-defined state | Native runtime records; the adapter supplies typed `T::ThreadState` |
 | Signals | Tool can influence delivery | Notification only |
 | Event selection | Subscription filters | No shared subscription contract |
 | CPU and lifecycle events | CPUID, RDTSC, exec, timers, exits | RDTSC, VDSO, function detours, partial lifecycle |
