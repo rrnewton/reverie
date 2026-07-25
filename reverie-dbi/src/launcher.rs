@@ -664,7 +664,7 @@ mod tests {
         std::fs::write(&client, b"placeholder").unwrap();
 
         let script = format!(
-            "output=$(sh -c 'printf guest-stderr >&2; printf backend-diagnostic >&{DIAGNOSTIC_FD}' 2>&1); printf 'captured=<%s>\\n' \"$output\""
+            "output=$(/bin/bash -c 'printf guest-stderr >&2; printf backend-diagnostic >&{DIAGNOSTIC_FD}' 2>&1); printf 'captured=<%s>\\n' \"$output\""
         );
         let mut guest = Command::new("/bin/bash");
         guest.args(["-c", &script]);
