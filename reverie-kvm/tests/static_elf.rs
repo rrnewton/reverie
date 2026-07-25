@@ -547,7 +547,7 @@ fn real_coreutils_complete_file_mutation_workflow() {
     let root = TestDirectory::new();
     std::fs::write(root.0.join("source"), b"payload\n").unwrap();
 
-    run_host_program("/bin/mkdir", &["mkdir", "directory"], &root.0);
+    run_host_program("/bin/mkdir", &["mkdir", "-p", "directory/nested"], &root.0);
     run_host_program("/usr/bin/touch", &["touch", "touched"], &root.0);
     run_host_program("/bin/chmod", &["chmod", "600", "touched"], &root.0);
     run_host_program("/bin/ln", &["ln", "source", "hard-link"], &root.0);
@@ -562,6 +562,7 @@ fn real_coreutils_complete_file_mutation_workflow() {
     run_host_program("/bin/rm", &["rm", "renamed"], &root.0);
 
     assert!(root.0.join("directory").is_dir());
+    assert!(root.0.join("directory/nested").is_dir());
     assert_eq!(std::fs::read(root.0.join("source")).unwrap(), b"payload\n");
     assert!(root.0.join("touched").is_file());
     assert_eq!(

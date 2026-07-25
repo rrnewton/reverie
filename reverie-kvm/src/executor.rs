@@ -262,6 +262,10 @@ fn execute_basic_syscall_with_output(
         symlink_at(memory, state, args[0], libc::AT_FDCWD, args[1])
     } else if number == libc::SYS_symlinkat as u64 {
         symlink_at(memory, state, args[0], args[1] as libc::c_int, args[2])
+    } else if number == libc::SYS_chdir as u64 {
+        chdir(memory, state, args[0])
+    } else if number == libc::SYS_fchdir as u64 {
+        fchdir(state, args[0])
     } else if number == libc::SYS_getcwd as u64 {
         getcwd(memory, state, args)
     } else if number == libc::SYS_getdents64 as u64 {
@@ -2172,6 +2176,50 @@ fn getcwd(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         Ok(()) => required as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
+}
+
+fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, path_address: u64) -> i64 {
+    let path = match read_c_string(memory, path_address, 4096) {
+        Ok(path) if !path.is_empty() => path,
+        Ok(_) => return negative_errno(libc::ENOENT),
+        Err(error) => return read_c_string_errno(error),
+    };
+    let directory = match open_metadata_path(state, libc::AT_FDCWD, &path, false) {
+        Ok(directory) => directory,
+        Err(error) => return error,
+    };
+    install_working_directory(state, directory)
+}
+
+fn fchdir(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
+    let Ok(guest_fd) = libc::c_int::try_from(raw_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(host_fd) = host_fd(state, guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let directory = match open_host_metadata_path(host_fd, c".", false) {
+        Ok(directory) => directory,
+        Err(error) => return error,
+    };
+    install_working_directory(state, directory)
+}
+
+fn install_working_directory(state: &mut LoadedStaticElf, directory: std::fs::File) -> i64 {
+    match file_mode(&directory) {
+        Ok(mode) if mode & libc::S_IFMT == libc::S_IFDIR => {}
+        Ok(_) => return negative_errno(libc::ENOTDIR),
+        Err(error) => return error,
+    }
+
+    let proc_path = format!("/proc/self/fd/{}", directory.as_raw_fd());
+    let path = match std::fs::read_link(proc_path) {
+        Ok(path) => path,
+        Err(error) => return io_error(error),
+    };
+    state.cwd = path;
+    state.cwd_fd = directory;
+    0
 }
 
 fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -4311,6 +4359,71 @@ mod tests {
         let mut actual = [0; 8];
         memory.read(READ_ADDRESS, &mut actual).unwrap();
         assert_eq!(&actual, b"original");
+    }
+
+    #[test]
+    fn chdir_and_fchdir_update_working_directory() {
+        const PATH_ADDRESS: u64 = 0x100;
+        const CWD_ADDRESS: u64 = 0x200;
+
+        let root = TestDir::new();
+        let child = root.0.join("child");
+        std::fs::create_dir(&child).unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x1000).unwrap();
+
+        memory.write(PATH_ADDRESS, b".\0").unwrap();
+        let root_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                PATH_ADDRESS,
+                (libc::O_RDONLY | libc::O_DIRECTORY) as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(root_fd, 3);
+
+        memory.write(PATH_ADDRESS, b"child\0").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [PATH_ADDRESS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(state.cwd, child);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchdir,
+                [root_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(state.cwd, root.0);
+
+        let expected_len = root.0.as_os_str().as_bytes().len() + 1;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getcwd,
+                [CWD_ADDRESS, expected_len as u64, 0, 0, 0, 0],
+            ),
+            expected_len as i64
+        );
+        let mut cwd = vec![0; expected_len];
+        memory.read(CWD_ADDRESS, &mut cwd).unwrap();
+        assert_eq!(&cwd[..expected_len - 1], root.0.as_os_str().as_bytes());
     }
 
     #[test]
