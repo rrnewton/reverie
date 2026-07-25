@@ -140,6 +140,8 @@ struct CompatibilityEventChannel {
     inode: u64,
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#93): Review the direct-TID nested-event table.
 fn initialize_current_event_table() -> io::Result<()> {
     // Linux caps PID/TID values at PID_MAX_LIMIT on 64-bit architectures.
     const LINUX_PID_MAX_LIMIT: usize = 1 << 22;
@@ -257,6 +259,8 @@ fn compatibility_event_channel() -> io::Result<Option<CompatibilityEventChannel>
     }))
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#93): Review signal-mask restoration and nested SIGSYS dispatch.
 unsafe extern "C" fn sigsys_handler(
     signal: libc::c_int,
     info: *mut libc::siginfo_t,
