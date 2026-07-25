@@ -1,4 +1,5 @@
 use core::arch::global_asm;
+use core::sync::atomic::AtomicI32;
 use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering;
@@ -6,6 +7,7 @@ use std::ffi::OsStr;
 use std::io;
 use std::ptr;
 
+use crate::COMPAT_EVENT_FD_ENV;
 use crate::pun::PunProbe;
 
 const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
@@ -25,6 +27,7 @@ const TOOL_COMPAT: u8 = 2;
 
 static PROBE: AtomicPtr<PunProbe> = AtomicPtr::new(ptr::null_mut());
 static TOOL_MODE: AtomicU8 = AtomicU8::new(0);
+static EVENT_FD: AtomicI32 = AtomicI32::new(libc::STDERR_FILENO);
 
 #[thread_local]
 static mut CURRENT_EVENT: *mut SyscallEvent = ptr::null_mut();
@@ -91,6 +94,12 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
         }
     };
     TOOL_MODE.store(mode, Ordering::Release);
+    let event_fd = if mode == TOOL_COMPAT {
+        compatibility_event_fd()?
+    } else {
+        libc::STDERR_FILENO
+    };
+    EVENT_FD.store(event_fd, Ordering::Release);
 
     let probe = Box::new(PunProbe::new(tool_trampoline)?);
     let probe = Box::into_raw(probe);
@@ -98,6 +107,42 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
 
     install_sigsys_handler()?;
     install_seccomp_filter()
+}
+
+fn compatibility_event_fd() -> io::Result<libc::c_int> {
+    let Some(value) = std::env::var_os(COMPAT_EVENT_FD_ENV) else {
+        return Ok(libc::STDERR_FILENO);
+    };
+    let value = value.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{COMPAT_EVENT_FD_ENV} must be valid UTF-8"),
+        )
+    })?;
+    let fd = value.parse::<libc::c_int>().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{COMPAT_EVENT_FD_ENV} must be a non-negative descriptor"),
+        )
+    })?;
+    let flags = if fd < 0 {
+        -1
+    } else {
+        unsafe { libc::fcntl(fd, libc::F_GETFL) }
+    };
+    if flags < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{COMPAT_EVENT_FD_ENV} does not name an open descriptor"),
+        ));
+    }
+    if flags & libc::O_ACCMODE == libc::O_RDONLY {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{COMPAT_EVENT_FD_ENV} must name a writable descriptor"),
+        ));
+    }
+    Ok(fd)
 }
 
 unsafe extern "C" fn sigsys_handler(
@@ -223,11 +268,14 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
 
 unsafe fn trace_event(event: &SyscallEvent, result: Option<i64>) {
     let mode = TOOL_MODE.load(Ordering::Relaxed);
+    let output_fd;
     let mut line = StackLine::new();
     if mode == TOOL_COMPAT {
+        output_fd = EVENT_FD.load(Ordering::Acquire);
         line.push_bytes(b"reverie-liteinst: tool=compat syscall=");
         line.push_signed(event.number);
     } else if mode == TOOL_STRACE {
+        output_fd = libc::STDERR_FILENO;
         let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };
         line.push_bytes(b"[liteinst strace pid ");
         line.push_signed(pid);
@@ -249,7 +297,7 @@ unsafe fn trace_event(event: &SyscallEvent, result: Option<i64>) {
         raw_syscall6(
             libc::SYS_write,
             [
-                libc::STDERR_FILENO as u64,
+                output_fd as u64,
                 line.bytes.as_ptr() as u64,
                 line.len as u64,
                 0,

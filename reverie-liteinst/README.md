@@ -49,6 +49,12 @@ Callers can count and compare these markers alongside guest output and exit
 status. Arguments and results are omitted because many otherwise compatible
 calls contain host-selected addresses and identifiers.
 
+Controllers that must keep guest standard error separate from compatibility
+events can set `REVERIE_LITEINST_EVENT_FD` to an open inherited descriptor.
+The runtime validates that descriptor during initialization and writes only
+compatibility markers to it; standalone launchers retain the standard-error
+default.
+
 The `preload-constructor` default feature installs the runtime through the
 DSO's `.init_array`. Embedders that provide their own cdylib wrapper must
 disable default features and install `reverie_liteinst_initialize` exactly once.

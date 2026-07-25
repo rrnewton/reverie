@@ -13,6 +13,14 @@ compile_error!("reverie-liteinst requires Linux x86-64");
 mod pun;
 mod runtime;
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-87): Review the inherited compatibility event channel.
+/// Environment variable selecting an inherited descriptor for compatibility events.
+///
+/// When unset, compatibility events retain their standalone behavior and use
+/// standard error.
+pub const COMPAT_EVENT_FD_ENV: &str = "REVERIE_LITEINST_EVENT_FD";
+
 /// Built-in synchronous tool executed by the preload runtime.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreloadTool {
