@@ -89,6 +89,10 @@ pub struct DbiRuntimeCallbacks {
     pub emit: RuntimeEmitter,
     /// Yields while an async runtime future remains pending.
     pub idle: RuntimeIdler,
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-84): Review the persistent fail-closed client policy ABI.
+    /// Nonzero when the persistent client policy requires unsupported syscalls to fail closed.
+    pub panic_on_unsupported_syscalls: i32,
 }
 
 /// Result of dispatching a syscall through an external DBI Tool.
