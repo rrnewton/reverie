@@ -1334,6 +1334,15 @@ fn open_file(
     if let Some(guest_fd) = guest_fd_path(&path) {
         return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
     }
+    if path == b"/dev/random" || path == b"/dev/urandom" {
+        let bytes = (0..64 * 1024)
+            .map(|index| (index as u8).wrapping_mul(73).wrapping_add(41))
+            .collect::<Vec<_>>();
+        return open_virtual_file(state, &bytes, flags, guest_cloexec);
+    }
+    if path == b"/proc/uptime" {
+        return open_virtual_file(state, b"0.00 0.00\n", flags, guest_cloexec);
+    }
     let Ok((host_dirfd, path)) = host_dirfd_and_path(state, guest_dirfd, &path) else {
         return negative_errno(libc::EBADF);
     };
@@ -1405,6 +1414,43 @@ fn open_file(
         }
     }
     insert_file_with_flags(state, file, guest_cloexec, None)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#92): Review deterministic random-device and procfs virtual files.
+fn open_virtual_file(
+    state: &mut LoadedStaticElf,
+    contents: &[u8],
+    flags: u64,
+    close_on_exec: bool,
+) -> i64 {
+    let unsupported = (libc::O_CREAT
+        | libc::O_DIRECTORY
+        | libc::O_EXCL
+        | libc::O_PATH
+        | libc::O_TMPFILE
+        | libc::O_TRUNC) as u64;
+    if flags & unsupported != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let name = c"reverie-kvm-virtual";
+    let host_fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
+    if host_fd < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: memfd_create returned a new owned descriptor.
+    let mut file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+    if let Err(error) = file.write_all(contents) {
+        return io_error(error);
+    }
+    if unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_SET) } < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let access_mode = flags as libc::c_int & libc::O_ACCMODE;
+    if access_mode == libc::O_WRONLY {
+        return negative_errno(libc::EACCES);
+    }
+    insert_file_with_flags(state, file, close_on_exec, None)
 }
 
 fn guest_fd_path(path: &[u8]) -> Option<libc::c_int> {
