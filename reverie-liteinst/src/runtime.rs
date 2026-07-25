@@ -452,7 +452,8 @@ unsafe fn compatibility_event_channel_is_intact(output_fd: libc::c_int) -> bool 
 }
 
 unsafe fn write_compatibility_event(output_fd: libc::c_int, bytes: &[u8]) {
-    const MAX_BACKPRESSURE_RETRIES: usize = 4096;
+    const MAX_BACKPRESSURE_RETRIES: usize = 20;
+    const BACKPRESSURE_POLL_MILLISECONDS: u64 = 100;
 
     if unsafe { !compatibility_event_channel_is_intact(output_fd) } {
         unsafe {
@@ -479,7 +480,24 @@ unsafe fn write_compatibility_event(output_fd: libc::c_int, bytes: &[u8]) {
         if written != -i64::from(libc::EAGAIN) && written != -i64::from(libc::EINTR) {
             break;
         }
-        let _ = unsafe { raw_syscall6(libc::SYS_sched_yield, [0; 6]) };
+        let mut descriptor = libc::pollfd {
+            fd: output_fd,
+            events: libc::POLLOUT,
+            revents: 0,
+        };
+        let _ = unsafe {
+            raw_syscall6(
+                libc::SYS_poll,
+                [
+                    (&raw mut descriptor) as u64,
+                    1,
+                    BACKPRESSURE_POLL_MILLISECONDS,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
     }
     unsafe {
         exit_now(EVENT_CHANNEL_WRITE_FAILURE_STATUS);
