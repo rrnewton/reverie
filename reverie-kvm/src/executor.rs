@@ -338,6 +338,8 @@ fn execute_basic_syscall_with_output(
         || number == libc::SYS_getegid as u64
     {
         0
+    } else if number == libc::SYS_setresuid as u64 || number == libc::SYS_setresgid as u64 {
+        set_fixed_root_ids(&args[..3])
     } else if number == libc::SYS_getgroups as u64 {
         getgroups(memory, args)
     } else if number == libc::SYS_umask as u64 {
@@ -2086,6 +2088,14 @@ fn getgroups(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     match memory.write(args[1], &bytes) {
         Ok(()) => i64::from(count),
         Err(_) => negative_errno(libc::EFAULT),
+    }
+}
+
+fn set_fixed_root_ids(ids: &[u64]) -> i64 {
+    if ids.iter().all(|id| matches!(*id as u32, 0 | u32::MAX)) {
+        0
+    } else {
+        negative_errno(libc::EPERM)
     }
 }
 

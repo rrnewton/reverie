@@ -866,6 +866,29 @@ fn strace_tool_logs_syscalls_from_static_elf() {
     );
 }
 
+#[test]
+fn real_make_runs_a_shell_recipe_through_clone3_vfork() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM make test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+    let root = TestDirectory::new();
+    std::fs::write(
+        root.0.join("Makefile"),
+        "all: result.txt\nresult.txt:\n\tprintf 'make:42\\n' > result.txt\n",
+    )
+    .unwrap();
+    run_host_program("/usr/bin/make", &["make", "-s"], &root.0);
+    assert_eq!(
+        std::fs::read(root.0.join("result.txt")).unwrap(),
+        b"make:42\n"
+    );
+}
+
 fn static_elf(code: &[u8]) -> Vec<u8> {
     let mut image = vec![0; CODE_OFFSET + code.len()];
 
