@@ -9,7 +9,9 @@
 //! Correctness-first hybrid backend for e9patch syscall events.
 
 use std::ffi::CString;
+use std::fs::File;
 use std::io;
+use std::io::Read;
 use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
@@ -136,6 +138,30 @@ fn syscall_result(result: libc::c_int) -> io::Result<()> {
     }
 }
 
+fn is_elf_file(path: &Path) -> io::Result<bool> {
+    let mut file = File::open(path)?;
+    let mut magic = [0_u8; 4];
+    match file.read_exact(&mut magic) {
+        Ok(()) => Ok(magic == *b"\x7fELF"),
+        Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+async fn spawn_tracer<T>(
+    command: Command,
+    config: <T::GlobalState as GlobalTool>::Config,
+) -> Result<Tracer<T::GlobalState>, Error>
+where
+    T: Tool + 'static,
+{
+    TracerBuilder::<T>::new(command)
+        .config(config)
+        .injected_syscall_trap(E9PATCH_SYSCALL_TRAP_MARKER, E9PATCH_SYSCALL_TRAP_RIP)
+        .spawn()
+        .await
+}
+
 /// Hybrid e9patch backend with ptrace lifecycle and full `Guest` semantics.
 ///
 /// Recovered syscall instructions in the root ELF are replaced by e9patch
@@ -157,6 +183,16 @@ impl E9patchBackend {
     {
         let source = command.find_program()?;
         let arg0 = command.get_arg0().to_owned();
+        // TODO-HUMAN-REVIEW(PR-103): Review non-ELF ptrace fallback behavior.
+        if !is_elf_file(&source)? {
+            eprintln!(
+                ":: Backend: e9patch hybrid; recovered_sites=0; patched_sites=0; b0_sites=0; event_source=ptrace; controller=ptrace; main_executable=non-ELF"
+            );
+            command.program(&source).arg0(arg0);
+            let tracer = spawn_tracer::<T>(command, config).await?;
+            return Ok((tracer, ExecutableResource::Original));
+        }
+
         let prepared = E9patchRewriter::from_env()?.prepare(&source)?;
         let report = prepared.report();
         // TODO-HUMAN-REVIEW(PR-103): Review the stable backend coverage diagnostic.
@@ -170,11 +206,7 @@ impl E9patchBackend {
         // TODO-HUMAN-REVIEW(PR-103): Review zero-site original-image execution.
         if report.patched_sites() == 0 {
             command.program(&source).arg0(arg0);
-            let tracer = TracerBuilder::<T>::new(command)
-                .config(config)
-                .injected_syscall_trap(E9PATCH_SYSCALL_TRAP_MARKER, E9PATCH_SYSCALL_TRAP_RIP)
-                .spawn()
-                .await?;
+            let tracer = spawn_tracer::<T>(command, config).await?;
             return Ok((tracer, ExecutableResource::Original));
         }
 
@@ -205,11 +237,7 @@ impl E9patchBackend {
             ExecutableResource::Temporary(executable)
         };
 
-        let spawn_result = TracerBuilder::<T>::new(command)
-            .config(config)
-            .injected_syscall_trap(E9PATCH_SYSCALL_TRAP_MARKER, E9PATCH_SYSCALL_TRAP_RIP)
-            .spawn()
-            .await;
+        let spawn_result = spawn_tracer::<T>(command, config).await;
         match spawn_result {
             Ok(tracer) => Ok((tracer, resource)),
             Err(error) => {

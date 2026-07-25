@@ -7,6 +7,8 @@
  */
 
 use std::ffi::OsString;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::AtomicU64;
@@ -217,5 +219,21 @@ async fn marker_collision_at_another_rip_is_not_a_syscall_event() {
         .await
         .unwrap();
     assert_eq!(global.delivered.load(Ordering::SeqCst), 0);
+    assert_eq!(status, ExitStatus::Exited(0));
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a ptrace-capable host"]
+async fn non_elf_script_uses_ptrace_fallback() {
+    let directory = tempfile::tempdir().unwrap();
+    let guest = directory.path().join("guest.sh");
+    fs::write(&guest, "#!/bin/sh\nexit 0\n").unwrap();
+    let mut permissions = fs::metadata(&guest).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&guest, permissions).unwrap();
+
+    let (status, ()) = E9patchBackend::run::<()>(Command::new(guest), ())
+        .await
+        .unwrap();
     assert_eq!(status, ExitStatus::Exited(0));
 }
