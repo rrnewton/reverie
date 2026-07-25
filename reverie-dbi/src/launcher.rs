@@ -44,6 +44,7 @@ pub struct DbiRunner {
     drrun: PathBuf,
     client: PathBuf,
     summary: bool,
+    virtual_time_epoch_ns: Option<u64>,
 }
 
 impl DbiRunner {
@@ -76,12 +77,19 @@ impl DbiRunner {
             drrun,
             client,
             summary: false,
+            virtual_time_epoch_ns: None,
         })
     }
 
     /// Enables or disables the instrumentation summary written at process exit.
     pub fn summary(mut self, enabled: bool) -> Self {
         self.summary = enabled;
+        self
+    }
+
+    /// Sets the initial virtual-clock value passed to the native DBI client.
+    pub fn virtual_time_epoch_ns(mut self, nanoseconds: u64) -> Self {
+        self.virtual_time_epoch_ns = Some(nanoseconds);
         self
     }
 
@@ -167,6 +175,11 @@ impl DbiRunner {
             .arg(&self.client);
         if self.summary {
             command.arg("-summary");
+        }
+        if let Some(nanoseconds) = self.virtual_time_epoch_ns {
+            command
+                .arg("-virtual-time-epoch-ns")
+                .arg(nanoseconds.to_string());
         }
         command.arg("--");
 
@@ -318,6 +331,7 @@ mod tests {
             drrun: PathBuf::from("/opt/dynamorio/bin64/drrun"),
             client: PathBuf::from("/opt/reverie/libreverie_dbi_client.so"),
             summary: false,
+            virtual_time_epoch_ns: None,
         }
     }
 
@@ -386,6 +400,31 @@ mod tests {
                 script.as_os_str(),
                 OsStr::new("argument"),
             ]
+        );
+    }
+
+    #[test]
+    fn passes_virtual_time_epoch_to_native_client() {
+        let guest = Command::new("/bin/date");
+        let wrapped = runner()
+            .virtual_time_epoch_ns(1_640_995_199_000_000_000)
+            .command(&guest, None);
+
+        assert_eq!(
+            wrapped.get_args().collect::<Vec<_>>(),
+            [
+                "-quiet",
+                "-disable_rseq",
+                "-stack_size",
+                "2M",
+                "-c",
+                "/opt/reverie/libreverie_dbi_client.so",
+                "-virtual-time-epoch-ns",
+                "1640995199000000000",
+                "--",
+                "/bin/date",
+            ]
+            .map(OsStr::new)
         );
     }
 

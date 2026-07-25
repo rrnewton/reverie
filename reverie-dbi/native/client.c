@@ -783,6 +783,22 @@ static void event_exit(void) {
   drmgr_exit();
 }
 
+static bool parse_u64_decimal(const char *value, uint64_t *result) {
+  uint64_t parsed = 0;
+  if (value == NULL || *value == '\0')
+    return false;
+  for (const char *cursor = value; *cursor != '\0'; ++cursor) {
+    if (*cursor < '0' || *cursor > '9')
+      return false;
+    uint64_t digit = (uint64_t)(*cursor - '0');
+    if (parsed > (UINT64_MAX - digit) / UINT64_C(10))
+      return false;
+    parsed = parsed * UINT64_C(10) + digit;
+  }
+  *result = parsed;
+  return true;
+}
+
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   drreg_options_t register_options = {sizeof(register_options), 1, false};
 
@@ -790,9 +806,17 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   DR_ASSERT(resource_lock != NULL);
   init_virtual_limits();
 
-  for (int i = 1; i < argc; ++i)
-    if (strcmp(argv[i], "-summary") == 0)
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "-summary") == 0) {
       report_summary = true;
+    } else if (strcmp(argv[i], "-virtual-time-epoch-ns") == 0) {
+      uint64_t nanoseconds;
+      DR_ASSERT(i + 1 < argc);
+      DR_ASSERT(parse_u64_decimal(argv[++i], &nanoseconds));
+      atomic_store_explicit(&virtual_time_ns, nanoseconds,
+                            memory_order_seq_cst);
+    }
+  }
 
   dr_set_client_name("Reverie DynamoRIO backend prototype",
                      "https://github.com/rrnewton/reverie");
