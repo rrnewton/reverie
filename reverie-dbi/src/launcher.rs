@@ -44,6 +44,7 @@ pub struct DbiRunner {
     drrun: PathBuf,
     client: PathBuf,
     summary: bool,
+    count_branches: bool,
 }
 
 impl DbiRunner {
@@ -76,12 +77,23 @@ impl DbiRunner {
             drrun,
             client,
             summary: false,
+            count_branches: false,
         })
     }
 
     /// Enables or disables the instrumentation summary written at process exit.
     pub fn summary(mut self, enabled: bool) -> Self {
         self.summary = enabled;
+        self
+    }
+
+    /// Enables or disables retired-branch counting in the native client.
+    ///
+    /// Counting is disabled by default because the locked increment inserted
+    /// before every branch is only needed by tools that implement RCB
+    /// preemption or consume the branch clock.
+    pub fn branch_counting(mut self, enabled: bool) -> Self {
+        self.count_branches = enabled;
         self
     }
 
@@ -165,6 +177,9 @@ impl DbiRunner {
             .args(["-stack_size", "2M"])
             .arg("-c")
             .arg(&self.client);
+        if self.count_branches {
+            command.arg("-count-branches");
+        }
         if self.summary {
             command.arg("-summary");
         }
@@ -318,6 +333,7 @@ mod tests {
             drrun: PathBuf::from("/opt/dynamorio/bin64/drrun"),
             client: PathBuf::from("/opt/reverie/libreverie_dbi_client.so"),
             summary: false,
+            count_branches: false,
         }
     }
 
@@ -359,6 +375,28 @@ mod tests {
             wrapped
                 .get_envs()
                 .any(|(key, value)| key == OsStr::new("REMOVED") && value.is_none())
+        );
+    }
+
+    #[test]
+    fn enables_branch_counting_for_the_native_client() {
+        let guest = Command::new("/bin/true");
+        let wrapped = runner().branch_counting(true).command(&guest, None);
+
+        assert_eq!(
+            wrapped.get_args().collect::<Vec<_>>(),
+            [
+                "-quiet",
+                "-disable_rseq",
+                "-stack_size",
+                "2M",
+                "-c",
+                "/opt/reverie/libreverie_dbi_client.so",
+                "-count-branches",
+                "--",
+                "/bin/true",
+            ]
+            .map(OsStr::new)
         );
     }
 

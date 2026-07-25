@@ -119,6 +119,7 @@ static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
 static int thread_state_index;
 static ptr_uint_t cpuid_marker_note;
 static bool report_summary;
+static bool count_branches;
 
 typedef struct {
   uint64_t rlim_cur;
@@ -213,7 +214,8 @@ static dr_emit_flags_t instrument_instruction(void *drcontext, void *tag,
         DR_CLEANCALL_READS_APP_CONTEXT | DR_CLEANCALL_WRITES_APP_CONTEXT, 0);
     return DR_EMIT_DEFAULT;
   }
-  if (!instr_is_app(instruction) || !is_counted_branch(instruction))
+  if (!count_branches || !instr_is_app(instruction) ||
+      !is_counted_branch(instruction))
     return DR_EMIT_DEFAULT;
 
   if (!drx_insert_counter_update(drcontext, bb, instruction, SPILL_SLOT_MAX + 1,
@@ -793,6 +795,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   for (int i = 1; i < argc; ++i)
     if (strcmp(argv[i], "-summary") == 0)
       report_summary = true;
+    else if (strcmp(argv[i], "-count-branches") == 0)
+      count_branches = true;
 
   dr_set_client_name("Reverie DynamoRIO backend prototype",
                      "https://github.com/rrnewton/reverie");

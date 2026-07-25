@@ -280,11 +280,14 @@ where
     }
 
     fn read_clock(&mut self) -> Result<u64, Error> {
-        // Coarse: this is the retired-conditional-branch count sampled by the
-        // native client at the most recent syscall entry, not a continuously
-        // updated clock. Adequate for ordering at syscall boundaries only.
+        // Coarse: when branch counting is enabled, this is the
+        // retired-conditional-branch count sampled by the native client at the
+        // most recent syscall entry, not a continuously updated clock.
+        // Counting is opt-in because tools that do not use RCB time would
+        // otherwise pay for a locked increment before every branch.
         // TODO-STUB(#31): expose a continuously updated RCB read from the
-        // native client for sub-syscall resolution.
+        // native client for sub-syscall resolution and enable counting with
+        // DbiRunner::branch_counting.
         Ok(self.branch_count)
     }
 }
