@@ -1760,6 +1760,9 @@ fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
             Err(error) => return error,
         }
     };
+    if path.is_none() && raw_flags != 0 {
+        return negative_errno(libc::EINVAL);
+    }
     let path_pointer = path.as_ref().map_or(std::ptr::null(), |path| path.as_ptr());
 
     let mut times = if args[2] == 0 {
@@ -1787,16 +1790,23 @@ fn utimensat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
             return negative_errno(libc::EINVAL);
         }
     }
-    // SAFETY: path_pointer is either NULL for the Linux fd-based extension or
-    // points into path, and times remains live for the call.
-    zero_or_errno(unsafe {
-        libc::utimensat(
-            host_dirfd,
-            path_pointer,
-            times.as_ptr(),
-            raw_flags as libc::c_int,
-        )
-    })
+    // glibc rejects the raw syscall's Linux-specific NULL pathname form. Use
+    // futimens for that equivalent fd-based operation instead.
+    let result = if path.is_none() {
+        // SAFETY: host_dirfd is an owned descriptor and times is live.
+        unsafe { libc::futimens(host_dirfd, times.as_ptr()) }
+    } else {
+        // SAFETY: path_pointer points into path and times is live for the call.
+        unsafe {
+            libc::utimensat(
+                host_dirfd,
+                path_pointer,
+                times.as_ptr(),
+                raw_flags as libc::c_int,
+            )
+        }
+    };
+    zero_or_errno(result)
 }
 
 fn getcwd(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -4394,6 +4404,39 @@ mod tests {
         assert_eq!(
             std::fs::metadata(root.0.join("renamed")).unwrap().mtime(),
             DETERMINISTIC_UTIME_SECONDS
+        );
+        let fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                RENAMED,
+                libc::O_RDONLY as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(fd, 3);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_utimensat,
+                [fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0,
+            "fd-based utimensat with a NULL pathname must use futimens"
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
         );
         assert_eq!(
             syscall_result(
