@@ -52,6 +52,9 @@ typedef struct {
 #define CPUID_RESULT(a, b, c, d) {(a), (b), (c), (d)}
 #define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
 #define BIT32(bit) (UINT32_C(1) << (bit))
+#define X32_SYSCALL_BIT UINT32_C(0x40000000)
+#define X86_32_SYS_SETPGID 57
+#define X86_32_SYS_SETSID 66
 
 /* Keep this synthetic CPU identity aligned with Hermit's ptrace backend. */
 static const cpuid_result_t basic_cpuid[] = {
@@ -873,6 +876,12 @@ static bool used_compat_syscall_gateway(void *drcontext) {
 }
 
 static bool pre_syscall(void *drcontext, int sysnum) {
+  if (((uint32_t)sysnum & X32_SYSCALL_BIT) != 0) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbi: x32-marked syscalls are unsupported\n");
+    exit_runtime_tree(102);
+    return false;
+  }
   if (used_compat_syscall_gateway(drcontext)) {
     dr_fprintf(diagnostic_file,
                "reverie-dbi: compat int 0x80 syscalls are unsupported\n");
@@ -881,8 +890,12 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   }
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-84): Review process-group mutation refusal in isolated runtimes.
+  // Group containment does not rely on mutable gateway bytes: copied
+  // runtimes reject the ambiguous i386 raw numbers even if gateway proof races.
   if (runtime_process_group != 0 &&
-      (sysnum == SYS_setsid || sysnum == SYS_setpgid)) {
+      (sysnum == SYS_setsid || sysnum == SYS_setpgid ||
+       (has_copied_runtime() &&
+        (sysnum == X86_32_SYS_SETPGID || sysnum == X86_32_SYS_SETSID)))) {
     dr_syscall_set_result(drcontext, (reg_t)-EPERM);
     return false;
   }
