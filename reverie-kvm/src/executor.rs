@@ -1299,11 +1299,14 @@ fn open_file(
         let close_on_exec = flags & libc::O_CLOEXEC as u64 != 0;
         return open_synthetic_proc(state, &normalized, &content, close_on_exec);
     }
+    let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
+    let guest_cloexec = flags & libc::O_CLOEXEC as u64 != 0;
+    if let Some(guest_fd) = guest_fd_path(&path) {
+        return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
+    }
     let Ok((host_dirfd, path)) = host_dirfd_and_path(state, guest_dirfd, &path) else {
         return negative_errno(libc::EBADF);
     };
-    let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
-    let guest_cloexec = flags & libc::O_CLOEXEC as u64 != 0;
     let uses_mode = flags & libc::O_CREAT as u64 != 0
         || flags & libc::O_TMPFILE as u64 == libc::O_TMPFILE as u64;
     let mode = if uses_mode {
@@ -1372,6 +1375,57 @@ fn open_file(
         }
     }
     insert_file_with_flags(state, file, guest_cloexec, None)
+}
+
+fn guest_fd_path(path: &[u8]) -> Option<libc::c_int> {
+    let suffix = path
+        .strip_prefix(b"/dev/fd/")
+        .or_else(|| path.strip_prefix(b"/proc/self/fd/"))?;
+    if suffix.is_empty() || !suffix.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    suffix.iter().try_fold(0_i32, |value, digit| {
+        value.checked_mul(10)?.checked_add(i32::from(*digit - b'0'))
+    })
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#92): Review guest /dev/fd duplication without supervisor procfs exposure.
+fn open_guest_fd_path(
+    state: &mut LoadedStaticElf,
+    guest_fd: libc::c_int,
+    flags: u64,
+    close_on_exec: bool,
+) -> i64 {
+    let Some(source_host_fd) = host_fd(state, guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let unsupported = (libc::O_CREAT
+        | libc::O_DIRECTORY
+        | libc::O_EXCL
+        | libc::O_NOFOLLOW
+        | libc::O_TMPFILE
+        | libc::O_TRUNC) as u64;
+    if flags & unsupported != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let source_flags = match fd_status_flags(source_host_fd) {
+        Ok(flags) => flags,
+        Err(error) => return error,
+    };
+    if source_flags & libc::O_ACCMODE != flags as libc::c_int & libc::O_ACCMODE {
+        return negative_errno(libc::EACCES);
+    }
+    let source_alias = output_alias(state, guest_fd);
+    // SAFETY: source_host_fd names a live descriptor and F_DUPFD_CLOEXEC
+    // returns a new owned descriptor.
+    let duplicated = unsafe { libc::fcntl(source_host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicated < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: fcntl returned a new owned descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
+    insert_file_with_flags(state, file, close_on_exec, source_alias)
 }
 
 fn ensure_not_procfs(file: &std::fs::File) -> Result<(), i64> {
@@ -4910,6 +4964,73 @@ mod tests {
             0
         );
         assert!(state.files.is_empty());
+    }
+
+    #[test]
+    fn guest_fd_paths_duplicate_mapped_descriptors() {
+        const PATH: u64 = 0x100;
+        const PIPE_FDS: u64 = 0x200;
+        const PAYLOAD: u64 = 0x300;
+        const READ_BUFFER: u64 = 0x400;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        assert_eq!(pipe_fds, [3, 4]);
+
+        memory.write(PATH, b"/dev/fd/3\0").unwrap();
+        let duplicate = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_open,
+            [PATH, libc::O_RDONLY as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(duplicate, 5);
+        memory.write(PAYLOAD, b"fd-path").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [pipe_fds[1] as u64, PAYLOAD, 7, 0, 0, 0],
+            ),
+            7
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [duplicate as u64, READ_BUFFER, 7, 0, 0, 0],
+            ),
+            7
+        );
+        let mut payload = [0; 7];
+        memory.read(READ_BUFFER, &mut payload).unwrap();
+        assert_eq!(&payload, b"fd-path");
+
+        memory.write(PATH, b"/proc/self/fd/99\0").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_open,
+                [PATH, libc::O_RDONLY as u64, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(guest_fd_path(b"/proc/self/fd/3"), Some(3));
+        assert_eq!(guest_fd_path(b"/dev/fd/not-a-fd"), None);
     }
 
     #[test]
