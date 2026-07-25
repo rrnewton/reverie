@@ -50,3 +50,24 @@ This tool is meant to emulate a pathological kernel where:
     returned at a time.
  2. `EINTR` is returned instead of running the real syscall for every other
     read.
+
+## Cross-backend counter harness
+
+bench.rs builds the selected backend adapter, runs one program, and emits a
+CSV row containing the program, backend, wall-clock time, and total intercepted
+syscall count:
+
+    ./reverie-examples/bench.rs --backend ptrace -- /bin/echo hello
+    ./reverie-examples/bench.rs --backend all -- /path/to/program
+
+The ptrace path uses counter2. DBI uses its per-thread prototype counters, KVM
+uses the same thread-exit aggregation pattern as counter2, and SaBRe uses
+riptrace with quiet summary output. Compilation is excluded from wall_time_ms.
+
+DBI requires the pinned DynamoRIO source to be active. KVM requires writable
+/dev/kvm and an x86-64 ELF supported by its bounded Linux personality.
+SaBRe requires either SABRE_BINARY or the pinned SaBRe source; when the source
+is active the harness builds the loader in target/sabre. The all-backend mode
+reports unavailable optional backends on stderr and continues with the rest.
+Counts are backend-observed: prototype startup and interception coverage differs,
+so totals for the same program are not expected to match across backends.
