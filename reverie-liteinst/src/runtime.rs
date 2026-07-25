@@ -460,7 +460,7 @@ unsafe fn write_compatibility_event(output_fd: libc::c_int, bytes: &[u8]) {
             exit_now(EVENT_CHANNEL_IDENTITY_FAILURE_STATUS);
         }
     }
-    for _ in 0..MAX_BACKPRESSURE_RETRIES {
+    for attempt in 0..=MAX_BACKPRESSURE_RETRIES {
         let written = unsafe {
             raw_syscall6(
                 libc::SYS_write,
@@ -478,6 +478,9 @@ unsafe fn write_compatibility_event(output_fd: libc::c_int, bytes: &[u8]) {
             return;
         }
         if written != -i64::from(libc::EAGAIN) && written != -i64::from(libc::EINTR) {
+            break;
+        }
+        if attempt == MAX_BACKPRESSURE_RETRIES {
             break;
         }
         let mut descriptor = libc::pollfd {
