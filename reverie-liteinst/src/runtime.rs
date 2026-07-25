@@ -297,6 +297,36 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
         return;
     }
 
+    if TOOL_MODE.load(Ordering::Relaxed) == TOOL_COMPAT
+        && matches!(
+            event.number,
+            libc::SYS_setpgid | libc::SYS_setsid | libc::SYS_setns | libc::SYS_unshare
+        )
+    {
+        event.result = -i64::from(libc::EPERM);
+        unsafe {
+            trace_event(event, Some(event.result));
+        }
+        return;
+    }
+
+    if TOOL_MODE.load(Ordering::Relaxed) == TOOL_COMPAT && event.number == libc::SYS_clone {
+        let namespace_flags = (libc::CLONE_NEWCGROUP
+            | libc::CLONE_NEWIPC
+            | libc::CLONE_NEWNET
+            | libc::CLONE_NEWNS
+            | libc::CLONE_NEWPID
+            | libc::CLONE_NEWUSER
+            | libc::CLONE_NEWUTS) as u64;
+        if event.args[0] & namespace_flags != 0 {
+            event.result = -i64::from(libc::EPERM);
+            unsafe {
+                trace_event(event, Some(event.result));
+            }
+            return;
+        }
+    }
+
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(#61): exec cannot safely cross an inherited trap filter.
     if event.number == libc::SYS_execve || event.number == libc::SYS_execveat {
@@ -518,6 +548,8 @@ unsafe fn trace_event(event: &SyscallEvent, result: Option<i64>) {
         if cookie != 0 {
             line.push_bytes(b" cookie=");
             line.push_unsigned(cookie);
+            line.push_bytes(b" pid=");
+            line.push_signed(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) });
         }
         line.push_bytes(b" syscall=");
         line.push_signed(event.number);

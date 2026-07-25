@@ -146,11 +146,15 @@ fn compatibility_event_fd_separates_guest_stderr() {
     assert_eq!(output.stderr, spoof.as_bytes());
 
     let events = String::from_utf8(events).unwrap();
-    let prefix = format!("reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} syscall=");
+    let prefix = format!("reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} pid=");
     assert!(
-        events.lines().all(|line| line
-            .strip_prefix(&prefix)
-            .is_some_and(|number| number.parse::<i64>().is_ok())),
+        events.lines().all(|line| {
+            line.strip_prefix(&prefix)
+                .and_then(|record| record.split_once(" syscall="))
+                .is_some_and(|(pid, number)| {
+                    pid.parse::<u32>().is_ok() && number.parse::<i64>().is_ok()
+                })
+        }),
         "unexpected events: {events}"
     );
     assert!(!events.contains("999999"), "guest stderr leaked: {events}");
@@ -171,7 +175,7 @@ fn compatibility_event_fd_survives_guest_close() {
     let events = String::from_utf8(events).unwrap();
     assert!(
         events.contains(&format!(
-            "reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} syscall="
+            "reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} pid="
         )),
         "missing dedicated events: {events}"
     );
@@ -179,7 +183,9 @@ fn compatibility_event_fd_survives_guest_close() {
 
 #[test]
 fn compatibility_event_fd_rejects_guest_spoof_write() {
-    let forged = format!("reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} syscall=999999");
+    let forged = format!(
+        "reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} pid=999999 syscall=999999"
+    );
     let script = format!(
         "eval \"printf '{forged}\\n' >&${{REVERIE_LITEINST_TEST_EVENT_FD}}\" 2>/dev/null; result=$?; test $result -ne 0; printf 'spoof-rejected\\n'"
     );
@@ -296,6 +302,19 @@ fn compatibility_event_fd_recovers_when_delayed_reader_drains() {
         events.len() > 4096,
         "delayed reader did not drain a full pipe"
     );
+}
+
+#[test]
+fn compatibility_tool_rejects_process_group_escape() {
+    let output = run_compat_guest(
+        "/usr/bin/python3",
+        &[
+            "-c",
+            "import os\ntry:\n os.setsid()\nexcept PermissionError:\n print('setsid-rejected')\nelse:\n raise SystemExit('setsid unexpectedly succeeded')",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"setsid-rejected\n");
 }
 
 #[test]
