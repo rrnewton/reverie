@@ -101,6 +101,7 @@ typedef void (*reverie_idle_fn_t)(void);
 typedef struct {
   reverie_emit_fn_t emit;
   reverie_idle_fn_t idle;
+  int32_t panic_on_unsupported_syscalls;
 } runtime_callbacks_t;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#90): Confirm diagnostic fd ownership across exec.
@@ -138,9 +139,12 @@ static int thread_state_index;
 static ptr_uint_t cpuid_marker_note;
 static bool report_summary;
 static process_id_t runtime_owner_pid;
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-84): Review isolation-aware process-group termination.
+static process_id_t runtime_process_group;
 static void exit_runtime_tree(int exit_code) {
-  if (runtime_owner_pid != 0)
-    kill(-(pid_t)runtime_owner_pid, SIGKILL);
+  if (runtime_process_group != 0)
+    kill(-(pid_t)runtime_process_group, SIGKILL);
   dr_exit_process(exit_code);
 }
 
@@ -958,7 +962,8 @@ static void event_exit(void) {
 
 static void runtime_idle(void) { dr_sleep(1); }
 
-static runtime_callbacks_t runtime_callbacks = {reverie_dbi_emit, runtime_idle};
+static runtime_callbacks_t runtime_callbacks = {reverie_dbi_emit, runtime_idle,
+                                                0};
 
 static void runtime_background_init(void *argument) {
   (void)argument;
@@ -986,6 +991,10 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       DR_ASSERT(fd >= 0);
       diagnostic_file = (file_t)fd;
     }
+    else if (strcmp(argv[i], "-panic-on-unsupported-syscalls") == 0)
+      runtime_callbacks.panic_on_unsupported_syscalls = 1;
+    else if (strcmp(argv[i], "-isolated-process-group") == 0)
+      runtime_process_group = (process_id_t)getpgrp();
   }
 
   dr_set_client_name("Reverie DynamoRIO backend prototype",
