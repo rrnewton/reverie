@@ -134,6 +134,11 @@ static int thread_state_index;
 static ptr_uint_t cpuid_marker_note;
 static bool report_summary;
 static process_id_t runtime_owner_pid;
+static void exit_runtime_tree(int exit_code) {
+  if (runtime_owner_pid != 0)
+    kill(-(pid_t)runtime_owner_pid, SIGKILL);
+  dr_exit_process(exit_code);
+}
 
 typedef struct {
   uint64_t rlim_cur;
@@ -845,7 +850,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       dr_fprintf(STDERR,
                  "detcore-dbi: unsupported syscall %d in copied child\n",
                  sysnum);
-      dr_exit_process(101);
+      exit_runtime_tree(101);
       return false;
     }
 #ifdef SYS_execveat
@@ -881,7 +886,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       atomic_load_explicit(&branch_count, memory_order_relaxed), &result,
       invoke_syscall, read_registers, read_memory, reverie_dbi_emit);
   if (action < 0) {
-    dr_exit_process(101);
+    exit_runtime_tree(101);
     return false;
   }
   if (action > 0) {
