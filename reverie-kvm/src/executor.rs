@@ -206,6 +206,8 @@ fn execute_basic_syscall_with_output(
         fcntl(state, args)
     } else if number == libc::SYS_open as u64 {
         open(memory, state, args)
+    } else if number == libc::SYS_creat as u64 {
+        open_file(memory, state, libc::AT_FDCWD, args[0], 0o1101, args[1])
     } else if number == libc::SYS_openat as u64 {
         openat(memory, state, args)
     } else if number == libc::SYS_creat as u64 {
@@ -342,6 +344,28 @@ fn execute_basic_syscall_with_output(
         set_fixed_root_ids(&args[..3])
     } else if number == libc::SYS_getgroups as u64 {
         getgroups(memory, args)
+    } else if number == libc::SYS_flock as u64 {
+        flock(state, args)
+    } else if number == libc::SYS_fchown as u64 {
+        fchown(state, args[0])
+    } else if number == libc::SYS_chown as u64 {
+        fchownat(memory, state, libc::AT_FDCWD, args[0], 0)
+    } else if number == libc::SYS_lchown as u64 {
+        fchownat(
+            memory,
+            state,
+            libc::AT_FDCWD,
+            args[0],
+            libc::AT_SYMLINK_NOFOLLOW,
+        )
+    } else if number == libc::SYS_fchownat as u64 {
+        fchownat(
+            memory,
+            state,
+            args[0] as libc::c_int,
+            args[1],
+            args[4] as libc::c_int,
+        )
     } else if number == libc::SYS_umask as u64 {
         let previous = state.umask;
         state.umask = args[0] as libc::mode_t & 0o777;
@@ -2096,6 +2120,60 @@ fn set_fixed_root_ids(ids: &[u64]) -> i64 {
         0
     } else {
         negative_errno(libc::EPERM)
+    }
+}
+
+fn flock(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
+        return negative_errno(libc::EBADF);
+    };
+    let operation = args[1] as libc::c_int;
+    let base = operation & !libc::LOCK_NB;
+    if !matches!(base, libc::LOCK_SH | libc::LOCK_EX | libc::LOCK_UN)
+        || operation & !(libc::LOCK_SH | libc::LOCK_EX | libc::LOCK_UN | libc::LOCK_NB) != 0
+    {
+        return negative_errno(libc::EINVAL);
+    }
+    zero_or_errno(unsafe { libc::flock(host_fd, operation) })
+}
+
+fn fchown(state: &LoadedStaticElf, raw_fd: u64) -> i64 {
+    if host_fd(state, raw_fd as libc::c_int).is_some() {
+        0
+    } else {
+        negative_errno(libc::EBADF)
+    }
+}
+
+fn fchownat(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
+    path_address: u64,
+    flags: libc::c_int,
+) -> i64 {
+    let allowed = libc::AT_EMPTY_PATH | libc::AT_SYMLINK_NOFOLLOW;
+    if flags & !allowed != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let path = match read_c_string(memory, path_address, 4096) {
+        Ok(path) => path,
+        Err(error) => return read_c_string_errno(error),
+    };
+    if path.is_empty() {
+        if flags & libc::AT_EMPTY_PATH == 0 {
+            return negative_errno(libc::ENOENT);
+        }
+        return fchown(state, guest_dirfd as u64);
+    }
+    match open_metadata_path(
+        state,
+        guest_dirfd,
+        &path,
+        flags & libc::AT_SYMLINK_NOFOLLOW != 0,
+    ) {
+        Ok(_) => 0,
+        Err(error) => error,
     }
 }
 
