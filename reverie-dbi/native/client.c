@@ -143,8 +143,12 @@ static process_id_t runtime_owner_pid;
 // TODO-HUMAN-REVIEW(PR-84): Review isolation-aware process-group termination.
 static process_id_t runtime_process_group;
 static void exit_runtime_tree(int exit_code) {
-  if (runtime_process_group != 0)
-    kill(-(pid_t)runtime_process_group, SIGKILL);
+  // A copied child cannot kill its own process group and then run DynamoRIO
+  // cleanup. Kill the root instead; the out-of-group launcher reaps it and
+  // terminates the remaining isolated group after preserving its exit status.
+  if (runtime_process_group != 0 &&
+      runtime_owner_pid != dr_get_process_id())
+    kill((pid_t)runtime_owner_pid, SIGKILL);
   dr_exit_process(exit_code);
 }
 
@@ -854,18 +858,15 @@ static bool has_copied_runtime(void) {
 
 static bool pre_syscall(void *drcontext, int sysnum) {
   // AUTONOMOUS-BOT-IMPLEMENTED
-  // TODO-HUMAN-REVIEW(PR-84): Review virtualized setsid containment for isolated runtimes.
+  // TODO-HUMAN-REVIEW(PR-84): Review explicit setsid refusal in isolated runtimes.
   if (runtime_process_group != 0 && sysnum == SYS_setsid) {
-    pid_t pid = (pid_t)dr_get_process_id();
-    pid_t current_group = getpgrp();
-    reg_t result = pid == current_group ? (reg_t)-EPERM : (reg_t)pid;
-    dr_syscall_set_result(drcontext, result);
+    dr_syscall_set_result(drcontext, (reg_t)-EPERM);
     return false;
   }
 
   if (has_copied_runtime()) {
     if (reverie_dbi_runtime_copied_syscall((int64_t)sysnum)) {
-      dr_fprintf(STDERR,
+      dr_fprintf(diagnostic_file,
                  "detcore-dbi: unsupported syscall %d in copied child\n",
                  sysnum);
       exit_runtime_tree(101);
