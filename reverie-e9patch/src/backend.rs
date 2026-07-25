@@ -33,7 +33,10 @@ use crate::E9patchRewriter;
 
 enum ExecutableResource {
     Temporary(tempfile::TempPath),
-    Overlay(ExecutableOverlay),
+    Overlay {
+        mount: ExecutableOverlay,
+        backing_path: tempfile::TempPath,
+    },
     Original,
 }
 
@@ -41,7 +44,14 @@ impl ExecutableResource {
     fn cleanup(self) -> io::Result<()> {
         match self {
             Self::Temporary(path) => path.close(),
-            Self::Overlay(mut overlay) => overlay.unmount(),
+            Self::Overlay {
+                mut mount,
+                backing_path,
+            } => {
+                let unmount = mount.unmount();
+                let unlink = backing_path.close();
+                unmount.and(unlink)
+            }
             Self::Original => Ok(()),
         }
     }
@@ -185,9 +195,11 @@ impl E9patchBackend {
 
         let resource = if preserve_executable {
             let overlay = ExecutableOverlay::mount(&executable, &source)?;
-            executable.close()?;
             command.program(&source).arg0(arg0);
-            ExecutableResource::Overlay(overlay)
+            ExecutableResource::Overlay {
+                mount: overlay,
+                backing_path: executable,
+            }
         } else {
             command.program(&executable).arg0(arg0);
             ExecutableResource::Temporary(executable)
