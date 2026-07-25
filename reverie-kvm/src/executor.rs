@@ -5580,6 +5580,71 @@ mod tests {
     }
 
     #[test]
+    fn chdir_and_fchdir_update_working_directory() {
+        const PATH_ADDRESS: u64 = 0x100;
+        const CWD_ADDRESS: u64 = 0x200;
+
+        let root = TestDir::new();
+        let child = root.0.join("child");
+        std::fs::create_dir(&child).unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x1000).unwrap();
+
+        memory.write(PATH_ADDRESS, b".\0").unwrap();
+        let root_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                PATH_ADDRESS,
+                (libc::O_RDONLY | libc::O_DIRECTORY) as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert_eq!(root_fd, 3);
+
+        memory.write(PATH_ADDRESS, b"child\0").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [PATH_ADDRESS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(state.cwd, child);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchdir,
+                [root_fd as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(state.cwd, root.0);
+
+        let expected_len = root.0.as_os_str().as_bytes().len() + 1;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getcwd,
+                [CWD_ADDRESS, expected_len as u64, 0, 0, 0, 0],
+            ),
+            expected_len as i64
+        );
+        let mut cwd = vec![0; expected_len];
+        memory.read(CWD_ADDRESS, &mut cwd).unwrap();
+        assert_eq!(&cwd[..expected_len - 1], root.0.as_os_str().as_bytes());
+    }
+
+    #[test]
     fn host_read_forwards_input_without_consuming_on_guest_fault() {
         let (reader, mut writer) = UnixStream::pair().unwrap();
         writer.write_all(b"hello\n").unwrap();
