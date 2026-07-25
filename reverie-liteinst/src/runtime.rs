@@ -13,15 +13,18 @@ use crate::COMPAT_EVENT_FD_ENV;
 use crate::pun::PunProbe;
 
 const AUDIT_ARCH_X86_64: u32 = 0xc000_003e;
+const SI_CODE_SYS_SECCOMP: libc::c_int = 1;
 const SECCOMP_DATA_NR_OFFSET: u32 = 0;
 const SECCOMP_DATA_ARCH_OFFSET: u32 = 4;
 const SECCOMP_DATA_IP_LOW_OFFSET: u32 = 8;
 const SECCOMP_DATA_IP_HIGH_OFFSET: u32 = 12;
+const SECCOMP_DATA_ARG0_LOW_OFFSET: u32 = 16;
 const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
 const SECCOMP_RET_TRAP: u32 = 0x0003_0000;
 const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
 const BPF_LD_W_ABS: u16 = 0x20;
 const BPF_JMP_JEQ_K: u16 = 0x15;
+const BPF_JMP_JSET_K: u16 = 0x45;
 const BPF_RET_K: u16 = 0x06;
 const UNSET_RESULT: i64 = i64::MIN;
 const TOOL_STRACE: u8 = 1;
@@ -36,8 +39,8 @@ static EVENT_COOKIE: AtomicU64 = AtomicU64::new(0);
 static EVENT_DEVICE: AtomicU64 = AtomicU64::new(0);
 static EVENT_INODE: AtomicU64 = AtomicU64::new(0);
 
-#[thread_local]
-static mut CURRENT_EVENT: *mut SyscallEvent = ptr::null_mut();
+static CURRENT_EVENT_TABLE: AtomicPtr<*mut SyscallEvent> = AtomicPtr::new(ptr::null_mut());
+static CURRENT_EVENT_TABLE_LEN: AtomicU64 = AtomicU64::new(0);
 
 global_asm!(
     r#"
@@ -121,6 +124,7 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
         }
     }
 
+    initialize_current_event_table()?;
     let probe = Box::new(PunProbe::new(tool_trampoline)?);
     let probe = Box::into_raw(probe);
     PROBE.store(probe, Ordering::Release);
@@ -134,6 +138,35 @@ struct CompatibilityEventChannel {
     cookie: u64,
     device: u64,
     inode: u64,
+}
+
+fn initialize_current_event_table() -> io::Result<()> {
+    // Linux caps PID/TID values at PID_MAX_LIMIT on 64-bit architectures.
+    const LINUX_PID_MAX_LIMIT: usize = 1 << 22;
+    let entries = LINUX_PID_MAX_LIMIT + 1;
+    let mapping_len = entries
+        .checked_mul(core::mem::size_of::<*mut SyscallEvent>())
+        .ok_or_else(|| io::Error::other("current-event table size overflow"))?;
+    let mapping = unsafe {
+        libc::mmap(
+            ptr::null_mut(),
+            mapping_len,
+            libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE,
+            -1,
+            0,
+        )
+    };
+    if mapping == libc::MAP_FAILED {
+        return Err(io::Error::last_os_error());
+    }
+
+    // Anonymous mappings are zero-filled, which is the null representation
+    // required by AtomicPtr::from_ptr for every lazily used TID entry.
+    let table = mapping.cast::<*mut SyscallEvent>();
+    CURRENT_EVENT_TABLE.store(table, Ordering::Release);
+    CURRENT_EVENT_TABLE_LEN.store(entries as u64, Ordering::Release);
+    Ok(())
 }
 
 fn compatibility_event_channel() -> io::Result<Option<CompatibilityEventChannel>> {
@@ -226,16 +259,21 @@ fn compatibility_event_channel() -> io::Result<Option<CompatibilityEventChannel>
 
 unsafe extern "C" fn sigsys_handler(
     signal: libc::c_int,
-    _info: *mut libc::siginfo_t,
+    info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
 ) {
-    if signal != libc::SIGSYS || context.is_null() {
+    if signal != libc::SIGSYS
+        || info.is_null()
+        || unsafe { (*info).si_code } != SI_CODE_SYS_SECCOMP
+        || context.is_null()
+    {
         unsafe {
             exit_now(126);
         }
     }
 
     let context = unsafe { &mut *context.cast::<libc::ucontext_t>() };
+    let interrupted_mask = context.uc_sigmask;
     let registers = &mut context.uc_mcontext.gregs;
     let mut event = SyscallEvent {
         number: registers[libc::REG_RAX as usize],
@@ -251,15 +289,12 @@ unsafe extern "C" fn sigsys_handler(
         result: UNSET_RESULT,
     };
 
-    if unsafe { !CURRENT_EVENT.is_null() } {
-        unsafe {
-            exit_now(125);
-        }
-    }
-    unsafe {
-        CURRENT_EVENT = &mut event;
-    }
+    let slot = unsafe { current_event_slot() };
+    let previous = slot.swap(&mut event, Ordering::AcqRel);
 
+    unsafe {
+        restore_interrupted_signal_mask(&interrupted_mask);
+    }
     let probe = PROBE.load(Ordering::Acquire);
     if probe.is_null() || unsafe { (*probe).enable() }.is_err() {
         unsafe {
@@ -268,8 +303,8 @@ unsafe extern "C" fn sigsys_handler(
     }
     unsafe {
         (*probe).dispatch();
-        CURRENT_EVENT = ptr::null_mut();
     }
+    slot.store(previous, Ordering::Release);
 
     if event.result == UNSET_RESULT {
         event.result = -i64::from(libc::ENOSYS);
@@ -278,7 +313,7 @@ unsafe extern "C" fn sigsys_handler(
 }
 
 unsafe extern "C" fn tool_trampoline() {
-    let event = unsafe { CURRENT_EVENT };
+    let event = unsafe { current_event_slot() }.load(Ordering::Acquire);
     if event.is_null() {
         unsafe {
             exit_now(123);
@@ -287,6 +322,48 @@ unsafe extern "C" fn tool_trampoline() {
     unsafe {
         process_syscall(&mut *event);
     }
+}
+
+unsafe fn restore_interrupted_signal_mask(mask: &libc::sigset_t) {
+    const KERNEL_SIGSET_SIZE: u64 = 8;
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_rt_sigprocmask,
+            [
+                libc::SIG_SETMASK as u64,
+                mask as *const libc::sigset_t as u64,
+                0,
+                KERNEL_SIGSET_SIZE,
+                0,
+                0,
+            ],
+        )
+    };
+    if result != 0 {
+        unsafe {
+            exit_now(122);
+        }
+    }
+}
+
+unsafe fn current_event_slot() -> &'static AtomicPtr<SyscallEvent> {
+    let tid = unsafe { raw_process_id(libc::SYS_gettid) };
+    let table = CURRENT_EVENT_TABLE.load(Ordering::Acquire);
+    let table_len = CURRENT_EVENT_TABLE_LEN.load(Ordering::Acquire);
+    if table.is_null() || u64::from(tid) >= table_len {
+        unsafe { exit_now(125) };
+    }
+    unsafe { AtomicPtr::from_ptr(table.add(tid as usize)) }
+}
+
+unsafe fn raw_process_id(number: i64) -> u32 {
+    let id = unsafe { raw_syscall6(number, [0; 6]) };
+    if id <= 0 || id > i64::from(i32::MAX) {
+        unsafe {
+            exit_now(125);
+        }
+    }
+    id as u32
 }
 
 unsafe fn process_syscall(event: &mut SyscallEvent) {
@@ -343,8 +420,18 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(#61): clone3 and vfork need a controller-owned child bootstrap.
-    if event.number == libc::SYS_clone3 || event.number == libc::SYS_vfork {
+    // TODO-HUMAN-REVIEW(#61): clone3 needs a controller-owned child bootstrap.
+    if event.number == libc::SYS_clone3 {
+        // glibc falls back to legacy clone only when clone3 appears unavailable.
+        event.result = -i64::from(libc::ENOSYS);
+        unsafe {
+            trace_event(event, Some(event.result));
+        }
+        return;
+    }
+
+    // TODO-HUMAN-REVIEW(#61): vfork needs a controller-owned child bootstrap.
+    if event.number == libc::SYS_vfork {
         event.result = -i64::from(libc::ENOTSUP);
         unsafe {
             trace_event(event, Some(event.result));
@@ -363,6 +450,11 @@ unsafe fn process_syscall(event: &mut SyscallEvent) {
     if compatibility_fork {
         unsafe {
             trace_event(event, None);
+        }
+    }
+    if event.number == libc::SYS_exit {
+        unsafe {
+            current_event_slot().store(ptr::null_mut(), Ordering::Release);
         }
     }
     event.result = unsafe { raw_syscall6(event.number, event.args) };
@@ -552,6 +644,8 @@ unsafe fn trace_event(event: &SyscallEvent, result: Option<i64>) {
             line.push_unsigned(cookie);
             line.push_bytes(b" pid=");
             line.push_signed(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) });
+            line.push_bytes(b" tid=");
+            line.push_signed(unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) });
         }
         line.push_bytes(b" syscall=");
         line.push_signed(event.number);
@@ -618,9 +712,9 @@ unsafe fn exit_now(code: i32) -> ! {
 
 fn install_sigsys_handler() -> io::Result<()> {
     let mut action: libc::sigaction = unsafe { core::mem::zeroed() };
-    action.sa_flags = libc::SA_SIGINFO;
+    action.sa_flags = libc::SA_SIGINFO | libc::SA_NODEFER;
     action.sa_sigaction = sigsys_handler as *const () as usize;
-    if unsafe { libc::sigemptyset(&mut action.sa_mask) } != 0 {
+    if unsafe { libc::sigfillset(&mut action.sa_mask) } != 0 {
         return Err(io::Error::last_os_error());
     }
     if unsafe { libc::sigaction(libc::SIGSYS, &action, ptr::null_mut()) } != 0 {
@@ -642,12 +736,19 @@ fn install_seccomp_filter() -> io::Result<()> {
         ));
     }
 
+    // Thread-creating clone must run at the guest's original syscall site:
+    // executing it from the SIGSYS handler would return the child on a stack
+    // that does not contain the trusted-gate call frame. New threads inherit
+    // this filter and the process-wide SIGSYS disposition.
     let mut filter = [
         stmt(BPF_LD_W_ABS, SECCOMP_DATA_ARCH_OFFSET),
         jump(BPF_JMP_JEQ_K, AUDIT_ARCH_X86_64, 1, 0),
         stmt(BPF_RET_K, SECCOMP_RET_KILL_PROCESS),
         stmt(BPF_LD_W_ABS, SECCOMP_DATA_NR_OFFSET),
-        jump(BPF_JMP_JEQ_K, libc::SYS_rt_sigreturn as u32, 6, 0),
+        jump(BPF_JMP_JEQ_K, libc::SYS_rt_sigreturn as u32, 9, 0),
+        jump(BPF_JMP_JEQ_K, libc::SYS_clone as u32, 0, 2),
+        stmt(BPF_LD_W_ABS, SECCOMP_DATA_ARG0_LOW_OFFSET),
+        jump(BPF_JMP_JSET_K, libc::CLONE_THREAD as u32, 6, 0),
         stmt(BPF_LD_W_ABS, SECCOMP_DATA_IP_HIGH_OFFSET),
         jump(BPF_JMP_JEQ_K, (gate_ip >> 32) as u32, 0, 3),
         stmt(BPF_LD_W_ABS, SECCOMP_DATA_IP_LOW_OFFSET),

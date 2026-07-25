@@ -22,6 +22,10 @@ path = "src/bin/strace.rs"
 name = "reverie-liteinst-fork-guest"
 path = "src/bin/fork_guest.rs"
 
+[[bin]]
+name = "reverie-liteinst-advanced-guest"
+path = "src/bin/advanced_guest.rs"
+
 [dependencies]
 libc = "0.2.186"
 

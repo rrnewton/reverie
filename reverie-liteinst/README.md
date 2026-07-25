@@ -59,9 +59,10 @@ includes the cookie in each marker, and prevents ordinary descriptor syscalls
 from closing, duplicating, or writing to the reserved descriptor. It terminates
 the compatibility run if the descriptor identity changes or an atomic marker
 write cannot complete. Standalone launchers retain the standard-error default.
-Dedicated-channel records also identify the emitting runtime-visible Linux PID. Compatibility
-mode rejects process-group/session and PID-namespace escape operations so an
-external controller can clean up fork descendants as one process group.
+Dedicated-channel records also identify the emitting runtime-visible Linux PID
+and TID. Compatibility mode rejects process-group/session and PID-namespace
+escape operations so an external controller can clean up fork descendants as
+one process group.
 
 The cookie prevents accidental control-record confusion; it is not an
 authentication boundary against intentionally hostile code in the same address
@@ -85,14 +86,20 @@ trapped syscalls and requires trace records from two PIDs.
 - This prototype puns a synthetic dispatch instruction. It does not yet find
   and rewrite arbitrary two-byte `syscall` instructions in ELF text.
 - `fork` and fork-like `clone` with a null child stack inherit instrumentation.
-  Thread-creating `clone`, `clone3`, and `vfork` return `ENOTSUP`.
+  Legacy `clone` with `CLONE_THREAD` executes at the original guest site and
+  inherits the seccomp filter and SIGSYS disposition. That direct clone syscall
+  is not itself present in the event stream; subsequent events carry the new
+  TID. `clone3` returns `ENOSYS` so libc can fall back to legacy `clone`,
+  while `vfork` returns `ENOTSUP`.
 - `execve` and `execveat` return `ENOTSUP`. Seccomp filters survive exec while
   caught signal handlers, preload mappings, and alternate stacks do not; an
   inherited trap filter would otherwise kill the new image before its preload
   constructor could run.
-- Applications can still interfere with reserved signals or masks. Replacing
-  the `SIGSYS` disposition is rejected, but complete `rt_sigprocmask` and
-  `sigaltstack` virtualization is outside this prototype.
+- Catchable application signals remain able to interrupt forwarded syscalls.
+  Syscalls made by nested application handlers are tracked in a bounded,
+  signal-safe TID table. Applications can still interfere with reserved signals
+  or masks: replacing the `SIGSYS` disposition is rejected, and complete
+  `rt_sigprocmask` and `sigaltstack` virtualization is outside this prototype.
 - CPUID, RDTSC/RDTSCP, RDRAND/RDSEED, static binaries, secure-execution mode,
   `dlopen`/JIT executable mappings, and arbitrary signal multiplexing are not
   covered.
