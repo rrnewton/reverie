@@ -130,11 +130,7 @@ impl SyscallDispatcher for SpoofGetpidDispatcher {
             event.set_result(SPOOF_PID);
             return;
         }
-        if event.number() == libc::SYS_execve || event.number() == libc::SYS_execveat {
-            event.fail(libc::ENOTSUP);
-            return;
-        }
-        event.forward();
+        PassthroughDispatcher::new().dispatch(event);
     }
 }
 
@@ -233,7 +229,7 @@ pub fn configure_command(command: &mut Command, tool: BuiltinTool) -> io::Result
     Ok(())
 }
 
-// TODO-HUMAN-REVIEW(#reverie-preload): this constructor installs process-wide
+// TODO-HUMAN-REVIEW(#100): this constructor installs process-wide
 // signal and seccomp state. Only a human reviewer may clear this marker.
 /// Constructor entry point invoked by the dynamic loader for the cdylib.
 ///
@@ -266,5 +262,20 @@ mod tests {
             assert_eq!(BuiltinTool::parse(OsStr::new(name)), Some(tool));
         }
         assert_eq!(BuiltinTool::parse(OsStr::new("nope")), None);
+    }
+
+    #[test]
+    fn spoof_dispatcher_keeps_shared_fail_closed_guards() {
+        let dispatcher = SpoofGetpidDispatcher;
+        let mut mask_args = [0; 6];
+        mask_args[0] = libc::SIG_BLOCK as u64;
+        mask_args[1] = 0xdead_beef;
+        let mut mask = SyscallEvent::new(libc::SYS_rt_sigprocmask, mask_args, 0);
+        dispatcher.dispatch(&mut mask);
+        assert_eq!(mask.result(), Some(-i64::from(libc::EPERM)));
+
+        let mut exec = SyscallEvent::new(libc::SYS_execve, [0; 6], 0);
+        dispatcher.dispatch(&mut exec);
+        assert_eq!(exec.result(), Some(-i64::from(libc::ENOTSUP)));
     }
 }
