@@ -2722,7 +2722,7 @@ fn prlimit64(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     if args[3] == 0 {
         return 0;
     }
-    let limit = if args[1] == libc::RLIMIT_NOFILE as u64 {
+    let limit = if args[1] as libc::c_uint == libc::RLIMIT_NOFILE as libc::c_uint {
         GUEST_NOFILE_LIMIT as u64
     } else {
         STACK_LIMIT
@@ -5326,24 +5326,29 @@ mod tests {
             12,
             "fcntl source fds use the low 32-bit Linux ABI"
         );
-        assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_prlimit64,
-                [0, libc::RLIMIT_NOFILE as u64, 0, 0x200, 0, 0],
-            ),
-            0
-        );
-        let nofile = read_guest_bytes::<16>(&memory, 0x200).unwrap();
-        assert_eq!(
-            u64::from_le_bytes(nofile[..8].try_into().unwrap()),
-            GUEST_NOFILE_LIMIT as u64
-        );
-        assert_eq!(
-            u64::from_le_bytes(nofile[8..].try_into().unwrap()),
-            GUEST_NOFILE_LIMIT as u64
-        );
+        for resource in [
+            libc::RLIMIT_NOFILE as u64,
+            (1_u64 << 32) | libc::RLIMIT_NOFILE as u64,
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_prlimit64,
+                    [0, resource, 0, 0x200, 0, 0],
+                ),
+                0
+            );
+            let nofile = read_guest_bytes::<16>(&memory, 0x200).unwrap();
+            assert_eq!(
+                u64::from_le_bytes(nofile[..8].try_into().unwrap()),
+                GUEST_NOFILE_LIMIT as u64
+            );
+            assert_eq!(
+                u64::from_le_bytes(nofile[8..].try_into().unwrap()),
+                GUEST_NOFILE_LIMIT as u64
+            );
+        }
         for fd in [10, 11, 12] {
             assert_eq!(
                 syscall_result(
