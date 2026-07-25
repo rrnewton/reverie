@@ -1193,7 +1193,7 @@ fn open_file(
         return open_virtual_file(state, b"0.00 0.00\n", flags, guest_cloexec);
     }
     if path == b"/proc/self/loginuid" {
-        return open_virtual_file(state, b"0\n", flags, guest_cloexec);
+        return open_virtual_file(state, b"0", flags, guest_cloexec);
     }
     let Ok((host_dirfd, path)) = host_dirfd_and_path(state, guest_dirfd, &path) else {
         return negative_errno(libc::EBADF);
