@@ -29,6 +29,11 @@
 //! DynamoRIO emit callback rather than `eprintln!`/fd 2, because the guest may
 //! close its stderr before exit and app-level writes re-enter the syscall path.
 
+#[path = "../../reverie-examples/counter1_tool.rs"]
+mod counter1_exact;
+#[path = "../../reverie-examples/counter2_tool.rs"]
+mod counter2_exact;
+
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::future::Future;
@@ -42,6 +47,10 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
+use counter1_exact::CounterGlobal as ExactCounter1Global;
+use counter1_exact::CounterLocal as ExactCounter1Tool;
+use counter2_exact::CounterGlobal as ExactCounter2Global;
+use counter2_exact::CounterLocal as ExactCounter2Tool;
 use reverie::Error;
 use reverie::GlobalTool;
 use reverie::Guest;
@@ -68,6 +77,8 @@ const SYSCALL_HISTOGRAM_ENV: &str = "HERMIT_DBI_SYSCALL_HISTOGRAM";
 const STRACE_ENV: &str = "HERMIT_DBI_STRACE";
 const NOOP_ENV: &str = "HERMIT_DBI_NOOP";
 const COUNTER1_ENV: &str = "HERMIT_DBI_COUNTER1";
+const COUNTER1_EXACT_ENV: &str = "HERMIT_DBI_COUNTER1_EXACT";
+const COUNTER2_EXACT_ENV: &str = "HERMIT_DBI_COUNTER2_EXACT";
 
 fn env_flag(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|value| {
@@ -79,6 +90,16 @@ static HISTOGRAM_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(SYSCALL_HIS
 static STRACE_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(STRACE_ENV));
 static NOOP_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(NOOP_ENV));
 static COUNTER1_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(COUNTER1_ENV));
+static COUNTER1_EXACT_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(COUNTER1_EXACT_ENV));
+static COUNTER1_EXACT_TOOL: LazyLock<ExactCounter1Tool> = LazyLock::new(ExactCounter1Tool::default);
+static COUNTER1_EXACT_GLOBAL: LazyLock<ExactCounter1Global> =
+    LazyLock::new(ExactCounter1Global::default);
+static COUNTER2_EXACT_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(COUNTER2_EXACT_ENV));
+static COUNTER2_EXACT_TOOL: LazyLock<ExactCounter2Tool> = LazyLock::new(|| {
+    <ExactCounter2Tool as Tool>::new(reverie::Pid::from_raw(unsafe { libc::getpid() }), &())
+});
+static COUNTER2_EXACT_GLOBAL: LazyLock<ExactCounter2Global> =
+    LazyLock::new(ExactCounter2Global::default);
 
 /// Per-syscall-number invocation counts, keyed by raw syscall number.
 static SYSCALL_HISTOGRAM: LazyLock<Mutex<BTreeMap<i32, u64>>> =
@@ -91,6 +112,52 @@ static EMITTER: AtomicUsize = AtomicUsize::new(0);
 /// Records the emit callback so the tools can produce output.
 pub fn set_emitter(emit: Emitter) {
     EMITTER.store(emit as usize, Ordering::Relaxed);
+}
+
+/// Whether the exact backend-neutral counter1 tool is selected.
+pub(crate) fn counter1_exact_enabled() -> bool {
+    *COUNTER1_EXACT_ENABLED
+}
+
+/// Exact counter1 process-local tool instance.
+pub(crate) fn counter1_exact_tool() -> &'static ExactCounter1Tool {
+    &COUNTER1_EXACT_TOOL
+}
+
+/// Exact counter1 process-tree global state.
+pub(crate) fn counter1_exact_global() -> &'static ExactCounter1Global {
+    &COUNTER1_EXACT_GLOBAL
+}
+
+/// Emits the exact counter1 global summary through DynamoRIO.
+pub(crate) fn emit_counter1_exact_summary() {
+    emit_line(&format!(
+        "counter1-global syscalls={}",
+        COUNTER1_EXACT_GLOBAL.total()
+    ));
+}
+
+/// Whether the exact backend-neutral counter2 tool is selected.
+pub(crate) fn counter2_exact_enabled() -> bool {
+    *COUNTER2_EXACT_ENABLED
+}
+
+/// Exact counter2 process-local tool instance.
+pub(crate) fn counter2_exact_tool() -> &'static ExactCounter2Tool {
+    &COUNTER2_EXACT_TOOL
+}
+
+/// Exact counter2 process-local global state.
+pub(crate) fn counter2_exact_global() -> &'static ExactCounter2Global {
+    &COUNTER2_EXACT_GLOBAL
+}
+
+/// Emits the exact counter2 process-local summary through DynamoRIO.
+pub(crate) fn emit_counter2_exact_summary() {
+    let (syscalls, threads) = COUNTER2_EXACT_TOOL.process_totals();
+    emit_line(&format!(
+        " [counter2 exact] Process-local system calls: {syscalls}, exited threads: {threads}"
+    ));
 }
 
 /// Writes one line of tool output through the DynamoRIO emit callback. Using

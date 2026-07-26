@@ -19,7 +19,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 #[allow(dead_code)]
-#[path = "../counter1.rs"]
+#[path = "../counter1_tool.rs"]
 mod counter1;
 #[allow(dead_code)]
 #[path = "../noop.rs"]

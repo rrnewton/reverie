@@ -20,7 +20,7 @@ use reverie::process::Command;
 use reverie_liteinst::LiteinstBackend;
 
 #[allow(dead_code)]
-#[path = "../counter1.rs"]
+#[path = "../counter1_tool.rs"]
 mod counter1;
 #[allow(dead_code)]
 #[path = "../noop.rs"]
