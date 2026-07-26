@@ -1964,7 +1964,7 @@ fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(reverie#PENDING): faccessat access check so bash
+// TODO-HUMAN-REVIEW(reverie#124): faccessat access check so bash
 // `test -r/-w/-x` and program startup probes resolve correctly under the KVM
 // backend instead of falling through to ENOSYS.
 fn faccessat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -1981,7 +1981,7 @@ fn faccessat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(reverie#PENDING): faccessat2 access check. glibc routes the
+// TODO-HUMAN-REVIEW(reverie#124): faccessat2 access check. glibc routes the
 // C `access`/`euidaccess` helpers and the shell `test -r/-w/-x` operators
 // through faccessat2; without this arm every access probe returned ENOSYS.
 fn faccessat2(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -3765,18 +3765,22 @@ fn sigaltstack(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u6
 }
 
 fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let requested = args[0] as i64;
+    // pid_t is a 32-bit signed value; the guest passes wait4(-1) as 0xFFFFFFFF
+    // in a 64-bit register. Truncate to i32 before sign-extending so the common
+    // wait-for-any-child form (-1), process-group forms (0, <-1), and a specific
+    // pid are all interpreted correctly instead of collapsing to ECHILD.
+    let requested = args[0] as i32 as i64;
     if args[2] & !(libc::WNOHANG as u64) != 0 {
         return negative_errno(libc::EINVAL);
     }
-    let child_pid = if requested == -1 {
-        state.children.keys().next().copied()
-    } else if requested > 0 {
+    let child_pid = if requested > 0 {
         i32::try_from(requested)
             .ok()
             .filter(|pid| state.children.contains_key(pid))
     } else {
-        None
+        // -1 (any child), 0 and <-1 (any child in a process group): this guest
+        // models a single process group, so reap any recorded child.
+        state.children.keys().next().copied()
     };
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
@@ -7756,6 +7760,45 @@ mod tests {
                 ],
             ),
             negative_errno(libc::EINVAL)
+        );
+    }
+
+    #[test]
+    fn wait4_sign_extends_negative_pid_and_reaps_child() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+        // A child (pid 9) has already exited with code 7.
+        state.children.insert(9, 7);
+
+        // wait4(-1) arrives as 0xFFFF_FFFF in a 64-bit register; the handler
+        // must sign-extend it to -1 and reap the recorded child rather than
+        // treating the value as an out-of-range positive pid and returning
+        // ECHILD.
+        let status_addr = 0x100u64;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_wait4,
+                [0xFFFF_FFFF, status_addr, 0, 0, 0, 0],
+            ),
+            9
+        );
+        // The wait status encodes a normal exit with code 7 (WIFEXITED,
+        // WEXITSTATUS == 7).
+        let raw: i32 = read_struct(&memory, status_addr);
+        assert_eq!(raw & 0x7f, 0);
+        assert_eq!((raw >> 8) & 0xff, 7);
+        // The child is consumed; a subsequent reap reports ECHILD.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_wait4,
+                [0xFFFF_FFFF, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ECHILD)
         );
     }
 }
