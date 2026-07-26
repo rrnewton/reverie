@@ -275,7 +275,8 @@ impl KvmBackend {
         Ok(child)
     }
 
-    fn exec_process(
+    // TODO-HUMAN-REVIEW(PR-156): Review lifecycle-hook exec image replacement API.
+    pub(crate) fn exec_process(
         &mut self,
         executor: &mut ElfExecutor,
         image: &[u8],
@@ -302,10 +303,12 @@ impl KvmBackend {
         Ok(())
     }
 
+    // TODO-HUMAN-REVIEW(PR-156): Review process actions completed during Tool injection.
     pub(crate) fn run_process_action(
         &mut self,
         executor: &mut ElfExecutor,
         action: ProcessAction,
+        park_syscall_return: bool,
     ) -> Result<()> {
         match action {
             ProcessAction::Fork {
@@ -318,15 +321,17 @@ impl KvmBackend {
             } => {
                 let mut child_executor = executor.fork_child(child_pid, clear_sighand)?;
                 child_executor.set_clear_child_tid(clear_child_tid);
-                set_syscall_return_park(&mut self.memory, self.hypercall_instruction, true)?;
-                let parked = match self.vcpu.run()? {
-                    VcpuExit::Hlt => Ok(()),
-                    exit => Err(Error::UnexpectedVcpuExit(format!(
-                        "parent did not park at fork: {exit:?}"
-                    ))),
-                };
-                set_syscall_return_park(&mut self.memory, self.hypercall_instruction, false)?;
-                parked?;
+                if park_syscall_return {
+                    set_syscall_return_park(&mut self.memory, self.hypercall_instruction, true)?;
+                    let parked = match self.vcpu.run()? {
+                        VcpuExit::Hlt => Ok(()),
+                        exit => Err(Error::UnexpectedVcpuExit(format!(
+                            "parent did not park at fork: {exit:?}"
+                        ))),
+                    };
+                    set_syscall_return_park(&mut self.memory, self.hypercall_instruction, false)?;
+                    parked?;
+                }
                 let child_snapshot = self.snapshot_process()?;
                 write_tid_best_effort(&mut self.memory, parent_tid, child_pid);
 
@@ -368,15 +373,17 @@ impl KvmBackend {
                 self.memory
                     .read_raw(SYSCALL_FRAME_ADDRESS, &mut parent_syscall_frame)?;
 
-                set_syscall_return_park(&mut self.memory, self.hypercall_instruction, true)?;
-                let parked = match self.vcpu.run()? {
-                    VcpuExit::Hlt => Ok(()),
-                    exit => Err(Error::UnexpectedVcpuExit(format!(
-                        "parent did not park at thread clone: {exit:?}"
-                    ))),
-                };
-                set_syscall_return_park(&mut self.memory, self.hypercall_instruction, false)?;
-                parked?;
+                if park_syscall_return {
+                    set_syscall_return_park(&mut self.memory, self.hypercall_instruction, true)?;
+                    let parked = match self.vcpu.run()? {
+                        VcpuExit::Hlt => Ok(()),
+                        exit => Err(Error::UnexpectedVcpuExit(format!(
+                            "parent did not park at thread clone: {exit:?}"
+                        ))),
+                    };
+                    set_syscall_return_park(&mut self.memory, self.hypercall_instruction, false)?;
+                    parked?;
+                }
 
                 write_tid_best_effort(&mut self.memory, parent_tid, child_tid);
                 write_tid_best_effort(&mut self.memory, child_tid_address, child_tid);
@@ -422,15 +429,17 @@ impl KvmBackend {
                 }
             }
             ProcessAction::Exec { image, argv, envp } => {
-                set_syscall_return_park(&mut self.memory, self.hypercall_instruction, true)?;
-                let parked = match self.vcpu.run()? {
-                    VcpuExit::Hlt => Ok(()),
-                    exit => Err(Error::UnexpectedVcpuExit(format!(
-                        "process did not park before exec: {exit:?}"
-                    ))),
-                };
-                set_syscall_return_park(&mut self.memory, self.hypercall_instruction, false)?;
-                parked?;
+                if park_syscall_return {
+                    set_syscall_return_park(&mut self.memory, self.hypercall_instruction, true)?;
+                    let parked = match self.vcpu.run()? {
+                        VcpuExit::Hlt => Ok(()),
+                        exit => Err(Error::UnexpectedVcpuExit(format!(
+                            "process did not park before exec: {exit:?}"
+                        ))),
+                    };
+                    set_syscall_return_park(&mut self.memory, self.hypercall_instruction, false)?;
+                    parked?;
+                }
                 self.exec_process(executor, &image, &argv, &envp)?;
             }
         }
@@ -504,7 +513,7 @@ impl KvmBackend {
             }
 
             if let Some(action) = process_action {
-                self.run_process_action(executor, action)?;
+                self.run_process_action(executor, action, true)?;
             }
 
             if let Some(code) = executor.take_exit() {
