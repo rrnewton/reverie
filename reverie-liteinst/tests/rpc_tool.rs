@@ -42,15 +42,9 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     );
     let stdout = String::from_utf8(guest.stdout).unwrap();
     assert!(
-        stdout.starts_with("calls=32 traps=1 hooks=32 rpc="),
+        stdout.starts_with(
+            "calls=32 traps=1 hooks=32 rpc=35 nested_traps=1 nested_hooks=34 mask_traps=1 mask_hooks=33 mask_result=-1 signals=1 "
+        ),
         "{stdout}"
     );
-    let rpc = stdout
-        .trim()
-        .rsplit_once("rpc=")
-        .unwrap()
-        .1
-        .parse::<u64>()
-        .unwrap();
-    assert!(rpc >= 32, "{stdout}");
 }

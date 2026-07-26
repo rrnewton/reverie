@@ -554,6 +554,66 @@ unsafe fn install_site_hook(address: u64, slot: &'static SiteSlot) -> io::Result
     Ok(())
 }
 
+unsafe fn block_guest_signals() -> u64 {
+    // SIGSYS remains unblocked because the runtime owns the seccomp trap handler.
+    let mask = !(1_u64 << (libc::SIGSYS - 1));
+    let mut previous = 0_u64;
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_rt_sigprocmask,
+            [
+                libc::SIG_BLOCK as u64,
+                (&raw const mask) as u64,
+                (&raw mut previous) as u64,
+                core::mem::size_of::<u64>() as u64,
+                0,
+                0,
+            ],
+        )
+    };
+    if result != 0 {
+        unsafe { exit_now(126) };
+    }
+    previous
+}
+
+unsafe fn restore_guest_signals(mask: u64) {
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_rt_sigprocmask,
+            [
+                libc::SIG_SETMASK as u64,
+                (&raw const mask) as u64,
+                0,
+                core::mem::size_of::<u64>() as u64,
+                0,
+                0,
+            ],
+        )
+    };
+    if result != 0 {
+        unsafe { exit_now(126) };
+    }
+}
+
+fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
+    let unsupported_process = matches!(
+        event.number,
+        libc::SYS_clone
+            | libc::SYS_clone3
+            | libc::SYS_fork
+            | libc::SYS_vfork
+            | libc::SYS_execve
+            | libc::SYS_execveat
+    );
+    if unsupported_process {
+        event.result = -i64::from(libc::ENOTSUP);
+    } else if !(protect_runtime_control(event) || unsafe { protect_coordinator_channel(event) }) {
+        event.result = unsafe { raw_syscall6(event.number, event.args) };
+        observe_mapping_generation(event);
+    }
+}
+
 unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
     if context.is_null() {
         unsafe {
@@ -580,17 +640,21 @@ unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
         result: UNSET_RESULT,
         context: context_pointer,
     };
-    // TODO-HUMAN-REVIEW(PR-133): Review installed-hook bypass for Tool-internal syscalls.
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-133): Review guarded installed-hook bypass for Tool-internal syscalls.
     if unsafe { !CURRENT_EVENT.is_null() } {
-        context.rax = unsafe { raw_syscall6(event.number, event.args) } as u64;
+        forward_nested_tool_syscall(&mut event);
+        context.rax = event.result as u64;
         context.rcx = context.instruction_pointer.saturating_add(2);
         context.r11 = context.rflags;
         return;
     }
+    let signal_mask = unsafe { block_guest_signals() };
     unsafe {
         CURRENT_EVENT = &mut event;
         tool_trampoline();
         CURRENT_EVENT = ptr::null_mut();
+        restore_guest_signals(signal_mask);
     }
     if event.result == UNSET_RESULT {
         event.result = -i64::from(libc::ENOSYS);
