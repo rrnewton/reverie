@@ -25,6 +25,7 @@ use crate::SyscallRequest;
 use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::SegmentBase;
 use crate::elf::GuestFileIdentity;
+use crate::elf::GuestFileIdentityEntry;
 use crate::elf::LoadedStaticElf;
 use crate::elf::STACK_LIMIT;
 use crate::runtime::SyscallExecutor;
@@ -57,6 +58,10 @@ const ARCH_SET_FS: u64 = 0x1002;
 const ARCH_GET_FS: u64 = 0x1003;
 const ARCH_GET_GS: u64 = 0x1004;
 const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
+// TODO-HUMAN-REVIEW(PR-136): Review anonymous-object filesystem classification.
+const ANON_INODE_FS_MAGIC: libc::c_long = 0x0904_1934;
+const PIPEFS_MAGIC: libc::c_long = 0x5049_5045;
+const SOCKFS_MAGIC: libc::c_long = 0x534f_434b;
 const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
 // TODO-HUMAN-REVIEW(PR-136): Review the Linux UAPI value missing from pinned libc.
 const FALLOC_FL_WRITE_ZEROES: libc::c_int = 0x80;
@@ -2034,9 +2039,7 @@ fn cleanup_fd_object_inodes(state: &LoadedStaticElf) {
         .file_identity_table
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    table
-        .objects
-        .retain(|_, identity| identity.strong_count() > 0);
+    table.objects.retain(|_, entry| entry.is_live());
 }
 
 fn allocate_fd_object_inode(
@@ -2050,15 +2053,30 @@ fn allocate_fd_object_inode(
     }
     // SAFETY: fstat initialized stat on success.
     let stat = unsafe { stat.assume_init() };
+    let mut filesystem = std::mem::MaybeUninit::<libc::statfs>::zeroed();
+    // SAFETY: filesystem is writable and file owns a live descriptor.
+    if unsafe { libc::fstatfs(file.as_raw_fd(), filesystem.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fstatfs initialized filesystem on success.
+    let filesystem = unsafe { filesystem.assume_init() };
+    let persistent = stat.st_nlink > 0
+        && !matches!(
+            filesystem.f_type,
+            ANON_INODE_FS_MAGIC | PIPEFS_MAGIC | SOCKFS_MAGIC
+        );
+
     let key = (stat.st_dev, stat.st_ino);
     let mut table = state
         .file_identity_table
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    table
+    table.objects.retain(|_, entry| entry.is_live());
+    if let Some(identity) = table
         .objects
-        .retain(|_, identity| identity.strong_count() > 0);
-    if let Some(identity) = table.objects.get(&key).and_then(std::sync::Weak::upgrade) {
+        .get(&key)
+        .and_then(GuestFileIdentityEntry::identity)
+    {
         return Ok(identity);
     }
 
@@ -2067,7 +2085,15 @@ fn allocate_fd_object_inode(
         .checked_add(1)
         .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
     let identity = Arc::new(GuestFileIdentity { inode });
-    table.objects.insert(key, Arc::downgrade(&identity));
+    // Linked filesystem objects keep Linux inode identity across close/reopen.
+    // Anonymous or deleted objects cannot be reopened by path, so retain them
+    // only while a descriptor in any forked state holds a strong identity.
+    let entry = if persistent {
+        GuestFileIdentityEntry::Persistent(identity.clone())
+    } else {
+        GuestFileIdentityEntry::Ephemeral(Arc::downgrade(&identity))
+    };
+    table.objects.insert(key, entry);
     Ok(identity)
 }
 
@@ -6648,6 +6674,14 @@ mod tests {
             0
         );
         assert!(state.files.is_empty());
+        assert!(
+            state
+                .file_identity_table
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .objects
+                .is_empty()
+        );
     }
 
     #[test]
@@ -6773,6 +6807,26 @@ mod tests {
                 [epoll_fd as u64, EVENTS, 1, u32::MAX as u64, 0, 0]
             ),
             0
+        );
+
+        for fd in [event_fd, epoll_fd] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_close,
+                    [fd as u64, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+        }
+        assert!(
+            state
+                .file_identity_table
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .objects
+                .is_empty()
         );
     }
 
@@ -7235,6 +7289,8 @@ mod tests {
 
         let child_fd = open_readonly(&mut memory, &mut child, "child-file");
         let child_inode = synthetic_guest_fd_object_inode(&child, child_fd as libc::c_int);
+        assert_eq!(close(&mut child, child_fd as u64), 0);
+        drop(child);
 
         let parent_fd = open_readonly(&mut memory, &mut parent, "parent-file");
         let parent_inode = synthetic_guest_fd_object_inode(&parent, parent_fd as libc::c_int);
@@ -7248,17 +7304,30 @@ mod tests {
         );
         assert_eq!(
             child_inode, reopened_inode,
-            "the parent must reuse the identity of a child-held file object"
+            "the parent must reuse the persistent identity after child exit"
         );
 
         assert_eq!(close(&mut parent, parent_fd as u64), 0);
         assert_eq!(close(&mut parent, reopened_fd as u64), 0);
-        assert_eq!(close(&mut child, child_fd as u64), 0);
+        let reopened_after_close = open_readonly(&mut memory, &mut parent, "child-file");
+        let reopened_after_close_inode =
+            synthetic_guest_fd_object_inode(&parent, reopened_after_close as libc::c_int);
+        assert_eq!(
+            child_inode, reopened_after_close_inode,
+            "a linked file must retain identity after every descriptor closes"
+        );
+        assert_eq!(close(&mut parent, reopened_after_close as u64), 0);
         let table = parent
             .file_identity_table
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        assert!(table.objects.is_empty());
+        assert_eq!(table.objects.len(), 2);
+        assert!(
+            table
+                .objects
+                .values()
+                .all(|entry| matches!(entry, GuestFileIdentityEntry::Persistent(_)))
+        );
     }
 
     #[test]
