@@ -238,6 +238,23 @@ fn exact_counter2_tool_reports_process_and_thread_totals() {
     );
 }
 
+
+#[test]
+fn exact_chunky_print_tool_buffers_and_flushes_standard_streams() {
+    let output = run(
+        "chunky-print",
+        &[],
+        &[
+            "/bin/sh",
+            "-c",
+            "printf stdout-message; printf stderr-message >&2",
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"stdout-message");
+    assert_eq!(output.stderr, b"stderr-message");
+}
 #[test]
 fn exact_strace_tool_observes_filtered_write() {
     let output = run("strace", &["--trace", "write"], &["/bin/echo", "hello"]);
