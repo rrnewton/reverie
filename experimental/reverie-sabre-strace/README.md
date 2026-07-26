@@ -1,4 +1,4 @@
-# Reverie SaBRe strace
+# Reverie SaBRe example tools
 
 This package contains a SaBRe host executable and plugin that drive a shared
 `reverie::Tool` through `reverie_sabre::ReverieAdapter`.
@@ -19,6 +19,23 @@ target/debug/reverie-sabre-strace \
   --plugin target/debug/libreverie_sabre_strace_plugin.so \
   -- /bin/echo hello
 ```
+
+Choose another example with `--tool`:
+
+```sh
+target/debug/reverie-sabre-strace \
+  --sabre /path/to/sabre \
+  --plugin target/debug/libreverie_sabre_strace_plugin.so \
+  --tool counter1 \
+  -- /bin/echo hello
+```
+
+Supported values are:
+
+- `strace` (default): decode and print syscalls and results.
+- `counter1`: print the number of intercepted syscalls.
+- `counter2`: also count unique process and thread identities.
+- `noop`: forward syscalls through the default shared Tool handler.
 
 Hermit uses the same artifacts through `HERMIT_SABRE_RUNNER`,
 `HERMIT_SABRE_BINARY`, and `HERMIT_SABRE_PLUGIN`:
@@ -43,6 +60,14 @@ This is a syscall-tracing milestone, not a deterministic Detcore backend.
 It targets dynamically linked Linux x86-64 guests and synchronous Reverie
 handlers. A handler must complete on its first poll; `tail_inject` is the only
 supported pending future.
+
+Counter summaries are emitted before the terminal syscall because the legacy
+SaBRe callback API has no process-exit event. Without an external coordinator
+such as `riptrace`, every SaBRe process owns a separate adapter and counter.
+
+`noop` requests `Subscription::none()`, but the legacy SaBRe loader does not
+yet consult subscriptions, so rewritten syscall sites still enter the default
+shared Tool handler before being forwarded.
 
 `execve` re-enters the pinned SaBRe loader and keeps the plugin active for the
 new image; `execveat` remains unsupported. Parent thread-state snapshots,
