@@ -67,6 +67,7 @@ pub(crate) struct GuestFileIdentity {
     pub inode: u64,
 }
 
+// TODO-HUMAN-REVIEW(PR-136): Review the identity entry lifetime API.
 #[derive(Debug)]
 pub(crate) enum GuestFileIdentityEntry {
     Persistent(std::sync::Arc<GuestFileIdentity>),
@@ -74,6 +75,7 @@ pub(crate) enum GuestFileIdentityEntry {
 }
 
 impl GuestFileIdentityEntry {
+    // TODO-HUMAN-REVIEW(PR-136): Review identity entry lifetime accessors.
     pub(crate) fn identity(&self) -> Option<std::sync::Arc<GuestFileIdentity>> {
         match self {
             Self::Persistent(identity) => Some(identity.clone()),
@@ -81,11 +83,13 @@ impl GuestFileIdentityEntry {
         }
     }
 
+    // TODO-HUMAN-REVIEW(PR-136): Review identity entry liveness checks.
     pub(crate) fn is_live(&self) -> bool {
         self.identity().is_some()
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-136): Review the shared identity table API.
 #[derive(Debug)]
 pub(crate) struct GuestFileIdentityTable {
     pub next_inode: u64,

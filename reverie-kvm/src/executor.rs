@@ -2042,6 +2042,34 @@ fn cleanup_fd_object_inodes(state: &LoadedStaticElf) {
     table.objects.retain(|_, entry| entry.is_live());
 }
 
+// TODO-HUMAN-REVIEW(PR-136): Review link-removal identity lifecycle tracking.
+fn file_identity_stat(file: &std::fs::File) -> Option<libc::stat> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: stat is writable and file owns a live descriptor.
+    if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: fstat initialized stat on success.
+    Some(unsafe { stat.assume_init() })
+}
+
+fn downgrade_file_identity(state: &LoadedStaticElf, key: (libc::dev_t, libc::ino_t)) {
+    let mut table = state
+        .file_identity_table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(entry) = table.objects.get_mut(&key) {
+        let weak = match entry {
+            GuestFileIdentityEntry::Persistent(identity) => Some(Arc::downgrade(identity)),
+            GuestFileIdentityEntry::Ephemeral(_) => None,
+        };
+        if let Some(weak) = weak {
+            *entry = GuestFileIdentityEntry::Ephemeral(weak);
+        }
+    }
+    table.objects.retain(|_, entry| entry.is_live());
+}
+
 fn allocate_fd_object_inode(
     state: &LoadedStaticElf,
     file: &std::fs::File,
@@ -3167,6 +3195,7 @@ fn mkdir_at(
     zero_or_errno(unsafe { libc::fchmodat(host_dirfd, path.as_ptr(), mode, 0) })
 }
 
+// TODO-HUMAN-REVIEW(PR-136): Review last-link identity downgrade semantics.
 fn unlink_at(
     memory: &GuestMemory,
     state: &LoadedStaticElf,
@@ -3181,10 +3210,31 @@ fn unlink_at(
         Ok(path) => path,
         Err(error) => return error,
     };
+    let removes_directory = raw_flags & libc::AT_REMOVEDIR as u64 != 0;
+    let removed_file = open_host_metadata_path(host_dirfd, &path, true).ok();
+    let removed_key = removed_file
+        .as_ref()
+        .and_then(file_identity_stat)
+        .and_then(|stat| {
+            if removes_directory || stat.st_nlink <= 1 {
+                Some((stat.st_dev, stat.st_ino))
+            } else {
+                None
+            }
+        });
     // SAFETY: path is NUL-terminated and flags were validated.
-    zero_or_errno(unsafe { libc::unlinkat(host_dirfd, path.as_ptr(), raw_flags as libc::c_int) })
+    let result = unsafe { libc::unlinkat(host_dirfd, path.as_ptr(), raw_flags as libc::c_int) };
+    if result == 0 {
+        if let Some(key) = removed_key {
+            downgrade_file_identity(state, key);
+        }
+        0
+    } else {
+        io_error(std::io::Error::last_os_error())
+    }
 }
 
+// TODO-HUMAN-REVIEW(PR-136): Review rename-replacement identity downgrade semantics.
 fn rename_at(
     memory: &GuestMemory,
     state: &LoadedStaticElf,
@@ -3208,6 +3258,29 @@ fn rename_at(
             Ok(path) => path,
             Err(error) => return error,
         };
+    let old_file = if raw_flags == 0 {
+        open_host_metadata_path(old_host_dirfd, &old_path, true).ok()
+    } else {
+        None
+    };
+    let replaced_file = if raw_flags == 0 {
+        open_host_metadata_path(new_host_dirfd, &new_path, true).ok()
+    } else {
+        None
+    };
+    let replaced_key = match (
+        old_file.as_ref().and_then(file_identity_stat),
+        replaced_file.as_ref().and_then(file_identity_stat),
+    ) {
+        (Some(old), Some(replaced))
+            if (old.st_dev, old.st_ino) != (replaced.st_dev, replaced.st_ino)
+                && ((replaced.st_mode & libc::S_IFMT) == libc::S_IFDIR
+                    || replaced.st_nlink <= 1) =>
+        {
+            Some((replaced.st_dev, replaced.st_ino))
+        }
+        _ => None,
+    };
     // SAFETY: both paths are NUL-terminated, dirfds were translated, and flags
     // are restricted to non-whiteout rename operations.
     let result = unsafe {
@@ -3221,6 +3294,9 @@ fn rename_at(
         )
     };
     if result == 0 {
+        if let Some(key) = replaced_key {
+            downgrade_file_identity(state, key);
+        }
         0
     } else {
         io_error(std::io::Error::last_os_error())
@@ -7327,6 +7403,66 @@ mod tests {
                 .objects
                 .values()
                 .all(|entry| matches!(entry, GuestFileIdentityEntry::Persistent(_)))
+        );
+    }
+
+    #[test]
+    fn removed_link_identities_are_reclaimed() {
+        const PATH: u64 = 0x100;
+        const NEW_PATH: u64 = 0x300;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        for index in 0..64 {
+            let name = format!("removed-{index}");
+            std::fs::write(root.0.join(&name), b"payload").unwrap();
+            let fd = open_readonly(&mut memory, &mut state, &name);
+            assert!(fd >= 0);
+            write_c_string(&mut memory, PATH, &name);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_unlink,
+                    [PATH, 0, 0, 0, 0, 0],
+                ),
+                0
+            );
+            assert_eq!(close(&mut state, fd as u64), 0);
+        }
+        assert!(
+            state
+                .file_identity_table
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .objects
+                .is_empty()
+        );
+
+        std::fs::write(root.0.join("source"), b"source").unwrap();
+        std::fs::write(root.0.join("target"), b"target").unwrap();
+        let target_fd = open_readonly(&mut memory, &mut state, "target");
+        assert_eq!(close(&mut state, target_fd as u64), 0);
+        write_c_string(&mut memory, PATH, "source");
+        write_c_string(&mut memory, NEW_PATH, "target");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_rename,
+                [PATH, NEW_PATH, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(
+            state
+                .file_identity_table
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .objects
+                .is_empty()
         );
     }
 
