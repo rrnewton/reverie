@@ -24,6 +24,8 @@ use super::utils;
 use super::vdso;
 use crate::signal::guard;
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-140): Review the loader-owned syscall-frame lifetime boundary.
 thread_local! {
     static CURRENT_SYSCALL_FRAME: std::cell::Cell<*mut ffi::syscall_stackframe> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
