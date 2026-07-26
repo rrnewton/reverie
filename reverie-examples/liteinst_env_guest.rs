@@ -15,6 +15,7 @@ fn main() {
         Some("check-coordinator-environment") => check_coordinator_environment(),
         // TODO-HUMAN-REVIEW(PR-148): Review the allocator-reentry test guest mode.
         Some("exercise-allocator") => exercise_allocator(),
+        Some("exercise-chaos-read") => exercise_chaos_read(),
         // TODO-HUMAN-REVIEW(PR-152): Review the chunky_print ordering test guest mode.
         Some("chunky-alias-order") => exercise_chunky_alias_order(),
         Some(argument) => panic!("unknown argument {argument:?}"),
@@ -79,6 +80,34 @@ fn exercise_allocator() {
     assert_eq!(large[last], 0xa5);
 
     println!("allocator-growth-ok");
+}
+
+fn exercise_chaos_read() {
+    for _ in 0..256 {
+        let pid = unsafe { libc::syscall(libc::SYS_getpid) };
+        assert!(pid > 0);
+    }
+
+    let mut pipe = [-1; 2];
+    assert_eq!(
+        unsafe { libc::pipe2(pipe.as_mut_ptr(), libc::O_CLOEXEC) },
+        0
+    );
+    let input = b"data";
+    assert_eq!(
+        unsafe { libc::write(pipe[1], input.as_ptr().cast(), input.len()) },
+        input.len() as isize
+    );
+
+    let mut output = [0_u8; 4];
+    assert_eq!(
+        unsafe { libc::read(pipe[0], output.as_mut_ptr().cast(), output.len()) },
+        1
+    );
+    assert_eq!(output[0], input[0]);
+    assert_eq!(unsafe { libc::close(pipe[0]) }, 0);
+    assert_eq!(unsafe { libc::close(pipe[1]) }, 0);
+    println!("chaos-read-one");
 }
 
 // TODO-HUMAN-REVIEW(PR-152): Review deterministic chunky_print ordering coverage.

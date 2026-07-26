@@ -239,6 +239,24 @@ fn exact_counter2_tool_reports_process_and_thread_totals() {
 }
 
 #[test]
+fn exact_chaos_tool_limits_reads_after_skip() {
+    let output = run(
+        "chaos",
+        &["--chaos-skip", "200", "--chaos-no-interrupt"],
+        &[
+            env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"),
+            "exercise-chaos-read",
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"chaos-read-one\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("read("), "{stderr}");
+    assert!(stderr.contains(", 1) = 1"), "{stderr}");
+}
+
+#[test]
 fn exact_chunky_print_delays_buffered_write_behind_later_alias_write() {
     let output = run(
         "chunky-print",
