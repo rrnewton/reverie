@@ -1554,6 +1554,17 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
   DR_ASSERT(counters != NULL);
+
+  /* A delayed entry-block flush is not synchronous.  If a native child reaches
+   * a syscall through an inherited fragment, start it here after the
+   * thread-init event has returned so the parent post-clone callback can
+   * register it. */
+  if (!has_copied_runtime() && counters->pending_thread_start != 0) {
+    start_pending_thread();
+    if (counters->pending_thread_start != 0)
+      return false;
+  }
+
   for (i = 0; i != 6; ++i)
     args[i] = (uint64_t)dr_syscall_get_param(drcontext, i);
 
