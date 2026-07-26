@@ -2645,18 +2645,11 @@ fn getgroups(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
 
 // TODO-HUMAN-REVIEW(PR-145): Review fixed-root saved-ID output and fault ordering.
 fn get_fixed_root_ids(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
-    let id_size = std::mem::size_of::<libc::uid_t>() as u64;
-    if args[..3]
-        .iter()
-        .any(|address| !range_is_valid(memory, *address, id_size))
-    {
-        return negative_errno(libc::EFAULT);
-    }
     let root_id = libc::uid_t::from(0_u8).to_ne_bytes();
     for address in &args[..3] {
-        memory
-            .write(*address, &root_id)
-            .expect("prevalidated saved-ID output must remain writable");
+        if memory.write(*address, &root_id).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
     }
     0
 }
@@ -4630,13 +4623,18 @@ fn validate_range(memory: &GuestMemory, address: u64, length: u64) -> i64 {
 
 // TODO-HUMAN-REVIEW(PR-145): Review flat guest-memory munlock validation semantics.
 fn munlock_guest_range(memory: &GuestMemory, address: u64, length: u64) -> i64 {
-    if length == 0 {
-        return 0;
-    }
-    if address.checked_add(length).is_none() {
+    let page_start = address & !(PAGE_SIZE - 1);
+    let page_offset = address - page_start;
+    let Some(page_length) = length
+        .checked_add(page_offset)
+        .and_then(|length| align_up(length, PAGE_SIZE))
+    else {
+        return negative_errno(libc::EINVAL);
+    };
+    if page_start.checked_add(page_length).is_none() {
         return negative_errno(libc::EINVAL);
     }
-    if !range_is_valid(memory, address, length) {
+    if page_length != 0 && !range_is_valid(memory, page_start, page_length) {
         return negative_errno(libc::ENOMEM);
     }
     0
@@ -7939,11 +7937,39 @@ mod tests {
                 ),
                 negative_errno(libc::EFAULT)
             );
-            assert_eq!(read_guest_bytes::<4>(&memory, REAL).unwrap(), [0xa5; 4]);
+            assert_eq!(read_struct::<u32>(&memory, REAL), 0);
+            assert_eq!(read_struct::<u32>(&memory, EFFECTIVE), 0);
+
+            memory.write(REAL, &[0xa5; 4]).unwrap();
+            memory.write(SAVED, &[0xa5; 4]).unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    syscall,
+                    [REAL, u64::MAX, SAVED, 0, 0, 0],
+                ),
+                negative_errno(libc::EFAULT)
+            );
+            assert_eq!(read_struct::<u32>(&memory, REAL), 0);
+            assert_eq!(read_guest_bytes::<4>(&memory, SAVED).unwrap(), [0xa5; 4]);
+
+            memory.write(EFFECTIVE, &[0xa5; 4]).unwrap();
+            memory.write(SAVED, &[0xa5; 4]).unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    syscall,
+                    [u64::MAX, EFFECTIVE, SAVED, 0, 0, 0],
+                ),
+                negative_errno(libc::EFAULT)
+            );
             assert_eq!(
                 read_guest_bytes::<4>(&memory, EFFECTIVE).unwrap(),
                 [0xa5; 4]
             );
+            assert_eq!(read_guest_bytes::<4>(&memory, SAVED).unwrap(), [0xa5; 4]);
         }
     }
 
@@ -10719,6 +10745,15 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_munlock,
+                [5 * PAGE_SIZE + 1, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOMEM)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munlock,
                 [5 * PAGE_SIZE - 1, 2, 0, 0, 0, 0],
             ),
             negative_errno(libc::ENOMEM)
@@ -10729,6 +10764,24 @@ mod tests {
                 &mut state,
                 libc::SYS_munlock,
                 [u64::MAX - 1, 4, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munlock,
+                [u64::MAX, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munlock,
+                [u64::MAX - (PAGE_SIZE - 1), 1, 0, 0, 0, 0],
             ),
             negative_errno(libc::EINVAL)
         );
