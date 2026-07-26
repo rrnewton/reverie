@@ -1559,6 +1559,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
    * a syscall through an inherited fragment, start it here after the
    * thread-init event has returned so the parent post-clone callback can
    * register it. */
+  // TODO-HUMAN-REVIEW(PR-134): Confirm the delayed-flush syscall fallback.
   if (!has_copied_runtime() && counters->pending_thread_start != 0) {
     start_pending_thread();
     if (counters->pending_thread_start != 0)
