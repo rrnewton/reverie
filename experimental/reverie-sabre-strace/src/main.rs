@@ -20,6 +20,7 @@ const TOOL_ENV: &str = "REVERIE_SABRE_TOOL";
 enum ToolKind {
     Strace,
     Counter1,
+    Counter2,
     Noop,
 }
 
@@ -28,6 +29,7 @@ impl ToolKind {
         match self {
             Self::Strace => "strace",
             Self::Counter1 => "counter1",
+            Self::Counter2 => "counter2",
             Self::Noop => "noop",
         }
     }
