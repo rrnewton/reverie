@@ -189,6 +189,12 @@ fn execute_basic_syscall_with_output(
         lseek(state, args)
     } else if number == libc::SYS_ftruncate as u64 {
         ftruncate(state, args)
+    } else if number == libc::SYS_truncate as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        truncate(memory, state, args)
+    } else if number == libc::SYS_fallocate as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        fallocate(state, args)
     } else if number == libc::SYS_fsync as u64 {
         sync_file(state, args[0], false)
     } else if number == libc::SYS_fdatasync as u64 {
@@ -1425,6 +1431,52 @@ fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
     // SAFETY: host_fd names a live writable descriptor and length is nonnegative.
     if unsafe { libc::ftruncate(host_fd, length) } == 0 {
+        0
+    } else {
+        io_error(std::io::Error::last_os_error())
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-136): Review path truncate descriptor delegation.
+fn truncate(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let guest_fd = open_file(
+        memory,
+        state,
+        libc::AT_FDCWD,
+        args[0],
+        (libc::O_WRONLY | libc::O_CLOEXEC) as u64,
+        0,
+    );
+    if guest_fd < 0 {
+        return guest_fd;
+    }
+    let truncate_args = [guest_fd as u64, args[1], 0, 0, 0, 0];
+    let result = ftruncate(state, &truncate_args);
+    let close_result = close(state, guest_fd as u64);
+    debug_assert_eq!(close_result, 0, "temporary truncate descriptor must close");
+    result
+}
+
+// TODO-HUMAN-REVIEW(PR-136): Review host fallocate delegation and flag bounds.
+fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(host_fd) = host_fd(state, fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    if let Err(error) = ensure_writable_fd(host_fd) {
+        return error;
+    }
+    let mode = args[1] as libc::c_int;
+    let offset = args[2] as libc::off_t;
+    let length = args[3] as libc::off_t;
+    if offset < 0 || length <= 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    // SAFETY: host_fd is live and writable. Linux validates the mode and range.
+    let result = unsafe { libc::fallocate(host_fd, mode, offset, length) };
+    if result == 0 {
         0
     } else {
         io_error(std::io::Error::last_os_error())
@@ -8227,6 +8279,53 @@ mod tests {
             0
         );
         assert_eq!(std::fs::read(root.0.join("positioned")).unwrap(), b"abXY");
+
+        let fallocate_result = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fallocate,
+            [fd as u64, 0, 0, 8192, 0, 0],
+        );
+        assert!(
+            fallocate_result == 0 || fallocate_result == negative_errno(libc::EOPNOTSUPP),
+            "fallocate returned {fallocate_result}"
+        );
+        if fallocate_result == 0 {
+            assert_eq!(
+                std::fs::metadata(root.0.join("positioned")).unwrap().len(),
+                8192
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_truncate,
+                [PATH_ADDRESS, 2, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(std::fs::read(root.0.join("positioned")).unwrap(), b"ab");
+        assert_eq!(state.files.len(), 1, "truncate must close its temporary fd");
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fallocate,
+                [99, 0, 0, 1, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fallocate,
+                [fd as u64, 0, u64::MAX, 1, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
 
         assert_eq!(
             syscall_result(
