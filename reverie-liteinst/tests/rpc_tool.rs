@@ -5,7 +5,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[test]
-fn first_sigsys_then_hook_callbacks_use_shared_coordinator_rpc() {
+fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
     let directory = std::env::temp_dir().join(format!("li-rpc-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();

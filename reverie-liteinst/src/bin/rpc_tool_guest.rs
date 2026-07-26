@@ -10,6 +10,8 @@ use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Tool;
 use reverie::syscalls::Syscall;
+use reverie::syscalls::SyscallInfo;
+use reverie::syscalls::Sysno;
 use reverie_rpc_transport::RpcServer;
 
 const CALLS: u64 = 32;
@@ -44,6 +46,9 @@ impl Tool for CounterTool {
         guest: &mut G,
         syscall: Syscall,
     ) -> Result<i64, Error> {
+        if syscall.number() == Sysno::getpid {
+            let _ = unsafe { reverie_liteinst_rpc_getuid() };
+        }
         *guest.thread_state_mut() += 1;
         let total = guest.send_rpc(1).await;
         LAST_TOTAL.store(total, Ordering::Relaxed);
@@ -69,11 +74,25 @@ reverie_liteinst_rpc_getpid_site:
     nop
     ret
     .size reverie_liteinst_rpc_getpid, .-reverie_liteinst_rpc_getpid
+
+    .p2align 4
+    .global reverie_liteinst_rpc_getuid
+    .hidden reverie_liteinst_rpc_getuid
+    .type reverie_liteinst_rpc_getuid,@function
+reverie_liteinst_rpc_getuid:
+    mov eax, 102
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .size reverie_liteinst_rpc_getuid, .-reverie_liteinst_rpc_getuid
 "#
 );
 
 unsafe extern "C" {
     fn reverie_liteinst_rpc_getpid() -> i64;
+    fn reverie_liteinst_rpc_getuid() -> i64;
     static reverie_liteinst_rpc_getpid_site: u8;
 }
 
@@ -92,6 +111,7 @@ fn coordinator(path: &Path) {
 
 fn guest(path: &Path) {
     unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let _ = unsafe { reverie_liteinst_rpc_getuid() };
     let mut pid = None;
     for _ in 0..CALLS {
         let observed = unsafe { reverie_liteinst_rpc_getpid() };
