@@ -6,7 +6,9 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! SaBRe plugin that runs a shared Reverie strace tool.
+//! SaBRe plugin that runs shared Reverie example tools.
+
+mod tools;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
@@ -60,7 +62,7 @@ impl ReverieTool for StraceTool {
 }
 
 struct Plugin {
-    adapter: sabre::ReverieAdapter<StraceTool>,
+    adapter: tools::SharedAdapter,
 }
 
 #[sabre::tool]
@@ -68,14 +70,14 @@ impl sabre::Tool for Plugin {
     type Client = ();
 
     fn new(_client: Self::Client) -> Self {
-        let quiet = std::env::var_os(QUIET_ENV).is_some() || QUIET.load(Ordering::Acquire);
+        let kind = tools::ToolKind::from_environment();
+        // SAFETY: Plugin construction runs before SaBRe starts guest callbacks.
+        let quiet = unsafe { reverie_sabre::take_private_env(QUIET_ENV) }.is_some()
+            || QUIET.load(Ordering::Acquire);
         QUIET.store(quiet, Ordering::Release);
-        if quiet {
-            std::env::remove_var(QUIET_ENV);
-        }
 
         Self {
-            adapter: sabre::ReverieAdapter::new(StraceTool { quiet }, (), ()),
+            adapter: tools::SharedAdapter::new(kind, quiet),
         }
     }
 
