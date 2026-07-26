@@ -162,11 +162,11 @@ fn execute_basic_syscall_with_output(
         read(memory, state, args)
     } else if number == libc::SYS_writev as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-kvm-writev)
+        // TODO-HUMAN-REVIEW(#120)
         writev(memory, state, args, output)
     } else if number == libc::SYS_readv as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-kvm-writev)
+        // TODO-HUMAN-REVIEW(#120)
         readv(memory, state, args)
     } else if number == libc::SYS_pread64 as u64 {
         pread64(memory, state, args)
@@ -329,23 +329,23 @@ fn execute_basic_syscall_with_output(
         fchmodat(memory, state, args[0] as libc::c_int, args[1], args[2], 0)
     } else if number == libc::SYS_flock as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-kvm-flock)
+        // TODO-HUMAN-REVIEW(#120)
         flock_guest(state, args[0], args[1])
     } else if number == libc::SYS_chown as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-kvm-chown)
+        // TODO-HUMAN-REVIEW(#120)
         chown_path_noop(memory, state, libc::AT_FDCWD, args[0], false)
     } else if number == libc::SYS_lchown as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-kvm-chown)
+        // TODO-HUMAN-REVIEW(#120)
         chown_path_noop(memory, state, libc::AT_FDCWD, args[0], true)
     } else if number == libc::SYS_fchown as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-kvm-chown)
+        // TODO-HUMAN-REVIEW(#120)
         fchown_noop(state, args[0])
     } else if number == libc::SYS_fchownat as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-kvm-chown)
+        // TODO-HUMAN-REVIEW(#120)
         let nofollow = (args[4] & libc::AT_SYMLINK_NOFOLLOW as u64) != 0;
         chown_path_noop(memory, state, args[0] as libc::c_int, args[1], nofollow)
     } else if number == libc::SYS_mknod as u64 {
@@ -981,7 +981,7 @@ fn signal_is_pending(signal: libc::c_int) -> Result<bool, libc::c_int> {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-kvm-writev): guest writev gathers each iovec and reuses
+// TODO-HUMAN-REVIEW(#120): guest writev gathers each iovec and reuses
 // the scalar write path, so descriptor routing, captured-output aliasing, and
 // SIGPIPE suppression stay identical to write(2). Programs such as javac/java
 // emit their startup diagnostics with writev and abort (exit 127) when it is
@@ -1029,7 +1029,7 @@ fn writev(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-kvm-writev): guest readv scatters into each iovec via the
+// TODO-HUMAN-REVIEW(#120): guest readv scatters into each iovec via the
 // scalar read path; a short read or EOF stops the scatter, matching readv(2).
 fn readv(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Ok(count) = usize::try_from(args[2]) else {
@@ -2284,7 +2284,7 @@ fn symlink_at(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-kvm-flock): advisory flock on the guest's backing host
+// TODO-HUMAN-REVIEW(#120): advisory flock on the guest's backing host
 // descriptor. The deterministic container hosts a single guest, so the lock
 // never contends; forwarding to the host preserves LOCK_SH/LOCK_EX/LOCK_UN and
 // LOCK_NB semantics. Without this, flock(1) reports ENOSYS ("Function not
@@ -2301,7 +2301,7 @@ fn flock_guest(state: &LoadedStaticElf, guest_fd: u64, operation: u64) -> i64 {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-kvm-chown): guest ownership changes are validated then
+// TODO-HUMAN-REVIEW(#120): guest ownership changes are validated then
 // treated as a deterministic no-op. The container virtualizes identity to a
 // single root user and reports deterministic uid/gid from stat, so honoring the
 // request means confirming the target inode exists and leaving the host-owned
@@ -2325,7 +2325,7 @@ fn chown_path_noop(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-kvm-chown): fd-referenced ownership change; validated to
+// TODO-HUMAN-REVIEW(#120): fd-referenced ownership change; validated to
 // EBADF-check the descriptor then treated as the same deterministic no-op as
 // chown_path_noop.
 fn fchown_noop(state: &LoadedStaticElf, guest_fd: u64) -> i64 {
@@ -3036,7 +3036,7 @@ fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
             0
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-kvm-fcntl-setfl): guest F_SETFL applies the
+        // TODO-HUMAN-REVIEW(#120): guest F_SETFL applies the
         // kernel-settable file status flags (O_APPEND/O_ASYNC/O_DIRECT/
         // O_NOATIME/O_NONBLOCK) to the backing host descriptor. Access mode and
         // creation flags are silently ignored, matching fcntl(2). Without this,
