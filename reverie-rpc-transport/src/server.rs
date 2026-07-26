@@ -131,7 +131,7 @@ where
     /// disconnects (cleanly or otherwise) simply ends its own task.
     pub async fn serve(self) -> Result<(), RpcError> {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-TBD): Review connection cancellation on server shutdown.
+        // TODO-HUMAN-REVIEW(PR-170): Review connection cancellation on server shutdown.
         let mut connections = tokio::task::JoinSet::new();
         loop {
             let (stream, _addr) = self.listener.accept().await?;
