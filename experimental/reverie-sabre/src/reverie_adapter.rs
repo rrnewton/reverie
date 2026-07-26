@@ -298,7 +298,7 @@ where
     /// Forwards an intercepted RDTSC instruction through the shared tool and
     /// remote GlobalTool.
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-pending): Review SaBRe RDTSC forwarding.
+    // TODO-HUMAN-REVIEW(PR-144): Review SaBRe RDTSC forwarding.
     pub fn handle_rdtsc(&self) -> Result<u64, Errno> {
         let tid = current_tid();
         let pid = current_pid();
