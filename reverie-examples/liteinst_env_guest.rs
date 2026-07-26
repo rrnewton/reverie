@@ -13,6 +13,10 @@ fn main() {
         None => check_environment(),
         Some("check-fd-198") => check_inherited_descriptor(),
         Some("check-coordinator-environment") => check_coordinator_environment(),
+        // TODO-HUMAN-REVIEW(PR-148): Review the allocator-reentry test guest mode.
+        Some("exercise-allocator") => exercise_allocator(),
+        // TODO-HUMAN-REVIEW(PR-152): Review the chunky_print ordering test guest mode.
+        Some("chunky-alias-order") => exercise_chunky_alias_order(),
         Some(argument) => panic!("unknown argument {argument:?}"),
     }
 }
@@ -54,4 +58,42 @@ fn check_inherited_descriptor() {
         std::path::Path::new("/dev/null")
     );
     println!("fd-198-preserved");
+}
+
+// TODO-HUMAN-REVIEW(PR-148): Review deterministic guest allocator growth coverage.
+fn exercise_allocator() {
+    let mut blocks = Vec::with_capacity(256);
+    for value in 0_u8..=255 {
+        blocks.push(vec![value; 64 * 1024]);
+    }
+    let checksum = blocks
+        .iter()
+        .map(|block| usize::from(block[0]) + usize::from(block[block.len() - 1]))
+        .sum::<usize>();
+    assert_eq!(checksum, 2 * (0_usize..=255).sum::<usize>());
+
+    let mut large = vec![0x5a_u8; 8 * 1024 * 1024];
+    let last = large.len() - 1;
+    large[last] = 0xa5;
+    assert_eq!(large[0], 0x5a);
+    assert_eq!(large[last], 0xa5);
+
+    println!("allocator-growth-ok");
+}
+
+// TODO-HUMAN-REVIEW(PR-152): Review deterministic chunky_print ordering coverage.
+fn exercise_chunky_alias_order() {
+    let alias = unsafe { libc::dup(libc::STDOUT_FILENO) };
+    assert!(alias > libc::STDERR_FILENO);
+    for index in 0_u8..16 {
+        let tens = b'0' + index / 10;
+        let ones = b'0' + index % 10;
+        let buffered = [b'B', tens, ones, b';'];
+        let pass_through = [b'P', tens, ones, b';'];
+        let written = unsafe { libc::write(libc::STDOUT_FILENO, buffered.as_ptr().cast(), 4) };
+        assert_eq!(written, 4);
+        let written = unsafe { libc::write(alias, pass_through.as_ptr().cast(), 4) };
+        assert_eq!(written, 4);
+    }
+    assert_eq!(unsafe { libc::close(alias) }, 0);
 }
