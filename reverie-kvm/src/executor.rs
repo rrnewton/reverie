@@ -43,6 +43,13 @@ const GUEST_CAP_LAST_CAP: u64 = 40;
 const PROCESS_CLONE_TID_FLAGS: u64 = libc::CLONE_PARENT_SETTID as u64
     | libc::CLONE_CHILD_SETTID as u64
     | libc::CLONE_CHILD_CLEARTID as u64;
+// CLONE_CLEAR_SIGHAND (bit 32): reset the child's caught signal handlers to
+// SIG_DFL. glibc >= 2.36 `posix_spawn` sets this in its clone3 alongside
+// CLONE_VM|CLONE_VFORK, so modern `make`/`gcc` job spawning depends on it being
+// accepted rather than rejected as unsupported. Defined locally as a `u64`
+// because `libc::CLONE_CLEAR_SIGHAND` is (incorrectly) typed `c_int` on gnu and
+// truncates to 0.
+const CLONE_CLEAR_SIGHAND: u64 = 0x1_0000_0000;
 const ARCH_SET_GS: u64 = 0x1001;
 const ARCH_SET_FS: u64 = 0x1002;
 const ARCH_GET_FS: u64 = 0x1003;
@@ -4434,7 +4441,13 @@ fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
         | libc::CLONE_VFORK as u64
         | libc::CLONE_PARENT_SETTID as u64
         | libc::CLONE_CHILD_SETTID as u64
-        | libc::CLONE_CHILD_CLEARTID as u64;
+        | libc::CLONE_CHILD_CLEARTID as u64
+        // Accepted as a no-op: a cloned child in this executor is a fresh
+        // snapshot that runs only until it exits or execve()s, and execve()
+        // already resets caught handlers to SIG_DFL, so clearing signal
+        // handlers is redundant for the supported immediate-exec clone use
+        // (glibc >= 2.36 posix_spawn, i.e. `make`/`gcc` recipe jobs).
+        | CLONE_CLEAR_SIGHAND;
     if flags & !allowed != 0 {
         return Err(negative_errno(libc::ENOTSUP));
     }
@@ -7875,6 +7888,52 @@ mod tests {
             "a TID field remains explicitly unsupported after validation"
         );
         assert!(executor.take_process_action().is_none());
+    }
+
+    #[test]
+    fn clone3_posix_spawn_vfork_with_clear_sighand_is_accepted() {
+        // glibc >= 2.36 `posix_spawn` (used by `make`/`gcc` to launch recipe and
+        // subprocess jobs) issues exactly this clone3: CLONE_VM|CLONE_VFORK with
+        // CLONE_CLEAR_SIGHAND, an explicit child stack, and SIGCHLD as the exit
+        // signal. Older glibc omitted CLONE_CLEAR_SIGHAND, so the executor must
+        // accept the flag rather than reject the whole call as unsupported (the
+        // child immediately execve()s, which already resets signal handlers).
+        const CLONE3_ARGS: u64 = 0x200;
+        const CHILD_STACK: u64 = 0x4000;
+        const CHILD_STACK_SIZE: u64 = 0x9000;
+
+        let root = TestDir::new();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut clone3 = [0_u8; 88];
+        let flags = libc::CLONE_VM as u64 | libc::CLONE_VFORK as u64 | CLONE_CLEAR_SIGHAND;
+        clone3[0..8].copy_from_slice(&flags.to_le_bytes());
+        clone3[32..40].copy_from_slice(&(libc::SIGCHLD as u64).to_le_bytes());
+        clone3[40..48].copy_from_slice(&CHILD_STACK.to_le_bytes());
+        clone3[48..56].copy_from_slice(&CHILD_STACK_SIZE.to_le_bytes());
+        memory.write(CLONE3_ARGS, &clone3).unwrap();
+
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let request = SyscallRequest::new(
+            libc::SYS_clone3 as u64,
+            [CLONE3_ARGS, clone3.len() as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(executor.execute_process_action(&request, &memory), Some(2));
+        match executor.take_process_action() {
+            Some(ProcessAction::Fork {
+                child_pid,
+                child_stack,
+                parent_tid,
+                child_tid,
+                clear_child_tid,
+            }) => {
+                assert_eq!(child_pid, 2);
+                assert_eq!(child_stack, Some(CHILD_STACK + CHILD_STACK_SIZE));
+                assert_eq!(parent_tid, None);
+                assert_eq!(child_tid, None);
+                assert_eq!(clear_child_tid, None);
+            }
+            _ => panic!("clone3 with CLONE_CLEAR_SIGHAND did not create a fork action"),
+        }
     }
 
     #[test]
