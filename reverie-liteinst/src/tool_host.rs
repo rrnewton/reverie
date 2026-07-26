@@ -213,7 +213,7 @@ where
                 {
                     tool_fatal(125, &error);
                 }
-                // TODO-HUMAN-REVIEW(PR-TBD): Review single-process Tool exit lifecycle.
+                // TODO-HUMAN-REVIEW(PR-143): Review single-process Tool exit lifecycle.
                 if number == libc::SYS_exit_group || tid == pid {
                     let tool = tool_slot.take().unwrap_or_else(|| fatal(126));
                     if let Err(error) = drive_ready(tool.on_exit_process(pid, &self.rpc, status)) {
@@ -537,17 +537,17 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         std::future::pending().await
     }
 
-    // TODO-HUMAN-REVIEW(PR-TBD): Review cooperative LiteInst timer semantics.
+    // TODO-HUMAN-REVIEW(PR-143): Review cooperative LiteInst timer semantics.
     fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
         Ok(())
     }
 
-    // TODO-HUMAN-REVIEW(PR-TBD): Review cooperative LiteInst timer semantics.
+    // TODO-HUMAN-REVIEW(PR-143): Review cooperative LiteInst timer semantics.
     fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
         Ok(())
     }
 
-    // TODO-HUMAN-REVIEW(PR-TBD): Review cooperative LiteInst clock semantics.
+    // TODO-HUMAN-REVIEW(PR-143): Review cooperative LiteInst clock semantics.
     fn read_clock(&mut self) -> Result<u64, Error> {
         Ok(0)
     }
