@@ -621,7 +621,7 @@ impl KvmBackend {
         }
 
         loop {
-            let (pending_segment, pending_exit, pending_process) = match self.vcpu.run()? {
+            let (pending_segment, mut pending_exit, pending_process) = match self.vcpu.run()? {
                 VcpuExit::Hypercall(exit) => {
                     if exit.nr != VMCALL_SYSCALL_TRANSPORT {
                         return Err(Error::UnexpectedHypercall(exit.nr));
@@ -696,6 +696,7 @@ impl KvmBackend {
             if let Some(action) = pending_process {
                 self.run_process_action(&mut executor, action)?;
                 auxv = executor.auxv().to_vec();
+                pending_exit = pending_exit.or_else(|| executor.take_exit());
             }
             if let Some(code) = pending_exit {
                 notify_tool_exit(

@@ -76,6 +76,8 @@ pub(crate) struct LoadedStaticElf {
     pub fs_base: u64,
     pub gs_base: u64,
     pub pid: i32,
+    // TODO-HUMAN-REVIEW(PR-132): Review single-vCPU thread identity transitions.
+    pub tid: i32,
     pub ppid: i32,
     pub umask: libc::mode_t,
     // TODO-HUMAN-REVIEW(PR-92): Review virtual nice process state.
@@ -136,6 +138,7 @@ impl LoadedStaticElf {
             fs_base: self.fs_base,
             gs_base: self.gs_base,
             pid: child_pid,
+            tid: child_pid,
             ppid: self.pid,
             umask: self.umask,
             nice: self.nice,
@@ -223,6 +226,7 @@ impl LoadedStaticElf {
         self.cwd_fd = previous.cwd_fd;
         self.stdin = stdin;
         self.pid = previous.pid;
+        self.tid = previous.tid;
         self.ppid = previous.ppid;
         self.umask = previous.umask;
         self.nice = previous.nice;
@@ -431,6 +435,7 @@ fn load_executable(
         fs_base: 0,
         gs_base: 0,
         pid: 1,
+        tid: 1,
         ppid: 0,
         umask: 0o022,
         nice: 0,

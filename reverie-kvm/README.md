@@ -45,11 +45,12 @@ topology.
 The process personality implements `fork`, `vfork`, process-only `clone`/`clone3`,
 `execve`/`execveat`, and `wait4`. Forked children receive an independent guest
 RAM snapshot and fresh VM/vCPU, inherit duplicated host file descriptions, and
-run to completion before the parent resumes. Legacy `clone` process calls support
-`CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID`, and `CLONE_CHILD_CLEARTID`;
-`clone3` TID fields and thread-sharing flags remain unsupported. The tool runtime keeps the root
-tool's `GlobalState`; child syscalls currently execute through the deterministic
-KVM personality without per-child tool lifecycle callbacks.
+run to completion before the parent resumes. Legacy process clones support
+`CLONE_PARENT_SETTID`, `CLONE_CHILD_SETTID`, and `CLONE_CHILD_CLEARTID`. The
+glibc pthread clone profile is also supported by running each child thread to
+completion on the shared vCPU before its parent resumes. The tool runtime keeps
+the root tool's `GlobalState`; child process and thread syscalls currently execute
+through the KVM personality without per-child tool lifecycle callbacks.
 
 ## Typed syscall decoding
 
@@ -90,12 +91,12 @@ No gVisor code is copied. Unlike the gVisor Sentry VFS and `pkg/sentry/fsimpl/` 
 ## Current limits
 
 This crate is not a complete Linux execution backend. Each process has one vCPU
-and fixed-address identity mappings; thread-clone flags, asynchronous signal
-delivery, concurrent process scheduling, and hardware page-permission enforcement
-remain unsupported. Host-side guest-memory copies track mapped and `PROT_NONE`
-pages so intercepted syscalls can preserve Linux fault and partial-copy behavior;
-the identity-mapped vCPU page tables remain permissive for direct guest loads and
-stores. Filesystem access forwards into the host namespace with bounded
+and fixed-address identity mappings; pthread clones run cooperatively rather than
+concurrently, and asynchronous signal delivery, concurrent process scheduling,
+and hardware page-permission enforcement remain unsupported. Host-side
+guest-memory copies track mapped and `PROT_NONE` pages so intercepted syscalls can
+preserve Linux fault and partial-copy behavior; the identity-mapped vCPU page
+tables remain permissive for direct guest loads and stores. Filesystem access forwards into the host namespace with bounded
 memory copies and a guest-owned descriptor table; it does not isolate or
 snapshot host filesystem changes. The current hypercall transport also reuses
 standardized KVM hypercall 12 because it is the only hypercall KVM exposes to

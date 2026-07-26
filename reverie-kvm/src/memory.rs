@@ -445,10 +445,9 @@ impl MemoryAccess for GuestMemory {
             let requested = (read_from[source_index].len() - source_offset)
                 .min(write_to[destination_index].len() - destination_offset);
             let address = read_from[source_index].as_ptr() as u64 + source_offset as u64;
-            let count = match self.user_accessible_prefix(address, requested) {
-                Ok(count) => count,
-                Err(_) => 0,
-            };
+            let count = self
+                .user_accessible_prefix(address, requested)
+                .unwrap_or_default();
             if count == 0 {
                 return if total == 0 {
                     Err(Errno::EFAULT)
@@ -503,10 +502,9 @@ impl MemoryAccess for GuestMemory {
             let address =
                 write_to[destination_index].as_mut_ptr() as u64 + destination_offset as u64;
             let requested = count;
-            let count = match self.user_accessible_prefix(address, requested) {
-                Ok(count) => count,
-                Err(_) => 0,
-            };
+            let count = self
+                .user_accessible_prefix(address, requested)
+                .unwrap_or_default();
             if count == 0 {
                 return if total == 0 {
                     Err(Errno::EFAULT)
