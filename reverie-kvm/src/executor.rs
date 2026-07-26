@@ -208,7 +208,7 @@ fn execute_basic_syscall_with_output(
         unlink_at(memory, state, libc::AT_FDCWD, args[0], 0)
     } else if number == libc::SYS_rmdir as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(#PR): Review rmdir->unlinkat(AT_REMOVEDIR) mapping.
+        // TODO-HUMAN-REVIEW(#111): Review rmdir->unlinkat(AT_REMOVEDIR) mapping.
         // rmdir(path) is unlinkat(AT_FDCWD, path, AT_REMOVEDIR). Without this
         // arm the guest's bare rmdir(2) fell through to ENOSYS, so coreutils
         // `rmdir` (and `mktemp -d` cleanup) failed under the KVM backend even
