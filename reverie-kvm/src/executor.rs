@@ -57,6 +57,9 @@ const ARCH_GET_FS: u64 = 0x1003;
 const ARCH_GET_GS: u64 = 0x1004;
 const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
 const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+// TODO-HUMAN-REVIEW(PR-136): Review the Linux UAPI value missing from pinned libc.
+const FALLOC_FL_WRITE_ZEROES: libc::c_int = 0x80;
+
 const FALLOCATE_VALID_MODES: &[libc::c_int] = &[
     0,
     libc::FALLOC_FL_KEEP_SIZE,
@@ -67,6 +70,7 @@ const FALLOCATE_VALID_MODES: &[libc::c_int] = &[
     libc::FALLOC_FL_INSERT_RANGE,
     libc::FALLOC_FL_UNSHARE_RANGE,
     libc::FALLOC_FL_UNSHARE_RANGE | libc::FALLOC_FL_KEEP_SIZE,
+    FALLOC_FL_WRITE_ZEROES,
 ];
 const GUEST_SUPPLEMENTARY_GROUPS: &[libc::gid_t] = &[65_534];
 const LEGACY_OPEN_FLAGS: u64 = (libc::O_ACCMODE
@@ -8711,6 +8715,7 @@ mod tests {
             libc::FALLOC_FL_PUNCH_HOLE,
             libc::FALLOC_FL_COLLAPSE_RANGE | libc::FALLOC_FL_KEEP_SIZE,
             libc::FALLOC_FL_INSERT_RANGE | libc::FALLOC_FL_KEEP_SIZE,
+            FALLOC_FL_WRITE_ZEROES | libc::FALLOC_FL_KEEP_SIZE,
         ] {
             assert_eq!(
                 syscall_result(
@@ -8723,6 +8728,16 @@ mod tests {
                 "invalid mode combination validation precedes writable access"
             );
         }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fallocate,
+                [9, FALLOC_FL_WRITE_ZEROES as u64, 0, 1, 0, 0],
+            ),
+            negative_errno(libc::EBADF),
+            "valid write-zeroes mode reaches writable-access validation"
+        );
 
         assert_eq!(
             syscall_result(
