@@ -47,7 +47,7 @@ struct Args {
 
     /// Shared Reverie tool to run in the SaBRe plugin.
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-pending): Review the SaBRe example-tool selector.
+    // TODO-HUMAN-REVIEW(PR-137): Review the SaBRe example-tool selector.
     #[clap(long, value_enum, default_value = "strace")]
     tool: ToolKind,
 
