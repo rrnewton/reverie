@@ -2956,7 +2956,7 @@ fn prctl(args: &[u64; 6]) -> i64 {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-108): Review the no-xattr KVM guest model and errors.
+// TODO-HUMAN-REVIEW(PR-116): Review the no-xattr KVM guest model and errors.
 //
 // The deterministic container models no extended attributes, but Linux still
 // validates the target and attribute name before reporting ENODATA. Preserve
