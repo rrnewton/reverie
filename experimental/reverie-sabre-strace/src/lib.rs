@@ -38,6 +38,7 @@ impl ReverieTool for StraceTool {
     type GlobalState = ();
     type ThreadState = ();
 
+    // TODO-HUMAN-REVIEW(PR-153): Review decoded syscall memory access and logging.
     async fn handle_syscall_event<G: Guest<Self>>(
         &self,
         guest: &mut G,
@@ -49,16 +50,19 @@ impl ReverieTool for StraceTool {
 
         let tid = guest.tid();
         match syscall {
+            // AUTONOMOUS-BOT-IMPLEMENTED
             Syscall::Exit(_) | Syscall::ExitGroup(_) => {
                 nostd_print::eprintln!("[{tid}] {}", syscall.display(&guest.memory()));
                 guest.tail_inject(syscall).await
             }
+            // AUTONOMOUS-BOT-IMPLEMENTED
             Syscall::Execve(_) | Syscall::Execveat(_) => {
                 // A successful exec replaces the address space, so format its
                 // input pointers while the old image is still readable.
                 nostd_print::eprintln!("[{tid}] {}", syscall.display(&guest.memory()));
                 guest.inject(syscall).await.map_err(Error::from)
             }
+            // AUTONOMOUS-BOT-IMPLEMENTED
             _ => {
                 let result = guest.inject(syscall).await;
                 let memory = guest.memory();
