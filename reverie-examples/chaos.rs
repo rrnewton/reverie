@@ -33,8 +33,9 @@ struct Args {
     chaos_opts: ChaosOpts,
 }
 
-#[derive(Parser, Debug, Serialize, Deserialize, Clone, Default)]
-struct ChaosOpts {
+// TODO-HUMAN-REVIEW(PR-157): Review crate-local reuse of the production chaos config.
+#[derive(Parser, Debug, Serialize, Deserialize, Clone, Default, Eq, PartialEq)]
+pub(crate) struct ChaosOpts {
     /// Skips the first N syscalls of a process before doing any intervention.
     /// This is useful when you need to skip past an error caused by the tool.
     #[clap(long, value_name = "N", default_value = "0")]
@@ -53,8 +54,9 @@ struct ChaosOpts {
     no_interrupt: bool,
 }
 
+// TODO-HUMAN-REVIEW(PR-157): Review crate-local reuse of the production chaos tool.
 #[derive(Debug, Default)]
-struct ChaosTool {
+pub(crate) struct ChaosTool {
     count: AtomicU64,
 }
 
@@ -66,8 +68,9 @@ impl Clone for ChaosTool {
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-157): Review crate-local reuse of the chaos global state.
 #[derive(Debug, Default, Clone)]
-struct ChaosToolGlobal {}
+pub(crate) struct ChaosToolGlobal {}
 
 #[reverie::global_tool]
 impl GlobalTool for ChaosToolGlobal {

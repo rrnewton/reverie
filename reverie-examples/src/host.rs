@@ -20,6 +20,10 @@ use reverie::process::Command;
 use reverie_liteinst::LiteinstBackend;
 
 #[allow(dead_code)]
+#[path = "../chaos.rs"]
+pub(crate) mod chaos;
+
+#[allow(dead_code)]
 #[path = "../chunky_print.rs"]
 mod chunky_print;
 #[allow(dead_code)]
@@ -45,6 +49,9 @@ pub(crate) use strace::global_state;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
 /// Production example tool hosted by the LiteInst preload.
 pub(crate) enum ToolKind {
+    /// Introduce short reads and optional interrupted reads.
+    // TODO-HUMAN-REVIEW(PR-157): Review the chaos LiteInst selector extension.
+    Chaos,
     /// Count every intercepted syscall through the shared global state.
     Counter1,
     /// Aggregate per-thread and per-process syscall counts in global state.
@@ -62,6 +69,7 @@ pub(crate) enum ToolKind {
 impl ToolKind {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Chaos => "chaos",
             Self::Counter1 => "counter1",
             Self::Counter2 => "counter2",
             Self::Strace => "strace",
@@ -103,8 +111,16 @@ pub(crate) async fn run(
     kind: ToolKind,
     command: Command,
     filters: Vec<String>,
+    chaos_options: chaos::ChaosOpts,
     preload: PathBuf,
 ) -> Result<RunOutput, reverie::Error> {
+    if kind != ToolKind::Chaos && chaos_options != chaos::ChaosOpts::default() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "chaos options require the chaos tool",
+        )
+        .into());
+    }
     let filters = if kind == ToolKind::Strace {
         filters
             .into_iter()
@@ -122,6 +138,21 @@ pub(crate) async fn run(
     };
     let tool_data = kind.as_str().as_bytes().to_vec();
     match kind {
+        // TODO-HUMAN-REVIEW(PR-157): Review the exact chaos LiteInst host path.
+        ToolKind::Chaos => {
+            let (output, _) =
+                LiteinstBackend::run_with_output_and_preload_data::<chaos::ChaosTool>(
+                    command,
+                    chaos_options,
+                    preload,
+                    tool_data,
+                )
+                .await?;
+            Ok(RunOutput {
+                output,
+                counter_summary: None,
+            })
+        }
         ToolKind::Counter1 => {
             let (output, global) = LiteinstBackend::run_with_output_and_preload_data::<
                 counter1::CounterLocal,

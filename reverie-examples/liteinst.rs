@@ -35,6 +35,10 @@ struct Args {
     #[clap(long = "trace")]
     filters: Vec<String>,
 
+    // TODO-HUMAN-REVIEW(PR-157): Review the production chaos option surface.
+    #[clap(flatten)]
+    chaos_options: example_tools::chaos::ChaosOpts,
+
     #[clap(required = true, num_args = 1.., allow_hyphen_values = true)]
     command: Vec<String>,
 }
@@ -45,6 +49,9 @@ async fn main() -> anyhow::Result<()> {
     if args.tool != example_tools::ToolKind::Strace && !args.filters.is_empty() {
         bail!("--trace is only valid with --tool strace");
     }
+    if args.tool != example_tools::ToolKind::Chaos && args.chaos_options != Default::default() {
+        bail!("chaos options are only valid with --tool chaos");
+    }
 
     let preload = match args.preload {
         Some(path) => path,
@@ -52,7 +59,14 @@ async fn main() -> anyhow::Result<()> {
     };
     let mut command = Command::new(&args.command[0]);
     command.args(&args.command[1..]);
-    let result = example_tools::run(args.tool, command, args.filters, preload).await?;
+    let result = example_tools::run(
+        args.tool,
+        command,
+        args.filters,
+        args.chaos_options,
+        preload,
+    )
+    .await?;
 
     std::io::stdout().write_all(&result.output.stdout)?;
     std::io::stderr().write_all(&result.output.stderr)?;
