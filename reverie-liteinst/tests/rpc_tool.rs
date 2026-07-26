@@ -32,6 +32,17 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     assert!(rejected_handler.status.success(), "{rejected_handler:?}");
     assert_eq!(rejected_handler.stdout, b"preinstalled-handler-reset\n");
 
+    let pending_sigsys = Command::new(binary)
+        .arg("pending-sigsys")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert_eq!(
+        pending_sigsys.status.code(),
+        Some(126),
+        "{pending_sigsys:?}"
+    );
+
     let preblocked_sigsys = Command::new(binary)
         .arg("preblocked-sigsys")
         .arg(&socket)

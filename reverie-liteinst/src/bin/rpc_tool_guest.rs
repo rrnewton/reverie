@@ -279,6 +279,33 @@ fn preinstalled_handler_guest(path: &Path) {
     println!("preinstalled-handler-reset");
 }
 
+unsafe extern "C" fn stale_sigsys_handler(_signal: libc::c_int) {
+    unsafe { libc::_exit(77) };
+}
+
+fn pending_sigsys_guest(path: &Path) -> ! {
+    let previous = unsafe {
+        libc::signal(
+            libc::SIGSYS,
+            stale_sigsys_handler as *const () as libc::sighandler_t,
+        )
+    };
+    assert_ne!(previous, libc::SIG_ERR);
+    let sigsys = 1_u64 << (libc::SIGSYS - 1);
+    let block = unsafe {
+        reverie_liteinst_rpc_sigprocmask(
+            libc::SIG_BLOCK as u64,
+            &sigsys,
+            core::ptr::null_mut(),
+            core::mem::size_of::<u64>(),
+        )
+    };
+    assert_eq!(block, 0);
+    assert_eq!(unsafe { libc::raise(libc::SIGSYS) }, 0);
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    panic!("pending guest SIGSYS was not delivered");
+}
+
 fn preblocked_sigsys_guest(path: &Path) {
     let sigsys = 1_u64 << (libc::SIGSYS - 1);
     let block = unsafe {
@@ -320,6 +347,7 @@ fn main() {
         Some("coordinator") => coordinator(Path::new(&path)),
         Some("guest") => guest(Path::new(&path)),
         Some("preinstalled-handler") => preinstalled_handler_guest(Path::new(&path)),
+        Some("pending-sigsys") => pending_sigsys_guest(Path::new(&path)),
         Some("preblocked-sigsys") => preblocked_sigsys_guest(Path::new(&path)),
         Some("spoof-sigsys") => spoof_sigsys_guest(Path::new(&path)),
         _ => panic!("expected coordinator or guest"),

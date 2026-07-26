@@ -595,7 +595,7 @@ impl Drop for SignalInstallGuard {
 // TODO-HUMAN-REVIEW(PR-133): Review atomic signal-state preparation.
 pub(crate) fn prepare_guest_signal_state() -> io::Result<SignalInstallGuard> {
     let sigsys = 1_u64 << (libc::SIGSYS - 1);
-    let install_mask = !sigsys;
+    let install_mask = u64::MAX;
     let mut previous_mask = 0_u64;
     let result = unsafe {
         raw_syscall6(
