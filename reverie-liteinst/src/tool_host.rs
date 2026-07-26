@@ -314,7 +314,8 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
         || matches!(number, libc::SYS_execve | libc::SYS_execveat);
     let protected_signal =
         // AUTONOMOUS-BOT-IMPLEMENTED
-        (number == libc::SYS_rt_sigaction && args[0] == libc::SIGSYS as u64)
+        // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
+        (number == libc::SYS_rt_sigaction && args[1] != 0)
         // AUTONOMOUS-BOT-IMPLEMENTED
         || (number == libc::SYS_sigaltstack && args[0] != 0)
         // AUTONOMOUS-BOT-IMPLEMENTED

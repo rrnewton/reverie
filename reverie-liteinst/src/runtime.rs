@@ -566,8 +566,15 @@ fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
             | libc::SYS_execve
             | libc::SYS_execveat
     );
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    let unsupported_signal_state = matches!(
+        event.number,
+        libc::SYS_rt_sigaction | libc::SYS_rt_sigprocmask | libc::SYS_sigaltstack
+    );
     if unsupported_process {
         event.result = -i64::from(libc::ENOTSUP);
+    } else if unsupported_signal_state {
+        event.result = -i64::from(libc::EPERM);
     } else if !(protect_runtime_control(event) || unsafe { protect_coordinator_channel(event) }) {
         event.result = unsafe { raw_syscall6(event.number, event.args) };
         observe_mapping_generation(event);
@@ -726,7 +733,8 @@ fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
         matches!(event.number, libc::SYS_clone3 | libc::SYS_vfork);
     let protected_signal =
         // AUTONOMOUS-BOT-IMPLEMENTED
-        (event.number == libc::SYS_rt_sigaction && event.args[0] == libc::SIGSYS as u64)
+        // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
+        (event.number == libc::SYS_rt_sigaction && event.args[1] != 0)
         // AUTONOMOUS-BOT-IMPLEMENTED
         || (event.number == libc::SYS_sigaltstack && event.args[0] != 0)
         // AUTONOMOUS-BOT-IMPLEMENTED

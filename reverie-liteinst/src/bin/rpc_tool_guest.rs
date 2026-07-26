@@ -20,6 +20,7 @@ static LAST_TOTAL: AtomicU64 = AtomicU64::new(0);
 static LAST_NESTED_UID: AtomicI64 = AtomicI64::new(-1);
 static LAST_MASK_RESULT: AtomicI64 = AtomicI64::new(0);
 static LAST_FIRST_USE_EXEC_RESULT: AtomicI64 = AtomicI64::new(0);
+static LAST_FIRST_USE_SIGNAL_RESULT: AtomicI64 = AtomicI64::new(0);
 
 #[derive(Default)]
 struct CounterGlobal {
@@ -67,6 +68,8 @@ impl Tool for CounterTool {
                 reverie_liteinst_rpc_execve(core::ptr::null(), core::ptr::null(), core::ptr::null())
             };
             LAST_FIRST_USE_EXEC_RESULT.store(exec_result, Ordering::Relaxed);
+            let signal_result = unsafe { reverie_liteinst_rpc_sigaltstack() };
+            LAST_FIRST_USE_SIGNAL_RESULT.store(signal_result, Ordering::Relaxed);
         }
         *guest.thread_state_mut() += 1;
         let total = guest.send_rpc(1).await;
@@ -139,6 +142,19 @@ reverie_liteinst_rpc_execve:
     nop
     ret
     .size reverie_liteinst_rpc_execve, .-reverie_liteinst_rpc_execve
+
+    .p2align 4
+    .global reverie_liteinst_rpc_sigaltstack
+    .hidden reverie_liteinst_rpc_sigaltstack
+    .type reverie_liteinst_rpc_sigaltstack,@function
+reverie_liteinst_rpc_sigaltstack:
+    mov eax, 131
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .size reverie_liteinst_rpc_sigaltstack, .-reverie_liteinst_rpc_sigaltstack
 "#
 );
 
@@ -150,6 +166,7 @@ unsafe extern "C" {
         argv: *const *const u8,
         envp: *const *const u8,
     ) -> i64;
+    fn reverie_liteinst_rpc_sigaltstack() -> i64;
     fn reverie_liteinst_rpc_sigprocmask(
         how: u64,
         set: *const u64,
@@ -174,6 +191,8 @@ fn coordinator(path: &Path) {
     });
 }
 
+unsafe extern "C" fn forbidden_signal_handler(_signal: libc::c_int) {}
+
 fn guest(path: &Path) {
     let mut expected_mask = 0_u64;
     let mask_query = unsafe {
@@ -186,6 +205,13 @@ fn guest(path: &Path) {
     };
     assert_eq!(mask_query, 0);
     unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let signal_result = unsafe {
+        libc::signal(
+            libc::SIGUSR1,
+            forbidden_signal_handler as *const () as libc::sighandler_t,
+        )
+    };
+    assert_eq!(signal_result, libc::SIG_ERR);
     let expected_uid = unsafe { reverie_liteinst_rpc_getuid() };
     let mut initial_mask = 0_u64;
     let mask_query = unsafe {
@@ -214,10 +240,11 @@ fn guest(path: &Path) {
     let mask_hooks = reverie_liteinst::reverie_liteinst_site_hook_count(mask_address);
     let rpc = LAST_TOTAL.load(Ordering::Relaxed);
     let first_use_exec_result = LAST_FIRST_USE_EXEC_RESULT.load(Ordering::Relaxed);
+    let first_use_signal_result = LAST_FIRST_USE_SIGNAL_RESULT.load(Ordering::Relaxed);
     let mask_result = LAST_MASK_RESULT.load(Ordering::Relaxed);
     let nested_uid = LAST_NESTED_UID.load(Ordering::Relaxed);
     println!(
-        "calls={CALLS} traps={traps} hooks={hooks} rpc={rpc} nested_traps={nested_traps} nested_hooks={nested_hooks} mask_traps={mask_traps} mask_hooks={mask_hooks} mask_result={mask_result} first_use_exec_result={first_use_exec_result} nested_uid={nested_uid} expected_uid={expected_uid}"
+        "calls={CALLS} traps={traps} hooks={hooks} rpc={rpc} nested_traps={nested_traps} nested_hooks={nested_hooks} mask_traps={mask_traps} mask_hooks={mask_hooks} mask_result={mask_result} first_use_exec_result={first_use_exec_result} first_use_signal_result={first_use_signal_result} nested_uid={nested_uid} expected_uid={expected_uid}"
     );
     assert_eq!(traps, 1);
     assert_eq!(hooks, CALLS);
@@ -228,6 +255,7 @@ fn guest(path: &Path) {
     assert_eq!(mask_hooks, CALLS + 1);
     assert_eq!(mask_result, -i64::from(libc::EPERM));
     assert_eq!(first_use_exec_result, -i64::from(libc::ENOTSUP));
+    assert_eq!(first_use_signal_result, -i64::from(libc::EPERM));
     assert_eq!(nested_uid, expected_uid);
 }
 
