@@ -105,6 +105,12 @@ pub(crate) struct LoadedStaticElf {
     // this side table only marks which fds must report stable, synthesized
     // metadata instead of the memfd's per-run inode.
     pub proc_files: std::collections::BTreeMap<i32, u64>,
+    // AUTONOMOUS-BOT-IMPLEMENTED: Preserve deterministic file-object identity.
+    // TODO-HUMAN-REVIEW(PR-136): Review descriptor object identity inheritance.
+    //
+    // Every mapped descriptor carries a stable synthetic inode. Duplicates and
+    // the two ends of one pipe share the source object's value.
+    pub fd_object_inodes: std::collections::BTreeMap<i32, u64>,
 }
 
 impl LoadedStaticElf {
@@ -165,6 +171,7 @@ impl LoadedStaticElf {
             closed_standard_fds: self.closed_standard_fds.clone(),
             children: std::collections::BTreeMap::new(),
             proc_files: self.proc_files.clone(),
+            fd_object_inodes: self.fd_object_inodes.clone(),
         })
     }
 
@@ -188,6 +195,11 @@ impl LoadedStaticElf {
             .collect();
         let proc_files: std::collections::BTreeMap<_, _> = previous
             .proc_files
+            .into_iter()
+            .filter(|(fd, _)| files.contains_key(fd))
+            .collect();
+        let fd_object_inodes: std::collections::BTreeMap<_, _> = previous
+            .fd_object_inodes
             .into_iter()
             .filter(|(fd, _)| files.contains_key(fd))
             .collect();
@@ -240,6 +252,7 @@ impl LoadedStaticElf {
         self.closed_standard_fds = closed_standard_fds;
         self.children = previous.children;
         self.proc_files = proc_files;
+        self.fd_object_inodes = fd_object_inodes;
     }
 }
 
@@ -446,6 +459,7 @@ fn load_executable(
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: std::collections::BTreeMap::new(),
         proc_files: std::collections::BTreeMap::new(),
+        fd_object_inodes: std::collections::BTreeMap::new(),
     })
 }
 

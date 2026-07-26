@@ -57,6 +57,7 @@ const ARCH_GET_FS: u64 = 0x1003;
 const ARCH_GET_GS: u64 = 0x1004;
 const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
 const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+const FALLOCATE_KNOWN_MODE_BITS: libc::c_int = 0x7f;
 const GUEST_SUPPLEMENTARY_GROUPS: &[libc::gid_t] = &[65_534];
 const LEGACY_OPEN_FLAGS: u64 = (libc::O_ACCMODE
     | libc::O_APPEND
@@ -1443,16 +1444,15 @@ fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 
 // TODO-HUMAN-REVIEW(PR-136): Review held-descriptor path truncate delegation.
 fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let length = args[1] as libc::off_t;
+    if length < 0 {
+        return negative_errno(libc::EINVAL);
+    }
     let path = match read_c_string(memory, args[0], 4096) {
         Ok(path) if !path.is_empty() => path,
         Ok(_) => return negative_errno(libc::ENOENT),
         Err(error) => return read_c_string_errno(error),
     };
-    let length = args[1] as libc::off_t;
-    if length < 0 {
-        return negative_errno(libc::EINVAL);
-    }
-
     let held_file;
     let target_fd = if let Some(guest_fd) = guest_fd_path(state, &path) {
         if state.proc_files.contains_key(&guest_fd) {
@@ -1461,6 +1461,14 @@ fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
         let Some(host_fd) = host_fd(state, guest_fd) else {
             return negative_errno(libc::ENOENT);
         };
+        if canonical_fd_path(host_fd).is_ok_and(|target| {
+            target
+                .as_os_str()
+                .as_bytes()
+                .starts_with(b"/memfd:reverie-kvm-virtual")
+        }) {
+            return negative_errno(libc::EINVAL);
+        }
         host_fd
     } else {
         held_file = match open_metadata_path(state, libc::AT_FDCWD, &path, false) {
@@ -1496,6 +1504,9 @@ fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let length = args[3] as libc::off_t;
     if offset < 0 || length <= 0 {
         return negative_errno(libc::EINVAL);
+    }
+    if mode & !FALLOCATE_KNOWN_MODE_BITS != 0 {
+        return negative_errno(libc::EOPNOTSUPP);
     }
     if let Err(error) = ensure_writable_fd(host_fd) {
         return error;
@@ -1769,6 +1780,11 @@ fn guest_fd_link_target(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Resul
     if let Some(&inode) = state.proc_files.get(&guest_fd)
         && let Some(path) = synthetic_proc_path_for_inode(inode)
     {
+        if let Some(suffix) = path.strip_prefix(b"/proc/self/") {
+            let mut numeric = format!("/proc/{}/", state.pid).into_bytes();
+            numeric.extend_from_slice(suffix);
+            return Ok(numeric);
+        }
         return Ok(path.to_vec());
     }
     let target = canonical_fd_path(host_fd)?;
@@ -1815,6 +1831,7 @@ fn open_guest_fd_path(
     }
     let source_alias = output_alias(state, guest_fd);
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
+    let source_object_inode = synthetic_guest_fd_object_inode(state, guest_fd);
 
     // Opening a proc-fd magic link creates a fresh open file description. A
     // descriptor duplication would incorrectly share the source offset and
@@ -1841,6 +1858,11 @@ fn open_guest_fd_path(
     // SAFETY: openat returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(reopened as RawFd) };
     let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
+    if new_fd >= 0 {
+        state
+            .fd_object_inodes
+            .insert(new_fd as libc::c_int, source_object_inode);
+    }
     if new_fd >= 0
         && let Some(inode) = source_proc_inode
     {
@@ -1990,6 +2012,7 @@ fn set_output_alias(state: &mut LoadedStaticElf, fd: libc::c_int, alias: Option<
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-136): Review initial descriptor-object identity allocation.
 fn insert_file_with_flags(
     state: &mut LoadedStaticElf,
     file: std::fs::File,
@@ -2002,6 +2025,9 @@ fn insert_file_with_flags(
         return negative_errno(libc::EMFILE);
     };
     state.files.insert(fd, file);
+    state
+        .fd_object_inodes
+        .insert(fd, synthetic_guest_fd_inode(fd, false));
     if close_on_exec {
         state.cloexec_fds.insert(fd);
     } else {
@@ -2013,6 +2039,7 @@ fn insert_file_with_flags(
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Model fcntl descriptor duplication in the guest table.
 // TODO-HUMAN-REVIEW(#91): Review minimum/error precedence and standard-fd ownership.
+// TODO-HUMAN-REVIEW(PR-136): Review fcntl duplicate object identity propagation.
 fn duplicate_fd_at_or_above(
     state: &mut LoadedStaticElf,
     old_host_fd: RawFd,
@@ -2020,6 +2047,7 @@ fn duplicate_fd_at_or_above(
     close_on_exec: bool,
     output_alias: Option<OutputAlias>,
     source_proc_inode: Option<u64>,
+    source_object_inode: u64,
 ) -> i64 {
     let minimum = raw_minimum as libc::c_int;
     if !(0..GUEST_NOFILE_LIMIT).contains(&minimum) {
@@ -2040,6 +2068,7 @@ fn duplicate_fd_at_or_above(
     // SAFETY: fcntl returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
     state.files.insert(fd, file);
+    state.fd_object_inodes.insert(fd, source_object_inode);
     if close_on_exec {
         state.cloexec_fds.insert(fd);
     } else {
@@ -2077,6 +2106,7 @@ fn duplicate_fd(
     let Some(old_host_fd) = host_fd(state, old_fd) else {
         return negative_errno(libc::EBADF);
     };
+    let source_object_inode = synthetic_guest_fd_object_inode(state, old_fd);
     let close_on_exec = is_dup3 && flags & libc::O_CLOEXEC != 0;
 
     let new_fd = match raw_new_fd {
@@ -2107,6 +2137,7 @@ fn duplicate_fd(
     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
     if let Some(new_fd) = new_fd {
         state.files.insert(new_fd, file);
+        state.fd_object_inodes.insert(new_fd, source_object_inode);
         if close_on_exec {
             state.cloexec_fds.insert(new_fd);
         } else {
@@ -2126,6 +2157,11 @@ fn duplicate_fd(
         i64::from(new_fd)
     } else {
         let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
+        if new_fd >= 0 {
+            state
+                .fd_object_inodes
+                .insert(new_fd as libc::c_int, source_object_inode);
+        }
         if new_fd >= 0
             && let Some(inode) = source_proc_inode
         {
@@ -2169,18 +2205,25 @@ fn pipe2(
     let write_fd = insert_file_with_flags(state, write_end, close_on_exec, None);
     if write_fd < 0 {
         state.files.remove(&(read_fd as libc::c_int));
+        state.fd_object_inodes.remove(&(read_fd as libc::c_int));
         state.cloexec_fds.remove(&(read_fd as libc::c_int));
         return write_fd;
     }
 
     let read_fd = read_fd as libc::c_int;
     let write_fd = write_fd as libc::c_int;
+    let object_inode = synthetic_guest_fd_object_inode(state, read_fd);
+    state.fd_object_inodes.insert(read_fd, object_inode);
+    state.fd_object_inodes.insert(write_fd, object_inode);
+
     let mut bytes = [0; std::mem::size_of::<[libc::c_int; 2]>()];
     bytes[..std::mem::size_of::<libc::c_int>()].copy_from_slice(&read_fd.to_ne_bytes());
     bytes[std::mem::size_of::<libc::c_int>()..].copy_from_slice(&write_fd.to_ne_bytes());
     if memory.write(address, &bytes).is_err() {
         state.files.remove(&read_fd);
         state.files.remove(&write_fd);
+        state.fd_object_inodes.remove(&read_fd);
+        state.fd_object_inodes.remove(&write_fd);
         state.cloexec_fds.remove(&read_fd);
         state.cloexec_fds.remove(&write_fd);
         return negative_errno(libc::EFAULT);
@@ -3814,35 +3857,13 @@ fn synthetic_guest_fd_inode(guest_fd: libc::c_int, symlink: bool) -> u64 {
     0x2000_0000 + (guest_fd as u64 * 2) + u64::from(symlink)
 }
 
-fn raw_fd_identity(fd: RawFd) -> Option<(libc::dev_t, libc::ino_t, libc::mode_t)> {
-    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
-    // SAFETY: stat is writable and callers supply a live mapped descriptor.
-    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } != 0 {
-        return None;
-    }
-    // SAFETY: fstat initialized stat on success.
-    let stat = unsafe { stat.assume_init() };
-    Some((stat.st_dev, stat.st_ino, stat.st_mode & libc::S_IFMT))
-}
-
 // TODO-HUMAN-REVIEW(PR-136): Review deterministic open-file object grouping.
 fn synthetic_guest_fd_object_inode(state: &LoadedStaticElf, guest_fd: libc::c_int) -> u64 {
-    let Some(target_fd) = host_fd(state, guest_fd) else {
-        return synthetic_guest_fd_inode(guest_fd, false);
-    };
-    let Some(target_identity) = raw_fd_identity(target_fd) else {
-        return synthetic_guest_fd_inode(guest_fd, false);
-    };
-    let representative = (0..=libc::STDERR_FILENO)
-        .chain(state.files.keys().copied())
-        .filter(|candidate| {
-            host_fd(state, *candidate)
-                .and_then(raw_fd_identity)
-                .is_some_and(|identity| identity == target_identity)
-        })
-        .min()
-        .unwrap_or(guest_fd);
-    synthetic_guest_fd_inode(representative, false)
+    state
+        .fd_object_inodes
+        .get(&guest_fd)
+        .copied()
+        .unwrap_or_else(|| synthetic_guest_fd_inode(guest_fd, false))
 }
 
 fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: &mut libc::stat) {
@@ -3976,6 +3997,7 @@ fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
+    let source_object_inode = synthetic_guest_fd_object_inode(state, guest_fd);
     match args[1] as libc::c_int {
         libc::F_DUPFD => duplicate_fd_at_or_above(
             state,
@@ -3984,6 +4006,7 @@ fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
             false,
             source_alias,
             source_proc_inode,
+            source_object_inode,
         ),
         libc::F_DUPFD_CLOEXEC => duplicate_fd_at_or_above(
             state,
@@ -3992,6 +4015,7 @@ fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
             true,
             source_alias,
             source_proc_inode,
+            source_object_inode,
         ),
         libc::F_GETFL => match fd_status_flags(host_fd) {
             Ok(flags) => flags as i64,
@@ -4063,6 +4087,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
     if state.files.remove(&fd).is_some() {
         state.cloexec_fds.remove(&fd);
         state.proc_files.remove(&fd);
+        state.fd_object_inodes.remove(&fd);
         set_output_alias(state, fd, None);
         return 0;
     }
@@ -4072,6 +4097,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         }
         state.closed_standard_fds.insert(fd);
         state.cloexec_fds.remove(&fd);
+        state.fd_object_inodes.remove(&fd);
         set_output_alias(state, fd, None);
         return 0;
     }
@@ -5532,6 +5558,7 @@ mod tests {
             closed_standard_fds: BTreeSet::new(),
             children: BTreeMap::new(),
             proc_files: BTreeMap::new(),
+            fd_object_inodes: BTreeMap::new(),
         }
     }
 
@@ -5991,6 +6018,27 @@ mod tests {
             let mut byte = [0];
             memory.read(0x200, &mut byte).unwrap();
             assert_eq!(byte[0], first_byte);
+            if path == "/dev/urandom" {
+                write_c_string(&mut memory, 0x100, &format!("/proc/self/fd/{fd}"));
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_truncate,
+                        [0x100, 0, 0, 0, 0, 0],
+                    ),
+                    negative_errno(libc::EINVAL)
+                );
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_read,
+                        [fd as u64, 0x200, 1, 0, 0, 0],
+                    ),
+                    1
+                );
+            }
             assert_eq!(
                 syscall_result(
                     &mut memory,
@@ -6910,10 +6958,10 @@ mod tests {
             libc::SYS_readlink,
             [PATH, OUTPUT, 4096, 0, 0, 0],
         );
-        assert_eq!(count, b"/proc/self/status".len() as i64);
+        assert_eq!(count, b"/proc/1/status".len() as i64);
         let mut actual = vec![0; count as usize];
         memory.read(OUTPUT, &mut actual).unwrap();
-        assert_eq!(actual, b"/proc/self/status");
+        assert_eq!(actual, b"/proc/1/status");
         assert_eq!(close(&mut state, proc_fd as u64), 0);
 
         write_c_string(&mut memory, PATH, "/proc/self/fd/99");
@@ -6981,6 +7029,36 @@ mod tests {
                 .all(|target| target == stable_pipe.as_bytes())
         );
         assert!(inodes.iter().all(|inode| *inode == inodes[0]));
+
+        let stable_inode = inodes[0];
+        assert_eq!(close(&mut state, pipe_fds[0] as u64), 0);
+        for fd in [pipe_fds[1], duplicate as libc::c_int] {
+            write_c_string(&mut memory, PATH, &format!("/proc/self/fd/{fd}"));
+            let count = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readlink,
+                [PATH, OUTPUT, 4096, 0, 0, 0],
+            );
+            let mut target = vec![0; count as usize];
+            memory.read(OUTPUT, &mut target).unwrap();
+            assert_eq!(target, stable_pipe.as_bytes());
+
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_newfstatat,
+                    [libc::AT_FDCWD as u64, PATH, STAT, 0, 0, 0],
+                ),
+                0
+            );
+            let stat: libc::stat = read_struct(&memory, STAT);
+            assert_eq!(
+                stat.st_ino, stable_inode,
+                "closing the first pipe fd must not change surviving identity"
+            );
+        }
     }
 
     #[test]
@@ -8516,7 +8594,38 @@ mod tests {
             negative_errno(libc::EINVAL),
             "range validation precedes writable-access validation"
         );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fallocate,
+                [9, 1_u64 << 30, 0, 1, 0, 0],
+            ),
+            negative_errno(libc::EOPNOTSUPP),
+            "unknown mode validation precedes writable-access validation"
+        );
         state.files.remove(&9);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_truncate,
+                [u64::MAX, u64::MAX, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL),
+            "negative length validation precedes path access"
+        );
+        write_c_string(&mut memory, PATH_ADDRESS, "");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_truncate,
+                [PATH_ADDRESS, u64::MAX, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
 
         let fifo = root.0.join("fifo");
         let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
