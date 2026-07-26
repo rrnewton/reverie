@@ -4625,13 +4625,10 @@ fn validate_range(memory: &GuestMemory, address: u64, length: u64) -> i64 {
 fn munlock_guest_range(memory: &GuestMemory, address: u64, length: u64) -> i64 {
     let page_start = address & !(PAGE_SIZE - 1);
     let page_offset = address - page_start;
-    let Some(page_length) = length
-        .checked_add(page_offset)
-        .and_then(|length| align_up(length, PAGE_SIZE))
-    else {
-        return negative_errno(libc::EINVAL);
-    };
-    if page_start.checked_add(page_length).is_none() {
+    let page_length =
+        length.wrapping_add(page_offset).wrapping_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let page_end = page_start.wrapping_add(page_length);
+    if page_end < page_start {
         return negative_errno(libc::EINVAL);
     }
     if page_length != 0 && !range_is_valid(memory, page_start, page_length) {
@@ -10757,6 +10754,24 @@ mod tests {
                 [5 * PAGE_SIZE - 1, 2, 0, 0, 0, 0],
             ),
             negative_errno(libc::ENOMEM)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munlock,
+                [1, u64::MAX, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munlock,
+                [0, u64::MAX, 0, 0, 0, 0],
+            ),
+            0
         );
         assert_eq!(
             syscall_result(
