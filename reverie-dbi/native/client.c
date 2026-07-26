@@ -8,6 +8,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <linux/sched.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdatomic.h>
@@ -41,6 +42,9 @@ typedef struct {
   uint64_t observed_syscalls;
   uint64_t rewritten_syscalls;
   void *runtime_state;
+  uint64_t pending_thread_clone;
+  uint64_t thread_clone_flags;
+  uint64_t thread_clone_ctid;
 } prototype_counters_t;
 
 typedef struct {
@@ -119,7 +123,16 @@ static void reverie_dbi_emit(const char *buf, size_t len) {
   dr_write_file(diagnostic_file, buf, len);
 }
 
-extern void reverie_dbi_runtime_thread_init(prototype_counters_t *counters);
+extern int32_t reverie_dbi_runtime_thread_init(
+    prototype_counters_t *counters, void *context, int32_t tid, int32_t pid,
+    uint64_t branches, int32_t defer_runtime, syscall_invoker_t invoke_syscall,
+    register_reader_t read_registers);
+extern int32_t reverie_dbi_runtime_thread_created(
+    prototype_counters_t *counters, void *context, int32_t parent_tid,
+    int32_t pid, uint64_t branches, int32_t child_tid, uint64_t child_tid_addr,
+    uint64_t flags, syscall_invoker_t invoke_syscall,
+    register_reader_t read_registers);
+
 extern void reverie_dbi_runtime_thread_exit(prototype_counters_t *counters);
 extern uint64_t reverie_dbi_runtime_image_init(void);
 extern void reverie_dbi_runtime_exec_failed(prototype_counters_t *counters,
@@ -141,6 +154,7 @@ extern void reverie_dbi_runtime_totals(uint64_t *branches, uint64_t *syscalls,
 
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
+static _Atomic uint64_t pending_thread_inits;
 static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
 static _Atomic uint64_t image_generation;
 static int thread_state_index;
@@ -860,6 +874,27 @@ static bool is_exec_syscall(int sysnum) {
       ;
 }
 
+static bool thread_clone_metadata(void *drcontext, int sysnum, uint64_t *flags,
+                                  uint64_t *child_tid_addr) {
+  if (sysnum == SYS_clone) {
+    *flags = (uint64_t)dr_syscall_get_param(drcontext, 0);
+    *child_tid_addr = (uint64_t)dr_syscall_get_param(drcontext, 3);
+    return (*flags & CLONE_THREAD) != 0;
+  }
+#ifdef SYS_clone3
+  uint64_t clone3_args[4];
+  if (sysnum == SYS_clone3 &&
+      read_app((const void *)dr_syscall_get_param(drcontext, 0), clone3_args,
+               sizeof(clone3_args)) &&
+      (clone3_args[0] & CLONE_THREAD) != 0) {
+    *flags = clone3_args[0];
+    *child_tid_addr = clone3_args[2];
+    return true;
+  }
+#endif
+  return false;
+}
+
 static void zero_wait_rusage(void *address) {
   if (address != NULL) {
     struct rusage usage = {0};
@@ -873,12 +908,33 @@ static void post_syscall(void *drcontext, int sysnum) {
   if (has_copied_runtime())
     return;
 
+  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
+      drcontext, thread_state_index);
+  DR_ASSERT(counters != NULL);
   ptr_int_t syscall_result = (ptr_int_t)dr_syscall_get_result(drcontext);
+  if (counters->pending_thread_clone != 0) {
+    if (syscall_result < 0) {
+      atomic_fetch_sub_explicit(&pending_thread_inits, 1, memory_order_release);
+    } else {
+      int32_t registration = reverie_dbi_runtime_thread_created(
+          counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
+          (int32_t)dr_get_process_id(),
+          atomic_load_explicit(&branch_count, memory_order_relaxed),
+          (int32_t)syscall_result, counters->thread_clone_ctid,
+          counters->thread_clone_flags, invoke_syscall, read_registers);
+      if (registration < 0) {
+        dr_fprintf(diagnostic_file,
+                   "reverie-dbi: child thread registration failed\n");
+        exit_runtime_tree(101);
+        return;
+      }
+    }
+    counters->pending_thread_clone = 0;
+    while (atomic_load_explicit(&pending_thread_inits, memory_order_acquire) !=
+           0)
+      dr_sleep(1);
+  }
   if (is_exec_syscall(sysnum)) {
-    prototype_counters_t *counters =
-        (prototype_counters_t *)drmgr_get_tls_field(drcontext,
-                                                    thread_state_index);
-    DR_ASSERT(counters != NULL);
     reverie_dbi_runtime_exec_failed(counters, (int32_t)dr_get_process_id());
     return;
   }
@@ -975,6 +1031,16 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   DR_ASSERT(counters != NULL);
   for (i = 0; i != 6; ++i)
     args[i] = (uint64_t)dr_syscall_get_param(drcontext, i);
+  uint64_t clone_flags = 0;
+  uint64_t clone_ctid = 0;
+  if (thread_clone_metadata(drcontext, sysnum, &clone_flags, &clone_ctid)) {
+    DR_ASSERT(counters->pending_thread_clone == 0);
+    counters->pending_thread_clone = 1;
+    counters->thread_clone_flags = clone_flags;
+    counters->thread_clone_ctid = clone_ctid;
+    atomic_fetch_add_explicit(&pending_thread_inits, 1, memory_order_release);
+  }
+
   if (syscall_reads_stdin(drcontext, sysnum, args))
     atomic_fetch_add_explicit(&stdin_read_count, 1, memory_order_relaxed);
 
@@ -985,6 +1051,11 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       (int64_t)sysnum, args,
       atomic_load_explicit(&branch_count, memory_order_relaxed), &result,
       invoke_syscall, read_registers, read_memory, reverie_dbi_emit);
+  if (action != 0 && counters->pending_thread_clone != 0) {
+    counters->pending_thread_clone = 0;
+    atomic_fetch_sub_explicit(&pending_thread_inits, 1, memory_order_release);
+  }
+
   if (action < 0) {
     exit_runtime_tree(101);
     return false;
@@ -1013,8 +1084,27 @@ static void thread_init(void *drcontext) {
   prototype_counters_t *counters =
       (prototype_counters_t *)dr_thread_alloc(drcontext, sizeof(*counters));
   DR_ASSERT(counters != NULL);
-  reverie_dbi_runtime_thread_init(counters);
+  memset(counters, 0, sizeof(*counters));
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
+
+  int32_t defer_runtime =
+      has_copied_runtime() || !reverie_dbi_runtime_ready(atomic_load_explicit(
+                                  &image_generation, memory_order_acquire));
+  int32_t init_result = reverie_dbi_runtime_thread_init(
+      counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
+      (int32_t)dr_get_process_id(),
+      atomic_load_explicit(&branch_count, memory_order_relaxed), defer_runtime,
+      invoke_syscall, read_registers);
+  if (!defer_runtime) {
+    uint64_t pending = atomic_fetch_sub_explicit(&pending_thread_inits, 1,
+                                                 memory_order_release);
+    DR_ASSERT(pending > 0);
+  }
+  if (init_result < 0) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbi: runtime thread initialization failed\n");
+    exit_runtime_tree(101);
+  }
 }
 
 static void thread_exit(void *drcontext) {
