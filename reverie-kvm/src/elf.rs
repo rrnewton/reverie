@@ -370,13 +370,16 @@ fn load_executable(
         (main_entry, 0, main_end)
     };
 
-    copy_program_headers(memory, image, &elf)?;
     let program_headers_address = elf
         .program_headers
         .iter()
         .find(|header| header.p_type == goblin::elf::program_header::PT_PHDR)
         .and_then(|header| main_bias.checked_add(header.p_vaddr))
         .unwrap_or(PROGRAM_HEADERS_ADDRESS);
+    copy_program_headers(memory, image, &elf)?;
+    if program_headers_address == PROGRAM_HEADERS_ADDRESS {
+        memory.map_user_range(PROGRAM_HEADERS_ADDRESS, PAGE_SIZE, false)?;
+    }
     let (stack_pointer, auxv) = build_initial_stack(
         memory,
         &elf,
@@ -668,7 +671,7 @@ fn load_segments(
         let zero_start = segment_start + header.p_filesz;
         let zero_len = usize::try_from(header.p_memsz - header.p_filesz)
             .map_err(|_| Error::UnsupportedElf("PT_LOAD memsz is too large".to_string()))?;
-        memory.zero(zero_start, zero_len)?;
+        memory.zero_raw(zero_start, zero_len)?;
         let mapped_start = segment_start & !(PAGE_SIZE - 1);
         let mapped_end = align_up(segment_end, PAGE_SIZE)?;
         memory.map_user_range(mapped_start, mapped_end - mapped_start, false)?;

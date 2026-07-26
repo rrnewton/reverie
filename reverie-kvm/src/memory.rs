@@ -151,6 +151,7 @@ impl GuestMemory {
         access.pages.clear();
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
     pub(crate) fn enable_user_access(&self) {
         self.mapping
             .user_access
@@ -159,6 +160,7 @@ impl GuestMemory {
             .enabled = true;
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
     pub(crate) fn map_user_range(
         &self,
         guest_address: u64,
@@ -184,6 +186,7 @@ impl GuestMemory {
         Ok(())
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
     pub(crate) fn unmap_user_range(&self, guest_address: u64, length: u64) -> Result<()> {
         let Some((first_page, last_page)) = self.checked_page_range(guest_address, length)? else {
             return Ok(());
@@ -199,6 +202,7 @@ impl GuestMemory {
         Ok(())
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
     pub(crate) fn user_range_is_mapped(&self, guest_address: u64, length: u64) -> bool {
         let Ok(Some((first_page, last_page))) = self.checked_page_range(guest_address, length)
         else {
@@ -212,6 +216,7 @@ impl GuestMemory {
         (first_page..=last_page).all(|page| access.pages.contains_key(&page))
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review the host-side KVM user mapping API.
     pub(crate) fn remap_user_range(
         &self,
         old_address: u64,
@@ -259,6 +264,7 @@ impl GuestMemory {
     }
 
     /// Copies bytes from guest memory into a host buffer.
+    // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn read(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
         self.checked_offset(guest_address, destination.len())?;
         if self.user_accessible_prefix(guest_address, destination.len())? != destination.len() {
@@ -270,6 +276,7 @@ impl GuestMemory {
         self.read_raw(guest_address, destination)
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
     pub(crate) fn read_raw(&self, guest_address: u64, destination: &mut [u8]) -> Result<()> {
         let offset = self.checked_offset(guest_address, destination.len())?;
         let _guard = self
@@ -290,6 +297,7 @@ impl GuestMemory {
     }
 
     /// Copies bytes from a host slice into guest memory.
+    // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn write(&mut self, guest_address: u64, source: &[u8]) -> Result<()> {
         self.checked_offset(guest_address, source.len())?;
         if self.user_accessible_prefix(guest_address, source.len())? != source.len() {
@@ -301,6 +309,7 @@ impl GuestMemory {
         self.write_raw(guest_address, source)
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
     pub(crate) fn write_raw(&self, guest_address: u64, source: &[u8]) -> Result<()> {
         let offset = self.checked_offset(guest_address, source.len())?;
         let _guard = self
@@ -320,7 +329,20 @@ impl GuestMemory {
         Ok(())
     }
     /// Zeros a guest-physical address range.
+    // TODO-HUMAN-REVIEW(PR-132): Review user-map enforcement on this public API.
     pub fn zero(&mut self, guest_address: u64, length: usize) -> Result<()> {
+        self.checked_offset(guest_address, length)?;
+        if self.user_accessible_prefix(guest_address, length)? != length {
+            return Err(Error::GuestMemoryAccessDenied {
+                address: guest_address,
+                length,
+            });
+        }
+        self.zero_raw(guest_address, length)
+    }
+
+    // TODO-HUMAN-REVIEW(PR-132): Review internal copies that bypass the user map.
+    pub(crate) fn zero_raw(&self, guest_address: u64, length: usize) -> Result<()> {
         let offset = self.checked_offset(guest_address, length)?;
         let _guard = self
             .mapping
@@ -370,7 +392,12 @@ impl GuestMemory {
         Ok(Some((first_page, last_page)))
     }
 
-    fn user_accessible_prefix(&self, guest_address: u64, length: usize) -> Result<usize> {
+    // TODO-HUMAN-REVIEW(PR-132): Review partial user-range validation.
+    pub(crate) fn user_accessible_prefix(
+        &self,
+        guest_address: u64,
+        length: usize,
+    ) -> Result<usize> {
         if length == 0 {
             return Ok(0);
         }

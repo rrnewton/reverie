@@ -8,7 +8,6 @@
 
 use std::ffi::CStr;
 use std::ffi::CString;
-use std::io::Read;
 use std::io::Write;
 use std::os::fd::AsRawFd;
 use std::os::fd::FromRawFd;
@@ -374,6 +373,8 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_getpid as u64 {
         i64::from(state.pid)
     } else if number == libc::SYS_gettid as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-132): Review distinct KVM thread IDs.
         i64::from(state.tid)
     } else if number == libc::SYS_getppid as u64 {
         i64::from(state.ppid)
@@ -887,10 +888,12 @@ impl ElfExecutor {
         (self.state.fs_base, self.state.gs_base)
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review cooperative KVM thread context access.
     pub(crate) fn thread_id(&self) -> i32 {
         self.state.tid
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review cooperative KVM thread context updates.
     pub(crate) fn set_thread_context(&mut self, tid: i32, fs_base: u64, gs_base: u64) {
         self.state.tid = tid;
         self.state.fs_base = fs_base;
@@ -907,10 +910,12 @@ impl ElfExecutor {
         self.exit_code.take()
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review KVM thread-group exit propagation.
     pub(crate) fn take_exit_group(&mut self) -> bool {
         std::mem::take(&mut self.exit_group)
     }
 
+    // TODO-HUMAN-REVIEW(PR-132): Review KVM thread-group exit propagation.
     pub(crate) fn set_exit(&mut self, code: i32, group: bool) {
         self.exit_code = Some(code);
         self.exit_group = group;
@@ -1370,8 +1375,14 @@ fn host_read(memory: &mut GuestMemory, fd: RawFd, address: u64, length: usize) -
     if !range_is_valid(memory, address, length as u64) {
         return negative_errno(libc::EFAULT);
     }
-    let mut bytes = vec![0; length];
-    // SAFETY: bytes is writable for length bytes and fd is a live host descriptor.
+    let Ok(writable) = memory.user_accessible_prefix(address, length) else {
+        return negative_errno(libc::EFAULT);
+    };
+    if writable == 0 && length != 0 {
+        return negative_errno(libc::EFAULT);
+    }
+    let mut bytes = vec![0; writable];
+    // SAFETY: bytes is writable for its full length and fd is a live host descriptor.
     let count = unsafe { libc::read(fd, bytes.as_mut_ptr().cast::<libc::c_void>(), bytes.len()) };
     if count < 0 {
         return io_error(std::io::Error::last_os_error());
@@ -1424,19 +1435,7 @@ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     if requested_length == 0 {
         return 0;
     }
-    let mut bytes = vec![0; length];
-    match state
-        .files
-        .get_mut(&fd)
-        .expect("owned descriptor disappeared")
-        .read(&mut bytes)
-    {
-        Ok(count) => match memory.write(args[1], &bytes[..count]) {
-            Ok(()) => count as i64,
-            Err(_) => negative_errno(libc::EFAULT),
-        },
-        Err(error) => io_error(error),
-    }
+    host_read(memory, file.as_raw_fd(), args[1], length)
 }
 
 fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -1459,7 +1458,13 @@ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
     if !range_is_valid(memory, args[1], length as u64) {
         return negative_errno(libc::EFAULT);
     }
-    let mut bytes = vec![0; length];
+    let Ok(writable) = memory.user_accessible_prefix(args[1], length) else {
+        return negative_errno(libc::EFAULT);
+    };
+    if writable == 0 {
+        return negative_errno(libc::EFAULT);
+    }
+    let mut bytes = vec![0; writable];
     match file.read_at(&mut bytes, args[3]) {
         Ok(count) => match memory.write(args[1], &bytes[..count]) {
             Ok(()) => count as i64,
@@ -3854,7 +3859,7 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
-    let length = requested_length.min(MAX_HOST_IO);
+    let mut length = requested_length.min(MAX_HOST_IO);
     let Some(file) = state.files.get(&fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -3863,6 +3868,15 @@ fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     }
     if length >= 24 && !range_is_valid(memory, args[1], length as u64) {
         return negative_errno(libc::EFAULT);
+    }
+    if length >= 24 {
+        let Ok(writable) = memory.user_accessible_prefix(args[1], length) else {
+            return negative_errno(libc::EFAULT);
+        };
+        if writable < 24 {
+            return negative_errno(libc::EFAULT);
+        }
+        length = writable;
     }
     let mut bytes = vec![0; length];
     // SAFETY: file owns a live descriptor and bytes is writable for length bytes.
@@ -4137,7 +4151,7 @@ fn brk(memory: &mut GuestMemory, state: &mut LoadedStaticElf, requested: u64) ->
         let Ok(length) = usize::try_from(requested - previous) else {
             return state.program_break as i64;
         };
-        if memory.zero(previous, length).is_err()
+        if memory.zero_raw(previous, length).is_err()
             || memory
                 .map_user_range(previous, requested - previous, false)
                 .is_err()
@@ -4224,7 +4238,7 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         None
     };
 
-    if memory.zero(address, length).is_err() {
+    if memory.zero_raw(address, length).is_err() {
         return negative_errno(libc::ENOMEM);
     }
     if let Some(bytes) = file_bytes
@@ -4259,7 +4273,7 @@ fn munmap(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
     let Ok(length) = usize::try_from(length) else {
         return negative_errno(libc::EINVAL);
     };
-    match memory.zero(address, length) {
+    match memory.zero_raw(address, length) {
         Ok(()) => match memory.unmap_user_range(address, length as u64) {
             Ok(()) => 0,
             Err(_) => negative_errno(libc::EINVAL),
@@ -4319,7 +4333,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
             let Ok(length) = usize::try_from(old_length - new_length) else {
                 return negative_errno(libc::ENOMEM);
             };
-            if memory.zero(tail, length).is_err() {
+            if memory.zero_raw(tail, length).is_err() {
                 return negative_errno(libc::EFAULT);
             }
         }
@@ -4341,7 +4355,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
             let Ok(extension) = usize::try_from(new_length - old_length) else {
                 return negative_errno(libc::ENOMEM);
             };
-            if memory.zero(old_end, extension).is_err() {
+            if memory.zero_raw(old_end, extension).is_err() {
                 return negative_errno(libc::ENOMEM);
             }
             if memory
@@ -4386,9 +4400,9 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     };
     let mut bytes = vec![0; copy_length];
     if memory.read_raw(old_address, &mut bytes).is_err()
-        || memory.zero(destination, new_length_usize).is_err()
+        || memory.zero_raw(destination, new_length_usize).is_err()
         || memory.write_raw(destination, &bytes).is_err()
-        || memory.zero(old_address, old_length_usize).is_err()
+        || memory.zero_raw(old_address, old_length_usize).is_err()
         || memory
             .remap_user_range(old_address, old_length, destination, new_length)
             .is_err()
@@ -5340,13 +5354,25 @@ fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<CloneReq
     let Ok(size) = usize::try_from(size) else {
         return Err(negative_errno(libc::E2BIG));
     };
-    if !(REQUIRED_SIZE..=MAX_SIZE).contains(&size) {
+    if size < REQUIRED_SIZE {
         return Err(negative_errno(libc::EINVAL));
+    }
+    if size > PAGE_SIZE as usize {
+        return Err(negative_errno(libc::E2BIG));
     }
     let mut bytes = [0; MAX_SIZE];
     memory
-        .read(address, &mut bytes[..size])
+        .read(address, &mut bytes[..size.min(MAX_SIZE)])
         .map_err(|_| negative_errno(libc::EFAULT))?;
+    if size > MAX_SIZE {
+        let mut extension = vec![0; size - MAX_SIZE];
+        memory
+            .read(address + MAX_SIZE as u64, &mut extension)
+            .map_err(|_| negative_errno(libc::EFAULT))?;
+        if extension.iter().any(|byte| *byte != 0) {
+            return Err(negative_errno(libc::E2BIG));
+        }
+    }
     let field = |offset: usize| {
         u64::from_le_bytes(
             bytes[offset..offset + 8]
@@ -5362,6 +5388,9 @@ fn read_clone3(memory: &GuestMemory, address: u64, size: u64) -> Result<CloneReq
     let flags = field(0) | field(32);
     let stack = field(40);
     let stack_size = field(48);
+    if (stack == 0) != (stack_size == 0) {
+        return Err(negative_errno(libc::EINVAL));
+    }
     let child_stack = if stack == 0 {
         None
     } else {
@@ -7542,6 +7571,36 @@ mod tests {
     }
 
     #[test]
+    fn getdents64_does_not_advance_directory_on_guest_fault() {
+        let root = TestDir::new();
+        std::fs::write(root.0.join("entry"), b"x").unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, std::fs::File::open(&root.0).unwrap());
+        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, true).unwrap();
+        memory.enable_user_access();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getdents64,
+                [3, PAGE_SIZE, PAGE_SIZE, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getdents64,
+                [3, 0, PAGE_SIZE, 0, 0, 0],
+            ) > 0
+        );
+    }
+
+    #[test]
     fn descriptor_lifecycle_and_error_precedence_match_linux() {
         const PATH_ADDRESS: u64 = 0x100;
         const PAYLOAD_ADDRESS: u64 = 0x200;
@@ -8025,6 +8084,67 @@ mod tests {
         let mut delayed = [0; 2];
         memory.read(0x300, &mut delayed).unwrap();
         assert_eq!(&delayed, b"hi");
+    }
+
+    #[test]
+    fn read_limits_host_consumption_to_the_accessible_guest_prefix() {
+        let root = TestDir::new();
+        let path = root.0.join("input");
+        std::fs::write(&path, b"abcdefgh").unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, std::fs::File::open(&path).unwrap());
+        state.files.insert(4, std::fs::File::open(&path).unwrap());
+        let mut memory = GuestMemory::new(0, 2 * PAGE_SIZE as usize).unwrap();
+        memory.map_user_range(0, PAGE_SIZE, false).unwrap();
+        memory.map_user_range(PAGE_SIZE, PAGE_SIZE, true).unwrap();
+        memory.enable_user_access();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [3, PAGE_SIZE - 4, 8, 0, 0, 0],
+            ),
+            4
+        );
+        let mut first = [0; 4];
+        memory.read(PAGE_SIZE - 4, &mut first).unwrap();
+        assert_eq!(&first, b"abcd");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [3, 0x100, 4, 0, 0, 0],
+            ),
+            4
+        );
+        let mut second = [0; 4];
+        memory.read(0x100, &mut second).unwrap();
+        assert_eq!(&second, b"efgh");
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [4, PAGE_SIZE, 4, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [4, 0x200, 4, 0, 0, 0],
+            ),
+            4
+        );
+        let mut unconsumed = [0; 4];
+        memory.read(0x200, &mut unconsumed).unwrap();
+        assert_eq!(&unconsumed, b"abcd");
     }
 
     #[test]
@@ -9607,6 +9727,36 @@ mod tests {
             }
             _ => panic!("glibc pthread clone3 did not produce a thread action"),
         }
+    }
+
+    #[test]
+    fn clone3_validates_nonzero_extensions_and_paired_stack_fields() {
+        const CLONE3_ARGS: u64 = 0x200;
+
+        let root = TestDir::new();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut clone3 = [0_u8; 96];
+        clone3[95] = 1;
+        memory.write(CLONE3_ARGS, &clone3).unwrap();
+        let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let request = SyscallRequest::new(
+            libc::SYS_clone3 as u64,
+            [CLONE3_ARGS, clone3.len() as u64, 0, 0, 0, 0],
+        );
+        assert_eq!(
+            executor.execute_process_action(&request, &memory),
+            Some(negative_errno(libc::E2BIG))
+        );
+
+        clone3[95] = 0;
+        clone3[40..48].copy_from_slice(&0x1000_u64.to_le_bytes());
+        memory.write(CLONE3_ARGS, &clone3).unwrap();
+        let request = SyscallRequest::new(libc::SYS_clone3 as u64, [CLONE3_ARGS, 88, 0, 0, 0, 0]);
+        assert_eq!(
+            executor.execute_process_action(&request, &memory),
+            Some(negative_errno(libc::EINVAL))
+        );
+        assert!(executor.take_process_action().is_none());
     }
 
     #[test]

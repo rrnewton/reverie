@@ -241,9 +241,6 @@ impl KvmBackend {
             loaded.stack_pointer,
             self.hypercall_instruction,
         )?;
-        // TODO-HUMAN-REVIEW(PR-132): Review bootstrap visibility in the KVM user map.
-        self.memory
-            .map_user_range(PAGE_SIZE, BOOT_RESERVED_END - PAGE_SIZE, false)?;
         self.memory.enable_user_access();
         self.static_elf = Some(loaded);
         Ok(())
@@ -287,7 +284,7 @@ impl KvmBackend {
     ) -> Result<()> {
         let user_length = usize::try_from(self.memory.guest_end() - BOOT_RESERVED_END)
             .expect("guest memory length must fit usize");
-        self.memory.zero(BOOT_RESERVED_END, user_length)?;
+        self.memory.zero_raw(BOOT_RESERVED_END, user_length)?;
 
         let argv = argv.iter().map(String::as_str).collect::<Vec<_>>();
         let envp = envp.iter().map(String::as_str).collect::<Vec<_>>();
@@ -300,8 +297,6 @@ impl KvmBackend {
             loaded.stack_pointer,
             self.hypercall_instruction,
         )?;
-        self.memory
-            .map_user_range(PAGE_SIZE, BOOT_RESERVED_END - PAGE_SIZE, false)?;
         self.memory.enable_user_access();
         executor.replace_after_exec(loaded);
         Ok(())
