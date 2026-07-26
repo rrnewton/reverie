@@ -155,11 +155,11 @@ pub(crate) async fn run(
         }
         // TODO-HUMAN-REVIEW(PR-152): Review the exact chunky_print LiteInst host path.
         ToolKind::ChunkyPrint => {
-            let (output, global) = LiteinstBackend::run_with_output_and_preload_data::<
+            let (output, global) = LiteinstBackend::run_with_inherited_stdio_and_preload_data::<
                 chunky_print::ChunkyPrintLocal,
             >(command, (), preload, tool_data)
             .await?;
-            global.flush()?;
+            let _ = global.flush();
             Ok(RunOutput {
                 output,
                 counter_summary: None,
