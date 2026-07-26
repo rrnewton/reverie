@@ -58,6 +58,7 @@ typedef struct {
 #define VIRTUAL_ROOT_PID INT32_C(3)
 #define VIRTUAL_INIT_PID INT32_C(1)
 #define VIRTUAL_IDENTITY_FD 197
+#define CLIENT_THREAD_START_FAILURE_EXIT_CODE 125
 #define DBI_DIAGNOSTIC_FD 198
 #define VIRTUAL_IDENTITY_MAGIC UINT64_C(0x5245565049443031)
 #define MAX_VIRTUAL_IDENTITIES 8192
@@ -1870,9 +1871,14 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   if (thread_state_index == -1 || compat_gateway_index == -1)
     DR_ASSERT(false);
 
+  // TODO-HUMAN-REVIEW(PR-134): Review fail-fast native runtime bootstrap.
   if (!dr_create_client_thread(runtime_background_init,
-                               (void *)reverie_dbi_emit))
-    DR_ASSERT(false);
+                               (void *)reverie_dbi_emit)) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbi: failed to start background client thread\n");
+    dr_exit_process(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+    return;
+  }
   dr_fprintf(diagnostic_file,
              "reverie-dbi lifecycle: background thread created\n");
   drmgr_register_exit_event(event_exit);
