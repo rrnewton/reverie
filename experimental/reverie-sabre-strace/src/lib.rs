@@ -35,7 +35,7 @@ pub struct StraceTool {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-pending): Review exec argument decoding and envp redaction.
+// TODO-HUMAN-REVIEW(PR-155): Review exec argument decoding and envp redaction.
 fn display_exec_redacted<M: MemoryAccess>(syscall: &Syscall, memory: &M) -> Option<String> {
     match syscall {
         // AUTONOMOUS-BOT-IMPLEMENTED
