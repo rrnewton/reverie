@@ -395,6 +395,9 @@ fn execute_basic_syscall_with_output(
         || number == libc::SYS_getegid as u64
     {
         0
+    } else if number == libc::SYS_getresuid as u64 || number == libc::SYS_getresgid as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        get_fixed_root_ids(memory, args)
     } else if number == libc::SYS_setresuid as u64 || number == libc::SYS_setresgid as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         set_fixed_root_ids(&args[..3])
@@ -481,6 +484,13 @@ fn execute_basic_syscall_with_output(
         mremap(memory, state, args)
     } else if number == libc::SYS_mprotect as u64 || number == libc::SYS_madvise as u64 {
         validate_range(memory, args[0], args[1])
+    } else if number == libc::SYS_munlock as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        munlock_guest_range(memory, args[0], args[1])
+    } else if number == libc::SYS_munlockall as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-145): Review the deterministic no-op unlock-all model.
+        0
     } else if number == libc::SYS_mincore as u64 {
         mincore(memory, args)
     } else if number == libc::SYS_getcpu as u64 {
@@ -2633,6 +2643,24 @@ fn getgroups(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-145): Review fixed-root saved-ID output and fault ordering.
+fn get_fixed_root_ids(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
+    let id_size = std::mem::size_of::<libc::uid_t>() as u64;
+    if args[..3]
+        .iter()
+        .any(|address| !range_is_valid(memory, *address, id_size))
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    let root_id = libc::uid_t::from(0_u8).to_ne_bytes();
+    for address in &args[..3] {
+        memory
+            .write(*address, &root_id)
+            .expect("prevalidated saved-ID output must remain writable");
+    }
+    0
+}
+
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn set_fixed_root_ids(ids: &[u64]) -> i64 {
     if ids.iter().all(|id| matches!(*id as u32, 0 | u32::MAX)) {
@@ -4598,6 +4626,20 @@ fn validate_range(memory: &GuestMemory, address: u64, length: u64) -> i64 {
     } else {
         0
     }
+}
+
+// TODO-HUMAN-REVIEW(PR-145): Review flat guest-memory munlock validation semantics.
+fn munlock_guest_range(memory: &GuestMemory, address: u64, length: u64) -> i64 {
+    if length == 0 {
+        return 0;
+    }
+    if address.checked_add(length).is_none() {
+        return negative_errno(libc::EINVAL);
+    }
+    if !range_is_valid(memory, address, length) {
+        return negative_errno(libc::ENOMEM);
+    }
+    0
 }
 
 fn mincore(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
@@ -7861,6 +7903,51 @@ mod tests {
     }
 
     #[test]
+    fn saved_ids_are_fixed_root_and_validate_every_output() {
+        const REAL: u64 = 0x100;
+        const EFFECTIVE: u64 = 0x108;
+        const SAVED: u64 = 0x110;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        for syscall in [libc::SYS_getresuid, libc::SYS_getresgid] {
+            memory.write(REAL, &[0xa5; 4]).unwrap();
+            memory.write(EFFECTIVE, &[0xa5; 4]).unwrap();
+            memory.write(SAVED, &[0xa5; 4]).unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    syscall,
+                    [REAL, EFFECTIVE, SAVED, 0, 0, 0],
+                ),
+                0
+            );
+            assert_eq!(read_struct::<u32>(&memory, REAL), 0);
+            assert_eq!(read_struct::<u32>(&memory, EFFECTIVE), 0);
+            assert_eq!(read_struct::<u32>(&memory, SAVED), 0);
+
+            memory.write(REAL, &[0xa5; 4]).unwrap();
+            memory.write(EFFECTIVE, &[0xa5; 4]).unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    syscall,
+                    [REAL, EFFECTIVE, u64::MAX, 0, 0, 0],
+                ),
+                negative_errno(libc::EFAULT)
+            );
+            assert_eq!(read_guest_bytes::<4>(&memory, REAL).unwrap(), [0xa5; 4]);
+            assert_eq!(
+                read_guest_bytes::<4>(&memory, EFFECTIVE).unwrap(),
+                [0xa5; 4]
+            );
+        }
+    }
+
+    #[test]
     fn filesystem_round_trip_and_metadata_syscalls() {
         const PATH_ADDRESS: u64 = 0x100;
         const LINK_ADDRESS: u64 = 0x200;
@@ -10609,6 +10696,46 @@ mod tests {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, (5 * PAGE_SIZE) as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munlock,
+                [PAGE_SIZE + 1, PAGE_SIZE - 1, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munlock,
+                [PAGE_SIZE, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munlock,
+                [5 * PAGE_SIZE - 1, 2, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOMEM)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munlock,
+                [u64::MAX - 1, 4, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_munlockall, [u64::MAX; 6],),
+            0
+        );
         assert_eq!(
             syscall_result(
                 &mut memory,
