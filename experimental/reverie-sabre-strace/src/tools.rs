@@ -35,7 +35,7 @@ use super::StraceTool;
 pub(super) const TOOL_ENV: &str = "REVERIE_SABRE_TOOL";
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-pending): Review fork-inherited example-tool selection.
+// TODO-HUMAN-REVIEW(PR-158): Review fork-inherited example-tool selection.
 static SELECTED_TOOL: OnceLock<ToolKind> = OnceLock::new();
 
 /// Shared Reverie tool implementations available through the SaBRe runner.
