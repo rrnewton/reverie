@@ -522,6 +522,10 @@ static int64_t invoke_raw_syscall(uintptr_t context, int64_t sysnum,
                                            args[4], args[5]);
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-106): keep the identity memfd (fd 197) and diagnostic fd
+// (198) alive across close/fcntl(F_SETFD)/dup2/dup3 in copied children.
+// RESIDUAL: close_range is not intercepted and can still close the memfd.
 static bool preserve_internal_descriptors(uintptr_t context, int sysnum,
                                           const uint64_t *args,
                                           int64_t *result) {
@@ -547,6 +551,10 @@ static bool preserve_internal_descriptors(uintptr_t context, int sysnum,
   return false;
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-106): map virtual PID/TID args to host IDs for
+// PID-consuming syscalls. RESIDUAL: negative (process-group) targets such as
+// kill(-pgid)/wait4(-pgid) pass through untranslated; pgid/sid not yet modeled.
 static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   switch (sysnum) {
   case SYS_kill:
@@ -584,6 +592,10 @@ static int64_t unknown_identity_error(int sysnum) {
   return sysnum == SYS_wait4 || sysnum == SYS_waitid ? -ECHILD : -ESRCH;
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-106): map host PID/TID results back to virtual IDs.
+// RESIDUAL: getpgid/getsid results absent from the identity table (an untracked
+// host group/session leader) fall through to the raw host value and leak it.
 static int64_t virtualize_identity_result(prototype_counters_t *counters,
                                           int sysnum, int64_t result) {
   if (result <= 0)
@@ -1297,6 +1309,9 @@ static void zero_wait_rusage(void *address) {
   }
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-106): emulate getpid/getppid/gettid in copied children
+// from the shared virtual-identity map so forks never observe host PIDs.
 static bool emulate_identity_getter(prototype_counters_t *counters, int sysnum,
                                     int64_t *result) {
   int32_t mapped;
