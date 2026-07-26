@@ -158,6 +158,25 @@ fn exact_counter1_tool_reports_a_nonzero_total() {
 }
 
 #[test]
+fn exact_counter1_tool_does_not_reenter_the_guest_allocator() {
+    let awk = "/usr/bin/awk";
+    if !std::path::Path::new(awk).is_file() {
+        eprintln!("skipping: {awk} is unavailable");
+        return;
+    }
+
+    let output = run("counter1", &[], &[awk, "BEGIN { print 42 }"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"42\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.contains(" [counter tool] Total system calls in process tree: "),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn exact_counter2_tool_reports_process_and_thread_totals() {
     let output = run("counter2", &[], &["/bin/echo", "hello"]);
 
