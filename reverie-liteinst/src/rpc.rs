@@ -64,7 +64,7 @@ impl<T> Drop for SpinGuard<'_, T> {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review blocking trusted-gate RPC semantics.
+// TODO-HUMAN-REVIEW(PR-127): Review blocking trusted-gate RPC semantics.
 /// Blocking guest-side RPC handle backed by the shared preload wire protocol.
 pub struct CoordinatorRpc<G: GlobalTool> {
     client: SpinMutex<CoordinatorClient>,

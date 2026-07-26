@@ -105,7 +105,7 @@ impl CoordinatorClient {
         })
     }
 
-    // TODO-HUMAN-REVIEW(PR-pending): Review exposure for reserved guest FD protection.
+    // TODO-HUMAN-REVIEW(PR-127): Review exposure for reserved guest FD protection.
     /// Returns the coordinator socket descriptor owned by this client.
     pub fn raw_fd(&self) -> libc::c_int {
         self.stream.as_raw_fd()
@@ -134,7 +134,7 @@ impl CoordinatorClient {
         decode(&response_bytes)
     }
 
-    // TODO-HUMAN-REVIEW(PR-pending): Review trusted-gate coordinator RPC API.
+    // TODO-HUMAN-REVIEW(PR-127): Review trusted-gate coordinator RPC API.
     /// Send one request using only syscalls issued through the trusted gate.
     ///
     /// Use this after the seccomp filter is active; ordinary `Read`/`Write`

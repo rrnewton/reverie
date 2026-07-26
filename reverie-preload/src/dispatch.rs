@@ -71,7 +71,7 @@ impl SyscallEvent {
         self.result = Some(-i64::from(errno));
     }
 
-    // TODO-HUMAN-REVIEW(PR-pending): Review deferred post-SIGSYS control transfer.
+    // TODO-HUMAN-REVIEW(PR-127): Review deferred post-SIGSYS control transfer.
     /// Resume at `address` after the signal handler returns without changing RAX.
     ///
     /// Dynamic instrumentation backends use this to publish a replacement

@@ -395,7 +395,7 @@ fn mark_site_range_stale(start: u64, len: u64, replacement_end: u64) {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review executable mapping-generation tracking.
+// TODO-HUMAN-REVIEW(PR-127): Review executable mapping-generation tracking.
 fn observe_mapping_generation(event: &SyscallEvent) {
     if event.result < 0 {
         return;
@@ -665,7 +665,7 @@ unsafe extern "C" fn tool_trampoline() {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review process-global preload safety guards.
+// TODO-HUMAN-REVIEW(PR-127): Review process-global preload safety guards.
 fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
     let unsupported_control =
         // AUTONOMOUS-BOT-IMPLEMENTED

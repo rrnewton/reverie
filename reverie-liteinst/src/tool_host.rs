@@ -65,7 +65,7 @@ trait ToolHandler: Send + Sync {
 
 static HANDLER: std::sync::OnceLock<Box<dyn ToolHandler>> = std::sync::OnceLock::new();
 
-// TODO-HUMAN-REVIEW(PR-pending): Review generic in-guest Tool hosting.
+// TODO-HUMAN-REVIEW(PR-127): Review generic in-guest Tool hosting.
 /// Install a concrete Reverie tool in this guest and connect it to its coordinator.
 ///
 /// The caller is normally a tool-specific preload DSO. It must invoke this
@@ -302,7 +302,7 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for LiteinstGuest<'_, T> {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review injected process/signal safety policy.
+// TODO-HUMAN-REVIEW(PR-127): Review injected process/signal safety policy.
 fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED

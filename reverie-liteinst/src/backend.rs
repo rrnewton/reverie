@@ -19,7 +19,7 @@ pub const TOOL_PRELOAD_ENV: &str = "REVERIE_LITEINST_TOOL_PRELOAD";
 /// Environment variable passed to the guest with the coordinator socket path.
 pub const COORDINATOR_ENV: &str = "REVERIE_LITEINST_COORDINATOR";
 
-// TODO-HUMAN-REVIEW(PR-pending): Review LiteInst Backend lifecycle and preload contract.
+// TODO-HUMAN-REVIEW(PR-127): Review LiteInst Backend lifecycle and preload contract.
 /// Online LiteInst backend with a coordinator-owned `GlobalTool`.
 pub struct LiteinstBackend;
 

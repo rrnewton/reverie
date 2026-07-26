@@ -125,7 +125,7 @@ pub unsafe extern "C" fn reverie_liteinst_initialize() {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review public per-site instrumentation counters.
+// TODO-HUMAN-REVIEW(PR-127): Review public per-site instrumentation counters.
 /// Returns the number of SIGSYS deliveries observed at one syscall instruction.
 #[unsafe(no_mangle)]
 pub extern "C" fn reverie_liteinst_site_trap_count(address: u64) -> u64 {
