@@ -33,8 +33,6 @@ pub(crate) use strace::config;
 pub(crate) use strace::filter;
 pub(crate) use strace::global_state;
 
-const TOOL_ENV: &str = "REVERIE_LITEINST_EXAMPLE_TOOL";
-
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-139): Review the LiteInst example-tool selector.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
@@ -75,7 +73,7 @@ pub(crate) struct RunOutput {
 /// `filters` accepts strace syscall filters and must be empty for other tools.
 pub(crate) async fn run(
     kind: ToolKind,
-    mut command: Command,
+    command: Command,
     filters: Vec<String>,
     preload: PathBuf,
 ) -> Result<RunOutput, reverie::Error> {
@@ -94,12 +92,12 @@ pub(crate) async fn run(
         )
         .into());
     };
-    command.env(TOOL_ENV, kind.as_str());
+    let tool_data = kind.as_str().as_bytes().to_vec();
     match kind {
         ToolKind::Counter1 => {
-            let (output, global) = LiteinstBackend::run_with_output_and_preload::<
+            let (output, global) = LiteinstBackend::run_with_output_and_preload_data::<
                 counter1::CounterLocal,
-            >(command, (), preload)
+            >(command, (), preload, tool_data)
             .await?;
             Ok(RunOutput {
                 output,
@@ -107,10 +105,11 @@ pub(crate) async fn run(
             })
         }
         ToolKind::Strace => {
-            let (output, _) = LiteinstBackend::run_with_output_and_preload::<strace::Strace>(
+            let (output, _) = LiteinstBackend::run_with_output_and_preload_data::<strace::Strace>(
                 command,
                 strace::Config { filters },
                 preload,
+                tool_data,
             )
             .await?;
             Ok(RunOutput {
@@ -119,10 +118,11 @@ pub(crate) async fn run(
             })
         }
         ToolKind::Noop => {
-            let (output, _) = LiteinstBackend::run_with_output_and_preload::<noop::NoopTool>(
+            let (output, _) = LiteinstBackend::run_with_output_and_preload_data::<noop::NoopTool>(
                 command,
                 (),
                 preload,
+                tool_data,
             )
             .await?;
             Ok(RunOutput {

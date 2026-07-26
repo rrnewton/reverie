@@ -14,13 +14,9 @@
 
 use std::ffi::CStr;
 use std::ffi::OsStr;
-use std::ffi::OsString;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::ffi::OsStringExt;
 use std::path::Path;
-use std::path::PathBuf;
-use std::ptr;
 
 #[allow(dead_code)]
 #[path = "../counter1.rs"]
@@ -35,9 +31,6 @@ pub(crate) mod strace;
 pub(crate) use strace::config;
 pub(crate) use strace::filter;
 pub(crate) use strace::global_state;
-
-const TOOL_ENV: &CStr = c"REVERIE_LITEINST_EXAMPLE_TOOL";
-const COORDINATOR_ENV: &CStr = c"REVERIE_LITEINST_COORDINATOR";
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-139): Review the example-tool preload constructor and selector boundary.
@@ -78,56 +71,37 @@ unsafe fn loaded_as_preload() -> bool {
 unsafe extern "C" fn initialize(
     _argc: libc::c_int,
     _argv: *mut *mut libc::c_char,
-    environment: *mut *mut libc::c_char,
+    _environment: *mut *mut libc::c_char,
 ) {
     if !unsafe { loaded_as_preload() } {
         return;
     }
-    let Some(socket) = (unsafe { take_initial_environment(environment, COORDINATOR_ENV) }) else {
-        return;
+    let bootstrap = match unsafe { reverie_liteinst::take_preload_bootstrap() } {
+        Ok(Some(bootstrap)) => bootstrap,
+        Ok(None) => return,
+        Err(error) => fail(&format!("invalid preload bootstrap: {error}")),
     };
-    let Some(selected) = (unsafe { take_initial_environment(environment, TOOL_ENV) }) else {
-        fail("example tool selector is missing");
+    let selected = match String::from_utf8(bootstrap.tool_data) {
+        Ok(selected) => selected,
+        Err(_) => fail("example tool selector is not valid UTF-8"),
     };
+    let socket = bootstrap.coordinator;
 
-    let result = match selected.to_str() {
-        Some("counter1") => unsafe {
-            reverie_liteinst::install_tool::<counter1::CounterLocal>(PathBuf::from(&socket))
+    let result = match selected.as_str() {
+        "counter1" => unsafe {
+            reverie_liteinst::install_tool_from_bootstrap::<counter1::CounterLocal>(&socket)
         },
-        Some("strace") => unsafe {
-            reverie_liteinst::install_tool::<strace::Strace>(PathBuf::from(&socket))
+        "strace" => unsafe {
+            reverie_liteinst::install_tool_from_bootstrap::<strace::Strace>(&socket)
         },
-        Some("noop") => unsafe {
-            reverie_liteinst::install_tool::<noop::NoopTool>(PathBuf::from(&socket))
+        "noop" => unsafe {
+            reverie_liteinst::install_tool_from_bootstrap::<noop::NoopTool>(&socket)
         },
-        Some(other) => fail(&format!("unknown example tool {other:?}")),
-        None => fail("example tool selector is not valid UTF-8"),
+        other => fail(&format!("unknown example tool {other:?}")),
     };
     if let Err(error) = result {
         fail(&format!("tool initialization failed: {error}"));
     }
-}
-
-unsafe fn take_initial_environment(
-    environment: *mut *mut libc::c_char,
-    name: &CStr,
-) -> Option<OsString> {
-    let mut slot = environment;
-    while !unsafe { (*slot).is_null() } {
-        let entry = unsafe { CStr::from_ptr(*slot) };
-        let bytes = entry.to_bytes();
-        if let Some(value) = bytes
-            .strip_prefix(name.to_bytes())
-            .and_then(|suffix| suffix.strip_prefix(b"="))
-        {
-            let value = OsString::from_vec(value.to_vec());
-            let length = bytes.len();
-            unsafe { ptr::write_bytes(*slot, 0, length) };
-            return Some(value);
-        }
-        slot = unsafe { slot.add(1) };
-    }
-    None
 }
 
 fn fail(message: &str) -> ! {
