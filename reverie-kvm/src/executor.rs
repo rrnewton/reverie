@@ -265,11 +265,11 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_getcwd as u64 {
         getcwd(memory, state, args)
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(#PENDING): KVM guest working-directory changes.
+    // TODO-HUMAN-REVIEW(#113): KVM guest working-directory changes.
     } else if number == libc::SYS_chdir as u64 {
         chdir(memory, state, args)
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(#PENDING): KVM guest working-directory changes.
+    // TODO-HUMAN-REVIEW(#113): KVM guest working-directory changes.
     } else if number == libc::SYS_fchdir as u64 {
         fchdir(state, args)
     } else if number == libc::SYS_getdents64 as u64 {
@@ -2266,7 +2266,7 @@ fn dir_path_from_fd(fd: RawFd) -> Option<std::path::PathBuf> {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#PENDING): KVM guest working-directory changes.
+// TODO-HUMAN-REVIEW(#113): KVM guest working-directory changes.
 /// `chdir(path)`: retarget the guest's AT_FDCWD base and tracked cwd. The new
 /// directory is opened as an `O_PATH` handle (mirroring the launch descriptor in
 /// `elf.rs`), so subsequent relative path resolution in `host_dirfd_and_path`
@@ -2306,7 +2306,7 @@ fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#PENDING): KVM guest working-directory changes.
+// TODO-HUMAN-REVIEW(#113): KVM guest working-directory changes.
 /// `fchdir(fd)`: retarget the guest's AT_FDCWD base to an already-open directory
 /// descriptor. Used by tools such as `find` to restore the initial working
 /// directory after a traversal. Deterministic for the same reasons as `chdir`.
