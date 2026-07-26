@@ -75,7 +75,15 @@ fn non_executable_copy() -> PathBuf {
     let path =
         std::env::temp_dir().join(format!("reverie-kvm-non-executable-{}", std::process::id()));
     fs::copy("/bin/true", &path).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o401)).unwrap();
+    // Root may execute a regular file when any execute bit is set. Non-root
+    // uses 0401 to exercise owner-class selection despite the other bit.
+    // SAFETY: geteuid has no preconditions.
+    let mode = if unsafe { libc::geteuid() } == 0 {
+        0o000
+    } else {
+        0o401
+    };
+    fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
     path
 }
 
