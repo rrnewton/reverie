@@ -43,6 +43,7 @@ const GUEST_CAP_LAST_CAP: u64 = 40;
 const PROCESS_CLONE_TID_FLAGS: u64 = libc::CLONE_PARENT_SETTID as u64
     | libc::CLONE_CHILD_SETTID as u64
     | libc::CLONE_CHILD_CLEARTID as u64;
+// TODO-HUMAN-REVIEW(PR-92): Review clone3 signal-disposition reset semantics.
 // CLONE_CLEAR_SIGHAND (bit 32): reset the child's caught signal handlers to
 // SIG_DFL. glibc >= 2.36 `posix_spawn` sets this in its clone3 alongside
 // CLONE_VM|CLONE_VFORK, so modern `make`/`gcc` job spawning depends on it being
@@ -124,6 +125,8 @@ pub(crate) enum ProcessAction {
         parent_tid: Option<u64>,
         child_tid: Option<u64>,
         clear_child_tid: Option<u64>,
+        // TODO-HUMAN-REVIEW(PR-92): Review CLONE_CLEAR_SIGHAND child state.
+        clear_sighand: bool,
     },
     Exec {
         image: Vec<u8>,
@@ -139,6 +142,8 @@ pub(crate) fn is_process_syscall(number: u64) -> bool {
         || number == libc::SYS_clone3 as u64
         || number == libc::SYS_execve as u64
         || number == libc::SYS_execveat as u64
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-92): Review wait4 process-action classification.
         || number == libc::SYS_wait4 as u64
 }
 
@@ -185,22 +190,34 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_pipe2 as u64 {
         pipe2(memory, state, args[0], args[1])
     } else if number == libc::SYS_poll as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         poll(memory, state, args)
     } else if number == libc::SYS_epoll_create1 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         epoll_create1(state, args[0])
     } else if number == libc::SYS_epoll_ctl as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         epoll_ctl(memory, state, args)
-    } else if number == libc::SYS_epoll_wait as u64 || number == libc::SYS_epoll_pwait as u64 {
-        epoll_wait(memory, state, args)
+    } else if number == libc::SYS_epoll_wait as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        epoll_wait(memory, state, args, false)
+    } else if number == libc::SYS_epoll_pwait as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        epoll_wait(memory, state, args, true)
     } else if number == libc::SYS_eventfd as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         eventfd2(state, args[0], 0)
     } else if number == libc::SYS_eventfd2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         eventfd2(state, args[0], args[1])
     } else if number == libc::SYS_socket as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         socket(state, args)
     } else if number == libc::SYS_connect as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         connect(memory, state, args)
     } else if number == libc::SYS_ioctl as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         ioctl(state, args)
     } else if number == libc::SYS_dup as u64 {
         duplicate_fd(state, args[0], None, 0, false)
@@ -235,8 +252,10 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_access as u64 {
         access(memory, state, args)
     } else if number == libc::SYS_faccessat as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         access_at(memory, state, args[0] as libc::c_int, args[1], args[2], 0)
     } else if number == libc::SYS_faccessat2 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         access_at(
             memory,
             state,
@@ -336,8 +355,11 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_getppid as u64 {
         i64::from(state.ppid)
     } else if number == libc::SYS_getpgrp as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-92): Review fixed guest process-group identity.
         i64::from(state.pid)
     } else if number == libc::SYS_wait4 as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         wait4(memory, state, args)
     } else if number == libc::SYS_getuid as u64
         || number == libc::SYS_geteuid as u64
@@ -346,16 +368,21 @@ fn execute_basic_syscall_with_output(
     {
         0
     } else if number == libc::SYS_setresuid as u64 || number == libc::SYS_setresgid as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         set_fixed_root_ids(&args[..3])
     } else if number == libc::SYS_getgroups as u64 {
         getgroups(memory, args)
     } else if number == libc::SYS_flock as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         flock(state, args)
     } else if number == libc::SYS_fchown as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         fchown(state, args[0])
     } else if number == libc::SYS_chown as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         fchownat(memory, state, libc::AT_FDCWD, args[0], 0)
     } else if number == libc::SYS_lchown as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         fchownat(
             memory,
             state,
@@ -364,6 +391,7 @@ fn execute_basic_syscall_with_output(
             libc::AT_SYMLINK_NOFOLLOW,
         )
     } else if number == libc::SYS_fchownat as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         fchownat(
             memory,
             state,
@@ -372,10 +400,13 @@ fn execute_basic_syscall_with_output(
             args[4] as libc::c_int,
         )
     } else if number == libc::SYS_listxattr as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         path_xattr_list(state, memory, args[0], false)
     } else if number == libc::SYS_llistxattr as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         path_xattr_list(state, memory, args[0], true)
     } else if number == libc::SYS_flistxattr as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
         fd_xattr_list(state, args[0])
     } else if number == libc::SYS_umask as u64 {
         let previous = state.umask;
@@ -549,7 +580,7 @@ impl ElfExecutor {
             return Some(i64::from(self.state.pid));
         }
         if number == libc::SYS_fork as u64 || number == libc::SYS_vfork as u64 {
-            return Some(self.prepare_fork(None, None, None, None));
+            return Some(self.prepare_fork(None, None, None, None, false));
         }
         if number == libc::SYS_clone as u64 {
             return Some(self.prepare_clone(
@@ -569,7 +600,13 @@ impl ElfExecutor {
                     {
                         negative_errno(libc::ENOTSUP)
                     }
-                    Ok(()) => self.prepare_fork(request.child_stack, None, None, None),
+                    Ok(()) => self.prepare_fork(
+                        request.child_stack,
+                        None,
+                        None,
+                        None,
+                        request.flags & CLONE_CLEAR_SIGHAND != 0,
+                    ),
                 },
                 Err(error) => error,
             });
@@ -606,7 +643,13 @@ impl ElfExecutor {
         let clear_child_tid = (flags & libc::CLONE_CHILD_CLEARTID as u64 != 0
             && child_tid_address != 0)
             .then_some(child_tid_address);
-        self.prepare_fork(child_stack, parent_tid, child_tid, clear_child_tid)
+        self.prepare_fork(
+            child_stack,
+            parent_tid,
+            child_tid,
+            clear_child_tid,
+            flags & CLONE_CLEAR_SIGHAND != 0,
+        )
     }
 
     fn prepare_fork(
@@ -615,6 +658,7 @@ impl ElfExecutor {
         parent_tid: Option<u64>,
         child_tid: Option<u64>,
         clear_child_tid: Option<u64>,
+        clear_sighand: bool,
     ) -> i64 {
         if self.process_action.is_some() {
             return negative_errno(libc::EBUSY);
@@ -629,6 +673,7 @@ impl ElfExecutor {
             parent_tid,
             child_tid,
             clear_child_tid,
+            clear_sighand,
         });
         i64::from(child_pid)
     }
@@ -688,9 +733,20 @@ impl ElfExecutor {
         0
     }
 
-    pub(crate) fn fork_child(&self, child_pid: i32) -> crate::Result<Self> {
+    pub(crate) fn fork_child(&self, child_pid: i32, clear_sighand: bool) -> crate::Result<Self> {
+        let mut state = self.state.try_clone_for_fork(child_pid)?;
+        if clear_sighand {
+            state.signal_actions.retain(|_, action| {
+                let handler = usize::from_ne_bytes(
+                    action[..std::mem::size_of::<usize>()]
+                        .try_into()
+                        .expect("signal handler field size"),
+                );
+                handler == libc::SIG_IGN
+            });
+        }
         Ok(Self {
-            state: self.state.try_clone_for_fork(child_pid)?,
+            state,
             output: self.output.is_some().then(CapturedOutput::default),
             next_pid: self.next_pid.clone(),
             process_action: None,
@@ -1451,7 +1507,7 @@ fn open_file(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#92): Review deterministic random-device and procfs virtual files.
+// TODO-HUMAN-REVIEW(PR-92): Review deterministic random-device and procfs virtual files.
 fn open_virtual_file(
     state: &mut LoadedStaticElf,
     contents: &[u8],
@@ -1467,6 +1523,9 @@ fn open_virtual_file(
     if flags & unsupported != 0 {
         return negative_errno(libc::EINVAL);
     }
+    if flags as libc::c_int & libc::O_ACCMODE != libc::O_RDONLY {
+        return negative_errno(libc::EACCES);
+    }
     let name = c"reverie-kvm-virtual";
     let host_fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
     if host_fd < 0 {
@@ -1477,16 +1536,18 @@ fn open_virtual_file(
     if let Err(error) = file.write_all(contents) {
         return io_error(error);
     }
-    if unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_SET) } < 0 {
-        return io_error(std::io::Error::last_os_error());
-    }
-    let access_mode = flags as libc::c_int & libc::O_ACCMODE;
-    if access_mode == libc::O_WRONLY {
-        return negative_errno(libc::EACCES);
-    }
-    insert_file_with_flags(state, file, close_on_exec, None)
+    let read_only = match std::fs::OpenOptions::new()
+        .read(true)
+        .open(format!("/proc/self/fd/{}", file.as_raw_fd()))
+    {
+        Ok(read_only) => read_only,
+        Err(error) => return io_error(error),
+    };
+    drop(file);
+    insert_file_with_flags(state, read_only, close_on_exec, None)
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn guest_fd_path(path: &[u8]) -> Option<libc::c_int> {
     let suffix = path
         .strip_prefix(b"/dev/fd/")
@@ -1500,7 +1561,7 @@ fn guest_fd_path(path: &[u8]) -> Option<libc::c_int> {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#92): Review guest /dev/fd duplication without supervisor procfs exposure.
+// TODO-HUMAN-REVIEW(PR-92): Review guest /dev/fd duplication without supervisor procfs exposure.
 fn open_guest_fd_path(
     state: &mut LoadedStaticElf,
     guest_fd: libc::c_int,
@@ -1862,7 +1923,7 @@ fn pipe2(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#92): Review guest descriptor translation and blocking poll semantics.
+// TODO-HUMAN-REVIEW(PR-92): Review guest descriptor translation and deterministic nonblocking poll semantics.
 fn poll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Ok(count) = usize::try_from(args[1]) else {
         return negative_errno(libc::EINVAL);
@@ -1915,9 +1976,9 @@ fn poll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
         }
     }
 
-    // SAFETY: poll_fds is writable for count entries and timeout is passed
-    // through with the Linux signed 32-bit ABI.
-    let ready = unsafe { libc::poll(poll_fds.as_mut_ptr(), count as libc::nfds_t, args[2] as i32) };
+    // Host wall time is outside the deterministic guest clock. Preserve
+    // already-ready events while making every backend poll nonblocking.
+    let ready = unsafe { libc::poll(poll_fds.as_mut_ptr(), count as libc::nfds_t, 0) };
     if ready < 0 {
         return io_error(std::io::Error::last_os_error());
     }
@@ -1942,7 +2003,7 @@ fn poll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#92): Review deterministic event-loop and AF_UNIX syscall boundaries.
+// TODO-HUMAN-REVIEW(PR-92): Review deterministic event-loop and AF_UNIX syscall boundaries.
 fn epoll_create1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
     let flags = raw_flags as libc::c_int;
     if flags & !libc::EPOLL_CLOEXEC != 0 {
@@ -1959,6 +2020,7 @@ fn epoll_create1(state: &mut LoadedStaticElf, raw_flags: u64) -> i64 {
     insert_file_with_flags(state, file, flags & libc::EPOLL_CLOEXEC != 0, None)
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(epoll_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
@@ -1967,7 +2029,7 @@ fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         return negative_errno(libc::EBADF);
     };
     let operation = args[1] as libc::c_int;
-    let mut event = if operation == libc::EPOLL_CTL_DEL && args[3] == 0 {
+    let mut event = if operation == libc::EPOLL_CTL_DEL {
         libc::epoll_event { events: 0, u64: 0 }
     } else {
         match read_guest_struct::<libc::epoll_event>(memory, args[3]) {
@@ -1980,7 +2042,22 @@ fn epoll_ctl(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     zero_or_errno(unsafe { libc::epoll_ctl(epoll_fd, operation, target_fd, &mut event) })
 }
 
-fn epoll_wait(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
+fn epoll_wait(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    pwait: bool,
+) -> i64 {
+    if pwait && args[4] != 0 {
+        if args[5] != KERNEL_SIGSET_SIZE as u64 {
+            return negative_errno(libc::EINVAL);
+        }
+        let mut signal_mask = [0; KERNEL_SIGSET_SIZE];
+        if memory.read(args[4], &mut signal_mask).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+    }
     let Some(epoll_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
     };
@@ -1996,17 +2073,23 @@ fn epoll_wait(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     let Some(byte_length) = count.checked_mul(std::mem::size_of::<libc::epoll_event>()) else {
         return negative_errno(libc::EINVAL);
     };
-    if byte_length > MAX_HOST_IO || !range_is_valid(memory, args[1], byte_length as u64) {
-        return negative_errno(libc::EFAULT);
+    if byte_length > MAX_HOST_IO {
+        return negative_errno(libc::EINVAL);
     }
     let mut events = vec![libc::epoll_event { events: 0, u64: 0 }; count];
     // A real-time host timeout is not a deterministic guest clock. Readiness
     // for already-available descriptor events is preserved with a zero timeout.
+    // Guest signal masks are modeled in guest state and must not alter the
+    // supervisor thread. With a zero timeout there is no guest blocking window.
+    // SAFETY: the event array is writable for max_events entries.
     let ready = unsafe { libc::epoll_wait(epoll_fd, events.as_mut_ptr(), max_events, 0) };
     if ready < 0 {
         return io_error(std::io::Error::last_os_error());
     }
     let ready = ready as usize;
+    if ready == 0 {
+        return 0;
+    }
     let bytes = unsafe {
         std::slice::from_raw_parts(
             events.as_ptr().cast::<u8>(),
@@ -2019,6 +2102,7 @@ fn epoll_wait(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn eventfd2(state: &mut LoadedStaticElf, initial: u64, raw_flags: u64) -> i64 {
     let flags = raw_flags as libc::c_int;
     let allowed = libc::EFD_CLOEXEC | libc::EFD_NONBLOCK | libc::EFD_SEMAPHORE;
@@ -2034,6 +2118,7 @@ fn eventfd2(state: &mut LoadedStaticElf, initial: u64, raw_flags: u64) -> i64 {
     insert_file_with_flags(state, file, flags & libc::EFD_CLOEXEC != 0, None)
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn socket(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if args[0] as libc::c_int != libc::AF_UNIX || args[2] != 0 {
         return negative_errno(libc::EAFNOSUPPORT);
@@ -2052,6 +2137,7 @@ fn socket(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     insert_file_with_flags(state, file, socket_type & libc::SOCK_CLOEXEC != 0, None)
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if host_fd(state, args[0] as libc::c_int).is_none() {
         return negative_errno(libc::EBADF);
@@ -2084,6 +2170,7 @@ fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
     negative_errno(libc::ECONNREFUSED)
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn ioctl(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if host_fd(state, args[0] as libc::c_int).is_none() {
         return negative_errno(libc::EBADF);
@@ -2120,6 +2207,7 @@ fn getgroups(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn set_fixed_root_ids(ids: &[u64]) -> i64 {
     if ids.iter().all(|id| matches!(*id as u32, 0 | u32::MAX)) {
         0
@@ -2128,6 +2216,7 @@ fn set_fixed_root_ids(ids: &[u64]) -> i64 {
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn flock(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
@@ -2139,9 +2228,14 @@ fn flock(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     {
         return negative_errno(libc::EINVAL);
     }
-    zero_or_errno(unsafe { libc::flock(host_fd, operation) })
+    // Detcore owns guest scheduling; host advisory locks would expose external
+    // lock ownership and can block on host wall time. A validated guest fd
+    // receives the deterministic single-process lock result.
+    let _ = host_fd;
+    0
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn fchown(state: &LoadedStaticElf, raw_fd: u64) -> i64 {
     if host_fd(state, raw_fd as libc::c_int).is_some() {
         0
@@ -2150,6 +2244,7 @@ fn fchown(state: &LoadedStaticElf, raw_fd: u64) -> i64 {
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn fchownat(
     memory: &GuestMemory,
     state: &LoadedStaticElf,
@@ -2183,7 +2278,8 @@ fn fchownat(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#92): Review the deterministic no-xattr KVM filesystem view.
+// TODO-HUMAN-REVIEW(PR-92): Review the deterministic no-xattr KVM filesystem view.
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn path_xattr_list(
     state: &LoadedStaticElf,
     memory: &GuestMemory,
@@ -2201,6 +2297,7 @@ fn path_xattr_list(
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn fd_xattr_list(state: &LoadedStaticElf, raw_fd: u64) -> i64 {
     if host_fd(state, raw_fd as libc::c_int).is_some() {
         0
@@ -2417,6 +2514,7 @@ fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     write_struct(memory, args[4], &stat)
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn sanitize_stat_timestamps(stat: &mut libc::stat) {
     stat.st_atime = 0;
     stat.st_atime_nsec = 0;
@@ -2466,6 +2564,7 @@ fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
     access_at(memory, state, libc::AT_FDCWD, args[0], args[1], 0)
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 fn access_at(
     memory: &GuestMemory,
     state: &LoadedStaticElf,
@@ -4075,54 +4174,62 @@ struct SchedAttr {
 
 // The pid/target argument must name the guest process (0 or its own pid).
 fn is_self_target(raw_pid: u64, state: &LoadedStaticElf) -> bool {
-    raw_pid == 0 || raw_pid as i64 == i64::from(state.pid)
+    let pid = raw_pid as u32 as libc::pid_t;
+    pid == 0 || pid == state.pid
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#92): Review the fixed KVM priority and scheduling persona.
+// TODO-HUMAN-REVIEW(PR-92): Review stateful virtual nice queries.
 fn getpriority(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    if args[0] != libc::PRIO_PROCESS as u64 {
+    if args[0] as u32 != libc::PRIO_PROCESS {
         return negative_errno(libc::EINVAL);
     }
     if !is_self_target(args[1], state) {
         return negative_errno(libc::ESRCH);
     }
-    20
+    i64::from(20 - state.nice)
 }
 
-fn setpriority(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    if args[0] != libc::PRIO_PROCESS as u64 {
+// TODO-HUMAN-REVIEW(PR-92): Review stateful virtual nice mutation and clamping.
+fn setpriority(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if args[0] as u32 != libc::PRIO_PROCESS {
         return negative_errno(libc::EINVAL);
     }
     if !is_self_target(args[1], state) {
         return negative_errno(libc::ESRCH);
     }
+    state.nice = (args[2] as u32 as libc::c_int).clamp(-20, 19);
     0
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review bounded sched_getattr ABI writes.
 fn sched_getattr(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let size = args[2] as u32 as usize;
+    if !(48..=PAGE_SIZE as usize).contains(&size) || args[3] as u32 != 0 {
+        return negative_errno(libc::EINVAL);
+    }
     if !is_self_target(args[0], state) {
         return negative_errno(libc::ESRCH);
     }
-    if args[3] != 0 {
-        return negative_errno(libc::EINVAL);
-    }
-    if args[2] < 48 {
-        return negative_errno(libc::E2BIG);
-    }
     let attr = SchedAttr {
         size: std::mem::size_of::<SchedAttr>() as u32,
-        sched_policy: libc::SCHED_OTHER as u32,
-        sched_flags: 0,
-        sched_nice: 0,
-        sched_priority: 0,
+        sched_policy: state.sched_policy as u32,
+        sched_flags: u64::from(state.sched_reset_on_fork),
+        sched_nice: state.nice,
+        sched_priority: state.sched_priority as u32,
         sched_runtime: 2_800_000,
         sched_deadline: 0,
         sched_period: 0,
         sched_util_min: 0,
         sched_util_max: 0,
     };
-    write_struct(memory, args[1], &attr)
+    let length = size.min(std::mem::size_of::<SchedAttr>());
+    // SAFETY: attr is initialized repr(C) data and length is bounded to it.
+    let bytes =
+        unsafe { std::slice::from_raw_parts((&attr as *const SchedAttr).cast::<u8>(), length) };
+    match memory.write(args[1], bytes) {
+        Ok(()) => 0,
+        Err(_) => negative_errno(libc::EFAULT),
+    }
 }
 
 fn getrandom(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
@@ -4639,11 +4746,7 @@ fn validate_process_clone_flags(flags: u64) -> Result<(), i64> {
         | libc::CLONE_PARENT_SETTID as u64
         | libc::CLONE_CHILD_SETTID as u64
         | libc::CLONE_CHILD_CLEARTID as u64
-        // Accepted as a no-op: a cloned child in this executor is a fresh
-        // snapshot that runs only until it exits or execve()s, and execve()
-        // already resets caught handlers to SIG_DFL, so clearing signal
-        // handlers is redundant for the supported immediate-exec clone use
-        // (glibc >= 2.36 posix_spawn, i.e. `make`/`gcc` recipe jobs).
+        // The fork action clears caught handlers in the child snapshot.
         | CLONE_CLEAR_SIGHAND;
     if flags & !allowed != 0 {
         return Err(negative_errno(libc::ENOTSUP));
@@ -4823,6 +4926,7 @@ mod tests {
             pid: 1,
             ppid: 0,
             umask: 0o022,
+            nice: 0,
             sched_policy: libc::SCHED_OTHER,
             sched_priority: 0,
             sched_reset_on_fork: false,
@@ -5258,6 +5362,57 @@ mod tests {
     }
 
     #[test]
+    fn virtual_identity_and_random_files_are_read_only() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        for (path, first_byte) in [("/dev/urandom", 41), ("/proc/self/loginuid", b'0')] {
+            write_c_string(&mut memory, 0x100, path);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_openat,
+                    [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0]
+                ),
+                negative_errno(libc::EACCES)
+            );
+
+            let fd = open_readonly(&mut memory, &mut state, path);
+            assert!(fd >= 0, "open {path} failed: {fd}");
+            let flags = syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+            );
+            assert_eq!(flags as libc::c_int & libc::O_ACCMODE, libc::O_RDONLY);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_read,
+                    [fd as u64, 0x200, 1, 0, 0, 0]
+                ),
+                1
+            );
+            let mut byte = [0];
+            memory.read(0x200, &mut byte).unwrap();
+            assert_eq!(byte[0], first_byte);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_write,
+                    [fd as u64, 0x200, 1, 0, 0, 0]
+                ),
+                negative_errno(libc::EBADF)
+            );
+        }
+    }
+
+    #[test]
     fn fcntl_getfl_translates_guest_descriptors() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -5454,7 +5609,7 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_poll,
-                [POLL_FD, 1, 0, 0, 0, 0],
+                [POLL_FD, 1, u32::MAX as u64, 0, 0, 0],
             ),
             0
         );
@@ -5569,6 +5724,132 @@ mod tests {
             0
         );
         assert!(state.files.is_empty());
+    }
+
+    #[test]
+    fn epoll_waits_are_nonblocking_and_pwait_validates_sigmask() {
+        const EVENTS: u64 = 0x100;
+        const SIGNAL_MASK: u64 = 0x200;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(SIGNAL_MASK, &[0; KERNEL_SIGSET_SIZE]).unwrap();
+        let epoll_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_epoll_create1,
+            [0, 0, 0, 0, 0, 0],
+        );
+        assert!(epoll_fd >= 0);
+
+        for invalid_output in [0, 1] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_epoll_wait,
+                    [epoll_fd as u64, invalid_output, 1, 0, 0, 0]
+                ),
+                0
+            );
+        }
+
+        let event_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_eventfd2,
+            [0, libc::EFD_NONBLOCK as u64, 0, 0, 0, 0],
+        );
+        assert!(event_fd >= 0);
+        let event = libc::epoll_event {
+            events: libc::EPOLLIN as u32,
+            u64: event_fd as u64,
+        };
+        assert_eq!(write_struct(&mut memory, EVENTS, &event), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_ctl,
+                [
+                    epoll_fd as u64,
+                    libc::EPOLL_CTL_ADD as u64,
+                    event_fd as u64,
+                    EVENTS,
+                    0,
+                    0,
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_ctl,
+                [
+                    epoll_fd as u64,
+                    libc::EPOLL_CTL_DEL as u64,
+                    event_fd as u64,
+                    1,
+                    0,
+                    0,
+                ]
+            ),
+            0
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait,
+                [epoll_fd as u64, EVENTS, 1, u32::MAX as u64, SIGNAL_MASK, 7]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait,
+                [
+                    epoll_fd as u64,
+                    EVENTS,
+                    1,
+                    u32::MAX as u64,
+                    PAGE_SIZE,
+                    KERNEL_SIGSET_SIZE as u64,
+                ]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_pwait,
+                [
+                    epoll_fd as u64,
+                    EVENTS,
+                    1,
+                    u32::MAX as u64,
+                    SIGNAL_MASK,
+                    KERNEL_SIGSET_SIZE as u64,
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_epoll_wait,
+                [epoll_fd as u64, EVENTS, 1, u32::MAX as u64, 0, 0]
+            ),
+            0
+        );
     }
 
     #[test]
@@ -7992,9 +8273,11 @@ mod tests {
                 parent_tid,
                 child_tid,
                 clear_child_tid,
+                clear_sighand,
             }) => {
                 assert_eq!(child_pid, 2);
                 assert_eq!(child_stack, None);
+                assert!(!clear_sighand);
                 assert_eq!(parent_tid, Some(PARENT_TID));
                 assert_eq!(child_tid, Some(CHILD_TID));
                 assert_eq!(clear_child_tid, Some(CHILD_TID));
@@ -8097,8 +8380,7 @@ mod tests {
         // subprocess jobs) issues exactly this clone3: CLONE_VM|CLONE_VFORK with
         // CLONE_CLEAR_SIGHAND, an explicit child stack, and SIGCHLD as the exit
         // signal. Older glibc omitted CLONE_CLEAR_SIGHAND, so the executor must
-        // accept the flag rather than reject the whole call as unsupported (the
-        // child immediately execve()s, which already resets signal handlers).
+        // accept the flag and reset caught child handlers before it runs.
         const CLONE3_ARGS: u64 = 0x200;
         const CHILD_STACK: u64 = 0x4000;
         const CHILD_STACK_SIZE: u64 = 0x9000;
@@ -8114,6 +8396,12 @@ mod tests {
         memory.write(CLONE3_ARGS, &clone3).unwrap();
 
         let mut executor = ElfExecutor::new(test_state(&root.0), false);
+        let mut ignored = [0; KERNEL_SIGACTION_SIZE];
+        ignored[..std::mem::size_of::<usize>()].copy_from_slice(&libc::SIG_IGN.to_ne_bytes());
+        let mut caught = [0; KERNEL_SIGACTION_SIZE];
+        caught[..std::mem::size_of::<usize>()].copy_from_slice(&2usize.to_ne_bytes());
+        executor.state.signal_actions.insert(libc::SIGUSR1, ignored);
+        executor.state.signal_actions.insert(libc::SIGUSR2, caught);
         let request = SyscallRequest::new(
             libc::SYS_clone3 as u64,
             [CLONE3_ARGS, clone3.len() as u64, 0, 0, 0, 0],
@@ -8126,12 +8414,28 @@ mod tests {
                 parent_tid,
                 child_tid,
                 clear_child_tid,
+                clear_sighand,
             }) => {
                 assert_eq!(child_pid, 2);
                 assert_eq!(child_stack, Some(CHILD_STACK + CHILD_STACK_SIZE));
+                assert!(clear_sighand);
                 assert_eq!(parent_tid, None);
                 assert_eq!(child_tid, None);
                 assert_eq!(clear_child_tid, None);
+                let child = executor.fork_child(child_pid, clear_sighand).unwrap();
+                assert_eq!(
+                    child.state.signal_actions.get(&libc::SIGUSR1),
+                    Some(&ignored)
+                );
+                assert!(!child.state.signal_actions.contains_key(&libc::SIGUSR2));
+                assert_eq!(
+                    executor.state.signal_actions.get(&libc::SIGUSR1),
+                    Some(&ignored)
+                );
+                assert_eq!(
+                    executor.state.signal_actions.get(&libc::SIGUSR2),
+                    Some(&caught)
+                );
             }
             _ => panic!("clone3 with CLONE_CLEAR_SIGHAND did not create a fork action"),
         }
@@ -8161,13 +8465,10 @@ mod tests {
     }
 
     #[test]
-    fn priority_and_scheduler_queries_use_fixed_guest_persona() {
+    fn priority_and_scheduler_queries_round_trip_guest_persona() {
         const PARAM: u64 = 0x100;
         const ATTR: u64 = 0x200;
-        // ioprio encoding (whoami=PROCESS, class shift, IDLE class). The
-        // getxattr-style constants moved out with #92's ioprio helper; the
-        // dispatch now uses main's inline GUEST_IOPRIO_DEFAULT, so this test
-        // keeps them local and asserts against that source of truth.
+        // ioprio encoding (whoami=PROCESS, class shift, IDLE class).
         const IOPRIO_WHO_PROCESS: u64 = 1;
         const IOPRIO_CLASS_SHIFT: u32 = 13;
         const IOPRIO_CLASS_IDLE: u64 = 3;
@@ -8193,6 +8494,16 @@ mod tests {
             ),
             0
         );
+        assert_eq!(state.nice, 1);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getpriority,
+                [libc::PRIO_PROCESS as u64, 0, 0, 0, 0, 0],
+            ),
+            19
+        );
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -8200,7 +8511,7 @@ mod tests {
                 libc::SYS_ioprio_get,
                 [IOPRIO_WHO_PROCESS, 0, 0, 0, 0, 0],
             ),
-            GUEST_IOPRIO_DEFAULT
+            0
         );
         assert_eq!(
             syscall_result(
@@ -8240,6 +8551,35 @@ mod tests {
             read_struct::<libc::sched_param>(&memory, PARAM).sched_priority,
             0
         );
+        for size in [0, 47, PAGE_SIZE + 1] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_sched_getattr,
+                    [0, ATTR, size, 0, 0, 0]
+                ),
+                negative_errno(libc::EINVAL)
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getattr,
+                [999_999, ATTR, 48, 1, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getattr,
+                [999_999, ATTR, 48, 0, 0, 0]
+            ),
+            negative_errno(libc::ESRCH)
+        );
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -8253,7 +8593,21 @@ mod tests {
         assert_eq!(attr.size as usize, std::mem::size_of::<SchedAttr>());
         assert_eq!(attr.sched_policy, libc::SCHED_OTHER as u32);
         assert_eq!(attr.sched_priority, 0);
-        assert_eq!(attr.sched_nice, 0);
+        assert_eq!(attr.sched_nice, 1);
+
+        memory.write(ATTR + 48, &[0xa5; 8]).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getattr,
+                [0, ATTR, 48, 0, 0, 0],
+            ),
+            0
+        );
+        let mut canary = [0; 8];
+        memory.read(ATTR + 48, &mut canary).unwrap();
+        assert_eq!(canary, [0xa5; 8]);
     }
 
     #[test]
@@ -9065,12 +9419,14 @@ mod tests {
     fn scheduler_and_ioprio_state_follow_fork_and_exec_rules() {
         let dir = TestDir::new();
         let mut state = test_state(&dir.0);
+        state.nice = -7;
         state.sched_policy = libc::SCHED_FIFO;
         state.sched_priority = 7;
         state.sched_reset_on_fork = true;
         state.ioprio = (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 4;
 
         let child = state.try_clone_for_fork(2).unwrap();
+        assert_eq!(child.nice, -7);
         assert_eq!(child.sched_policy, libc::SCHED_OTHER);
         assert_eq!(child.sched_priority, 0);
         assert!(!child.sched_reset_on_fork);
@@ -9094,6 +9450,7 @@ mod tests {
         let expected_ioprio = state.ioprio;
         let mut after_exec = test_state(&dir.0);
         after_exec.inherit_process_state(state);
+        assert_eq!(after_exec.nice, -7);
         assert_eq!(after_exec.sched_policy, libc::SCHED_RR);
         assert_eq!(after_exec.sched_priority, 9);
         assert!(after_exec.sched_reset_on_fork);

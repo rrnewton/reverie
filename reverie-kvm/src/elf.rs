@@ -78,6 +78,8 @@ pub(crate) struct LoadedStaticElf {
     pub pid: i32,
     pub ppid: i32,
     pub umask: libc::mode_t,
+    // TODO-HUMAN-REVIEW(PR-92): Review virtual nice process state.
+    pub nice: libc::c_int,
     // TODO-HUMAN-REVIEW(PR-119): Review virtual scheduler/ioprio process state.
     pub sched_policy: libc::c_int,
     pub sched_priority: libc::c_int,
@@ -136,6 +138,7 @@ impl LoadedStaticElf {
             pid: child_pid,
             ppid: self.pid,
             umask: self.umask,
+            nice: self.nice,
             sched_policy: if reset_realtime {
                 libc::SCHED_OTHER
             } else {
@@ -222,6 +225,7 @@ impl LoadedStaticElf {
         self.pid = previous.pid;
         self.ppid = previous.ppid;
         self.umask = previous.umask;
+        self.nice = previous.nice;
         // TODO-HUMAN-REVIEW(PR-119): Review scheduler and ioprio exec inheritance.
         self.sched_policy = previous.sched_policy;
         self.sched_priority = previous.sched_priority;
@@ -239,6 +243,7 @@ impl LoadedStaticElf {
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review script loading and executable resolution.
 pub(crate) fn load_static_elf(
     memory: &mut GuestMemory,
     image: &[u8],
@@ -249,6 +254,7 @@ pub(crate) fn load_static_elf(
     load_executable(memory, image, argv, envp, cwd, 0)
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review recursive script interpreter loading.
 fn load_executable(
     memory: &mut GuestMemory,
     image: &[u8],
@@ -424,6 +430,7 @@ fn load_executable(
         pid: 1,
         ppid: 0,
         umask: 0o022,
+        nice: 0,
         // TODO-HUMAN-REVIEW(PR-119): Review default virtual scheduler and ioprio state.
         sched_policy: libc::SCHED_OTHER,
         sched_priority: 0,
@@ -442,6 +449,7 @@ fn load_executable(
     })
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review Linux shebang parsing limits.
 fn parse_shebang(image: &[u8]) -> Result<Option<(String, Option<String>)>> {
     let Some(rest) = image.strip_prefix(b"#!") else {
         return Ok(None);
@@ -465,6 +473,7 @@ fn parse_shebang(image: &[u8]) -> Result<Option<(String, Option<String>)>> {
     )))
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review PATH and cwd executable resolution.
 fn resolve_executable_path(argv0: &str, envp: &[&str], cwd: &Path) -> Result<PathBuf> {
     let path = Path::new(argv0);
     if path.is_absolute() || path.components().count() > 1 {
