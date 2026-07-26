@@ -36,7 +36,7 @@ pub(crate) use strace::global_state;
 const TOOL_ENV: &str = "REVERIE_LITEINST_EXAMPLE_TOOL";
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review the public LiteInst example-tool selector.
+// TODO-HUMAN-REVIEW(PR-139): Review the public LiteInst example-tool selector.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
 /// Production example tool hosted by the LiteInst preload.
 pub enum ToolKind {
@@ -59,7 +59,7 @@ impl ToolKind {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review the public LiteInst example-tool result.
+// TODO-HUMAN-REVIEW(PR-139): Review the public LiteInst example-tool result.
 /// Captured result of a LiteInst example-tool run.
 pub struct RunOutput {
     /// Guest process status and captured standard streams.
@@ -69,7 +69,7 @@ pub struct RunOutput {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review the public LiteInst example-tool launch boundary.
+// TODO-HUMAN-REVIEW(PR-139): Review the public LiteInst example-tool launch boundary.
 /// Runs one production example tool through `LiteinstBackend`.
 ///
 /// `filters` accepts strace syscall filters and must be empty for other tools.
@@ -134,7 +134,7 @@ pub async fn run(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review the example-tool preload constructor and selector boundary.
+// TODO-HUMAN-REVIEW(PR-139): Review the example-tool preload constructor and selector boundary.
 #[used]
 #[unsafe(link_section = ".init_array")]
 static LITEINST_EXAMPLE_INIT: unsafe extern "C" fn() = initialize;
@@ -168,7 +168,7 @@ fn fail(message: &str) -> ! {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review the public example preload discovery API.
+// TODO-HUMAN-REVIEW(PR-139): Review the public example preload discovery API.
 /// Finds the package preload DSO beside the current executable.
 pub fn default_preload_path() -> io::Result<PathBuf> {
     let executable = std::env::current_exe()?;
