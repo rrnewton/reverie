@@ -68,6 +68,8 @@ where
     global_state: T::GlobalState,
     config: <T::GlobalState as GlobalTool>::Config,
     thread_states: Mutex<HashMap<i32, ThreadStateCell<T>>>,
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-142): Review local syscall-subscription caching and bypass.
     syscall_subscriptions: BTreeSet<Sysno>,
 }
 
@@ -234,6 +236,8 @@ where
     config: <T::GlobalState as GlobalTool>::Config,
     socket_path: std::path::PathBuf,
     thread_states: Mutex<HashMap<i32, Arc<Mutex<RemoteThreadState<T>>>>>,
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-142): Review remote syscall-subscription caching and bypass.
     syscall_subscriptions: BTreeSet<Sysno>,
 }
 
@@ -454,6 +458,8 @@ fn shared_result(result: Result<i64, Error>) -> Result<usize, Errno> {
     })
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-142): Review direct and process-control bypass semantics.
 fn bypass_tool(
     syscall: Syscall,
     special_inject: Option<&mut (dyn FnMut() -> usize + Send + Sync)>,

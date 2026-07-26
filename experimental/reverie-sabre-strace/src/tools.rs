@@ -39,6 +39,8 @@ pub(super) enum ToolKind {
     Strace,
     /// Count intercepted syscalls in the current plugin process.
     Counter1,
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-142): Review the process-local counter2 adaptation.
     /// Count syscalls and unique process/thread identities in this plugin process.
     Counter2,
     /// Forward syscalls without tool-specific work.
@@ -108,6 +110,8 @@ impl ReverieTool for Counter1Tool {
     }
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-142): Review counter2 state, RPC, and scope semantics.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub(super) struct Counter2Summary {
     total_syscalls: u64,

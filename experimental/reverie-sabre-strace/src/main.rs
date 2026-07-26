@@ -20,6 +20,8 @@ const TOOL_ENV: &str = "REVERIE_SABRE_TOOL";
 enum ToolKind {
     Strace,
     Counter1,
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-142): Review counter2 CLI selection.
     Counter2,
     Noop,
 }
