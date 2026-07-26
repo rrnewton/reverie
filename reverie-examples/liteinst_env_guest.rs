@@ -19,6 +19,8 @@ fn main() {
         Some("exercise-chaos-read") => exercise_chaos_read(),
         // TODO-HUMAN-REVIEW(PR-157): Review the chaos interrupted-read test guest mode.
         Some("exercise-chaos-interrupt") => exercise_chaos_interrupt(),
+        // TODO-HUMAN-REVIEW(PR-157): Review the chaos skip-suppression test guest mode.
+        Some("exercise-chaos-full-read") => exercise_chaos_full_read(),
         // TODO-HUMAN-REVIEW(PR-152): Review the chunky_print ordering test guest mode.
         Some("chunky-alias-order") => exercise_chunky_alias_order(),
         Some(argument) => panic!("unknown argument {argument:?}"),
@@ -134,6 +136,20 @@ fn exercise_chaos_interrupt() {
     assert_eq!(unsafe { libc::close(pipe[0]) }, 0);
     assert_eq!(unsafe { libc::close(pipe[1]) }, 0);
     println!("chaos-interrupt-then-one");
+}
+
+// TODO-HUMAN-REVIEW(PR-157): Review the chaos pre-boundary suppression coverage.
+fn exercise_chaos_full_read() {
+    let pipe = prepare_chaos_pipe();
+    let mut output = [0_u8; 4];
+    assert_eq!(
+        unsafe { libc::read(pipe[0], output.as_mut_ptr().cast(), output.len()) },
+        4
+    );
+    assert_eq!(&output, b"data");
+    assert_eq!(unsafe { libc::close(pipe[0]) }, 0);
+    assert_eq!(unsafe { libc::close(pipe[1]) }, 0);
+    println!("chaos-read-four");
 }
 
 // TODO-HUMAN-REVIEW(PR-152): Review deterministic chunky_print ordering coverage.

@@ -257,6 +257,24 @@ fn exact_chaos_tool_limits_reads_after_skip() {
 }
 
 #[test]
+fn exact_chaos_skip_suppresses_intervention_before_boundary() {
+    let output = run(
+        "chaos",
+        &["--skip", "18446744073709551615", "--no-interrupt"],
+        &[
+            env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"),
+            "exercise-chaos-full-read",
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(output.stdout, b"chaos-read-four\n");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("SKIPPED"), "{stderr}");
+    assert!(!stderr.contains(" = -512"), "{stderr}");
+}
+
+#[test]
 fn exact_chaos_tool_interrupts_then_limits_retry() {
     let output = run(
         "chaos",
@@ -276,15 +294,16 @@ fn exact_chaos_tool_interrupts_then_limits_retry() {
 
 #[test]
 fn chaos_options_require_the_chaos_tool() {
-    let output = run("noop", &["--skip", "1"], &["/bin/true"]);
-
-    assert!(!output.status.success(), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains("chaos options are only valid with --tool chaos"),
-        "{stderr}"
-    );
+    for skip in ["0", "1"] {
+        let output = run("noop", &["--skip", skip], &["/bin/true"]);
+        assert!(!output.status.success(), "skip={skip}: {output:?}");
+        assert!(output.stdout.is_empty(), "skip={skip}: {output:?}");
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(
+            stderr.contains("chaos options are only valid with --tool chaos"),
+            "skip={skip}: {stderr}"
+        );
+    }
 }
 
 #[test]

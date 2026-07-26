@@ -54,6 +54,24 @@ pub(crate) struct ChaosOpts {
     no_interrupt: bool,
 }
 
+impl ChaosOpts {
+    // TODO-HUMAN-REVIEW(PR-157): Review the narrow LiteInst config constructor API.
+    #[allow(dead_code)]
+    pub(crate) fn for_liteinst(
+        skip: Option<u64>,
+        no_read: bool,
+        no_recv: bool,
+        no_interrupt: bool,
+    ) -> Self {
+        Self {
+            skip: skip.unwrap_or_default(),
+            no_read,
+            no_recv,
+            no_interrupt,
+        }
+    }
+}
+
 // TODO-HUMAN-REVIEW(PR-157): Review crate-local reuse of the production chaos tool.
 #[derive(Debug, Default)]
 pub(crate) struct ChaosTool {
