@@ -35,6 +35,7 @@ use std::future::Future;
 use std::pin::pin;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::task::Context;
@@ -42,23 +43,31 @@ use std::task::Poll;
 use std::task::Waker;
 
 use reverie::Error;
+use reverie::GlobalTool;
 use reverie::Guest;
+use reverie::Tid;
 use reverie::Tool;
 use reverie::syscalls::Displayable;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
+use serde::Deserialize;
+use serde::Serialize;
 
 use crate::DbiGuest;
 use crate::RegisterReader;
 use crate::SyscallInvoker;
+use crate::counter::RecordSyscall;
+use crate::counter::SyscallCounterGlobal;
 
 /// Native callback that emits a pre-formatted buffer via DynamoRIO's own I/O.
 pub type Emitter = unsafe extern "C" fn(*const u8, usize);
 
 const SYSCALL_HISTOGRAM_ENV: &str = "HERMIT_DBI_SYSCALL_HISTOGRAM";
 const STRACE_ENV: &str = "HERMIT_DBI_STRACE";
+const NOOP_ENV: &str = "HERMIT_DBI_NOOP";
+const COUNTER1_ENV: &str = "HERMIT_DBI_COUNTER1";
 
 fn env_flag(name: &str) -> bool {
     std::env::var_os(name).is_some_and(|value| {
@@ -68,6 +77,8 @@ fn env_flag(name: &str) -> bool {
 
 static HISTOGRAM_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(SYSCALL_HISTOGRAM_ENV));
 static STRACE_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(STRACE_ENV));
+static NOOP_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(NOOP_ENV));
+static COUNTER1_ENABLED: LazyLock<bool> = LazyLock::new(|| env_flag(COUNTER1_ENV));
 
 /// Per-syscall-number invocation counts, keyed by raw syscall number.
 static SYSCALL_HISTOGRAM: LazyLock<Mutex<BTreeMap<i32, u64>>> =
@@ -159,6 +170,35 @@ impl Tool for SyscallCounterTool {
     }
 }
 
+/// Counts every syscall by number into a **shared, cross-process** histogram.
+///
+/// Unlike [`SyscallCounterTool`] (whose histogram is process-local, so fork
+/// children are counted separately), this tool routes each syscall through
+/// [`reverie::Guest::send_rpc`] to the single [`SyscallCounterGlobal`] owned by
+/// the coordinator process — over a Unix-domain socket (see [`crate::sync_rpc`])
+/// when one is configured. The coordinator prints the aggregate at run end, so
+/// this handler produces no per-process output.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SharedSyscallCounterTool;
+
+#[reverie::tool]
+impl Tool for SharedSyscallCounterTool {
+    type GlobalState = SyscallCounterGlobal;
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let number = syscall.number();
+        // Record into the shared histogram before injecting; `exit`/`exit_group`
+        // never return to us, but the count is already committed above.
+        let _ = guest.send_rpc(RecordSyscall(number.id())).await;
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
 /// Logs every syscall's name, decoded arguments and return value.
 ///
 /// Mirrors `strace_minimal`, but recovers the real return value via
@@ -201,17 +241,119 @@ impl Tool for StraceTool {
     }
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#123): Review the DBI noop/counter1 example-tool ports.
+/// The reverie `noop` example, adapted to DBI: a tool that observes every
+/// syscall but changes nothing, passing each straight through to the kernel.
+/// Exercises the minimal `Guest::inject` path — the floor of DBI Tool support.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NoopTool;
+
+#[reverie::tool]
+impl Tool for NoopTool {
+    type GlobalState = ();
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+/// RPC request for [`Counter1Global`]: either record one syscall or read the
+/// running total back. Mirrors `reverie-examples/counter1`'s `IncrMsg`, but adds
+/// a `Report` so the tool can retrieve the count to print at guest exit (the DBI
+/// observation harness has no post-run hook to read the global like the ptrace
+/// example's `tracer.wait()` does).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Counter1Request {
+    /// Record one syscall (by raw number).
+    Incr(i32),
+    /// Return the running total without modifying it.
+    Report,
+}
+
+/// A syscall counter that routes through `GlobalRPC::send_rpc`, exactly like the
+/// `counter1` example — proving the DBI `Guest`'s RPC surface works, not just
+/// direct syscall injection.
+#[derive(Debug, Default)]
+pub struct Counter1Global {
+    count: AtomicU64,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for Counter1Global {
+    type Request = Counter1Request;
+    type Response = u64;
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Tid, request: Counter1Request) -> u64 {
+        match request {
+            Counter1Request::Incr(_number) => {
+                self.count.fetch_add(1, Ordering::SeqCst);
+                0
+            }
+            Counter1Request::Report => self.count.load(Ordering::SeqCst),
+        }
+    }
+}
+
+/// The `counter1` example tool, adapted to DBI: count every syscall via
+/// `send_rpc`, and at guest exit read the total back (again via `send_rpc`) and
+/// print it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Counter1Tool;
+
+#[reverie::tool]
+impl Tool for Counter1Tool {
+    type GlobalState = Counter1Global;
+    type ThreadState = ();
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        let number = syscall.number();
+        let _ = guest.send_rpc(Counter1Request::Incr(number.id())).await;
+        if matches!(number, Sysno::exit | Sysno::exit_group) {
+            let total = guest.send_rpc(Counter1Request::Report).await;
+            emit_line(&format!(
+                "reverie-dbi: counter1 total system calls: {total}"
+            ));
+        }
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
 /// The observation tool selected by the environment, if any.
 enum ActiveTool {
     Strace,
     Counter,
+    SharedCounter,
+    Noop,
+    Counter1,
 }
 
 fn active_tool() -> Option<ActiveTool> {
     if *STRACE_ENABLED {
         Some(ActiveTool::Strace)
     } else if *HISTOGRAM_ENABLED {
-        Some(ActiveTool::Counter)
+        // When a coordinator socket is configured, count into the single shared
+        // cross-process GlobalState; otherwise fall back to the process-local
+        // histogram.
+        if crate::sync_rpc::is_active() {
+            Some(ActiveTool::SharedCounter)
+        } else {
+            Some(ActiveTool::Counter)
+        }
+    } else if *COUNTER1_ENABLED {
+        Some(ActiveTool::Counter1)
+    } else if *NOOP_ENABLED {
+        Some(ActiveTool::Noop)
     } else {
         None
     }
@@ -278,6 +420,34 @@ pub(crate) fn run_active_tool(
             invoke_syscall,
             read_registers,
         ),
+        ActiveTool::SharedCounter => dispatch_shared(
+            context,
+            tid,
+            pid,
+            branches,
+            syscall,
+            invoke_syscall,
+            read_registers,
+        ),
+        ActiveTool::Noop => dispatch(
+            &NoopTool,
+            context,
+            tid,
+            pid,
+            branches,
+            syscall,
+            invoke_syscall,
+            read_registers,
+        ),
+        ActiveTool::Counter1 => dispatch_counter1(
+            context,
+            tid,
+            pid,
+            branches,
+            syscall,
+            invoke_syscall,
+            read_registers,
+        ),
     };
     Some(match result {
         Ok(value) => value,
@@ -317,4 +487,71 @@ where
         read_registers,
     );
     run_ready(tool.handle_syscall_event(&mut guest, syscall))
+}
+
+/// The process-global `counter1` state. It must persist across syscalls (each
+/// `run_active_tool` call builds a fresh `DbiGuest`), so it lives here rather
+/// than in a per-call local. `send_rpc` on `DbiGuest` dispatches to this
+/// instance's `receive_rpc` in-process.
+static COUNTER1_GLOBAL: LazyLock<Counter1Global> = LazyLock::new(Counter1Global::default);
+
+/// Runs one syscall through [`SharedSyscallCounterTool`], whose non-`()`
+/// [`SyscallCounterGlobal`] is served out-of-process. `send_rpc` routes to the
+/// coordinator socket, so the local `global` below is a never-touched
+/// placeholder required only by the [`DbiGuest`] constructor.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_shared(
+    context: usize,
+    tid: i32,
+    pid: i32,
+    branches: u64,
+    syscall: Syscall,
+    invoke_syscall: SyscallInvoker,
+    read_registers: RegisterReader,
+) -> Result<i64, Error> {
+    let global = SyscallCounterGlobal::default();
+    let config = ();
+    let mut thread_state = ();
+    let mut guest = DbiGuest::new(
+        context,
+        reverie::Pid::from_raw(tid),
+        reverie::Pid::from_raw(pid),
+        None,
+        branches,
+        &mut thread_state,
+        &global,
+        &config,
+        invoke_syscall,
+        read_registers,
+    );
+    run_ready(SharedSyscallCounterTool.handle_syscall_event(&mut guest, syscall))
+}
+
+/// Runs one syscall through [`Counter1Tool`], whose non-`()` [`Counter1Global`]
+/// is the shared [`COUNTER1_GLOBAL`] so the count accumulates across the run.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_counter1(
+    context: usize,
+    tid: i32,
+    pid: i32,
+    branches: u64,
+    syscall: Syscall,
+    invoke_syscall: SyscallInvoker,
+    read_registers: RegisterReader,
+) -> Result<i64, Error> {
+    let mut thread_state = ();
+    let mut guest = DbiGuest::new(
+        context,
+        reverie::Pid::from_raw(tid),
+        reverie::Pid::from_raw(pid),
+        None,
+        branches,
+        &mut thread_state,
+        // `&*` forces `LazyLock<Counter1Global>` to deref to `&Counter1Global`.
+        &*COUNTER1_GLOBAL,
+        &(),
+        invoke_syscall,
+        read_registers,
+    );
+    run_ready(Counter1Tool.handle_syscall_event(&mut guest, syscall))
 }

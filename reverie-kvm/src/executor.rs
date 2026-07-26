@@ -173,6 +173,14 @@ fn execute_basic_syscall_with_output(
         write(memory, state, args, output)
     } else if number == libc::SYS_read as u64 {
         read(memory, state, args)
+    } else if number == libc::SYS_writev as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120)
+        writev(memory, state, args, output)
+    } else if number == libc::SYS_readv as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120)
+        readv(memory, state, args)
     } else if number == libc::SYS_pread64 as u64 {
         pread64(memory, state, args)
     } else if number == libc::SYS_pwrite64 as u64 {
@@ -253,17 +261,10 @@ fn execute_basic_syscall_with_output(
         access(memory, state, args)
     } else if number == libc::SYS_faccessat as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        access_at(memory, state, args[0] as libc::c_int, args[1], args[2], 0)
+        faccessat(memory, state, args)
     } else if number == libc::SYS_faccessat2 as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        access_at(
-            memory,
-            state,
-            args[0] as libc::c_int,
-            args[1],
-            args[2],
-            args[3],
-        )
+        faccessat2(memory, state, args)
     } else if number == libc::SYS_mkdir as u64 {
         mkdir_at(memory, state, libc::AT_FDCWD, args[0], args[1])
     } else if number == libc::SYS_mkdirat as u64 {
@@ -1077,6 +1078,94 @@ fn signal_is_pending(signal: libc::c_int) -> Result<bool, libc::c_int> {
     } else {
         Ok(member == 1)
     }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#120): guest writev gathers each iovec and reuses
+// the scalar write path, so descriptor routing, captured-output aliasing, and
+// SIGPIPE suppression stay identical to write(2). Programs such as javac/java
+// emit their startup diagnostics with writev and abort (exit 127) when it is
+// ENOSYS.
+fn writev(
+    memory: &GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    mut output: Option<&mut CapturedOutput>,
+) -> i64 {
+    let Ok(count) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if count > libc::UIO_MAXIOV as usize {
+        return negative_errno(libc::EINVAL);
+    }
+    let mut total: i64 = 0;
+    for index in 0..count {
+        let entry = args[1] + (index as u64) * 16;
+        let mut base = [0u8; 8];
+        let mut len = [0u8; 8];
+        if memory.read(entry, &mut base).is_err() || memory.read(entry + 8, &mut len).is_err() {
+            return if total > 0 {
+                total
+            } else {
+                negative_errno(libc::EFAULT)
+            };
+        }
+        let iov_base = u64::from_le_bytes(base);
+        let iov_len = u64::from_le_bytes(len);
+        if iov_len == 0 {
+            continue;
+        }
+        let write_args = [args[0], iov_base, iov_len, 0, 0, 0];
+        let result = write(memory, state, &write_args, output.as_deref_mut());
+        if result < 0 {
+            return if total > 0 { total } else { result };
+        }
+        total = total.saturating_add(result);
+        if (result as u64) < iov_len {
+            break; // a short write ends the gather, matching writev(2)
+        }
+    }
+    total
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#120): guest readv scatters into each iovec via the
+// scalar read path; a short read or EOF stops the scatter, matching readv(2).
+fn readv(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(count) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if count > libc::UIO_MAXIOV as usize {
+        return negative_errno(libc::EINVAL);
+    }
+    let mut total: i64 = 0;
+    for index in 0..count {
+        let entry = args[1] + (index as u64) * 16;
+        let mut base = [0u8; 8];
+        let mut len = [0u8; 8];
+        if memory.read(entry, &mut base).is_err() || memory.read(entry + 8, &mut len).is_err() {
+            return if total > 0 {
+                total
+            } else {
+                negative_errno(libc::EFAULT)
+            };
+        }
+        let iov_base = u64::from_le_bytes(base);
+        let iov_len = u64::from_le_bytes(len);
+        if iov_len == 0 {
+            continue;
+        }
+        let read_args = [args[0], iov_base, iov_len, 0, 0, 0];
+        let result = read(memory, state, &read_args);
+        if result < 0 {
+            return if total > 0 { total } else { result };
+        }
+        total = total.saturating_add(result);
+        if (result as u64) < iov_len {
+            break; // a short read or EOF ends the scatter
+        }
+    }
+    total
 }
 
 fn write_without_sigpipe(fd: RawFd, bytes: &[u8]) -> i64 {
@@ -2642,23 +2731,66 @@ fn fstatfs_host(memory: &mut GuestMemory, host_fd: RawFd, output: u64) -> i64 {
 }
 
 fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    access_at(memory, state, libc::AT_FDCWD, args[0], args[1], 0)
+    // access(2) is faccessat2(AT_FDCWD, path, mode, 0): a real-UID check that
+    // follows symlinks and rejects an empty path with ENOENT.
+    faccessat_impl(
+        memory,
+        state,
+        libc::AT_FDCWD,
+        args[0],
+        args[1] as libc::c_int,
+        0,
+    )
 }
 
-// TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
-fn access_at(
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(reverie#124): faccessat access check so bash
+// `test -r/-w/-x` and program startup probes resolve correctly under the KVM
+// backend instead of falling through to ENOSYS.
+fn faccessat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    // faccessat(2) has no flags argument, so it behaves like access(2) relative
+    // to the supplied directory descriptor: real-UID check, follow symlinks.
+    faccessat_impl(
+        memory,
+        state,
+        args[0] as libc::c_int,
+        args[1],
+        args[2] as libc::c_int,
+        0,
+    )
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(reverie#124): faccessat2 access check. glibc routes the
+// C `access`/`euidaccess` helpers and the shell `test -r/-w/-x` operators
+// through faccessat2; without this arm every access probe returned ENOSYS.
+fn faccessat2(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    faccessat_impl(
+        memory,
+        state,
+        args[0] as libc::c_int,
+        args[1],
+        args[2] as libc::c_int,
+        args[3] as libc::c_int,
+    )
+}
+
+// Shared access-check implementation for access(2)/faccessat(2)/faccessat2(2).
+// The guest dirfd, cwd, and AT_SYMLINK_NOFOLLOW are resolved locally into an
+// O_PATH descriptor; the permission decision itself is delegated to the host
+// kernel via AT_EMPTY_PATH so the answer matches what the ptrace backend sees.
+fn faccessat_impl(
     memory: &GuestMemory,
     state: &LoadedStaticElf,
     guest_dirfd: libc::c_int,
     path_address: u64,
-    raw_mode: u64,
-    raw_flags: u64,
+    mode: libc::c_int,
+    flags: libc::c_int,
 ) -> i64 {
-    let mode = raw_mode as libc::c_int;
+    // mode is F_OK or a bitmask of R_OK/W_OK/X_OK; anything else is invalid.
     if mode & !(libc::R_OK | libc::W_OK | libc::X_OK) != 0 {
         return negative_errno(libc::EINVAL);
     }
-    let flags = raw_flags as libc::c_int;
     let allowed_flags = libc::AT_EACCESS | libc::AT_SYMLINK_NOFOLLOW | libc::AT_EMPTY_PATH;
     if flags & !allowed_flags != 0 {
         return negative_errno(libc::EINVAL);
@@ -2688,6 +2820,9 @@ fn access_at(
         Err(error) => return error,
     };
     let empty_path = b"\0";
+    // Forward AT_EACCESS so an effective-ID probe keeps its meaning; the O_PATH
+    // fd is addressed with AT_EMPTY_PATH.
+    let host_flags = libc::AT_EMPTY_PATH | (flags & libc::AT_EACCESS);
     // SAFETY: empty_path is NUL-terminated and file owns a live O_PATH fd.
     let result = unsafe {
         libc::syscall(
@@ -2695,7 +2830,7 @@ fn access_at(
             file.as_raw_fd(),
             empty_path.as_ptr(),
             mode,
-            libc::AT_EMPTY_PATH | (flags & libc::AT_EACCESS),
+            host_flags,
         )
     };
     if result == 0 {
@@ -3665,6 +3800,23 @@ fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
                 state.cloexec_fds.remove(&guest_fd);
             }
             0
+        }
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120): guest F_SETFL applies the
+        // kernel-settable file status flags (O_APPEND/O_ASYNC/O_DIRECT/
+        // O_NOATIME/O_NONBLOCK) to the backing host descriptor. Access mode and
+        // creation flags are silently ignored, matching fcntl(2). Without this,
+        // programs that set O_NONBLOCK on a freshly created pipe (e.g. xz)
+        // observe ENOSYS and abort.
+        libc::F_SETFL => {
+            let settable = libc::O_APPEND
+                | libc::O_ASYNC
+                | libc::O_DIRECT
+                | libc::O_NOATIME
+                | libc::O_NONBLOCK;
+            let flags = args[2] as libc::c_int & settable;
+            // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
+            zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
         }
         _ => negative_errno(libc::ENOSYS),
     }
@@ -4772,16 +4924,22 @@ fn sigaltstack(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u6
 }
 
 fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let requested = args[0] as libc::pid_t;
+    // pid_t is a 32-bit signed value; the guest passes wait4(-1) as 0xFFFFFFFF
+    // in a 64-bit register. Truncate to i32 before sign-extending so the common
+    // wait-for-any-child form (-1), process-group forms (0, <-1), and a specific
+    // pid are all interpreted correctly instead of collapsing to ECHILD.
+    let requested = args[0] as i32 as i64;
     if args[2] & !(libc::WNOHANG as u64) != 0 {
         return negative_errno(libc::EINVAL);
     }
-    let child_pid = if requested == -1 {
-        state.children.keys().next().copied()
-    } else if requested > 0 {
-        Some(requested).filter(|pid| state.children.contains_key(pid))
+    let child_pid = if requested > 0 {
+        i32::try_from(requested)
+            .ok()
+            .filter(|pid| state.children.contains_key(pid))
     } else {
-        None
+        // -1 (any child), 0 and <-1 (any child in a process group): this guest
+        // models a single process group, so reap any recorded child.
+        state.children.keys().next().copied()
     };
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
@@ -5624,6 +5782,208 @@ mod tests {
                 &mut state,
                 libc::SYS_fcntl,
                 [0, libc::F_GETFL as u64, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+    }
+
+    #[test]
+    fn fcntl_setfl_applies_status_flags() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        const PIPE_FDS: u64 = 0x100;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        let write_fd = pipe_fds[1];
+
+        // F_SETFL O_NONBLOCK on the guest write end succeeds (previously ENOSYS).
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [
+                    write_fd as u64,
+                    libc::F_SETFL as u64,
+                    libc::O_NONBLOCK as u64,
+                    0,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        // F_GETFL now reflects the applied status flag.
+        let flags = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [write_fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        );
+        assert!(flags >= 0);
+        assert_ne!(flags as libc::c_int & libc::O_NONBLOCK, 0);
+    }
+
+    #[test]
+    fn writev_and_readv_gather_scatter_round_trip() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x8000).unwrap();
+
+        const PIPE_FDS: u64 = 0x100;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        let (read_fd, write_fd) = (pipe_fds[0], pipe_fds[1]);
+
+        const BUF_A: u64 = 0x200;
+        const BUF_B: u64 = 0x210;
+        memory.write(BUF_A, b"foo").unwrap();
+        memory.write(BUF_B, b"barbaz").unwrap();
+        const IOV: u64 = 0x300;
+        write_struct(&mut memory, IOV, &[BUF_A, 3u64]);
+        write_struct(&mut memory, IOV + 16, &[BUF_B, 6u64]);
+
+        // writev gathers both iovecs into the pipe.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_writev,
+                [write_fd as u64, IOV, 2, 0, 0, 0]
+            ),
+            9
+        );
+
+        // readv scatters the 9 bytes back into two differently-sized iovecs.
+        const RBUF_A: u64 = 0x400;
+        const RBUF_B: u64 = 0x410;
+        const RIOV: u64 = 0x500;
+        write_struct(&mut memory, RIOV, &[RBUF_A, 4u64]);
+        write_struct(&mut memory, RIOV + 16, &[RBUF_B, 5u64]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [read_fd as u64, RIOV, 2, 0, 0, 0]
+            ),
+            9
+        );
+        let mut first = [0u8; 4];
+        let mut second = [0u8; 5];
+        memory.read(RBUF_A, &mut first).unwrap();
+        memory.read(RBUF_B, &mut second).unwrap();
+        assert_eq!(&first, b"foob");
+        assert_eq!(&second, b"arbaz");
+    }
+
+    #[test]
+    fn flock_and_chown_are_deterministic_for_owned_files() {
+        let root = TestDir::new();
+        std::fs::write(root.0.join("f"), b"x").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        write_c_string(&mut memory, 0x100, "f");
+        let fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0],
+        );
+        assert!(fd >= 0, "open failed: {fd}");
+
+        // flock acquire (non-blocking) and release succeed on an owned descriptor.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_flock,
+                [
+                    fd as u64,
+                    (libc::LOCK_EX | libc::LOCK_NB) as u64,
+                    0,
+                    0,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_flock,
+                [fd as u64, libc::LOCK_UN as u64, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // flock on an unknown descriptor is EBADF.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_flock,
+                [999, libc::LOCK_EX as u64, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+
+        // chown/fchown validate the target then no-op to 0 (virtualized identity).
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchown,
+                [fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chown,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // A missing path still reports ENOENT; a bad fd reports EBADF.
+        write_c_string(&mut memory, 0x200, "missing-file");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chown,
+                [0x200, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchown,
+                [999, 0, 0, 0, 0, 0]
             ),
             negative_errno(libc::EBADF)
         );
@@ -10038,5 +10398,135 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn faccessat_variants_check_permissions() {
+        let dir = TestDir::new();
+        std::fs::write(dir.0.join("readable"), b"hi").unwrap();
+        std::fs::set_permissions(
+            dir.0.join("readable"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let mut state = test_state(&dir.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+
+        // access(2): an existing readable file resolves to success.
+        write_c_string(&mut memory, 0x100, "readable");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_access,
+                [0x100, libc::R_OK as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        // faccessat2(AT_FDCWD, path, R_OK, AT_EACCESS) is what the shell
+        // `test -r` operator issues; it must succeed rather than ENOSYS.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_faccessat2,
+                [
+                    libc::AT_FDCWD as u64,
+                    0x100,
+                    libc::R_OK as u64,
+                    libc::AT_EACCESS as u64,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        // faccessat(2) without a flags argument behaves like access(2).
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_faccessat,
+                [libc::AT_FDCWD as u64, 0x100, libc::R_OK as u64, 0, 0, 0],
+            ),
+            0
+        );
+        // A 0o644 file is not executable for any user, including root.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_faccessat2,
+                [libc::AT_FDCWD as u64, 0x100, libc::X_OK as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::EACCES)
+        );
+        // A missing path reports ENOENT.
+        write_c_string(&mut memory, 0x200, "missing");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_faccessat2,
+                [libc::AT_FDCWD as u64, 0x200, libc::R_OK as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        // An unsupported flag is rejected with EINVAL.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_faccessat2,
+                [
+                    libc::AT_FDCWD as u64,
+                    0x100,
+                    libc::R_OK as u64,
+                    0x8000,
+                    0,
+                    0
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+    }
+
+    #[test]
+    fn wait4_sign_extends_negative_pid_and_reaps_child() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+        // A child (pid 9) has already exited with code 7.
+        state.children.insert(9, 7);
+
+        // wait4(-1) arrives as 0xFFFF_FFFF in a 64-bit register; the handler
+        // must sign-extend it to -1 and reap the recorded child rather than
+        // treating the value as an out-of-range positive pid and returning
+        // ECHILD.
+        let status_addr = 0x100u64;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_wait4,
+                [0xFFFF_FFFF, status_addr, 0, 0, 0, 0],
+            ),
+            9
+        );
+        // The wait status encodes a normal exit with code 7 (WIFEXITED,
+        // WEXITSTATUS == 7).
+        let raw: i32 = read_struct(&memory, status_addr);
+        assert_eq!(raw & 0x7f, 0);
+        assert_eq!((raw >> 8) & 0xff, 7);
+        // The child is consumed; a subsequent reap reports ECHILD.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_wait4,
+                [0xFFFF_FFFF, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ECHILD)
+        );
     }
 }
