@@ -100,8 +100,8 @@ userspace; that prototype ABI must be replaced before running a stock guest
 kernel.
 
 The deterministic guest procfs surface is currently limited to explicit
-synthetic files and descriptor reopen aliases. It does not yet enumerate procfs
-directories or expose guest descriptor link targets, so proc-inspection tools
-that depend on those operations remain unsupported.
+synthetic files, descriptor reopen aliases, and guest-owned descriptor link
+targets. It does not yet enumerate procfs directories, so proc-inspection tools
+that scan the process table remain unsupported.
 
 The ELF loader supports one host interpreter and enough file-backed mapping for small dynamically linked programs. General libc coverage remains bounded by the explicit syscall personality; unsupported operations fail with `ENOSYS` rather than silently bypassing the tool.
