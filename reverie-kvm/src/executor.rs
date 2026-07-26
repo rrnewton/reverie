@@ -1560,6 +1560,32 @@ fn guest_fd_path(path: &[u8]) -> Option<libc::c_int> {
     })
 }
 
+// TODO-HUMAN-REVIEW(PR-92): Review guest-fd metadata translation.
+#[derive(Clone, Copy)]
+struct GuestFdMetadata {
+    guest_fd: libc::c_int,
+    host_fd: RawFd,
+    no_follow: bool,
+}
+
+fn guest_fd_metadata(
+    state: &LoadedStaticElf,
+    path: &[u8],
+    no_follow: bool,
+) -> Result<Option<GuestFdMetadata>, i64> {
+    let Some(guest_fd) = guest_fd_path(path) else {
+        return Ok(None);
+    };
+    let Some(host_fd) = host_fd(state, guest_fd) else {
+        return Err(negative_errno(libc::ENOENT));
+    };
+    Ok(Some(GuestFdMetadata {
+        guest_fd,
+        host_fd,
+        no_follow,
+    }))
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-92): Review guest /dev/fd duplication without supervisor procfs exposure.
 fn open_guest_fd_path(
@@ -1569,7 +1595,7 @@ fn open_guest_fd_path(
     close_on_exec: bool,
 ) -> i64 {
     let Some(source_host_fd) = host_fd(state, guest_fd) else {
-        return negative_errno(libc::EBADF);
+        return negative_errno(libc::ENOENT);
     };
     let unsupported = (libc::O_CREAT
         | libc::O_DIRECTORY
@@ -1588,6 +1614,7 @@ fn open_guest_fd_path(
         return negative_errno(libc::EACCES);
     }
     let source_alias = output_alias(state, guest_fd);
+    let source_proc_inode = state.proc_files.get(&guest_fd).copied();
     // SAFETY: source_host_fd names a live descriptor and F_DUPFD_CLOEXEC
     // returns a new owned descriptor.
     let duplicated = unsafe { libc::fcntl(source_host_fd, libc::F_DUPFD_CLOEXEC, 0) };
@@ -1596,7 +1623,13 @@ fn open_guest_fd_path(
     }
     // SAFETY: fcntl returned a new owned descriptor.
     let file = unsafe { std::fs::File::from_raw_fd(duplicated) };
-    insert_file_with_flags(state, file, close_on_exec, source_alias)
+    let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
+    if new_fd >= 0
+        && let Some(inode) = source_proc_inode
+    {
+        state.proc_files.insert(new_fd as libc::c_int, inode);
+    }
+    new_fd
 }
 
 fn ensure_not_procfs(file: &std::fs::File) -> Result<(), i64> {
@@ -1769,6 +1802,7 @@ fn duplicate_fd_at_or_above(
     raw_minimum: u64,
     close_on_exec: bool,
     output_alias: Option<OutputAlias>,
+    source_proc_inode: Option<u64>,
 ) -> i64 {
     let minimum = raw_minimum as libc::c_int;
     if !(0..GUEST_NOFILE_LIMIT).contains(&minimum) {
@@ -1800,6 +1834,9 @@ fn duplicate_fd_at_or_above(
         state.closed_standard_fds.remove(&fd);
     }
     set_output_alias(state, fd, output_alias);
+    if let Some(inode) = source_proc_inode {
+        state.proc_files.insert(fd, inode);
+    }
     i64::from(fd)
 }
 
@@ -1819,6 +1856,7 @@ fn duplicate_fd(
     }
     let old_fd = raw_old_fd as libc::c_int;
     let source_alias = output_alias(state, old_fd);
+    let source_proc_inode = state.proc_files.get(&old_fd).copied();
     let Some(old_host_fd) = host_fd(state, old_fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -1863,9 +1901,20 @@ fn duplicate_fd(
             state.closed_standard_fds.remove(&new_fd);
         }
         set_output_alias(state, new_fd, source_alias);
+        if let Some(inode) = source_proc_inode {
+            state.proc_files.insert(new_fd, inode);
+        } else {
+            state.proc_files.remove(&new_fd);
+        }
         i64::from(new_fd)
     } else {
-        insert_file_with_flags(state, file, close_on_exec, source_alias)
+        let new_fd = insert_file_with_flags(state, file, close_on_exec, source_alias);
+        if new_fd >= 0
+            && let Some(inode) = source_proc_inode
+        {
+            state.proc_files.insert(new_fd as libc::c_int, inode);
+        }
+        new_fd
     }
 }
 
@@ -2376,8 +2425,20 @@ fn fstatat_impl(
         return write_struct(memory, output_address, &stat);
     }
 
+    let guest_path = match guest_fd_metadata(state, &path, flags & libc::AT_SYMLINK_NOFOLLOW != 0) {
+        Ok(metadata) => metadata,
+        Err(error) => return error,
+    };
+    if let Some(metadata) = guest_path
+        && metadata.no_follow
+    {
+        let stat = synthetic_guest_fd_symlink_stat(metadata.guest_fd);
+        return write_struct(memory, output_address, &stat);
+    }
     let opened_file;
-    let host_fd = if path.is_empty() {
+    let host_fd = if let Some(metadata) = guest_path {
+        metadata.host_fd
+    } else if path.is_empty() {
         let Ok((host_fd, _)) = host_dirfd_and_path(state, guest_dirfd, &path) else {
             return negative_errno(libc::EBADF);
         };
@@ -2405,15 +2466,19 @@ fn fstatat_impl(
     }
     // SAFETY: fstat initialized stat on success.
     let mut stat = unsafe { stat.assume_init() };
-    // AT_EMPTY_PATH stat of a synthetic /proc descriptor (path is empty here).
-    let empty_path_proc_inode = path
-        .is_empty()
-        .then(|| state.proc_files.get(&guest_dirfd).copied())
-        .flatten();
-    if let Some(inode) = empty_path_proc_inode {
-        sanitize_proc_stat(&mut stat, inode);
+    if let Some(metadata) = guest_path {
+        sanitize_guest_fd_stat(state, metadata.guest_fd, &mut stat);
+    } else {
+        // AT_EMPTY_PATH stat of a synthetic /proc descriptor.
+        let empty_path_proc_inode = path
+            .is_empty()
+            .then(|| state.proc_files.get(&guest_dirfd).copied())
+            .flatten();
+        if let Some(inode) = empty_path_proc_inode {
+            sanitize_proc_stat(&mut stat, inode);
+        }
+        sanitize_stat_timestamps(&mut stat);
     }
-    sanitize_stat_timestamps(&mut stat);
     write_struct(memory, output_address, &stat)
 }
 
@@ -2460,8 +2525,20 @@ fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         return write_struct(memory, args[4], &stx);
     }
 
+    let guest_path = match guest_fd_metadata(state, &path, flags & libc::AT_SYMLINK_NOFOLLOW != 0) {
+        Ok(metadata) => metadata,
+        Err(error) => return error,
+    };
+    if let Some(metadata) = guest_path
+        && metadata.no_follow
+    {
+        let stat = synthetic_guest_fd_symlink_statx(metadata.guest_fd);
+        return write_struct(memory, args[4], &stat);
+    }
     let opened_file;
-    let host_fd = if path.is_empty() {
+    let host_fd = if let Some(metadata) = guest_path {
+        metadata.host_fd
+    } else if path.is_empty() {
         let Ok((host_fd, _)) = host_dirfd_and_path(state, args[0] as libc::c_int, &path) else {
             return negative_errno(libc::EBADF);
         };
@@ -2502,14 +2579,18 @@ fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     }
     // SAFETY: statx initialized stat on success.
     let mut stat = unsafe { stat.assume_init() };
-    for timestamp in [
-        &mut stat.stx_atime,
-        &mut stat.stx_btime,
-        &mut stat.stx_ctime,
-        &mut stat.stx_mtime,
-    ] {
-        timestamp.tv_sec = 0;
-        timestamp.tv_nsec = 0;
+    if let Some(metadata) = guest_path {
+        sanitize_guest_fd_statx(state, metadata.guest_fd, &mut stat);
+    } else {
+        for timestamp in [
+            &mut stat.stx_atime,
+            &mut stat.stx_btime,
+            &mut stat.stx_ctime,
+            &mut stat.stx_mtime,
+        ] {
+            timestamp.tv_sec = 0;
+            timestamp.tv_nsec = 0;
+        }
     }
     write_struct(memory, args[4], &stat)
 }
@@ -3165,7 +3246,13 @@ fn canonical_fd_path(fd: RawFd) -> Result<std::path::PathBuf, i64> {
 // metadata, because the backing memfd's own inode varies per run and would
 // otherwise perturb determinism. Directory enumeration of /proc itself is not
 // provided, so tools that scan every PID (e.g. `ps`) are out of scope here.
-const SYNTHETIC_PROC_DEV: u64 = 0x00ff_0001;
+const SYNTHETIC_DEV_MAJOR: u32 = 0;
+const SYNTHETIC_PROC_DEV_MINOR: u32 = 0xff01;
+const SYNTHETIC_GUEST_FD_DEV_MINOR: u32 = 0xff02;
+
+fn synthetic_dev(minor: u32) -> libc::dev_t {
+    libc::makedev(SYNTHETIC_DEV_MAJOR, minor)
+}
 
 /// Deterministic inode for a normalized synthetic /proc path (FNV-1a). Stable
 /// across runs so `--verify` sees identical `stat` results.
@@ -3354,7 +3441,7 @@ fn open_synthetic_proc(
 /// Overwrite the nondeterministic fields of a memfd `stat` with the stable
 /// synthetic identity of a /proc file, keeping the (deterministic) size.
 fn sanitize_proc_stat(stat: &mut libc::stat, inode: u64) {
-    stat.st_dev = SYNTHETIC_PROC_DEV;
+    stat.st_dev = synthetic_dev(SYNTHETIC_PROC_DEV_MINOR);
     stat.st_ino = inode;
     stat.st_mode = libc::S_IFREG | 0o444;
     stat.st_nlink = 1;
@@ -3402,9 +3489,74 @@ fn synthetic_proc_statx(inode: u64, size: u64) -> libc::statx {
     stx.stx_ino = inode;
     stx.stx_size = size;
     stx.stx_blocks = (size + 511) >> 9;
-    stx.stx_dev_major = 0;
-    stx.stx_dev_minor = SYNTHETIC_PROC_DEV as u32;
+    stx.stx_dev_major = SYNTHETIC_DEV_MAJOR;
+    stx.stx_dev_minor = SYNTHETIC_PROC_DEV_MINOR;
     stx
+}
+
+// TODO-HUMAN-REVIEW(PR-92): Review deterministic guest-fd alias metadata.
+fn synthetic_guest_fd_inode(guest_fd: libc::c_int, symlink: bool) -> u64 {
+    0x2000_0000 + (guest_fd as u64 * 2) + u64::from(symlink)
+}
+
+fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: &mut libc::stat) {
+    if let Some(&inode) = state.proc_files.get(&guest_fd) {
+        sanitize_proc_stat(stat, inode);
+        return;
+    }
+    stat.st_dev = synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR);
+    stat.st_ino = synthetic_guest_fd_inode(guest_fd, false);
+    sanitize_stat_timestamps(stat);
+}
+
+fn sanitize_guest_fd_statx(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: &mut libc::statx) {
+    if let Some(&inode) = state.proc_files.get(&guest_fd) {
+        *stat = synthetic_proc_statx(inode, stat.stx_size);
+        return;
+    }
+    stat.stx_ino = synthetic_guest_fd_inode(guest_fd, false);
+    stat.stx_dev_major = SYNTHETIC_DEV_MAJOR;
+    stat.stx_dev_minor = SYNTHETIC_GUEST_FD_DEV_MINOR;
+    for timestamp in [
+        &mut stat.stx_atime,
+        &mut stat.stx_btime,
+        &mut stat.stx_ctime,
+        &mut stat.stx_mtime,
+    ] {
+        timestamp.tv_sec = 0;
+        timestamp.tv_nsec = 0;
+    }
+}
+
+fn synthetic_guest_fd_symlink_stat(guest_fd: libc::c_int) -> libc::stat {
+    // SAFETY: libc::stat is plain-old-data; a zeroed value is valid.
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    stat.st_dev = synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR);
+    stat.st_ino = synthetic_guest_fd_inode(guest_fd, true);
+    stat.st_mode = libc::S_IFLNK | 0o777;
+    stat.st_nlink = 1;
+    stat.st_uid = 0;
+    stat.st_gid = 0;
+    stat.st_blksize = PAGE_SIZE as libc::blksize_t;
+    stat
+}
+
+fn synthetic_guest_fd_symlink_statx(guest_fd: libc::c_int) -> libc::statx {
+    // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
+    let mut stat = unsafe { std::mem::zeroed::<libc::statx>() };
+    stat.stx_mask = libc::STATX_TYPE
+        | libc::STATX_MODE
+        | libc::STATX_NLINK
+        | libc::STATX_UID
+        | libc::STATX_GID
+        | libc::STATX_INO
+        | libc::STATX_SIZE;
+    stat.stx_blksize = PAGE_SIZE as u32;
+    stat.stx_nlink = 1;
+    stat.stx_mode = (libc::S_IFLNK | 0o777) as u16;
+    stat.stx_ino = synthetic_guest_fd_inode(guest_fd, true);
+    stat.stx_dev_minor = SYNTHETIC_GUEST_FD_DEV_MINOR;
+    stat
 }
 
 fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -3474,14 +3626,27 @@ fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
 fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let guest_fd = args[0] as libc::c_int;
     let source_alias = output_alias(state, guest_fd);
+    let source_proc_inode = state.proc_files.get(&guest_fd).copied();
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
     match args[1] as libc::c_int {
-        libc::F_DUPFD => duplicate_fd_at_or_above(state, host_fd, args[2], false, source_alias),
-        libc::F_DUPFD_CLOEXEC => {
-            duplicate_fd_at_or_above(state, host_fd, args[2], true, source_alias)
-        }
+        libc::F_DUPFD => duplicate_fd_at_or_above(
+            state,
+            host_fd,
+            args[2],
+            false,
+            source_alias,
+            source_proc_inode,
+        ),
+        libc::F_DUPFD_CLOEXEC => duplicate_fd_at_or_above(
+            state,
+            host_fd,
+            args[2],
+            true,
+            source_alias,
+            source_proc_inode,
+        ),
         libc::F_GETFL => match fd_status_flags(host_fd) {
             Ok(flags) => flags as i64,
             Err(error) => error,
@@ -5295,7 +5460,7 @@ mod tests {
         let stat: libc::stat = read_struct(&memory, stat_address);
         assert_eq!(stat.st_mode, libc::S_IFREG | 0o444);
         assert_eq!(stat.st_ino, synthetic_proc_inode(b"/proc/uptime"));
-        assert_eq!(stat.st_dev, SYNTHETIC_PROC_DEV);
+        assert_eq!(stat.st_dev, synthetic_dev(SYNTHETIC_PROC_DEV_MINOR));
         assert_eq!(stat.st_size, b"0.00 0.00\n".len() as libc::off_t);
         assert_eq!(stat.st_uid, 0);
         assert_eq!(stat.st_mtime, 0);
@@ -5858,6 +6023,7 @@ mod tests {
         const PIPE_FDS: u64 = 0x200;
         const PAYLOAD: u64 = 0x300;
         const READ_BUFFER: u64 = 0x400;
+        const STATX: u64 = 0x500;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -5882,6 +6048,24 @@ mod tests {
             [PATH, libc::O_RDONLY as u64, 0, 0, 0, 0],
         );
         assert_eq!(duplicate, 5);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_statx,
+                [
+                    libc::AT_FDCWD as u64,
+                    PATH,
+                    0,
+                    libc::STATX_BASIC_STATS as u64,
+                    STATX,
+                    0,
+                ]
+            ),
+            0
+        );
+        let statx: libc::statx = read_struct(&memory, STATX);
+        assert_eq!(statx.stx_mode & libc::S_IFMT as u16, libc::S_IFIFO as u16);
         memory.write(PAYLOAD, b"fd-path").unwrap();
         assert_eq!(
             syscall_result(
@@ -5913,10 +6097,206 @@ mod tests {
                 libc::SYS_open,
                 [PATH, libc::O_RDONLY as u64, 0, 0, 0, 0],
             ),
-            negative_errno(libc::EBADF)
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_statx,
+                [
+                    libc::AT_FDCWD as u64,
+                    PATH,
+                    0,
+                    libc::STATX_BASIC_STATS as u64,
+                    STATX,
+                    0,
+                ]
+            ),
+            negative_errno(libc::ENOENT)
         );
         assert_eq!(guest_fd_path(b"/proc/self/fd/3"), Some(3));
         assert_eq!(guest_fd_path(b"/dev/fd/not-a-fd"), None);
+    }
+
+    #[test]
+    fn guest_fd_metadata_is_stable_and_isolated_from_supervisor() {
+        const PATH: u64 = 0x100;
+        const STAT: u64 = 0x400;
+        const STATX: u64 = 0x800;
+        const PIPE_FDS: u64 = 0xc00;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+
+        for prefix in ["/dev/fd/", "/proc/self/fd/"] {
+            write_c_string(&mut memory, PATH, &format!("{prefix}3"));
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_newfstatat,
+                    [libc::AT_FDCWD as u64, PATH, STAT, 0, 0, 0]
+                ),
+                0
+            );
+            let followed: libc::stat = read_struct(&memory, STAT);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_statx,
+                    [
+                        libc::AT_FDCWD as u64,
+                        PATH,
+                        0,
+                        libc::STATX_BASIC_STATS as u64,
+                        STATX,
+                        0,
+                    ]
+                ),
+                0
+            );
+            let followed_x: libc::statx = read_struct(&memory, STATX);
+            assert_eq!(followed.st_ino, followed_x.stx_ino);
+            assert_eq!(libc::major(followed.st_dev), followed_x.stx_dev_major);
+            assert_eq!(libc::minor(followed.st_dev), followed_x.stx_dev_minor);
+            assert_eq!(followed_x.stx_dev_major, SYNTHETIC_DEV_MAJOR);
+            assert_eq!(followed_x.stx_dev_minor, SYNTHETIC_GUEST_FD_DEV_MINOR);
+            assert_eq!(followed.st_mode & libc::S_IFMT, libc::S_IFIFO);
+
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_newfstatat,
+                    [
+                        libc::AT_FDCWD as u64,
+                        PATH,
+                        STAT,
+                        libc::AT_SYMLINK_NOFOLLOW as u64,
+                        0,
+                        0,
+                    ]
+                ),
+                0
+            );
+            let nofollow: libc::stat = read_struct(&memory, STAT);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_statx,
+                    [
+                        libc::AT_FDCWD as u64,
+                        PATH,
+                        libc::AT_SYMLINK_NOFOLLOW as u64,
+                        libc::STATX_BASIC_STATS as u64,
+                        STATX,
+                        0,
+                    ]
+                ),
+                0
+            );
+            let nofollow_x: libc::statx = read_struct(&memory, STATX);
+            assert_eq!(nofollow.st_ino, nofollow_x.stx_ino);
+            assert_eq!(libc::major(nofollow.st_dev), nofollow_x.stx_dev_major);
+            assert_eq!(libc::minor(nofollow.st_dev), nofollow_x.stx_dev_minor);
+            assert_eq!(nofollow.st_mode & libc::S_IFMT, libc::S_IFLNK);
+            assert_eq!(
+                nofollow_x.stx_mode & libc::S_IFMT as u16,
+                libc::S_IFLNK as u16
+            );
+
+            write_c_string(&mut memory, PATH, &format!("{prefix}99"));
+            for flags in [0, libc::AT_SYMLINK_NOFOLLOW as u64] {
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_newfstatat,
+                        [libc::AT_FDCWD as u64, PATH, STAT, flags, 0, 0]
+                    ),
+                    negative_errno(libc::ENOENT)
+                );
+                assert_eq!(
+                    syscall_result(
+                        &mut memory,
+                        &mut state,
+                        libc::SYS_statx,
+                        [
+                            libc::AT_FDCWD as u64,
+                            PATH,
+                            flags,
+                            libc::STATX_BASIC_STATS as u64,
+                            STATX,
+                            0,
+                        ]
+                    ),
+                    negative_errno(libc::ENOENT)
+                );
+            }
+        }
+
+        let proc_fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert!(proc_fd >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fstat,
+                [proc_fd as u64, STAT, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let direct_proc: libc::stat = read_struct(&memory, STAT);
+        write_c_string(&mut memory, PATH, &format!("/dev/fd/{proc_fd}"));
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_newfstatat,
+                [libc::AT_FDCWD as u64, PATH, STAT, 0, 0, 0]
+            ),
+            0
+        );
+        let aliased_proc: libc::stat = read_struct(&memory, STAT);
+        assert_eq!(aliased_proc.st_dev, direct_proc.st_dev);
+        assert_eq!(aliased_proc.st_ino, direct_proc.st_ino);
+        assert_eq!(aliased_proc.st_mode, direct_proc.st_mode);
+        assert_eq!(aliased_proc.st_size, direct_proc.st_size);
+
+        let fcntl_copy = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [proc_fd as u64, libc::F_DUPFD as u64, 20, 0, 0, 0],
+        );
+        let dup_copy = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [proc_fd as u64, 0, 0, 0, 0, 0],
+        );
+        let inode = state.proc_files[&(proc_fd as libc::c_int)];
+        assert_eq!(
+            state.proc_files.get(&(fcntl_copy as libc::c_int)),
+            Some(&inode)
+        );
+        assert_eq!(
+            state.proc_files.get(&(dup_copy as libc::c_int)),
+            Some(&inode)
+        );
     }
 
     #[test]
