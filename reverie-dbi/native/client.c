@@ -487,6 +487,9 @@ static void start_pending_thread(void) {
       (int32_t)dr_get_process_id(),
       atomic_load_explicit(&branch_count, memory_order_relaxed), 0,
       invoke_syscall, read_registers);
+  // TODO-HUMAN-REVIEW(PR-134): Confirm retryable native child startup.
+  if (init_result > 0)
+    return;
   if (init_result < 0) {
     dr_fprintf(diagnostic_file,
                "reverie-dbi: runtime thread initialization failed\n");
@@ -1560,10 +1563,10 @@ static bool pre_syscall(void *drcontext, int sysnum) {
    * thread-init event has returned so the parent post-clone callback can
    * register it. */
   // TODO-HUMAN-REVIEW(PR-134): Confirm the delayed-flush syscall fallback.
-  if (!has_copied_runtime() && counters->pending_thread_start != 0) {
+  while (!has_copied_runtime() && counters->pending_thread_start != 0) {
     start_pending_thread();
     if (counters->pending_thread_start != 0)
-      return false;
+      dr_sleep(1);
   }
 
   for (i = 0; i != 6; ++i)
