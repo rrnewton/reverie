@@ -24,6 +24,7 @@ use crate::GuestMemory;
 use crate::SyscallRequest;
 use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::SegmentBase;
+use crate::elf::GuestFileIdentity;
 use crate::elf::LoadedStaticElf;
 use crate::elf::STACK_LIMIT;
 use crate::runtime::SyscallExecutor;
@@ -1822,6 +1823,7 @@ fn guest_fd_link_target(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Resul
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-92): Review guest /dev/fd duplication without supervisor procfs exposure.
 // TODO-HUMAN-REVIEW(PR-114): Review fresh open-file-description semantics.
+// TODO-HUMAN-REVIEW(PR-136): Review procfd object-identity propagation.
 fn open_guest_fd_path(
     state: &mut LoadedStaticElf,
     guest_fd: libc::c_int,
@@ -1845,7 +1847,7 @@ fn open_guest_fd_path(
     }
     let source_alias = output_alias(state, guest_fd);
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
-    let source_object_inode = synthetic_guest_fd_object_inode(state, guest_fd);
+    let source_object_inode = guest_fd_object_identity(state, guest_fd);
 
     // Opening a proc-fd magic link creates a fresh open file description. A
     // descriptor duplication would incorrectly share the source offset and
@@ -2026,8 +2028,21 @@ fn set_output_alias(state: &mut LoadedStaticElf, fd: libc::c_int, alias: Option<
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-136): Review initial descriptor-object identity allocation.
-fn allocate_fd_object_inode(state: &mut LoadedStaticElf, file: &std::fs::File) -> Result<u64, i64> {
+// TODO-HUMAN-REVIEW(PR-136): Review shared descriptor-object identity allocation.
+fn cleanup_fd_object_inodes(state: &LoadedStaticElf) {
+    let mut table = state
+        .file_identity_table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    table
+        .objects
+        .retain(|_, identity| identity.strong_count() > 0);
+}
+
+fn allocate_fd_object_inode(
+    state: &LoadedStaticElf,
+    file: &std::fs::File,
+) -> Result<Arc<GuestFileIdentity>, i64> {
     let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
     // SAFETY: stat is writable and file owns a live descriptor.
     if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
@@ -2036,16 +2051,24 @@ fn allocate_fd_object_inode(state: &mut LoadedStaticElf, file: &std::fs::File) -
     // SAFETY: fstat initialized stat on success.
     let stat = unsafe { stat.assume_init() };
     let key = (stat.st_dev, stat.st_ino);
-    if let Some(&inode) = state.host_object_inodes.get(&key) {
-        return Ok(inode);
+    let mut table = state
+        .file_identity_table
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    table
+        .objects
+        .retain(|_, identity| identity.strong_count() > 0);
+    if let Some(identity) = table.objects.get(&key).and_then(std::sync::Weak::upgrade) {
+        return Ok(identity);
     }
 
-    let inode = state.next_fd_object_inode;
-    state.next_fd_object_inode = inode
+    let inode = table.next_inode;
+    table.next_inode = inode
         .checked_add(1)
         .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
-    state.host_object_inodes.insert(key, inode);
-    Ok(inode)
+    let identity = Arc::new(GuestFileIdentity { inode });
+    table.objects.insert(key, Arc::downgrade(&identity));
+    Ok(identity)
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review descriptor insertion and identity allocation.
@@ -2085,7 +2108,7 @@ fn duplicate_fd_at_or_above(
     close_on_exec: bool,
     output_alias: Option<OutputAlias>,
     source_proc_inode: Option<u64>,
-    source_object_inode: u64,
+    source_object_inode: Arc<GuestFileIdentity>,
 ) -> i64 {
     let minimum = raw_minimum as libc::c_int;
     if !(0..GUEST_NOFILE_LIMIT).contains(&minimum) {
@@ -2145,7 +2168,7 @@ fn duplicate_fd(
     let Some(old_host_fd) = host_fd(state, old_fd) else {
         return negative_errno(libc::EBADF);
     };
-    let source_object_inode = synthetic_guest_fd_object_inode(state, old_fd);
+    let source_object_inode = guest_fd_object_identity(state, old_fd);
     let close_on_exec = is_dup3 && flags & libc::O_CLOEXEC != 0;
 
     let new_fd = match raw_new_fd {
@@ -2177,6 +2200,7 @@ fn duplicate_fd(
     if let Some(new_fd) = new_fd {
         state.files.insert(new_fd, file);
         state.fd_object_inodes.insert(new_fd, source_object_inode);
+        cleanup_fd_object_inodes(state);
         if close_on_exec {
             state.cloexec_fds.insert(new_fd);
         } else {
@@ -2246,15 +2270,13 @@ fn pipe2(
     if write_fd < 0 {
         state.files.remove(&(read_fd as libc::c_int));
         state.fd_object_inodes.remove(&(read_fd as libc::c_int));
+        cleanup_fd_object_inodes(state);
         state.cloexec_fds.remove(&(read_fd as libc::c_int));
         return write_fd;
     }
 
     let read_fd = read_fd as libc::c_int;
     let write_fd = write_fd as libc::c_int;
-    let object_inode = synthetic_guest_fd_object_inode(state, read_fd);
-    state.fd_object_inodes.insert(read_fd, object_inode);
-    state.fd_object_inodes.insert(write_fd, object_inode);
 
     let mut bytes = [0; std::mem::size_of::<[libc::c_int; 2]>()];
     bytes[..std::mem::size_of::<libc::c_int>()].copy_from_slice(&read_fd.to_ne_bytes());
@@ -2264,6 +2286,7 @@ fn pipe2(
         state.files.remove(&write_fd);
         state.fd_object_inodes.remove(&read_fd);
         state.fd_object_inodes.remove(&write_fd);
+        cleanup_fd_object_inodes(state);
         state.cloexec_fds.remove(&read_fd);
         state.cloexec_fds.remove(&write_fd);
         return negative_errno(libc::EFAULT);
@@ -3898,12 +3921,23 @@ fn synthetic_guest_fd_inode(guest_fd: libc::c_int, symlink: bool) -> u64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review deterministic open-file object grouping.
-fn synthetic_guest_fd_object_inode(state: &LoadedStaticElf, guest_fd: libc::c_int) -> u64 {
+fn guest_fd_object_identity(
+    state: &LoadedStaticElf,
+    guest_fd: libc::c_int,
+) -> Arc<GuestFileIdentity> {
     state
         .fd_object_inodes
         .get(&guest_fd)
-        .copied()
-        .unwrap_or_else(|| synthetic_guest_fd_inode(guest_fd, false))
+        .cloned()
+        .unwrap_or_else(|| {
+            Arc::new(GuestFileIdentity {
+                inode: synthetic_guest_fd_inode(guest_fd, false),
+            })
+        })
+}
+
+fn synthetic_guest_fd_object_inode(state: &LoadedStaticElf, guest_fd: libc::c_int) -> u64 {
+    guest_fd_object_identity(state, guest_fd).inode
 }
 
 fn sanitize_guest_fd_stat(state: &LoadedStaticElf, guest_fd: libc::c_int, stat: &mut libc::stat) {
@@ -4037,7 +4071,7 @@ fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
-    let source_object_inode = synthetic_guest_fd_object_inode(state, guest_fd);
+    let source_object_inode = guest_fd_object_identity(state, guest_fd);
     match args[1] as libc::c_int {
         libc::F_DUPFD => duplicate_fd_at_or_above(
             state,
@@ -4129,6 +4163,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         state.cloexec_fds.remove(&fd);
         state.proc_files.remove(&fd);
         state.fd_object_inodes.remove(&fd);
+        cleanup_fd_object_inodes(state);
         set_output_alias(state, fd, None);
         return 0;
     }
@@ -4139,6 +4174,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         state.closed_standard_fds.insert(fd);
         state.cloexec_fds.remove(&fd);
         state.fd_object_inodes.remove(&fd);
+        cleanup_fd_object_inodes(state);
         set_output_alias(state, fd, None);
         return 0;
     }
@@ -5600,8 +5636,12 @@ mod tests {
             children: BTreeMap::new(),
             proc_files: BTreeMap::new(),
             fd_object_inodes: BTreeMap::new(),
-            host_object_inodes: BTreeMap::new(),
-            next_fd_object_inode: 0x2100_0000,
+            file_identity_table: Arc::new(std::sync::Mutex::new(
+                crate::elf::GuestFileIdentityTable {
+                    next_inode: 0x2100_0000,
+                    objects: BTreeMap::new(),
+                },
+            )),
         }
     }
 
@@ -7148,19 +7188,25 @@ mod tests {
         let new_inode = state
             .fd_object_inodes
             .get(&second_pipe_fds[0])
-            .copied()
+            .map(|identity| identity.inode)
             .unwrap();
         assert_eq!(
-            state.fd_object_inodes.get(&second_pipe_fds[1]),
-            Some(&new_inode)
+            state
+                .fd_object_inodes
+                .get(&second_pipe_fds[1])
+                .map(|identity| identity.inode),
+            Some(new_inode)
         );
         assert_ne!(
             new_inode, stable_inode,
             "descriptor reuse must allocate a distinct live pipe identity"
         );
         assert_eq!(
-            state.fd_object_inodes.get(&pipe_fds[1]),
-            Some(&stable_inode)
+            state
+                .fd_object_inodes
+                .get(&pipe_fds[1])
+                .map(|identity| identity.inode),
+            Some(stable_inode)
         );
         write_c_string(
             &mut memory,
@@ -7176,6 +7222,43 @@ mod tests {
         let mut target = vec![0; count as usize];
         memory.read(OUTPUT, &mut target).unwrap();
         assert_eq!(target, format!("pipe:[{new_inode}]").as_bytes());
+    }
+
+    #[test]
+    fn forked_states_share_file_object_identity_namespace() {
+        let root = TestDir::new();
+        std::fs::write(root.0.join("child-file"), b"child").unwrap();
+        std::fs::write(root.0.join("parent-file"), b"parent").unwrap();
+        let mut parent = test_state(&root.0);
+        let mut child = parent.try_clone_for_fork(2).unwrap();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        let child_fd = open_readonly(&mut memory, &mut child, "child-file");
+        let child_inode = synthetic_guest_fd_object_inode(&child, child_fd as libc::c_int);
+
+        let parent_fd = open_readonly(&mut memory, &mut parent, "parent-file");
+        let parent_inode = synthetic_guest_fd_object_inode(&parent, parent_fd as libc::c_int);
+
+        let reopened_fd = open_readonly(&mut memory, &mut parent, "child-file");
+        let reopened_inode = synthetic_guest_fd_object_inode(&parent, reopened_fd as libc::c_int);
+
+        assert_ne!(
+            child_inode, parent_inode,
+            "forked states must not allocate one identity to distinct live files"
+        );
+        assert_eq!(
+            child_inode, reopened_inode,
+            "the parent must reuse the identity of a child-held file object"
+        );
+
+        assert_eq!(close(&mut parent, parent_fd as u64), 0);
+        assert_eq!(close(&mut parent, reopened_fd as u64), 0);
+        assert_eq!(close(&mut child, child_fd as u64), 0);
+        let table = parent
+            .file_identity_table
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert!(table.objects.is_empty());
     }
 
     #[test]
