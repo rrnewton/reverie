@@ -3289,7 +3289,7 @@ const IOPRIO_CLASS_BE: libc::c_int = 2;
 const IOPRIO_CLASS_IDLE: libc::c_int = 3;
 const IOPRIO_LEVEL_MASK: libc::c_int = 0x7;
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review guest scheduler pid validation and lookup.
+// TODO-HUMAN-REVIEW(PR-119): Review guest scheduler pid validation and lookup.
 fn sched_pid_value(raw_pid: u64) -> Result<libc::c_int, i64> {
     let pid = raw_pid as u32 as libc::c_int;
     if pid < 0 {
@@ -3307,7 +3307,7 @@ fn sched_target_result(state: &LoadedStaticElf, pid: libc::c_int) -> Result<(), 
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review guest sched_param memory validation.
+// TODO-HUMAN-REVIEW(PR-119): Review guest sched_param memory validation.
 fn read_sched_param(memory: &GuestMemory, address: u64) -> Result<libc::c_int, i64> {
     if address == 0 {
         return Err(negative_errno(libc::EINVAL));
@@ -3319,7 +3319,7 @@ fn read_sched_param(memory: &GuestMemory, address: u64) -> Result<libc::c_int, i
     Ok(libc::c_int::from_ne_bytes(priority))
 }
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review guest sched_param output validation.
+// TODO-HUMAN-REVIEW(PR-119): Review guest sched_param output validation.
 fn write_sched_param(memory: &mut GuestMemory, address: u64, priority: libc::c_int) -> i64 {
     match memory.write(address, &priority.to_ne_bytes()) {
         Ok(()) => 0,
@@ -3327,7 +3327,7 @@ fn write_sched_param(memory: &mut GuestMemory, address: u64, priority: libc::c_i
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review settable policy and priority validation.
+// TODO-HUMAN-REVIEW(PR-119): Review settable policy and priority validation.
 fn sched_policy_settable(policy: libc::c_int) -> bool {
     matches!(
         policy,
@@ -3348,7 +3348,7 @@ fn sched_priority_valid(policy: libc::c_int, priority: libc::c_int) -> bool {
 }
 
 // TODO-HUMAN-REVIEW(PR-110): Review scheduler policy priority bounds.
-// TODO-HUMAN-REVIEW(PR-PENDING): Review modern policy-bound compatibility.
+// TODO-HUMAN-REVIEW(PR-119): Review modern policy-bound compatibility.
 fn sched_priority_bound(policy: u64, want_max: bool) -> i64 {
     let policy = policy as u32 as libc::c_int;
     match policy {
@@ -3365,7 +3365,7 @@ fn sched_priority_bound(policy: u64, want_max: bool) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-110): Review virtual sched_getscheduler behavior.
-// TODO-HUMAN-REVIEW(PR-PENDING): Review stateful scheduler query behavior.
+// TODO-HUMAN-REVIEW(PR-119): Review stateful scheduler query behavior.
 fn sched_getscheduler(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let pid = match sched_pid_value(args[0]) {
         Ok(pid) => pid,
@@ -3383,7 +3383,7 @@ fn sched_getscheduler(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-110): Review virtual sched_setscheduler behavior.
-// TODO-HUMAN-REVIEW(PR-PENDING): Review stateful scheduler mutation and errno ordering.
+// TODO-HUMAN-REVIEW(PR-119): Review stateful scheduler mutation and errno ordering.
 fn sched_setscheduler(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let pid = match sched_pid_value(args[0]) {
         Ok(pid) => pid,
@@ -3411,7 +3411,7 @@ fn sched_setscheduler(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &
 }
 
 // TODO-HUMAN-REVIEW(PR-110): Review virtual sched_getparam behavior.
-// TODO-HUMAN-REVIEW(PR-PENDING): Review scheduler parameter query errno ordering.
+// TODO-HUMAN-REVIEW(PR-119): Review scheduler parameter query errno ordering.
 fn sched_getparam(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let pid = match sched_pid_value(args[0]) {
         Ok(pid) => pid,
@@ -3427,7 +3427,7 @@ fn sched_getparam(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64
 }
 
 // TODO-HUMAN-REVIEW(PR-110): Review virtual sched_setparam behavior.
-// TODO-HUMAN-REVIEW(PR-PENDING): Review scheduler parameter mutation errno ordering.
+// TODO-HUMAN-REVIEW(PR-119): Review scheduler parameter mutation errno ordering.
 fn sched_setparam(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let pid = match sched_pid_value(args[0]) {
         Ok(pid) => pid,
@@ -3447,7 +3447,7 @@ fn sched_setparam(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64
     0
 }
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review single-process ioprio target validation.
+// TODO-HUMAN-REVIEW(PR-119): Review single-process ioprio target validation.
 // Group and user selectors deterministically address the current KVM executor only;
 // this is a one-task approximation and does not claim cross-executor group updates.
 fn ioprio_target_result(state: &LoadedStaticElf, which: u64, who: u64) -> Result<(), i64> {
@@ -3465,7 +3465,7 @@ fn ioprio_target_result(state: &LoadedStaticElf, which: u64, who: u64) -> Result
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review policy-derived effective ioprio defaults.
+// TODO-HUMAN-REVIEW(PR-119): Review policy-derived effective ioprio defaults.
 fn ioprio_effective_default(state: &LoadedStaticElf) -> libc::c_int {
     let class = match state.sched_policy {
         libc::SCHED_IDLE => IOPRIO_CLASS_IDLE,
@@ -3476,7 +3476,7 @@ fn ioprio_effective_default(state: &LoadedStaticElf) -> libc::c_int {
 }
 
 // TODO-HUMAN-REVIEW(PR-110): Review virtual ioprio_get behavior.
-// TODO-HUMAN-REVIEW(PR-PENDING): Review raw versus effective ioprio query results.
+// TODO-HUMAN-REVIEW(PR-119): Review raw versus effective ioprio query results.
 fn ioprio_get(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if let Err(error) = ioprio_target_result(state, args[0], args[1]) {
         return error;
@@ -3491,7 +3491,7 @@ fn ioprio_get(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-110): Review virtual ioprio_set behavior.
-// TODO-HUMAN-REVIEW(PR-PENDING): Review modern class, level, and hint payload handling.
+// TODO-HUMAN-REVIEW(PR-119): Review modern class, level, and hint payload handling.
 fn ioprio_set(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let ioprio = args[2] as u32 as libc::c_int;
     if ioprio < 0 {

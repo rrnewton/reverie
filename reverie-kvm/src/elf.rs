@@ -77,7 +77,7 @@ pub(crate) struct LoadedStaticElf {
     pub pid: i32,
     pub ppid: i32,
     pub umask: libc::mode_t,
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review virtual scheduler/ioprio process state.
+    // TODO-HUMAN-REVIEW(PR-119): Review virtual scheduler/ioprio process state.
     pub sched_policy: libc::c_int,
     pub sched_priority: libc::c_int,
     pub sched_reset_on_fork: bool,
@@ -106,7 +106,7 @@ pub(crate) struct LoadedStaticElf {
 
 impl LoadedStaticElf {
     pub(crate) fn try_clone_for_fork(&self, child_pid: i32) -> Result<Self> {
-        // TODO-HUMAN-REVIEW(PR-PENDING): Review scheduler reset and ioprio fork inheritance.
+        // TODO-HUMAN-REVIEW(PR-119): Review scheduler reset and ioprio fork inheritance.
         let reset_realtime = self.sched_reset_on_fork
             && matches!(self.sched_policy, libc::SCHED_FIFO | libc::SCHED_RR);
         let files = self
@@ -221,7 +221,7 @@ impl LoadedStaticElf {
         self.pid = previous.pid;
         self.ppid = previous.ppid;
         self.umask = previous.umask;
-        // TODO-HUMAN-REVIEW(PR-PENDING): Review scheduler and ioprio exec inheritance.
+        // TODO-HUMAN-REVIEW(PR-119): Review scheduler and ioprio exec inheritance.
         self.sched_policy = previous.sched_policy;
         self.sched_priority = previous.sched_priority;
         self.sched_reset_on_fork = previous.sched_reset_on_fork;
@@ -368,7 +368,7 @@ pub(crate) fn load_static_elf(
         pid: 1,
         ppid: 0,
         umask: 0o022,
-        // TODO-HUMAN-REVIEW(PR-PENDING): Review default virtual scheduler and ioprio state.
+        // TODO-HUMAN-REVIEW(PR-119): Review default virtual scheduler and ioprio state.
         sched_policy: libc::SCHED_OTHER,
         sched_priority: 0,
         sched_reset_on_fork: false,
