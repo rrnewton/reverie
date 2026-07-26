@@ -40,7 +40,7 @@ use crate::error::RpcError;
 /// delayed until another thread releases resources, so sharing one connection
 /// across threads could otherwise deadlock behind the single in-flight request.
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-98): Review the blocking transport used by synchronous in-guest backends.
+// TODO-HUMAN-REVIEW(PR-128): Review the blocking transport used by synchronous in-guest backends.
 pub struct BlockingRpcClient<G: GlobalTool> {
     tid: Tid,
     config: G::Config,

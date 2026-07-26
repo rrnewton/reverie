@@ -49,7 +49,7 @@ pub trait Tool {
     /// `experimental/reverie-rpc` channel. The default keeps the existing
     /// constructor path for all current tools.
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-98): Review the alternate transport constructor boundary.
+    // TODO-HUMAN-REVIEW(PR-128): Review the alternate transport constructor boundary.
     fn new_without_legacy_rpc() -> Option<Self>
     where
         Self: Sized,

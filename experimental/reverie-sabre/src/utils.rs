@@ -154,7 +154,7 @@ pub fn sys_execve(
 /// The directory-relative and `AT_EMPTY_PATH` (`fexecve`) forms are resolved
 /// through `/proc/self/fd` so they keep working after the loader is prepended.
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-98): Review execveat re-entry and /proc/self/fd path resolution.
+// TODO-HUMAN-REVIEW(PR-128): Review execveat re-entry and /proc/self/fd path resolution.
 pub fn sys_execveat(
     dirfd: libc::c_int,
     pathname: *const libc::c_char,

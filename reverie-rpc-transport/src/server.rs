@@ -62,6 +62,7 @@ where
         Self::bind_inner(path, global, config, None)
     }
 
+    // TODO-HUMAN-REVIEW(PR-128): Review the externally shared fallback-readiness boundary.
     /// Binds a coordinator and marks `readiness` after the first complete
     /// guest request arrives.
     pub fn bind_with_readiness(
