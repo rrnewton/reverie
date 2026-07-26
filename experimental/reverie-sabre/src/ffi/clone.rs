@@ -106,7 +106,7 @@ pub unsafe fn clone_syscall(
 /// `wrapper_sp` must point to the live SaBRe syscall frame for the current guest
 /// thread, and the flag/pointer arguments must satisfy `clone(2)`.
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-98): Review the fork-child stack/register restore trampoline.
+// TODO-HUMAN-REVIEW(PR-128): Review the fork-child stack/register restore trampoline.
 pub unsafe fn fork_syscall(
     clone_flags: usize,      // rdi
     parent_tidptr: *mut i32, // rdx

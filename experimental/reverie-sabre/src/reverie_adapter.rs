@@ -216,7 +216,7 @@ where
 /// SaBRe callback still observes a handler future that completes on its first
 /// poll.
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-98): Review the remote SaBRe adapter and per-thread RPC lifecycle.
+// TODO-HUMAN-REVIEW(PR-128): Review the remote SaBRe adapter and per-thread RPC lifecycle.
 pub struct RemoteReverieAdapter<T>
 where
     T: ReverieTool,
@@ -628,7 +628,7 @@ where
             // thread-state lock. Run the consuming destructor immediately before
             // the non-returning injection, then mark the callback as handled.
             // AUTONOMOUS-BOT-IMPLEMENTED
-            // TODO-HUMAN-REVIEW(PR-98): Review terminal injection destructor ordering.
+            // TODO-HUMAN-REVIEW(PR-128): Review terminal injection destructor ordering.
             let Some(thread_state) = self.thread_state.take() else {
                 return Err(Errno::EIO);
             };
