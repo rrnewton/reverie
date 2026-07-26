@@ -160,6 +160,14 @@ fn execute_basic_syscall_with_output(
         write(memory, state, args, output)
     } else if number == libc::SYS_read as u64 {
         read(memory, state, args)
+    } else if number == libc::SYS_writev as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120)
+        writev(memory, state, args, output)
+    } else if number == libc::SYS_readv as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120)
+        readv(memory, state, args)
     } else if number == libc::SYS_pread64 as u64 {
         pread64(memory, state, args)
     } else if number == libc::SYS_pwrite64 as u64 {
@@ -189,6 +197,9 @@ fn execute_basic_syscall_with_output(
         open(memory, state, args)
     } else if number == libc::SYS_openat as u64 {
         openat(memory, state, args)
+    } else if number == libc::SYS_creat as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        creat(memory, state, args)
     } else if number == libc::SYS_fstat as u64 {
         fstat(memory, state, args)
     } else if number == libc::SYS_stat as u64 {
@@ -205,6 +216,12 @@ fn execute_basic_syscall_with_output(
         fstatfs(memory, state, args)
     } else if number == libc::SYS_access as u64 {
         access(memory, state, args)
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    } else if number == libc::SYS_faccessat as u64 {
+        faccessat(memory, state, args)
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    } else if number == libc::SYS_faccessat2 as u64 {
+        faccessat2(memory, state, args)
     } else if number == libc::SYS_mkdir as u64 {
         mkdir_at(memory, state, libc::AT_FDCWD, args[0], args[1])
     } else if number == libc::SYS_mkdirat as u64 {
@@ -213,7 +230,7 @@ fn execute_basic_syscall_with_output(
         unlink_at(memory, state, libc::AT_FDCWD, args[0], 0)
     } else if number == libc::SYS_rmdir as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(#111): Review rmdir->unlinkat(AT_REMOVEDIR) mapping.
+        // TODO-HUMAN-REVIEW(PR-111): Review rmdir->unlinkat(AT_REMOVEDIR) mapping.
         // rmdir(path) is unlinkat(AT_FDCWD, path, AT_REMOVEDIR). Without this
         // arm the guest's bare rmdir(2) fell through to ENOSYS, so coreutils
         // `rmdir` (and `mktemp -d` cleanup) failed under the KVM backend even
@@ -316,6 +333,27 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_fchmodat as u64 {
         // SYS_fchmodat has three arguments; r10 is unspecified guest state.
         fchmodat(memory, state, args[0] as libc::c_int, args[1], args[2], 0)
+    } else if number == libc::SYS_flock as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120)
+        flock_guest(state, args[0], args[1])
+    } else if number == libc::SYS_chown as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120)
+        chown_path_noop(memory, state, libc::AT_FDCWD, args[0], false)
+    } else if number == libc::SYS_lchown as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120)
+        chown_path_noop(memory, state, libc::AT_FDCWD, args[0], true)
+    } else if number == libc::SYS_fchown as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120)
+        fchown_noop(state, args[0])
+    } else if number == libc::SYS_fchownat as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120)
+        let nofollow = (args[4] & libc::AT_SYMLINK_NOFOLLOW as u64) != 0;
+        chown_path_noop(memory, state, args[0] as libc::c_int, args[1], nofollow)
     } else if number == libc::SYS_mknod as u64 {
         mknod_at(memory, state, libc::AT_FDCWD, args[0], args[1], args[2])
     } else if number == libc::SYS_mknodat as u64 {
@@ -339,13 +377,7 @@ fn execute_basic_syscall_with_output(
         || number == libc::SYS_fgetxattr as u64
     {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // The deterministic container models no extended attributes, so report
-        // every attribute as absent (ENODATA) rather than letting the call fall
-        // through to ENOSYS. This matches what the ptrace backend observes from
-        // the host for files without xattrs and keeps `ls -l` (which probes
-        // security.selinux and system.posix_acl_access) from printing a spurious
-        // "Function not implemented".
-        negative_errno(libc::ENODATA)
+        getxattr(memory, state, number, args)
     } else if number == libc::SYS_brk as u64 {
         brk(memory, state, args[0])
     } else if number == libc::SYS_mmap as u64 {
@@ -367,13 +399,13 @@ fn execute_basic_syscall_with_output(
         sched_getscheduler(state, args)
     } else if number == libc::SYS_sched_setscheduler as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        sched_setscheduler(state, args)
+        sched_setscheduler(memory, state, args)
     } else if number == libc::SYS_sched_getparam as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         sched_getparam(memory, state, args)
     } else if number == libc::SYS_sched_setparam as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        sched_setparam(state, args)
+        sched_setparam(memory, state, args)
     } else if number == libc::SYS_sched_get_priority_min as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         sched_priority_bound(args[0], false)
@@ -382,10 +414,10 @@ fn execute_basic_syscall_with_output(
         sched_priority_bound(args[0], true)
     } else if number == libc::SYS_ioprio_get as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        GUEST_IOPRIO_DEFAULT
+        ioprio_get(state, args)
     } else if number == libc::SYS_ioprio_set as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        0
+        ioprio_set(state, args)
     } else if number == libc::SYS_membarrier as u64 {
         match (args[0] as libc::c_int, args[1] as libc::c_uint) {
             (0, 0) => i64::from(MEMBARRIER_SUPPORTED),
@@ -948,6 +980,94 @@ fn signal_is_pending(signal: libc::c_int) -> Result<bool, libc::c_int> {
     }
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#120): guest writev gathers each iovec and reuses
+// the scalar write path, so descriptor routing, captured-output aliasing, and
+// SIGPIPE suppression stay identical to write(2). Programs such as javac/java
+// emit their startup diagnostics with writev and abort (exit 127) when it is
+// ENOSYS.
+fn writev(
+    memory: &GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    mut output: Option<&mut CapturedOutput>,
+) -> i64 {
+    let Ok(count) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if count > libc::UIO_MAXIOV as usize {
+        return negative_errno(libc::EINVAL);
+    }
+    let mut total: i64 = 0;
+    for index in 0..count {
+        let entry = args[1] + (index as u64) * 16;
+        let mut base = [0u8; 8];
+        let mut len = [0u8; 8];
+        if memory.read(entry, &mut base).is_err() || memory.read(entry + 8, &mut len).is_err() {
+            return if total > 0 {
+                total
+            } else {
+                negative_errno(libc::EFAULT)
+            };
+        }
+        let iov_base = u64::from_le_bytes(base);
+        let iov_len = u64::from_le_bytes(len);
+        if iov_len == 0 {
+            continue;
+        }
+        let write_args = [args[0], iov_base, iov_len, 0, 0, 0];
+        let result = write(memory, state, &write_args, output.as_deref_mut());
+        if result < 0 {
+            return if total > 0 { total } else { result };
+        }
+        total = total.saturating_add(result);
+        if (result as u64) < iov_len {
+            break; // a short write ends the gather, matching writev(2)
+        }
+    }
+    total
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#120): guest readv scatters into each iovec via the
+// scalar read path; a short read or EOF stops the scatter, matching readv(2).
+fn readv(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(count) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if count > libc::UIO_MAXIOV as usize {
+        return negative_errno(libc::EINVAL);
+    }
+    let mut total: i64 = 0;
+    for index in 0..count {
+        let entry = args[1] + (index as u64) * 16;
+        let mut base = [0u8; 8];
+        let mut len = [0u8; 8];
+        if memory.read(entry, &mut base).is_err() || memory.read(entry + 8, &mut len).is_err() {
+            return if total > 0 {
+                total
+            } else {
+                negative_errno(libc::EFAULT)
+            };
+        }
+        let iov_base = u64::from_le_bytes(base);
+        let iov_len = u64::from_le_bytes(len);
+        if iov_len == 0 {
+            continue;
+        }
+        let read_args = [args[0], iov_base, iov_len, 0, 0, 0];
+        let result = read(memory, state, &read_args);
+        if result < 0 {
+            return if total > 0 { total } else { result };
+        }
+        total = total.saturating_add(result);
+        if (result as u64) < iov_len {
+            break; // a short read or EOF ends the scatter
+        }
+    }
+    total
+}
+
 fn write_without_sigpipe(fd: RawFd, bytes: &[u8]) -> i64 {
     // A guest backing pipe must not deliver SIGPIPE into the supervisor. Block it in this thread,
     // then synchronously consume the signal generated by this write while preserving a signal that
@@ -1243,6 +1363,19 @@ fn openat(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) ->
         args[2],
         args[3],
     )
+}
+
+// TODO-HUMAN-REVIEW(PR-112): Review creat delegation to the open path.
+//
+// `creat(path, mode)` is defined by Linux as
+// `open(path, O_CREAT | O_WRONLY | O_TRUNC, mode)`. GNU tar (and other
+// programs) still emit the raw `creat` syscall for their output file, which
+// previously fell through to `ENOSYS`. Delegating to `open_file` reuses the
+// existing create/procfs/umask handling so the behavior matches the equivalent
+// `open`/`openat` call exactly.
+fn creat(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let flags = (libc::O_CREAT | libc::O_WRONLY | libc::O_TRUNC) as u64;
+    open_file(memory, state, libc::AT_FDCWD, args[0], flags, args[1])
 }
 
 fn open_file(
@@ -1929,11 +2062,71 @@ fn fstatfs_host(memory: &mut GuestMemory, host_fd: RawFd, output: u64) -> i64 {
 }
 
 fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let mode = args[1] as libc::c_int;
+    // access(2) is faccessat2(AT_FDCWD, path, mode, 0): a real-UID check that
+    // follows symlinks and rejects an empty path with ENOENT.
+    faccessat_impl(
+        memory,
+        state,
+        libc::AT_FDCWD,
+        args[0],
+        args[1] as libc::c_int,
+        0,
+    )
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(reverie#124): faccessat access check so bash
+// `test -r/-w/-x` and program startup probes resolve correctly under the KVM
+// backend instead of falling through to ENOSYS.
+fn faccessat(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    // faccessat(2) has no flags argument, so it behaves like access(2) relative
+    // to the supplied directory descriptor: real-UID check, follow symlinks.
+    faccessat_impl(
+        memory,
+        state,
+        args[0] as libc::c_int,
+        args[1],
+        args[2] as libc::c_int,
+        0,
+    )
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(reverie#124): faccessat2 access check. glibc routes the
+// C `access`/`euidaccess` helpers and the shell `test -r/-w/-x` operators
+// through faccessat2; without this arm every access probe returned ENOSYS.
+fn faccessat2(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    faccessat_impl(
+        memory,
+        state,
+        args[0] as libc::c_int,
+        args[1],
+        args[2] as libc::c_int,
+        args[3] as libc::c_int,
+    )
+}
+
+// Shared access-check implementation for access(2)/faccessat(2)/faccessat2(2).
+// The guest dirfd, cwd, and AT_SYMLINK_NOFOLLOW are resolved locally into an
+// O_PATH descriptor; the permission decision itself is delegated to the host
+// kernel via AT_EMPTY_PATH so the answer matches what the ptrace backend sees.
+fn faccessat_impl(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
+    path_address: u64,
+    mode: libc::c_int,
+    flags: libc::c_int,
+) -> i64 {
+    // mode is F_OK or a bitmask of R_OK/W_OK/X_OK; anything else is invalid.
     if mode & !(libc::R_OK | libc::W_OK | libc::X_OK) != 0 {
         return negative_errno(libc::EINVAL);
     }
-    let path = match read_c_string(memory, args[0], 4096) {
+    let allowed_flags = libc::AT_EACCESS | libc::AT_SYMLINK_NOFOLLOW;
+    if flags & !allowed_flags != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let path = match read_c_string(memory, path_address, 4096) {
         Ok(path) => path,
         Err(error) => return read_c_string_errno(error),
     };
@@ -1948,11 +2141,19 @@ fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
         }
         return 0;
     }
-    let file = match open_metadata_path(state, libc::AT_FDCWD, &path, false) {
+    let file = match open_metadata_path(
+        state,
+        guest_dirfd,
+        &path,
+        flags & libc::AT_SYMLINK_NOFOLLOW != 0,
+    ) {
         Ok(file) => file,
         Err(error) => return error,
     };
     let empty_path = b"\0";
+    // Forward AT_EACCESS so an effective-ID probe keeps its meaning; the O_PATH
+    // fd is addressed with AT_EMPTY_PATH.
+    let host_flags = libc::AT_EMPTY_PATH | (flags & libc::AT_EACCESS);
     // SAFETY: empty_path is NUL-terminated and file owns a live O_PATH fd.
     let result = unsafe {
         libc::syscall(
@@ -1960,7 +2161,7 @@ fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
             file.as_raw_fd(),
             empty_path.as_ptr(),
             mode,
-            libc::AT_EMPTY_PATH,
+            host_flags,
         )
     };
     if result == 0 {
@@ -2148,6 +2349,61 @@ fn symlink_at(
         };
     // SAFETY: target and new_path are NUL-terminated.
     zero_or_errno(unsafe { libc::symlinkat(target.as_ptr(), new_host_dirfd, new_path.as_ptr()) })
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#120): advisory flock on the guest's backing host
+// descriptor. The deterministic container hosts a single guest, so the lock
+// never contends; forwarding to the host preserves LOCK_SH/LOCK_EX/LOCK_UN and
+// LOCK_NB semantics. Without this, flock(1) reports ENOSYS ("Function not
+// implemented") and aborts.
+fn flock_guest(state: &LoadedStaticElf, guest_fd: u64, operation: u64) -> i64 {
+    let Ok(guest_fd) = libc::c_int::try_from(guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(host_fd) = host_fd(state, guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    // SAFETY: host_fd names a live descriptor; operation is one int command word.
+    zero_or_errno(unsafe { libc::flock(host_fd, operation as libc::c_int) })
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#120): guest ownership changes are validated then
+// treated as a deterministic no-op. The container virtualizes identity to a
+// single root user and reports deterministic uid/gid from stat, so honoring the
+// request means confirming the target inode exists and leaving the host-owned
+// inode untouched. A real host chown would need privilege we do not hold and
+// would leak host-owner nondeterminism into the guest.
+fn chown_path_noop(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
+    path_address: u64,
+    nofollow: bool,
+) -> i64 {
+    let (host_dirfd, path) = match read_path_at(memory, state, guest_dirfd, path_address, false) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    match open_host_metadata_path(host_dirfd, &path, nofollow) {
+        Ok(_) => 0,
+        Err(error) => error,
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#120): fd-referenced ownership change; validated to
+// EBADF-check the descriptor then treated as the same deterministic no-op as
+// chown_path_noop.
+fn fchown_noop(state: &LoadedStaticElf, guest_fd: u64) -> i64 {
+    let Ok(guest_fd) = libc::c_int::try_from(guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    match host_fd(state, guest_fd) {
+        Some(_) => 0,
+        None => negative_errno(libc::EBADF),
+    }
 }
 
 fn fchmod(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -2847,6 +3103,23 @@ fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
             }
             0
         }
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(#120): guest F_SETFL applies the
+        // kernel-settable file status flags (O_APPEND/O_ASYNC/O_DIRECT/
+        // O_NOATIME/O_NONBLOCK) to the backing host descriptor. Access mode and
+        // creation flags are silently ignored, matching fcntl(2). Without this,
+        // programs that set O_NONBLOCK on a freshly created pipe (e.g. xz)
+        // observe ENOSYS and abort.
+        libc::F_SETFL => {
+            let settable = libc::O_APPEND
+                | libc::O_ASYNC
+                | libc::O_DIRECT
+                | libc::O_NOATIME
+                | libc::O_NONBLOCK;
+            let flags = args[2] as libc::c_int & settable;
+            // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
+            zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
+        }
         _ => negative_errno(libc::ENOSYS),
     }
 }
@@ -2922,7 +3195,7 @@ fn arch_prctl(
     }
 }
 
-// TODO-HUMAN-REVIEW(reverie-kvm): prctl(2) subset for the KVM guest.
+// TODO-HUMAN-REVIEW(PR-108): Review the prctl(2) subset for the KVM guest.
 //
 // Only PR_CAPBSET_READ is modeled. The deterministic container runs the guest as
 // root with the full capability bounding set, so libcap's cap_get_bound() must
@@ -2943,6 +3216,61 @@ fn prctl(args: &[u64; 6]) -> i64 {
         }
         // Other prctl operations are not modeled yet.
         _ => negative_errno(libc::ENOSYS),
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-116): Review the no-xattr KVM guest model and errors.
+//
+// The deterministic container models no extended attributes, but Linux still
+// validates the target and attribute name before reporting ENODATA. Preserve
+// those observable path/fd/memory errors without exposing host xattr contents.
+fn getxattr(memory: &GuestMemory, state: &LoadedStaticElf, number: u64, args: &[u64; 6]) -> i64 {
+    if number == libc::SYS_fgetxattr as u64 {
+        let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
+            return negative_errno(libc::EBADF);
+        };
+        if host_fd(state, guest_fd).is_none() {
+            return negative_errno(libc::EBADF);
+        }
+    } else {
+        let path = match read_c_string(memory, args[0], 4096) {
+            Ok(path) => path,
+            Err(error) => return read_c_string_errno(error),
+        };
+        if path.is_empty() {
+            return negative_errno(libc::ENOENT);
+        }
+        if synthetic_proc_content(state, &path).is_none() {
+            let nofollow = number == libc::SYS_lgetxattr as u64;
+            if let Err(error) = open_metadata_path(state, libc::AT_FDCWD, &path, nofollow) {
+                return error;
+            }
+        }
+    }
+
+    match read_c_string(memory, args[1], 256) {
+        Ok(name) if name.is_empty() => negative_errno(libc::ERANGE),
+        Ok(name) => {
+            let empty_namespace =
+                [b"user.".as_slice(), b"trusted.", b"security."].contains(&name.as_slice());
+            if empty_namespace {
+                return negative_errno(libc::EINVAL);
+            }
+            let supported_namespace = [b"user.".as_slice(), b"trusted.", b"security."]
+                .iter()
+                .any(|prefix| name.starts_with(prefix));
+            let supported_system_name = matches!(
+                name.as_slice(),
+                b"system.posix_acl_access" | b"system.posix_acl_default"
+            );
+            if supported_namespace || supported_system_name {
+                negative_errno(libc::ENODATA)
+            } else {
+                negative_errno(libc::EOPNOTSUPP)
+            }
+        }
+        Err(ReadCStringError::Fault) => negative_errno(libc::EFAULT),
+        Err(ReadCStringError::NameTooLong) => negative_errno(libc::ERANGE),
     }
 }
 
@@ -3211,20 +3539,59 @@ fn sched_getaffinity(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[
     }
 }
 
-// Fixed I/O priority reported to the guest: best-effort class, level 4 (the
-// Linux default), encoded as IOPRIO_PRIO_VALUE(IOPRIO_CLASS_BE, 4).
-const GUEST_IOPRIO_DEFAULT: i64 = (2 << 13) | 4;
-
-// SCHED_RESET_ON_FORK may be OR'd into the policy passed to sched_setscheduler.
+// SCHED_RESET_ON_FORK may be ORed into the policy passed to sched_setscheduler.
 const SCHED_RESET_ON_FORK: libc::c_int = 0x4000_0000;
+const SCHED_DEADLINE: libc::c_int = 6;
+const SCHED_EXT: libc::c_int = 7;
+const IOPRIO_WHO_PROCESS: libc::c_int = 1;
+const IOPRIO_WHO_PGRP: libc::c_int = 2;
+const IOPRIO_WHO_USER: libc::c_int = 3;
+const IOPRIO_CLASS_SHIFT: libc::c_int = 13;
+const IOPRIO_CLASS_RT: libc::c_int = 1;
+const IOPRIO_CLASS_BE: libc::c_int = 2;
+const IOPRIO_CLASS_IDLE: libc::c_int = 3;
+const IOPRIO_LEVEL_MASK: libc::c_int = 0x7;
 
-// The deterministic guest runs a single sequential CPU, so scheduling policy and
-// priority never affect execution order. Model a fixed SCHED_OTHER task: report
-// SCHED_OTHER with priority 0 and accept policy/priority changes as no-ops. All
-// answers are constants -- identical across a --verify pair and host-independent
-// -- so tools such as `chrt` and `ionice` run instead of hitting ENOSYS.
+// TODO-HUMAN-REVIEW(PR-119): Review guest scheduler pid validation and lookup.
+fn sched_pid_value(raw_pid: u64) -> Result<libc::c_int, i64> {
+    let pid = raw_pid as u32 as libc::c_int;
+    if pid < 0 {
+        Err(negative_errno(libc::EINVAL))
+    } else {
+        Ok(pid)
+    }
+}
 
-fn is_valid_sched_policy(policy: libc::c_int) -> bool {
+fn sched_target_result(state: &LoadedStaticElf, pid: libc::c_int) -> Result<(), i64> {
+    if pid == 0 || pid == state.pid {
+        Ok(())
+    } else {
+        Err(negative_errno(libc::ESRCH))
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-119): Review guest sched_param memory validation.
+fn read_sched_param(memory: &GuestMemory, address: u64) -> Result<libc::c_int, i64> {
+    if address == 0 {
+        return Err(negative_errno(libc::EINVAL));
+    }
+    let mut priority = [0; std::mem::size_of::<libc::c_int>()];
+    memory
+        .read(address, &mut priority)
+        .map_err(|_| negative_errno(libc::EFAULT))?;
+    Ok(libc::c_int::from_ne_bytes(priority))
+}
+
+// TODO-HUMAN-REVIEW(PR-119): Review guest sched_param output validation.
+fn write_sched_param(memory: &mut GuestMemory, address: u64, priority: libc::c_int) -> i64 {
+    match memory.write(address, &priority.to_ne_bytes()) {
+        Ok(()) => 0,
+        Err(_) => negative_errno(libc::EFAULT),
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-119): Review settable policy and priority validation.
+fn sched_policy_settable(policy: libc::c_int) -> bool {
     matches!(
         policy,
         libc::SCHED_OTHER
@@ -3235,20 +3602,18 @@ fn is_valid_sched_policy(policy: libc::c_int) -> bool {
     )
 }
 
-// The pid argument must name the guest process (0 or its own pid).
-fn sched_pid_ok(state: &LoadedStaticElf, pid: u64) -> bool {
-    let pid = pid as i64;
-    pid == 0 || pid == i64::from(state.pid)
+fn sched_priority_valid(policy: libc::c_int, priority: libc::c_int) -> bool {
+    match policy {
+        libc::SCHED_FIFO | libc::SCHED_RR => (1..=99).contains(&priority),
+        libc::SCHED_OTHER | libc::SCHED_BATCH | libc::SCHED_IDLE => priority == 0,
+        _ => false,
+    }
 }
 
+// TODO-HUMAN-REVIEW(PR-110): Review scheduler policy priority bounds.
+// TODO-HUMAN-REVIEW(PR-119): Review modern policy-bound compatibility.
 fn sched_priority_bound(policy: u64, want_max: bool) -> i64 {
-    let Ok(policy) = libc::c_int::try_from(policy) else {
-        return negative_errno(libc::EINVAL);
-    };
-    if !is_valid_sched_policy(policy) {
-        return negative_errno(libc::EINVAL);
-    }
-    // Real-time policies use 1..=99; the fair-class policies use 0..=0.
+    let policy = policy as u32 as libc::c_int;
     match policy {
         libc::SCHED_FIFO | libc::SCHED_RR => {
             if want_max {
@@ -3257,46 +3622,157 @@ fn sched_priority_bound(policy: u64, want_max: bool) -> i64 {
                 1
             }
         }
-        _ => 0,
+        libc::SCHED_OTHER | libc::SCHED_BATCH | libc::SCHED_IDLE | SCHED_DEADLINE | SCHED_EXT => 0,
+        _ => negative_errno(libc::EINVAL),
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-110): Review virtual sched_getscheduler behavior.
+// TODO-HUMAN-REVIEW(PR-119): Review stateful scheduler query behavior.
 fn sched_getscheduler(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    if !sched_pid_ok(state, args[0]) {
-        return negative_errno(libc::ESRCH);
+    let pid = match sched_pid_value(args[0]) {
+        Ok(pid) => pid,
+        Err(error) => return error,
+    };
+    if let Err(error) = sched_target_result(state, pid) {
+        return error;
     }
-    i64::from(libc::SCHED_OTHER)
+    let reset = if state.sched_reset_on_fork {
+        SCHED_RESET_ON_FORK
+    } else {
+        0
+    };
+    i64::from(state.sched_policy | reset)
 }
 
-fn sched_setscheduler(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    if !sched_pid_ok(state, args[0]) {
-        return negative_errno(libc::ESRCH);
-    }
-    let Ok(policy) = libc::c_int::try_from(args[1]) else {
-        return negative_errno(libc::EINVAL);
+// TODO-HUMAN-REVIEW(PR-110): Review virtual sched_setscheduler behavior.
+// TODO-HUMAN-REVIEW(PR-119): Review stateful scheduler mutation and errno ordering.
+fn sched_setscheduler(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let pid = match sched_pid_value(args[0]) {
+        Ok(pid) => pid,
+        Err(error) => return error,
     };
-    if !is_valid_sched_policy(policy & !SCHED_RESET_ON_FORK) {
+    let policy_with_flags = args[1] as u32 as libc::c_int;
+    if policy_with_flags < 0 {
         return negative_errno(libc::EINVAL);
     }
-    // Accepted as a no-op; the sequential scheduler ignores policy.
+    let priority = match read_sched_param(memory, args[2]) {
+        Ok(priority) => priority,
+        Err(error) => return error,
+    };
+    if let Err(error) = sched_target_result(state, pid) {
+        return error;
+    }
+    let policy = policy_with_flags & !SCHED_RESET_ON_FORK;
+    if !sched_policy_settable(policy) || !sched_priority_valid(policy, priority) {
+        return negative_errno(libc::EINVAL);
+    }
+    state.sched_policy = policy;
+    state.sched_priority = priority;
+    state.sched_reset_on_fork = policy_with_flags & SCHED_RESET_ON_FORK != 0;
     0
 }
 
+// TODO-HUMAN-REVIEW(PR-110): Review virtual sched_getparam behavior.
+// TODO-HUMAN-REVIEW(PR-119): Review scheduler parameter query errno ordering.
 fn sched_getparam(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    if !sched_pid_ok(state, args[0]) {
-        return negative_errno(libc::ESRCH);
+    let pid = match sched_pid_value(args[0]) {
+        Ok(pid) => pid,
+        Err(error) => return error,
+    };
+    if args[1] == 0 {
+        return negative_errno(libc::EINVAL);
     }
-    // struct sched_param { int sched_priority; } -- always 0 for SCHED_OTHER.
-    match memory.write(args[1], &0_i32.to_ne_bytes()) {
-        Ok(()) => 0,
-        Err(_) => negative_errno(libc::EFAULT),
+    if let Err(error) = sched_target_result(state, pid) {
+        return error;
+    }
+    write_sched_param(memory, args[1], state.sched_priority)
+}
+
+// TODO-HUMAN-REVIEW(PR-110): Review virtual sched_setparam behavior.
+// TODO-HUMAN-REVIEW(PR-119): Review scheduler parameter mutation errno ordering.
+fn sched_setparam(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let pid = match sched_pid_value(args[0]) {
+        Ok(pid) => pid,
+        Err(error) => return error,
+    };
+    let priority = match read_sched_param(memory, args[1]) {
+        Ok(priority) => priority,
+        Err(error) => return error,
+    };
+    if let Err(error) = sched_target_result(state, pid) {
+        return error;
+    }
+    if !sched_priority_valid(state.sched_policy, priority) {
+        return negative_errno(libc::EINVAL);
+    }
+    state.sched_priority = priority;
+    0
+}
+
+// TODO-HUMAN-REVIEW(PR-119): Review single-process ioprio target validation.
+// Group and user selectors deterministically address the current KVM executor only;
+// this is a one-task approximation and does not claim cross-executor group updates.
+fn ioprio_target_result(state: &LoadedStaticElf, which: u64, who: u64) -> Result<(), i64> {
+    let which = which as u32 as libc::c_int;
+    let who = who as u32;
+    let target_matches = match which {
+        IOPRIO_WHO_PROCESS | IOPRIO_WHO_PGRP => who == 0 || who == state.pid as u32,
+        IOPRIO_WHO_USER => who == 0,
+        _ => return Err(negative_errno(libc::EINVAL)),
+    };
+    if target_matches {
+        Ok(())
+    } else {
+        Err(negative_errno(libc::ESRCH))
     }
 }
 
-fn sched_setparam(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    if !sched_pid_ok(state, args[0]) {
-        return negative_errno(libc::ESRCH);
+// TODO-HUMAN-REVIEW(PR-119): Review policy-derived effective ioprio defaults.
+fn ioprio_effective_default(state: &LoadedStaticElf) -> libc::c_int {
+    let class = match state.sched_policy {
+        libc::SCHED_IDLE => IOPRIO_CLASS_IDLE,
+        libc::SCHED_FIFO | libc::SCHED_RR | SCHED_DEADLINE => IOPRIO_CLASS_RT,
+        _ => IOPRIO_CLASS_BE,
+    };
+    (class << IOPRIO_CLASS_SHIFT) | 4
+}
+
+// TODO-HUMAN-REVIEW(PR-110): Review virtual ioprio_get behavior.
+// TODO-HUMAN-REVIEW(PR-119): Review raw versus effective ioprio query results.
+fn ioprio_get(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    if let Err(error) = ioprio_target_result(state, args[0], args[1]) {
+        return error;
     }
+    if state.ioprio >> IOPRIO_CLASS_SHIFT == 0
+        && args[0] as u32 as libc::c_int != IOPRIO_WHO_PROCESS
+    {
+        i64::from(ioprio_effective_default(state))
+    } else {
+        i64::from(state.ioprio)
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-110): Review virtual ioprio_set behavior.
+// TODO-HUMAN-REVIEW(PR-119): Review modern class, level, and hint payload handling.
+fn ioprio_set(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let ioprio = args[2] as u32 as libc::c_int;
+    if ioprio < 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    let class = ioprio >> IOPRIO_CLASS_SHIFT;
+    let valid = match class {
+        0 => ioprio & IOPRIO_LEVEL_MASK == 0,
+        IOPRIO_CLASS_RT | IOPRIO_CLASS_BE | IOPRIO_CLASS_IDLE => true,
+        _ => false,
+    };
+    if !valid {
+        return negative_errno(libc::EINVAL);
+    }
+    if let Err(error) = ioprio_target_result(state, args[0], args[1]) {
+        return error;
+    }
+    state.ioprio = ioprio;
     0
 }
 
@@ -3675,18 +4151,22 @@ fn sigaltstack(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u6
 }
 
 fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let requested = args[0] as i64;
+    // pid_t is a 32-bit signed value; the guest passes wait4(-1) as 0xFFFFFFFF
+    // in a 64-bit register. Truncate to i32 before sign-extending so the common
+    // wait-for-any-child form (-1), process-group forms (0, <-1), and a specific
+    // pid are all interpreted correctly instead of collapsing to ECHILD.
+    let requested = args[0] as i32 as i64;
     if args[2] & !(libc::WNOHANG as u64) != 0 {
         return negative_errno(libc::EINVAL);
     }
-    let child_pid = if requested == -1 {
-        state.children.keys().next().copied()
-    } else if requested > 0 {
+    let child_pid = if requested > 0 {
         i32::try_from(requested)
             .ok()
             .filter(|pid| state.children.contains_key(pid))
     } else {
-        None
+        // -1 (any child), 0 and <-1 (any child in a process group): this guest
+        // models a single process group, so reap any recorded child.
+        state.children.keys().next().copied()
     };
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
@@ -3994,6 +4474,10 @@ mod tests {
             pid: 1,
             ppid: 0,
             umask: 0o022,
+            sched_policy: libc::SCHED_OTHER,
+            sched_priority: 0,
+            sched_reset_on_fork: false,
+            ioprio: 0,
             signal_actions: BTreeMap::new(),
             signal_mask: [0; KERNEL_SIGSET_SIZE],
             signal_alt_stack: None,
@@ -4471,6 +4955,208 @@ mod tests {
                 &mut state,
                 libc::SYS_fcntl,
                 [0, libc::F_GETFL as u64, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+    }
+
+    #[test]
+    fn fcntl_setfl_applies_status_flags() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        const PIPE_FDS: u64 = 0x100;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        let write_fd = pipe_fds[1];
+
+        // F_SETFL O_NONBLOCK on the guest write end succeeds (previously ENOSYS).
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [
+                    write_fd as u64,
+                    libc::F_SETFL as u64,
+                    libc::O_NONBLOCK as u64,
+                    0,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        // F_GETFL now reflects the applied status flag.
+        let flags = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [write_fd as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        );
+        assert!(flags >= 0);
+        assert_ne!(flags as libc::c_int & libc::O_NONBLOCK, 0);
+    }
+
+    #[test]
+    fn writev_and_readv_gather_scatter_round_trip() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x8000).unwrap();
+
+        const PIPE_FDS: u64 = 0x100;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        let (read_fd, write_fd) = (pipe_fds[0], pipe_fds[1]);
+
+        const BUF_A: u64 = 0x200;
+        const BUF_B: u64 = 0x210;
+        memory.write(BUF_A, b"foo").unwrap();
+        memory.write(BUF_B, b"barbaz").unwrap();
+        const IOV: u64 = 0x300;
+        write_struct(&mut memory, IOV, &[BUF_A, 3u64]);
+        write_struct(&mut memory, IOV + 16, &[BUF_B, 6u64]);
+
+        // writev gathers both iovecs into the pipe.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_writev,
+                [write_fd as u64, IOV, 2, 0, 0, 0]
+            ),
+            9
+        );
+
+        // readv scatters the 9 bytes back into two differently-sized iovecs.
+        const RBUF_A: u64 = 0x400;
+        const RBUF_B: u64 = 0x410;
+        const RIOV: u64 = 0x500;
+        write_struct(&mut memory, RIOV, &[RBUF_A, 4u64]);
+        write_struct(&mut memory, RIOV + 16, &[RBUF_B, 5u64]);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [read_fd as u64, RIOV, 2, 0, 0, 0]
+            ),
+            9
+        );
+        let mut first = [0u8; 4];
+        let mut second = [0u8; 5];
+        memory.read(RBUF_A, &mut first).unwrap();
+        memory.read(RBUF_B, &mut second).unwrap();
+        assert_eq!(&first, b"foob");
+        assert_eq!(&second, b"arbaz");
+    }
+
+    #[test]
+    fn flock_and_chown_are_deterministic_for_owned_files() {
+        let root = TestDir::new();
+        std::fs::write(root.0.join("f"), b"x").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        write_c_string(&mut memory, 0x100, "f");
+        let fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [libc::AT_FDCWD as u64, 0x100, libc::O_RDWR as u64, 0, 0, 0],
+        );
+        assert!(fd >= 0, "open failed: {fd}");
+
+        // flock acquire (non-blocking) and release succeed on an owned descriptor.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_flock,
+                [
+                    fd as u64,
+                    (libc::LOCK_EX | libc::LOCK_NB) as u64,
+                    0,
+                    0,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_flock,
+                [fd as u64, libc::LOCK_UN as u64, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // flock on an unknown descriptor is EBADF.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_flock,
+                [999, libc::LOCK_EX as u64, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+
+        // chown/fchown validate the target then no-op to 0 (virtualized identity).
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchown,
+                [fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chown,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // A missing path still reports ENOENT; a bad fd reports EBADF.
+        write_c_string(&mut memory, 0x200, "missing-file");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chown,
+                [0x200, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchown,
+                [999, 0, 0, 0, 0, 0]
             ),
             negative_errno(libc::EBADF)
         );
@@ -5502,6 +6188,65 @@ mod tests {
         let mut actual = [0; 8];
         memory.read(READ_ADDRESS, &mut actual).unwrap();
         assert_eq!(&actual, b"original");
+    }
+
+    #[test]
+    fn creat_creates_and_truncates_like_open_o_creat() {
+        const PATH_ADDRESS: u64 = 0x100;
+        const WRITE_ADDRESS: u64 = 0x200;
+
+        let root = TestDir::new();
+        let target = root.0.join("archive");
+        // A pre-existing longer file proves creat applies O_TRUNC.
+        std::fs::write(&target, b"stale-and-longer-than-new").unwrap();
+
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x1000).unwrap();
+        memory.write(PATH_ADDRESS, b"archive\0").unwrap();
+        memory.write(WRITE_ADDRESS, b"tar\n").unwrap();
+
+        // creat(path, 0o644) must open the existing file, not fall through to
+        // ENOSYS as it did before this handler existed.
+        let fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_creat,
+            [PATH_ADDRESS, 0o644, 0, 0, 0, 0],
+        );
+        assert_eq!(fd, 3, "creat should return the first free guest fd");
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [fd as u64, WRITE_ADDRESS, 4, 0, 0, 0],
+            ),
+            4
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+
+        // O_TRUNC replaced the stale content entirely.
+        assert_eq!(std::fs::read(&target).unwrap(), b"tar\n");
+
+        // creat on a brand-new path creates it.
+        memory.write(PATH_ADDRESS, b"fresh\0").unwrap();
+        let fresh_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_creat,
+            [PATH_ADDRESS, 0o600, 0, 0, 0, 0],
+        );
+        assert!(fresh_fd >= 3, "creat on a new path should succeed");
+        assert!(root.0.join("fresh").exists());
     }
 
     #[test]
@@ -7420,6 +8165,7 @@ mod tests {
         .unwrap();
         assert_eq!(path, interp);
         assert_eq!(image, FAKE_ELF);
+        // Kernel order: [interp, shebang args.., script_path, original args[1..]].
         assert_eq!(
             argv,
             vec![
@@ -7442,6 +8188,103 @@ mod tests {
         let err = resolve_exec_shebang(a.clone(), std::fs::read(&a).unwrap(), vec!["a".to_owned()])
             .unwrap_err();
         assert_eq!(err, negative_errno(libc::ELOOP));
+    }
+
+    #[test]
+    fn xattr_model_preserves_target_and_name_errors() {
+        let root = TestDir::new();
+        std::fs::write(root.0.join("file"), b"content").unwrap();
+        std::os::unix::fs::symlink("missing", root.0.join("dangling")).unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        write_c_string(&mut memory, 0x100, "file");
+        write_c_string(&mut memory, 0x200, "security.selinux");
+
+        for number in [libc::SYS_getxattr, libc::SYS_lgetxattr] {
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, number, [0x100, 0x200, 0, 0, 0, 0]),
+                negative_errno(libc::ENODATA)
+            );
+        }
+
+        for (name, errno) in [
+            ("", libc::ERANGE),
+            ("foo", libc::EOPNOTSUPP),
+            ("user.reverie_review", libc::ENODATA),
+        ] {
+            write_c_string(&mut memory, 0x200, name);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_getxattr,
+                    [0x100, 0x200, 0, 0, 0, 0]
+                ),
+                negative_errno(errno),
+                "xattr name {name:?}"
+            );
+        }
+
+        write_c_string(&mut memory, 0x100, "missing");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getxattr,
+                [0x100, 0x200, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+
+        write_c_string(&mut memory, 0x100, "dangling");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getxattr,
+                [0x100, 0x200, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lgetxattr,
+                [0x100, 0x200, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENODATA)
+        );
+
+        let fd = open_readonly(&mut memory, &mut state, "file");
+        assert!(fd >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fgetxattr,
+                [fd as u64, 0x200, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENODATA)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fgetxattr,
+                [u64::MAX, 0x200, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fgetxattr,
+                [fd as u64, 0x5000, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
     }
 
     #[test]
@@ -7469,7 +8312,13 @@ mod tests {
 
     #[test]
     fn sched_priority_bounds_match_policy_class() {
-        for policy in [libc::SCHED_OTHER, libc::SCHED_BATCH, libc::SCHED_IDLE] {
+        for policy in [
+            libc::SCHED_OTHER,
+            libc::SCHED_BATCH,
+            libc::SCHED_IDLE,
+            SCHED_DEADLINE,
+            SCHED_EXT,
+        ] {
             assert_eq!(sched_priority_bound(policy as u64, false), 0);
             assert_eq!(sched_priority_bound(policy as u64, true), 0);
         }
@@ -7481,29 +8330,174 @@ mod tests {
             sched_priority_bound(999, true),
             negative_errno(libc::EINVAL)
         );
+        assert_eq!(sched_priority_bound(1_u64 << 32, true), 0);
     }
 
     #[test]
-    fn sched_scheduler_and_param_model_fixed_sched_other() {
+    fn scheduler_syscalls_validate_and_round_trip_virtual_state() {
+        const PARAM: u64 = 0x100;
+        const OUTPUT: u64 = 0x200;
+
         let dir = TestDir::new();
-        let state = test_state(&dir.0);
+        let mut state = test_state(&dir.0);
+        let mut memory = GuestMemory::new(0, 0x1000).unwrap();
 
         assert_eq!(
-            sched_getscheduler(&state, &[0, 0, 0, 0, 0, 0]),
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getscheduler,
+                [0, 0, 0, 0, 0, 0]
+            ),
             i64::from(libc::SCHED_OTHER)
         );
         assert_eq!(
-            sched_getscheduler(&state, &[999_999, 0, 0, 0, 0, 0]),
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getscheduler,
+                [u64::MAX, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getscheduler,
+                [999_999, 0, 0, 0, 0, 0]
+            ),
             negative_errno(libc::ESRCH)
         );
 
+        for number in [libc::SYS_sched_setscheduler, libc::SYS_sched_setparam] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [999_999, libc::SCHED_OTHER as u64, 0, 0, 0, 0]
+                ),
+                negative_errno(libc::EINVAL)
+            );
+        }
         assert_eq!(
-            sched_setscheduler(
-                &state,
-                &[
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getparam,
+                [999_999, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setscheduler,
+                [999_999, libc::SCHED_OTHER as u64, 0x2000, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setparam,
+                [999_999, 0x2000, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setscheduler,
+                [0, 12_345, 0x2000, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setscheduler,
+                [0, u64::MAX, 0x2000, 0, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+
+        for number in [libc::SYS_sched_setscheduler, libc::SYS_sched_setparam] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    number,
+                    [0, libc::SCHED_OTHER as u64, 0, 0, 0, 0]
+                ),
+                negative_errno(libc::EINVAL)
+            );
+        }
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setscheduler,
+                [0, libc::SCHED_OTHER as u64, 0x2000, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setparam,
+                [0, 0x2000, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        {
+            let number = libc::SYS_sched_getparam;
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, number, [0, 0, 0, 0, 0, 0]),
+                negative_errno(libc::EINVAL)
+            );
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, number, [0, 0x2000, 0, 0, 0, 0]),
+                negative_errno(libc::EFAULT)
+            );
+        }
+
+        memory.write(PARAM, &1_i32.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setscheduler,
+                [0, libc::SCHED_OTHER as u64, PARAM, 0, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        memory.write(PARAM, &0_i32.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setscheduler,
+                [0, libc::SCHED_FIFO as u64, PARAM, 0, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        memory.write(PARAM, &1_i32.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setscheduler,
+                [
                     0,
                     (libc::SCHED_FIFO | SCHED_RESET_ON_FORK) as u64,
-                    0,
+                    PARAM,
                     0,
                     0,
                     0
@@ -7512,10 +8506,449 @@ mod tests {
             0
         );
         assert_eq!(
-            sched_setscheduler(&state, &[0, 12345, 0, 0, 0, 0]),
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getscheduler,
+                [0, 0, 0, 0, 0, 0]
+            ),
+            i64::from(libc::SCHED_FIFO | SCHED_RESET_ON_FORK)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getparam,
+                [0, OUTPUT, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let mut output = [0; std::mem::size_of::<i32>()];
+        memory.read(OUTPUT, &mut output).unwrap();
+        assert_eq!(i32::from_ne_bytes(output), 1);
+
+        memory.write(PARAM, &2_i32.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setparam,
+                [0, PARAM, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(state.sched_priority, 2);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_getparam,
+                [0, OUTPUT, 0, 0, 0, 0]
+            ),
+            0
+        );
+        memory.read(OUTPUT, &mut output).unwrap();
+        assert_eq!(i32::from_ne_bytes(output), 2);
+        memory.write(PARAM, &0_i32.to_ne_bytes()).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setscheduler,
+                [0, SCHED_DEADLINE as u64, PARAM, 0, 0, 0]
+            ),
             negative_errno(libc::EINVAL)
         );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setscheduler,
+                [0, 12_345, PARAM, 0, 0, 0]
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sched_setscheduler,
+                [0, 1_u64 << 32, PARAM, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(state.sched_policy, libc::SCHED_OTHER);
+    }
 
-        assert_eq!(GUEST_IOPRIO_DEFAULT, 16388);
+    #[test]
+    fn scheduler_and_ioprio_state_follow_fork_and_exec_rules() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+        state.sched_policy = libc::SCHED_FIFO;
+        state.sched_priority = 7;
+        state.sched_reset_on_fork = true;
+        state.ioprio = (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 4;
+
+        let child = state.try_clone_for_fork(2).unwrap();
+        assert_eq!(child.sched_policy, libc::SCHED_OTHER);
+        assert_eq!(child.sched_priority, 0);
+        assert!(!child.sched_reset_on_fork);
+        assert_eq!(child.ioprio, state.ioprio);
+
+        state.sched_reset_on_fork = false;
+        let child = state.try_clone_for_fork(3).unwrap();
+        assert_eq!(child.sched_policy, libc::SCHED_FIFO);
+        assert_eq!(child.sched_priority, 7);
+        assert!(!child.sched_reset_on_fork);
+        assert_eq!(child.ioprio, state.ioprio);
+
+        state.ioprio = 1 << 3;
+        let child = state.try_clone_for_fork(4).unwrap();
+        assert_eq!(child.ioprio, 0);
+        assert_eq!(state.ioprio, 1 << 3);
+
+        state.sched_policy = libc::SCHED_RR;
+        state.sched_priority = 9;
+        state.sched_reset_on_fork = true;
+        let expected_ioprio = state.ioprio;
+        let mut after_exec = test_state(&dir.0);
+        after_exec.inherit_process_state(state);
+        assert_eq!(after_exec.sched_policy, libc::SCHED_RR);
+        assert_eq!(after_exec.sched_priority, 9);
+        assert!(after_exec.sched_reset_on_fork);
+        assert_eq!(after_exec.ioprio, expected_ioprio);
+    }
+
+    #[test]
+    fn ioprio_syscalls_validate_and_round_trip_virtual_state() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+        let mut memory = GuestMemory::new(0, 0x1000).unwrap();
+        let pid = state.pid as u64;
+
+        for (which, who, expected) in [
+            (IOPRIO_WHO_PROCESS, 0, 0),
+            (
+                IOPRIO_WHO_PGRP,
+                pid,
+                (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 4,
+            ),
+            (
+                IOPRIO_WHO_USER,
+                0,
+                (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 4,
+            ),
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_ioprio_get,
+                    [which as u64, who, 0, 0, 0, 0]
+                ),
+                i64::from(expected)
+            );
+        }
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_get,
+                [(1_u64 << 32) | IOPRIO_WHO_PROCESS as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        state.sched_policy = libc::SCHED_IDLE;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_get,
+                [IOPRIO_WHO_PGRP as u64, 0, 0, 0, 0, 0]
+            ),
+            i64::from((IOPRIO_CLASS_IDLE << IOPRIO_CLASS_SHIFT) | 4)
+        );
+        state.sched_policy = libc::SCHED_OTHER;
+
+        let best_effort = (IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 4;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_set,
+                [
+                    IOPRIO_WHO_PROCESS as u64,
+                    0,
+                    (1_u64 << 32) | best_effort as u64,
+                    0,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_get,
+                [IOPRIO_WHO_PROCESS as u64, pid, 0, 0, 0, 0]
+            ),
+            i64::from(best_effort)
+        );
+
+        let hinted_best_effort = best_effort | (1 << 3);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_set,
+                [
+                    IOPRIO_WHO_PROCESS as u64,
+                    0,
+                    hinted_best_effort as u64,
+                    0,
+                    0,
+                    0
+                ]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_get,
+                [IOPRIO_WHO_PROCESS as u64, 0, 0, 0, 0, 0]
+            ),
+            i64::from(hinted_best_effort)
+        );
+
+        let hinted_none = 1 << 3;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_set,
+                [IOPRIO_WHO_PROCESS as u64, 0, hinted_none as u64, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_get,
+                [IOPRIO_WHO_PROCESS as u64, 0, 0, 0, 0, 0]
+            ),
+            i64::from(hinted_none)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_get,
+                [IOPRIO_WHO_PGRP as u64, 0, 0, 0, 0, 0]
+            ),
+            i64::from((IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 4)
+        );
+
+        let idle = (IOPRIO_CLASS_IDLE << IOPRIO_CLASS_SHIFT) | 1;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_set,
+                [IOPRIO_WHO_PGRP as u64, 0, idle as u64, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(state.ioprio, idle);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_set,
+                [IOPRIO_WHO_USER as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(state.ioprio, 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_ioprio_get,
+                [IOPRIO_WHO_PGRP as u64, 0, 0, 0, 0, 0]
+            ),
+            i64::from((IOPRIO_CLASS_BE << IOPRIO_CLASS_SHIFT) | 4)
+        );
+
+        for invalid_ioprio in [1_u64, 7_u64 << IOPRIO_CLASS_SHIFT] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_ioprio_set,
+                    [IOPRIO_WHO_PROCESS as u64, 999_999, invalid_ioprio, 0, 0, 0]
+                ),
+                negative_errno(libc::EINVAL)
+            );
+        }
+
+        for args in [
+            [99, 0, 0, 0, 0, 0],
+            [IOPRIO_WHO_PROCESS as u64, 999_999, 0, 0, 0, 0],
+            [IOPRIO_WHO_PROCESS as u64, 0, 1, 0, 0, 0],
+            [
+                IOPRIO_WHO_PROCESS as u64,
+                0,
+                7 << IOPRIO_CLASS_SHIFT,
+                0,
+                0,
+                0,
+            ],
+        ] {
+            let expected = if args[0] == IOPRIO_WHO_PROCESS as u64 && args[1] == 999_999 {
+                negative_errno(libc::ESRCH)
+            } else {
+                negative_errno(libc::EINVAL)
+            };
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, libc::SYS_ioprio_set, args),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn faccessat_variants_check_permissions() {
+        let dir = TestDir::new();
+        std::fs::write(dir.0.join("readable"), b"hi").unwrap();
+        std::fs::set_permissions(
+            dir.0.join("readable"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        let mut state = test_state(&dir.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+
+        // access(2): an existing readable file resolves to success.
+        write_c_string(&mut memory, 0x100, "readable");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_access,
+                [0x100, libc::R_OK as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        // faccessat2(AT_FDCWD, path, R_OK, AT_EACCESS) is what the shell
+        // `test -r` operator issues; it must succeed rather than ENOSYS.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_faccessat2,
+                [
+                    libc::AT_FDCWD as u64,
+                    0x100,
+                    libc::R_OK as u64,
+                    libc::AT_EACCESS as u64,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        // faccessat(2) without a flags argument behaves like access(2).
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_faccessat,
+                [libc::AT_FDCWD as u64, 0x100, libc::R_OK as u64, 0, 0, 0],
+            ),
+            0
+        );
+        // A 0o644 file is not executable for any user, including root.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_faccessat2,
+                [libc::AT_FDCWD as u64, 0x100, libc::X_OK as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::EACCES)
+        );
+        // A missing path reports ENOENT.
+        write_c_string(&mut memory, 0x200, "missing");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_faccessat2,
+                [libc::AT_FDCWD as u64, 0x200, libc::R_OK as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        // An unsupported flag is rejected with EINVAL.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_faccessat2,
+                [
+                    libc::AT_FDCWD as u64,
+                    0x100,
+                    libc::R_OK as u64,
+                    0x8000,
+                    0,
+                    0
+                ],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+    }
+
+    #[test]
+    fn wait4_sign_extends_negative_pid_and_reaps_child() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+        // A child (pid 9) has already exited with code 7.
+        state.children.insert(9, 7);
+
+        // wait4(-1) arrives as 0xFFFF_FFFF in a 64-bit register; the handler
+        // must sign-extend it to -1 and reap the recorded child rather than
+        // treating the value as an out-of-range positive pid and returning
+        // ECHILD.
+        let status_addr = 0x100u64;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_wait4,
+                [0xFFFF_FFFF, status_addr, 0, 0, 0, 0],
+            ),
+            9
+        );
+        // The wait status encodes a normal exit with code 7 (WIFEXITED,
+        // WEXITSTATUS == 7).
+        let raw: i32 = read_struct(&memory, status_addr);
+        assert_eq!(raw & 0x7f, 0);
+        assert_eq!((raw >> 8) & 0xff, 7);
+        // The child is consumed; a subsequent reap reports ECHILD.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_wait4,
+                [0xFFFF_FFFF, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::ECHILD)
+        );
     }
 }
