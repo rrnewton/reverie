@@ -6,12 +6,14 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+// TODO-HUMAN-REVIEW(PR-139): Review module visibility for the shared LiteInst host.
 pub(crate) mod config;
 pub(crate) mod filter;
 pub(crate) mod global_state;
 pub(crate) mod tool;
 
 use clap::Parser;
+// TODO-HUMAN-REVIEW(PR-139): Review type visibility for the shared LiteInst host.
 pub(crate) use config::Config;
 pub(crate) use filter::Filter;
 use reverie::Error;

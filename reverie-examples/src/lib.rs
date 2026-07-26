@@ -12,12 +12,15 @@
 // The reused production tool sources each declare the same test-only KVM helper.
 #![allow(clippy::duplicate_mod)]
 
-use std::io;
+use std::ffi::CStr;
+use std::ffi::OsStr;
+use std::ffi::OsString;
+use std::mem::MaybeUninit;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::OsStringExt;
+use std::path::Path;
 use std::path::PathBuf;
-use std::process::Output;
-
-use reverie::process::Command;
-use reverie_liteinst::LiteinstBackend;
+use std::ptr;
 
 #[allow(dead_code)]
 #[path = "../counter1.rs"]
@@ -33,127 +36,70 @@ pub(crate) use strace::config;
 pub(crate) use strace::filter;
 pub(crate) use strace::global_state;
 
-const TOOL_ENV: &str = "REVERIE_LITEINST_EXAMPLE_TOOL";
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-139): Review the public LiteInst example-tool selector.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
-/// Production example tool hosted by the LiteInst preload.
-pub enum ToolKind {
-    /// Count every intercepted syscall through the shared global state.
-    Counter1,
-    /// Decode and print subscribed syscalls.
-    Strace,
-    /// Preserve guest behavior without subscribing to events.
-    Noop,
-}
-
-impl ToolKind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Counter1 => "counter1",
-            Self::Strace => "strace",
-            Self::Noop => "noop",
-        }
-    }
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-139): Review the public LiteInst example-tool result.
-/// Captured result of a LiteInst example-tool run.
-pub struct RunOutput {
-    /// Guest process status and captured standard streams.
-    pub output: Output,
-    /// Final counter value for `counter1`; absent for other tools.
-    pub counter_total: Option<u64>,
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-139): Review the public LiteInst example-tool launch boundary.
-/// Runs one production example tool through `LiteinstBackend`.
-///
-/// `filters` accepts strace syscall filters and must be empty for other tools.
-pub async fn run(
-    kind: ToolKind,
-    mut command: Command,
-    filters: Vec<String>,
-    preload: PathBuf,
-) -> Result<RunOutput, reverie::Error> {
-    let filters = if kind == ToolKind::Strace {
-        filters
-            .into_iter()
-            .map(|filter| filter.parse())
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
-    } else if filters.is_empty() {
-        Vec::new()
-    } else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "strace filters require the strace tool",
-        )
-        .into());
-    };
-    command.env(TOOL_ENV, kind.as_str());
-    match kind {
-        ToolKind::Counter1 => {
-            let (output, global) = LiteinstBackend::run_with_output_and_preload::<
-                counter1::CounterLocal,
-            >(command, (), preload)
-            .await?;
-            Ok(RunOutput {
-                output,
-                counter_total: Some(global.total()),
-            })
-        }
-        ToolKind::Strace => {
-            let (output, _) = LiteinstBackend::run_with_output_and_preload::<strace::Strace>(
-                command,
-                strace::Config { filters },
-                preload,
-            )
-            .await?;
-            Ok(RunOutput {
-                output,
-                counter_total: None,
-            })
-        }
-        ToolKind::Noop => {
-            let (output, _) = LiteinstBackend::run_with_output_and_preload::<noop::NoopTool>(
-                command,
-                (),
-                preload,
-            )
-            .await?;
-            Ok(RunOutput {
-                output,
-                counter_total: None,
-            })
-        }
-    }
-}
+const TOOL_ENV: &CStr = c"REVERIE_LITEINST_EXAMPLE_TOOL";
+const COORDINATOR_ENV: &CStr = c"REVERIE_LITEINST_COORDINATOR";
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-139): Review the example-tool preload constructor and selector boundary.
 #[used]
 #[unsafe(link_section = ".init_array")]
-static LITEINST_EXAMPLE_INIT: unsafe extern "C" fn() = initialize;
+static LITEINST_EXAMPLE_INIT: unsafe extern "C" fn(
+    libc::c_int,
+    *mut *mut libc::c_char,
+    *mut *mut libc::c_char,
+) = initialize;
 
-unsafe extern "C" fn initialize() {
-    let Some(socket) = std::env::var_os(reverie_liteinst::COORDINATOR_ENV) else {
+unsafe fn loaded_as_preload() -> bool {
+    let mut info = MaybeUninit::<libc::Dl_info>::uninit();
+    let found = unsafe {
+        libc::dladdr(
+            initialize as *const () as *const libc::c_void,
+            info.as_mut_ptr(),
+        )
+    };
+    if found == 0 {
+        return false;
+    }
+    let info = unsafe { info.assume_init() };
+    if info.dli_fname.is_null() {
+        return false;
+    }
+    let mapped_name = unsafe { CStr::from_ptr(info.dli_fname) }.to_bytes();
+    if mapped_name.is_empty() {
+        return false;
+    }
+    let mapped_path = Path::new(OsStr::from_bytes(mapped_name));
+    match (mapped_path.canonicalize(), std::env::current_exe()) {
+        (Ok(mapped_path), Ok(executable)) => mapped_path != executable,
+        _ => false,
+    }
+}
+
+unsafe extern "C" fn initialize(
+    _argc: libc::c_int,
+    _argv: *mut *mut libc::c_char,
+    environment: *mut *mut libc::c_char,
+) {
+    if !unsafe { loaded_as_preload() } {
+        return;
+    }
+    let Some(socket) = (unsafe { take_initial_environment(environment, COORDINATOR_ENV) }) else {
         return;
     };
-    let Some(selected) = std::env::var_os(TOOL_ENV) else {
+    let Some(selected) = (unsafe { take_initial_environment(environment, TOOL_ENV) }) else {
         fail("example tool selector is missing");
     };
-    unsafe { std::env::remove_var(TOOL_ENV) };
 
     let result = match selected.to_str() {
         Some("counter1") => unsafe {
-            reverie_liteinst::install_tool::<counter1::CounterLocal>(&socket)
+            reverie_liteinst::install_tool::<counter1::CounterLocal>(PathBuf::from(&socket))
         },
-        Some("strace") => unsafe { reverie_liteinst::install_tool::<strace::Strace>(&socket) },
-        Some("noop") => unsafe { reverie_liteinst::install_tool::<noop::NoopTool>(&socket) },
+        Some("strace") => unsafe {
+            reverie_liteinst::install_tool::<strace::Strace>(PathBuf::from(&socket))
+        },
+        Some("noop") => unsafe {
+            reverie_liteinst::install_tool::<noop::NoopTool>(PathBuf::from(&socket))
+        },
         Some(other) => fail(&format!("unknown example tool {other:?}")),
         None => fail("example tool selector is not valid UTF-8"),
     };
@@ -162,36 +108,29 @@ unsafe extern "C" fn initialize() {
     }
 }
 
+unsafe fn take_initial_environment(
+    environment: *mut *mut libc::c_char,
+    name: &CStr,
+) -> Option<OsString> {
+    let mut slot = environment;
+    while !unsafe { (*slot).is_null() } {
+        let entry = unsafe { CStr::from_ptr(*slot) };
+        let bytes = entry.to_bytes();
+        if let Some(value) = bytes
+            .strip_prefix(name.to_bytes())
+            .and_then(|suffix| suffix.strip_prefix(b"="))
+        {
+            let value = OsString::from_vec(value.to_vec());
+            let length = bytes.len();
+            unsafe { ptr::write_bytes(*slot, 0, length) };
+            return Some(value);
+        }
+        slot = unsafe { slot.add(1) };
+    }
+    None
+}
+
 fn fail(message: &str) -> ! {
     eprintln!("reverie-liteinst-examples: {message}");
     unsafe { libc::_exit(127) }
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-139): Review the public example preload discovery API.
-/// Finds the package preload DSO beside the current executable.
-pub fn default_preload_path() -> io::Result<PathBuf> {
-    let executable = std::env::current_exe()?;
-    let parent = executable.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, "launcher executable has no parent")
-    })?;
-    [
-        parent.join("libreverie_examples.so"),
-        parent.join("deps/libreverie_examples.so"),
-        parent
-            .parent()
-            .unwrap_or(parent)
-            .join("libreverie_examples.so"),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-    .ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
-            format!(
-                "cannot find libreverie_examples.so beside {}",
-                executable.display()
-            ),
-        )
-    })
 }

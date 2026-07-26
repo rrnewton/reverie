@@ -15,7 +15,13 @@ use anyhow::bail;
 use clap::Parser;
 use reverie::ExitStatus;
 use reverie::process::Command;
-use reverie_examples as example_tools;
+#[path = "src/host.rs"]
+mod example_tools;
+
+// TODO-HUMAN-REVIEW(PR-139): Review crate-local strace source reuse.
+pub(crate) use example_tools::config;
+pub(crate) use example_tools::filter;
+pub(crate) use example_tools::global_state;
 
 #[derive(Debug, Parser)]
 #[clap(trailing_var_arg = true)]

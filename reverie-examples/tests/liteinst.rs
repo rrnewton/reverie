@@ -39,14 +39,27 @@ fn run(tool: &str, extra: &[&str], guest: &[&str]) -> Output {
 }
 
 #[test]
-fn exact_noop_tool_preserves_output_and_hides_selector() {
+fn launcher_does_not_activate_the_guest_constructor() {
+    let output = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-examples"))
+        .env("REVERIE_LITEINST_COORDINATOR", "/tmp/not-a-coordinator")
+        .env("REVERIE_LITEINST_EXAMPLE_TOOL", "noop")
+        .arg("--help")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.starts_with(b"Usage:"), "{output:?}");
+}
+
+#[test]
+fn exact_noop_tool_preserves_output_and_hides_control_environment() {
     let output = run(
         "noop",
         &[],
         &[
             "/bin/sh",
             "-c",
-            "test -z \"$REVERIE_LITEINST_EXAMPLE_TOOL\"; printf hello",
+            "test -z \"$REVERIE_LITEINST_EXAMPLE_TOOL\" && test -z \"$REVERIE_LITEINST_COORDINATOR\" && printf hello",
         ],
     );
 

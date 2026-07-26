@@ -5,6 +5,8 @@ use std::io;
 use std::path::PathBuf;
 use std::process::Output;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 
 use reverie::Backend;
 use reverie::Error;
@@ -105,8 +107,14 @@ where
         .tempdir()?;
     let socket = directory.path().join("coordinator.sock");
     let global = Arc::new(T::GlobalState::init_global_state(&config).await);
-    let server = RpcServer::bind(&socket, global.clone(), config)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let connected = Arc::new(AtomicBool::new(false));
+    let server = RpcServer::bind_with_connection_readiness(
+        &socket,
+        global.clone(),
+        config,
+        connected.clone(),
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
 
     let mut child_command = command.into_std_lossy();
     let configured_preload = child_command
@@ -133,17 +141,15 @@ where
             child.wait().map(ChildWait::Status)
         }
     });
-    let mut completed_connections = 0_usize;
     let wait = loop {
         tokio::select! {
             biased;
             result = server.serve_one() => {
                 result.map_err(|error| io::Error::other(error.to_string()))?;
-                completed_connections += 1;
             }
             result = &mut wait => {
                 let wait = result.map_err(|error| io::Error::other(error.to_string()))??;
-                if completed_connections == 0 {
+                if !connected.load(Ordering::Acquire) {
                     return Err(io::Error::new(
                         io::ErrorKind::ConnectionAborted,
                         "LiteInst guest exited before connecting to the coordinator; static executables and loader failures are unsupported",
