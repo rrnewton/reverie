@@ -242,7 +242,7 @@ impl Tool for StraceTool {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(#PR): Review the DBI noop/counter1 example-tool ports.
+// TODO-HUMAN-REVIEW(#123): Review the DBI noop/counter1 example-tool ports.
 /// The reverie `noop` example, adapted to DBI: a tool that observes every
 /// syscall but changes nothing, passing each straight through to the kernel.
 /// Exercises the minimal `Guest::inject` path — the floor of DBI Tool support.
