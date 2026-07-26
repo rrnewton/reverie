@@ -14,6 +14,9 @@ use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
+use std::process::Stdio;
+use std::time::Duration;
+use std::time::Instant;
 
 fn preload() -> PathBuf {
     let executable = std::env::current_exe().unwrap();
@@ -38,7 +41,23 @@ fn run(tool: &str, extra: &[&str], guest: &[&str]) -> Output {
         .args(extra)
         .arg("--")
         .args(guest);
-    command.output().unwrap()
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            return child.wait_with_output().unwrap();
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!("LiteInst example timed out: {output:?}");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]
@@ -159,21 +178,25 @@ fn exact_counter1_tool_reports_a_nonzero_total() {
 
 #[test]
 fn exact_counter1_tool_does_not_reenter_the_guest_allocator() {
-    let awk = "/usr/bin/awk";
-    if !std::path::Path::new(awk).is_file() {
-        eprintln!("skipping: {awk} is unavailable");
-        return;
-    }
-
-    let output = run("counter1", &[], &[awk, "BEGIN { print 42 }"]);
+    let output = run(
+        "counter1",
+        &[],
+        &[
+            env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"),
+            "exercise-allocator",
+        ],
+    );
 
     assert!(output.status.success(), "{output:?}");
-    assert_eq!(output.stdout, b"42\n");
+    assert_eq!(output.stdout, b"allocator-growth-ok\n");
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(
-        stderr.contains(" [counter tool] Total system calls in process tree: "),
-        "{stderr}"
-    );
+    let total = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix(" [counter tool] Total system calls in process tree: "))
+        .expect("counter1 summary is missing")
+        .parse::<u64>()
+        .unwrap();
+    assert!(total > 0, "{stderr}");
 }
 
 #[test]

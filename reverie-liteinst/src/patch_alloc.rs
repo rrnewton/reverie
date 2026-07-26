@@ -367,10 +367,22 @@ static TOOL_HEAP: ToolHeap = ToolHeap::new();
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+    use std::sync::MutexGuard;
+
     use super::*;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn test_guard() -> MutexGuard<'static, ()> {
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
 
     #[test]
     fn dispatch_heap_reuses_freed_blocks() {
+        let _test_guard = test_guard();
         let allocator = PatchAllocator;
         let layout = Layout::from_size_align(256, 64).unwrap();
         let _scope = enter_dispatch();
@@ -386,5 +398,129 @@ mod tests {
         assert_eq!(second, first);
         // SAFETY: second is live and was allocated with layout.
         unsafe { allocator.dealloc(second, layout) };
+    }
+
+    #[test]
+    fn dispatch_heap_honors_large_alignment() {
+        let _test_guard = test_guard();
+        let allocator = PatchAllocator;
+        let _scope = enter_dispatch();
+        for alignment in [8, 64, 4096] {
+            let layout = Layout::from_size_align(257, alignment).unwrap();
+            // SAFETY: layout is valid for this allocator.
+            let pointer = unsafe { allocator.alloc(layout) };
+            assert!(!pointer.is_null());
+            assert_eq!((pointer as usize) % alignment, 0);
+            // SAFETY: pointer is live and was allocated with layout.
+            unsafe { allocator.dealloc(pointer, layout) };
+        }
+    }
+
+    #[test]
+    fn dispatch_heap_realloc_preserves_bytes_when_growing_and_shrinking() {
+        let _test_guard = test_guard();
+        let allocator = PatchAllocator;
+        let small = Layout::from_size_align(64, 32).unwrap();
+        let _scope = enter_dispatch();
+        // SAFETY: small is valid for this allocator.
+        let pointer = unsafe { allocator.alloc(small) };
+        assert!(!pointer.is_null());
+        for index in 0..small.size() {
+            // SAFETY: index is within the live small allocation.
+            unsafe { pointer.add(index).write(index as u8) };
+        }
+
+        // SAFETY: pointer is live and was allocated with small.
+        let grown = unsafe { allocator.realloc(pointer, small, 512) };
+        assert!(!grown.is_null());
+        for index in 0..small.size() {
+            // SAFETY: index is within the live grown allocation.
+            assert_eq!(unsafe { grown.add(index).read() }, index as u8);
+        }
+        let grown_layout = Layout::from_size_align(512, small.align()).unwrap();
+        // SAFETY: grown is live and was allocated with grown_layout.
+        let shrunk = unsafe { allocator.realloc(grown, grown_layout, 16) };
+        assert!(!shrunk.is_null());
+        for index in 0..16 {
+            // SAFETY: index is within the live shrunk allocation.
+            assert_eq!(unsafe { shrunk.add(index).read() }, index as u8);
+        }
+        let shrunk_layout = Layout::from_size_align(16, small.align()).unwrap();
+        // SAFETY: shrunk is live and was allocated with shrunk_layout.
+        unsafe { allocator.dealloc(shrunk, shrunk_layout) };
+    }
+
+    #[test]
+    fn failed_dispatch_realloc_keeps_the_source_live() {
+        let _test_guard = test_guard();
+        let allocator = PatchAllocator;
+        let layout = Layout::from_size_align(64, 16).unwrap();
+        let _scope = enter_dispatch();
+        // SAFETY: layout is valid for this allocator.
+        let pointer = unsafe { allocator.alloc(layout) };
+        assert!(!pointer.is_null());
+        // SAFETY: pointer covers layout.size writable bytes.
+        unsafe { pointer.write_bytes(0xa5, layout.size()) };
+
+        // SAFETY: pointer is live; the requested size exceeds the bounded arena.
+        let failed = unsafe { allocator.realloc(pointer, layout, TOOL_HEAP_BYTES + 1) };
+        assert!(failed.is_null());
+        for index in 0..layout.size() {
+            // SAFETY: failed realloc leaves the original allocation live.
+            assert_eq!(unsafe { pointer.add(index).read() }, 0xa5);
+        }
+        // SAFETY: pointer remains live with its original layout.
+        unsafe { allocator.dealloc(pointer, layout) };
+    }
+
+    #[test]
+    fn system_realloc_migrates_into_the_dispatch_heap() {
+        let _test_guard = test_guard();
+        let allocator = PatchAllocator;
+        let layout = Layout::from_size_align(64, 16).unwrap();
+        // SAFETY: layout is valid for System.
+        let original = unsafe { System.alloc(layout) };
+        assert!(!original.is_null());
+        // SAFETY: original covers layout.size writable bytes.
+        unsafe { original.write_bytes(0x3c, layout.size()) };
+
+        let scope = enter_dispatch();
+        // SAFETY: original is live and was allocated with layout.
+        let migrated = unsafe { allocator.realloc(original, layout, 128) };
+        assert!(!migrated.is_null());
+        assert!(TOOL_HEAP.contains(migrated));
+        drop(scope);
+        for index in 0..layout.size() {
+            // SAFETY: migrated contains at least the copied original bytes.
+            assert_eq!(unsafe { migrated.add(index).read() }, 0x3c);
+        }
+        let migrated_layout = Layout::from_size_align(128, layout.align()).unwrap();
+        // SAFETY: migrated remains owned by TOOL_HEAP after dispatch ends.
+        unsafe { allocator.dealloc(migrated, migrated_layout) };
+    }
+
+    #[test]
+    fn dispatch_heap_supports_concurrent_allocate_free() {
+        let _test_guard = test_guard();
+        let threads: [_; 4] = std::array::from_fn(|thread_index| {
+            std::thread::spawn(move || {
+                let allocator = PatchAllocator;
+                let _scope = enter_dispatch();
+                for iteration in 0..1000 {
+                    let size = 1 + (thread_index * 17 + iteration) % 1024;
+                    let layout = Layout::from_size_align(size, 64).unwrap();
+                    // SAFETY: layout is valid for this allocator.
+                    let pointer = unsafe { allocator.alloc(layout) };
+                    assert!(!pointer.is_null());
+                    // SAFETY: pointer covers layout.size writable bytes.
+                    unsafe { pointer.write_bytes(thread_index as u8, layout.size()) };
+                    // SAFETY: pointer is live and was allocated with layout.
+                    unsafe { allocator.dealloc(pointer, layout) };
+                }
+            })
+        });
+        for thread in threads {
+            thread.join().unwrap();
+        }
     }
 }
