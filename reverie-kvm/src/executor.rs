@@ -264,6 +264,14 @@ fn execute_basic_syscall_with_output(
         symlink_at(memory, state, args[0], args[1] as libc::c_int, args[2])
     } else if number == libc::SYS_getcwd as u64 {
         getcwd(memory, state, args)
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(#PENDING): KVM guest working-directory changes.
+    } else if number == libc::SYS_chdir as u64 {
+        chdir(memory, state, args)
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(#PENDING): KVM guest working-directory changes.
+    } else if number == libc::SYS_fchdir as u64 {
+        fchdir(state, args)
     } else if number == libc::SYS_getdents64 as u64 {
         getdents64(memory, state, args)
     } else if number == libc::SYS_getpid as u64 || number == libc::SYS_gettid as u64 {
@@ -2248,6 +2256,80 @@ fn getcwd(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
         Ok(()) => required as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
+}
+
+/// Resolve the absolute path a directory descriptor points at, via the kernel's
+/// `/proc/self/fd` magic symlink. Deterministic under Hermit's controlled,
+/// stable filesystem image, matching the value `getcwd` would report.
+fn dir_path_from_fd(fd: RawFd) -> Option<std::path::PathBuf> {
+    std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#PENDING): KVM guest working-directory changes.
+/// `chdir(path)`: retarget the guest's AT_FDCWD base and tracked cwd. The new
+/// directory is opened as an `O_PATH` handle (mirroring the launch descriptor in
+/// `elf.rs`), so subsequent relative path resolution in `host_dirfd_and_path`
+/// and `getcwd` observe the move. Deterministic: reads no host clock, PID, or
+/// scheduling state.
+fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let path = match read_c_string(memory, args[0], 4096) {
+        Ok(path) => path,
+        Err(error) => return read_c_string_errno(error),
+    };
+    if path.is_empty() {
+        return negative_errno(libc::ENOENT);
+    }
+    let (host_dirfd, path) = match host_dirfd_and_path(state, libc::AT_FDCWD, &path) {
+        Ok(resolved) => resolved,
+        Err(error) => return error,
+    };
+    // SAFETY: path is NUL-terminated; host_dirfd is a live descriptor or AT_FDCWD.
+    let fd = unsafe {
+        libc::openat(
+            host_dirfd,
+            path.as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    if fd < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: fd is a fresh owned descriptor returned by openat.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    let Some(new_cwd) = dir_path_from_fd(file.as_raw_fd()) else {
+        return negative_errno(libc::ENOENT);
+    };
+    state.cwd_fd = file;
+    state.cwd = new_cwd;
+    0
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#PENDING): KVM guest working-directory changes.
+/// `fchdir(fd)`: retarget the guest's AT_FDCWD base to an already-open directory
+/// descriptor. Used by tools such as `find` to restore the initial working
+/// directory after a traversal. Deterministic for the same reasons as `chdir`.
+fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(guest_fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(file) = state.files.get(&guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    if let Err(error) = ensure_directory(file) {
+        return error;
+    }
+    let cloned = match file.try_clone() {
+        Ok(cloned) => cloned,
+        Err(error) => return io_error(error),
+    };
+    let Some(new_cwd) = dir_path_from_fd(cloned.as_raw_fd()) else {
+        return negative_errno(libc::ENOENT);
+    };
+    state.cwd_fd = cloned;
+    state.cwd = new_cwd;
+    0
 }
 
 fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
