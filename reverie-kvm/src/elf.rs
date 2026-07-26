@@ -61,17 +61,35 @@ const AT_RANDOM: u64 = 25;
 const AT_EXECFN: u64 = 31;
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Share deterministic file identities across fork.
-// TODO-HUMAN-REVIEW(PR-136): Review the shared weak-reference identity registry.
+// TODO-HUMAN-REVIEW(PR-136): Review linked and anonymous object identity lifetimes.
 #[derive(Debug)]
 pub(crate) struct GuestFileIdentity {
     pub inode: u64,
 }
 
 #[derive(Debug)]
+pub(crate) enum GuestFileIdentityEntry {
+    Persistent(std::sync::Arc<GuestFileIdentity>),
+    Ephemeral(std::sync::Weak<GuestFileIdentity>),
+}
+
+impl GuestFileIdentityEntry {
+    pub(crate) fn identity(&self) -> Option<std::sync::Arc<GuestFileIdentity>> {
+        match self {
+            Self::Persistent(identity) => Some(identity.clone()),
+            Self::Ephemeral(identity) => identity.upgrade(),
+        }
+    }
+
+    pub(crate) fn is_live(&self) -> bool {
+        self.identity().is_some()
+    }
+}
+
+#[derive(Debug)]
 pub(crate) struct GuestFileIdentityTable {
     pub next_inode: u64,
-    pub objects:
-        std::collections::BTreeMap<(libc::dev_t, libc::ino_t), std::sync::Weak<GuestFileIdentity>>,
+    pub objects: std::collections::BTreeMap<(libc::dev_t, libc::ino_t), GuestFileIdentityEntry>,
 }
 
 #[derive(Debug)]
@@ -225,9 +243,7 @@ impl LoadedStaticElf {
             let mut table = file_identity_table
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            table
-                .objects
-                .retain(|_, identity| identity.strong_count() > 0);
+            table.objects.retain(|_, entry| entry.is_live());
         }
         let mut closed_standard_fds = previous.closed_standard_fds;
         if cloexec_fds.contains(&libc::STDIN_FILENO) {
