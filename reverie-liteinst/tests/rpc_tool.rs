@@ -32,6 +32,14 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     assert!(rejected_handler.status.success(), "{rejected_handler:?}");
     assert_eq!(rejected_handler.stdout, b"preinstalled-handler-reset\n");
 
+    let preblocked_sigsys = Command::new(binary)
+        .arg("preblocked-sigsys")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert!(preblocked_sigsys.status.success(), "{preblocked_sigsys:?}");
+    assert_eq!(preblocked_sigsys.stdout, b"inherited-sigsys-unblocked\n");
+
     let spoofed_sigsys = Command::new(binary)
         .arg("spoof-sigsys")
         .arg(&socket)

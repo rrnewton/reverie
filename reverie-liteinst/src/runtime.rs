@@ -566,9 +566,57 @@ struct KernelSigaction {
     mask: u64,
 }
 
+pub(crate) struct SignalInstallGuard {
+    restore_mask: u64,
+}
+
+impl Drop for SignalInstallGuard {
+    fn drop(&mut self) {
+        let result = unsafe {
+            raw_syscall6(
+                libc::SYS_rt_sigprocmask,
+                [
+                    libc::SIG_SETMASK as u64,
+                    (&raw const self.restore_mask) as u64,
+                    0,
+                    core::mem::size_of::<u64>() as u64,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if result < 0 {
+            unsafe { exit_now(126) };
+        }
+    }
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-133): Review pre-runtime signal disposition reset.
-pub(crate) fn reset_preinstalled_signal_handlers() -> io::Result<()> {
+// TODO-HUMAN-REVIEW(PR-133): Review atomic signal-state preparation.
+pub(crate) fn prepare_guest_signal_state() -> io::Result<SignalInstallGuard> {
+    let sigsys = 1_u64 << (libc::SIGSYS - 1);
+    let install_mask = !sigsys;
+    let mut previous_mask = 0_u64;
+    let result = unsafe {
+        raw_syscall6(
+            libc::SYS_rt_sigprocmask,
+            [
+                libc::SIG_SETMASK as u64,
+                (&raw const install_mask) as u64,
+                (&raw mut previous_mask) as u64,
+                core::mem::size_of::<u64>() as u64,
+                0,
+                0,
+            ],
+        )
+    };
+    if result < 0 {
+        return Err(io::Error::from_raw_os_error((-result) as i32));
+    }
+    let guard = SignalInstallGuard {
+        restore_mask: previous_mask & !sigsys,
+    };
+
     for signal in 1..=64 {
         if matches!(signal, libc::SIGKILL | libc::SIGSTOP) {
             continue;
@@ -610,7 +658,7 @@ pub(crate) fn reset_preinstalled_signal_handlers() -> io::Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(guard)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -653,28 +701,38 @@ pub(crate) fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-133): Review nested Tool syscall guards and raw forwarding.
 fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
-    let unsupported_process = matches!(
-        event.number,
-        libc::SYS_clone
-            | libc::SYS_clone3
-            | libc::SYS_fork
-            | libc::SYS_vfork
-            | libc::SYS_execve
-            | libc::SYS_execveat
-    );
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    let unsupported_signal_state = matches!(
-        event.number,
-        libc::SYS_rt_sigaction
-            | libc::SYS_rt_sigprocmask
-            | libc::SYS_sigaltstack
-            | libc::SYS_rt_sigsuspend
-            | libc::SYS_pselect6
-            | libc::SYS_ppoll
-            | libc::SYS_epoll_pwait
-            | libc::SYS_epoll_pwait2
-            | SYS_IO_PGETEVENTS
-    );
+    let unsupported_process =
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        event.number == libc::SYS_clone
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_clone3
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_fork
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_vfork
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_execve
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_execveat;
+    let unsupported_signal_state =
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        event.number == libc::SYS_rt_sigaction
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_rt_sigprocmask
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_sigaltstack
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_rt_sigsuspend
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_pselect6
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_ppoll
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_epoll_pwait
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == libc::SYS_epoll_pwait2
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        || event.number == SYS_IO_PGETEVENTS;
     if unsupported_process {
         event.result = -i64::from(libc::ENOTSUP);
     } else if unsupported_signal_state {
