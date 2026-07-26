@@ -626,12 +626,13 @@ impl SyscallDispatcher for LiteinstDispatcher {
         }
         let mode = TOOL_MODE.load(Ordering::Relaxed);
         let args = event.args();
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-127): Keep fork-like clone on the compatibility trap fallback.
-        if mode != TOOL_REVERIE
-            && event.number() == libc::SYS_clone
-            && clone_is_fork_like(args[0], args[1])
-        {
+        let compatibility_trap_fallback =
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            (event.number() == libc::SYS_clone && clone_is_fork_like(args[0], args[1]))
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            || event.number() == libc::SYS_wait4;
+        // TODO-HUMAN-REVIEW(PR-127): Review fork and wait libc-wrapper trap fallbacks.
+        if mode != TOOL_REVERIE && compatibility_trap_fallback {
             let mut trapped = SyscallEvent {
                 number: event.number(),
                 args,
