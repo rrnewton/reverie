@@ -55,7 +55,7 @@ pub struct PreloadBootstrap {
 /// Call only from a preload constructor launched by LiteinstBackend; this scans
 /// inherited descriptors and consumes only a sealed, protocol-matching memfd.
 pub unsafe fn take_preload_bootstrap() -> io::Result<Option<PreloadBootstrap>> {
-    let mut found = None;
+    let mut found = Vec::new();
     for entry in std::fs::read_dir("/proc/self/fd")? {
         let entry = entry?;
         let Some(fd) = entry
@@ -70,33 +70,25 @@ pub unsafe fn take_preload_bootstrap() -> io::Result<Option<PreloadBootstrap>> {
         }
         match read_preload_bootstrap(fd) {
             Ok(Some(bootstrap)) => {
-                if let Some((previous_fd, _)) = found.take() {
-                    unsafe {
-                        libc::close(previous_fd);
-                        libc::close(fd);
-                    }
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "multiple LiteInst preload bootstraps",
-                    ));
-                }
-                found = Some((fd, bootstrap));
+                found.push((unsafe { OwnedFd::from_raw_fd(fd) }, bootstrap));
             }
             Ok(None) => {}
             Err(error) => {
-                if let Some((previous_fd, _)) = found.take() {
-                    unsafe { libc::close(previous_fd) };
-                }
-                unsafe { libc::close(fd) };
+                let _matching_fd = unsafe { OwnedFd::from_raw_fd(fd) };
                 return Err(error);
             }
         }
     }
-    if let Some((fd, bootstrap)) = found {
-        unsafe { libc::close(fd) };
-        Ok(Some(bootstrap))
-    } else {
-        Ok(None)
+    match found.len() {
+        0 => Ok(None),
+        1 => {
+            let (_fd, bootstrap) = found.pop().unwrap();
+            Ok(Some(bootstrap))
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "multiple LiteInst preload bootstraps",
+        )),
     }
 }
 
@@ -411,6 +403,9 @@ mod tests {
         let second = create_preload_bootstrap(Path::new("/tmp/second.sock"), b"two")
             .unwrap()
             .into_raw_fd();
+        let third = create_preload_bootstrap(Path::new("/tmp/third.sock"), b"three")
+            .unwrap()
+            .into_raw_fd();
 
         let error = match unsafe { take_preload_bootstrap() } {
             Err(error) => error,
@@ -421,6 +416,8 @@ mod tests {
         assert_eq!(unsafe { libc::fcntl(first, libc::F_GETFD) }, -1);
         assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
         assert_eq!(unsafe { libc::fcntl(second, libc::F_GETFD) }, -1);
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+        assert_eq!(unsafe { libc::fcntl(third, libc::F_GETFD) }, -1);
         assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
     }
 }
