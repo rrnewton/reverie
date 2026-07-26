@@ -669,9 +669,7 @@ unsafe extern "C" fn tool_trampoline() {
 fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
     let unsupported_control =
         // AUTONOMOUS-BOT-IMPLEMENTED
-        matches!(event.number, libc::SYS_execve | libc::SYS_execveat)
-        // AUTONOMOUS-BOT-IMPLEMENTED
-        || matches!(event.number, libc::SYS_clone3 | libc::SYS_vfork);
+        matches!(event.number, libc::SYS_clone3 | libc::SYS_vfork);
     let protected_signal =
         // AUTONOMOUS-BOT-IMPLEMENTED
         (event.number == libc::SYS_rt_sigaction && event.args[0] == libc::SIGSYS as u64)
@@ -691,17 +689,21 @@ fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
 }
 
 unsafe fn process_syscall(event: &mut SyscallEvent) {
-    if protect_runtime_control(event) {
-        if TOOL_MODE.load(Ordering::Relaxed) != TOOL_REVERIE {
+    let tool_mode = TOOL_MODE.load(Ordering::Relaxed);
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    if matches!(event.number, libc::SYS_execve | libc::SYS_execveat) {
+        event.result = -i64::from(libc::ENOTSUP);
+        if tool_mode != TOOL_REVERIE {
             unsafe {
                 trace_event(event, Some(event.result));
             }
         }
         return;
     }
-    if TOOL_MODE.load(Ordering::Relaxed) == TOOL_REVERIE
-        && unsafe { protect_coordinator_channel(event) }
-    {
+    if tool_mode == TOOL_REVERIE && protect_runtime_control(event) {
+        return;
+    }
+    if tool_mode == TOOL_REVERIE && unsafe { protect_coordinator_channel(event) } {
         return;
     }
     if TOOL_MODE.load(Ordering::Relaxed) == TOOL_REVERIE {
