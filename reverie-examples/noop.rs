@@ -16,7 +16,7 @@ use reverie::Tool;
 use reverie_util::CommonToolArguments;
 
 #[derive(Debug, Default)]
-struct NoopTool;
+pub(crate) struct NoopTool;
 
 #[reverie::tool]
 impl Tool for NoopTool {

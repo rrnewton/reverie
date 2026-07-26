@@ -25,12 +25,20 @@ use serde::Deserialize;
 use serde::Serialize;
 
 #[derive(Debug, Default)]
-struct CounterGlobal {
+pub(crate) struct CounterGlobal {
     num_syscalls: AtomicU64,
 }
 
 #[derive(Debug, Default, Clone)]
-struct CounterLocal {}
+pub(crate) struct CounterLocal {}
+
+impl CounterGlobal {
+    // Used by the LiteInst host; the standalone ptrace binary does not read it directly.
+    #[allow(dead_code)]
+    pub(crate) fn total(&self) -> u64 {
+        self.num_syscalls.load(Ordering::SeqCst)
+    }
+}
 
 /// The message sent to the global state method.
 /// This contains the syscall number.
