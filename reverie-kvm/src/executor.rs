@@ -269,6 +269,12 @@ fn execute_basic_syscall_with_output(
         symlink_at(memory, state, args[0], args[1] as libc::c_int, args[2])
     } else if number == libc::SYS_getcwd as u64 {
         getcwd(memory, state, args)
+    } else if number == libc::SYS_chdir as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        chdir(memory, state, args)
+    } else if number == libc::SYS_fchdir as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        fchdir(state, args)
     } else if number == libc::SYS_getdents64 as u64 {
         getdents64(memory, state, args)
     } else if number == libc::SYS_getpid as u64 || number == libc::SYS_gettid as u64 {
@@ -319,13 +325,7 @@ fn execute_basic_syscall_with_output(
         || number == libc::SYS_fgetxattr as u64
     {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // The deterministic container models no extended attributes, so report
-        // every attribute as absent (ENODATA) rather than letting the call fall
-        // through to ENOSYS. This matches what the ptrace backend observes from
-        // the host for files without xattrs and keeps `ls -l` (which probes
-        // security.selinux and system.posix_acl_access) from printing a spurious
-        // "Function not implemented".
-        negative_errno(libc::ENODATA)
+        getxattr(memory, state, number, args)
     } else if number == libc::SYS_brk as u64 {
         brk(memory, state, args[0])
     } else if number == libc::SYS_mmap as u64 {
@@ -557,6 +557,14 @@ impl ElfExecutor {
         } else {
             argv
         };
+        // TODO-HUMAN-REVIEW(reverie-kvm): in-guest execve `#!` interpreter
+        // resolution. The KVM ELF loader only maps ELF images, so a guest that
+        // execs a `#!`-script must have its interpreter resolved here, as the
+        // kernel's binfmt_script loader does.
+        let (image, argv) = match resolve_exec_shebang(path, image, argv) {
+            Ok((_interpreter, image, argv)) => (image, argv),
+            Err(errno) => return errno,
+        };
         self.process_action = Some(ProcessAction::Exec { image, argv, envp });
         0
     }
@@ -723,6 +731,68 @@ fn ensure_directory(file: &std::fs::File) -> Result<(), i64> {
         return Err(negative_errno(libc::ENOTDIR));
     }
     Ok(())
+}
+
+/// Maximum `#!` interpreter indirection levels, matching the Linux kernel's
+/// `BINPRM_MAX_RECURSION` limit for chained script interpreters.
+const MAX_SHEBANG_DEPTH: usize = 4;
+
+/// Resolve `#!` interpreter scripts for in-guest `execve(2)`, mirroring the
+/// kernel's `binfmt_script` loader (`fs/binfmt_script.c`).
+///
+/// The reverie-kvm ELF loader can only map ELF images, so a guest that execs a
+/// `#!`-script (for example a `sh` wrapper that execs another wrapper) must have
+/// its interpreter resolved here. On success the returned image is the
+/// interpreter's file contents and `argv` is rewritten in kernel order:
+/// `[interp, shebang_args.., script_path, <original argv[1..]>]`. Errors are
+/// returned as negative errnos.
+fn resolve_exec_shebang(
+    mut path: std::path::PathBuf,
+    mut image: Vec<u8>,
+    mut argv: Vec<String>,
+) -> Result<(std::path::PathBuf, Vec<u8>, Vec<String>), i64> {
+    let mut depth = 0;
+    while image.starts_with(b"#!") {
+        depth += 1;
+        if depth > MAX_SHEBANG_DEPTH {
+            return Err(negative_errno(libc::ELOOP));
+        }
+        let line_end = image
+            .iter()
+            .position(|&b| b == b'\n')
+            .unwrap_or(image.len());
+        // Skip "#!" and any leading blanks, then take the interpreter token.
+        let mut start = 2;
+        while start < line_end && matches!(image[start], b' ' | b'\t') {
+            start += 1;
+        }
+        let mut end = start;
+        while end < line_end && !matches!(image[end], b' ' | b'\t' | b'\r') {
+            end += 1;
+        }
+        if start == end {
+            return Err(negative_errno(libc::ENOEXEC));
+        }
+        let interpreter = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&image[start..end]));
+        // Remaining tokens on the directive line become interpreter arguments.
+        let mut shebang_args: Vec<String> = String::from_utf8_lossy(&image[end..line_end])
+            .split_ascii_whitespace()
+            .map(str::to_owned)
+            .collect();
+
+        let mut rewritten = Vec::with_capacity(argv.len() + shebang_args.len() + 2);
+        rewritten.push(interpreter.to_string_lossy().into_owned());
+        rewritten.append(&mut shebang_args);
+        rewritten.push(path.to_string_lossy().into_owned());
+        if argv.len() > 1 {
+            rewritten.extend_from_slice(&argv[1..]);
+        }
+        argv = rewritten;
+
+        path = interpreter;
+        image = std::fs::read(&path).map_err(io_error)?;
+    }
+    Ok((path, image, argv))
 }
 
 fn ensure_read_capable(file: &std::fs::File) -> Result<(), i64> {
@@ -1145,6 +1215,18 @@ fn open_file(
     };
     if path.is_empty() {
         return negative_errno(libc::ENOENT);
+    }
+    // Serve the synthetic /proc surface before touching the host filesystem, so
+    // deterministic content replaces the deliberately-refused real procfs.
+    if let Some(content) = synthetic_proc_content(state, &path) {
+        let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
+        if flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64 {
+            return negative_errno(libc::EACCES);
+        }
+        let normalized =
+            normalize_proc_path(state, &path).expect("a synthesized /proc path always normalizes");
+        let close_on_exec = flags & libc::O_CLOEXEC as u64 != 0;
+        return open_synthetic_proc(state, &normalized, &content, close_on_exec);
     }
     let Ok((host_dirfd, path)) = host_dirfd_and_path(state, guest_dirfd, &path) else {
         return negative_errno(libc::EBADF);
@@ -1583,7 +1665,11 @@ fn fstat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         return io_error(std::io::Error::last_os_error());
     }
     // SAFETY: fstat initialized stat on success.
-    write_struct(memory, args[1], &unsafe { stat.assume_init() })
+    let mut stat = unsafe { stat.assume_init() };
+    if let Some(&inode) = state.proc_files.get(&fd) {
+        sanitize_proc_stat(&mut stat, inode);
+    }
+    write_struct(memory, args[1], &stat)
 }
 
 fn path_stat(
@@ -1625,6 +1711,15 @@ fn fstatat_impl(
     if path.is_empty() && flags & libc::AT_EMPTY_PATH == 0 {
         return negative_errno(libc::ENOENT);
     }
+    // Path-addressed synthetic /proc file: synthesize deterministic metadata.
+    // synthetic_proc_content returns None for an empty path, so no explicit
+    // AT_EMPTY_PATH guard is needed here.
+    if let Some(content) = synthetic_proc_content(state, &path) {
+        let normalized =
+            normalize_proc_path(state, &path).expect("a synthesized /proc path always normalizes");
+        let stat = synthetic_proc_stat(synthetic_proc_inode(&normalized), content.len());
+        return write_struct(memory, output_address, &stat);
+    }
 
     let opened_file;
     let host_fd = if path.is_empty() {
@@ -1654,7 +1749,16 @@ fn fstatat_impl(
         return io_error(std::io::Error::last_os_error());
     }
     // SAFETY: fstat initialized stat on success.
-    write_struct(memory, output_address, &unsafe { stat.assume_init() })
+    let mut stat = unsafe { stat.assume_init() };
+    // AT_EMPTY_PATH stat of a synthetic /proc descriptor (path is empty here).
+    let empty_path_proc_inode = path
+        .is_empty()
+        .then(|| state.proc_files.get(&guest_dirfd).copied())
+        .flatten();
+    if let Some(inode) = empty_path_proc_inode {
+        sanitize_proc_stat(&mut stat, inode);
+    }
+    write_struct(memory, output_address, &stat)
 }
 
 fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -1672,6 +1776,32 @@ fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
     }
     if path.is_empty() && flags & libc::AT_EMPTY_PATH == 0 {
         return negative_errno(libc::ENOENT);
+    }
+    // Path-addressed synthetic /proc file: synthesize deterministic metadata.
+    if !path.is_empty() {
+        if let Some(content) = synthetic_proc_content(state, &path) {
+            let normalized = normalize_proc_path(state, &path)
+                .expect("a synthesized /proc path always normalizes");
+            let stx = synthetic_proc_statx(synthetic_proc_inode(&normalized), content.len() as u64);
+            return write_struct(memory, args[4], &stx);
+        }
+    } else if let Some(&inode) = state.proc_files.get(&(args[0] as libc::c_int)) {
+        // AT_EMPTY_PATH statx of a synthetic /proc descriptor: report the memfd's
+        // (deterministic) size with synthesized identity.
+        let size = match host_fd(state, args[0] as libc::c_int) {
+            Some(host_fd) => {
+                let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+                // SAFETY: stat is writable and host_fd is a live memfd descriptor.
+                if unsafe { libc::fstat(host_fd, stat.as_mut_ptr()) } != 0 {
+                    return io_error(std::io::Error::last_os_error());
+                }
+                // SAFETY: fstat initialized stat on success.
+                unsafe { stat.assume_init() }.st_size as u64
+            }
+            None => return negative_errno(libc::EBADF),
+        };
+        let stx = synthetic_proc_statx(inode, size);
+        return write_struct(memory, args[4], &stx);
     }
 
     let opened_file;
@@ -1765,6 +1895,14 @@ fn access(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
     };
     if path.is_empty() {
         return negative_errno(libc::ENOENT);
+    }
+    // Synthetic /proc files exist and are world-readable but never writable or
+    // executable, matching the read-only surface open_file serves.
+    if synthetic_proc_content(state, &path).is_some() {
+        if mode & (libc::W_OK | libc::X_OK) != 0 {
+            return negative_errno(libc::EACCES);
+        }
+        return 0;
     }
     let file = match open_metadata_path(state, libc::AT_FDCWD, &path, false) {
         Ok(file) => file,
@@ -2200,6 +2338,377 @@ fn getcwd(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
     }
 }
 
+// TODO-HUMAN-REVIEW(reverie-kvm): Review KVM guest chdir/fchdir cwd semantics.
+//
+// `chdir`/`fchdir` update the emulated working directory that `getcwd` reports
+// and that relative-path resolution (`host_dirfd_and_path`) resolves against.
+// Both replace `state.cwd_fd` with a fresh `O_PATH|O_DIRECTORY` handle so cwd
+// identity survives host renames (the same invariant `cwd_fd` had at load), and
+// canonicalize `state.cwd` from that handle so `getcwd` returns a stable, real
+// host path -- deterministic given the same external filesystem.
+fn chdir(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let path = match read_c_string(memory, args[0], 4096) {
+        Ok(path) => path,
+        Err(error) => return read_c_string_errno(error),
+    };
+    if path.is_empty() {
+        return negative_errno(libc::ENOENT);
+    }
+    let (host_dirfd, path) = match host_dirfd_and_path(state, libc::AT_FDCWD, &path) {
+        Ok(resolved) => resolved,
+        Err(error) => return error,
+    };
+    let directory = match open_cwd_directory(host_dirfd, &path) {
+        Ok(directory) => directory,
+        Err(error) => return error,
+    };
+    set_cwd(state, directory)
+}
+
+fn fchdir(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(file) = state.files.get(&fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    // Rejects non-directories (ENOTDIR) and O_PATH descriptors (EBADF), matching
+    // the kernel's fchdir precondition that the fd be a readable directory.
+    if let Err(error) = ensure_directory(file) {
+        return error;
+    }
+    // Reopen the directory itself ("." relative to the guest's own descriptor)
+    // as an independent O_PATH cwd handle so a later guest `close(fd)` cannot
+    // invalidate the working directory.
+    let directory = match open_cwd_directory(file.as_raw_fd(), c".") {
+        Ok(directory) => directory,
+        Err(error) => return error,
+    };
+    set_cwd(state, directory)
+}
+
+/// Open `path` (relative to `host_dirfd`) as an `O_PATH|O_DIRECTORY` handle
+/// suitable for use as `state.cwd_fd`. `O_DIRECTORY` yields `ENOTDIR` for a
+/// non-directory and procfs is refused, keeping cwd within the same isolation
+/// boundary as [`open_file`].
+fn open_cwd_directory(host_dirfd: RawFd, path: &CStr) -> Result<std::fs::File, i64> {
+    let how = OpenHow {
+        flags: (libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC) as u64,
+        mode: 0,
+        resolve: RESOLVE_NO_MAGICLINKS,
+    };
+    // SAFETY: path and how are live for the call; Linux validates host_dirfd.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_openat2,
+            host_dirfd,
+            path.as_ptr(),
+            &how,
+            std::mem::size_of::<OpenHow>(),
+        )
+    };
+    if fd < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: openat2 returned a new owned descriptor on success.
+    let file = unsafe { std::fs::File::from_raw_fd(fd as RawFd) };
+    ensure_not_procfs(&file)?;
+    Ok(file)
+}
+
+/// Commit `directory` as the new working directory, deriving the canonical
+/// `state.cwd` string from the descriptor so `getcwd` stays consistent with it.
+fn set_cwd(state: &mut LoadedStaticElf, directory: std::fs::File) -> i64 {
+    match canonical_fd_path(directory.as_raw_fd()) {
+        Ok(path) => {
+            state.cwd = path;
+            state.cwd_fd = directory;
+            0
+        }
+        Err(error) => error,
+    }
+}
+
+/// Resolve the canonical absolute path a descriptor refers to via the
+/// supervisor's own `/proc/self/fd`. This is a host-side operation on a
+/// supervisor descriptor (like the existing `link_at`/`utimensat` fallbacks),
+/// not a guest-visible procfs access.
+fn canonical_fd_path(fd: RawFd) -> Result<std::path::PathBuf, i64> {
+    let proc_path =
+        CString::new(format!("/proc/self/fd/{fd}")).map_err(|_| negative_errno(libc::EINVAL))?;
+    let mut buffer = vec![0u8; libc::PATH_MAX as usize];
+    // SAFETY: proc_path is NUL-terminated and buffer is writable for its length.
+    let count = unsafe {
+        libc::readlink(
+            proc_path.as_ptr(),
+            buffer.as_mut_ptr().cast::<libc::c_char>(),
+            buffer.len(),
+        )
+    };
+    if count < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    buffer.truncate(count as usize);
+    Ok(std::path::PathBuf::from(std::ffi::OsString::from_vec(
+        buffer,
+    )))
+}
+
+// ===== Synthetic /proc surface =====
+//
+// TODO-HUMAN-REVIEW(reverie-kvm): Review synthetic /proc content and determinism.
+//
+// Real procfs is refused (see `ensure_not_procfs`) because its contents are
+// host-specific and would break `--verify`. To still support programs that read
+// a few well-known /proc files (uptime, diagnostics, self-inspection), a small
+// allowlist is synthesized with DETERMINISTIC content and served from a memfd,
+// so the ordinary read/lseek/close/dup/fork paths apply unchanged. `fstat`,
+// `newfstatat`, and `statx` on such a descriptor report synthesized, run-stable
+// metadata, because the backing memfd's own inode varies per run and would
+// otherwise perturb determinism. Directory enumeration of /proc itself is not
+// provided, so tools that scan every PID (e.g. `ps`) are out of scope here.
+const SYNTHETIC_PROC_DEV: u64 = 0x00ff_0001;
+
+/// Deterministic inode for a normalized synthetic /proc path (FNV-1a). Stable
+/// across runs so `--verify` sees identical `stat` results.
+fn synthetic_proc_inode(path: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in path {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    // Keep clear of low, conventionally-reserved inode numbers.
+    hash | 0x1000
+}
+
+/// Rewrite a `/proc/<pid>` path (for this guest's own pid) to the canonical
+/// `/proc/self` form so both spellings resolve to the same synthetic content.
+fn normalize_proc_path(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> {
+    if path != b"/proc" && !path.starts_with(b"/proc/") {
+        return None;
+    }
+    let pid = format!("/proc/{}", state.pid).into_bytes();
+    if path == pid.as_slice() {
+        return Some(b"/proc/self".to_vec());
+    }
+    let mut pid_dir = pid;
+    pid_dir.push(b'/');
+    if let Some(rest) = path.strip_prefix(pid_dir.as_slice()) {
+        let mut normalized = b"/proc/self/".to_vec();
+        normalized.extend_from_slice(rest);
+        return Some(normalized);
+    }
+    Some(path.to_vec())
+}
+
+/// Synthesize deterministic content for a recognized /proc path, or `None` when
+/// the path is not part of the supported surface.
+fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> {
+    let normalized = normalize_proc_path(state, path)?;
+    let content = match normalized.as_slice() {
+        b"/proc/uptime" => b"0.00 0.00\n".to_vec(),
+        b"/proc/loadavg" => b"0.00 0.00 0.00 1/1 1\n".to_vec(),
+        b"/proc/version" => b"Linux version 6.0.0 (reverie-kvm) #1 SMP x86_64\n".to_vec(),
+        b"/proc/filesystems" => b"nodev\tproc\nnodev\ttmpfs\n\text4\n".to_vec(),
+        b"/proc/mounts" | b"/proc/self/mounts" => b"rootfs / rootfs rw 0 0\n".to_vec(),
+        b"/proc/stat" => concat!(
+            "cpu  0 0 0 0 0 0 0 0 0 0\n",
+            "cpu0 0 0 0 0 0 0 0 0 0 0\n",
+            "intr 0\n",
+            "ctxt 0\n",
+            "btime 0\n",
+            "processes 1\n",
+            "procs_running 1\n",
+            "procs_blocked 0\n",
+        )
+        .as_bytes()
+        .to_vec(),
+        b"/proc/meminfo" => concat!(
+            "MemTotal:        2097152 kB\n",
+            "MemFree:         1048576 kB\n",
+            "MemAvailable:    1572864 kB\n",
+            "Buffers:               0 kB\n",
+            "Cached:                0 kB\n",
+            "SwapTotal:             0 kB\n",
+            "SwapFree:              0 kB\n",
+        )
+        .as_bytes()
+        .to_vec(),
+        b"/proc/cpuinfo" => concat!(
+            "processor\t: 0\n",
+            "vendor_id\t: GenuineIntel\n",
+            "cpu family\t: 6\n",
+            "model\t\t: 0\n",
+            "model name\t: reverie-kvm virtual CPU\n",
+            "cpu MHz\t\t: 1000.000\n",
+            "cache size\t: 0 KB\n",
+            "physical id\t: 0\n",
+            "siblings\t: 1\n",
+            "core id\t\t: 0\n",
+            "cpu cores\t: 1\n",
+            "flags\t\t: fpu\n",
+            "\n",
+        )
+        .as_bytes()
+        .to_vec(),
+        b"/proc/self/stat" => proc_self_stat_content(state),
+        b"/proc/self/status" => proc_self_status_content(state),
+        b"/proc/self/cmdline" => proc_self_cmdline_content(state),
+        _ => return None,
+    };
+    Some(content)
+}
+
+/// The kernel's `comm`: the program basename, capped at 15 bytes.
+fn proc_comm(state: &LoadedStaticElf) -> String {
+    let base = state
+        .argv0
+        .rsplit(|byte| *byte == b'/')
+        .next()
+        .unwrap_or(&state.argv0);
+    String::from_utf8_lossy(&base.iter().copied().take(15).collect::<Vec<u8>>()).into_owned()
+}
+
+fn proc_self_cmdline_content(state: &LoadedStaticElf) -> Vec<u8> {
+    // Minimal: argv[0] followed by a NUL. reverie-kvm does not retain the full
+    // guest argv here, so consumers needing the complete command line get only
+    // argv[0]; the common "who am I" use is satisfied and the file is
+    // NUL-terminated like the kernel's.
+    let mut content = state.argv0.clone();
+    content.push(0);
+    content
+}
+
+fn proc_self_stat_content(state: &LoadedStaticElf) -> Vec<u8> {
+    // pid (comm) state ppid ... The fields after ppid are process-accounting
+    // values reported as zero so no nondeterministic host state leaks. The real
+    // file has 52 fields; pad with zeros so field-counting parsers are satisfied.
+    let mut line = format!(
+        "{} ({}) R {} 0 0 0 -1 0",
+        state.pid,
+        proc_comm(state),
+        state.ppid
+    );
+    for _ in 0..44 {
+        line.push_str(" 0");
+    }
+    line.push('\n');
+    line.into_bytes()
+}
+
+fn proc_self_status_content(state: &LoadedStaticElf) -> Vec<u8> {
+    format!(
+        "Name:\t{comm}\n\
+         Umask:\t{umask:04o}\n\
+         State:\tR (running)\n\
+         Tgid:\t{pid}\n\
+         Ngid:\t0\n\
+         Pid:\t{pid}\n\
+         PPid:\t{ppid}\n\
+         TracerPid:\t0\n\
+         Uid:\t0\t0\t0\t0\n\
+         Gid:\t0\t0\t0\t0\n\
+         FDSize:\t64\n\
+         Threads:\t1\n",
+        comm = proc_comm(state),
+        umask = state.umask,
+        pid = state.pid,
+        ppid = state.ppid,
+    )
+    .into_bytes()
+}
+
+/// Back a synthesized /proc file with a memfd holding `content` and record it in
+/// `proc_files` so `fstat`/`statx` report deterministic metadata.
+fn open_synthetic_proc(
+    state: &mut LoadedStaticElf,
+    normalized_path: &[u8],
+    content: &[u8],
+    close_on_exec: bool,
+) -> i64 {
+    // SAFETY: the name is a valid NUL-terminated C string.
+    let raw = unsafe {
+        libc::memfd_create(
+            c"reverie-kvm-proc".as_ptr(),
+            libc::MFD_CLOEXEC as libc::c_uint,
+        )
+    };
+    if raw < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: memfd_create returned a new owned descriptor on success.
+    let mut file = unsafe { std::fs::File::from_raw_fd(raw as RawFd) };
+    if file.write_all(content).is_err() {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: file owns a live descriptor; rewind so the guest reads from zero.
+    if unsafe { libc::lseek(file.as_raw_fd(), 0, libc::SEEK_SET) } < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let inode = synthetic_proc_inode(normalized_path);
+    let guest_fd = insert_file_with_flags(state, file, close_on_exec, None);
+    if guest_fd >= 0 {
+        state.proc_files.insert(guest_fd as i32, inode);
+    }
+    guest_fd
+}
+
+/// Overwrite the nondeterministic fields of a memfd `stat` with the stable
+/// synthetic identity of a /proc file, keeping the (deterministic) size.
+fn sanitize_proc_stat(stat: &mut libc::stat, inode: u64) {
+    stat.st_dev = SYNTHETIC_PROC_DEV;
+    stat.st_ino = inode;
+    stat.st_mode = libc::S_IFREG | 0o444;
+    stat.st_nlink = 1;
+    stat.st_uid = 0;
+    stat.st_gid = 0;
+    stat.st_rdev = 0;
+    stat.st_blksize = PAGE_SIZE as libc::blksize_t;
+    // 512-byte blocks, rounded up. A shift avoids the still-unstable
+    // int_roundings `div_ceil` on the pinned toolchain (512 == 1 << 9).
+    stat.st_blocks = (stat.st_size + 511) >> 9;
+    stat.st_atime = 0;
+    stat.st_atime_nsec = 0;
+    stat.st_mtime = 0;
+    stat.st_mtime_nsec = 0;
+    stat.st_ctime = 0;
+    stat.st_ctime_nsec = 0;
+}
+
+/// A fully synthetic `stat` for a path-addressed /proc file of `size` bytes.
+fn synthetic_proc_stat(inode: u64, size: usize) -> libc::stat {
+    // SAFETY: libc::stat is plain-old-data; a zeroed value is valid.
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    stat.st_size = size as libc::off_t;
+    sanitize_proc_stat(&mut stat, inode);
+    stat
+}
+
+/// A synthetic `statx` mirroring [`synthetic_proc_stat`].
+fn synthetic_proc_statx(inode: u64, size: u64) -> libc::statx {
+    // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
+    let mut stx = unsafe { std::mem::zeroed::<libc::statx>() };
+    stx.stx_mask = libc::STATX_TYPE
+        | libc::STATX_MODE
+        | libc::STATX_NLINK
+        | libc::STATX_UID
+        | libc::STATX_GID
+        | libc::STATX_INO
+        | libc::STATX_SIZE
+        | libc::STATX_BLOCKS;
+    stx.stx_blksize = PAGE_SIZE as u32;
+    stx.stx_nlink = 1;
+    stx.stx_uid = 0;
+    stx.stx_gid = 0;
+    stx.stx_mode = (libc::S_IFREG | 0o444) as u16;
+    stx.stx_ino = inode;
+    stx.stx_size = size;
+    stx.stx_blocks = (size + 511) >> 9;
+    stx.stx_dev_major = 0;
+    stx.stx_dev_minor = SYNTHETIC_PROC_DEV as u32;
+    stx
+}
+
 fn getdents64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
@@ -2327,6 +2836,7 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
     };
     if state.files.remove(&fd).is_some() {
         state.cloexec_fds.remove(&fd);
+        state.proc_files.remove(&fd);
         set_output_alias(state, fd, None);
         return 0;
     }
@@ -2368,7 +2878,7 @@ fn arch_prctl(
     }
 }
 
-// TODO-HUMAN-REVIEW(reverie-kvm): prctl(2) subset for the KVM guest.
+// TODO-HUMAN-REVIEW(PR-108): Review the prctl(2) subset for the KVM guest.
 //
 // Only PR_CAPBSET_READ is modeled. The deterministic container runs the guest as
 // root with the full capability bounding set, so libcap's cap_get_bound() must
@@ -2389,6 +2899,61 @@ fn prctl(args: &[u64; 6]) -> i64 {
         }
         // Other prctl operations are not modeled yet.
         _ => negative_errno(libc::ENOSYS),
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-108): Review the no-xattr KVM guest model and errors.
+//
+// The deterministic container models no extended attributes, but Linux still
+// validates the target and attribute name before reporting ENODATA. Preserve
+// those observable path/fd/memory errors without exposing host xattr contents.
+fn getxattr(memory: &GuestMemory, state: &LoadedStaticElf, number: u64, args: &[u64; 6]) -> i64 {
+    if number == libc::SYS_fgetxattr as u64 {
+        let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
+            return negative_errno(libc::EBADF);
+        };
+        if host_fd(state, guest_fd).is_none() {
+            return negative_errno(libc::EBADF);
+        }
+    } else {
+        let path = match read_c_string(memory, args[0], 4096) {
+            Ok(path) => path,
+            Err(error) => return read_c_string_errno(error),
+        };
+        if path.is_empty() {
+            return negative_errno(libc::ENOENT);
+        }
+        if synthetic_proc_content(state, &path).is_none() {
+            let nofollow = number == libc::SYS_lgetxattr as u64;
+            if let Err(error) = open_metadata_path(state, libc::AT_FDCWD, &path, nofollow) {
+                return error;
+            }
+        }
+    }
+
+    match read_c_string(memory, args[1], 256) {
+        Ok(name) if name.is_empty() => negative_errno(libc::ERANGE),
+        Ok(name) => {
+            let empty_namespace =
+                [b"user.".as_slice(), b"trusted.", b"security."].contains(&name.as_slice());
+            if empty_namespace {
+                return negative_errno(libc::EINVAL);
+            }
+            let supported_namespace = [b"user.".as_slice(), b"trusted.", b"security."]
+                .iter()
+                .any(|prefix| name.starts_with(prefix));
+            let supported_system_name = matches!(
+                name.as_slice(),
+                b"system.posix_acl_access" | b"system.posix_acl_default"
+            );
+            if supported_namespace || supported_system_name {
+                negative_errno(libc::ENODATA)
+            } else {
+                negative_errno(libc::EOPNOTSUPP)
+            }
+        }
+        Err(ReadCStringError::Fault) => negative_errno(libc::EFAULT),
+        Err(ReadCStringError::NameTooLong) => negative_errno(libc::ERANGE),
     }
 }
 
@@ -2710,6 +3275,15 @@ fn readlink(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     if path == b"/proc/self/exe" {
         let count = capacity.min(state.argv0.len());
         return match memory.write(args[1], &state.argv0[..count]) {
+            Ok(()) => count as i64,
+            Err(_) => negative_errno(libc::EFAULT),
+        };
+    }
+    // /proc/self (and /proc/<pid>) is a symlink to the numeric pid directory.
+    if path == b"/proc/self" || path == format!("/proc/{}", state.pid).as_bytes() {
+        let target = state.pid.to_string().into_bytes();
+        let count = capacity.min(target.len());
+        return match memory.write(args[1], &target[..count]) {
             Ok(()) => count as i64,
             Err(_) => negative_errno(libc::EFAULT),
         };
@@ -3351,6 +3925,7 @@ mod tests {
             cloexec_fds: BTreeSet::new(),
             closed_standard_fds: BTreeSet::new(),
             children: BTreeMap::new(),
+            proc_files: BTreeMap::new(),
         }
     }
 
@@ -3392,6 +3967,383 @@ mod tests {
         let mut bytes = value.as_bytes().to_vec();
         bytes.push(0);
         memory.write(address, &bytes).unwrap();
+    }
+
+    /// Read the emulated working directory back through `getcwd`.
+    fn current_directory(memory: &mut GuestMemory, state: &mut LoadedStaticElf) -> PathBuf {
+        let buffer_address = 0x800;
+        let result = syscall_result(
+            memory,
+            state,
+            libc::SYS_getcwd,
+            [buffer_address, 0x400, 0, 0, 0, 0],
+        );
+        assert!(result > 0, "getcwd failed: {result}");
+        let mut bytes = vec![0u8; result as usize];
+        memory.read(buffer_address, &mut bytes).unwrap();
+        // getcwd includes the trailing NUL in its returned length.
+        assert_eq!(bytes.pop(), Some(0));
+        PathBuf::from(std::ffi::OsString::from_vec(bytes))
+    }
+
+    #[test]
+    fn chdir_updates_cwd_and_resolves_relative_paths() {
+        let root = TestDir::new();
+        std::fs::create_dir(root.0.join("sub")).unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+
+        // Relative chdir into an existing subdirectory.
+        write_c_string(&mut memory, 0x100, "sub");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let expected = std::fs::canonicalize(root.0.join("sub")).unwrap();
+        assert_eq!(current_directory(&mut memory, &mut state), expected);
+
+        // A relative create now resolves against the new working directory.
+        write_c_string(&mut memory, 0x100, "created");
+        let fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                0x100,
+                (libc::O_CREAT | libc::O_WRONLY) as u64,
+                0o644,
+                0,
+                0,
+            ],
+        );
+        assert!(fd >= 0, "openat failed: {fd}");
+        assert!(root.0.join("sub").join("created").exists());
+
+        // Absolute chdir back to the root.
+        let root_path = std::fs::canonicalize(&root.0).unwrap();
+        write_c_string(&mut memory, 0x100, root_path.to_str().unwrap());
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(current_directory(&mut memory, &mut state), root_path);
+    }
+
+    #[test]
+    fn chdir_rejects_missing_and_nondirectory_targets() {
+        let root = TestDir::new();
+        std::fs::write(root.0.join("file"), b"x").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        write_c_string(&mut memory, 0x100, "missing");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+
+        write_c_string(&mut memory, 0x100, "file");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOTDIR)
+        );
+
+        // chdir("") is ENOENT, matching Linux.
+        write_c_string(&mut memory, 0x100, "");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_chdir,
+                [0x100, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+    }
+
+    #[test]
+    fn fchdir_follows_open_directory_descriptor() {
+        let root = TestDir::new();
+        std::fs::create_dir(root.0.join("sub")).unwrap();
+        std::fs::write(root.0.join("sub").join("inside"), b"y").unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+
+        // fchdir onto a regular-file descriptor is ENOTDIR; a stale fd is EBADF.
+        write_c_string(&mut memory, 0x100, "sub/inside");
+        let file_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+        );
+        assert!(file_fd >= 0, "openat file failed: {file_fd}");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchdir,
+                [file_fd as u64, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOTDIR)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchdir,
+                [9999, 0, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+
+        // Open the subdirectory as a guest directory descriptor and fchdir to it.
+        write_c_string(&mut memory, 0x100, "sub");
+        let dir_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                0x100,
+                (libc::O_RDONLY | libc::O_DIRECTORY) as u64,
+                0,
+                0,
+                0,
+            ],
+        );
+        assert!(dir_fd >= 0, "openat dir failed: {dir_fd}");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fchdir,
+                [dir_fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let expected = std::fs::canonicalize(root.0.join("sub")).unwrap();
+        assert_eq!(current_directory(&mut memory, &mut state), expected);
+
+        // The cwd handle is independent of the source fd: closing it leaves the
+        // working directory usable for later relative resolution.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [dir_fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        write_c_string(&mut memory, 0x100, "inside");
+        let reopened = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+        );
+        assert!(
+            reopened >= 0,
+            "relative open after close failed: {reopened}"
+        );
+    }
+
+    fn open_readonly(memory: &mut GuestMemory, state: &mut LoadedStaticElf, path: &str) -> i64 {
+        write_c_string(memory, 0x100, path);
+        syscall_result(
+            memory,
+            state,
+            libc::SYS_openat,
+            [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+        )
+    }
+
+    fn read_fd_to_end(memory: &mut GuestMemory, state: &mut LoadedStaticElf, fd: i64) -> Vec<u8> {
+        let buffer = 0x1000;
+        let mut content = Vec::new();
+        loop {
+            let n = syscall_result(
+                memory,
+                state,
+                libc::SYS_read,
+                [fd as u64, buffer, 0x400, 0, 0, 0],
+            );
+            assert!(n >= 0, "read failed: {n}");
+            if n == 0 {
+                break;
+            }
+            let mut chunk = vec![0u8; n as usize];
+            memory.read(buffer, &mut chunk).unwrap();
+            content.extend_from_slice(&chunk);
+        }
+        content
+    }
+
+    #[test]
+    fn synthetic_proc_files_serve_deterministic_content() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert!(fd >= 0, "open /proc/uptime failed: {fd}");
+        assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"0.00 0.00\n");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close,
+                [fd as u64, 0, 0, 0, 0, 0]
+            ),
+            0
+        );
+        // The descriptor is no longer tracked once closed.
+        assert!(state.proc_files.is_empty());
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/meminfo");
+        assert!(fd >= 0);
+        let content = read_fd_to_end(&mut memory, &mut state, fd);
+        assert!(
+            content.starts_with(b"MemTotal:"),
+            "{}",
+            String::from_utf8_lossy(&content)
+        );
+    }
+
+    #[test]
+    fn synthetic_proc_self_reflects_guest_identity() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0); // pid=1, ppid=0, argv0="test"
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/self/stat");
+        let stat = read_fd_to_end(&mut memory, &mut state, fd);
+        assert!(
+            String::from_utf8_lossy(&stat).starts_with("1 (test) R 0 "),
+            "{}",
+            String::from_utf8_lossy(&stat)
+        );
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/self/cmdline");
+        assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"test\0");
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/self/status");
+        let status = String::from_utf8(read_fd_to_end(&mut memory, &mut state, fd)).unwrap();
+        assert!(status.contains("Pid:\t1\n"), "{status}");
+        assert!(status.contains("PPid:\t0\n"), "{status}");
+
+        // /proc/<pid> aliases /proc/self for this guest's own pid.
+        let fd = open_readonly(&mut memory, &mut state, "/proc/1/cmdline");
+        assert_eq!(read_fd_to_end(&mut memory, &mut state, fd), b"test\0");
+    }
+
+    #[test]
+    fn synthetic_proc_metadata_is_synthetic_and_stable() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        // fstat of an open synthetic descriptor reports synthesized identity.
+        let fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        let stat_address = 0x1000;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fstat,
+                [fd as u64, stat_address, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let stat: libc::stat = read_struct(&memory, stat_address);
+        assert_eq!(stat.st_mode, libc::S_IFREG | 0o444);
+        assert_eq!(stat.st_ino, synthetic_proc_inode(b"/proc/uptime"));
+        assert_eq!(stat.st_dev, SYNTHETIC_PROC_DEV);
+        assert_eq!(stat.st_size, b"0.00 0.00\n".len() as libc::off_t);
+        assert_eq!(stat.st_uid, 0);
+        assert_eq!(stat.st_mtime, 0);
+
+        // A path-addressed newfstatat yields the identical synthetic identity.
+        write_c_string(&mut memory, 0x100, "/proc/uptime");
+        let path_stat_address = 0x1200;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_newfstatat,
+                [libc::AT_FDCWD as u64, 0x100, path_stat_address, 0, 0, 0]
+            ),
+            0
+        );
+        let path_stat: libc::stat = read_struct(&memory, path_stat_address);
+        assert_eq!(path_stat.st_ino, stat.st_ino);
+        assert_eq!(path_stat.st_size, stat.st_size);
+        assert_eq!(path_stat.st_mode, stat.st_mode);
+    }
+
+    #[test]
+    fn synthetic_proc_rejects_writes_and_ignores_unlisted_paths() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // A writable open of a synthetic file is refused.
+        write_c_string(&mut memory, 0x100, "/proc/uptime");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_openat,
+                [libc::AT_FDCWD as u64, 0x100, libc::O_WRONLY as u64, 0, 0, 0]
+            ),
+            negative_errno(libc::EACCES)
+        );
+
+        // access() reports the read-only surface.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_access,
+                [0x100, libc::R_OK as u64, 0, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_access,
+                [0x100, libc::W_OK as u64, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EACCES)
+        );
+
+        // An unlisted /proc path is not part of the synthesized surface.
+        assert!(synthetic_proc_content(&state, b"/proc/self/maps").is_none());
+        assert!(synthetic_proc_content(&state, b"/etc/passwd").is_none());
     }
 
     #[test]
@@ -6294,5 +7246,163 @@ mod tests {
             prctl(&[libc::PR_GET_NAME as u64, 0, 0, 0, 0, 0]),
             negative_errno(libc::ENOSYS)
         );
+    }
+
+    #[test]
+    fn xattr_model_preserves_target_and_name_errors() {
+        let root = TestDir::new();
+        std::fs::write(root.0.join("file"), b"content").unwrap();
+        std::os::unix::fs::symlink("missing", root.0.join("dangling")).unwrap();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        write_c_string(&mut memory, 0x100, "file");
+        write_c_string(&mut memory, 0x200, "security.selinux");
+
+        for number in [libc::SYS_getxattr, libc::SYS_lgetxattr] {
+            assert_eq!(
+                syscall_result(&mut memory, &mut state, number, [0x100, 0x200, 0, 0, 0, 0]),
+                negative_errno(libc::ENODATA)
+            );
+        }
+
+        for (name, errno) in [
+            ("", libc::ERANGE),
+            ("foo", libc::EOPNOTSUPP),
+            ("user.reverie_review", libc::ENODATA),
+        ] {
+            write_c_string(&mut memory, 0x200, name);
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_getxattr,
+                    [0x100, 0x200, 0, 0, 0, 0]
+                ),
+                negative_errno(errno),
+                "xattr name {name:?}"
+            );
+        }
+
+        write_c_string(&mut memory, 0x100, "missing");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getxattr,
+                [0x100, 0x200, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+
+        write_c_string(&mut memory, 0x100, "dangling");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getxattr,
+                [0x100, 0x200, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOENT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_lgetxattr,
+                [0x100, 0x200, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENODATA)
+        );
+
+        let fd = open_readonly(&mut memory, &mut state, "file");
+        assert!(fd >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fgetxattr,
+                [fd as u64, 0x200, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::ENODATA)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fgetxattr,
+                [u64::MAX, 0x200, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fgetxattr,
+                [fd as u64, 0x5000, 0, 0, 0, 0]
+            ),
+            negative_errno(libc::EFAULT)
+        );
+    }
+
+    // Non-`#!` payload; the resolver only checks that it is not a script.
+    const FAKE_ELF: &[u8] = b"\x7fELF\x02\x01\x01\x00 fake elf body";
+
+    #[test]
+    fn resolve_exec_shebang_plain_elf_is_unchanged() {
+        let dir = TestDir::new();
+        let prog = dir.0.join("prog");
+        std::fs::write(&prog, FAKE_ELF).unwrap();
+
+        let (path, image, argv) = resolve_exec_shebang(
+            prog.clone(),
+            FAKE_ELF.to_vec(),
+            vec!["prog".to_owned(), "-a".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(path, prog);
+        assert_eq!(image, FAKE_ELF);
+        assert_eq!(argv, vec!["prog".to_owned(), "-a".to_owned()]);
+    }
+
+    #[test]
+    fn resolve_exec_shebang_single_level_kernel_order() {
+        let dir = TestDir::new();
+        let interp = dir.0.join("fakebash");
+        std::fs::write(&interp, FAKE_ELF).unwrap();
+        let script = dir.0.join("script");
+        let script_body = format!("#!{} -x\necho hi\n", interp.display());
+
+        let (path, image, argv) = resolve_exec_shebang(
+            script.clone(),
+            script_body.into_bytes(),
+            vec!["script".to_owned(), "arg1".to_owned()],
+        )
+        .unwrap();
+        assert_eq!(path, interp);
+        assert_eq!(image, FAKE_ELF);
+        // Kernel order: [interp, shebang args.., script_path, original args[1..]].
+        assert_eq!(
+            argv,
+            vec![
+                interp.to_string_lossy().into_owned(),
+                "-x".to_owned(),
+                script.to_string_lossy().into_owned(),
+                "arg1".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_exec_shebang_rejects_infinite_recursion() {
+        let dir = TestDir::new();
+        let a = dir.0.join("a");
+        let b = dir.0.join("b");
+        std::fs::write(&a, format!("#!{}\n", b.display())).unwrap();
+        std::fs::write(&b, format!("#!{}\n", a.display())).unwrap();
+
+        let err = resolve_exec_shebang(a.clone(), std::fs::read(&a).unwrap(), vec!["a".to_owned()])
+            .unwrap_err();
+        assert_eq!(err, negative_errno(libc::ELOOP));
     }
 }
