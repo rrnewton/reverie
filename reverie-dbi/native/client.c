@@ -1347,6 +1347,7 @@ static bool syscall_reads_stdin(void *drcontext, int sysnum,
 static bool filter_syscall(void *drcontext, int sysnum) { return true; }
 
 static bool has_copied_runtime(void);
+static void ensure_runtime_background(void);
 static void runtime_background_init(void *argument);
 
 static bool is_exec_syscall(int sysnum) {
@@ -1561,6 +1562,10 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       drcontext, thread_state_index);
   DR_ASSERT(counters != NULL);
 
+  // TODO-HUMAN-REVIEW(PR-134): Review post-application runtime bootstrap.
+  if (!has_copied_runtime())
+    ensure_runtime_background();
+
   /* A delayed entry-block flush is not synchronous.  If a native child reaches
    * a syscall through an inherited fragment, start it here after the
    * thread-init event has returned so the parent post-clone callback can
@@ -1764,18 +1769,39 @@ static void event_exit(void) {
 
 static void runtime_idle(void) { dr_sleep(1); }
 
+static _Atomic int32_t runtime_background_state;
+
 static runtime_callbacks_t runtime_callbacks = {reverie_dbi_emit, runtime_idle,
                                                 0};
 
 static void runtime_background_init(void *argument) {
   (void)argument;
+  atomic_store_explicit(&runtime_background_state, 2, memory_order_release);
   reverie_dbi_runtime_background_init(&runtime_callbacks);
+}
+
+static void ensure_runtime_background(void) {
+  int32_t expected = 0;
+  if (!atomic_compare_exchange_strong_explicit(
+          &runtime_background_state, &expected, 1, memory_order_acq_rel,
+          memory_order_acquire))
+    return;
+
+  // TODO-HUMAN-REVIEW(PR-134): Review fail-fast native runtime bootstrap.
+  if (!dr_create_client_thread(runtime_background_init,
+                               (void *)reverie_dbi_emit)) {
+    atomic_store_explicit(&runtime_background_state, 0, memory_order_release);
+    dr_fprintf(diagnostic_file,
+               "reverie-dbi: failed to start background client thread\n");
+    dr_exit_process(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
+  }
 }
 
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   drreg_options_t register_options = {sizeof(register_options), 1, false};
 
   diagnostic_file = STDERR;
+  atomic_store_explicit(&runtime_background_state, 0, memory_order_release);
   runtime_owner_pid = dr_get_process_id();
   initialize_virtual_identity_state();
   if (lookup_virtual_identity((int32_t)runtime_owner_pid,
@@ -1837,15 +1863,6 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   compat_gateway_index = drmgr_register_tls_field();
   if (thread_state_index == -1 || compat_gateway_index == -1)
     DR_ASSERT(false);
-
-  // TODO-HUMAN-REVIEW(PR-134): Review fail-fast native runtime bootstrap.
-  if (!dr_create_client_thread(runtime_background_init,
-                               (void *)reverie_dbi_emit)) {
-    dr_fprintf(diagnostic_file,
-               "reverie-dbi: failed to start background client thread\n");
-    dr_exit_process(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
-    return;
-  }
   drmgr_register_exit_event(event_exit);
   if (!drmgr_register_module_load_event(module_load) ||
       !drmgr_register_thread_init_event(thread_init) ||
