@@ -79,18 +79,46 @@ pub unsafe fn install_tool<T>(coordinator: impl AsRef<Path>) -> io::Result<()>
 where
     T: Tool + 'static,
 {
+    unsafe { install_tool_inner::<T>(coordinator.as_ref(), true) }
+}
+
+// TODO-HUMAN-REVIEW(PR-139): Review the environment-preserving bootstrap install API.
+/// Installs a concrete tool using a consumed bootstrap coordinator path.
+///
+/// Unlike the legacy install entry point, this does not remove its coordinator
+/// environment variable because the bootstrap path did not introduce one.
+///
+/// # Safety
+///
+/// Installs process-global signal, seccomp, allocator, and instrumentation state.
+pub unsafe fn install_tool_from_bootstrap<T>(coordinator: impl AsRef<Path>) -> io::Result<()>
+where
+    T: Tool + 'static,
+{
+    unsafe { install_tool_inner::<T>(coordinator.as_ref(), false) }
+}
+
+unsafe fn install_tool_inner<T>(
+    coordinator: &Path,
+    remove_legacy_environment: bool,
+) -> io::Result<()>
+where
+    T: Tool + 'static,
+{
     let _signal_state = runtime::prepare_guest_signal_state()?;
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
     runtime::reserve_coordinator_fd(rpc.raw_fd())?;
     COMMITTED_STACKS.lock().clear();
     let pid = Pid::from_raw(unsafe { libc::getpid() });
     let subscriptions = T::subscriptions(rpc.config()).iter_syscalls().collect();
-    // SAFETY: tool installation runs before application-created threads.
-    unsafe { std::env::remove_var(crate::backend::COORDINATOR_ENV) };
+    if remove_legacy_environment {
+        // SAFETY: legacy tool installation runs before application-created threads.
+        unsafe { std::env::remove_var(crate::backend::COORDINATOR_ENV) };
+    }
     let tool = T::new(pid, rpc.config());
     HANDLER
         .set(Box::new(ToolHost::<T> {
-            tool,
+            tool: SpinMutex::new(Some(tool)),
             rpc,
             root_pid: pid,
             subscriptions,
@@ -110,7 +138,7 @@ pub(crate) fn dispatch(event: &mut SyscallEvent) {
 }
 
 struct ToolHost<T: Tool> {
-    tool: T,
+    tool: SpinMutex<Option<T>>,
     rpc: CoordinatorRpc<T::GlobalState>,
     root_pid: Pid,
     subscriptions: HashSet<Sysno>,
@@ -127,11 +155,13 @@ where
         let pid = raw_pid(libc::SYS_getpid);
         let ppid = (pid != self.root_pid).then(|| raw_pid(libc::SYS_getppid));
 
+        let mut tool_slot = self.tool.lock();
+        let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
         let mut states = self.states.lock();
         let is_new = !states.contains_key(&tid.as_raw());
         let state = states
             .entry(tid.as_raw())
-            .or_insert_with(|| self.tool.init_thread_state(tid, None));
+            .or_insert_with(|| tool.init_thread_state(tid, None));
         let tail = TailResult::default();
         let mut guest = LiteinstGuest::<T> {
             event,
@@ -143,7 +173,7 @@ where
             tail: &tail,
         };
 
-        if is_new && let Err(error) = drive_ready(self.tool.handle_thread_start(&mut guest)) {
+        if is_new && let Err(error) = drive_ready(tool.handle_thread_start(&mut guest)) {
             tool_fatal(124, &error);
         }
 
@@ -155,7 +185,23 @@ where
             return;
         };
         if !self.subscriptions.contains(&number) {
-            guest.event.result = unsafe { raw_syscall6(guest.event.number, guest.event.args) };
+            let number = guest.event.number;
+            let args = guest.event.args;
+            if is_exit_syscall(number) {
+                finish_tool_exit(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    tid,
+                    pid,
+                    number,
+                    args,
+                );
+            } else if let Some(error) = injected_syscall_guard(number, args) {
+                event.result = -i64::from(error.into_raw());
+                return;
+            }
+            event.result = unsafe { raw_syscall6(number, args) };
             return;
         }
         let args = guest.event.args.map(|arg| arg as usize);
@@ -164,7 +210,7 @@ where
             SyscallArgs::new(args[0], args[1], args[2], args[3], args[4], args[5]),
         );
 
-        match drive_syscall(self.tool.handle_syscall_event(&mut guest, syscall), &tail) {
+        match drive_syscall(tool.handle_syscall_event(&mut guest, syscall), &tail) {
             SyscallOutcome::Return(result) => {
                 guest.event.result = match result {
                     Ok(value) => value,
@@ -175,19 +221,57 @@ where
                 };
             }
             SyscallOutcome::Exit { number, args } => {
-                let state = states
-                    .remove(&tid.as_raw())
-                    .expect("LiteInst thread state disappeared before exit");
-                let status = reverie::ExitStatus::Exited(args[0] as i32);
-                if let Err(error) =
-                    drive_ready(self.tool.on_exit_thread(tid, &self.rpc, state, status))
-                {
-                    tool_fatal(125, &error);
-                }
+                finish_tool_exit(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    tid,
+                    pid,
+                    number,
+                    args,
+                );
                 event.result = unsafe { raw_syscall6(number, args) };
             }
         }
     }
+}
+
+// TODO-HUMAN-REVIEW(PR-143): Review single-process Tool exit lifecycle.
+fn finish_tool_exit<T: Tool>(
+    tool_slot: &mut Option<T>,
+    states: &mut HashMap<i32, T::ThreadState>,
+    rpc: &CoordinatorRpc<T::GlobalState>,
+    tid: Pid,
+    pid: Pid,
+    number: i64,
+    args: [u64; 6],
+) {
+    let state = states
+        .remove(&tid.as_raw())
+        .expect("LiteInst thread state disappeared before exit");
+    let status = reverie::ExitStatus::Exited((args[0] & 0xff) as i32);
+    let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
+    if let Err(error) = drive_ready(tool.on_exit_thread(tid, rpc, state, status)) {
+        tool_fatal(125, &error);
+    }
+    if is_process_exit(number, tid, pid) {
+        let tool = tool_slot.take().unwrap_or_else(|| fatal(126));
+        if let Err(error) = drive_ready(tool.on_exit_process(pid, rpc, status)) {
+            tool_fatal(125, &error);
+        }
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-143): Review exit syscall lifecycle classification.
+fn is_exit_syscall(number: i64) -> bool {
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    matches!(number, libc::SYS_exit | libc::SYS_exit_group)
+}
+
+// TODO-HUMAN-REVIEW(PR-143): Review single-process exit classification.
+fn is_process_exit(number: i64, tid: Pid, pid: Pid) -> bool {
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    number == libc::SYS_exit_group || tid == pid
 }
 
 fn raw_pid(number: i64) -> Pid {
@@ -466,6 +550,10 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         if let Some(error) = injected_syscall_guard(number, raw_args) {
             return Err(error);
         }
+        if is_exit_syscall(number) {
+            self.tail.set_exit(number, raw_args);
+            return std::future::pending().await;
+        }
         let kernel_signal_mask =
             (number == libc::SYS_rt_sigprocmask && raw_args[1] != 0).then(|| {
                 let requested = unsafe { (raw_args[1] as *const u64).read_unaligned() };
@@ -492,7 +580,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         let number = number.id() as i64;
         if let Some(error) = injected_syscall_guard(number, args) {
             self.tail.set_result(-i64::from(error.into_raw()));
-        } else if matches!(number, libc::SYS_exit | libc::SYS_exit_group) {
+        } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
         } else {
             let value = unsafe { raw_syscall6(number, args) };
