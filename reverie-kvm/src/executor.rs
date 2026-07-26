@@ -1196,6 +1196,17 @@ fn open_file(
     if path.is_empty() {
         return negative_errno(libc::ENOENT);
     }
+    // Bash process substitution `<(...)`/`>(...)` and other guest code reach an
+    // open descriptor by name through `/dev/fd/N` -> `/proc/self/fd/N` magic
+    // links. Proxying those to the host would resolve them against the
+    // SUPERVISOR (wrong process, and blocked by `ensure_not_procfs`), so
+    // translate them to the guest's own descriptor table and reopen the
+    // underlying object instead.
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(reverie-kvm-proc-self-fd)
+    if let Some(target_guest_fd) = guest_fd_magic_link(&path) {
+        return reopen_guest_fd(state, target_guest_fd, raw_flags);
+    }
     let Ok((host_dirfd, path)) = host_dirfd_and_path(state, guest_dirfd, &path) else {
         return negative_errno(libc::EBADF);
     };
@@ -1271,6 +1282,99 @@ fn open_file(
     insert_file_with_flags(state, file, guest_cloexec, None)
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(reverie-kvm-proc-self-fd)
+/// Recognize a guest procfs/`/dev` descriptor magic link that names one of the
+/// guest's own open descriptors, returning that guest fd number. Only the bare
+/// `.../fd/<N>` forms match; any trailing component (for example a path under
+/// `/proc/self/fd/3/...`) contains a non-digit and falls through to normal
+/// resolution. `/proc/<pid>/fd/<N>` is intentionally not matched here because
+/// the guest's own descriptors are always reachable through the `self` alias.
+fn guest_fd_magic_link(path: &[u8]) -> Option<libc::c_int> {
+    let digits = path
+        .strip_prefix(b"/proc/self/fd/")
+        .or_else(|| path.strip_prefix(b"/proc/thread-self/fd/"))
+        .or_else(|| path.strip_prefix(b"/dev/fd/"))?;
+    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    std::str::from_utf8(digits)
+        .ok()
+        .and_then(|digits| digits.parse::<libc::c_int>().ok())
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(reverie-kvm-proc-self-fd)
+/// Reopen the object backing a guest descriptor named through procfs. The guest
+/// fd is mapped to its host descriptor and reopened through the supervisor's own
+/// `/proc/self/fd/<host_fd>` magic link, yielding a fresh file description with
+/// an independent offset exactly like opening `/proc/self/fd/N` on Linux. Only
+/// descriptors the guest already owns are reachable, so no supervisor-private
+/// descriptor is exposed to the guest.
+fn reopen_guest_fd(
+    state: &mut LoadedStaticElf,
+    target_guest_fd: libc::c_int,
+    raw_flags: u64,
+) -> i64 {
+    let Some(host_fd) = host_fd(state, target_guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
+    let guest_cloexec = flags & libc::O_CLOEXEC as u64 != 0;
+    // Drop flags that are meaningless or unsafe when reopening an existing
+    // object by descriptor: creation/exclusivity flags, and O_NOFOLLOW (the
+    // magic link itself must be followed to reach the target). Always request
+    // host O_CLOEXEC; guest close-on-exec is modeled separately in the table.
+    let reopen_flags = (flags
+        & !(libc::O_CREAT as u64
+            | libc::O_EXCL as u64
+            | libc::O_TMPFILE as u64
+            | libc::O_NOFOLLOW as u64))
+        | libc::O_CLOEXEC as u64;
+    let proc_path =
+        CString::new(format!("/proc/self/fd/{host_fd}")).expect("supervisor fd path has no NUL");
+    // SAFETY: proc_path is NUL-terminated and live across the call; the target
+    // host descriptor is kept alive in the guest fd table.
+    let reopened = unsafe {
+        libc::syscall(
+            libc::SYS_openat,
+            libc::AT_FDCWD,
+            proc_path.as_ptr(),
+            reopen_flags as libc::c_int,
+            0,
+        )
+    };
+    if reopened < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a new owned descriptor on success.
+    let file = unsafe { std::fs::File::from_raw_fd(reopened as RawFd) };
+    insert_file_with_flags(state, file, guest_cloexec, None)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(reverie-kvm-proc-self-fd)
+/// Return an owned descriptor for the object backing a guest descriptor named
+/// through a procfs magic link, for metadata (stat/access) resolution. The
+/// guest fd is duplicated so callers may `fstat` the underlying object. Only
+/// descriptors the guest already owns are reachable.
+fn metadata_file_for_guest_fd(
+    state: &LoadedStaticElf,
+    target_guest_fd: libc::c_int,
+) -> Result<std::fs::File, i64> {
+    let Some(host_fd) = host_fd(state, target_guest_fd) else {
+        return Err(negative_errno(libc::EBADF));
+    };
+    // SAFETY: host_fd is a live standard or owned descriptor; F_DUPFD_CLOEXEC
+    // returns a new owned descriptor referring to the same object.
+    let duplicated = unsafe { libc::fcntl(host_fd, libc::F_DUPFD_CLOEXEC, 0) };
+    if duplicated < 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fcntl returned a new owned descriptor on success.
+    Ok(unsafe { std::fs::File::from_raw_fd(duplicated) })
+}
+
 fn ensure_not_procfs(file: &std::fs::File) -> Result<(), i64> {
     ensure_fd_not_procfs(file.as_raw_fd())
 }
@@ -1294,6 +1398,15 @@ fn open_metadata_path(
     path: &[u8],
     nofollow: bool,
 ) -> Result<std::fs::File, i64> {
+    // Metadata resolution (stat/access/statfs) of a guest procfs descriptor
+    // magic link must target the guest's own descriptor, not the supervisor's
+    // procfs. GNU diff, for example, stats an input path before opening it, so
+    // process substitution `<(...)` needs this alongside the open path.
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(reverie-kvm-proc-self-fd)
+    if let Some(target_guest_fd) = guest_fd_magic_link(path) {
+        return metadata_file_for_guest_fd(state, target_guest_fd);
+    }
     let (host_dirfd, path) = host_dirfd_and_path(state, guest_dirfd, path)?;
     let mut flags = (libc::O_PATH | libc::O_CLOEXEC) as u64;
     if nofollow {
@@ -5308,6 +5421,81 @@ mod tests {
                 [99, DIRECTORY, 0o755, 0, 0, 0],
             ),
             negative_errno(libc::EBADF)
+        );
+    }
+
+    #[test]
+    fn guest_fd_magic_link_matches_only_bare_descriptor_paths() {
+        assert_eq!(guest_fd_magic_link(b"/proc/self/fd/63"), Some(63));
+        assert_eq!(guest_fd_magic_link(b"/proc/thread-self/fd/0"), Some(0));
+        assert_eq!(guest_fd_magic_link(b"/dev/fd/7"), Some(7));
+        // A trailing component is not a bare descriptor link.
+        assert_eq!(guest_fd_magic_link(b"/proc/self/fd/3/status"), None);
+        assert_eq!(guest_fd_magic_link(b"/proc/self/fd/"), None);
+        assert_eq!(guest_fd_magic_link(b"/proc/self/fd"), None);
+        // Unrelated or non-numeric paths fall through to normal resolution.
+        assert_eq!(guest_fd_magic_link(b"/proc/self/exe"), None);
+        assert_eq!(guest_fd_magic_link(b"/dev/fd/xyz"), None);
+        assert_eq!(guest_fd_magic_link(b"/etc/passwd"), None);
+    }
+
+    #[test]
+    fn reopen_guest_fd_reads_the_guest_descriptor_not_the_supervisor() {
+        use std::io::Read;
+
+        let root = TestDir::new();
+        let path = root.0.join("substituted");
+        std::fs::write(&path, b"process-substitution").unwrap();
+        let mut state = test_state(&root.0);
+        // Guest fd 3 refers to the payload; the supervisor has no such fd.
+        state.files.insert(3, std::fs::File::open(&path).unwrap());
+
+        // Opening "/proc/self/fd/3" (as bash process substitution does through
+        // /dev/fd/N) must reopen the guest's descriptor, not the supervisor's.
+        let new_fd = reopen_guest_fd(&mut state, 3, libc::O_RDONLY as u64);
+        assert!(new_fd >= 0, "reopen failed: {new_fd}");
+        let new_fd = new_fd as libc::c_int;
+        assert_ne!(new_fd, 3, "reopen must allocate a fresh guest descriptor");
+
+        let mut contents = String::new();
+        state
+            .files
+            .get(&new_fd)
+            .expect("reopened descriptor is tracked")
+            .try_clone()
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert_eq!(contents, "process-substitution");
+
+        // An unknown guest fd is rejected rather than reaching supervisor state.
+        assert_eq!(
+            reopen_guest_fd(&mut state, 4321, libc::O_RDONLY as u64),
+            negative_errno(libc::EBADF),
+        );
+    }
+
+    #[test]
+    fn metadata_file_for_guest_fd_stats_the_underlying_object() {
+        use std::os::unix::fs::MetadataExt;
+
+        let root = TestDir::new();
+        let path = root.0.join("target");
+        std::fs::write(&path, b"payload").unwrap();
+        let mut state = test_state(&root.0);
+        let opened = std::fs::File::open(&path).unwrap();
+        let expected_ino = opened.metadata().unwrap().ino();
+        state.files.insert(3, opened);
+
+        // Stat resolution of "/proc/self/fd/3" must describe the guest's object.
+        let meta_file = metadata_file_for_guest_fd(&state, 3).expect("resolved guest fd");
+        assert_eq!(meta_file.metadata().unwrap().ino(), expected_ino);
+        assert_eq!(meta_file.metadata().unwrap().len(), 7);
+
+        // A descriptor the guest does not own is rejected.
+        assert_eq!(
+            metadata_file_for_guest_fd(&state, 4321).unwrap_err(),
+            negative_errno(libc::EBADF),
         );
     }
 
