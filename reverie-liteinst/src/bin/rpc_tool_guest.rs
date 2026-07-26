@@ -205,6 +205,11 @@ fn guest(path: &Path) {
     };
     assert_eq!(mask_query, 0);
     unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let ignored = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_IGN) };
+    assert_ne!(ignored, libc::SIG_ERR);
+    let defaulted = unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+    assert_eq!(defaulted, libc::SIG_IGN);
+    let rpc_baseline = LAST_TOTAL.load(Ordering::Relaxed);
     let signal_result = unsafe {
         libc::signal(
             libc::SIGUSR1,
@@ -239,16 +244,17 @@ fn guest(path: &Path) {
     let mask_traps = reverie_liteinst::reverie_liteinst_site_trap_count(mask_address);
     let mask_hooks = reverie_liteinst::reverie_liteinst_site_hook_count(mask_address);
     let rpc = LAST_TOTAL.load(Ordering::Relaxed);
+    let rpc_delta = rpc - rpc_baseline;
     let first_use_exec_result = LAST_FIRST_USE_EXEC_RESULT.load(Ordering::Relaxed);
     let first_use_signal_result = LAST_FIRST_USE_SIGNAL_RESULT.load(Ordering::Relaxed);
     let mask_result = LAST_MASK_RESULT.load(Ordering::Relaxed);
     let nested_uid = LAST_NESTED_UID.load(Ordering::Relaxed);
     println!(
-        "calls={CALLS} traps={traps} hooks={hooks} rpc={rpc} nested_traps={nested_traps} nested_hooks={nested_hooks} mask_traps={mask_traps} mask_hooks={mask_hooks} mask_result={mask_result} first_use_exec_result={first_use_exec_result} first_use_signal_result={first_use_signal_result} nested_uid={nested_uid} expected_uid={expected_uid}"
+        "calls={CALLS} traps={traps} hooks={hooks} rpc_delta={rpc_delta} nested_traps={nested_traps} nested_hooks={nested_hooks} mask_traps={mask_traps} mask_hooks={mask_hooks} mask_result={mask_result} first_use_exec_result={first_use_exec_result} first_use_signal_result={first_use_signal_result} nested_uid={nested_uid} expected_uid={expected_uid}"
     );
     assert_eq!(traps, 1);
     assert_eq!(hooks, CALLS);
-    assert_eq!(rpc, CALLS + 2);
+    assert_eq!(rpc_delta, CALLS + 2);
     assert_eq!(nested_traps, 1);
     assert_eq!(nested_hooks, CALLS + 1);
     assert_eq!(mask_traps, 1);
@@ -259,6 +265,26 @@ fn guest(path: &Path) {
     assert_eq!(nested_uid, expected_uid);
 }
 
+fn preinstalled_handler_guest(path: &Path) {
+    let previous = unsafe {
+        libc::signal(
+            libc::SIGUSR1,
+            forbidden_signal_handler as *const () as libc::sighandler_t,
+        )
+    };
+    assert_ne!(previous, libc::SIG_ERR);
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let previous = unsafe { libc::signal(libc::SIGUSR1, libc::SIG_IGN) };
+    assert_eq!(previous, libc::SIG_DFL);
+    println!("preinstalled-handler-reset");
+}
+
+fn spoof_sigsys_guest(path: &Path) -> ! {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    unsafe { libc::raise(libc::SIGSYS) };
+    panic!("guest-generated SIGSYS returned");
+}
+
 fn main() {
     let mut args = std::env::args_os();
     let _program = args.next();
@@ -267,6 +293,8 @@ fn main() {
     match mode.to_str() {
         Some("coordinator") => coordinator(Path::new(&path)),
         Some("guest") => guest(Path::new(&path)),
+        Some("preinstalled-handler") => preinstalled_handler_guest(Path::new(&path)),
+        Some("spoof-sigsys") => spoof_sigsys_guest(Path::new(&path)),
         _ => panic!("expected coordinator or guest"),
     }
 }
