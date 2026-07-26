@@ -170,7 +170,7 @@ fn exact_strace_tool_observes_filtered_write() {
 
 #[test]
 fn exact_strace_tool_observes_thread_and_process_exit() {
-    let output = run("strace", &["--trace", "exit,exit_group"], &["/bin/true"]);
+    let output = run("strace", &["--trace", "write"], &["/bin/true"]);
 
     assert!(output.status.success(), "{output:?}");
     assert!(output.stdout.is_empty(), "{output:?}");

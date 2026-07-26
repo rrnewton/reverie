@@ -185,7 +185,23 @@ where
             return;
         };
         if !self.subscriptions.contains(&number) {
-            guest.event.result = unsafe { raw_syscall6(guest.event.number, guest.event.args) };
+            let number = guest.event.number;
+            let args = guest.event.args;
+            if is_exit_syscall(number) {
+                finish_tool_exit(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    tid,
+                    pid,
+                    number,
+                    args,
+                );
+            } else if let Some(error) = injected_syscall_guard(number, args) {
+                event.result = -i64::from(error.into_raw());
+                return;
+            }
+            event.result = unsafe { raw_syscall6(number, args) };
             return;
         }
         let args = guest.event.args.map(|arg| arg as usize);
@@ -205,25 +221,57 @@ where
                 };
             }
             SyscallOutcome::Exit { number, args } => {
-                let state = states
-                    .remove(&tid.as_raw())
-                    .expect("LiteInst thread state disappeared before exit");
-                let status = reverie::ExitStatus::Exited(args[0] as i32);
-                if let Err(error) = drive_ready(tool.on_exit_thread(tid, &self.rpc, state, status))
-                {
-                    tool_fatal(125, &error);
-                }
-                // TODO-HUMAN-REVIEW(PR-143): Review single-process Tool exit lifecycle.
-                if number == libc::SYS_exit_group || tid == pid {
-                    let tool = tool_slot.take().unwrap_or_else(|| fatal(126));
-                    if let Err(error) = drive_ready(tool.on_exit_process(pid, &self.rpc, status)) {
-                        tool_fatal(125, &error);
-                    }
-                }
+                finish_tool_exit(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
+                    tid,
+                    pid,
+                    number,
+                    args,
+                );
                 event.result = unsafe { raw_syscall6(number, args) };
             }
         }
     }
+}
+
+// TODO-HUMAN-REVIEW(PR-143): Review single-process Tool exit lifecycle.
+fn finish_tool_exit<T: Tool>(
+    tool_slot: &mut Option<T>,
+    states: &mut HashMap<i32, T::ThreadState>,
+    rpc: &CoordinatorRpc<T::GlobalState>,
+    tid: Pid,
+    pid: Pid,
+    number: i64,
+    args: [u64; 6],
+) {
+    let state = states
+        .remove(&tid.as_raw())
+        .expect("LiteInst thread state disappeared before exit");
+    let status = reverie::ExitStatus::Exited((args[0] & 0xff) as i32);
+    let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
+    if let Err(error) = drive_ready(tool.on_exit_thread(tid, rpc, state, status)) {
+        tool_fatal(125, &error);
+    }
+    if is_process_exit(number, tid, pid) {
+        let tool = tool_slot.take().unwrap_or_else(|| fatal(126));
+        if let Err(error) = drive_ready(tool.on_exit_process(pid, rpc, status)) {
+            tool_fatal(125, &error);
+        }
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-143): Review exit syscall lifecycle classification.
+fn is_exit_syscall(number: i64) -> bool {
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    matches!(number, libc::SYS_exit | libc::SYS_exit_group)
+}
+
+// TODO-HUMAN-REVIEW(PR-143): Review single-process exit classification.
+fn is_process_exit(number: i64, tid: Pid, pid: Pid) -> bool {
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    number == libc::SYS_exit_group || tid == pid
 }
 
 fn raw_pid(number: i64) -> Pid {
@@ -502,6 +550,10 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         if let Some(error) = injected_syscall_guard(number, raw_args) {
             return Err(error);
         }
+        if is_exit_syscall(number) {
+            self.tail.set_exit(number, raw_args);
+            return std::future::pending().await;
+        }
         let kernel_signal_mask =
             (number == libc::SYS_rt_sigprocmask && raw_args[1] != 0).then(|| {
                 let requested = unsafe { (raw_args[1] as *const u64).read_unaligned() };
@@ -528,7 +580,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         let number = number.id() as i64;
         if let Some(error) = injected_syscall_guard(number, args) {
             self.tail.set_result(-i64::from(error.into_raw()));
-        } else if matches!(number, libc::SYS_exit | libc::SYS_exit_group) {
+        } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
         } else {
             let value = unsafe { raw_syscall6(number, args) };
@@ -537,19 +589,28 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         std::future::pending().await
     }
 
-    // TODO-HUMAN-REVIEW(PR-143): Review cooperative LiteInst timer semantics.
     fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        Ok(())
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "LiteInst does not implement RCB timer delivery",
+        )
+        .into())
     }
 
-    // TODO-HUMAN-REVIEW(PR-143): Review cooperative LiteInst timer semantics.
     fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        Ok(())
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "LiteInst does not implement precise RCB timer delivery",
+        )
+        .into())
     }
 
-    // TODO-HUMAN-REVIEW(PR-143): Review cooperative LiteInst clock semantics.
     fn read_clock(&mut self) -> Result<u64, Error> {
-        Ok(0)
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "LiteInst does not implement an RCB clock",
+        )
+        .into())
     }
 }
 
