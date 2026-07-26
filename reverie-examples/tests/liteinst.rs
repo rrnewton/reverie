@@ -238,7 +238,6 @@ fn exact_counter2_tool_reports_process_and_thread_totals() {
     );
 }
 
-
 #[test]
 fn exact_chunky_print_tool_buffers_and_flushes_standard_streams() {
     let output = run(
