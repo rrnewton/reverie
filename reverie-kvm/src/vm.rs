@@ -48,6 +48,7 @@ use crate::runtime::SyscallExecutor;
 pub const VMCALL_SYSCALL_TRANSPORT: u64 = 12;
 
 const SYSCALL_FRAME_STRIDE: u64 = 4096;
+const PAGE_SIZE: u64 = 4096;
 const VMCALL: [u8; 3] = [0x0f, 0x01, 0xc1];
 const VMMCALL: [u8; 3] = [0x0f, 0x01, 0xd9];
 const HLT: u8 = 0xf4;
@@ -240,6 +241,10 @@ impl KvmBackend {
             loaded.stack_pointer,
             self.hypercall_instruction,
         )?;
+        // TODO-HUMAN-REVIEW(PR-132): Review bootstrap visibility in the KVM user map.
+        self.memory
+            .map_user_range(PAGE_SIZE, BOOT_RESERVED_END - PAGE_SIZE, false)?;
+        self.memory.enable_user_access();
         self.static_elf = Some(loaded);
         Ok(())
     }
@@ -295,6 +300,9 @@ impl KvmBackend {
             loaded.stack_pointer,
             self.hypercall_instruction,
         )?;
+        self.memory
+            .map_user_range(PAGE_SIZE, BOOT_RESERVED_END - PAGE_SIZE, false)?;
+        self.memory.enable_user_access();
         executor.replace_after_exec(loaded);
         Ok(())
     }

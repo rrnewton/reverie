@@ -251,6 +251,8 @@ pub(crate) fn load_static_elf(
     envp: &[&str],
     cwd: &Path,
 ) -> Result<LoadedStaticElf> {
+    // TODO-HUMAN-REVIEW(PR-132): Review ELF user-map construction.
+    memory.clear_user_access();
     load_executable(memory, image, argv, envp, cwd, 0)
 }
 
@@ -380,6 +382,7 @@ fn load_executable(
         at_base,
         main_entry,
     )?;
+    memory.map_user_range(memory.guest_end() - STACK_LIMIT, STACK_LIMIT, false)?;
     let program_break = align_up(main_end, PAGE_SIZE)?;
     let mmap_next = align_up(
         image_end
@@ -661,6 +664,9 @@ fn load_segments(
         let zero_len = usize::try_from(header.p_memsz - header.p_filesz)
             .map_err(|_| Error::UnsupportedElf("PT_LOAD memsz is too large".to_string()))?;
         memory.zero(zero_start, zero_len)?;
+        let mapped_start = segment_start & !(PAGE_SIZE - 1);
+        let mapped_end = align_up(segment_end, PAGE_SIZE)?;
+        memory.map_user_range(mapped_start, mapped_end - mapped_start, false)?;
 
         entry_is_executable |=
             header.p_flags & PF_X != 0 && (segment_start..segment_end).contains(&entry);
