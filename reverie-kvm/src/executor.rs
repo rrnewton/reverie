@@ -1203,7 +1203,7 @@ fn open_file(
     // translate them to the guest's own descriptor table and reopen the
     // underlying object instead.
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(reverie-kvm-proc-self-fd)
+    // TODO-HUMAN-REVIEW(#114)
     if let Some(target_guest_fd) = guest_fd_magic_link(&path) {
         return reopen_guest_fd(state, target_guest_fd, raw_flags);
     }
@@ -1283,7 +1283,7 @@ fn open_file(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(reverie-kvm-proc-self-fd)
+// TODO-HUMAN-REVIEW(#114)
 /// Recognize a guest procfs/`/dev` descriptor magic link that names one of the
 /// guest's own open descriptors, returning that guest fd number. Only the bare
 /// `.../fd/<N>` forms match; any trailing component (for example a path under
@@ -1304,7 +1304,7 @@ fn guest_fd_magic_link(path: &[u8]) -> Option<libc::c_int> {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(reverie-kvm-proc-self-fd)
+// TODO-HUMAN-REVIEW(#114)
 /// Reopen the object backing a guest descriptor named through procfs. The guest
 /// fd is mapped to its host descriptor and reopened through the supervisor's own
 /// `/proc/self/fd/<host_fd>` magic link, yielding a fresh file description with
@@ -1353,7 +1353,7 @@ fn reopen_guest_fd(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(reverie-kvm-proc-self-fd)
+// TODO-HUMAN-REVIEW(#114)
 /// Return an owned descriptor for the object backing a guest descriptor named
 /// through a procfs magic link, for metadata (stat/access) resolution. The
 /// guest fd is duplicated so callers may `fstat` the underlying object. Only
@@ -1403,7 +1403,7 @@ fn open_metadata_path(
     // procfs. GNU diff, for example, stats an input path before opening it, so
     // process substitution `<(...)` needs this alongside the open path.
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(reverie-kvm-proc-self-fd)
+    // TODO-HUMAN-REVIEW(#114)
     if let Some(target_guest_fd) = guest_fd_magic_link(path) {
         return metadata_file_for_guest_fd(state, target_guest_fd);
     }
