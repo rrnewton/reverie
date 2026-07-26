@@ -42,7 +42,7 @@ pub(super) const TOOL_ENV: &str = "REVERIE_SABRE_TOOL";
 static SELECTED_TOOL: OnceLock<ToolKind> = OnceLock::new();
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-pending): Review fork-inherited counter coordinator discovery.
+// TODO-HUMAN-REVIEW(PR-160): Review fork-inherited counter coordinator discovery.
 static COUNTER_RPC_SOCKET: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]

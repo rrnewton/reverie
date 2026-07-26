@@ -36,7 +36,7 @@ static QUIET: AtomicBool = AtomicBool::new(false);
 const COUNTER_RPC_SOCKET_ENV: &str = "REVERIE_SABRE_EXAMPLE_RPC_SOCKET";
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-pending): Review the host-side example-counter coordinator API.
+// TODO-HUMAN-REVIEW(PR-160): Review the host-side example-counter coordinator API.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CounterTool {
     Counter1,
@@ -44,7 +44,7 @@ pub enum CounterTool {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-pending): Review the host-side example-counter coordinator lifecycle.
+// TODO-HUMAN-REVIEW(PR-160): Review the host-side example-counter coordinator lifecycle.
 pub async fn run_counter(
     kind: CounterTool,
     command: Command,
