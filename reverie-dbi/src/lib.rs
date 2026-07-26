@@ -181,7 +181,7 @@ where
         message: <T::GlobalState as GlobalTool>::Request,
     ) -> <T::GlobalState as GlobalTool>::Response {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(#PR): Review cross-process GlobalState RPC routing.
+        // TODO-HUMAN-REVIEW(#121): Review cross-process GlobalState RPC routing.
         // When a coordinator socket is configured, route the RPC to the single
         // shared GlobalState hosted out-of-process; otherwise fall back to the
         // in-process (per-process) global state.
@@ -207,7 +207,7 @@ where
         message: <T::GlobalState as GlobalTool>::Request,
     ) -> <T::GlobalState as GlobalTool>::Response {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(#PR): Review cross-process GlobalState RPC routing.
+        // TODO-HUMAN-REVIEW(#121): Review cross-process GlobalState RPC routing.
         // See `DbiGlobal::send_rpc`: prefer the cross-process coordinator when
         // one is configured, so fork/exec children share one GlobalState.
         if crate::sync_rpc::is_active() {
