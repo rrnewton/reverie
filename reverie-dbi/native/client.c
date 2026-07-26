@@ -123,6 +123,7 @@ static void reverie_dbi_emit(const char *buf, size_t len) {
   dr_write_file(diagnostic_file, buf, len);
 }
 
+// TODO-HUMAN-REVIEW(PR-131): Review the native thread lifecycle callback ABI.
 extern int32_t reverie_dbi_runtime_thread_init(
     prototype_counters_t *counters, void *context, int32_t tid, int32_t pid,
     uint64_t branches, int32_t defer_runtime, syscall_invoker_t invoke_syscall,
@@ -874,8 +875,10 @@ static bool is_exec_syscall(int sysnum) {
       ;
 }
 
+// TODO-HUMAN-REVIEW(PR-131): Review clone metadata and registration ordering.
 static bool thread_clone_metadata(void *drcontext, int sysnum, uint64_t *flags,
                                   uint64_t *child_tid_addr) {
+  // AUTONOMOUS-BOT-IMPLEMENTED
   if (sysnum == SYS_clone) {
     *flags = (uint64_t)dr_syscall_get_param(drcontext, 0);
     *child_tid_addr = (uint64_t)dr_syscall_get_param(drcontext, 3);
@@ -883,6 +886,7 @@ static bool thread_clone_metadata(void *drcontext, int sysnum, uint64_t *flags,
   }
 #ifdef SYS_clone3
   uint64_t clone3_args[4];
+  // AUTONOMOUS-BOT-IMPLEMENTED
   if (sysnum == SYS_clone3 &&
       read_app((const void *)dr_syscall_get_param(drcontext, 0), clone3_args,
                sizeof(clone3_args)) &&

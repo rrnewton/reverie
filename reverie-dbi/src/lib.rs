@@ -1106,6 +1106,7 @@ pub extern "C" fn reverie_dbi_runtime_image_init() -> u64 {
 ///
 /// `counters` must point to aligned, writable storage for one counter value and
 /// the callback pointers must be valid for the lifetime of the application.
+// TODO-HUMAN-REVIEW(PR-131): Review the expanded native thread initialization ABI.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
@@ -1129,6 +1130,7 @@ pub unsafe extern "C" fn reverie_dbi_runtime_thread_init(
 ///
 /// `counters` must name initialized per-thread storage and the callback pointers
 /// must be valid for the lifetime of the application.
+// TODO-HUMAN-REVIEW(PR-131): Review the native child-registration ABI.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
