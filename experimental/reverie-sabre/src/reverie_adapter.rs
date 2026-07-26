@@ -538,7 +538,7 @@ fn current_tid() -> Pid {
 
 /// Kernel-validated access to memory in the SaBRe guest process.
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-pending): Review SaBRe process memory access semantics.
+// TODO-HUMAN-REVIEW(PR-153): Review SaBRe process memory access semantics.
 #[derive(Clone, Copy, Debug)]
 pub struct SabreMemory {
     pid: Pid,
