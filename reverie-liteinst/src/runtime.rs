@@ -624,6 +624,27 @@ impl SyscallDispatcher for LiteinstDispatcher {
             event.set_result(unsafe { raw_syscall6(event.number(), event.args()) });
             return;
         }
+        let mode = TOOL_MODE.load(Ordering::Relaxed);
+        let args = event.args();
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-127): Keep fork-like clone on the compatibility trap fallback.
+        if mode != TOOL_REVERIE
+            && event.number() == libc::SYS_clone
+            && clone_is_fork_like(args[0], args[1])
+        {
+            let mut trapped = SyscallEvent {
+                number: event.number(),
+                args,
+                instruction_pointer: event.instruction_pointer(),
+                result: UNSET_RESULT,
+                context: 0,
+            };
+            unsafe {
+                process_syscall(&mut trapped);
+            }
+            event.set_result(trapped.result);
+            return;
+        }
 
         let resume_address = event.instruction_pointer();
         let instruction_pointer =
