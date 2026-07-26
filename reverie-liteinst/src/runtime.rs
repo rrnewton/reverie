@@ -580,10 +580,12 @@ unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
         result: UNSET_RESULT,
         context: context_pointer,
     };
+    // TODO-HUMAN-REVIEW(PR-133): Review installed-hook bypass for Tool-internal syscalls.
     if unsafe { !CURRENT_EVENT.is_null() } {
-        unsafe {
-            exit_now(125);
-        }
+        context.rax = unsafe { raw_syscall6(event.number, event.args) } as u64;
+        context.rcx = context.instruction_pointer.saturating_add(2);
+        context.r11 = context.rflags;
+        return;
     }
     unsafe {
         CURRENT_EVENT = &mut event;
