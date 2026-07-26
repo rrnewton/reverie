@@ -41,6 +41,18 @@ fn run(tool: &str, extra: &[&str], guest: &[&str]) -> Output {
         .args(extra)
         .arg("--")
         .args(guest);
+    output_with_timeout(&mut command)
+}
+
+fn output_with_timeout(command: &mut Command) -> Output {
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setpgid(0, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -52,6 +64,9 @@ fn run(tool: &str, extra: &[&str], guest: &[&str]) -> Output {
             return child.wait_with_output().unwrap();
         }
         if Instant::now() >= deadline {
+            let process_group = i32::try_from(child.id()).unwrap();
+            // SAFETY: the child created its own process group before exec.
+            let _ = unsafe { libc::kill(-process_group, libc::SIGKILL) };
             let _ = child.kill();
             let output = child.wait_with_output().unwrap();
             panic!("LiteInst example timed out: {output:?}");
@@ -62,12 +77,12 @@ fn run(tool: &str, extra: &[&str], guest: &[&str]) -> Output {
 
 #[test]
 fn launcher_does_not_activate_the_guest_constructor() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-examples"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-examples"));
+    command
         .env("REVERIE_LITEINST_COORDINATOR", "/tmp/not-a-coordinator")
         .env("REVERIE_LITEINST_EXAMPLE_TOOL", "noop")
-        .arg("--help")
-        .output()
-        .unwrap();
+        .arg("--help");
+    let output = output_with_timeout(&mut command);
 
     assert!(output.status.success(), "{output:?}");
     assert!(output.stdout.starts_with(b"Usage:"), "{output:?}");
@@ -92,7 +107,8 @@ fn exact_noop_tool_preserves_output_and_hides_control_environment() {
 
 #[test]
 fn exact_noop_tool_preserves_user_coordinator_environment() {
-    let output = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-examples"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-examples"));
+    command
         .env("REVERIE_LITEINST_COORDINATOR", "guest-value")
         .arg("--tool")
         .arg("noop")
@@ -100,9 +116,8 @@ fn exact_noop_tool_preserves_user_coordinator_environment() {
         .arg(preload())
         .arg("--")
         .arg(env!("CARGO_BIN_EXE_reverie-liteinst-env-guest"))
-        .arg("check-coordinator-environment")
-        .output()
-        .unwrap();
+        .arg("check-coordinator-environment");
+    let output = output_with_timeout(&mut command);
 
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"coordinator-environment-preserved\n");
@@ -143,7 +158,7 @@ fn exact_noop_tool_preserves_unrelated_inherited_descriptor() {
             Ok(())
         });
     }
-    let output = command.output().unwrap();
+    let output = output_with_timeout(&mut command);
 
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"fd-198-preserved\n");
