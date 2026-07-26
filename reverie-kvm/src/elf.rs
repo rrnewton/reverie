@@ -111,6 +111,14 @@ pub(crate) struct LoadedStaticElf {
     // Every mapped descriptor carries a stable synthetic inode. Duplicates and
     // the two ends of one pipe share the source object's value.
     pub fd_object_inodes: std::collections::BTreeMap<i32, u64>,
+    // AUTONOMOUS-BOT-IMPLEMENTED: Allocate synthetic identities by file object.
+    // TODO-HUMAN-REVIEW(PR-136): Review host-keyed deterministic inode allocation.
+    //
+    // Host device/inode pairs are used only as equality keys. Guest-visible
+    // inode values come from the deterministic counter and never expose either
+    // host value.
+    pub host_object_inodes: std::collections::BTreeMap<(libc::dev_t, libc::ino_t), u64>,
+    pub next_fd_object_inode: u64,
 }
 
 impl LoadedStaticElf {
@@ -172,6 +180,8 @@ impl LoadedStaticElf {
             children: std::collections::BTreeMap::new(),
             proc_files: self.proc_files.clone(),
             fd_object_inodes: self.fd_object_inodes.clone(),
+            host_object_inodes: self.host_object_inodes.clone(),
+            next_fd_object_inode: self.next_fd_object_inode,
         })
     }
 
@@ -253,6 +263,8 @@ impl LoadedStaticElf {
         self.children = previous.children;
         self.proc_files = proc_files;
         self.fd_object_inodes = fd_object_inodes;
+        self.host_object_inodes = previous.host_object_inodes;
+        self.next_fd_object_inode = previous.next_fd_object_inode;
     }
 }
 
@@ -460,6 +472,8 @@ fn load_executable(
         children: std::collections::BTreeMap::new(),
         proc_files: std::collections::BTreeMap::new(),
         fd_object_inodes: std::collections::BTreeMap::new(),
+        host_object_inodes: std::collections::BTreeMap::new(),
+        next_fd_object_inode: 0x2100_0000,
     })
 }
 

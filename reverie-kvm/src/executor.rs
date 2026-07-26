@@ -57,7 +57,17 @@ const ARCH_GET_FS: u64 = 0x1003;
 const ARCH_GET_GS: u64 = 0x1004;
 const PROC_SUPER_MAGIC: libc::c_long = 0x9fa0;
 const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-const FALLOCATE_KNOWN_MODE_BITS: libc::c_int = 0x7f;
+const FALLOCATE_VALID_MODES: &[libc::c_int] = &[
+    0,
+    libc::FALLOC_FL_KEEP_SIZE,
+    libc::FALLOC_FL_PUNCH_HOLE | libc::FALLOC_FL_KEEP_SIZE,
+    libc::FALLOC_FL_COLLAPSE_RANGE,
+    libc::FALLOC_FL_ZERO_RANGE,
+    libc::FALLOC_FL_ZERO_RANGE | libc::FALLOC_FL_KEEP_SIZE,
+    libc::FALLOC_FL_INSERT_RANGE,
+    libc::FALLOC_FL_UNSHARE_RANGE,
+    libc::FALLOC_FL_UNSHARE_RANGE | libc::FALLOC_FL_KEEP_SIZE,
+];
 const GUEST_SUPPLEMENTARY_GROUPS: &[libc::gid_t] = &[65_534];
 const LEGACY_OPEN_FLAGS: u64 = (libc::O_ACCMODE
     | libc::O_APPEND
@@ -1505,7 +1515,7 @@ fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if offset < 0 || length <= 0 {
         return negative_errno(libc::EINVAL);
     }
-    if mode & !FALLOCATE_KNOWN_MODE_BITS != 0 {
+    if !FALLOCATE_VALID_MODES.contains(&mode) {
         return negative_errno(libc::EOPNOTSUPP);
     }
     if let Err(error) = ensure_writable_fd(host_fd) {
@@ -2013,6 +2023,28 @@ fn set_output_alias(state: &mut LoadedStaticElf, fd: libc::c_int, alias: Option<
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review initial descriptor-object identity allocation.
+fn allocate_fd_object_inode(state: &mut LoadedStaticElf, file: &std::fs::File) -> Result<u64, i64> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: stat is writable and file owns a live descriptor.
+    if unsafe { libc::fstat(file.as_raw_fd(), stat.as_mut_ptr()) } != 0 {
+        return Err(io_error(std::io::Error::last_os_error()));
+    }
+    // SAFETY: fstat initialized stat on success.
+    let stat = unsafe { stat.assume_init() };
+    let key = (stat.st_dev, stat.st_ino);
+    if let Some(&inode) = state.host_object_inodes.get(&key) {
+        return Ok(inode);
+    }
+
+    let inode = state.next_fd_object_inode;
+    state.next_fd_object_inode = inode
+        .checked_add(1)
+        .ok_or_else(|| negative_errno(libc::EOVERFLOW))?;
+    state.host_object_inodes.insert(key, inode);
+    Ok(inode)
+}
+
+// TODO-HUMAN-REVIEW(PR-136): Review descriptor insertion and identity allocation.
 fn insert_file_with_flags(
     state: &mut LoadedStaticElf,
     file: std::fs::File,
@@ -2024,10 +2056,12 @@ fn insert_file_with_flags(
     else {
         return negative_errno(libc::EMFILE);
     };
+    let object_inode = match allocate_fd_object_inode(state, &file) {
+        Ok(inode) => inode,
+        Err(error) => return error,
+    };
     state.files.insert(fd, file);
-    state
-        .fd_object_inodes
-        .insert(fd, synthetic_guest_fd_inode(fd, false));
+    state.fd_object_inodes.insert(fd, object_inode);
     if close_on_exec {
         state.cloexec_fds.insert(fd);
     } else {
@@ -2086,6 +2120,7 @@ fn duplicate_fd_at_or_above(
     i64::from(fd)
 }
 
+// TODO-HUMAN-REVIEW(PR-136): Review dup object-identity propagation.
 fn duplicate_fd(
     state: &mut LoadedStaticElf,
     raw_old_fd: u64,
@@ -2173,6 +2208,7 @@ fn duplicate_fd(
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#54): Confirm guest-fd ownership and pipe2 flag boundaries.
+// TODO-HUMAN-REVIEW(PR-136): Review pipe object-identity allocation and cleanup.
 fn pipe2(
     memory: &mut GuestMemory,
     state: &mut LoadedStaticElf,
@@ -4080,6 +4116,7 @@ fn host_dirfd_and_path(
         .map_err(|_| negative_errno(libc::EINVAL))
 }
 
+// TODO-HUMAN-REVIEW(PR-136): Review descriptor object-identity cleanup.
 fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
     let Ok(fd) = i32::try_from(raw_fd) else {
         return negative_errno(libc::EBADF);
@@ -5559,6 +5596,8 @@ mod tests {
             children: BTreeMap::new(),
             proc_files: BTreeMap::new(),
             fd_object_inodes: BTreeMap::new(),
+            host_object_inodes: BTreeMap::new(),
+            next_fd_object_inode: 0x2100_0000,
         }
     }
 
@@ -6964,6 +7003,35 @@ mod tests {
         assert_eq!(actual, b"/proc/1/status");
         assert_eq!(close(&mut state, proc_fd as u64), 0);
 
+        // Independent opens of one file must report one target inode, just as
+        // native procfd links do, even though their file offsets are separate.
+        let first = open_readonly(&mut memory, &mut state, "payload");
+        let second = open_readonly(&mut memory, &mut state, "payload");
+        assert_eq!(
+            [first, second],
+            [3, 4],
+            "live guest fds: {:?}",
+            state.files.keys().collect::<Vec<_>>()
+        );
+        let mut regular_inodes = Vec::new();
+        for fd in [first, second] {
+            write_c_string(&mut memory, PATH, &format!("/proc/self/fd/{fd}"));
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_newfstatat,
+                    [libc::AT_FDCWD as u64, PATH, STAT, 0, 0, 0],
+                ),
+                0
+            );
+            let stat: libc::stat = read_struct(&memory, STAT);
+            regular_inodes.push(stat.st_ino);
+        }
+        assert_eq!(regular_inodes[0], regular_inodes[1]);
+        assert_eq!(close(&mut state, first as u64), 0);
+        assert_eq!(close(&mut state, second as u64), 0);
+
         write_c_string(&mut memory, PATH, "/proc/self/fd/99");
         assert_eq!(
             syscall_result(
@@ -7022,7 +7090,7 @@ mod tests {
             inodes.push(stat.st_ino);
         }
 
-        let stable_pipe = format!("pipe:[{}]", synthetic_guest_fd_inode(3, false));
+        let stable_pipe = format!("pipe:[{}]", inodes[0]);
         assert!(
             targets
                 .iter()
@@ -7059,6 +7127,51 @@ mod tests {
                 "closing the first pipe fd must not change surviving identity"
             );
         }
+
+        // Reusing closed fd 3 for a new pipe must not alias the still-live old
+        // pipe object held by fds 4 and 5.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let second_pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        assert_eq!(second_pipe_fds, [3, 6]);
+        let new_inode = state
+            .fd_object_inodes
+            .get(&second_pipe_fds[0])
+            .copied()
+            .unwrap();
+        assert_eq!(
+            state.fd_object_inodes.get(&second_pipe_fds[1]),
+            Some(&new_inode)
+        );
+        assert_ne!(
+            new_inode, stable_inode,
+            "descriptor reuse must allocate a distinct live pipe identity"
+        );
+        assert_eq!(
+            state.fd_object_inodes.get(&pipe_fds[1]),
+            Some(&stable_inode)
+        );
+        write_c_string(
+            &mut memory,
+            PATH,
+            &format!("/proc/self/fd/{}", second_pipe_fds[0]),
+        );
+        let count = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_readlink,
+            [PATH, OUTPUT, 4096, 0, 0, 0],
+        );
+        let mut target = vec![0; count as usize];
+        memory.read(OUTPUT, &mut target).unwrap();
+        assert_eq!(target, format!("pipe:[{new_inode}]").as_bytes());
     }
 
     #[test]
@@ -8594,6 +8707,23 @@ mod tests {
             negative_errno(libc::EINVAL),
             "range validation precedes writable-access validation"
         );
+        for mode in [
+            libc::FALLOC_FL_PUNCH_HOLE,
+            libc::FALLOC_FL_COLLAPSE_RANGE | libc::FALLOC_FL_KEEP_SIZE,
+            libc::FALLOC_FL_INSERT_RANGE | libc::FALLOC_FL_KEEP_SIZE,
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fallocate,
+                    [9, mode as u64, 0, 1, 0, 0],
+                ),
+                negative_errno(libc::EOPNOTSUPP),
+                "invalid mode combination validation precedes writable access"
+            );
+        }
+
         assert_eq!(
             syscall_result(
                 &mut memory,
