@@ -80,3 +80,46 @@ pub fn plugin_path() -> &'static CStr {
 pub fn client_path() -> &'static CStr {
     unsafe { CStr::from_ptr(CLIENT_PATH) }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsStr;
+    use std::process::Command;
+
+    use super::*;
+
+    const CHILD_ENV: &str = "REVERIE_SABRE_TEST_CHILD";
+    const SECRET_ENV: &str = "REVERIE_SABRE_TEST_SECRET";
+    const SECRET_VALUE: &str = "run-specific-value";
+
+    #[test]
+    fn take_private_env_scrubs_proc() {
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("paths::tests::take_private_env_scrubs_proc")
+                .arg("--nocapture")
+                .env(CHILD_ENV, "1")
+                .env(SECRET_ENV, SECRET_VALUE)
+                .status()
+                .unwrap();
+            assert!(status.success(), "child test failed with {status}");
+            return;
+        }
+
+        assert_eq!(
+            take_private_env(SECRET_ENV).as_deref(),
+            Some(OsStr::new(SECRET_VALUE))
+        );
+        assert!(std::env::var_os(SECRET_ENV).is_none());
+
+        let proc_environment = std::fs::read("/proc/self/environ").unwrap();
+        let secret = format!("{SECRET_ENV}={SECRET_VALUE}");
+        assert!(
+            !proc_environment
+                .windows(secret.len())
+                .any(|window| window == secret.as_bytes()),
+            "private setting remained visible in /proc/self/environ"
+        );
+    }
+}
