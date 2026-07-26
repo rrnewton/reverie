@@ -507,6 +507,9 @@ fn execute_basic_syscall_with_output(
         gettimeofday(memory, args)
     } else if number == libc::SYS_readlink as u64 {
         readlink(memory, state, args)
+    } else if number == libc::SYS_readlinkat as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        readlinkat(memory, state, args)
     } else if number == libc::SYS_uname as u64 {
         uname(memory, args[0])
     } else if number == libc::SYS_prlimit64 as u64 {
@@ -1507,7 +1510,7 @@ fn open_file(
     }
     let flags = u64::from(raw_flags as libc::c_int as u32) & LEGACY_OPEN_FLAGS;
     let guest_cloexec = flags & libc::O_CLOEXEC as u64 != 0;
-    if let Some(guest_fd) = guest_fd_path(&path) {
+    if let Some(guest_fd) = guest_fd_path(state, &path) {
         return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
     }
     if path == b"/dev/random" || path == b"/dev/urandom" {
@@ -1638,11 +1641,14 @@ fn open_virtual_file(
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
 // TODO-HUMAN-REVIEW(PR-114): Review /proc/thread-self/fd guest descriptor resolution.
-fn guest_fd_path(path: &[u8]) -> Option<libc::c_int> {
+// TODO-HUMAN-REVIEW(PR-136): Review numeric guest-pid descriptor aliases.
+fn guest_fd_path(state: &LoadedStaticElf, path: &[u8]) -> Option<libc::c_int> {
+    let numeric_prefix = format!("/proc/{}/fd/", state.pid).into_bytes();
     let suffix = path
         .strip_prefix(b"/dev/fd/")
         .or_else(|| path.strip_prefix(b"/proc/self/fd/"))
-        .or_else(|| path.strip_prefix(b"/proc/thread-self/fd/"))?;
+        .or_else(|| path.strip_prefix(b"/proc/thread-self/fd/"))
+        .or_else(|| path.strip_prefix(numeric_prefix.as_slice()))?;
     if suffix.is_empty() || !suffix.iter().all(u8::is_ascii_digit) {
         return None;
     }
@@ -1664,7 +1670,7 @@ fn guest_fd_metadata(
     path: &[u8],
     no_follow: bool,
 ) -> Result<Option<GuestFdMetadata>, i64> {
-    let Some(guest_fd) = guest_fd_path(path) else {
+    let Some(guest_fd) = guest_fd_path(state, path) else {
         return Ok(None);
     };
     let Some(host_fd) = host_fd(state, guest_fd) else {
@@ -1675,6 +1681,27 @@ fn guest_fd_metadata(
         host_fd,
         no_follow,
     }))
+}
+
+// TODO-HUMAN-REVIEW(PR-136): Review guest descriptor link-target sanitization.
+fn guest_fd_link_target(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Result<Vec<u8>, i64> {
+    let Some(host_fd) = host_fd(state, guest_fd) else {
+        return Err(negative_errno(libc::ENOENT));
+    };
+    let target = canonical_fd_path(host_fd)?;
+    let target = target.as_os_str().as_bytes();
+
+    // Host pipe and socket link targets embed kernel-assigned inode numbers.
+    // Replace only that unstable identity while retaining Linux's link shape.
+    for kind in ["pipe", "socket"] {
+        let prefix = format!("{kind}:[");
+        if target.starts_with(prefix.as_bytes()) && target.ends_with(b"]") {
+            return Ok(
+                format!("{kind}:[{}]", synthetic_guest_fd_inode(guest_fd, false)).into_bytes(),
+            );
+        }
+    }
+    Ok(target.to_vec())
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -4633,11 +4660,34 @@ fn gettimeofday(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
 }
 
 fn readlink(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let path = match read_c_string(memory, args[0], 4096) {
+    readlink_at_impl(memory, state, libc::AT_FDCWD, args[0], args[1], args[2])
+}
+
+// TODO-HUMAN-REVIEW(PR-136): Review readlinkat guest-dirfd and procfd semantics.
+fn readlinkat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    readlink_at_impl(
+        memory,
+        state,
+        args[0] as libc::c_int,
+        args[1],
+        args[2],
+        args[3],
+    )
+}
+
+fn readlink_at_impl(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
+    path_address: u64,
+    output_address: u64,
+    raw_capacity: u64,
+) -> i64 {
+    let path = match read_c_string(memory, path_address, 4096) {
         Ok(path) => path,
         Err(error) => return read_c_string_errno(error),
     };
-    let Ok(requested_capacity) = usize::try_from(args[2]) else {
+    let Ok(requested_capacity) = usize::try_from(raw_capacity) else {
         return negative_errno(libc::EINVAL);
     };
     if requested_capacity == 0 {
@@ -4645,9 +4695,28 @@ fn readlink(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     }
     let capacity = requested_capacity.min(MAX_HOST_IO);
 
-    if path == b"/proc/self/exe" {
-        let count = capacity.min(state.argv0.len());
-        return match memory.write(args[1], &state.argv0[..count]) {
+    if let Some(guest_fd) = guest_fd_path(state, &path) {
+        let target = match guest_fd_link_target(state, guest_fd) {
+            Ok(target) => target,
+            Err(error) => return error,
+        };
+        let count = capacity.min(target.len());
+        return match memory.write(output_address, &target[..count]) {
+            Ok(()) => count as i64,
+            Err(_) => negative_errno(libc::EFAULT),
+        };
+    }
+
+    let normalized = normalize_proc_path(state, &path);
+    let proc_link_target: Option<&[u8]> = match normalized.as_deref() {
+        Some(b"/proc/self/exe") => Some(&state.argv0),
+        Some(b"/proc/self/cwd") => Some(state.cwd.as_os_str().as_bytes()),
+        Some(b"/proc/self/root") => Some(b"/"),
+        _ => None,
+    };
+    if let Some(target) = proc_link_target {
+        let count = capacity.min(target.len());
+        return match memory.write(output_address, &target[..count]) {
             Ok(()) => count as i64,
             Err(_) => negative_errno(libc::EFAULT),
         };
@@ -4656,13 +4725,13 @@ fn readlink(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     if path == b"/proc/self" || path == format!("/proc/{}", state.pid).as_bytes() {
         let target = state.pid.to_string().into_bytes();
         let count = capacity.min(target.len());
-        return match memory.write(args[1], &target[..count]) {
+        return match memory.write(output_address, &target[..count]) {
             Ok(()) => count as i64,
             Err(_) => negative_errno(libc::EFAULT),
         };
     }
 
-    let file = match open_metadata_path(state, libc::AT_FDCWD, &path, true) {
+    let file = match open_metadata_path(state, guest_dirfd, &path, true) {
         Ok(file) => file,
         Err(error) => return error,
     };
@@ -4687,7 +4756,7 @@ fn readlink(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
         return io_error(std::io::Error::last_os_error());
     }
     let count = count as usize;
-    match memory.write(args[1], &bytes[..count]) {
+    match memory.write(output_address, &bytes[..count]) {
         Ok(()) => count as i64,
         Err(_) => negative_errno(libc::EFAULT),
     }
@@ -6558,9 +6627,117 @@ mod tests {
             ),
             negative_errno(libc::ENOENT)
         );
-        assert_eq!(guest_fd_path(b"/proc/self/fd/3"), Some(3));
-        assert_eq!(guest_fd_path(b"/proc/thread-self/fd/3"), Some(3));
-        assert_eq!(guest_fd_path(b"/dev/fd/not-a-fd"), None);
+        assert_eq!(guest_fd_path(&state, b"/proc/self/fd/3"), Some(3));
+        assert_eq!(guest_fd_path(&state, b"/proc/thread-self/fd/3"), Some(3));
+        assert_eq!(guest_fd_path(&state, b"/proc/1/fd/3"), Some(3));
+        assert_eq!(guest_fd_path(&state, b"/dev/fd/not-a-fd"), None);
+    }
+
+    #[test]
+    fn guest_proc_fd_links_and_readlinkat_are_guest_owned() {
+        const PATH: u64 = 0x100;
+        const OUTPUT: u64 = 0x400;
+        const PIPE_FDS: u64 = 0x800;
+
+        let root = TestDir::new();
+        let payload = root.0.join("payload");
+        std::fs::write(&payload, b"contents").unwrap();
+        std::os::unix::fs::symlink("payload", root.0.join("link")).unwrap();
+        let mut state = test_state(&root.0);
+        state
+            .files
+            .insert(9, std::fs::File::open(&payload).unwrap());
+        let mut memory = GuestMemory::new(0, 0x2000).unwrap();
+
+        write_c_string(&mut memory, PATH, "/proc/1/fd/9");
+        let expected = payload.as_os_str().as_bytes();
+        let count = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_readlink,
+            [PATH, OUTPUT, 4096, 0, 0, 0],
+        );
+        assert_eq!(count, expected.len() as i64);
+        let mut actual = vec![0; count as usize];
+        memory.read(OUTPUT, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+
+        // readlinkat returns a truncated byte count and never appends a NUL.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readlinkat,
+                [libc::AT_FDCWD as u64, PATH, OUTPUT, 4, 0, 0],
+            ),
+            4
+        );
+        let mut prefix = [0; 4];
+        memory.read(OUTPUT, &mut prefix).unwrap();
+        assert_eq!(&prefix, &expected[..4]);
+
+        // Numeric guest-pid links normalize to the same synthetic process.
+        write_c_string(&mut memory, PATH, "/proc/1/cwd");
+        let count = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_readlinkat,
+            [libc::AT_FDCWD as u64, PATH, OUTPUT, 4096, 0, 0],
+        );
+        let expected_cwd = root.0.as_os_str().as_bytes();
+        assert_eq!(count, expected_cwd.len() as i64);
+        let mut actual = vec![0; count as usize];
+        memory.read(OUTPUT, &mut actual).unwrap();
+        assert_eq!(actual, expected_cwd);
+
+        // Relative readlinkat resolves against the guest cwd descriptor.
+        write_c_string(&mut memory, PATH, "link");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readlinkat,
+                [libc::AT_FDCWD as u64, PATH, OUTPUT, 4096, 0, 0],
+            ),
+            7
+        );
+        let mut relative_target = [0; 7];
+        memory.read(OUTPUT, &mut relative_target).unwrap();
+        assert_eq!(&relative_target, b"payload");
+
+        write_c_string(&mut memory, PATH, "/proc/self/fd/99");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readlink,
+                [PATH, OUTPUT, 4096, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOENT)
+        );
+
+        // Kernel pipe inode numbers are host-specific; expose a guest-stable link.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        write_c_string(&mut memory, PATH, "/proc/self/fd/3");
+        let count = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_readlink,
+            [PATH, OUTPUT, 4096, 0, 0, 0],
+        );
+        let stable_pipe = format!("pipe:[{}]", synthetic_guest_fd_inode(3, false));
+        assert_eq!(count, stable_pipe.len() as i64);
+        let mut actual = vec![0; count as usize];
+        memory.read(OUTPUT, &mut actual).unwrap();
+        assert_eq!(actual, stable_pipe.as_bytes());
     }
 
     #[test]
