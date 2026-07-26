@@ -482,11 +482,6 @@ static void start_pending_thread(void) {
       drcontext, thread_state_index);
   if (counters == NULL || counters->pending_thread_start == 0)
     return;
-  bool first_attempt = counters->pending_thread_start == 1;
-  if (first_attempt)
-    dr_fprintf(diagnostic_file,
-               "reverie-dbi lifecycle: child %d start attempt\n",
-               (int32_t)dr_get_thread_id(drcontext));
 
   int32_t init_result = reverie_dbi_runtime_thread_init(
       counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
@@ -496,10 +491,6 @@ static void start_pending_thread(void) {
   // TODO-HUMAN-REVIEW(PR-134): Confirm retryable native child startup.
   if (init_result > 0) {
     counters->pending_thread_start = 2;
-    if (first_attempt)
-      dr_fprintf(diagnostic_file,
-                 "reverie-dbi lifecycle: child %d awaiting parent\n",
-                 (int32_t)dr_get_thread_id(drcontext));
     return;
   }
   if (init_result < 0) {
@@ -508,9 +499,6 @@ static void start_pending_thread(void) {
     exit_runtime_tree(101);
     return;
   }
-  dr_fprintf(diagnostic_file,
-             "reverie-dbi lifecycle: child %d started\n",
-             (int32_t)dr_get_thread_id(drcontext));
   counters->pending_thread_start = 0;
   atomic_fetch_sub_explicit(&pending_thread_starts, 1, memory_order_release);
 }
@@ -1490,9 +1478,6 @@ static void post_syscall(void *drcontext, int sysnum) {
 
   if (counters->pending_thread_clone != 0) {
     if (host_syscall_result >= 0) {
-      dr_fprintf(diagnostic_file,
-                 "reverie-dbi lifecycle: parent registering child %d\n",
-                 (int32_t)host_syscall_result);
       int32_t registration = reverie_dbi_runtime_thread_created(
           counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
           (int32_t)dr_get_process_id(),
@@ -1505,9 +1490,6 @@ static void post_syscall(void *drcontext, int sysnum) {
         exit_runtime_tree(101);
         return;
       }
-      dr_fprintf(diagnostic_file,
-                 "reverie-dbi lifecycle: parent registered child %d\n",
-                 (int32_t)host_syscall_result);
     }
     counters->pending_thread_clone = 0;
   }
@@ -1584,9 +1566,6 @@ static bool pre_syscall(void *drcontext, int sysnum) {
    * thread-init event has returned so the parent post-clone callback can
    * register it. */
   // TODO-HUMAN-REVIEW(PR-134): Confirm the delayed-flush syscall fallback.
-  if (!has_copied_runtime() && counters->pending_thread_start != 0)
-    dr_fprintf(diagnostic_file,
-               "reverie-dbi lifecycle: child retrying at syscall\n");
   while (!has_copied_runtime() && counters->pending_thread_start != 0) {
     start_pending_thread();
     if (counters->pending_thread_start != 0)
@@ -1639,10 +1618,6 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     }
     return prepare_original_identity_syscall(drcontext, counters, sysnum, args);
   }
-  if (!reverie_dbi_runtime_ready(
-          atomic_load_explicit(&image_generation, memory_order_acquire)))
-    dr_fprintf(diagnostic_file,
-               "reverie-dbi lifecycle: application waiting for runtime\n");
   while (!reverie_dbi_runtime_ready(
       atomic_load_explicit(&image_generation, memory_order_acquire)))
     dr_sleep(1);
@@ -1739,9 +1714,6 @@ static void thread_init(void *drcontext) {
   }
 
   counters->pending_thread_start = (uint64_t)pending_thread_start;
-  if (pending_thread_start != 0)
-    dr_fprintf(diagnostic_file,
-               "reverie-dbi lifecycle: child %d initialized\n", host_tid);
   if (pending_thread_start != 0) {
     dr_mcontext_t context = {sizeof(context), DR_MC_CONTROL};
     atomic_fetch_add_explicit(&pending_thread_starts, 1, memory_order_release);
@@ -1804,11 +1776,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   drreg_options_t register_options = {sizeof(register_options), 1, false};
 
   diagnostic_file = STDERR;
-  dr_fprintf(diagnostic_file, "reverie-dbi lifecycle: client main entered\n");
   runtime_owner_pid = dr_get_process_id();
   initialize_virtual_identity_state();
-  dr_fprintf(diagnostic_file,
-             "reverie-dbi lifecycle: virtual identity initialized\n");
   if (lookup_virtual_identity((int32_t)runtime_owner_pid,
                               &virtual_process_id)) {
     int32_t host_parent = (int32_t)getppid();
@@ -1821,8 +1790,6 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   }
   atomic_store_explicit(&image_generation, reverie_dbi_runtime_image_init(),
                         memory_order_release);
-  dr_fprintf(diagnostic_file,
-             "reverie-dbi lifecycle: runtime image initialized\n");
   resource_lock = dr_mutex_create();
   DR_ASSERT(resource_lock != NULL);
   init_virtual_limits();
@@ -1879,8 +1846,6 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     dr_exit_process(CLIENT_THREAD_START_FAILURE_EXIT_CODE);
     return;
   }
-  dr_fprintf(diagnostic_file,
-             "reverie-dbi lifecycle: background thread created\n");
   drmgr_register_exit_event(event_exit);
   if (!drmgr_register_module_load_event(module_load) ||
       !drmgr_register_thread_init_event(thread_init) ||
