@@ -9,6 +9,7 @@ use std::sync::Arc;
 use reverie::Error;
 use reverie::GlobalTool;
 use reverie::Guest;
+use reverie::TimerSchedule;
 use reverie::Tool;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
@@ -52,6 +53,9 @@ impl Tool for CounterTool {
         syscall: Syscall,
     ) -> Result<i64, Error> {
         if syscall.number() == Sysno::getpid {
+            guest.set_timer(TimerSchedule::Rcbs(1_000_000))?;
+            guest.set_timer_precise(TimerSchedule::RcbsAndInstructions(1_000_000, 1))?;
+            assert_eq!(guest.read_clock()?, 0);
             let uid = unsafe { reverie_liteinst_rpc_getuid() };
             LAST_NESTED_UID.store(uid, Ordering::Relaxed);
             let mask = 0_u64;

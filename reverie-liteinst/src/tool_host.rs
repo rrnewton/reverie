@@ -118,7 +118,7 @@ where
     let tool = T::new(pid, rpc.config());
     HANDLER
         .set(Box::new(ToolHost::<T> {
-            tool,
+            tool: SpinMutex::new(Some(tool)),
             rpc,
             root_pid: pid,
             subscriptions,
@@ -138,7 +138,7 @@ pub(crate) fn dispatch(event: &mut SyscallEvent) {
 }
 
 struct ToolHost<T: Tool> {
-    tool: T,
+    tool: SpinMutex<Option<T>>,
     rpc: CoordinatorRpc<T::GlobalState>,
     root_pid: Pid,
     subscriptions: HashSet<Sysno>,
@@ -155,11 +155,13 @@ where
         let pid = raw_pid(libc::SYS_getpid);
         let ppid = (pid != self.root_pid).then(|| raw_pid(libc::SYS_getppid));
 
+        let mut tool_slot = self.tool.lock();
+        let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
         let mut states = self.states.lock();
         let is_new = !states.contains_key(&tid.as_raw());
         let state = states
             .entry(tid.as_raw())
-            .or_insert_with(|| self.tool.init_thread_state(tid, None));
+            .or_insert_with(|| tool.init_thread_state(tid, None));
         let tail = TailResult::default();
         let mut guest = LiteinstGuest::<T> {
             event,
@@ -171,7 +173,7 @@ where
             tail: &tail,
         };
 
-        if is_new && let Err(error) = drive_ready(self.tool.handle_thread_start(&mut guest)) {
+        if is_new && let Err(error) = drive_ready(tool.handle_thread_start(&mut guest)) {
             tool_fatal(124, &error);
         }
 
@@ -192,7 +194,7 @@ where
             SyscallArgs::new(args[0], args[1], args[2], args[3], args[4], args[5]),
         );
 
-        match drive_syscall(self.tool.handle_syscall_event(&mut guest, syscall), &tail) {
+        match drive_syscall(tool.handle_syscall_event(&mut guest, syscall), &tail) {
             SyscallOutcome::Return(result) => {
                 guest.event.result = match result {
                     Ok(value) => value,
@@ -207,10 +209,16 @@ where
                     .remove(&tid.as_raw())
                     .expect("LiteInst thread state disappeared before exit");
                 let status = reverie::ExitStatus::Exited(args[0] as i32);
-                if let Err(error) =
-                    drive_ready(self.tool.on_exit_thread(tid, &self.rpc, state, status))
+                if let Err(error) = drive_ready(tool.on_exit_thread(tid, &self.rpc, state, status))
                 {
                     tool_fatal(125, &error);
+                }
+                // TODO-HUMAN-REVIEW(PR-TBD): Review single-process Tool exit lifecycle.
+                if number == libc::SYS_exit_group || tid == pid {
+                    let tool = tool_slot.take().unwrap_or_else(|| fatal(126));
+                    if let Err(error) = drive_ready(tool.on_exit_process(pid, &self.rpc, status)) {
+                        tool_fatal(125, &error);
+                    }
                 }
                 event.result = unsafe { raw_syscall6(number, args) };
             }
@@ -529,28 +537,19 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         std::future::pending().await
     }
 
+    // TODO-HUMAN-REVIEW(PR-TBD): Review cooperative LiteInst timer semantics.
     fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "LiteInst does not implement RCB timer delivery",
-        )
-        .into())
+        Ok(())
     }
 
+    // TODO-HUMAN-REVIEW(PR-TBD): Review cooperative LiteInst timer semantics.
     fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "LiteInst does not implement precise RCB timer delivery",
-        )
-        .into())
+        Ok(())
     }
 
+    // TODO-HUMAN-REVIEW(PR-TBD): Review cooperative LiteInst clock semantics.
     fn read_clock(&mut self) -> Result<u64, Error> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "LiteInst does not implement an RCB clock",
-        )
-        .into())
+        Ok(0)
     }
 }
 
