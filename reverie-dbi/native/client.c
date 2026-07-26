@@ -1638,6 +1638,10 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     }
     return prepare_original_identity_syscall(drcontext, counters, sysnum, args);
   }
+  if (!reverie_dbi_runtime_ready(
+          atomic_load_explicit(&image_generation, memory_order_acquire)))
+    dr_fprintf(diagnostic_file,
+               "reverie-dbi lifecycle: application waiting for runtime\n");
   while (!reverie_dbi_runtime_ready(
       atomic_load_explicit(&image_generation, memory_order_acquire)))
     dr_sleep(1);
@@ -1799,8 +1803,11 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   drreg_options_t register_options = {sizeof(register_options), 1, false};
 
   diagnostic_file = STDERR;
+  dr_fprintf(diagnostic_file, "reverie-dbi lifecycle: client main entered\n");
   runtime_owner_pid = dr_get_process_id();
   initialize_virtual_identity_state();
+  dr_fprintf(diagnostic_file,
+             "reverie-dbi lifecycle: virtual identity initialized\n");
   if (lookup_virtual_identity((int32_t)runtime_owner_pid,
                               &virtual_process_id)) {
     int32_t host_parent = (int32_t)getppid();
@@ -1813,6 +1820,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   }
   atomic_store_explicit(&image_generation, reverie_dbi_runtime_image_init(),
                         memory_order_release);
+  dr_fprintf(diagnostic_file,
+             "reverie-dbi lifecycle: runtime image initialized\n");
   resource_lock = dr_mutex_create();
   DR_ASSERT(resource_lock != NULL);
   init_virtual_limits();
@@ -1864,6 +1873,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   if (!dr_create_client_thread(runtime_background_init,
                                (void *)reverie_dbi_emit))
     DR_ASSERT(false);
+  dr_fprintf(diagnostic_file,
+             "reverie-dbi lifecycle: background thread created\n");
   drmgr_register_exit_event(event_exit);
   if (!drmgr_register_module_load_event(module_load) ||
       !drmgr_register_thread_init_event(thread_init) ||
