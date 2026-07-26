@@ -338,7 +338,7 @@ impl Tool for Counter1Tool {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-PENDING): Review the DBI counter2 Tool port and lifecycle accounting.
+// TODO-HUMAN-REVIEW(PR-150): Review the DBI counter2 Tool port and lifecycle accounting.
 #[derive(Debug, Default)]
 struct Counter2Totals {
     total_syscalls: u64,
@@ -482,7 +482,7 @@ fn run_ready<F: Future>(future: F) -> F::Output {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review persistent DBI observation Tool state and exit lifecycle.
+// TODO-HUMAN-REVIEW(PR-150): Review persistent DBI observation Tool state and exit lifecycle.
 struct ObservationToolHost<T: Tool> {
     tool: Option<T>,
     global_state: T::GlobalState,
@@ -619,7 +619,7 @@ where
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review DBI exit lifecycle classification.
+// TODO-HUMAN-REVIEW(PR-150): Review DBI exit lifecycle classification.
 fn is_exit_syscall(number: Sysno) -> bool {
     // AUTONOMOUS-BOT-IMPLEMENTED
     matches!(number, Sysno::exit | Sysno::exit_group)
@@ -629,7 +629,7 @@ fn is_exit_syscall(number: Sysno) -> bool {
 /// active. The outcome either suppresses the original syscall with a result or
 /// lets DynamoRIO execute it after the Rust handler has released its borrows.
 #[allow(clippy::too_many_arguments)]
-// TODO-HUMAN-REVIEW(PR-PENDING): Review the suspension-aware observation Tool outcome API.
+// TODO-HUMAN-REVIEW(PR-150): Review the suspension-aware observation Tool outcome API.
 pub(crate) fn run_active_tool(
     context: usize,
     tid: i32,
