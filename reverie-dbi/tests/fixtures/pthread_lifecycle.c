@@ -17,7 +17,7 @@ static void *thread_main(void *argument) {
   return NULL;
 }
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review the native DBI example-tool pthread ratchet.
+// TODO-HUMAN-REVIEW(PR-154): Review the native DBI example-tool pthread ratchet.
 int main(void) {
   pthread_t threads[THREADS];
   int values[THREADS] = {0, 1, 2, 3};

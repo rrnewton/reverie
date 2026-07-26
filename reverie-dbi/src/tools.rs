@@ -155,7 +155,7 @@ impl Tool for SyscallCounterTool {
     type GlobalState = ();
     type ThreadState = ();
 
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review lifecycle-safe histogram tail injection.
+    // TODO-HUMAN-REVIEW(PR-154): Review lifecycle-safe histogram tail injection.
     async fn handle_syscall_event<G: Guest<Self>>(
         &self,
         guest: &mut G,
@@ -188,7 +188,7 @@ impl Tool for SharedSyscallCounterTool {
     type GlobalState = SyscallCounterGlobal;
     type ThreadState = ();
 
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review lifecycle-safe shared-counter tail injection.
+    // TODO-HUMAN-REVIEW(PR-154): Review lifecycle-safe shared-counter tail injection.
     async fn handle_syscall_event<G: Guest<Self>>(
         &self,
         guest: &mut G,
@@ -214,7 +214,7 @@ impl Tool for StraceTool {
     type GlobalState = ();
     type ThreadState = ();
 
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review native lifecycle deferral in DBI strace.
+    // TODO-HUMAN-REVIEW(PR-154): Review native lifecycle deferral in DBI strace.
     async fn handle_syscall_event<G: Guest<Self>>(
         &self,
         guest: &mut G,
@@ -259,7 +259,7 @@ impl Tool for NoopTool {
     type GlobalState = ();
     type ThreadState = ();
 
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review lifecycle-safe noop tail injection.
+    // TODO-HUMAN-REVIEW(PR-154): Review lifecycle-safe noop tail injection.
     async fn handle_syscall_event<G: Guest<Self>>(
         &self,
         guest: &mut G,
@@ -318,7 +318,7 @@ impl Tool for Counter1Tool {
     type GlobalState = Counter1Global;
     type ThreadState = ();
 
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review lifecycle-safe counter1 tail injection.
+    // TODO-HUMAN-REVIEW(PR-154): Review lifecycle-safe counter1 tail injection.
     async fn handle_syscall_event<G: Guest<Self>>(
         &self,
         guest: &mut G,

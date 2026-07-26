@@ -164,7 +164,7 @@ where
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review lifecycle syscalls deferred to DynamoRIO's original path.
+// TODO-HUMAN-REVIEW(PR-154): Review lifecycle syscalls deferred to DynamoRIO's original path.
 fn lifecycle_syscall_runs_original(number: Sysno) -> bool {
     // AUTONOMOUS-BOT-IMPLEMENTED
     matches!(
