@@ -41,7 +41,7 @@ const COUNTER_RPC_SOCKET_ENV: &str = "REVERIE_SABRE_EXAMPLE_RPC_SOCKET";
 pub enum CounterTool {
     Counter1,
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-TBD): Review backend-neutral counter coordinator selection.
+    // TODO-HUMAN-REVIEW(PR-190): Review backend-neutral counter coordinator selection.
     Counter1Exact,
     Counter2,
 }
