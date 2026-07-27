@@ -13,7 +13,7 @@ use reverie::Subscription;
 use reverie::Tool;
 use reverie_util::CommonToolArguments;
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review reuse of the ptrace GDB tool from the LiteInst parity launcher.
+// TODO-HUMAN-REVIEW(PR-193): Review reuse of the ptrace GDB tool from the LiteInst parity launcher.
 #[derive(Debug, Default)]
 pub(crate) struct DebugTool;
 impl Tool for DebugTool {

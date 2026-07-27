@@ -77,12 +77,12 @@ pub(crate) enum ToolKind {
     // TODO-HUMAN-REVIEW(PR-152): Review the chunky_print LiteInst selector extension.
     ChunkyPrint,
     /// Run the ptrace-assisted GDB server used by the debug example.
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review the explicit ptrace debug fallback.
+    // TODO-HUMAN-REVIEW(PR-193): Review the explicit ptrace debug fallback.
     Debug,
     /// Decode and print subscribed syscalls.
     Strace,
     /// Print every syscall before injecting it.
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review the minimal-strace LiteInst selector.
+    // TODO-HUMAN-REVIEW(PR-193): Review the minimal-strace LiteInst selector.
     StraceMinimal,
     /// Preserve guest behavior without subscribing to events.
     Noop,

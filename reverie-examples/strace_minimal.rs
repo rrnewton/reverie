@@ -14,7 +14,7 @@ use reverie::syscalls::Displayable;
 use reverie::syscalls::Syscall;
 use reverie_util::CommonToolArguments;
 
-// TODO-HUMAN-REVIEW(PR-PENDING): Review reuse of the minimal strace tool in the LiteInst preload.
+// TODO-HUMAN-REVIEW(PR-193): Review reuse of the minimal strace tool in the LiteInst preload.
 #[derive(Default)]
 pub(crate) struct StraceTool {}
 

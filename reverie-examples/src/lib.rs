@@ -128,7 +128,7 @@ unsafe extern "C" fn initialize(
         "strace" => unsafe {
             reverie_liteinst::install_tool_from_bootstrap::<strace::Strace>(&socket)
         },
-        // TODO-HUMAN-REVIEW(PR-PENDING): Review minimal-strace preload selection.
+        // TODO-HUMAN-REVIEW(PR-193): Review minimal-strace preload selection.
         "strace-minimal" => unsafe {
             reverie_liteinst::install_tool_from_bootstrap::<strace_minimal::StraceTool>(&socket)
         },
