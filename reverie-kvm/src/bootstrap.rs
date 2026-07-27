@@ -24,7 +24,7 @@ use crate::syscall::SAVED_RBX_WORD;
 const PAGE_SIZE: u64 = 4096;
 const LARGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;
 const PAGE_DIRECTORY_SPAN: u64 = 1024 * 1024 * 1024;
-const PAGE_DIRECTORY_ADDRESSES: [u64; 2] = [0x4000, 0x9000];
+const PAGE_DIRECTORY_ADDRESSES: [u64; 3] = [0x4000, 0x9000, 0xe000];
 const MAX_IDENTITY_MAP: u64 = PAGE_DIRECTORY_SPAN * PAGE_DIRECTORY_ADDRESSES.len() as u64;
 
 const GDT_ADDRESS: u64 = 0x1000;
@@ -38,11 +38,12 @@ const IDT_ADDRESS: u64 = 0xa000;
 const EXCEPTION_STUB_ADDRESS: u64 = 0xb000;
 const EXCEPTION_STACK_BOTTOM: u64 = 0xc000;
 const EXCEPTION_STACK_TOP: u64 = 0xd000;
-// Includes the 0xd000..0xe000 Tool injection scratch page and 160 private
+pub(crate) const TOOL_STACK_TOP: u64 = 0xe000;
+// Includes the 0xe000..0xf000 third page directory and 160 private
 // trampoline/frame pairs used by concurrent KVM guest threads.
 // AUTONOMOUS-BOT-IMPLEMENTED: Reserve transport slots for savevm worker pools.
 // TODO-HUMAN-REVIEW(impl-kvm-ratchet-17): Review the bounded per-thread transport layout.
-pub(crate) const THREAD_SYSCALL_AREA_START: u64 = 0xe000;
+pub(crate) const THREAD_SYSCALL_AREA_START: u64 = 0xf000;
 pub(crate) const THREAD_SYSCALL_AREA_STRIDE: u64 = 2 * PAGE_SIZE;
 pub(crate) const MAX_GUEST_THREADS: u64 = 160;
 pub(crate) const BOOT_RESERVED_END: u64 =
@@ -611,13 +612,14 @@ mod tests {
     }
 
     #[test]
-    fn page_tables_identity_map_two_gibibytes() {
+    fn page_tables_identity_map_three_gibibytes() {
         let mut memory = GuestMemory::new(0, MAX_IDENTITY_MAP as usize).unwrap();
 
         write_page_tables(&mut memory).unwrap();
 
         assert_eq!(read_u64(&memory, PDPT_ADDRESS).unwrap(), 0x4000 | 0x7);
         assert_eq!(read_u64(&memory, PDPT_ADDRESS + 8).unwrap(), 0x9000 | 0x7);
+        assert_eq!(read_u64(&memory, PDPT_ADDRESS + 16).unwrap(), 0xe000 | 0x7);
         assert_eq!(
             read_u64(&memory, 0x4000 + 511 * 8).unwrap(),
             0x3fe0_0000 | 0x87
@@ -626,6 +628,11 @@ mod tests {
         assert_eq!(
             read_u64(&memory, 0x9000 + 511 * 8).unwrap(),
             0x7fe0_0000 | 0x87
+        );
+        assert_eq!(read_u64(&memory, 0xe000).unwrap(), 0x8000_0000 | 0x87);
+        assert_eq!(
+            read_u64(&memory, 0xe000 + 511 * 8).unwrap(),
+            0xbfe0_0000 | 0x87
         );
     }
 
