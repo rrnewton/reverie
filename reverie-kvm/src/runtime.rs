@@ -106,7 +106,7 @@ enum InjectionCompletion {
     },
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review awaitable KVM injection Tool context.
+// TODO-HUMAN-REVIEW(PR-192): Review awaitable KVM injection Tool context.
 pub(crate) struct ToolContext<'a, T: Tool> {
     pub(crate) pid: Pid,
     pub(crate) thread_state: &'a T::ThreadState,
@@ -115,7 +115,7 @@ pub(crate) struct ToolContext<'a, T: Tool> {
     pub(crate) subscriptions: &'a Subscription,
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review async KVM process-action completion.
+// TODO-HUMAN-REVIEW(PR-192): Review async KVM process-action completion.
 trait GuestSyscallExecutor<T: Tool>: Send + Sync {
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64;
 
@@ -877,7 +877,7 @@ impl KvmBackend {
         Ok((global_state, exit_code, stdout, stderr))
     }
 
-    // TODO-HUMAN-REVIEW(PR-pending): Review recursive KVM process Tool runtime.
+    // TODO-HUMAN-REVIEW(PR-192): Review recursive KVM process Tool runtime.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn run_static_elf_process_with_tool<T: Tool>(
         &mut self,

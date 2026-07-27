@@ -788,7 +788,7 @@ impl KvmBackend {
         Ok(())
     }
 
-    // TODO-HUMAN-REVIEW(PR-pending): Review tool lifecycle for KVM fork children.
+    // TODO-HUMAN-REVIEW(PR-192): Review tool lifecycle for KVM fork children.
     pub(crate) async fn run_process_action_with_tool<T: Tool>(
         &mut self,
         executor: &mut ElfExecutor,
