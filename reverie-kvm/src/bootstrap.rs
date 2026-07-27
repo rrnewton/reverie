@@ -23,12 +23,13 @@ use crate::syscall::SAVED_RBX_WORD;
 
 const PAGE_SIZE: u64 = 4096;
 const LARGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;
-const MAX_IDENTITY_MAP: u64 = 1024 * 1024 * 1024;
+const PAGE_DIRECTORY_SPAN: u64 = 1024 * 1024 * 1024;
+const PAGE_DIRECTORY_ADDRESSES: [u64; 2] = [0x4000, 0x9000];
+const MAX_IDENTITY_MAP: u64 = PAGE_DIRECTORY_SPAN * PAGE_DIRECTORY_ADDRESSES.len() as u64;
 
 const GDT_ADDRESS: u64 = 0x1000;
 const PML4_ADDRESS: u64 = 0x2000;
 const PDPT_ADDRESS: u64 = 0x3000;
-const PDE_ADDRESS: u64 = 0x4000;
 pub(crate) const SYSCALL_TRAMPOLINE_ADDRESS: u64 = 0x5000;
 pub(crate) const SYSCALL_FRAME_ADDRESS: u64 = 0x6000;
 pub(crate) const PROGRAM_HEADERS_ADDRESS: u64 = 0x7000;
@@ -374,15 +375,31 @@ pub(crate) fn exception_from_halt(
 fn write_page_tables(memory: &mut GuestMemory) -> Result<()> {
     memory.zero_raw(PML4_ADDRESS, PAGE_SIZE as usize)?;
     memory.zero_raw(PDPT_ADDRESS, PAGE_SIZE as usize)?;
-    memory.zero_raw(PDE_ADDRESS, PAGE_SIZE as usize)?;
-
     write_u64(memory, PML4_ADDRESS, PDPT_ADDRESS | 0x7)?;
-    write_u64(memory, PDPT_ADDRESS, PDE_ADDRESS | 0x7)?;
 
-    let mapped_pages = memory.guest_end().div_ceil(LARGE_PAGE_SIZE);
-    for index in 0..mapped_pages {
-        let entry_address = PDE_ADDRESS + index * std::mem::size_of::<u64>() as u64;
-        write_u64(memory, entry_address, (index * LARGE_PAGE_SIZE) | 0x87)?;
+    // AUTONOMOUS-BOT-IMPLEMENTED: Map a second GiB for large KVM workloads.
+    // TODO-HUMAN-REVIEW(impl-kvm-ratchet-17): Review the two-directory identity map.
+    let mapped_large_pages = memory.guest_end().div_ceil(LARGE_PAGE_SIZE);
+    let entries_per_directory = PAGE_SIZE / std::mem::size_of::<u64>() as u64;
+    for (directory_index, directory_address) in PAGE_DIRECTORY_ADDRESSES.into_iter().enumerate() {
+        let first_page = directory_index as u64 * entries_per_directory;
+        if first_page >= mapped_large_pages {
+            break;
+        }
+        memory.zero_raw(directory_address, PAGE_SIZE as usize)?;
+        write_u64(
+            memory,
+            PDPT_ADDRESS + directory_index as u64 * std::mem::size_of::<u64>() as u64,
+            directory_address | 0x7,
+        )?;
+        let pages_in_directory = (mapped_large_pages - first_page).min(entries_per_directory);
+        for index in 0..pages_in_directory {
+            write_u64(
+                memory,
+                directory_address + index * std::mem::size_of::<u64>() as u64,
+                ((first_page + index) * LARGE_PAGE_SIZE) | 0x87,
+            )?;
+        }
     }
     Ok(())
 }
@@ -590,6 +607,25 @@ mod tests {
         let mut io_map_base = [0; 2];
         memory.read(TSS_ADDRESS + 0x66, &mut io_map_base).unwrap();
         assert_eq!(u16::from_le_bytes(io_map_base), 0x68);
+    }
+
+    #[test]
+    fn page_tables_identity_map_two_gibibytes() {
+        let mut memory = GuestMemory::new(0, MAX_IDENTITY_MAP as usize).unwrap();
+
+        write_page_tables(&mut memory).unwrap();
+
+        assert_eq!(read_u64(&memory, PDPT_ADDRESS).unwrap(), 0x4000 | 0x7);
+        assert_eq!(read_u64(&memory, PDPT_ADDRESS + 8).unwrap(), 0x9000 | 0x7);
+        assert_eq!(
+            read_u64(&memory, 0x4000 + 511 * 8).unwrap(),
+            0x3fe0_0000 | 0x87
+        );
+        assert_eq!(read_u64(&memory, 0x9000).unwrap(), 0x4000_0000 | 0x87);
+        assert_eq!(
+            read_u64(&memory, 0x9000 + 511 * 8).unwrap(),
+            0x7fe0_0000 | 0x87
+        );
     }
 
     #[test]
