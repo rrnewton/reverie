@@ -45,7 +45,6 @@ use crate::bootstrap::configure_process_syscall_return;
 use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
-use crate::executor::is_process_syscall;
 
 const GUEST_PID: i32 = 1;
 const STACK_CAPACITY: usize = 4096;
@@ -65,10 +64,9 @@ type SharedHandlerSignal = Arc<Mutex<Option<HandlerSignal>>>;
 // AUTONOMOUS-BOT-IMPLEMENTED: Keep root syscalls that share worker state in one backend.
 // TODO-HUMAN-REVIEW(PR-173): Review KVM root syscall ownership.
 fn is_backend_owned_syscall(number: u64) -> bool {
-    is_process_syscall(number)
-        // KVM guest workers run outside Detcore's scheduler. Root futexes must
-        // use the same host-backed words as workers, or Detcore deadlocks.
-        || number == libc::SYS_futex as u64
+    // KVM guest workers run outside Detcore's scheduler. Root futexes must
+    // use the same host-backed words as workers, or Detcore deadlocks.
+    number == libc::SYS_futex as u64
         // QEMU's root event loop waits on worker eventfds. KVM syscall
         // injection cannot perform ppoll, so use translated host descriptors.
         || number == libc::SYS_ppoll as u64
