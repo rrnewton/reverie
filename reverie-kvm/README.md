@@ -91,8 +91,12 @@ No gVisor code is copied. Unlike the gVisor Sentry VFS and `pkg/sentry/fsimpl/` 
 
 This crate is not a complete Linux execution backend. Each process has one vCPU
 and fixed-address identity mappings; thread-clone flags, asynchronous signal
-delivery, concurrent process scheduling, and page-permission enforcement remain
-unsupported. Filesystem access forwards into the host namespace with bounded
+delivery, concurrent process scheduling, and read-versus-write permission
+enforcement remain unsupported. `PROT_NONE` regions are tracked for Reverie tool
+and executor user copies so intercepted syscalls preserve Linux partial-fault
+behavior. The identity-mapped vCPU page tables remain permissive, so direct
+guest loads and stores do not yet fault according to those protections.
+Filesystem access forwards into the host namespace with bounded
 memory copies and a guest-owned descriptor table; it does not isolate or
 snapshot host filesystem changes. The current hypercall transport also reuses
 standardized KVM hypercall 12 because it is the only hypercall KVM exposes to

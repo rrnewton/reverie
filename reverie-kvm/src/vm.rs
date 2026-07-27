@@ -240,6 +240,8 @@ impl KvmBackend {
             loaded.stack_pointer,
             self.hypercall_instruction,
         )?;
+        // TODO-HUMAN-REVIEW(PR-130): Review tool-visible null-page fault modeling.
+        self.memory.reset_user_access()?;
         self.static_elf = Some(loaded);
         Ok(())
     }
@@ -280,6 +282,8 @@ impl KvmBackend {
         argv: &[String],
         envp: &[String],
     ) -> Result<()> {
+        // TODO-HUMAN-REVIEW(PR-130): Review protection reset across exec.
+        self.memory.clear_user_access();
         let user_length = usize::try_from(self.memory.guest_end() - BOOT_RESERVED_END)
             .expect("guest memory length must fit usize");
         self.memory.zero(BOOT_RESERVED_END, user_length)?;
@@ -295,6 +299,7 @@ impl KvmBackend {
             loaded.stack_pointer,
             self.hypercall_instruction,
         )?;
+        self.memory.reset_user_access()?;
         executor.replace_after_exec(loaded);
         Ok(())
     }

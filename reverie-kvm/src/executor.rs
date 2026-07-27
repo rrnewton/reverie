@@ -386,7 +386,10 @@ fn execute_basic_syscall_with_output(
         munmap(memory, args[0], args[1])
     } else if number == libc::SYS_mremap as u64 {
         mremap(memory, state, args)
-    } else if number == libc::SYS_mprotect as u64 || number == libc::SYS_madvise as u64 {
+    } else if number == libc::SYS_mprotect as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        mprotect(memory, args)
+    } else if number == libc::SYS_madvise as u64 {
         validate_range(memory, args[0], args[1])
     } else if number == libc::SYS_mincore as u64 {
         mincore(memory, args)
@@ -3354,9 +3357,16 @@ fn mmap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
         return negative_errno(libc::ENOMEM);
     }
     if let Some(bytes) = file_bytes
-        && memory.write(address, &bytes).is_err()
+        && memory.write_raw(address, &bytes).is_err()
     {
         return negative_errno(libc::EFAULT);
+    }
+    // TODO-HUMAN-REVIEW(PR-130): Review no-access tracking across mmap/munmap.
+    if memory
+        .set_mapped_access(address, length as u64, args[2] == libc::PROT_NONE as u64)
+        .is_err()
+    {
+        return negative_errno(libc::ENOMEM);
     }
 
     if !fixed {
@@ -3380,8 +3390,36 @@ fn munmap(memory: &mut GuestMemory, address: u64, length: u64) -> i64 {
         return negative_errno(libc::EINVAL);
     };
     match memory.zero(address, length) {
-        Ok(()) => 0,
+        // TODO-HUMAN-REVIEW(PR-130): Review explicit unmap tracking.
+        Ok(()) => match memory.set_unmapped(address, length as u64) {
+            Ok(()) => 0,
+            Err(_) => negative_errno(libc::EINVAL),
+        },
         Err(_) => negative_errno(libc::EINVAL),
+    }
+}
+
+// TODO-HUMAN-REVIEW(PR-130): Review partial-fault semantics for tool memory access.
+fn mprotect(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
+    let address = args[0];
+    let requested_length = args[1];
+    let protection = args[2];
+    let allowed_protection = (libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) as u64;
+    if !address.is_multiple_of(PAGE_SIZE) || protection & !allowed_protection != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    if requested_length == 0 {
+        return 0;
+    }
+    let Some(length) = align_up(requested_length, PAGE_SIZE) else {
+        return negative_errno(libc::ENOMEM);
+    };
+    if !range_is_valid(memory, address, length) || !memory.range_is_mapped(address, length) {
+        return negative_errno(libc::ENOMEM);
+    }
+    match memory.set_mapped_access(address, length, protection == libc::PROT_NONE as u64) {
+        Ok(()) => 0,
+        Err(_) => negative_errno(libc::ENOMEM),
     }
 }
 
@@ -3401,6 +3439,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         || flags & !allowed_flags != 0
         || flags & libc::MREMAP_FIXED as u64 != 0 && flags & libc::MREMAP_MAYMOVE as u64 == 0
         || !range_is_valid(memory, old_address, old_length)
+        || !memory.range_is_mapped(old_address, old_length)
     {
         return negative_errno(libc::EINVAL);
     }
@@ -3415,6 +3454,13 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
                 return negative_errno(libc::EFAULT);
             }
         }
+        // TODO-HUMAN-REVIEW(PR-130): Review mremap protection inheritance.
+        if memory
+            .remap_access(old_address, old_length, old_address, new_length)
+            .is_err()
+        {
+            return negative_errno(libc::EFAULT);
+        }
         return old_address as i64;
     }
 
@@ -3428,6 +3474,12 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
                 return negative_errno(libc::ENOMEM);
             };
             if memory.zero(old_end, extension).is_err() {
+                return negative_errno(libc::ENOMEM);
+            }
+            if memory
+                .remap_access(old_address, old_length, old_address, new_length)
+                .is_err()
+            {
                 return negative_errno(libc::ENOMEM);
             }
             state.mmap_next = new_end;
@@ -3465,10 +3517,13 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
         return negative_errno(libc::ENOMEM);
     };
     let mut bytes = vec![0; copy_length];
-    if memory.read(old_address, &mut bytes).is_err()
+    if memory.read_raw(old_address, &mut bytes).is_err()
         || memory.zero(destination, new_length_usize).is_err()
-        || memory.write(destination, &bytes).is_err()
+        || memory.write_raw(destination, &bytes).is_err()
         || memory.zero(old_address, old_length_usize).is_err()
+        || memory
+            .remap_access(old_address, old_length, destination, new_length)
+            .is_err()
     {
         return negative_errno(libc::EFAULT);
     }
@@ -6568,8 +6623,10 @@ mod tests {
         memory.read(moved, &mut payload).unwrap();
         assert_eq!(&payload, b"mremap-data");
         let mut old = [1; 11];
-        memory.read(first, &mut old).unwrap();
-        assert_eq!(old, [0; 11]);
+        assert!(matches!(
+            memory.read(first, &mut old),
+            Err(crate::Error::GuestMemoryAccessDenied { .. })
+        ));
 
         assert_eq!(
             syscall_result(
@@ -6581,8 +6638,10 @@ mod tests {
             moved as i64
         );
         let mut released = [1; 16];
-        memory.read(moved + PAGE_SIZE, &mut released).unwrap();
-        assert_eq!(released, [0; 16]);
+        assert!(matches!(
+            memory.read(moved + PAGE_SIZE, &mut released),
+            Err(crate::Error::GuestMemoryAccessDenied { .. })
+        ));
         assert_eq!(
             syscall_result(
                 &mut memory,
@@ -6598,6 +6657,107 @@ mod tests {
                 ],
             ),
             negative_errno(libc::EINVAL)
+        );
+    }
+
+    #[test]
+    fn mprotect_and_mremap_preserve_no_access_and_unmapped_pages() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let memory_size = BOOT_RESERVED_END + 8 * PAGE_SIZE;
+        let mut memory = GuestMemory::new(0, memory_size as usize).unwrap();
+        state.mmap_next = BOOT_RESERVED_END + PAGE_SIZE;
+        state.mmap_limit = memory_size;
+        let mapping = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_mmap,
+            [
+                0,
+                PAGE_SIZE,
+                libc::PROT_NONE as u64,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+                -1_i32 as u64,
+                0,
+            ],
+        ) as u64;
+
+        assert!(matches!(
+            memory.write(mapping, &[1]),
+            Err(crate::Error::GuestMemoryAccessDenied { .. })
+        ));
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [1, mapping, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_gettimeofday,
+                [mapping, 0, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mprotect,
+                [mapping, PAGE_SIZE, 0x4000_0000, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        assert!(matches!(
+            memory.write(mapping, &[1]),
+            Err(crate::Error::GuestMemoryAccessDenied { .. })
+        ));
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mremap,
+                [mapping, PAGE_SIZE, 2 * PAGE_SIZE, 0, 0, 0],
+            ),
+            mapping as i64
+        );
+        assert!(matches!(
+            memory.write(mapping + PAGE_SIZE, &[1]),
+            Err(crate::Error::GuestMemoryAccessDenied { .. })
+        ));
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munmap,
+                [mapping, 2 * PAGE_SIZE, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mprotect,
+                [mapping, PAGE_SIZE, libc::PROT_READ as u64, 0, 0, 0],
+            ),
+            negative_errno(libc::ENOMEM)
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mprotect,
+                [mapping, 0, libc::PROT_NONE as u64, 0, 0, 0],
+            ),
+            0
         );
     }
 
