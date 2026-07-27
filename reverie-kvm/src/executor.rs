@@ -4789,7 +4789,7 @@ fn arch_prctl(
 // Capability-control prctls use virtual guest state so privilege-dropping
 // launchers can inspect and mutate their persona without touching supervisor
 // credentials.
-// TODO-HUMAN-REVIEW(impl-kvm-ratchet-27): Review deterministic capability prctls.
+// TODO-HUMAN-REVIEW(PR-181): Review deterministic capability prctls.
 fn prctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     match args[0] {
         PR_CAPBSET_READ => {
@@ -4856,7 +4856,7 @@ fn prctl_cap_ambient(state: &mut LoadedStaticElf, operation: u64, capability: u6
     }
 }
 
-// TODO-HUMAN-REVIEW(impl-kvm-ratchet-27): Review the virtual capability ABI and masks.
+// TODO-HUMAN-REVIEW(PR-181): Review the virtual capability ABI and masks.
 fn capget(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if args[0] == 0 {
         return negative_errno(libc::EFAULT);
@@ -4894,7 +4894,7 @@ fn capget(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
     }
 }
 
-// TODO-HUMAN-REVIEW(impl-kvm-ratchet-27): Review deterministic capability mutation.
+// TODO-HUMAN-REVIEW(PR-181): Review deterministic capability mutation.
 fn capset(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if args[0] == 0 || args[1] == 0 {
         return negative_errno(libc::EFAULT);

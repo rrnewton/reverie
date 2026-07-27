@@ -118,7 +118,7 @@ pub(crate) struct LoadedStaticElf {
     pub tid: i32,
     pub ppid: i32,
     pub umask: libc::mode_t,
-    // TODO-HUMAN-REVIEW(impl-kvm-ratchet-27): Review virtual capability lifecycle state.
+    // TODO-HUMAN-REVIEW(PR-181): Review virtual capability lifecycle state.
     pub keep_capabilities: bool,
     pub capability_effective: u64,
     pub capability_permitted: u64,
