@@ -50,7 +50,7 @@ pub(crate) const MAX_GUEST_THREADS: u64 = 160;
 pub(crate) const BOOT_RESERVED_END: u64 =
     THREAD_SYSCALL_AREA_START + THREAD_SYSCALL_AREA_STRIDE * MAX_GUEST_THREADS;
 // AUTONOMOUS-BOT-IMPLEMENTED: Isolate each KVM worker's privilege-transition state.
-// TODO-HUMAN-REVIEW(impl-kvm-ratchet-22): Review the packed per-thread TSS/stack layout.
+// TODO-HUMAN-REVIEW(PR-179): Review the packed per-thread TSS/stack layout.
 const THREAD_TSS_OFFSET: u64 = PAGE_SIZE / 2;
 
 const EXCEPTION_VECTOR_COUNT: usize = 32;
