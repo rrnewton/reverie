@@ -52,7 +52,7 @@ const TOOL_STACK_BOTTOM: u64 = TOOL_STACK_TOP - STACK_CAPACITY as u64;
 type TailResult = Arc<Mutex<Option<std::result::Result<i64, Errno>>>>;
 
 // AUTONOMOUS-BOT-IMPLEMENTED: Keep root syscalls that share worker state in one backend.
-// TODO-HUMAN-REVIEW(impl-kvm-ratchet-17): Review KVM root syscall ownership.
+// TODO-HUMAN-REVIEW(PR-173): Review KVM root syscall ownership.
 fn is_backend_owned_syscall(number: u64) -> bool {
     is_process_syscall(number)
         // KVM guest workers run outside Detcore's scheduler. Root futexes must
