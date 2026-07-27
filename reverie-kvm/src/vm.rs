@@ -40,6 +40,8 @@ use crate::bootstrap::SYSCALL_TRAMPOLINE_ADDRESS;
 use crate::bootstrap::SegmentBase;
 use crate::bootstrap::THREAD_SYSCALL_AREA_START;
 use crate::bootstrap::THREAD_SYSCALL_AREA_STRIDE;
+use crate::bootstrap::THREAD_SYSCALL_FRAME_AREA_START;
+use crate::bootstrap::THREAD_SYSCALL_FRAME_STRIDE;
 use crate::bootstrap::configure_long_mode;
 use crate::bootstrap::configure_long_mode_with_syscall_area;
 use crate::bootstrap::configure_process_syscall_return;
@@ -51,6 +53,7 @@ use crate::elf::load_static_elf;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
 use crate::runtime::SyscallExecutor;
+use crate::syscall::FRAME_SIZE;
 
 /// KVM currently permits userspace exits for this standardized hypercall.
 /// The prototype uses it as a transport opcode and places the syscall frame
@@ -58,7 +61,6 @@ use crate::runtime::SyscallExecutor;
 pub const VMCALL_SYSCALL_TRANSPORT: u64 = 12;
 
 const SYSCALL_FRAME_STRIDE: u64 = 4096;
-const PAGE_SIZE: u64 = 4096;
 const VMCALL: [u8; 3] = [0x0f, 0x01, 0xc1];
 const VMMCALL: [u8; 3] = [0x0f, 0x01, 0xd9];
 const HLT: u8 = 0xf4;
@@ -361,7 +363,8 @@ impl KvmBackend {
             .ok_or(Error::GuestThreadLimitExceeded(child_tid))?;
         let syscall_trampoline_address =
             THREAD_SYSCALL_AREA_START + slot * THREAD_SYSCALL_AREA_STRIDE;
-        let syscall_frame_address = syscall_trampoline_address + PAGE_SIZE;
+        let syscall_frame_address =
+            THREAD_SYSCALL_FRAME_AREA_START + slot * THREAD_SYSCALL_FRAME_STRIDE;
         let mut child = Self::new_with_memory_and_cpuid_policy(memory, cpuid_policy, stdin)?;
         child.syscall_trampoline_address = syscall_trampoline_address;
         child.syscall_frame_address = syscall_frame_address;
@@ -488,7 +491,7 @@ impl KvmBackend {
                 let parent_registers = self.vcpu.get_regs()?;
                 let parent_xsave = self.vcpu.get_xsave()?;
                 let (parent_fs, parent_gs) = executor.segment_bases();
-                let mut parent_syscall_frame = vec![0; PAGE_SIZE as usize];
+                let mut parent_syscall_frame = vec![0; FRAME_SIZE];
                 self.memory
                     .read_raw(self.syscall_frame_address, &mut parent_syscall_frame)?;
 
