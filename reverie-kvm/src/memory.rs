@@ -217,7 +217,7 @@ impl GuestMemory {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED: Reuse deterministic holes in the KVM guest arena.
-    // TODO-HUMAN-REVIEW(impl-kvm-ratchet-18): Review mmap hole-selection semantics.
+    // TODO-HUMAN-REVIEW(PR-176): Review mmap hole-selection semantics.
     pub(crate) fn find_unmapped_user_range(
         &self,
         start: u64,

@@ -118,7 +118,7 @@ struct GuestThreadGroup {
 
 impl GuestThreadGroup {
     // AUTONOMOUS-BOT-IMPLEMENTED: Reuse syscall transports after guest threads exit.
-    // TODO-HUMAN-REVIEW(impl-kvm-ratchet-18): Review KVM transport slot lifecycle.
+    // TODO-HUMAN-REVIEW(PR-176): Review KVM transport slot lifecycle.
     fn reserve_transport_slot(&self, child_tid: i32) -> Result<usize> {
         let mut slots = self
             .transport_slots
