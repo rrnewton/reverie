@@ -41,6 +41,9 @@ typedef struct {
   uint64_t observed_syscalls;
   uint64_t rewritten_syscalls;
   void *runtime_state;
+  // TODO-HUMAN-REVIEW(PR-592): Re-review native thread-admission scratch ABI.
+  uint64_t runtime_started;
+  uintptr_t runtime_start_pc;
 } prototype_counters_t;
 
 typedef struct {
@@ -120,7 +123,14 @@ static void reverie_dbi_emit(const char *buf, size_t len) {
 }
 
 extern void reverie_dbi_runtime_thread_init(prototype_counters_t *counters);
-extern void reverie_dbi_runtime_thread_exit(prototype_counters_t *counters);
+// TODO-HUMAN-REVIEW(PR-592): Re-review native thread-start callback ABI.
+extern int32_t reverie_dbi_runtime_thread_start(
+    void *context, prototype_counters_t *counters, int32_t tid, int32_t pid,
+    uint64_t branches, syscall_invoker_t invoke_syscall,
+    register_reader_t read_registers, reverie_emit_fn_t emit);
+// TODO-HUMAN-REVIEW(PR-592): Re-review native thread-exit callback ABI.
+extern void reverie_dbi_runtime_thread_exit(prototype_counters_t *counters,
+                                            int32_t tid);
 extern uint64_t reverie_dbi_runtime_image_init(void);
 extern void reverie_dbi_runtime_exec_failed(prototype_counters_t *counters,
                                             int32_t pid);
@@ -134,6 +144,12 @@ extern int32_t reverie_dbi_runtime_pre_syscall(
     uint64_t branches, int64_t *result, syscall_invoker_t invoke_syscall,
     register_reader_t read_registers, memory_reader_t read_memory,
     reverie_emit_fn_t emit);
+// TODO-HUMAN-REVIEW(PR-592): Re-review native post-syscall callback ABI.
+extern int32_t reverie_dbi_runtime_post_syscall(
+    void *context, prototype_counters_t *counters, int32_t tid, int32_t pid,
+    int64_t sysnum, const uint64_t *args, uint64_t branches,
+    int64_t original_result, int64_t *result, syscall_invoker_t invoke_syscall,
+    register_reader_t read_registers, reverie_emit_fn_t emit);
 extern const char *reverie_dbi_runtime_name(void);
 extern void reverie_dbi_runtime_totals(uint64_t *branches, uint64_t *syscalls,
                                        uint64_t *rewritten,
@@ -247,6 +263,10 @@ static void mark_compat_syscall_gateway(void) {
   DR_ASSERT(drmgr_set_tls_field(drcontext, compat_gateway_index, (void *)1));
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-592): Re-review first-block admission after DetConfig wiring.
+static void ensure_thread_started(app_pc first_pc);
+
 static bool is_counted_branch(instr_t *instruction) {
   return instr_is_cbr(instruction) || instr_is_ubr(instruction) ||
          instr_is_call(instruction) || instr_is_return(instruction);
@@ -278,6 +298,12 @@ static dr_emit_flags_t instrument_instruction(void *drcontext, void *tag,
                          (void *)mark_compat_syscall_gateway, false, 0);
   }
   if (instr_is_app(instruction) &&
+      drmgr_is_first_instr(drcontext, instruction))
+    dr_insert_clean_call_ex(
+        drcontext, bb, instruction, (void *)ensure_thread_started,
+        DR_CLEANCALL_READS_APP_CONTEXT, 1,
+        OPND_CREATE_INTPTR(instr_get_app_pc(instruction)));
+  if (instr_is_app(instruction) &&
       (ptr_uint_t)instr_get_note(instruction) == cpuid_marker_note) {
     dr_insert_clean_call_ex(
         drcontext, bb, instruction, (void *)emulate_cpuid,
@@ -304,9 +330,14 @@ static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
 
 static int32_t read_registers(uintptr_t context, struct user_regs_struct *out) {
   dr_mcontext_t registers = {sizeof(registers), DR_MC_ALL};
+  prototype_counters_t *counters;
   memset(out, 0, sizeof(*out));
   if (!dr_get_mcontext((void *)context, &registers))
     return 0;
+  counters = (prototype_counters_t *)drmgr_get_tls_field(
+      (void *)context, thread_state_index);
+  if (counters != NULL && counters->runtime_start_pc != 0)
+    registers.xip = (app_pc)counters->runtime_start_pc;
 
   out->r15 = registers.r15;
   out->r14 = registers.r14;
@@ -630,13 +661,46 @@ static bool handle_virtual_clock(uintptr_t context, int sysnum,
   }
 }
 
+static bool has_copied_runtime(void);
+
+// TODO-HUMAN-REVIEW(PR-592): Re-review vDSO dispatch through the external Tool runtime.
+static bool handle_vdso_clock(void *wrapcxt, int sysnum, const uint64_t *args,
+                              int64_t *result) {
+  void *drcontext = (void *)drwrap_get_drcontext(wrapcxt);
+  if (has_copied_runtime())
+    return handle_virtual_clock((uintptr_t)drcontext, sysnum, args, result);
+
+  while (!reverie_dbi_runtime_ready(
+      atomic_load_explicit(&image_generation, memory_order_acquire)))
+    dr_sleep(1);
+
+  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
+      drcontext, thread_state_index);
+  DR_ASSERT(counters != NULL);
+  int32_t action = reverie_dbi_runtime_pre_syscall(
+      drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
+      (int32_t)dr_get_process_id(),
+      atomic_load_explicit(&image_generation, memory_order_acquire),
+      (int64_t)sysnum, args,
+      atomic_load_explicit(&branch_count, memory_order_relaxed), result,
+      invoke_syscall, read_registers, read_memory, reverie_dbi_emit);
+  if (action < 0) {
+    exit_runtime_tree(101);
+    return true;
+  }
+  if (action > 0)
+    return true;
+
+  return handle_virtual_clock((uintptr_t)drcontext, sysnum, args, result);
+}
+
 static void wrap_vdso_clock_gettime(void *wrapcxt, void **user_data) {
   uint64_t args[6] = {
       (uint64_t)(uintptr_t)drwrap_get_arg(wrapcxt, 0),
       (uint64_t)(uintptr_t)drwrap_get_arg(wrapcxt, 1),
   };
   int64_t result = -ENOSYS;
-  DR_ASSERT(handle_virtual_clock(0, SYS_clock_gettime, args, &result));
+  DR_ASSERT(handle_vdso_clock(wrapcxt, SYS_clock_gettime, args, &result));
   DR_ASSERT(drwrap_skip_call(wrapcxt, (void *)(ptr_int_t)result, 0));
 }
 
@@ -646,7 +710,7 @@ static void wrap_vdso_clock_getres(void *wrapcxt, void **user_data) {
       (uint64_t)(uintptr_t)drwrap_get_arg(wrapcxt, 1),
   };
   int64_t result = -ENOSYS;
-  DR_ASSERT(handle_virtual_clock(0, SYS_clock_getres, args, &result));
+  DR_ASSERT(handle_vdso_clock(wrapcxt, SYS_clock_getres, args, &result));
   DR_ASSERT(drwrap_skip_call(wrapcxt, (void *)(ptr_int_t)result, 0));
 }
 
@@ -656,7 +720,7 @@ static void wrap_vdso_gettimeofday(void *wrapcxt, void **user_data) {
       (uint64_t)(uintptr_t)drwrap_get_arg(wrapcxt, 1),
   };
   int64_t result = -ENOSYS;
-  DR_ASSERT(handle_virtual_clock(0, SYS_gettimeofday, args, &result));
+  DR_ASSERT(handle_vdso_clock(wrapcxt, SYS_gettimeofday, args, &result));
   DR_ASSERT(drwrap_skip_call(wrapcxt, (void *)(ptr_int_t)result, 0));
 }
 
@@ -666,7 +730,7 @@ static void wrap_vdso_time(void *wrapcxt, void **user_data) {
       (uint64_t)(uintptr_t)drwrap_get_arg(wrapcxt, 0),
   };
   int64_t result = -ENOSYS;
-  DR_ASSERT(handle_virtual_clock(0, SYS_time, args, &result));
+  DR_ASSERT(handle_vdso_clock(wrapcxt, SYS_time, args, &result));
   DR_ASSERT(drwrap_skip_call(wrapcxt, (void *)(ptr_int_t)result, 0));
 }
 #endif
@@ -862,12 +926,26 @@ static void post_syscall(void *drcontext, int sysnum) {
   if (has_copied_runtime())
     return;
 
-  ptr_int_t syscall_result = (ptr_int_t)dr_syscall_get_result(drcontext);
+  uint64_t args[6];
+  int64_t syscall_result = (int64_t)(ptr_int_t)dr_syscall_get_result(drcontext);
+  int64_t replacement = syscall_result;
+  int i;
+  prototype_counters_t *counters =
+      (prototype_counters_t *)drmgr_get_tls_field(drcontext,
+                                                  thread_state_index);
+  DR_ASSERT(counters != NULL);
+  for (i = 0; i != 6; ++i)
+    args[i] = (uint64_t)dr_syscall_get_param(drcontext, i);
+  if (reverie_dbi_runtime_post_syscall(
+          drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
+          (int32_t)dr_get_process_id(), (int64_t)sysnum, args,
+          atomic_load_explicit(&branch_count, memory_order_relaxed),
+          syscall_result, &replacement, invoke_syscall, read_registers,
+          reverie_dbi_emit)) {
+    dr_syscall_set_result(drcontext, (reg_t)replacement);
+    syscall_result = replacement;
+  }
   if (is_exec_syscall(sysnum)) {
-    prototype_counters_t *counters =
-        (prototype_counters_t *)drmgr_get_tls_field(drcontext,
-                                                    thread_state_index);
-    DR_ASSERT(counters != NULL);
     reverie_dbi_runtime_exec_failed(counters, (int32_t)dr_get_process_id());
     return;
   }
@@ -1003,14 +1081,41 @@ static void thread_init(void *drcontext) {
       (prototype_counters_t *)dr_thread_alloc(drcontext, sizeof(*counters));
   DR_ASSERT(counters != NULL);
   reverie_dbi_runtime_thread_init(counters);
+  counters->runtime_started =
+      dr_get_thread_id(drcontext) == dr_get_process_id() ? 1 : 0;
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-592): Re-review first-block admission after DetConfig wiring.
+static void ensure_thread_started(app_pc first_pc) {
+  void *drcontext = dr_get_current_drcontext();
+  prototype_counters_t *counters =
+      (prototype_counters_t *)drmgr_get_tls_field(drcontext,
+                                                  thread_state_index);
+
+  if (has_copied_runtime() || counters == NULL || counters->runtime_started)
+    return;
+  while (!reverie_dbi_runtime_ready(
+      atomic_load_explicit(&image_generation, memory_order_acquire)))
+    dr_sleep(1);
+  counters->runtime_start_pc = (uintptr_t)first_pc;
+  if (reverie_dbi_runtime_thread_start(
+          drcontext, counters, (int32_t)dr_get_thread_id(drcontext),
+          (int32_t)dr_get_process_id(),
+          atomic_load_explicit(&branch_count, memory_order_relaxed),
+          invoke_syscall, read_registers, reverie_dbi_emit))
+    exit_runtime_tree(101);
+  counters->runtime_start_pc = 0;
+  counters->runtime_started = 1;
 }
 
 static void thread_exit(void *drcontext) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
   if (counters != NULL && !has_copied_runtime()) {
-    reverie_dbi_runtime_thread_exit(counters);
+    reverie_dbi_runtime_thread_exit(counters,
+                                    (int32_t)dr_get_thread_id(drcontext));
     dr_thread_free(drcontext, counters, sizeof(*counters));
   }
 }

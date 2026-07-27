@@ -257,6 +257,12 @@ where
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         let (number, args) = syscall.into_parts();
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-592): Re-review native clone deferral after DetConfig wiring.
+        if matches!(number, Sysno::clone | Sysno::clone3) {
+            self.tail_inject_result.set_allow_original();
+            std::future::pending().await
+        }
         let args = [
             args.arg0 as u64,
             args.arg1 as u64,
@@ -1069,6 +1075,30 @@ pub unsafe extern "C" fn reverie_dbi_runtime_thread_init(counters: *mut Prototyp
     unsafe { counters.write(PrototypeCounters::default()) };
 }
 
+/// Starts a newly created prototype application thread.
+///
+/// The synchronous prototype has no global scheduler, so no admission work is needed.
+///
+/// # Safety
+///
+/// The native client must supply pointers matching this exported ABI.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+// TODO-HUMAN-REVIEW(PR-592): Re-review native thread admission after DetConfig wiring.
+pub unsafe extern "C" fn reverie_dbi_runtime_thread_start(
+    _context: *mut c_void,
+    _counters: *mut PrototypeCounters,
+    _tid: i32,
+    _pid: i32,
+    _branches: u64,
+    _invoke_syscall: SyscallInvoker,
+    _read_registers: RegisterReader,
+    _emit: tools::Emitter,
+) -> i32 {
+    0
+}
+
 /// Releases prototype state for an exiting application thread.
 ///
 /// # Safety
@@ -1076,7 +1106,11 @@ pub unsafe extern "C" fn reverie_dbi_runtime_thread_init(counters: *mut Prototyp
 /// `counters` must be the pointer previously passed to thread initialization.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn reverie_dbi_runtime_thread_exit(_counters: *mut PrototypeCounters) {}
+pub unsafe extern "C" fn reverie_dbi_runtime_thread_exit(
+    _counters: *mut PrototypeCounters,
+    _tid: i32,
+) {
+}
 
 /// Restores prototype state after an exec syscall returns with an error.
 ///
@@ -1215,6 +1249,35 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
     }
 }
 
+/// Completes a syscall deferred to DynamoRIO's native application path.
+///
+/// The synchronous prototype has no split lifecycle state, so it preserves
+/// the kernel result.
+///
+/// # Safety
+///
+/// The native client must supply pointers matching this exported ABI.
+#[allow(clippy::too_many_arguments)]
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+// TODO-HUMAN-REVIEW(PR-592): Re-review post-syscall clone completion after DetConfig wiring.
+pub unsafe extern "C" fn reverie_dbi_runtime_post_syscall(
+    _context: *mut c_void,
+    _counters: *mut PrototypeCounters,
+    _tid: i32,
+    _pid: i32,
+    _sysnum: i64,
+    _args: *const u64,
+    _branches: u64,
+    _original_result: i64,
+    _result: *mut i64,
+    _invoke_syscall: SyscallInvoker,
+    _read_registers: RegisterReader,
+    _emit: tools::Emitter,
+) -> i32 {
+    0
+}
+
 /// Initializes the built-in prototype runtime on a native client thread.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
@@ -1349,6 +1412,32 @@ mod tests {
         let tail_result = TailInjectResult::default();
         assert_eq!(run_ready(future, &tail_result), Some(1234));
         handle.join().unwrap();
+    }
+
+    #[test]
+    fn clone_is_deferred_to_dynamorio_application_path() {
+        let mut counters = PrototypeCounters::default();
+        let syscall = Syscall::from_raw(
+            Sysno::clone,
+            SyscallArgs::new(libc::CLONE_THREAD as usize, 0, 0, 0, 0, 0),
+        );
+        assert_eq!(
+            run_tool_syscall(
+                &PROTOTYPE_TOOL,
+                0,
+                Pid::from_raw(10),
+                Pid::from_raw(10),
+                99,
+                &mut counters,
+                &GLOBAL_STATE,
+                &CONFIG,
+                syscall,
+                invoke,
+                read_regs,
+            )
+            .unwrap(),
+            DbiSyscallOutcome::AllowOriginal
+        );
     }
 
     #[test]
