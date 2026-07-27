@@ -40,14 +40,13 @@ use crate::Result;
 use crate::SyscallRequest;
 use crate::VMCALL_SYSCALL_TRANSPORT;
 use crate::bootstrap::SYSCALL_FRAME_ADDRESS;
-use crate::bootstrap::THREAD_SYSCALL_AREA_START;
+use crate::bootstrap::TOOL_STACK_TOP;
 use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
 use crate::executor::is_process_syscall;
 
 const GUEST_PID: i32 = 1;
 const STACK_CAPACITY: usize = 4096;
-const TOOL_STACK_TOP: u64 = THREAD_SYSCALL_AREA_START;
 const TOOL_STACK_BOTTOM: u64 = TOOL_STACK_TOP - STACK_CAPACITY as u64;
 
 type TailResult = Arc<Mutex<Option<std::result::Result<i64, Errno>>>>;
