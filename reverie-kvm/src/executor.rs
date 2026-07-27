@@ -2034,7 +2034,7 @@ fn open_file(
         return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
     }
     if path == b"/dev/random" || path == b"/dev/urandom" {
-        // TODO-HUMAN-REVIEW(impl-kvm-ratchet-23): Review virtual-TID random-device streams.
+        // TODO-HUMAN-REVIEW(PR-180): Review virtual-TID random-device streams.
         let bytes = deterministic_random_bytes(state.tid, 64 * 1024, 73, 41);
         return open_virtual_file(state, &bytes, flags, guest_cloexec);
     }
@@ -5539,7 +5539,7 @@ fn sched_getattr(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64;
     }
 }
 
-// TODO-HUMAN-REVIEW(impl-kvm-ratchet-23): Review virtual-TID random stream separation.
+// TODO-HUMAN-REVIEW(PR-180): Review virtual-TID random stream separation.
 fn getrandom(memory: &mut GuestMemory, tid: i32, address: u64, length: u64) -> i64 {
     let Ok(length) = usize::try_from(length) else {
         return negative_errno(libc::EINVAL);
