@@ -122,7 +122,7 @@ struct GuestThreadGroup {
     root: Mutex<Option<libc::pthread_t>>,
     workers: Mutex<Vec<libc::pthread_t>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Join cancelled KVM workers before root teardown returns.
-    // TODO-HUMAN-REVIEW(impl-kvm-ratchet-21): Review KVM worker join ordering.
+    // TODO-HUMAN-REVIEW(PR-178): Review KVM worker join ordering.
     worker_handles: Mutex<Vec<std::thread::JoinHandle<()>>>,
     transport_slots: Mutex<Vec<bool>>,
 }
