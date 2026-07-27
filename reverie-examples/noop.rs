@@ -16,7 +16,7 @@ use reverie::Tool;
 use reverie_util::CommonToolArguments;
 
 #[derive(Debug, Default)]
-struct NoopTool;
+pub struct NoopTool;
 
 #[reverie::tool]
 impl Tool for NoopTool {
@@ -28,6 +28,7 @@ impl Tool for NoopTool {
     }
 }
 
+#[allow(dead_code)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = CommonToolArguments::parse();

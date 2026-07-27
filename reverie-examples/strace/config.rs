@@ -9,7 +9,7 @@
 use serde::Deserialize;
 use serde::Serialize;
 
-use crate::filter::Filter;
+use super::filter::Filter;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Config {

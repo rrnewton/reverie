@@ -25,12 +25,19 @@ use serde::Deserialize;
 use serde::Serialize;
 
 #[derive(Debug, Default)]
-struct CounterGlobal {
+pub struct CounterGlobal {
     num_syscalls: AtomicU64,
 }
 
+impl CounterGlobal {
+    /// Returns the total number of intercepted syscalls.
+    pub fn num_syscalls(&self) -> u64 {
+        self.num_syscalls.load(Ordering::SeqCst)
+    }
+}
+
 #[derive(Debug, Default, Clone)]
-struct CounterLocal {}
+pub struct CounterLocal {}
 
 /// The message sent to the global state method.
 /// This contains the syscall number.
@@ -70,6 +77,7 @@ impl Tool for CounterLocal {
     }
 }
 
+#[allow(dead_code)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = CommonToolArguments::parse();
@@ -80,7 +88,7 @@ async fn main() -> Result<(), Error> {
     let (status, global_state) = tracer.wait().await?;
     eprintln!(
         " [counter tool] Total system calls in process tree: {}",
-        AtomicU64::load(&global_state.num_syscalls, Ordering::SeqCst)
+        global_state.num_syscalls()
     );
     drop(log_guard); // Flush logs before exiting.
     status.raise_or_exit()

@@ -20,6 +20,7 @@ use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Pid;
 use reverie::Tool;
+use reverie::syscalls::Errno;
 use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Syscall;
 use reverie_kvm::KvmBackend;
@@ -288,6 +289,79 @@ impl Tool for RecordingTool {
         global.send_rpc(2).await;
         Ok(())
     }
+}
+
+#[derive(Default)]
+struct RestartGlobal {
+    attempts: AtomicUsize,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for RestartGlobal {
+    type Request = ();
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, (): ()) {
+        self.attempts.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Default)]
+struct RestartOnceTool;
+
+#[reverie::tool]
+impl Tool for RestartOnceTool {
+    type GlobalState = RestartGlobal;
+    type ThreadState = bool;
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, reverie::Error> {
+        guest.send_rpc(()).await;
+        if !*guest.thread_state() {
+            *guest.thread_state_mut() = true;
+            return Err(Errno::ERESTARTSYS.into());
+        }
+        guest.tail_inject(syscall).await
+    }
+}
+
+#[test]
+fn tool_erestartsys_redispatches_before_guest_resume() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM restart test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_syscall(
+            ENTRY_POINT,
+            FRAME_ADDRESS,
+            SyscallRequest::new(libc::SYS_write as u64, [1, MESSAGE_ADDRESS, 5, 0, 0, 0]),
+        )
+        .unwrap();
+
+    let executions = Arc::new(AtomicUsize::new(0));
+    let executor_executions = executions.clone();
+    let global = futures::executor::block_on(backend.run_with_tool::<RestartOnceTool, _>(
+        (),
+        move |_: &SyscallRequest, _: &reverie_kvm::GuestMemory| {
+            executor_executions.fetch_add(1, Ordering::SeqCst);
+            5
+        },
+    ))
+    .unwrap();
+
+    assert_eq!(global.attempts.load(Ordering::SeqCst), 2);
+    assert_eq!(executions.load(Ordering::SeqCst), 1);
 }
 
 #[test]

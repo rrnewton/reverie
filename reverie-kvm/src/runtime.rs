@@ -451,29 +451,34 @@ impl KvmBackend {
                         .iter_syscalls()
                         .any(|number| number == syscall.number());
                     let result = if subscribed {
-                        let tail_result = Arc::new(Mutex::new(None));
-                        let outcome = {
-                            let mut guest = KvmGuest::<T>::new(
-                                pid,
-                                memory.clone(),
-                                &auxv,
-                                kvm_registers(registers, request.number()),
-                                &mut thread_state,
-                                &mut executor,
-                                &global_state,
-                                &config,
-                                tail_result.clone(),
-                                stack_checked_out.clone(),
-                            );
-                            drive_handler(
-                                tool.handle_syscall_event(&mut guest, syscall),
-                                tail_result,
-                            )
-                            .await
-                        };
-                        match outcome {
-                            HandlerOutcome::Returned(result) => handler_result_to_raw(result)?,
-                            HandlerOutcome::TailInjected(result) => result_to_raw(result),
+                        loop {
+                            let tail_result = Arc::new(Mutex::new(None));
+                            let outcome = {
+                                let mut guest = KvmGuest::<T>::new(
+                                    pid,
+                                    memory.clone(),
+                                    &auxv,
+                                    kvm_registers(registers, request.number()),
+                                    &mut thread_state,
+                                    &mut executor,
+                                    &global_state,
+                                    &config,
+                                    tail_result.clone(),
+                                    stack_checked_out.clone(),
+                                );
+                                drive_handler(
+                                    tool.handle_syscall_event(&mut guest, syscall),
+                                    tail_result,
+                                )
+                                .await
+                            };
+                            let result = match outcome {
+                                HandlerOutcome::Returned(result) => handler_result_to_raw(result)?,
+                                HandlerOutcome::TailInjected(result) => result_to_raw(result),
+                            };
+                            if !should_restart_tool_syscall(result) {
+                                break result;
+                            }
                         }
                     } else {
                         executor.execute(&request, &memory)
@@ -644,29 +649,34 @@ impl KvmBackend {
                             .iter_syscalls()
                             .any(|number| number == syscall.number());
                     let result = if subscribed {
-                        let tail_result = Arc::new(Mutex::new(None));
-                        let outcome = {
-                            let mut guest = KvmGuest::<T>::new(
-                                pid,
-                                memory.clone(),
-                                &auxv,
-                                kvm_registers(registers, request.number()),
-                                &mut thread_state,
-                                &mut executor,
-                                &global_state,
-                                &config,
-                                tail_result.clone(),
-                                stack_checked_out.clone(),
-                            );
-                            drive_handler(
-                                tool.handle_syscall_event(&mut guest, syscall),
-                                tail_result,
-                            )
-                            .await
-                        };
-                        match outcome {
-                            HandlerOutcome::Returned(result) => handler_result_to_raw(result)?,
-                            HandlerOutcome::TailInjected(result) => result_to_raw(result),
+                        loop {
+                            let tail_result = Arc::new(Mutex::new(None));
+                            let outcome = {
+                                let mut guest = KvmGuest::<T>::new(
+                                    pid,
+                                    memory.clone(),
+                                    &auxv,
+                                    kvm_registers(registers, request.number()),
+                                    &mut thread_state,
+                                    &mut executor,
+                                    &global_state,
+                                    &config,
+                                    tail_result.clone(),
+                                    stack_checked_out.clone(),
+                                );
+                                drive_handler(
+                                    tool.handle_syscall_event(&mut guest, syscall),
+                                    tail_result,
+                                )
+                                .await
+                            };
+                            let result = match outcome {
+                                HandlerOutcome::Returned(result) => handler_result_to_raw(result)?,
+                                HandlerOutcome::TailInjected(result) => result_to_raw(result),
+                            };
+                            if !should_restart_tool_syscall(result) {
+                                break result;
+                            }
                         }
                     } else {
                         executor.execute(&request, &memory)
@@ -733,6 +743,13 @@ fn result_to_raw(result: std::result::Result<i64, Errno>) -> i64 {
         Ok(value) => value,
         Err(error) => -(error.into_raw() as i64),
     }
+}
+
+// TODO-HUMAN-REVIEW(#123): Review KVM emulation of the kernel's no-signal restart path.
+fn should_restart_tool_syscall(result: i64) -> bool {
+    // KVM currently has no asynchronous signal delivery at this boundary, so
+    // ERESTARTSYS follows Linux's automatic-restart branch.
+    result == -(i64::from(Errno::ERESTARTSYS.into_raw()))
 }
 
 fn kvm_registers(registers: kvm_regs, syscall_number: u64) -> libc::user_regs_struct {

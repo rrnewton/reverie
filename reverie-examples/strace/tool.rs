@@ -20,8 +20,8 @@ use reverie::syscalls::Errno;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 
-use crate::config::Config;
-use crate::global_state::GlobalState;
+use super::config::Config;
+use super::global_state::GlobalState;
 
 // Strace has no need for process-level state, so this is a unit struct.
 #[derive(Debug, Default, Clone)]

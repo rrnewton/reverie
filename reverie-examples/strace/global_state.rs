@@ -9,7 +9,7 @@
 use reverie::GlobalTool;
 use reverie::Pid;
 
-use crate::config::Config;
+use super::config::Config;
 
 #[derive(Debug, Default)]
 pub struct GlobalState;

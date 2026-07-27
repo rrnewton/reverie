@@ -50,3 +50,17 @@ This tool is meant to emulate a pathological kernel where:
     returned at a time.
  2. `EINTR` is returned instead of running the real syscall for every other
     read.
+# KVM runner
+
+On x86_64 hosts with access to `/dev/kvm`, the same example `Tool`
+implementations can run over the KVM backend:
+
+```bash
+cargo run -p reverie-examples --bin kvm_examples -- \
+  counter1 -- /bin/echo hello
+```
+
+The runner accepts `counter1`, `counter2`, `strace`, `strace_minimal`, `chaos`,
+and `noop`. It loads the requested Linux ELF into `reverie-kvm` and runs the
+selected tool through `KvmBackend::run_static_elf_with_tool`; guest stdout and
+stderr are forwarded after the run.

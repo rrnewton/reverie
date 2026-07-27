@@ -148,6 +148,7 @@ impl Tool for CounterLocal {
     }
 }
 
+#[allow(dead_code)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = CommonToolArguments::parse();

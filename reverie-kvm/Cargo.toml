@@ -16,3 +16,4 @@ thiserror = "2.0.18"
 
 [dev-dependencies]
 futures = { version = "0.3.31", features = ["async-await"] }
+reverie-examples = { version = "0.1.0", path = "../reverie-examples" }

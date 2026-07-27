@@ -15,7 +15,7 @@ use reverie::syscalls::Syscall;
 use reverie_util::CommonToolArguments;
 
 #[derive(Default)]
-struct StraceTool {}
+pub struct StraceTool {}
 
 #[reverie::tool]
 impl Tool for StraceTool {
@@ -36,6 +36,7 @@ impl Tool for StraceTool {
     }
 }
 
+#[allow(dead_code)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = CommonToolArguments::parse();

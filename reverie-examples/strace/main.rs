@@ -6,10 +6,10 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-mod config;
-mod filter;
-mod global_state;
-mod tool;
+pub mod config;
+pub mod filter;
+pub mod global_state;
+pub mod tool;
 
 use clap::Parser;
 use config::Config;
@@ -31,6 +31,7 @@ struct Opts {
     trace: Vec<Filter>,
 }
 
+#[allow(dead_code)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = Opts::parse();
