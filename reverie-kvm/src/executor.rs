@@ -3439,7 +3439,7 @@ fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
-// TODO-HUMAN-REVIEW(impl-kvm-ratchet-29): Review fixed host-backed metadata timestamps.
+// TODO-HUMAN-REVIEW(PR-183): Review fixed host-backed metadata timestamps.
 fn sanitize_stat_timestamps(stat: &mut libc::stat) {
     stat.st_atime = DETERMINISTIC_METADATA_SECONDS;
     stat.st_atime_nsec = 0;
