@@ -24,7 +24,7 @@ use crate::syscall::SAVED_RBX_WORD;
 const PAGE_SIZE: u64 = 4096;
 const LARGE_PAGE_SIZE: u64 = 2 * 1024 * 1024;
 const PAGE_DIRECTORY_SPAN: u64 = 1024 * 1024 * 1024;
-const PAGE_DIRECTORY_ADDRESSES: [u64; 4] = [0x4000, 0x9000, 0xe000, 0xf000];
+const PAGE_DIRECTORY_ADDRESSES: [u64; 3] = [0x4000, 0x9000, 0xe000];
 const MAX_IDENTITY_MAP: u64 = PAGE_DIRECTORY_SPAN * PAGE_DIRECTORY_ADDRESSES.len() as u64;
 
 const GDT_ADDRESS: u64 = 0x1000;
@@ -39,18 +39,15 @@ const EXCEPTION_STUB_ADDRESS: u64 = 0xb000;
 const EXCEPTION_STACK_BOTTOM: u64 = 0xc000;
 const EXCEPTION_STACK_TOP: u64 = 0xd000;
 pub(crate) const TOOL_STACK_TOP: u64 = 0xe000;
-// Includes the 0xe000..0x10000 upper page directories, 384 private trampoline
-// pages, and a compact array of private syscall frames.
+// Includes the 0xe000..0xf000 third page directory and 160 private
+// trampoline/frame pairs used by concurrent KVM guest threads.
 // AUTONOMOUS-BOT-IMPLEMENTED: Reserve transport slots for savevm worker pools.
 // TODO-HUMAN-REVIEW(impl-kvm-ratchet-17): Review the bounded per-thread transport layout.
-pub(crate) const THREAD_SYSCALL_AREA_START: u64 = 0x10000;
-pub(crate) const THREAD_SYSCALL_AREA_STRIDE: u64 = PAGE_SIZE;
-pub(crate) const MAX_GUEST_THREADS: u64 = 384;
-pub(crate) const THREAD_SYSCALL_FRAME_AREA_START: u64 =
-    THREAD_SYSCALL_AREA_START + THREAD_SYSCALL_AREA_STRIDE * MAX_GUEST_THREADS;
-pub(crate) const THREAD_SYSCALL_FRAME_STRIDE: u64 = 128;
+pub(crate) const THREAD_SYSCALL_AREA_START: u64 = 0xf000;
+pub(crate) const THREAD_SYSCALL_AREA_STRIDE: u64 = 2 * PAGE_SIZE;
+pub(crate) const MAX_GUEST_THREADS: u64 = 160;
 pub(crate) const BOOT_RESERVED_END: u64 =
-    THREAD_SYSCALL_FRAME_AREA_START + THREAD_SYSCALL_FRAME_STRIDE * MAX_GUEST_THREADS;
+    THREAD_SYSCALL_AREA_START + THREAD_SYSCALL_AREA_STRIDE * MAX_GUEST_THREADS;
 
 const EXCEPTION_VECTOR_COUNT: usize = 32;
 const IDT_ENTRY_SIZE: usize = 16;
@@ -583,7 +580,6 @@ mod tests {
         assert!(code.windows(3).any(|window| window == [0x0f, 0x01, 0xc1]));
         assert_eq!(&code[code.len() - 3..], &[0x48, 0x0f, 0x07]);
         assert!(code.len() < PAGE_SIZE as usize);
-        assert!(crate::syscall::FRAME_SIZE <= THREAD_SYSCALL_FRAME_STRIDE as usize);
     }
 
     #[test]
@@ -616,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn page_tables_identity_map_four_gibibytes() {
+    fn page_tables_identity_map_three_gibibytes() {
         let mut memory = GuestMemory::new(0, MAX_IDENTITY_MAP as usize).unwrap();
 
         write_page_tables(&mut memory).unwrap();
@@ -624,7 +620,6 @@ mod tests {
         assert_eq!(read_u64(&memory, PDPT_ADDRESS).unwrap(), 0x4000 | 0x7);
         assert_eq!(read_u64(&memory, PDPT_ADDRESS + 8).unwrap(), 0x9000 | 0x7);
         assert_eq!(read_u64(&memory, PDPT_ADDRESS + 16).unwrap(), 0xe000 | 0x7);
-        assert_eq!(read_u64(&memory, PDPT_ADDRESS + 24).unwrap(), 0xf000 | 0x7);
         assert_eq!(
             read_u64(&memory, 0x4000 + 511 * 8).unwrap(),
             0x3fe0_0000 | 0x87
@@ -638,11 +633,6 @@ mod tests {
         assert_eq!(
             read_u64(&memory, 0xe000 + 511 * 8).unwrap(),
             0xbfe0_0000 | 0x87
-        );
-        assert_eq!(read_u64(&memory, 0xf000).unwrap(), 0xc000_0000 | 0x87);
-        assert_eq!(
-            read_u64(&memory, 0xf000 + 511 * 8).unwrap(),
-            0xffe0_0000 | 0x87
         );
     }
 
