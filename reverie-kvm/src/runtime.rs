@@ -191,8 +191,8 @@ impl GuestSyscallExecutor for StaticElfSyscallExecutor<'_> {
                     Ok(())
                 }
                 _ => Err(Error::UnexpectedVcpuExit(
-                        "fork/clone injection requires a guest syscall boundary".to_owned(),
-                    )),
+                    "fork/clone injection requires a guest syscall boundary".to_owned(),
+                )),
             },
         })();
         let expose_result = expose_tool_scratch(&self.memory);
