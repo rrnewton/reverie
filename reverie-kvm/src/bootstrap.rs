@@ -42,7 +42,7 @@ pub(crate) const TOOL_STACK_TOP: u64 = 0xe000;
 // Includes the 0xe000..0xf000 third page directory and 160 private
 // trampoline/frame pairs used by concurrent KVM guest threads.
 // AUTONOMOUS-BOT-IMPLEMENTED: Reserve transport slots for savevm worker pools.
-// TODO-HUMAN-REVIEW(impl-kvm-ratchet-17): Review the bounded per-thread transport layout.
+// TODO-HUMAN-REVIEW(PR-173): Review the bounded per-thread transport layout.
 pub(crate) const THREAD_SYSCALL_AREA_START: u64 = 0xf000;
 pub(crate) const THREAD_SYSCALL_AREA_STRIDE: u64 = 2 * PAGE_SIZE;
 pub(crate) const MAX_GUEST_THREADS: u64 = 160;
@@ -380,7 +380,7 @@ fn write_page_tables(memory: &mut GuestMemory) -> Result<()> {
     write_u64(memory, PML4_ADDRESS, PDPT_ADDRESS | 0x7)?;
 
     // AUTONOMOUS-BOT-IMPLEMENTED: Map a second GiB for large KVM workloads.
-    // TODO-HUMAN-REVIEW(impl-kvm-ratchet-17): Review the two-directory identity map.
+    // TODO-HUMAN-REVIEW(PR-173): Review the three-directory identity map.
     let mapped_large_pages = memory.guest_end().div_ceil(LARGE_PAGE_SIZE);
     let entries_per_directory = PAGE_SIZE / std::mem::size_of::<u64>() as u64;
     for (directory_index, directory_address) in PAGE_DIRECTORY_ADDRESSES.into_iter().enumerate() {
