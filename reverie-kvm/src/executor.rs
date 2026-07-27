@@ -5068,11 +5068,14 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     }
 
     let old_end = old_address + old_length;
-    if flags & libc::MREMAP_FIXED as u64 == 0 && old_end == state.mmap_next {
+    if flags & libc::MREMAP_FIXED as u64 == 0 {
         let Some(new_end) = old_address.checked_add(new_length) else {
             return negative_errno(libc::ENOMEM);
         };
-        if new_end <= state.mmap_limit {
+        let extension_length = new_length - old_length;
+        if new_end <= state.mmap_limit
+            && memory.find_unmapped_user_range(old_end, new_end, extension_length) == Some(old_end)
+        {
             let Ok(extension) = usize::try_from(new_length - old_length) else {
                 return negative_errno(libc::ENOMEM);
             };
@@ -5085,7 +5088,7 @@ fn mremap(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
             {
                 return negative_errno(libc::ENOMEM);
             }
-            state.mmap_next = new_end;
+            state.mmap_next = state.mmap_next.max(new_end);
             return old_address as i64;
         }
     }
@@ -10026,6 +10029,68 @@ mod tests {
             syscall_result(&mut memory, &mut state, libc::SYS_mmap, mmap_args),
             negative_errno(libc::ENOMEM)
         );
+    }
+
+    #[test]
+    fn mremap_grows_a_reused_hole_into_adjacent_space() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let memory_size = BOOT_RESERVED_END + 8 * PAGE_SIZE;
+        let mut memory = GuestMemory::new(0, memory_size as usize).unwrap();
+        state.mmap_base = BOOT_RESERVED_END + PAGE_SIZE;
+        state.mmap_next = state.mmap_base;
+        state.mmap_limit = state.mmap_base + 3 * PAGE_SIZE;
+        let mmap_args = [
+            0,
+            PAGE_SIZE,
+            (libc::PROT_READ | libc::PROT_WRITE) as u64,
+            (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS) as u64,
+            -1_i32 as u64,
+            0,
+        ];
+
+        let first = syscall_result(&mut memory, &mut state, libc::SYS_mmap, mmap_args) as u64;
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_mmap, mmap_args),
+            (first + PAGE_SIZE) as i64
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_mmap, mmap_args),
+            (first + 2 * PAGE_SIZE) as i64
+        );
+        assert_eq!(state.mmap_next, state.mmap_limit);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_munmap,
+                [first, 2 * PAGE_SIZE, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(&mut memory, &mut state, libc::SYS_mmap, mmap_args),
+            first as i64
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_mremap,
+                [
+                    first,
+                    PAGE_SIZE,
+                    2 * PAGE_SIZE,
+                    libc::MREMAP_MAYMOVE as u64,
+                    0,
+                    0,
+                ],
+            ),
+            first as i64
+        );
+        assert_eq!(state.mmap_next, state.mmap_limit);
+        assert!(memory.user_range_is_mapped(first, 2 * PAGE_SIZE));
     }
 
     #[test]
