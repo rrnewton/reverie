@@ -50,7 +50,7 @@ pub enum CounterTool {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review the SaBRe production chaos option surface.
+// TODO-HUMAN-REVIEW(PR-194): Review the SaBRe production chaos option surface.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ChaosOptions {
     pub skip: Option<u64>,
@@ -120,7 +120,7 @@ pub async fn run_counter(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review exact chaos hosting through the SaBRe coordinator.
+// TODO-HUMAN-REVIEW(PR-194): Review exact chaos hosting through the SaBRe coordinator.
 pub async fn run_chaos(
     command: Command,
     sabre: Option<PathBuf>,
@@ -144,7 +144,7 @@ pub async fn run_chaos(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review exact Chrome Trace hosting and artifact publication.
+// TODO-HUMAN-REVIEW(PR-194): Review exact Chrome Trace hosting and artifact publication.
 pub async fn run_chrome_trace(
     command: Command,
     sabre: Option<PathBuf>,
@@ -161,7 +161,7 @@ pub async fn run_chrome_trace(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review exact chunky-print hosting and final flush.
+// TODO-HUMAN-REVIEW(PR-194): Review exact chunky-print hosting and final flush.
 pub async fn run_chunky_print(
     command: Command,
     sabre: Option<PathBuf>,

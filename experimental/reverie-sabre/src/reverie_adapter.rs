@@ -210,7 +210,7 @@ where
     /// Delivers the shared tool's post-exec callback after the loader has
     /// installed the rewritten guest image.
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-TBD): Review local post-exec lifecycle delivery.
+    // TODO-HUMAN-REVIEW(PR-194): Review local post-exec lifecycle delivery.
     pub fn handle_post_exec(&self) {
         let tid = current_tid();
         let state = self.thread_state(tid);
@@ -247,7 +247,7 @@ where
     /// Delivers the consuming process-exit callback using a snapshot of the
     /// process-local tool state.
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-TBD): Review local process-exit lifecycle delivery.
+    // TODO-HUMAN-REVIEW(PR-194): Review local process-exit lifecycle delivery.
     pub fn handle_process_exit(&self, exit_status: ExitStatus)
     where
         T: Clone,
@@ -536,7 +536,7 @@ where
 
     /// Delivers the shared tool's post-exec callback through the coordinator.
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-TBD): Review remote post-exec lifecycle delivery.
+    // TODO-HUMAN-REVIEW(PR-194): Review remote post-exec lifecycle delivery.
     pub fn handle_post_exec(&self) {
         let tid = current_tid();
         let state = match self.thread_state(tid) {
@@ -577,7 +577,7 @@ where
     /// Delivers the consuming process-exit callback over a final coordinator
     /// connection after thread-local RPC connections have begun shutting down.
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-TBD): Review remote process-exit lifecycle delivery.
+    // TODO-HUMAN-REVIEW(PR-194): Review remote process-exit lifecycle delivery.
     pub fn handle_process_exit(&self, exit_status: ExitStatus)
     where
         T: Clone,

@@ -123,7 +123,7 @@ where
 static POST_LOAD_PENDING: AtomicBool = AtomicBool::new(false);
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review the SaBRe loader-to-tool post-load bridge.
+// TODO-HUMAN-REVIEW(PR-194): Review the SaBRe loader-to-tool post-load bridge.
 pub extern "C" fn handle_post_load(_is_static: bool) {
     POST_LOAD_PENDING.store(true, Ordering::Release);
 }
