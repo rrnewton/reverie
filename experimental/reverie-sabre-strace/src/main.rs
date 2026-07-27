@@ -74,7 +74,10 @@ impl Args {
         let counter = match self.tool {
             ToolKind::Counter1 => Some(CounterTool::Counter1),
             ToolKind::Counter2 => Some(CounterTool::Counter2),
-            ToolKind::Strace | ToolKind::Noop => None,
+            ToolKind::Counter1Exact
+            | ToolKind::Counter2Exact
+            | ToolKind::Strace
+            | ToolKind::Noop => None,
         };
         if let Some(counter) = counter {
             return reverie_sabre_strace_plugin::run_counter(
