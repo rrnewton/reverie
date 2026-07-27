@@ -1035,7 +1035,7 @@ impl KvmBackend {
                 configure_process_syscall_return(
                     &memory,
                     &self.vcpu,
-                    self.syscall_frame_address,
+                    SYSCALL_FRAME_ADDRESS,
                     result,
                     None,
                 )?;
