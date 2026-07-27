@@ -117,7 +117,7 @@ fn set_guest_interrupt_signal_mask(how: libc::c_int) -> Result<bool> {
 struct GuestThreadGroup {
     cancelled: AtomicBool,
     // AUTONOMOUS-BOT-IMPLEMENTED: Propagate worker exit_group to the root vCPU.
-    // TODO-HUMAN-REVIEW(impl-kvm-ratchet-20): Review KVM thread-group exit ordering.
+    // TODO-HUMAN-REVIEW(PR-177): Review KVM thread-group exit ordering.
     exit_code: Mutex<Option<i32>>,
     root: Mutex<Option<libc::pthread_t>>,
     workers: Mutex<Vec<libc::pthread_t>>,
