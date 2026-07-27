@@ -39,7 +39,7 @@ const EXCEPTION_STACK_BOTTOM: u64 = 0xc000;
 const EXCEPTION_STACK_TOP: u64 = 0xd000;
 // Includes the 0xd000..0xe000 Tool injection scratch page and 64 private
 // trampoline/frame pairs used by concurrent KVM guest threads.
-// TODO-HUMAN-REVIEW(PR-pending): Review the bounded per-thread syscall transport layout.
+// TODO-HUMAN-REVIEW(PR-172): Review the bounded per-thread syscall transport layout.
 pub(crate) const THREAD_SYSCALL_AREA_START: u64 = 0xe000;
 pub(crate) const THREAD_SYSCALL_AREA_STRIDE: u64 = 2 * PAGE_SIZE;
 pub(crate) const MAX_GUEST_THREADS: u64 = 64;
@@ -103,7 +103,7 @@ pub(crate) fn configure_long_mode(
 }
 
 #[allow(clippy::too_many_arguments)]
-// TODO-HUMAN-REVIEW(PR-pending): Review per-vCPU syscall transport initialization.
+// TODO-HUMAN-REVIEW(PR-172): Review per-vCPU syscall transport initialization.
 pub(crate) fn configure_long_mode_with_syscall_area(
     memory: &mut GuestMemory,
     vcpu: &VcpuFd,
@@ -213,7 +213,7 @@ pub(crate) fn set_user_segment_base(
     Ok(())
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review syscall-frame selection for concurrent vCPUs.
+// TODO-HUMAN-REVIEW(PR-172): Review syscall-frame selection for concurrent vCPUs.
 pub(crate) fn configure_process_syscall_return(
     memory: &GuestMemory,
     vcpu: &VcpuFd,
@@ -266,7 +266,7 @@ pub(crate) fn configure_process_syscall_return(
     Ok(())
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review per-thread trampoline park/unpark updates.
+// TODO-HUMAN-REVIEW(PR-172): Review per-thread trampoline park/unpark updates.
 pub(crate) fn set_syscall_return_park(
     memory: &mut GuestMemory,
     hypercall_instruction: [u8; 3],

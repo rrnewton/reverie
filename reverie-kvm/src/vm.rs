@@ -108,7 +108,7 @@ fn unblock_worker_interrupt_signal() {
 }
 
 #[derive(Default)]
-// TODO-HUMAN-REVIEW(PR-pending): Review process-wide KVM worker cancellation state.
+// TODO-HUMAN-REVIEW(PR-172): Review process-wide KVM worker cancellation state.
 struct GuestThreadGroup {
     cancelled: AtomicBool,
     workers: Mutex<Vec<libc::pthread_t>>,
@@ -345,7 +345,7 @@ impl KvmBackend {
         Ok(child)
     }
 
-    // TODO-HUMAN-REVIEW(PR-pending): Review independent vCPU creation from clone3 state.
+    // TODO-HUMAN-REVIEW(PR-172): Review independent vCPU creation from clone3 state.
     fn from_thread_state(
         memory: GuestMemory,
         registers: kvm_regs,
@@ -476,7 +476,7 @@ impl KvmBackend {
                     None,
                 )?;
             }
-            // TODO-HUMAN-REVIEW(PR-pending): Review concurrent CLONE_THREAD lifecycle semantics.
+            // TODO-HUMAN-REVIEW(PR-172): Review concurrent CLONE_THREAD lifecycle semantics.
             ProcessAction::Thread {
                 child_tid,
                 child_stack,
@@ -695,7 +695,7 @@ impl KvmBackend {
         }
     }
 
-    // TODO-HUMAN-REVIEW(PR-pending): Review signal-driven KVM worker cancellation.
+    // TODO-HUMAN-REVIEW(PR-172): Review signal-driven KVM worker cancellation.
     pub(crate) fn cancel_guest_threads(&self) {
         self.thread_group.cancelled.store(true, Ordering::Release);
         let workers = self
@@ -813,7 +813,7 @@ fn write_tid_best_effort(memory: &mut GuestMemory, address: Option<u64>, tid: i3
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review CHILD_CLEARTID store and shared futex wake ordering.
+// TODO-HUMAN-REVIEW(PR-172): Review CHILD_CLEARTID store and shared futex wake ordering.
 fn clear_tid_and_wake(memory: &mut GuestMemory, address: Option<u64>) {
     let Some(address) = address else {
         return;

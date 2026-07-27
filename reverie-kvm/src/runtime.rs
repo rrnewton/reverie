@@ -656,7 +656,7 @@ impl KvmBackend {
                     let registers = self.vcpu.get_regs()?;
                     let request = SyscallRequest::read_from(&memory, frame_address)?;
                     let syscall = request.into_syscall()?;
-                    // TODO-HUMAN-REVIEW(PR-pending): Review concurrent KVM root
+                    // TODO-HUMAN-REVIEW(PR-172): Review concurrent KVM root
                     // syscall routing that bypasses Detcore tool callbacks.
                     let backend_owned = is_process_syscall(request.number())
                         // KVM guest workers run outside Detcore's scheduler. Root

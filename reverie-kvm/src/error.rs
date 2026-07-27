@@ -99,7 +99,7 @@ pub enum Error {
     UnexpectedHypercall(u64),
 
     /// The bounded bootstrap area cannot allocate another thread transport.
-    // TODO-HUMAN-REVIEW(PR-pending): Review the fixed KVM guest-thread limit.
+    // TODO-HUMAN-REVIEW(PR-172): Review the fixed KVM guest-thread limit.
     #[error("KVM guest thread limit exceeded by tid {0}")]
     GuestThreadLimitExceeded(i32),
 

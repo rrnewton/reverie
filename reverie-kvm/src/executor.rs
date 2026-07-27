@@ -140,7 +140,7 @@ struct CapturedOutputInner {
 }
 
 #[derive(Clone, Default)]
-// TODO-HUMAN-REVIEW(PR-pending): Review cross-thread captured-output ownership.
+// TODO-HUMAN-REVIEW(PR-172): Review cross-thread captured-output ownership.
 pub(crate) struct CapturedOutput {
     inner: Arc<Mutex<CapturedOutputInner>>,
 }
@@ -625,7 +625,7 @@ fn execute_basic_syscall_with_output(
         futex(memory, args)
     } else if number == libc::SYS_rseq as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-pending): Review deterministic rseq feature refusal.
+        // TODO-HUMAN-REVIEW(PR-172): Review deterministic rseq feature refusal.
         negative_errno(libc::ENOSYS)
     } else if number == libc::SYS_set_robust_list as u64 {
         0
@@ -636,7 +636,7 @@ fn execute_basic_syscall_with_output(
     continue_with(result)
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review host-backed futex address and timeout translation.
+// TODO-HUMAN-REVIEW(PR-172): Review host-backed futex address and timeout translation.
 fn futex(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     const FUTEX_CMD_MASK: libc::c_int = !(128 | 256);
     const FUTEX_WAIT: libc::c_int = 0;
@@ -1018,7 +1018,7 @@ impl ElfExecutor {
         })
     }
 
-    // TODO-HUMAN-REVIEW(PR-pending): Review shared address-space and output ownership.
+    // TODO-HUMAN-REVIEW(PR-172): Review shared address-space and output ownership.
     pub(crate) fn thread_child(&self, child_tid: i32) -> crate::Result<Self> {
         let mut state = self.state.try_clone_for_fork(child_tid)?;
         state.pid = self.state.pid;
@@ -2637,7 +2637,7 @@ fn poll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
     poll_with_timeout(memory, state, args, 0)
 }
 
-// TODO-HUMAN-REVIEW(PR-pending): Review host-blocking KVM ppoll timeout and signal-mask semantics.
+// TODO-HUMAN-REVIEW(PR-172): Review host-blocking KVM ppoll timeout and signal-mask semantics.
 fn ppoll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if args[3] != 0 {
         if args[4] != KERNEL_SIGSET_SIZE as u64 {
