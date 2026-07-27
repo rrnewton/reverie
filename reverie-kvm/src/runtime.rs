@@ -8,12 +8,15 @@
 
 use std::future::Future;
 use std::future::poll_fn;
+use std::pin::Pin;
 use std::pin::pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
+use std::task::Context;
 use std::task::Poll;
+use std::task::Waker;
 
 use kvm_bindings::kvm_regs;
 use kvm_ioctls::VcpuExit;
@@ -25,6 +28,7 @@ use reverie::Guest;
 use reverie::Never;
 use reverie::Pid;
 use reverie::Stack;
+use reverie::Subscription;
 use reverie::TimerSchedule;
 use reverie::Tool;
 use reverie::syscalls::Addr;
@@ -43,13 +47,15 @@ use crate::bootstrap::BOOT_RESERVED_END;
 use crate::bootstrap::SYSCALL_FRAME_ADDRESS;
 use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
-use crate::executor::is_process_syscall;
+use crate::vm::PreparedProcessAction;
 
 const GUEST_PID: i32 = 1;
 const STACK_CAPACITY: usize = 4096;
 const TOOL_STACK_TOP: u64 = BOOT_RESERVED_END;
 
 type TailResult = Arc<Mutex<Option<std::result::Result<i64, Errno>>>>;
+type ToolProcessResult = Result<(i32, Vec<u8>, Vec<u8>)>;
+type ToolProcessFuture<'a> = Pin<Box<dyn Future<Output = ToolProcessResult> + 'a>>;
 
 /// Executes a syscall on behalf of a KVM guest.
 ///
@@ -88,28 +94,89 @@ impl<G: GlobalTool> GlobalRPC<G> for KvmGlobal<'_, G> {
     }
 }
 
+#[derive(Default)]
+struct ForkCompletion {
+    complete: AtomicBool,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl ForkCompletion {
+    fn complete(&self) {
+        self.complete.store(true, Ordering::Release);
+        if let Some(waker) = self
+            .waker
+            .lock()
+            .expect("KVM fork completion waker lock poisoned")
+            .take()
+        {
+            waker.wake();
+        }
+    }
+
+    async fn wait(&self) {
+        poll_fn(|context| {
+            if self.complete.load(Ordering::Acquire) {
+                return Poll::Ready(());
+            }
+            *self
+                .waker
+                .lock()
+                .expect("KVM fork completion waker lock poisoned") = Some(context.waker().clone());
+            if self.complete.load(Ordering::Acquire) {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await
+    }
+}
+
+struct PreparedToolChild<T: Tool> {
+    pid: Pid,
+    tool: T,
+    thread_state: T::ThreadState,
+}
+
 struct KvmGuest<'a, T: Tool> {
     pid: Pid,
+    // TODO-HUMAN-REVIEW(#92): Review fork-child parent identity exposure.
+    ppid: Option<Pid>,
     memory: GuestMemory,
     auxv: &'a [(libc::c_ulong, libc::c_ulong)],
     registers: libc::user_regs_struct,
-    thread_state: &'a mut T::ThreadState,
-    executor: &'a mut dyn SyscallExecutor,
+    thread_state: *mut T::ThreadState,
+    executor: *mut (dyn SyscallExecutor + 'a),
+    pending_child: *mut Option<PreparedToolChild<T>>,
+    fork_completion: Arc<ForkCompletion>,
     global_state: &'a T::GlobalState,
     config: &'a <T::GlobalState as GlobalTool>::Config,
     tail_result: TailResult,
     stack_checked_out: Arc<AtomicBool>,
 }
 
+// SAFETY: `KvmGuest` is only constructed and polled by the single-vCPU runtime.
+// The pointed-to values remain alive for the callback and are never accessed
+// concurrently; raw pointers only permit serialized child setup while a parent
+// callback is suspended.
+unsafe impl<T: Tool> Send for KvmGuest<'_, T> {}
+
+// SAFETY: mutable pointer dereferences occur on the one runtime task. Shared
+// access only reaches immutable Tool state or synchronized GlobalTool state.
+unsafe impl<T: Tool> Sync for KvmGuest<'_, T> {}
+
 impl<'a, T: Tool> KvmGuest<'a, T> {
     #[allow(clippy::too_many_arguments)]
     fn new(
         pid: Pid,
+        ppid: Option<Pid>,
         memory: GuestMemory,
         auxv: &'a [(libc::c_ulong, libc::c_ulong)],
         registers: libc::user_regs_struct,
-        thread_state: &'a mut T::ThreadState,
-        executor: &'a mut dyn SyscallExecutor,
+        thread_state: &mut T::ThreadState,
+        executor: &mut (dyn SyscallExecutor + 'a),
+        pending_child: &mut Option<PreparedToolChild<T>>,
+        fork_completion: Arc<ForkCompletion>,
         global_state: &'a T::GlobalState,
         config: &'a <T::GlobalState as GlobalTool>::Config,
         tail_result: TailResult,
@@ -117,11 +184,14 @@ impl<'a, T: Tool> KvmGuest<'a, T> {
     ) -> Self {
         Self {
             pid,
+            ppid,
             memory,
             auxv,
             registers,
-            thread_state,
-            executor,
+            thread_state: std::ptr::from_mut(thread_state),
+            executor: std::ptr::from_mut(executor),
+            pending_child: std::ptr::from_mut(pending_child),
+            fork_completion,
             global_state,
             config,
             tail_result,
@@ -158,11 +228,15 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     fn ppid(&self) -> Option<Pid> {
-        None
+        self.ppid
     }
 
     fn memory(&self) -> Self::Memory {
         self.memory.clone()
+    }
+
+    fn fork_blocks_parent_until_child_exit(&self) -> bool {
+        true
     }
 
     fn auxv(&self) -> Auxv {
@@ -170,11 +244,23 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
     }
 
     fn thread_state_mut(&mut self) -> &mut T::ThreadState {
-        self.thread_state
+        // SAFETY: the KVM runtime is single-threaded and never polls a Tool
+        // future while it accesses the same state to advance a fork lifecycle.
+        unsafe { &mut *self.thread_state }
+    }
+
+    async fn wait_for_fork_child_exit(
+        &mut self,
+        _child: Pid,
+    ) -> std::result::Result<(), reverie::Error> {
+        self.fork_completion.wait().await;
+        Ok(())
     }
 
     fn thread_state(&self) -> &T::ThreadState {
-        self.thread_state
+        // SAFETY: see `thread_state_mut`; cooperative parent/child polling is
+        // serialized, so no mutable access overlaps this shared reference.
+        unsafe { &*self.thread_state }
     }
 
     async fn regs(&mut self) -> libc::user_regs_struct {
@@ -189,7 +275,51 @@ impl<T: Tool> Guest<T> for KvmGuest<'_, T> {
 
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> std::result::Result<i64, Errno> {
         let request = SyscallRequest::from_syscall(syscall);
-        raw_to_result(self.executor.execute(&request, &self.memory))
+        // SAFETY: executor access is serialized with Tool future polling by the
+        // single-vCPU runtime; the pointer remains valid for this callback.
+        let result = unsafe { (&mut *self.executor).execute(&request, &self.memory) };
+        let clone_family = matches!(
+            request.number(),
+            number if number == libc::SYS_clone as u64
+                || number == libc::SYS_clone3 as u64
+                || number == libc::SYS_fork as u64
+                || number == libc::SYS_vfork as u64
+        );
+        if result > 0 && clone_family {
+            // TODO-HUMAN-REVIEW(#92): Review child Tool-state initialization at
+            // clone injection, while the parent's clone metadata is still live.
+            // SAFETY: this callback has exclusive serialized access to both
+            // pointers for the lifetime of the parent Tool handler.
+            let pending_child = unsafe { &mut *self.pending_child };
+            if pending_child.is_none() {
+                let child_pid = Pid::from_raw(result as i32);
+                let child_tool = T::new(child_pid, self.config);
+                let parent_state = unsafe { &*self.thread_state };
+                let child_state =
+                    child_tool.init_thread_state(child_pid, Some((self.pid, parent_state)));
+                *pending_child = Some(PreparedToolChild {
+                    pid: child_pid,
+                    tool: child_tool,
+                    thread_state: child_state,
+                });
+            }
+        }
+        let successful_exec = result == 0
+            && matches!(
+                request.number(),
+                number if number == libc::SYS_execve as u64
+                    || number == libc::SYS_execveat as u64
+            );
+        if successful_exec {
+            // TODO-HUMAN-REVIEW(#92): Review successful exec injection's
+            // non-returning Tool contract for the KVM process personality.
+            *self
+                .tail_result
+                .lock()
+                .expect("KVM tail-injection result lock poisoned") = Some(Ok(0));
+            return std::future::pending().await;
+        }
+        raw_to_result(result)
     }
 
     async fn tail_inject<S: SyscallInfo>(&mut self, syscall: S) -> Never {
@@ -350,12 +480,20 @@ enum HandlerOutcome<T> {
     TailInjected(std::result::Result<i64, Errno>),
 }
 
-async fn drive_handler<T>(
-    future: impl Future<Output = T>,
-    tail_result: TailResult,
-) -> HandlerOutcome<T> {
-    let mut future = pin!(future);
-    poll_fn(|context| match future.as_mut().poll(context) {
+enum HandlerProgress<T> {
+    Completed(HandlerOutcome<T>),
+    ProcessPending(Option<HandlerOutcome<T>>),
+}
+
+fn poll_handler<T, F>(
+    mut future: Pin<&mut F>,
+    tail_result: &TailResult,
+    context: &mut Context<'_>,
+) -> Poll<HandlerOutcome<T>>
+where
+    F: Future<Output = T> + ?Sized,
+{
+    match future.as_mut().poll(context) {
         Poll::Ready(result) => Poll::Ready(HandlerOutcome::Returned(result)),
         Poll::Pending => match tail_result
             .lock()
@@ -365,6 +503,94 @@ async fn drive_handler<T>(
             Some(result) => Poll::Ready(HandlerOutcome::TailInjected(result)),
             None => Poll::Pending,
         },
+    }
+}
+
+async fn drive_handler<T>(
+    future: impl Future<Output = T>,
+    tail_result: TailResult,
+) -> HandlerOutcome<T> {
+    let mut future = pin!(future);
+    poll_fn(|context| poll_handler(future.as_mut(), &tail_result, context)).await
+}
+
+async fn drive_handler_until_process<T, F>(
+    mut future: Pin<&mut F>,
+    tail_result: &TailResult,
+    executor: &ElfExecutor,
+) -> HandlerProgress<T>
+where
+    F: Future<Output = T> + ?Sized,
+{
+    poll_fn(
+        |context| match poll_handler(future.as_mut(), tail_result, context) {
+            Poll::Ready(outcome) if executor.has_fork_action() => {
+                Poll::Ready(HandlerProgress::ProcessPending(Some(outcome)))
+            }
+            Poll::Ready(outcome) => Poll::Ready(HandlerProgress::Completed(outcome)),
+            Poll::Pending if executor.has_fork_action() => {
+                Poll::Ready(HandlerProgress::ProcessPending(None))
+            }
+            Poll::Pending => Poll::Pending,
+        },
+    )
+    .await
+}
+
+async fn drive_child_start_while_parent_pending<P, C, PF, CF>(
+    mut parent: Pin<&mut PF>,
+    parent_tail: &TailResult,
+    mut child: Pin<&mut CF>,
+    child_tail: &TailResult,
+) -> (Option<HandlerOutcome<P>>, HandlerOutcome<C>)
+where
+    PF: Future<Output = P> + ?Sized,
+    CF: Future<Output = C> + ?Sized,
+{
+    let mut parent_outcome = None;
+    let child_outcome = poll_fn(|context| {
+        if parent_outcome.is_none()
+            && let Poll::Ready(outcome) = poll_handler(parent.as_mut(), parent_tail, context)
+        {
+            parent_outcome = Some(outcome);
+        }
+        poll_handler(child.as_mut(), child_tail, context)
+    })
+    .await;
+    (parent_outcome, child_outcome)
+}
+
+async fn drive_parent_and_child_process<P, C, PF, CF>(
+    mut parent: Pin<&mut PF>,
+    parent_tail: &TailResult,
+    mut child: Pin<&mut CF>,
+    fork_completion: &ForkCompletion,
+) -> (HandlerOutcome<P>, C)
+where
+    PF: Future<Output = P> + ?Sized,
+    CF: Future<Output = C> + ?Sized,
+{
+    let mut parent_outcome = None;
+    let mut child_outcome = None;
+    poll_fn(|context| {
+        if parent_outcome.is_none()
+            && let Poll::Ready(outcome) = poll_handler(parent.as_mut(), parent_tail, context)
+        {
+            parent_outcome = Some(outcome);
+        }
+        if child_outcome.is_none()
+            && let Poll::Ready(outcome) = child.as_mut().poll(context)
+        {
+            fork_completion.complete();
+            child_outcome = Some(outcome);
+        }
+        match (parent_outcome.as_ref(), child_outcome.as_ref()) {
+            (Some(_), Some(_)) => Poll::Ready((
+                parent_outcome.take().expect("parent outcome disappeared"),
+                child_outcome.take().expect("child outcome disappeared"),
+            )),
+            _ => Poll::Pending,
+        }
     })
     .await
 }
@@ -417,14 +643,18 @@ impl KvmBackend {
 
         let registers = kvm_registers(self.vcpu.get_regs()?, 0);
         let tail_result = Arc::new(Mutex::new(None));
+        let mut pending_child = None;
         let start_outcome = {
             let mut guest = KvmGuest::<T>::new(
                 pid,
+                None,
                 memory.clone(),
                 &auxv,
                 registers,
                 &mut thread_state,
                 &mut executor,
+                &mut pending_child,
+                Arc::new(ForkCompletion::default()),
                 &global_state,
                 &config,
                 tail_result.clone(),
@@ -452,14 +682,18 @@ impl KvmBackend {
                         .any(|number| number == syscall.number());
                     let result = if subscribed {
                         let tail_result = Arc::new(Mutex::new(None));
+                        let mut pending_child = None;
                         let outcome = {
                             let mut guest = KvmGuest::<T>::new(
                                 pid,
+                                None,
                                 memory.clone(),
                                 &auxv,
                                 kvm_registers(registers, request.number()),
                                 &mut thread_state,
                                 &mut executor,
+                                &mut pending_child,
+                                Arc::new(ForkCompletion::default()),
                                 &global_state,
                                 &config,
                                 tail_result.clone(),
@@ -531,71 +765,101 @@ impl KvmBackend {
         if capture_output {
             loaded.stdin = Some(std::fs::File::open("/dev/null")?);
         }
-        let mut auxv = loaded.auxv.clone();
+
         let pid = Pid::from_raw(GUEST_PID);
         let global_state = T::GlobalState::init_global_state(&config).await;
         let tool = T::new(pid, &config);
         let subscriptions = T::subscriptions(&config);
-        let mut thread_state = tool.init_thread_state(pid, None);
-        // Clones share the MAP_SHARED guest mapping; a mutable handle lets the
-        // loop write syscall results back into the guest's frame.
-        let mut memory = self.memory.clone();
-        let stack_checked_out = Arc::new(AtomicBool::new(false));
+        let thread_state = tool.init_thread_state(pid, None);
         let mut executor = ElfExecutor::new(loaded, capture_output);
+        let (code, stdout, stderr) = run_elf_process_with_tool(
+            self,
+            &mut executor,
+            pid,
+            None,
+            tool,
+            thread_state,
+            &global_state,
+            &config,
+            &subscriptions,
+            true,
+            false,
+        )
+        .await?;
+        Ok((global_state, code, stdout, stderr))
+    }
+}
 
-        let registers = kvm_registers(self.vcpu.get_regs()?, 0);
-        let tail_result = Arc::new(Mutex::new(None));
-        let start_outcome = {
-            let mut guest = KvmGuest::<T>::new(
-                pid,
-                memory.clone(),
-                &auxv,
-                registers,
-                &mut thread_state,
-                &mut executor,
-                &global_state,
-                &config,
-                tail_result.clone(),
-                stack_checked_out.clone(),
-            );
-            drive_handler(tool.handle_thread_start(&mut guest), tail_result).await
-        };
-        if let HandlerOutcome::Returned(result) = start_outcome {
-            result.map_err(Error::Reverie)?;
+#[allow(clippy::too_many_arguments)]
+fn run_elf_process_with_tool<'a, T>(
+    backend: &'a mut KvmBackend,
+    executor: &'a mut ElfExecutor,
+    pid: Pid,
+    ppid: Option<Pid>,
+    tool: T,
+    mut thread_state: T::ThreadState,
+    global_state: &'a T::GlobalState,
+    config: &'a <T::GlobalState as GlobalTool>::Config,
+    subscriptions: &'a Subscription,
+    initial_post_exec: bool,
+    thread_started: bool,
+) -> ToolProcessFuture<'a>
+where
+    T: Tool + 'a,
+{
+    Box::pin(async move {
+        let mut auxv = executor.auxv().to_vec();
+        let mut memory = backend.memory.clone();
+        let stack_checked_out = Arc::new(AtomicBool::new(false));
+
+        if !thread_started {
+            let registers = kvm_registers(backend.vcpu.get_regs()?, 0);
+            let tail_result = Arc::new(Mutex::new(None));
+            let mut pending_child = None;
+            let start_outcome = {
+                let mut guest = KvmGuest::<T>::new(
+                    pid,
+                    ppid,
+                    memory.clone(),
+                    &auxv,
+                    registers,
+                    &mut thread_state,
+                    executor,
+                    &mut pending_child,
+                    Arc::new(ForkCompletion::default()),
+                    global_state,
+                    config,
+                    tail_result.clone(),
+                    stack_checked_out.clone(),
+                );
+                drive_handler(tool.handle_thread_start(&mut guest), tail_result).await
+            };
+            if let HandlerOutcome::Returned(result) = start_outcome {
+                result.map_err(Error::Reverie)?;
+            }
         }
 
-        // The ELF image is already installed when this backend begins. Present
-        // the same successful-exec lifecycle boundary as ptrace before running it.
-        let registers = kvm_registers(self.vcpu.get_regs()?, 0);
-        let tail_result = Arc::new(Mutex::new(None));
-        let post_exec_outcome = {
-            let mut guest = KvmGuest::<T>::new(
+        if initial_post_exec
+            && let Err(error) = drive_tool_post_exec(
+                backend,
+                executor,
                 pid,
-                memory.clone(),
-                &auxv,
-                registers,
+                ppid,
+                &tool,
                 &mut thread_state,
-                &mut executor,
-                &global_state,
-                &config,
-                tail_result.clone(),
+                &memory,
+                &auxv,
+                global_state,
+                config,
                 stack_checked_out.clone(),
-            );
-            drive_handler(tool.handle_post_exec(&mut guest), tail_result).await
-        };
-        let post_exec_error = match post_exec_outcome {
-            HandlerOutcome::Returned(Ok(())) => None,
-            HandlerOutcome::Returned(Err(error)) => Some(Error::PostExec(error)),
-            HandlerOutcome::TailInjected(_) => Some(Error::UnexpectedVcpuExit(
-                "tool tail-injected a syscall from handle_post_exec".to_string(),
-            )),
-        };
-        if let Some(error) = post_exec_error {
+            )
+            .await
+        {
             notify_tool_exit(
                 tool,
                 pid,
-                &global_state,
-                &config,
+                global_state,
+                config,
                 thread_state,
                 ExitStatus::Exited(255),
             )
@@ -604,65 +868,186 @@ impl KvmBackend {
         }
 
         if let Some((segment, address)) = executor.take_segment() {
-            set_user_segment_base(&self.vcpu, segment, address)?;
+            set_user_segment_base(&backend.vcpu, segment, address)?;
         }
         if let Some(code) = executor.take_exit() {
             notify_tool_exit(
                 tool,
                 pid,
-                &global_state,
-                &config,
+                global_state,
+                config,
                 thread_state,
                 ExitStatus::Exited(code),
             )
             .await?;
             let (stdout, stderr) = executor.take_output();
-            return Ok((global_state, code, stdout, stderr));
+            return Ok((code, stdout, stderr));
         }
 
         loop {
-            let (pending_segment, pending_exit, pending_process) = match self.vcpu.run()? {
+            let (pending_segment, pending_exit, pending_process) = match backend.vcpu.run()? {
                 VcpuExit::Hypercall(exit) => {
                     if exit.nr != VMCALL_SYSCALL_TRANSPORT {
                         return Err(Error::UnexpectedHypercall(exit.nr));
                     }
                     let frame_address = exit.args[0];
-                    // Capture the hypercall return slot as a raw pointer so the
-                    // `&mut exit` borrow ends before `self.vcpu.get_regs()`.
                     let return_slot = std::ptr::from_mut(exit.ret) as usize;
                     if frame_address != SYSCALL_FRAME_ADDRESS {
                         return Err(Error::UnexpectedVcpuExit(format!(
                             "syscall frame is at unexpected address {frame_address:#x}"
                         )));
                     }
-                    let registers = self.vcpu.get_regs()?;
+                    let registers = backend.vcpu.get_regs()?;
                     let request = SyscallRequest::read_from(&memory, frame_address)?;
                     let syscall = request.into_syscall()?;
-                    let process_syscall = is_process_syscall(request.number());
-                    let subscribed = !process_syscall
-                        && subscriptions
-                            .iter_syscalls()
-                            .any(|number| number == syscall.number());
+                    let subscribed = subscriptions
+                        .iter_syscalls()
+                        .any(|number| number == syscall.number());
                     let result = if subscribed {
                         let tail_result = Arc::new(Mutex::new(None));
-                        let outcome = {
-                            let mut guest = KvmGuest::<T>::new(
-                                pid,
-                                memory.clone(),
-                                &auxv,
-                                kvm_registers(registers, request.number()),
-                                &mut thread_state,
-                                &mut executor,
-                                &global_state,
-                                &config,
-                                tail_result.clone(),
-                                stack_checked_out.clone(),
-                            );
-                            drive_handler(
-                                tool.handle_syscall_event(&mut guest, syscall),
-                                tail_result,
-                            )
-                            .await
+                        let mut pending_child = None;
+                        let fork_completion = Arc::new(ForkCompletion::default());
+                        let mut guest = KvmGuest::<T>::new(
+                            pid,
+                            ppid,
+                            memory.clone(),
+                            &auxv,
+                            kvm_registers(registers, request.number()),
+                            &mut thread_state,
+                            executor,
+                            &mut pending_child,
+                            fork_completion.clone(),
+                            global_state,
+                            config,
+                            tail_result.clone(),
+                            stack_checked_out.clone(),
+                        );
+                        let mut handler = tool.handle_syscall_event(&mut guest, syscall);
+                        let progress =
+                            drive_handler_until_process(handler.as_mut(), &tail_result, executor)
+                                .await;
+                        let outcome = match progress {
+                            HandlerProgress::Completed(outcome) => outcome,
+                            HandlerProgress::ProcessPending(mut parent_outcome) => {
+                                let action = executor
+                                    .take_process_action()
+                                    .expect("pending KVM process action disappeared");
+                                let PreparedProcessAction::Fork(mut forked) =
+                                    backend.prepare_process_action(executor, action)?
+                                else {
+                                    return Err(Error::UnexpectedVcpuExit(
+                                        "Tool callback suspended after preparing exec".to_string(),
+                                    ));
+                                };
+
+                                let PreparedToolChild {
+                                    pid: child_pid,
+                                    tool: child_tool,
+                                    thread_state: mut child_thread_state,
+                                } = pending_child.take().ok_or_else(|| {
+                                    Error::UnexpectedVcpuExit(
+                                        "clone injection did not prepare child Tool state"
+                                            .to_string(),
+                                    )
+                                })?;
+                                if child_pid.as_raw() != forked.child_pid {
+                                    return Err(Error::UnexpectedVcpuExit(format!(
+                                        "prepared Tool child {} does not match fork child {}",
+                                        child_pid.as_raw(),
+                                        forked.child_pid,
+                                    )));
+                                }
+                                let child_auxv = forked.executor.auxv().to_vec();
+                                let child_memory = forked.backend.memory.clone();
+                                let child_stack_checked_out = Arc::new(AtomicBool::new(false));
+                                let child_tail_result = Arc::new(Mutex::new(None));
+                                let child_registers =
+                                    kvm_registers(forked.backend.vcpu.get_regs()?, 0);
+                                let mut pending_grandchild = None;
+                                let mut child_guest = KvmGuest::<T>::new(
+                                    child_pid,
+                                    Some(pid),
+                                    child_memory,
+                                    &child_auxv,
+                                    child_registers,
+                                    &mut child_thread_state,
+                                    &mut forked.executor,
+                                    &mut pending_grandchild,
+                                    Arc::new(ForkCompletion::default()),
+                                    global_state,
+                                    config,
+                                    child_tail_result.clone(),
+                                    child_stack_checked_out,
+                                );
+                                let mut child_start =
+                                    child_tool.handle_thread_start(&mut child_guest);
+                                let child_start_outcome = if parent_outcome.is_some() {
+                                    drive_handler(child_start.as_mut(), child_tail_result.clone())
+                                        .await
+                                } else {
+                                    let (outcome, child_start_outcome) =
+                                        drive_child_start_while_parent_pending(
+                                            handler.as_mut(),
+                                            &tail_result,
+                                            child_start.as_mut(),
+                                            &child_tail_result,
+                                        )
+                                        .await;
+                                    parent_outcome = outcome;
+                                    child_start_outcome
+                                };
+                                match child_start_outcome {
+                                    HandlerOutcome::Returned(result) => {
+                                        result.map_err(Error::Reverie)?;
+                                    }
+                                    HandlerOutcome::TailInjected(_) => {
+                                        return Err(Error::UnexpectedVcpuExit(
+                                            "child Tool tail-injected during thread start"
+                                                .to_string(),
+                                        ));
+                                    }
+                                }
+                                drop(child_start);
+                                drop(child_guest);
+
+                                let mut child_process = run_elf_process_with_tool(
+                                    &mut forked.backend,
+                                    &mut forked.executor,
+                                    child_pid,
+                                    Some(pid),
+                                    child_tool,
+                                    child_thread_state,
+                                    global_state,
+                                    config,
+                                    subscriptions,
+                                    false,
+                                    true,
+                                );
+                                let child_result = if parent_outcome.is_some() {
+                                    let child_result = child_process.as_mut().await;
+                                    fork_completion.complete();
+                                    child_result
+                                } else {
+                                    let (outcome, child_result) = drive_parent_and_child_process(
+                                        handler.as_mut(),
+                                        &tail_result,
+                                        child_process.as_mut(),
+                                        &fork_completion,
+                                    )
+                                    .await;
+                                    parent_outcome = Some(outcome);
+                                    child_result
+                                };
+                                let (code, stdout, stderr) = child_result?;
+                                drop(child_process);
+                                backend
+                                    .finish_fork_process(executor, forked, code, stdout, stderr)?;
+
+                                match parent_outcome {
+                                    Some(outcome) => outcome,
+                                    None => drive_handler(handler, tail_result).await,
+                                }
+                            }
                         };
                         match outcome {
                             HandlerOutcome::Returned(result) => handler_result_to_raw(result)?,
@@ -671,12 +1056,9 @@ impl KvmBackend {
                     } else {
                         executor.execute(&request, &memory)
                     };
-                    // The ring0 trampoline reads the result from the frame and
-                    // then SYSRETs, so the hypercall return slot is unused here.
                     SyscallRequest::write_result(&mut memory, frame_address, result)?;
                     // SAFETY: return_slot points into this vCPU's stable KVM_RUN
-                    // mapping; the vCPU is stopped and not re-run while the tool
-                    // callback is active.
+                    // mapping; the vCPU is stopped while the tool callback runs.
                     unsafe {
                         (return_slot as *mut u64).write(0);
                     }
@@ -686,34 +1068,132 @@ impl KvmBackend {
                         executor.take_process_action(),
                     )
                 }
-                VcpuExit::Hlt => return Err(self.static_elf_halt_error()?),
+                VcpuExit::Hlt => return Err(backend.static_elf_halt_error()?),
                 exit => return Err(Error::UnexpectedVcpuExit(format!("{exit:?}"))),
             };
 
             if let Some((segment, address)) = pending_segment {
-                set_user_segment_base(&self.vcpu, segment, address)?;
+                set_user_segment_base(&backend.vcpu, segment, address)?;
             }
             if let Some(action) = pending_process {
-                self.run_process_action(&mut executor, action)?;
-                auxv = executor.auxv().to_vec();
+                match backend.prepare_process_action(executor, action)? {
+                    PreparedProcessAction::Fork(mut forked) => {
+                        let child_pid = Pid::from_raw(forked.child_pid);
+                        let child_tool = T::new(child_pid, config);
+                        let child_thread_state =
+                            child_tool.init_thread_state(child_pid, Some((pid, &thread_state)));
+                        let (code, stdout, stderr) = run_elf_process_with_tool(
+                            &mut forked.backend,
+                            &mut forked.executor,
+                            child_pid,
+                            Some(pid),
+                            child_tool,
+                            child_thread_state,
+                            global_state,
+                            config,
+                            subscriptions,
+                            false,
+                            false,
+                        )
+                        .await?;
+                        backend.finish_fork_process(executor, forked, code, stdout, stderr)?;
+                    }
+                    PreparedProcessAction::Exec => {
+                        auxv = executor.auxv().to_vec();
+                        if let Err(error) = drive_tool_post_exec(
+                            backend,
+                            executor,
+                            pid,
+                            ppid,
+                            &tool,
+                            &mut thread_state,
+                            &memory,
+                            &auxv,
+                            global_state,
+                            config,
+                            stack_checked_out.clone(),
+                        )
+                        .await
+                        {
+                            notify_tool_exit(
+                                tool,
+                                pid,
+                                global_state,
+                                config,
+                                thread_state,
+                                ExitStatus::Exited(255),
+                            )
+                            .await?;
+                            return Err(error);
+                        }
+                    }
+                }
             }
-            if let Some(code) = pending_exit {
+
+            if let Some((segment, address)) = executor.take_segment() {
+                set_user_segment_base(&backend.vcpu, segment, address)?;
+            }
+            let exit_code = pending_exit.or_else(|| executor.take_exit());
+            if let Some(code) = exit_code {
                 notify_tool_exit(
                     tool,
                     pid,
-                    &global_state,
-                    &config,
+                    global_state,
+                    config,
                     thread_state,
                     ExitStatus::Exited(code),
                 )
                 .await?;
                 let (stdout, stderr) = executor.take_output();
-                return Ok((global_state, code, stdout, stderr));
+                return Ok((code, stdout, stderr));
             }
         }
-    }
+    })
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn drive_tool_post_exec<T: Tool>(
+    backend: &mut KvmBackend,
+    executor: &mut ElfExecutor,
+    pid: Pid,
+    ppid: Option<Pid>,
+    tool: &T,
+    thread_state: &mut T::ThreadState,
+    memory: &GuestMemory,
+    auxv: &[(libc::c_ulong, libc::c_ulong)],
+    global_state: &T::GlobalState,
+    config: &<T::GlobalState as GlobalTool>::Config,
+    stack_checked_out: Arc<AtomicBool>,
+) -> Result<()> {
+    let registers = kvm_registers(backend.vcpu.get_regs()?, 0);
+    let tail_result = Arc::new(Mutex::new(None));
+    let mut pending_child = None;
+    let outcome = {
+        let mut guest = KvmGuest::<T>::new(
+            pid,
+            ppid,
+            memory.clone(),
+            auxv,
+            registers,
+            thread_state,
+            executor,
+            &mut pending_child,
+            Arc::new(ForkCompletion::default()),
+            global_state,
+            config,
+            tail_result.clone(),
+            stack_checked_out,
+        );
+        drive_handler(tool.handle_post_exec(&mut guest), tail_result).await
+    };
+    match outcome {
+        HandlerOutcome::Returned(Ok(())) => Ok(()),
+        HandlerOutcome::Returned(Err(error)) => Err(Error::PostExec(error)),
+        HandlerOutcome::TailInjected(_) => Err(Error::UnexpectedVcpuExit(
+            "tool tail-injected a syscall from handle_post_exec".to_string(),
+        )),
+    }
+}
 fn handler_result_to_raw(result: std::result::Result<i64, reverie::Error>) -> Result<i64> {
     match result {
         Ok(value) => Ok(value),

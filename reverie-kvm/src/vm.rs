@@ -89,6 +89,17 @@ struct KvmProcessSnapshot {
     cpuid_policy: CpuidPolicy,
 }
 
+pub(crate) enum PreparedProcessAction {
+    Fork(Box<ForkedProcess>),
+    Exec,
+}
+
+pub(crate) struct ForkedProcess {
+    pub(crate) child_pid: i32,
+    pub(crate) backend: KvmBackend,
+    pub(crate) executor: ElfExecutor,
+}
+
 impl KvmBackend {
     /// Creates a VM with one vCPU and a memory slot starting at GPA zero.
     pub fn new(memory_size: usize) -> Result<Self> {
@@ -298,11 +309,11 @@ impl KvmBackend {
         Ok(())
     }
 
-    pub(crate) fn run_process_action(
+    pub(crate) fn prepare_process_action(
         &mut self,
         executor: &mut ElfExecutor,
         action: ProcessAction,
-    ) -> Result<()> {
+    ) -> Result<PreparedProcessAction> {
         match action {
             ProcessAction::Fork {
                 child_pid,
@@ -331,18 +342,11 @@ impl KvmBackend {
                 set_user_segment_base(&child.vcpu, SegmentBase::Fs, fs_base)?;
                 set_user_segment_base(&child.vcpu, SegmentBase::Gs, gs_base)?;
                 configure_process_syscall_return(&child.memory, &child.vcpu, 0, child_stack)?;
-                let (code, stdout, stderr) = child.run_static_elf_process(&mut child_executor)?;
-                // A process clone has a private snapshot, so no surviving task can
-                // observe this clear; preserve the child-side ABI.
-                write_tid_best_effort(&mut child.memory, child_executor.take_clear_child_tid(), 0);
-                executor.record_child_exit(child_pid, code);
-                executor.append_output(stdout, stderr);
-                configure_process_syscall_return(
-                    &self.memory,
-                    &self.vcpu,
-                    i64::from(child_pid),
-                    None,
-                )?;
+                Ok(PreparedProcessAction::Fork(Box::new(ForkedProcess {
+                    child_pid,
+                    backend: child,
+                    executor: child_executor,
+                })))
             }
             ProcessAction::Exec { image, argv, envp } => {
                 set_syscall_return_park(&mut self.memory, self.hypercall_instruction, true)?;
@@ -355,11 +359,53 @@ impl KvmBackend {
                 set_syscall_return_park(&mut self.memory, self.hypercall_instruction, false)?;
                 parked?;
                 self.exec_process(executor, &image, &argv, &envp)?;
+                Ok(PreparedProcessAction::Exec)
             }
         }
+    }
+
+    pub(crate) fn finish_fork_process(
+        &mut self,
+        executor: &mut ElfExecutor,
+        mut forked: Box<ForkedProcess>,
+        code: i32,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    ) -> Result<()> {
+        // A process clone has a private snapshot, so no surviving task can
+        // observe this clear; preserve the child-side ABI.
+        write_tid_best_effort(
+            &mut forked.backend.memory,
+            forked.executor.take_clear_child_tid(),
+            0,
+        );
+        executor.record_child_exit(forked.child_pid, code);
+        executor.append_output(stdout, stderr);
+        configure_process_syscall_return(
+            &self.memory,
+            &self.vcpu,
+            i64::from(forked.child_pid),
+            None,
+        )?;
         Ok(())
     }
 
+    pub(crate) fn run_process_action(
+        &mut self,
+        executor: &mut ElfExecutor,
+        action: ProcessAction,
+    ) -> Result<()> {
+        match self.prepare_process_action(executor, action)? {
+            PreparedProcessAction::Fork(mut forked) => {
+                let (code, stdout, stderr) = forked
+                    .backend
+                    .run_static_elf_process(&mut forked.executor)?;
+                self.finish_fork_process(executor, forked, code, stdout, stderr)?;
+            }
+            PreparedProcessAction::Exec => {}
+        }
+        Ok(())
+    }
     pub(crate) fn static_elf_halt_error(&self) -> Result<Error> {
         let registers = self.vcpu.get_regs()?;
         if let Some((vector, instruction_pointer)) =

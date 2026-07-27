@@ -44,6 +44,22 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// mean it is the root process in the system.
     fn ppid(&self) -> Option<Pid>;
 
+    /// Returns true when this backend does not resume the parent guest until a
+    /// forked child exits. Schedulers can then avoid waiting for a parent turn
+    /// that the backend cannot run while the child is active.
+    // TODO-HUMAN-REVIEW(#92): Review synchronous-fork backend capability API.
+    fn fork_blocks_parent_until_child_exit(&self) -> bool {
+        false
+    }
+
+    /// Waits until a backend-blocked fork child has finished. Backends whose
+    /// parent is not synchronously blocked return immediately.
+    // TODO-HUMAN-REVIEW(#92): Review synchronous child-completion Guest API.
+    async fn wait_for_fork_child_exit(&mut self, child: Pid) -> Result<(), Error> {
+        let _ = child;
+        Ok(())
+    }
+
     /// Returns true if this thread is the thread group leader (i.e., the main
     /// thread).
     fn is_main_thread(&self) -> bool {
@@ -341,8 +357,16 @@ where
         self.inner.ppid()
     }
 
+    fn fork_blocks_parent_until_child_exit(&self) -> bool {
+        self.inner.fork_blocks_parent_until_child_exit()
+    }
+
     fn is_main_thread(&self) -> bool {
         self.inner.is_main_thread()
+    }
+
+    async fn wait_for_fork_child_exit(&mut self, child: Pid) -> Result<(), Error> {
+        self.inner.wait_for_fork_child_exit(child).await
     }
 
     fn is_root_process(&self) -> bool {

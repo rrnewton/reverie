@@ -153,9 +153,13 @@ fn deterministic_cpuid_policy_is_visible_inside_vm() {
         .unwrap();
 
     let vendor = read_cpuid_result(&backend, CPUID_RESULT_ADDRESS);
-    assert_ne!([vendor[1], vendor[2], vendor[3]], [0; 3]);
+    assert_eq!(vendor[0], 0x0000_000d);
+    assert_eq!(vendor[1], u32::from_le_bytes(*b"Genu"));
+    assert_eq!(vendor[2], u32::from_le_bytes(*b"ntel"));
+    assert_eq!(vendor[3], u32::from_le_bytes(*b"ineI"));
 
     let leaf1 = read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 16);
+    assert_eq!(leaf1[0], 0x0000_0663);
     assert_eq!(leaf1[2] & bit(30), 0, "RDRAND must be hidden");
 
     let leaf7 = read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 32);

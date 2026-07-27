@@ -39,10 +39,22 @@ impl CpuidPolicy {
     }
 
     pub(crate) fn apply(self, cpuid: &mut CpuId) {
+        let normalize_identity = self == Self::deterministic();
         for entry in cpuid.as_mut_slice() {
             match (entry.function, entry.index) {
-                (1, 0) if self.mask_hardware_random => {
-                    entry.ecx &= !bit(30); // RDRAND
+                (0, 0) if normalize_identity => {
+                    entry.eax = DETERMINISTIC_MAX_STANDARD_LEAF;
+                    entry.ebx = DETERMINISTIC_VENDOR_EBX;
+                    entry.ecx = DETERMINISTIC_VENDOR_ECX;
+                    entry.edx = DETERMINISTIC_VENDOR_EDX;
+                }
+                (1, 0) => {
+                    if normalize_identity {
+                        entry.eax = DETERMINISTIC_SIGNATURE;
+                    }
+                    if self.mask_hardware_random {
+                        entry.ecx &= !bit(30); // RDRAND
+                    }
                 }
                 (7, 0) => {
                     if self.mask_hardware_random {
@@ -88,6 +100,11 @@ const fn bit(index: u32) -> u32 {
     1_u32 << index
 }
 
+const DETERMINISTIC_MAX_STANDARD_LEAF: u32 = 0x0000_000d;
+const DETERMINISTIC_SIGNATURE: u32 = 0x0000_0663;
+const DETERMINISTIC_VENDOR_EBX: u32 = u32::from_le_bytes(*b"Genu");
+const DETERMINISTIC_VENDOR_EDX: u32 = u32::from_le_bytes(*b"ineI");
+const DETERMINISTIC_VENDOR_ECX: u32 = u32::from_le_bytes(*b"ntel");
 #[cfg(test)]
 mod tests {
     use kvm_bindings::CpuId;
@@ -109,26 +126,43 @@ mod tests {
 
     #[test]
     fn deterministic_policy_masks_nondeterministic_features() {
-        let mut cpuid =
-            CpuId::from_entries(&[entry(1, 0), entry(7, 0), entry(7, 1), entry(0xd, 0)]).unwrap();
+        let mut cpuid = CpuId::from_entries(&[
+            entry(0, 0),
+            entry(1, 0),
+            entry(7, 0),
+            entry(7, 1),
+            entry(0xd, 0),
+        ])
+        .unwrap();
 
         CpuidPolicy::deterministic().apply(&mut cpuid);
 
         let entries = cpuid.as_slice();
-        assert_eq!(entries[0].ecx & bit(30), 0);
-        assert_eq!(entries[1].ebx & bit(18), 0);
-        assert_eq!(entries[1].ebx & (bit(4) | bit(11)), 0);
-        assert_eq!(entries[1].edx & (bit(11) | bit(13) | bit(16)), 0);
-        assert_eq!(entries[1].ebx & bit(16), 0);
-        assert_eq!(entries[1].ecx & bit(1), 0);
-        assert_eq!(entries[1].edx & bit(23), 0);
-        assert_eq!(entries[2].eax & bit(5), 0);
-        assert_eq!(entries[3].eax & (bit(5) | bit(6) | bit(7)), 0);
+        assert_eq!(entries[0].eax, DETERMINISTIC_MAX_STANDARD_LEAF);
+        assert_eq!(entries[0].ebx, DETERMINISTIC_VENDOR_EBX);
+        assert_eq!(entries[0].ecx, DETERMINISTIC_VENDOR_ECX);
+        assert_eq!(entries[0].edx, DETERMINISTIC_VENDOR_EDX);
+        assert_eq!(entries[1].eax, DETERMINISTIC_SIGNATURE);
+        assert_eq!(entries[1].ecx & bit(30), 0);
+        assert_eq!(entries[2].ebx & bit(18), 0);
+        assert_eq!(entries[2].ebx & (bit(4) | bit(11)), 0);
+        assert_eq!(entries[2].edx & (bit(11) | bit(13) | bit(16)), 0);
+        assert_eq!(entries[2].ebx & bit(16), 0);
+        assert_eq!(entries[2].ecx & bit(1), 0);
+        assert_eq!(entries[2].edx & bit(23), 0);
+        assert_eq!(entries[3].eax & bit(5), 0);
+        assert_eq!(entries[4].eax & (bit(5) | bit(6) | bit(7)), 0);
     }
 
     #[test]
     fn host_supported_policy_preserves_entries() {
-        let entries = [entry(1, 0), entry(7, 0), entry(7, 1), entry(0xd, 0)];
+        let entries = [
+            entry(0, 0),
+            entry(1, 0),
+            entry(7, 0),
+            entry(7, 1),
+            entry(0xd, 0),
+        ];
         let mut cpuid = CpuId::from_entries(&entries).unwrap();
 
         CpuidPolicy::host_supported().apply(&mut cpuid);

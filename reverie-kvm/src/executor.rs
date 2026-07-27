@@ -120,15 +120,6 @@ pub(crate) enum ProcessAction {
     },
 }
 
-pub(crate) fn is_process_syscall(number: u64) -> bool {
-    number == libc::SYS_fork as u64
-        || number == libc::SYS_vfork as u64
-        || number == libc::SYS_clone as u64
-        || number == libc::SYS_clone3 as u64
-        || number == libc::SYS_execve as u64
-        || number == libc::SYS_execveat as u64
-}
-
 #[cfg(test)]
 pub(crate) fn execute_basic_syscall(
     memory: &mut GuestMemory,
@@ -571,6 +562,10 @@ impl ElfExecutor {
 
     pub(crate) fn take_process_action(&mut self) -> Option<ProcessAction> {
         self.process_action.take()
+    }
+
+    pub(crate) fn has_fork_action(&self) -> bool {
+        matches!(self.process_action, Some(ProcessAction::Fork { .. }))
     }
 
     pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {
@@ -3049,16 +3044,15 @@ fn sigaltstack(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u6
 }
 
 fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let requested = args[0] as i64;
+    // TODO-HUMAN-REVIEW(#92): Review pid_t sign extension for wait4 selectors.
+    let requested = args[0] as libc::pid_t;
     if args[2] & !(libc::WNOHANG as u64) != 0 {
         return negative_errno(libc::EINVAL);
     }
     let child_pid = if requested == -1 {
         state.children.keys().next().copied()
     } else if requested > 0 {
-        i32::try_from(requested)
-            .ok()
-            .filter(|pid| state.children.contains_key(pid))
+        state.children.contains_key(&requested).then_some(requested)
     } else {
         None
     };
@@ -6299,6 +6293,32 @@ mod tests {
         );
     }
 
+    #[test]
+    fn wait4_sign_extends_the_any_child_pid_selector() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+        state.children.insert(7, 3);
+        let mut memory = GuestMemory::new(0, 4096).unwrap();
+        let status_address = 0x100;
+        let any_child = u64::from(u32::MAX);
+
+        assert_eq!(
+            wait4(
+                &mut memory,
+                &mut state,
+                &[any_child, status_address, 0, 0, 0, 0],
+            ),
+            7,
+        );
+        let mut status = [0; std::mem::size_of::<libc::c_int>()];
+        memory.read(status_address, &mut status).unwrap();
+        assert_eq!(libc::c_int::from_le_bytes(status), 3 << 8);
+        assert!(state.children.is_empty());
+        assert_eq!(
+            wait4(&mut memory, &mut state, &[any_child, 0, 0, 0, 0, 0]),
+            negative_errno(libc::ECHILD),
+        );
+    }
     // Non-`#!` payload; the resolver only checks that it is not a script.
     const FAKE_ELF: &[u8] = b"\x7fELF\x02\x01\x01\x00 fake elf body";
 
