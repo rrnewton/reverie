@@ -29,7 +29,7 @@ mod kvm_runner;
 /// kernel is simulated by forcing reads to only return one byte a time.
 #[derive(Debug, Parser)]
 struct Args {
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review chaos runner selection.
+    // TODO-HUMAN-REVIEW(PR-195): Review chaos runner selection.
     /// Execution runner; KVM selects the prototype KvmGuest host.
     #[clap(long, value_enum, default_value = "ptrace")]
     runner: kvm_runner::Runner,

@@ -30,7 +30,7 @@ pub(crate) use tool::ChromeTrace;
 /// A tool to render a summary of the process tree.
 #[derive(Debug, Parser)]
 struct Args {
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review Chrome trace runner selection.
+    // TODO-HUMAN-REVIEW(PR-195): Review Chrome trace runner selection.
     /// Execution runner; KVM selects the prototype KvmGuest host.
     #[clap(long, value_enum, default_value = "ptrace")]
     runner: kvm_runner::Runner,
