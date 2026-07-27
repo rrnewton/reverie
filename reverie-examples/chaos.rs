@@ -34,7 +34,8 @@ struct Args {
 }
 
 #[derive(Parser, Debug, Serialize, Deserialize, Clone, Default)]
-struct ChaosOpts {
+// TODO-HUMAN-REVIEW(PR-128): Review the reusable chaos Tool configuration API.
+pub struct ChaosOpts {
     /// Skips the first N syscalls of a process before doing any intervention.
     /// This is useful when you need to skip past an error caused by the tool.
     #[clap(long, value_name = "N", default_value = "0")]
@@ -54,7 +55,8 @@ struct ChaosOpts {
 }
 
 #[derive(Debug, Default)]
-struct ChaosTool {
+// TODO-HUMAN-REVIEW(PR-128): Review the reusable chaos Tool API.
+pub struct ChaosTool {
     count: AtomicU64,
 }
 
@@ -67,7 +69,8 @@ impl Clone for ChaosTool {
 }
 
 #[derive(Debug, Default, Clone)]
-struct ChaosToolGlobal {}
+// TODO-HUMAN-REVIEW(PR-128): Review the reusable chaos global state API.
+pub struct ChaosToolGlobal {}
 
 #[reverie::global_tool]
 impl GlobalTool for ChaosToolGlobal {
@@ -175,6 +178,7 @@ impl Tool for ChaosTool {
     }
 }
 
+#[allow(dead_code)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = Args::parse();

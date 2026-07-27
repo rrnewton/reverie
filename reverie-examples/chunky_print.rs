@@ -55,7 +55,26 @@ pub enum Msg {
 type LogicalTime = u64;
 
 #[derive(Debug, Default)]
-struct ChunkyPrintGlobal(Mutex<Inner>);
+// TODO-HUMAN-REVIEW(PR-128): Review the reusable chunky_print global state API.
+pub struct ChunkyPrintGlobal(Mutex<Inner>);
+
+impl ChunkyPrintGlobal {
+    // TODO-HUMAN-REVIEW(PR-128): Review the public buffered-output diagnostic.
+    pub fn buffered_bytes(&self) -> usize {
+        let inner = self.0.lock().unwrap();
+        inner
+            .printbuf
+            .values()
+            .flatten()
+            .map(|(_, bytes)| bytes.len())
+            .sum()
+    }
+
+    // TODO-HUMAN-REVIEW(PR-128): Review the public final-output flush API.
+    pub fn flush(&self) -> io::Result<()> {
+        self.0.lock().unwrap().flush_messages()
+    }
+}
 
 #[derive(Debug, Default)]
 struct Inner {
@@ -161,7 +180,8 @@ impl Inner {
 }
 
 #[derive(Debug, Default)]
-struct ChunkyPrintLocal {
+// TODO-HUMAN-REVIEW(PR-128): Review the reusable chunky_print Tool API.
+pub struct ChunkyPrintLocal {
     stdout_disconnected: AtomicBool,
     stderr_disconnected: AtomicBool,
 }
@@ -261,6 +281,7 @@ impl Tool for ChunkyPrintLocal {
     }
 }
 
+#[allow(dead_code)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = CommonToolArguments::parse();
@@ -270,7 +291,7 @@ async fn main() -> Result<(), Error> {
         .await?;
     let (status, global_state) = tracer.wait().await?;
     trace!(" [chunky_print] global exit, flushing last messages.");
-    let _ = global_state.0.lock().unwrap().flush_messages();
+    let _ = global_state.flush();
     drop(log_guard); // Flush logs before exiting.
     status.raise_or_exit()
 }

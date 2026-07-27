@@ -16,7 +16,8 @@ use reverie::Tool;
 use reverie_util::CommonToolArguments;
 
 #[derive(Debug, Default)]
-struct NoopTool;
+// TODO-HUMAN-REVIEW(PR-128): Review the reusable noop Tool API.
+pub struct NoopTool;
 
 #[reverie::tool]
 impl Tool for NoopTool {
@@ -28,6 +29,7 @@ impl Tool for NoopTool {
     }
 }
 
+#[allow(dead_code)]
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let args = CommonToolArguments::parse();

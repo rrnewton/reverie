@@ -9,6 +9,9 @@ repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
 publish = false
 
+[lib]
+path = "lib.rs"
+
 [[bin]]
 name = "chaos"
 path = "chaos.rs"
