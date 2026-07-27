@@ -728,6 +728,7 @@ fn guest_host_address(
 pub(crate) struct ElfExecutor {
     state: LoadedStaticElf,
     address_space: Arc<std::sync::Mutex<AddressSpaceState>>,
+    file_table: Arc<std::sync::Mutex<FileTableState>>,
     output: Option<CapturedOutput>,
     owns_output: bool,
     next_pid: Arc<AtomicI32>,
@@ -743,6 +744,82 @@ struct AddressSpaceState {
     mmap_next: u64,
 }
 
+struct FileTableState {
+    stdin: Option<std::fs::File>,
+    files: std::collections::BTreeMap<i32, std::fs::File>,
+    stdout_alias_fds: std::collections::BTreeSet<i32>,
+    stderr_alias_fds: std::collections::BTreeSet<i32>,
+    cloexec_fds: std::collections::BTreeSet<i32>,
+    closed_standard_fds: std::collections::BTreeSet<i32>,
+    proc_files: std::collections::BTreeMap<i32, u64>,
+    fd_object_inodes: std::collections::BTreeMap<i32, Arc<GuestFileIdentity>>,
+}
+
+impl FileTableState {
+    fn try_from_elf(state: &LoadedStaticElf) -> std::io::Result<Self> {
+        Ok(Self {
+            stdin: state
+                .stdin
+                .as_ref()
+                .map(std::fs::File::try_clone)
+                .transpose()?,
+            files: state
+                .files
+                .iter()
+                .map(|(&fd, file)| Ok((fd, file.try_clone()?)))
+                .collect::<std::io::Result<_>>()?,
+            stdout_alias_fds: state.stdout_alias_fds.clone(),
+            stderr_alias_fds: state.stderr_alias_fds.clone(),
+            cloexec_fds: state.cloexec_fds.clone(),
+            closed_standard_fds: state.closed_standard_fds.clone(),
+            proc_files: state.proc_files.clone(),
+            fd_object_inodes: state.fd_object_inodes.clone(),
+        })
+    }
+
+    fn install(&self, state: &mut LoadedStaticElf) -> std::io::Result<()> {
+        state.stdin = self
+            .stdin
+            .as_ref()
+            .map(std::fs::File::try_clone)
+            .transpose()?;
+        state.files = self
+            .files
+            .iter()
+            .map(|(&fd, file)| Ok((fd, file.try_clone()?)))
+            .collect::<std::io::Result<_>>()?;
+        state.stdout_alias_fds.clone_from(&self.stdout_alias_fds);
+        state.stderr_alias_fds.clone_from(&self.stderr_alias_fds);
+        state.cloexec_fds.clone_from(&self.cloexec_fds);
+        state
+            .closed_standard_fds
+            .clone_from(&self.closed_standard_fds);
+        state.proc_files.clone_from(&self.proc_files);
+        state.fd_object_inodes.clone_from(&self.fd_object_inodes);
+        Ok(())
+    }
+}
+
+fn mutates_file_table(number: u64) -> bool {
+    matches!(
+        number,
+        number if number == libc::SYS_pipe as u64
+            || number == libc::SYS_pipe2 as u64
+            || number == libc::SYS_epoll_create1 as u64
+            || number == libc::SYS_eventfd as u64
+            || number == libc::SYS_eventfd2 as u64
+            || number == libc::SYS_socket as u64
+            || number == libc::SYS_dup as u64
+            || number == libc::SYS_dup2 as u64
+            || number == libc::SYS_dup3 as u64
+            || number == libc::SYS_fcntl as u64
+            || number == libc::SYS_open as u64
+            || number == libc::SYS_openat as u64
+            || number == libc::SYS_creat as u64
+            || number == libc::SYS_close as u64
+    )
+}
+
 impl AddressSpaceState {
     fn from_elf(state: &LoadedStaticElf) -> Self {
         Self {
@@ -755,9 +832,13 @@ impl AddressSpaceState {
 impl ElfExecutor {
     pub(crate) fn new(state: LoadedStaticElf, capture_output: bool) -> Self {
         let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
+        let file_table = Arc::new(std::sync::Mutex::new(
+            FileTableState::try_from_elf(&state).expect("clone initial KVM file table"),
+        ));
         Self {
             state,
             address_space,
+            file_table,
             output: capture_output.then(CapturedOutput::default),
             owns_output: true,
             next_pid: Arc::new(AtomicI32::new(2)),
@@ -1006,6 +1087,7 @@ impl ElfExecutor {
         }
         Ok(Self {
             address_space: Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state))),
+            file_table: Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?)),
             state,
             output: self.output.is_some().then(CapturedOutput::default),
             owns_output: true,
@@ -1026,6 +1108,7 @@ impl ElfExecutor {
         Ok(Self {
             state,
             address_space: self.address_space.clone(),
+            file_table: self.file_table.clone(),
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
@@ -1056,6 +1139,11 @@ impl ElfExecutor {
             .address_space
             .lock()
             .expect("KVM address-space lock poisoned") = AddressSpaceState::from_elf(&self.state);
+        *self
+            .file_table
+            .lock()
+            .expect("KVM file-table lock poisoned") =
+            FileTableState::try_from_elf(&self.state).expect("clone post-exec KVM file table");
         self.pending_segment = None;
         self.exit_code = None;
         self.exit_group = false;
@@ -1116,6 +1204,25 @@ impl ElfExecutor {
 
 impl SyscallExecutor for ElfExecutor {
     fn execute(&mut self, request: &SyscallRequest, memory: &GuestMemory) -> i64 {
+        // TODO-HUMAN-REVIEW(PR-172): Review CLONE_FILES descriptor-table sharing.
+        // Thread children retain private executor state, but synchronize their
+        // descriptor mappings through this shared table before every syscall.
+        // Descriptor-creating and descriptor-closing operations hold the lock
+        // through the update; potentially blocking I/O releases it after the
+        // snapshot so QEMU AIO workers can continue to make progress.
+        let file_table = self.file_table.clone();
+        let mut shared_files = Some(file_table.lock().expect("KVM file-table lock poisoned"));
+        if let Err(error) = shared_files
+            .as_ref()
+            .expect("file-table guard disappeared")
+            .install(&mut self.state)
+        {
+            return io_error(error);
+        }
+        let mutating_file_table = mutates_file_table(request.number());
+        if !mutating_file_table {
+            shared_files.take();
+        }
         if let Some(result) = self.execute_process_action(request, memory) {
             return result;
         }
@@ -1152,6 +1259,10 @@ impl SyscallExecutor for ElfExecutor {
                 self.output.as_mut(),
             )
         };
+        if let Some(mut shared_files) = shared_files {
+            *shared_files =
+                FileTableState::try_from_elf(&self.state).expect("clone updated KVM file table");
+        }
         match action {
             SyscallAction::Continue { result, segment } => {
                 if segment.is_some() {
@@ -9874,6 +9985,53 @@ mod tests {
         let second = child.execute(&request, &memory) as u64;
         assert_eq!(first, BOOT_RESERVED_END + PAGE_SIZE);
         assert_eq!(second, first + PAGE_SIZE);
+    }
+
+    #[test]
+    fn thread_executors_share_descriptor_replacement() {
+        let root = TestDir::new();
+        let old_path = root.0.join("old");
+        let new_path = root.0.join("new");
+        std::fs::write(&old_path, b"old").unwrap();
+        std::fs::write(&new_path, b"new").unwrap();
+
+        let mut state = test_state(&root.0);
+        state
+            .files
+            .insert(3, std::fs::File::open(old_path).unwrap());
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut parent = ElfExecutor::new(state, false);
+        let mut child = parent.thread_child(2).unwrap();
+
+        assert_eq!(
+            parent.execute(
+                &SyscallRequest::new(libc::SYS_close as u64, [3, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            0
+        );
+        write_c_string(&mut memory, 0x100, new_path.to_str().unwrap());
+        assert_eq!(
+            parent.execute(
+                &SyscallRequest::new(
+                    libc::SYS_openat as u64,
+                    [libc::AT_FDCWD as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+                ),
+                &memory,
+            ),
+            3
+        );
+
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(libc::SYS_read as u64, [3, 0x200, 3, 0, 0, 0]),
+                &memory,
+            ),
+            3
+        );
+        let mut bytes = [0; 3];
+        memory.read(0x200, &mut bytes).unwrap();
+        assert_eq!(&bytes, b"new");
     }
 
     #[test]
