@@ -38,13 +38,13 @@ const IDT_ADDRESS: u64 = 0xa000;
 const EXCEPTION_STUB_ADDRESS: u64 = 0xb000;
 const EXCEPTION_STACK_BOTTOM: u64 = 0xc000;
 const EXCEPTION_STACK_TOP: u64 = 0xd000;
-// Includes the 0xd000..0xe000 Tool injection scratch page and 128 private
+// Includes the 0xd000..0xe000 Tool injection scratch page and 160 private
 // trampoline/frame pairs used by concurrent KVM guest threads.
 // AUTONOMOUS-BOT-IMPLEMENTED: Reserve transport slots for savevm worker pools.
 // TODO-HUMAN-REVIEW(impl-kvm-ratchet-17): Review the bounded per-thread transport layout.
 pub(crate) const THREAD_SYSCALL_AREA_START: u64 = 0xe000;
 pub(crate) const THREAD_SYSCALL_AREA_STRIDE: u64 = 2 * PAGE_SIZE;
-pub(crate) const MAX_GUEST_THREADS: u64 = 128;
+pub(crate) const MAX_GUEST_THREADS: u64 = 160;
 pub(crate) const BOOT_RESERVED_END: u64 =
     THREAD_SYSCALL_AREA_START + THREAD_SYSCALL_AREA_STRIDE * MAX_GUEST_THREADS;
 
