@@ -1463,23 +1463,27 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
                 syscall,
                 invoke_syscall,
                 read_registers,
+                write_registers,
             );
             return match outcome {
-                Ok(DbiSyscallOutcome::AllowOriginal) => false,
+                Ok(DbiSyscallOutcome::ExecuteOriginal(syscall)) => {
+                    unsafe { write_deferred_syscall(syscall, deferred_sysnum, deferred_args) };
+                    2
+                }
                 Ok(DbiSyscallOutcome::Suppress(value)) => {
                     unsafe { result.write(value) };
                     TOTAL_REWRITTEN.fetch_add(1, Ordering::Relaxed);
-                    true
+                    1
                 }
                 Err(Error::Errno(errno)) => {
                     unsafe { result.write(-(errno.into_raw() as i64)) };
                     TOTAL_REWRITTEN.fetch_add(1, Ordering::Relaxed);
-                    true
+                    1
                 }
                 Err(_) => {
                     unsafe { result.write(-(Errno::EIO.into_raw() as i64)) };
                     TOTAL_REWRITTEN.fetch_add(1, Ordering::Relaxed);
-                    true
+                    1
                 }
             };
         }
@@ -1508,23 +1512,27 @@ pub unsafe extern "C" fn reverie_dbi_runtime_pre_syscall(
                 syscall,
                 invoke_syscall,
                 read_registers,
+                write_registers,
             );
             return match outcome {
-                Ok(DbiSyscallOutcome::AllowOriginal) => false,
+                Ok(DbiSyscallOutcome::ExecuteOriginal(syscall)) => {
+                    unsafe { write_deferred_syscall(syscall, deferred_sysnum, deferred_args) };
+                    2
+                }
                 Ok(DbiSyscallOutcome::Suppress(value)) => {
                     unsafe { result.write(value) };
                     TOTAL_REWRITTEN.fetch_add(1, Ordering::Relaxed);
-                    true
+                    1
                 }
                 Err(Error::Errno(errno)) => {
                     unsafe { result.write(-(errno.into_raw() as i64)) };
                     TOTAL_REWRITTEN.fetch_add(1, Ordering::Relaxed);
-                    true
+                    1
                 }
                 Err(_) => {
                     unsafe { result.write(-(Errno::EIO.into_raw() as i64)) };
                     TOTAL_REWRITTEN.fetch_add(1, Ordering::Relaxed);
-                    true
+                    1
                 }
             };
         }
