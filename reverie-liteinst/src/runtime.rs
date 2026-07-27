@@ -653,6 +653,8 @@ unsafe fn trace_event(event: &SyscallEvent, result: Option<i64>) {
         }
         line.push_bytes(b" syscall=");
         line.push_signed(event.number);
+        line.push_bytes(b" arg1=");
+        line.push_unsigned(event.args[1]);
     } else if mode == TOOL_STRACE {
         output_fd = libc::STDERR_FILENO;
         let pid = unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) };

@@ -89,7 +89,7 @@ fn preload_path() -> PathBuf {
     .expect("cargo did not build the preload cdylib")
 }
 
-fn parse_compatibility_events(events: &[u8]) -> Vec<(u32, u32, i64)> {
+fn parse_compatibility_events(events: &[u8]) -> Vec<(u32, u32, i64, u64)> {
     let events = std::str::from_utf8(events).unwrap();
     let prefix = format!("reverie-liteinst: tool=compat cookie={TEST_EVENT_COOKIE} pid=");
     events
@@ -101,13 +101,17 @@ fn parse_compatibility_events(events: &[u8]) -> Vec<(u32, u32, i64)> {
             let (pid, record) = record
                 .split_once(" tid=")
                 .unwrap_or_else(|| panic!("event record is missing TID: {line}"));
-            let (tid, syscall) = record
+            let (tid, record) = record
                 .split_once(" syscall=")
                 .unwrap_or_else(|| panic!("event record is missing syscall: {line}"));
+            let (syscall, arg1) = record
+                .split_once(" arg1=")
+                .unwrap_or_else(|| panic!("event record is missing arg1: {line}"));
             (
                 pid.parse().unwrap(),
                 tid.parse().unwrap(),
                 syscall.parse().unwrap(),
+                arg1.parse().unwrap(),
             )
         })
         .collect()
@@ -144,7 +148,10 @@ fn compatibility_tool_emits_stable_events() {
     assert!(
         events.lines().all(|line| line
             .strip_prefix("reverie-liteinst: tool=compat syscall=")
-            .is_some_and(|number| number.parse::<i64>().is_ok())),
+            .and_then(|record| record.split_once(" arg1="))
+            .is_some_and(|(number, arg1)| {
+                number.parse::<i64>().is_ok() && arg1.parse::<u64>().is_ok()
+            })),
         "unexpected events: {events}"
     );
     assert!(events.lines().count() > 1, "missing events: {events}");
@@ -172,7 +179,7 @@ fn compatibility_event_fd_separates_guest_stderr() {
     let records = parse_compatibility_events(&events);
     assert!(records.len() > 1, "missing events");
     assert!(
-        records.iter().all(|(_, _, syscall)| *syscall != 999999),
+        records.iter().all(|(_, _, syscall, _)| *syscall != 999999),
         "guest stderr leaked into the event channel"
     );
 }
@@ -343,8 +350,8 @@ fn compatibility_threads_emit_distinct_tids() {
     assert_eq!(output.stdout, b"threads-ok\n");
 
     let records = parse_compatibility_events(&events);
-    let pids: BTreeSet<_> = records.iter().map(|(pid, _, _)| *pid).collect();
-    let tids: BTreeSet<_> = records.iter().map(|(_, tid, _)| *tid).collect();
+    let pids: BTreeSet<_> = records.iter().map(|(pid, _, _, _)| *pid).collect();
+    let tids: BTreeSet<_> = records.iter().map(|(_, tid, _, _)| *tid).collect();
     assert_eq!(pids.len(), 1, "thread workers changed process: {pids:?}");
     assert!(
         tids.len() >= 5,
@@ -362,8 +369,8 @@ fn compatibility_raw_thread_does_not_require_loader_tls() {
     assert_eq!(output.stdout, b"raw-thread-ok\n");
 
     let records = parse_compatibility_events(&events);
-    let pids: BTreeSet<_> = records.iter().map(|(pid, _, _)| *pid).collect();
-    let tids: BTreeSet<_> = records.iter().map(|(_, tid, _)| *tid).collect();
+    let pids: BTreeSet<_> = records.iter().map(|(pid, _, _, _)| *pid).collect();
+    let tids: BTreeSet<_> = records.iter().map(|(_, tid, _, _)| *tid).collect();
     assert_eq!(pids.len(), 1, "raw thread changed process: {pids:?}");
     assert!(
         tids.len() >= 2,
@@ -420,7 +427,7 @@ fn compatibility_fork_stress_instruments_every_process() {
     assert_eq!(output.stdout, b"fork-ok\n");
 
     let records = parse_compatibility_events(&events);
-    let pids: BTreeSet<_> = records.iter().map(|(pid, _, _)| *pid).collect();
+    let pids: BTreeSet<_> = records.iter().map(|(pid, _, _, _)| *pid).collect();
     assert!(
         pids.len() >= 17,
         "expected parent and sixteen children, got {pids:?}"
@@ -439,8 +446,8 @@ fn compatibility_seeded_chaos_combines_threads_signals_and_forks() {
         assert_eq!(output.stdout, b"chaos-ok\n", "seed={seed}");
 
         let records = parse_compatibility_events(&events);
-        let pids: BTreeSet<_> = records.iter().map(|(pid, _, _)| *pid).collect();
-        let tids: BTreeSet<_> = records.iter().map(|(_, tid, _)| *tid).collect();
+        let pids: BTreeSet<_> = records.iter().map(|(pid, _, _, _)| *pid).collect();
+        let tids: BTreeSet<_> = records.iter().map(|(_, tid, _, _)| *tid).collect();
         assert!(pids.len() >= 18, "seed={seed}: pids={pids:?}");
         assert!(tids.len() >= 22, "seed={seed}: tids={tids:?}");
     }
@@ -552,25 +559,25 @@ fn assert_compatibility_fork_event(arguments: &[&str], syscall: i64) {
     assert_eq!(
         records
             .iter()
-            .filter(|(_, _, number)| *number == syscall)
+            .filter(|(_, _, number, _)| *number == syscall)
             .count(),
         1,
         "successful fork must have one parent-owned compatibility event"
     );
     let clone_position = records
         .iter()
-        .position(|(_, _, number)| *number == syscall)
+        .position(|(_, _, number, _)| *number == syscall)
         .unwrap();
     let parent_pid = records[clone_position].0;
     let child_position = records
         .iter()
-        .position(|(pid, _, _)| *pid != parent_pid)
+        .position(|(pid, _, _, _)| *pid != parent_pid)
         .expect("child instrumentation event is missing");
     assert!(
         clone_position < child_position,
         "clone marker must precede child activity"
     );
-    let pids: BTreeSet<_> = records.iter().map(|(pid, _, _)| *pid).collect();
+    let pids: BTreeSet<_> = records.iter().map(|(pid, _, _, _)| *pid).collect();
     assert!(
         pids.len() >= 2,
         "child instrumentation events are missing: {pids:?}"
