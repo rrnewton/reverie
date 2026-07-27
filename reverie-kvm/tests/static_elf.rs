@@ -33,7 +33,10 @@ use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::PathPtr;
 use reverie::syscalls::Syscall;
 use reverie::syscalls::Sysno;
+use reverie_kvm::CounterTool;
 use reverie_kvm::Error;
+use reverie_kvm::HierarchicalCounterTool;
+use reverie_kvm::HierarchicalTotals;
 use reverie_kvm::KvmBackend;
 use reverie_kvm::StraceTool;
 
@@ -1640,6 +1643,60 @@ fn tool_rpc_response_reaches_intercepted_static_elf_syscall() {
     assert_eq!(
         log.requests(),
         vec![(Pid::from_raw(1), 1), (Pid::from_raw(1), 2)]
+    );
+}
+
+#[test]
+fn counter_tools_aggregate_intercepted_static_elf_syscalls() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM counter-ELF test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let code = [
+        0xb8, 0x27, 0x00, 0x00, 0x00, 0x0f, 0x05, // getpid
+        0xb8, 0x27, 0x00, 0x00, 0x00, 0x0f, 0x05, // getpid
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // exit_group
+        0x31, 0xff, 0x0f, 0x05, // status 0; syscall
+        0x0f, 0x0b, // ud2
+    ];
+    let image = static_elf(&code);
+
+    let mut direct_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    direct_backend
+        .install_static_elf(&image, "/bin/counter-rpc")
+        .unwrap();
+    let (counter, exit_code, stdout, stderr) = futures::executor::block_on(
+        direct_backend.run_static_elf_with_tool::<CounterTool>((), true),
+    )
+    .unwrap();
+    assert_eq!(exit_code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(counter.total(), 3);
+
+    let mut hierarchical_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    hierarchical_backend
+        .install_static_elf(&image, "/bin/hierarchical-counter-rpc")
+        .unwrap();
+    let (counter, exit_code, stdout, stderr) = futures::executor::block_on(
+        hierarchical_backend.run_static_elf_with_tool::<HierarchicalCounterTool>((), true),
+    )
+    .unwrap();
+    assert_eq!(exit_code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+    assert_eq!(
+        counter.totals(),
+        HierarchicalTotals {
+            total_syscalls: 3,
+            exited_procs: 1,
+            exited_threads: 1,
+        }
     );
 }
 
