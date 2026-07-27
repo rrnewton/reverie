@@ -127,7 +127,7 @@ impl Tool for StraceTool {
             let formatted = format!("{}", syscall.display_with_outputs(&guest.memory()));
             eprintln!("[kvm-strace] {formatted} = ?");
             guest.send_rpc((name, formatted)).await;
-            return guest.tail_inject(syscall).await;
+            guest.tail_inject(syscall).await
         }
         // Execute the syscall through the backend `SyscallExecutor` first (like
         // the ptrace `Strace` tool's `inject`), so output buffers are populated
