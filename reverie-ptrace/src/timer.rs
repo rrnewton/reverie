@@ -73,7 +73,7 @@ pub(crate) fn get_pmu_config() -> &'static PmuConfig {
 }
 
 /// Processor-specific PMU event settings used by precise ptrace timers.
-// TODO-HUMAN-REVIEW(PR-TBD): Review the programmatic PMU skid-margin override API.
+// TODO-HUMAN-REVIEW(PR-186): Review the programmatic PMU skid-margin override API.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PmuConfig {
     rcb_event: u64,
