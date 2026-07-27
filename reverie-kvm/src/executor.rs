@@ -5753,7 +5753,7 @@ fn deterministic_random_bytes(tid: i32, length: usize, byte_stride: u8, first_by
 // Child processes and guest workers bypass Detcore's virtual scheduler. Validate
 // their sleep requests, but do not block the supervisor on host wall time;
 // subscribed root-process sleeps continue to use Detcore's time model.
-// TODO-HUMAN-REVIEW(impl-kvm-ratchet-28): Review nonblocking KVM child sleeps.
+// TODO-HUMAN-REVIEW(PR-182): Review nonblocking KVM child sleeps.
 fn nanosleep(memory: &GuestMemory, args: &[u64; 6]) -> i64 {
     validate_sleep_request(memory, args[0])
 }
