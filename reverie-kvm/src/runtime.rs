@@ -45,6 +45,8 @@ use crate::bootstrap::configure_process_syscall_return;
 use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
+use crate::executor::is_process_syscall;
+
 const GUEST_PID: i32 = 1;
 const STACK_CAPACITY: usize = 4096;
 const TOOL_STACK_BOTTOM: u64 = TOOL_STACK_TOP - STACK_CAPACITY as u64;
@@ -852,18 +854,22 @@ impl KvmBackend {
             HandlerOutcome::TailInjected { .. } => {}
         }
         auxv = executor.auxv().to_vec();
-        if let Some(code) = executor.take_exit() {
+        if let Some(exit) = executor.take_exit() {
+            if exit.group {
+                self.request_guest_thread_group_exit(exit.code);
+            }
+            self.cancel_guest_threads();
             notify_tool_exit(
                 tool,
                 pid,
                 &global_state,
                 &config,
                 thread_state,
-                ExitStatus::Exited(code),
+                ExitStatus::Exited(exit.code),
             )
             .await?;
             let (stdout, stderr) = executor.take_output();
-            return Ok((global_state, code, stdout, stderr));
+            return Ok((global_state, exit.code, stdout, stderr));
         }
 
         // The ELF image is already installed when this backend begins. Present
@@ -1026,7 +1032,13 @@ impl KvmBackend {
                 (return_slot as *mut u64).write(0);
             }
             if handler_process_completed && !handler_replaced_image {
-                configure_process_syscall_return(&memory, &self.vcpu, result, None)?;
+                configure_process_syscall_return(
+                    &memory,
+                    &self.vcpu,
+                    self.syscall_frame_address,
+                    result,
+                    None,
+                )?;
             }
             let pending_segment = executor.take_segment();
             let mut pending_exit = executor.take_exit();
