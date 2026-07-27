@@ -233,6 +233,7 @@ macro_rules! generate_signal_handlers {
             $(
                 #[allow(non_snake_case)]
                 pub fn $signal_name<T: ToolGlobal>(handler_input: HandlerInput) {
+                    signal::guard::mark_signal_dispatched(signal_values::$signal_name);
 
                     T::global().handle_signal_event(signal_values::$signal_name);
 
@@ -436,6 +437,24 @@ macro_rules! generate_signal_handlers {
                 .and_then(|pair| *pair)
                 .expect("registered signal action is missing")
                 .guest_facing_action
+        }
+
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-175): Review pending caught-signal selection for sigsuspend.
+        pub(crate) fn pending_unblocked_caught_signal(mask: &crate::utils::KernelSigset) -> bool {
+            $(
+                let signal = signal_values::$signal_name;
+                if signal::guard::signal_is_pending(signal) && !mask.contains(signal) {
+                    let action = get_registered_guest_handler(signal);
+                    if !matches!(
+                        action.sa_sigaction,
+                        libc::SIG_DFL | libc::SIG_IGN | libc::SIG_ERR
+                    ) {
+                        return true;
+                    }
+                }
+            )+
+            false
         }
     };
 }
