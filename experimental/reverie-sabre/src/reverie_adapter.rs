@@ -360,7 +360,7 @@ where
     T: ReverieTool,
 {
     thread_state: Option<T::ThreadState>,
-    // TODO-HUMAN-REVIEW(PR-209): Review protection of the coordinator socket
+    // TODO-HUMAN-REVIEW(PR-212): Review protection of the coordinator socket
     // from fork children that close inherited descriptors before exec.
     rpc: ProtectedFd<BlockingRpcClient<T::GlobalState>>,
     exit_handled: bool,
@@ -1246,9 +1246,11 @@ where
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-212): Review clone3 thread-state detection.
 fn is_thread_clone(pid: Pid, number: Sysno, args: SyscallArgs) -> bool {
     let flags = match number {
         Sysno::clone => args.arg0 as u64,
+        // AUTONOMOUS-BOT-IMPLEMENTED
         Sysno::clone3 if args.arg1 >= std::mem::size_of::<u64>() => {
             let Some(address) = Addr::<u64>::from_raw(args.arg0) else {
                 return false;

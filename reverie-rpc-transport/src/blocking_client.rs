@@ -50,7 +50,7 @@ pub struct BlockingRpcClient<G: GlobalTool> {
     _phantom: PhantomData<fn() -> G>,
 }
 
-// TODO-HUMAN-REVIEW(PR-209): Review raw descriptor exposure for in-guest
+// TODO-HUMAN-REVIEW(PR-212): Review raw descriptor exposure for in-guest
 // runtimes that must hide coordinator transport descriptors from the guest.
 impl<G: GlobalTool> AsRawFd for BlockingRpcClient<G> {
     fn as_raw_fd(&self) -> RawFd {
