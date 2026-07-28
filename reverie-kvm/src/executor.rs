@@ -4753,9 +4753,11 @@ fn open_synthetic_proc_directory(
     flags: u64,
     close_on_exec: bool,
 ) -> i64 {
-    let unsupported =
-        (libc::O_CREAT | libc::O_EXCL | libc::O_PATH | libc::O_TMPFILE | libc::O_TRUNC) as u64;
+    let unsupported = (libc::O_CREAT | libc::O_EXCL | libc::O_PATH | libc::O_TRUNC) as u64;
     if flags & unsupported != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+    if flags & libc::O_TMPFILE as u64 == libc::O_TMPFILE as u64 {
         return negative_errno(libc::EINVAL);
     }
     if flags & libc::O_ACCMODE as u64 != libc::O_RDONLY as u64 {
@@ -7285,7 +7287,20 @@ mod tests {
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
 
-        let proc_fd = open_readonly(&mut memory, &mut state, "/proc");
+        write_c_string(&mut memory, 0x100, "/proc");
+        let proc_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [
+                libc::AT_FDCWD as u64,
+                0x100,
+                (libc::O_RDONLY | libc::O_DIRECTORY) as u64,
+                0,
+                0,
+                0,
+            ],
+        );
         assert!(proc_fd >= 0, "open /proc failed: {proc_fd}");
 
         let stat_address = 0x1000;
