@@ -1647,6 +1647,12 @@ fn writev(
 // TODO-HUMAN-REVIEW(#120): guest readv scatters into each iovec via the
 // scalar read path; a short read or EOF stops the scatter, matching readv(2).
 fn readv(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(fd) = libc::c_int::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    if state.proc_files.contains_key(&fd) {
+        return negative_errno(libc::ENOSYS);
+    }
     let Ok(count) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
@@ -8002,6 +8008,18 @@ mod tests {
         // An unlisted /proc path is not part of the synthesized surface.
         assert!(synthetic_proc_content(&state, b"/proc/self/maps").is_none());
         assert!(synthetic_proc_content(&state, b"/etc/passwd").is_none());
+
+        let fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert!(fd >= 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_readv,
+                [fd as u64, 0x200, 1, 0, 0, 0]
+            ),
+            negative_errno(libc::ENOSYS)
+        );
     }
 
     #[test]
