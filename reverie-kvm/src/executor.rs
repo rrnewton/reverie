@@ -3340,7 +3340,7 @@ fn setsockopt(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
 }
 
 // TODO-HUMAN-REVIEW(PR-213): Review bounded host-backed AF_INET bind translation.
-// TODO-HUMAN-REVIEW(PR-216): Review filesystem-backed AF_UNIX bind translation.
+// TODO-HUMAN-REVIEW(PR-217): Review filesystem-backed AF_UNIX bind translation.
 fn bind(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
@@ -3460,7 +3460,7 @@ fn socketpair(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
-// TODO-HUMAN-REVIEW(PR-216): Review filesystem-backed AF_UNIX connect translation.
+// TODO-HUMAN-REVIEW(PR-217): Review filesystem-backed AF_UNIX connect translation.
 fn connect(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
