@@ -190,7 +190,7 @@ extern void reverie_dbi_runtime_background_init(void *argument);
 extern int32_t reverie_dbi_runtime_ready(uint64_t image_generation);
 extern void reverie_dbi_runtime_process_exit(void);
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review copied-child argument and errno policy ABI.
+// TODO-HUMAN-REVIEW(PR-219): Review copied-child argument and errno policy ABI.
 extern int32_t reverie_dbi_runtime_copied_syscall(int64_t sysnum,
                                                   const uint64_t *args);
 // TODO-HUMAN-REVIEW(PR-154): Review the deferred lifecycle syscall callback ABI.
