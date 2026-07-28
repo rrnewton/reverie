@@ -5531,7 +5531,7 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-211): Review KVM advisory-lock forwarding.
         command @ (libc::F_SETLK | libc::F_SETLKW | libc::F_OFD_SETLK | libc::F_OFD_SETLKW) => {
-            let lock = match read_guest_struct::<libc::flock>(memory, args[2]) {
+            let mut lock = match read_guest_struct::<libc::flock>(memory, args[2]) {
                 Ok(lock) => lock,
                 Err(error) => return error,
             };
@@ -5539,8 +5539,14 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
             // duplicate releases process-associated POSIX locks, whereas OFD
             // locks correctly remain attached to the shared open description.
             let host_command = match command {
-                libc::F_SETLK => libc::F_OFD_SETLK,
-                libc::F_SETLKW => libc::F_OFD_SETLKW,
+                libc::F_SETLK => {
+                    lock.l_pid = 0;
+                    libc::F_OFD_SETLK
+                }
+                libc::F_SETLKW => {
+                    lock.l_pid = 0;
+                    libc::F_OFD_SETLKW
+                }
                 command => command,
             };
             // SAFETY: host_fd is live and lock is a fully initialized flock value.
@@ -8220,7 +8226,9 @@ mod tests {
             l_whence: libc::SEEK_SET as libc::c_short,
             l_start: 0,
             l_len: 0,
-            l_pid: 0,
+            // POSIX SETLK ignores this output-only field; OFD SETLK requires
+            // zero, so translation must not pass a caller's stale value.
+            l_pid: 1234,
         };
         assert_eq!(write_struct(&mut memory, LOCK, &lock), 0);
         assert_eq!(
@@ -8238,6 +8246,8 @@ mod tests {
             synthetic_proc_content(&state, b"/proc/self/../locks").unwrap(),
             locks
         );
+        lock.l_pid = 0;
+        assert_eq!(write_struct(&mut memory, LOCK, &lock), 0);
         let conflict = syscall_result(
             &mut memory,
             &mut state,
