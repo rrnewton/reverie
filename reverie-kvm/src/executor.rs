@@ -243,6 +243,7 @@ fn execute_basic_syscall_with_output(
 ) -> SyscallAction {
     let args = request.args();
     let number = request.number();
+    let capture_output = output.is_some();
 
     if number == libc::SYS_exit as u64 || number == libc::SYS_exit_group as u64 {
         return SyscallAction::Exit(args[0] as i32);
@@ -341,7 +342,7 @@ fn execute_basic_syscall_with_output(
         // AUTONOMOUS-BOT-IMPLEMENTED
         creat(memory, state, args)
     } else if number == libc::SYS_fstat as u64 {
-        fstat(memory, state, args)
+        fstat(memory, state, args, capture_output)
     } else if number == libc::SYS_stat as u64 {
         path_stat(memory, state, args, 0)
     } else if number == libc::SYS_lstat as u64 {
@@ -3454,10 +3455,19 @@ fn fd_xattr_list(state: &LoadedStaticElf, raw_fd: u64) -> i64 {
     }
 }
 
-fn fstat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn fstat(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    if capture_output && output_alias(state, fd).is_some() {
+        let stat = synthetic_captured_output_stat(state, fd);
+        return write_struct(memory, args[1], &stat);
+    }
     let Some(host_fd) = host_fd(state, fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -3474,6 +3484,24 @@ fn fstat(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         sanitize_stat_timestamps(&mut stat);
     }
     write_struct(memory, args[1], &stat)
+}
+
+// TODO-HUMAN-REVIEW(PR-205): Review synthetic metadata for in-memory captured output.
+fn synthetic_captured_output_stat(state: &LoadedStaticElf, fd: libc::c_int) -> libc::stat {
+    // Captured writes never reach the host descriptor, so exposing that
+    // descriptor's type, size, or inode leaks the invoking shell into the
+    // guest. Model the capture sink as the pipe used by process-based backends.
+    // SAFETY: libc::stat is plain-old-data; a zeroed value is valid.
+    let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+    stat.st_dev = synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR);
+    stat.st_ino = synthetic_guest_fd_object_inode(state, fd);
+    stat.st_mode = libc::S_IFIFO | 0o600;
+    stat.st_nlink = 1;
+    stat.st_uid = 0;
+    stat.st_gid = 0;
+    stat.st_blksize = PAGE_SIZE as libc::blksize_t;
+    sanitize_stat_timestamps(&mut stat);
+    stat
 }
 
 fn path_stat(
@@ -7365,6 +7393,41 @@ mod tests {
         assert_eq!(path_stat.st_ino, stat.st_ino);
         assert_eq!(path_stat.st_size, stat.st_size);
         assert_eq!(path_stat.st_mode, stat.st_mode);
+    }
+
+    #[test]
+    fn captured_output_fstat_is_synthetic_and_stable() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let mut output = CapturedOutput::default();
+        let mut stats = Vec::new();
+
+        for (fd, address) in [(libc::STDOUT_FILENO, 0x1000), (libc::STDERR_FILENO, 0x1200)] {
+            let action = execute_basic_syscall_with_output(
+                &mut memory,
+                &mut state,
+                &SyscallRequest::new(libc::SYS_fstat as u64, [fd as u64, address, 0, 0, 0, 0]),
+                Some(&mut output),
+            );
+            assert!(matches!(
+                action,
+                SyscallAction::Continue {
+                    result: 0,
+                    segment: None
+                }
+            ));
+            let stat: libc::stat = read_struct(&memory, address);
+            assert_eq!(stat.st_dev, synthetic_dev(SYNTHETIC_GUEST_FD_DEV_MINOR));
+            assert_eq!(stat.st_ino, synthetic_guest_fd_object_inode(&state, fd));
+            assert_eq!(stat.st_mode, libc::S_IFIFO | 0o600);
+            assert_eq!(stat.st_size, 0);
+            assert_eq!(stat.st_blocks, 0);
+            assert_eq!(stat.st_mtime, DETERMINISTIC_METADATA_SECONDS);
+            stats.push(stat);
+        }
+
+        assert_ne!(stats[0].st_ino, stats[1].st_ino);
     }
 
     #[test]
