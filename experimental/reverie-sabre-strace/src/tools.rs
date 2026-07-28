@@ -125,13 +125,13 @@ pub(super) enum ToolKind {
     /// Buffer standard output and error writes by logical epochs.
     ChunkyPrint,
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-198): Review exact production debug-tool hosting.
+    // TODO-HUMAN-REVIEW(PR-200): Review exact production debug-tool hosting.
     /// Run the production no-subscription debug tool without a GDB server.
     Debug,
     /// Decode and print every intercepted syscall.
     Strace,
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-198): Review exact production minimal-strace hosting.
+    // TODO-HUMAN-REVIEW(PR-200): Review exact production minimal-strace hosting.
     /// Print every intercepted syscall before injecting it.
     StraceMinimal,
     /// Count intercepted syscalls in the current plugin process.

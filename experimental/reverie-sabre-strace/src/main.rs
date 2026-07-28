@@ -25,11 +25,11 @@ enum ToolKind {
     ChromeTrace,
     ChunkyPrint,
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-198): Review SaBRe production debug-tool selection.
+    // TODO-HUMAN-REVIEW(PR-200): Review SaBRe production debug-tool selection.
     Debug,
     Strace,
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-198): Review SaBRe minimal-strace selection.
+    // TODO-HUMAN-REVIEW(PR-200): Review SaBRe minimal-strace selection.
     StraceMinimal,
     Counter1,
     Counter1Exact,
