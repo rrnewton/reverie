@@ -305,7 +305,7 @@ pub struct KvmBackend {
     thread_group: Arc<GuestThreadGroup>,
     thread_slot: Option<usize>,
     is_guest_thread: bool,
-    // TODO-HUMAN-REVIEW(PR-TBD): Review per-vCPU deterministic TSC semantics.
+    // TODO-HUMAN-REVIEW(PR-222): Review per-vCPU deterministic TSC semantics.
     logical_tsc: u64,
     pub(crate) static_elf: Option<LoadedStaticElf>,
     stdin: Option<File>,
@@ -941,7 +941,7 @@ impl KvmBackend {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED: Hide the host TSC from userspace guests.
-    // TODO-HUMAN-REVIEW(PR-TBD): Review deterministic RDTSC/RDTSCP emulation.
+    // TODO-HUMAN-REVIEW(PR-222): Review deterministic RDTSC/RDTSCP emulation.
     pub(crate) fn try_resume_timestamp_counter(&mut self) -> Result<bool> {
         let Some(exception) = self.static_elf_exception()? else {
             return Ok(false);
