@@ -6937,6 +6937,55 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_proc_directory_resolves_relative_allowlisted_files() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        let proc_fd = open_readonly(&mut memory, &mut state, "/proc");
+        assert!(proc_fd >= 0, "open /proc failed: {proc_fd}");
+
+        let stat_address = 0x1000;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fstat,
+                [proc_fd as u64, stat_address, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let stat: libc::stat = read_struct(&memory, stat_address);
+        assert_eq!(stat.st_mode, libc::S_IFDIR | 0o555);
+
+        write_c_string(&mut memory, 0x100, "cpuinfo");
+        let cpuinfo_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_openat,
+            [proc_fd as u64, 0x100, libc::O_RDONLY as u64, 0, 0, 0],
+        );
+        assert!(cpuinfo_fd >= 0, "openat cpuinfo failed: {cpuinfo_fd}");
+        let content = read_fd_to_end(&mut memory, &mut state, cpuinfo_fd);
+        assert!(
+            content.starts_with(b"processor\t: 0\n"),
+            "{}",
+            String::from_utf8_lossy(&content)
+        );
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_getdents64,
+                [proc_fd as u64, 0x2000, 0x400, 0, 0, 0]
+            ),
+            0,
+            "the intentionally unenumerable synthetic directory must appear empty"
+        );
+    }
+
+    #[test]
     fn synthetic_proc_self_reflects_guest_identity() {
         let root = TestDir::new();
         let mut state = test_state(&root.0); // pid=1, ppid=0, argv0="test"
