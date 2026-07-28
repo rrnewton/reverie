@@ -1729,7 +1729,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     args[i] = (uint64_t)dr_syscall_get_param(drcontext, i);
 
   // AUTONOMOUS-BOT-IMPLEMENTED
-  // TODO-HUMAN-REVIEW(PR-247): Review copied-process Detcore state rebasing.
+  // TODO-HUMAN-REVIEW(PR-255): Review copied-process Detcore state rebasing.
   if (has_copied_runtime() && runtime_uses_external_global() &&
       !copied_process_runtime_initialized) {
     int32_t initialized = reverie_dbi_runtime_thread_init(
@@ -1870,7 +1870,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       return false;
     }
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-247): Review pre-exit guest-transport deregistration.
+    // TODO-HUMAN-REVIEW(PR-255): Review pre-exit guest-transport deregistration.
     if (runtime_uses_external_global() && sysnum == SYS_exit_group)
       reverie_dbi_runtime_thread_exit(
           counters, drcontext, (int32_t)dr_get_thread_id(drcontext),

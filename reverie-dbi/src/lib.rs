@@ -1191,7 +1191,7 @@ pub fn run_tool_thread_exit<T: Tool>(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-247): Review guest-transport thread-exit RPC.
+// TODO-HUMAN-REVIEW(PR-255): Review guest-transport thread-exit RPC.
 /// Drives an external tool's thread-exit hook from a DynamoRIO application callback.
 ///
 /// Unlike [`run_tool_thread_exit`], coordinator RPC uses injected guest
