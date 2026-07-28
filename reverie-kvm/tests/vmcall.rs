@@ -193,7 +193,7 @@ fn deterministic_cpuid_policy_is_visible_inside_vm() {
     assert_eq!(extended[3], u32::from_le_bytes(*b"ineI"));
     assert_eq!(
         read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 112),
-        [0x0000_0663, 0x0000_0000, 0x0000_0001, 0x2010_0800],
+        [0x0000_0663, 0x0000_0000, 0x0000_0001, 0x2010_0800 | bit(27),],
     );
     assert_eq!(
         read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 128),
