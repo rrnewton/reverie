@@ -247,6 +247,7 @@ static atomic_flag pending_clone_lock = ATOMIC_FLAG_INIT;
 static _Atomic int32_t pending_clone_virtual_child;
 static _Atomic int32_t pending_clone_creator_pid;
 static _Atomic uint64_t pending_clone_flags;
+static bool copied_process_runtime_initialized;
 
 static bool map_inherited_virtual_identity_state(void) {
   struct stat status;
@@ -854,7 +855,10 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
       (result <= 0 || (flags & CLONE_VM) == 0))
     release_clone_identity_handoff(virtual_child);
   counters->pending_virtual_child = 0;
-  counters->pending_clone_flags = 0;
+  if (!(result == 0 && (flags & CLONE_THREAD) == 0 &&
+        runtime_owner_pid != 0 && dr_get_process_id() != runtime_owner_pid &&
+        runtime_uses_external_global()))
+    counters->pending_clone_flags = 0;
   return virtual_child;
 }
 
@@ -1723,6 +1727,24 @@ static bool pre_syscall(void *drcontext, int sysnum) {
 
   for (i = 0; i != 6; ++i)
     args[i] = (uint64_t)dr_syscall_get_param(drcontext, i);
+
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-247): Review copied-process Detcore state rebasing.
+  if (has_copied_runtime() && runtime_uses_external_global() &&
+      !copied_process_runtime_initialized) {
+    int32_t initialized = reverie_dbi_runtime_thread_init(
+        counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
+        (int32_t)dr_get_process_id(), in_tree_parent_pid(),
+        atomic_load_explicit(&branch_count, memory_order_relaxed), 0,
+        invoke_syscall, read_registers, write_registers);
+    if (initialized != 0) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbi: copied process state initialization failed\n");
+      exit_runtime_tree(101);
+      return false;
+    }
+    copied_process_runtime_initialized = true;
+  }
 
   if (has_copied_runtime() && !runtime_uses_external_global()) {
     // Record this copied child's virtual identity before any refusal so the
