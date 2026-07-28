@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use core::cell::Cell;
 use core::marker::PhantomData;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::Ordering;
@@ -29,6 +30,18 @@ lazy_static! {
 
 thread_local! {
     pub static THREAD_SLOT_KEY: Option<SlotKey> = generate_thread_and_slot_key();
+    static THREAD_START_NOTIFIED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Notifies the tool about a clone child before guest execution resumes, while
+/// deferring allocation of the SaBRe thread-registry slot until its first
+/// callback after pthread has initialized child TLS.
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-214): Review allocation-free clone-child notification.
+pub(crate) fn notify_current_thread_start<E: EventSink>() {
+    let pid_tid = PidTid::current();
+    THREAD_START_NOTIFIED.with(|notified| notified.set(true));
+    E::on_new_thread(pid_tid);
 }
 
 /// We are serializing the state information directly to the bits of an unsigned
@@ -338,7 +351,10 @@ impl<E: EventSink> Thread<E> {
         // new but keep the new field marked in the returned instance.
         if result.new {
             let _guard = guard::enter_implicit_signal_exclusion_zone();
-            E::on_new_thread(PidTid::current());
+            let already_notified = THREAD_START_NOTIFIED.with(|notified| notified.replace(false));
+            if !already_notified {
+                E::on_new_thread(PidTid::current());
+            }
 
             // Unset the `new` flag in the atomic repr, so no other calls to
             // current can return a "new" thread
