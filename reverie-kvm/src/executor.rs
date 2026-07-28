@@ -227,7 +227,7 @@ pub(crate) fn is_process_syscall(number: u64) -> bool {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review direct-worker classification for CLONE_THREAD.
+// TODO-HUMAN-REVIEW(PR-216): Review direct-worker classification for CLONE_THREAD.
 pub(crate) fn is_thread_clone_request(request: &SyscallRequest, memory: &GuestMemory) -> bool {
     if request.number() == libc::SYS_clone as u64 {
         return request.args()[0] & libc::CLONE_THREAD as u64 != 0;
