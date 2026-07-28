@@ -120,7 +120,7 @@ pub(crate) struct LoadedStaticElf {
     // Direct KVM workers do not participate in Detcore's virtual clock. Keep a
     // private logical clock so repeated observations advance deterministically
     // without making host thread scheduling observable.
-    // TODO-HUMAN-REVIEW(PR-TBD): Review direct-worker logical clock semantics.
+    // TODO-HUMAN-REVIEW(PR-221): Review direct-worker logical clock semantics.
     pub logical_clock_ns: u64,
     pub umask: libc::mode_t,
     // TODO-HUMAN-REVIEW(PR-181): Review virtual capability lifecycle state.
