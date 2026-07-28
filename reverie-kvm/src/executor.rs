@@ -3474,7 +3474,7 @@ fn getsockname(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6
     write_struct(memory, args[2], &length)
 }
 
-// TODO-HUMAN-REVIEW(PR-217): Review blocking accept outside the shared descriptor-table lock.
+// TODO-HUMAN-REVIEW(PR-218): Review blocking accept outside the shared descriptor-table lock.
 fn accept_socket(
     memory: &mut GuestMemory,
     state: &LoadedStaticElf,
@@ -3650,7 +3650,7 @@ fn shutdown(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     zero_or_errno(unsafe { libc::shutdown(host_fd, how) })
 }
 
-// TODO-HUMAN-REVIEW(PR-217): Review bounded guest sendto translation and SIGPIPE suppression.
+// TODO-HUMAN-REVIEW(PR-218): Review bounded guest sendto translation and SIGPIPE suppression.
 fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Ok(fd) = libc::c_int::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
@@ -3706,7 +3706,7 @@ fn sendto(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-217): Review bounded recvfrom buffer and peer-address copyback semantics.
+// TODO-HUMAN-REVIEW(PR-218): Review bounded recvfrom buffer and peer-address copyback semantics.
 fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Ok(fd) = libc::c_int::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
