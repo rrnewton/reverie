@@ -2093,6 +2093,9 @@ fn open_file(
     if relative_proc_path.is_some() {
         return negative_errno(libc::ENOENT);
     }
+    if let Some(content) = synthetic_cpu_frequency_content(state, guest_dirfd, path) {
+        return open_virtual_file(state, content, flags, close_on_exec);
+    }
     let guest_cloexec = close_on_exec;
     if let Some(guest_fd) = guest_fd_path(state, path) {
         return open_guest_fd_path(state, guest_fd, flags, guest_cloexec);
@@ -2220,6 +2223,48 @@ fn open_virtual_file(
     };
     drop(file);
     insert_file_with_flags(state, read_only, close_on_exec, None)
+}
+
+// TODO-HUMAN-REVIEW(PR-205): Review the deterministic read-only CPU frequency surface.
+fn synthetic_cpu_frequency_content(
+    state: &LoadedStaticElf,
+    guest_dirfd: libc::c_int,
+    path: &[u8],
+) -> Option<&'static [u8]> {
+    const CPU_ROOT: &[u8] = b"/sys/devices/system/cpu";
+    let relative = if let Some(relative) = path.strip_prefix(b"/sys/devices/system/cpu/") {
+        relative
+    } else if !path.starts_with(b"/") {
+        let host_fd = host_fd(state, guest_dirfd)?;
+        let base = canonical_fd_path(host_fd).ok()?;
+        if base.as_os_str().as_bytes() != CPU_ROOT {
+            return None;
+        }
+        path
+    } else {
+        return None;
+    };
+
+    if relative == b"cpufreq/boost" {
+        return Some(b"1\n");
+    }
+
+    let mut components = relative.split(|byte| *byte == b'/');
+    let cpu = components.next()?;
+    if !cpu
+        .strip_prefix(b"cpu")
+        .is_some_and(|index| !index.is_empty() && index.iter().all(u8::is_ascii_digit))
+        || components.next()? != b"cpufreq"
+    {
+        return None;
+    }
+    let content = match components.next()? {
+        b"cpuinfo_max_freq" => b"3000000\n".as_slice(),
+        b"cpuinfo_min_freq" => b"1000000\n".as_slice(),
+        b"scaling_cur_freq" => b"2000000\n".as_slice(),
+        _ => return None,
+    };
+    components.next().is_none().then_some(content)
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
@@ -7428,6 +7473,47 @@ mod tests {
         }
 
         assert_ne!(stats[0].st_ino, stats[1].st_ino);
+    }
+
+    #[test]
+    fn cpu_frequency_surface_is_fixed_for_absolute_and_relative_paths() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+
+        for (path, expected) in [
+            (
+                b"/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq".as_slice(),
+                b"3000000\n".as_slice(),
+            ),
+            (
+                b"/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_min_freq".as_slice(),
+                b"1000000\n".as_slice(),
+            ),
+            (
+                b"/sys/devices/system/cpu/cpu7/cpufreq/scaling_cur_freq".as_slice(),
+                b"2000000\n".as_slice(),
+            ),
+            (
+                b"/sys/devices/system/cpu/cpufreq/boost".as_slice(),
+                b"1\n".as_slice(),
+            ),
+        ] {
+            assert_eq!(
+                synthetic_cpu_frequency_content(&state, libc::AT_FDCWD, path),
+                Some(expected)
+            );
+        }
+
+        let cpu_root = std::fs::File::open("/sys/devices/system/cpu").unwrap();
+        state.files.insert(3, cpu_root);
+        assert_eq!(
+            synthetic_cpu_frequency_content(&state, 3, b"cpu19/cpufreq/scaling_cur_freq"),
+            Some(b"2000000\n".as_slice())
+        );
+        assert_eq!(
+            synthetic_cpu_frequency_content(&state, 3, b"cpuX/cpufreq/scaling_cur_freq"),
+            None
+        );
     }
 
     #[test]
