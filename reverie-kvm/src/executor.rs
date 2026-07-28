@@ -3259,7 +3259,7 @@ fn eventfd2(state: &mut LoadedStaticElf, initial: u64, raw_flags: u64) -> i64 {
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
-// TODO-HUMAN-REVIEW(PR-TBD): Review host-backed AF_INET socket creation.
+// TODO-HUMAN-REVIEW(PR-213): Review host-backed AF_INET socket creation.
 fn socket(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let domain = args[0] as libc::c_int;
     if !matches!(domain, libc::AF_UNIX | libc::AF_INET) {
@@ -3285,7 +3285,7 @@ fn socket(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     insert_file_with_flags(state, file, socket_type & libc::SOCK_CLOEXEC != 0, None)
 }
 
-// TODO-HUMAN-REVIEW(PR-TBD): Review bounded guest socket-option translation.
+// TODO-HUMAN-REVIEW(PR-213): Review bounded guest socket-option translation.
 fn setsockopt(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
@@ -3319,7 +3319,7 @@ fn setsockopt(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
     })
 }
 
-// TODO-HUMAN-REVIEW(PR-TBD): Review bounded host-backed AF_INET bind translation.
+// TODO-HUMAN-REVIEW(PR-213): Review bounded host-backed AF_INET bind translation.
 fn bind(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
@@ -3350,7 +3350,7 @@ fn bind(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     zero_or_errno(unsafe { libc::bind(host_fd, address.as_ptr().cast::<libc::sockaddr>(), length) })
 }
 
-// TODO-HUMAN-REVIEW(PR-TBD): Review host-backed listen translation.
+// TODO-HUMAN-REVIEW(PR-213): Review host-backed listen translation.
 fn listen(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
@@ -3360,7 +3360,7 @@ fn listen(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     zero_or_errno(unsafe { libc::listen(host_fd, args[1] as libc::c_int) })
 }
 
-// TODO-HUMAN-REVIEW(PR-TBD): Review bounded getsockname copyback semantics.
+// TODO-HUMAN-REVIEW(PR-213): Review bounded getsockname copyback semantics.
 fn getsockname(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
