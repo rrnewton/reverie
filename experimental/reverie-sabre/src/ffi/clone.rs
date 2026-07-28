@@ -52,10 +52,12 @@ pub unsafe fn clone_syscall(
         "push r10", // rcx
         "push r8",
         "push r9",
+        "sub rsp, 8",
         "call qword ptr [rip + enter_plugin@GOTPCREL]",
         "movq r11, xmm0",
         "call r11",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
+        "add rsp, 8",
         "pop r9",
         "pop r8",
         "pop r10",
