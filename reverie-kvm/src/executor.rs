@@ -5281,7 +5281,7 @@ fn synthetic_proc_path_for_inode(inode: u64) -> Option<&'static [u8]> {
         b"/proc/self/status",
         b"/proc/self/cmdline",
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-pending): paths added to the synthetic
+        // TODO-HUMAN-REVIEW(PR-224): paths added to the synthetic
         // /proc/vmstat and /proc/sys/kernel/osrelease surface so fstat/statx on
         // their descriptors resolve to the same stable synthetic inode.
         b"/proc/vmstat",
@@ -5398,7 +5398,7 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
         b"/proc/self/status" => proc_self_status_content(state),
         b"/proc/self/cmdline" => proc_self_cmdline_content(state),
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-pending): deterministic /proc/vmstat surface so
+        // TODO-HUMAN-REVIEW(PR-224): deterministic /proc/vmstat surface so
         // procps `vmstat` reads its counters synthetically instead of hitting
         // the fail-closed real-procfs refusal. All counters are fixed at 0
         // (memory is not virtualized under KVM), matching the zeroed
@@ -5428,7 +5428,7 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
         .as_bytes()
         .to_vec(),
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(PR-pending): deterministic
+        // TODO-HUMAN-REVIEW(PR-224): deterministic
         // /proc/sys/kernel/osrelease so `sysctl -n kernel.osrelease` resolves
         // synthetically. The value matches the KVM `uname(2)` release field
         // ("6.0.0", see fn uname) and /proc/version above.
@@ -8384,7 +8384,7 @@ mod tests {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-pending): regression coverage for the /proc/vmstat
+    // TODO-HUMAN-REVIEW(PR-224): regression coverage for the /proc/vmstat
     // and /proc/sys/kernel/osrelease synthetic surfaces.
     #[test]
     fn synthetic_proc_vmstat_and_osrelease_are_served_deterministically() {
