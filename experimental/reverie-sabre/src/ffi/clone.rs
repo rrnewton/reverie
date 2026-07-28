@@ -27,7 +27,6 @@ extern "C" {
 /// SaBRe trampoline used by the current guest thread.
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-214): Review eager child-start callback ABI.
-// TODO-HUMAN-REVIEW(PR-226): Review removal of the pre-pthread child callback.
 pub unsafe fn clone_syscall(
     clone_flags: usize,             // rdi
     child_stack: *mut libc::c_void, // rsi
@@ -35,6 +34,7 @@ pub unsafe fn clone_syscall(
     child_tidptr: *mut i32,         // rcx
     tls: usize,                     // r8
     ret_addr: *const libc::c_void,  // r9
+    child_start: extern "C" fn(),
 ) -> usize {
     let mut ret: usize = Sysno::clone as usize;
 
@@ -52,6 +52,8 @@ pub unsafe fn clone_syscall(
         "push r10", // rcx
         "push r8",
         "push r9",
+        "movq r11, xmm0",
+        "call r11",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
         "pop r9",
         "pop r8",
@@ -80,6 +82,7 @@ pub unsafe fn clone_syscall(
         in("r10") child_tidptr,
         in("r8") tls,
         in("r9") ret_addr,
+        inlateout("xmm0") child_start as usize => _,
         // syscall instructions clobber rcx and r11
         lateout("rcx") _,
         lateout("r11") _,
@@ -177,7 +180,6 @@ pub unsafe fn fork_syscall(
 /// SaBRe trampoline used by the current guest thread.
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-214): Review eager child-start callback ABI.
-// TODO-HUMAN-REVIEW(PR-226): Review removal of the pre-pthread child callback.
 pub unsafe fn clone3_syscall(
     arg1: usize,                 // rdi
     arg2: usize,                 // rsi
@@ -185,6 +187,7 @@ pub unsafe fn clone3_syscall(
     unused: usize,               // rcx
     arg5: usize,                 // r8
     ret_addr: *mut libc::c_void, // r9
+    child_start: extern "C" fn(),
 ) -> usize {
     let mut ret: usize = Sysno::clone3 as usize;
 
@@ -201,6 +204,8 @@ pub unsafe fn clone3_syscall(
         "push rdx",
         "push r8",
         "push r9",
+        "movq r11, xmm0",
+        "call r11",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
         "pop r9",
         "pop r8",
@@ -228,6 +233,7 @@ pub unsafe fn clone3_syscall(
         in("r10") unused,
         in("r8") arg5,
         in("r9") ret_addr,
+        inlateout("xmm0") child_start as usize => _,
         // syscall instructions clobber rcx and r11
         lateout("rcx") _,
         lateout("r11") _,
