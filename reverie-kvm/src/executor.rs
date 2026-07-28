@@ -4631,25 +4631,34 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
 
 // TODO-HUMAN-REVIEW(PR-211): Review guest-owned /proc/locks filtering.
 fn proc_locks_content(state: &LoadedStaticElf) -> Vec<u8> {
-    let rows = state
-        .files
-        .values()
-        .filter_map(|file| {
-            std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).ok()
-        })
-        .flat_map(|fdinfo| {
-            fdinfo
-                .lines()
-                .filter_map(|line| line.strip_prefix("lock:").map(str::trim))
-                .filter_map(|line| line.split_once(' ').map(|(_, details)| details.to_owned()))
-                .collect::<Vec<_>>()
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    rows.into_iter()
-        .enumerate()
-        .map(|(index, details)| format!("{}: {details}\n", index + 1))
-        .collect::<String>()
-        .into_bytes()
+    let mut seen = std::collections::BTreeSet::new();
+    let mut rows = Vec::new();
+    for file in state.files.values() {
+        let Ok(fdinfo) = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd()))
+        else {
+            continue;
+        };
+        for line in fdinfo.lines() {
+            let Some(details) = line
+                .strip_prefix("lock:")
+                .map(str::trim)
+                .and_then(|line| line.split_once(' ').map(|(_, details)| details))
+            else {
+                continue;
+            };
+            if !seen.insert(details.to_owned()) {
+                continue;
+            }
+            let mut fields = details.split_whitespace().collect::<Vec<_>>();
+            if fields.len() != 7 || fields[4].split(':').count() != 3 {
+                continue;
+            }
+            let object = format!("00:00:{}", rows.len() + 1);
+            fields[4] = &object;
+            rows.push(format!("{}: {}\n", rows.len() + 1, fields.join(" ")));
+        }
+    }
+    rows.concat().into_bytes()
 }
 
 /// The kernel's `comm`: the program basename, capped at 15 bytes.
@@ -7682,7 +7691,7 @@ mod tests {
             0
         );
         let locks = synthetic_proc_content(&state, b"/proc/locks").unwrap();
-        assert!(!locks.is_empty());
+        assert_eq!(locks, b"1: OFDLCK ADVISORY WRITE -1 00:00:1 0 EOF\n");
         assert_eq!(
             synthetic_proc_content(&state, b"/proc/self/../locks").unwrap(),
             locks
