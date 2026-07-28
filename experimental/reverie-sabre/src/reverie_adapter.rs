@@ -49,6 +49,8 @@ use syscalls::Sysno;
 use syscalls::syscall;
 
 use crate::SyscallExt;
+use crate::protected_files::ProtectedFd;
+use crate::protected_files::protect_with;
 
 thread_local! {
     static TAIL_INJECT_RESULT: std::cell::Cell<Option<i64>> =
@@ -358,7 +360,9 @@ where
     T: ReverieTool,
 {
     thread_state: Option<T::ThreadState>,
-    rpc: BlockingRpcClient<T::GlobalState>,
+    // TODO-HUMAN-REVIEW(PR-209): Review protection of the coordinator socket
+    // from fork children that close inherited descriptors before exec.
+    rpc: ProtectedFd<BlockingRpcClient<T::GlobalState>>,
     exit_handled: bool,
 }
 
@@ -388,8 +392,8 @@ where
         let _ = root_process_pid();
         let socket_path = socket_path.as_ref().to_path_buf();
         let tid = current_tid();
-        let rpc: BlockingRpcClient<T::GlobalState> = BlockingRpcClient::connect(&socket_path, tid)?;
-        let config = rpc.config().clone();
+        let rpc = protect_with(|| BlockingRpcClient::<T::GlobalState>::connect(&socket_path, tid))?;
+        let config = rpc.as_ref().config().clone();
         let tool = T::new(current_pid(), &config);
         let thread_state = tool.init_thread_state(tid, None);
         let syscall_subscriptions = T::subscriptions(&config).iter_syscalls().collect();
@@ -441,7 +445,7 @@ where
             tid,
             pid,
             thread_state,
-            rpc,
+            rpc.as_ref(),
             Some((&self.tool, exit_handled, None)),
             None,
             None,
@@ -494,7 +498,7 @@ where
             tid,
             pid,
             thread_state,
-            rpc,
+            rpc.as_ref(),
             Some((
                 &self.tool,
                 exit_handled,
@@ -554,7 +558,7 @@ where
             tid,
             current_pid(),
             thread_state,
-            rpc,
+            rpc.as_ref(),
             Some((&self.tool, exit_handled, None)),
             None,
             None,
@@ -594,7 +598,7 @@ where
             tid,
             current_pid(),
             thread_state,
-            rpc,
+            rpc.as_ref(),
             Some((&self.tool, exit_handled, None)),
             None,
             None,
@@ -621,14 +625,20 @@ where
         T: Clone,
     {
         let pid = current_pid();
-        let rpc = match BlockingRpcClient::<T::GlobalState>::connect(&self.socket_path, pid) {
+        let rpc = match protect_with(|| {
+            BlockingRpcClient::<T::GlobalState>::connect(&self.socket_path, pid)
+        }) {
             Ok(rpc) => rpc,
             Err(error) => {
                 remote_rpc_error(error);
                 return;
             }
         };
-        match poll_once(self.tool.clone().on_exit_process(pid, &rpc, exit_status)) {
+        match poll_once(
+            self.tool
+                .clone()
+                .on_exit_process(pid, rpc.as_ref(), exit_status),
+        ) {
             Poll::Ready(Ok(())) => {}
             Poll::Ready(Err(error)) => {
                 crate::eprintln!("reverie-sabre: remote Tool::on_exit_process failed: {error}");
@@ -660,7 +670,7 @@ where
         };
         match poll_once(self.tool.on_exit_thread(
             tid,
-            &state.rpc,
+            state.rpc.as_ref(),
             thread_state,
             ExitStatus::Exited(0),
         )) {
@@ -687,7 +697,7 @@ where
             std::thread::yield_now();
         }
 
-        let rpc = BlockingRpcClient::connect(&self.socket_path, tid)?;
+        let rpc = protect_with(|| BlockingRpcClient::connect(&self.socket_path, tid))?;
         let state = Arc::new(Mutex::new(RemoteThreadState {
             thread_state: Some(self.tool.init_thread_state(tid, None)),
             rpc,
@@ -966,8 +976,8 @@ where
         if states.contains_key(&child.as_raw()) {
             return Ok(());
         }
-        let rpc =
-            BlockingRpcClient::connect(registry.socket_path, child).map_err(remote_rpc_error)?;
+        let rpc = protect_with(|| BlockingRpcClient::connect(registry.socket_path, child))
+            .map_err(remote_rpc_error)?;
         let thread_state = tool.init_thread_state(child, Some((self.tid, parent_state)));
         states.insert(
             child.as_raw(),
