@@ -69,6 +69,7 @@ pub type icept_reg_fn = extern "C" fn(*const fn_icept);
 
 unsafe impl Send for fn_icept {}
 unsafe impl Sync for fn_icept {}
+// TODO-HUMAN-REVIEW(PR-242): Review the architectural versus trampoline return slots.
 #[repr(C)]
 pub struct syscall_stackframe {
     pub rbp_stackalign: *mut libc::c_void,
@@ -86,10 +87,12 @@ pub struct syscall_stackframe {
     pub rcx: *mut libc::c_void,
     pub rbx: *mut libc::c_void,
     pub rbp_prologue: *mut libc::c_void,
-    // trampoline
+    /// Architectural guest return address after the patched syscall. SaBRe's
+    /// assembly calls this the fake return because the handler discards this
+    /// stack slot before returning through the scratch trampoline.
     pub fake_ret: *mut libc::c_void,
-    /// Syscall return address. This is where execution should continue after a
-    /// syscall has been handled.
+    /// Internal scratch-trampoline continuation. This restores the red zone,
+    /// executes displaced instructions, and then resumes guest code.
     pub ret: *mut libc::c_void,
 }
 
