@@ -190,7 +190,8 @@ extern int32_t reverie_dbi_runtime_thread_created(
     register_reader_t read_registers, register_writer_t write_registers);
 
 extern void reverie_dbi_runtime_thread_exit(prototype_counters_t *counters,
-                                            int32_t tid);
+                                            void *context, int32_t tid,
+                                            syscall_invoker_t invoke_syscall);
 extern uint64_t reverie_dbi_runtime_image_init(void);
 extern void reverie_dbi_runtime_exec_failed(prototype_counters_t *counters,
                                             int32_t pid);
@@ -1846,6 +1847,12 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       dr_syscall_set_result(drcontext, (reg_t)result);
       return false;
     }
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-247): Review pre-exit guest-transport deregistration.
+    if (runtime_uses_external_global() && sysnum == SYS_exit_group)
+      reverie_dbi_runtime_thread_exit(
+          counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
+          invoke_syscall);
     return prepare_original_identity_syscall(drcontext, counters, sysnum, args);
   }
 
@@ -1929,7 +1936,9 @@ static void thread_exit(void *drcontext) {
       drcontext, thread_state_index);
   if (counters != NULL &&
       (!has_copied_runtime() || runtime_uses_external_global())) {
-    reverie_dbi_runtime_thread_exit(counters, dr_get_thread_id(drcontext));
+    reverie_dbi_runtime_thread_exit(counters, drcontext,
+                                    dr_get_thread_id(drcontext),
+                                    invoke_syscall);
     dr_thread_free(drcontext, counters, sizeof(*counters));
   }
 }
