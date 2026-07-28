@@ -61,7 +61,7 @@ typedef struct {
 #define VIRTUAL_IDENTITY_FD 197
 #define CLIENT_THREAD_START_FAILURE_EXIT_CODE 125
 #define DBI_DIAGNOSTIC_FD 198
-#define VIRTUAL_IDENTITY_MAGIC UINT64_C(0x5245565049443031)
+#define VIRTUAL_IDENTITY_MAGIC UINT64_C(0x5245565049443032)
 #define MAX_VIRTUAL_IDENTITIES 8192
 
 typedef struct {
@@ -73,6 +73,13 @@ typedef struct {
   uint64_t magic;
   atomic_flag lock;
   _Atomic int32_t next_virtual_id;
+  /* Copied pre-exec processes cannot enter the Rust scheduler. Keep their
+   * externally visible writes on the same stable virtual-pid turn order. */
+  _Atomic int32_t output_turn;
+  /* The launch-time descriptor identity survives exec, unlike numeric fd 0. */
+  bool initial_stdin_valid;
+  struct stat initial_stdin;
+  _Atomic uint8_t output_active[MAX_VIRTUAL_IDENTITIES];
   size_t count;
   virtual_identity_t identities[MAX_VIRTUAL_IDENTITIES];
 } virtual_identity_state_t;
@@ -213,6 +220,7 @@ static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
 static _Atomic uint64_t image_generation;
 static int thread_state_index;
 static int compat_gateway_index;
+static int output_gate_index;
 static ptr_uint_t cpuid_marker_note;
 static bool report_summary;
 static process_id_t runtime_owner_pid;
@@ -277,6 +285,11 @@ static void initialize_virtual_identity_state(void) {
   virtual_identity_state->magic = VIRTUAL_IDENTITY_MAGIC;
   atomic_flag_clear(&virtual_identity_state->lock);
   atomic_init(&virtual_identity_state->next_virtual_id, VIRTUAL_ROOT_PID + 1);
+  atomic_init(&virtual_identity_state->output_turn, VIRTUAL_ROOT_PID);
+  virtual_identity_state->initial_stdin_valid =
+      fstat(STDIN_FILENO, &virtual_identity_state->initial_stdin) == 0;
+  for (size_t i = 0; i < MAX_VIRTUAL_IDENTITIES; ++i)
+    atomic_init(&virtual_identity_state->output_active[i], 0);
 }
 
 static void virtual_identity_lock(void) {
@@ -288,6 +301,88 @@ static void virtual_identity_lock(void) {
 static void virtual_identity_unlock(void) {
   atomic_flag_clear_explicit(&virtual_identity_state->lock,
                              memory_order_release);
+}
+
+static bool output_slot(int32_t virtual_id, size_t *slot) {
+  if (virtual_id < VIRTUAL_ROOT_PID ||
+      virtual_id - VIRTUAL_ROOT_PID >= MAX_VIRTUAL_IDENTITIES)
+    return false;
+  *slot = (size_t)(virtual_id - VIRTUAL_ROOT_PID);
+  return true;
+}
+
+static int32_t next_active_output_process(int32_t current) {
+  size_t current_slot;
+  if (!output_slot(current, &current_slot))
+    current_slot = MAX_VIRTUAL_IDENTITIES - 1;
+  for (size_t offset = 1; offset <= MAX_VIRTUAL_IDENTITIES; ++offset) {
+    size_t slot = (current_slot + offset) % MAX_VIRTUAL_IDENTITIES;
+    if (atomic_load_explicit(&virtual_identity_state->output_active[slot],
+                             memory_order_relaxed) != 0)
+      return (int32_t)slot + VIRTUAL_ROOT_PID;
+  }
+  return 0;
+}
+
+static void activate_output_process(int32_t virtual_id) {
+  size_t slot;
+  if (!output_slot(virtual_id, &slot))
+    return;
+  virtual_identity_lock();
+  atomic_store_explicit(&virtual_identity_state->output_active[slot], 1,
+                        memory_order_relaxed);
+  if (atomic_load_explicit(&virtual_identity_state->output_turn,
+                           memory_order_relaxed) == 0)
+    atomic_store_explicit(&virtual_identity_state->output_turn, virtual_id,
+                          memory_order_release);
+  virtual_identity_unlock();
+}
+
+static void deactivate_output_process(int32_t virtual_id) {
+  size_t slot;
+  if (!output_slot(virtual_id, &slot))
+    return;
+  virtual_identity_lock();
+  atomic_store_explicit(&virtual_identity_state->output_active[slot], 0,
+                        memory_order_relaxed);
+  if (atomic_load_explicit(&virtual_identity_state->output_turn,
+                           memory_order_relaxed) == virtual_id) {
+    atomic_store_explicit(&virtual_identity_state->output_turn,
+                          next_active_output_process(virtual_id),
+                          memory_order_release);
+  }
+  virtual_identity_unlock();
+}
+
+static bool is_shared_output_syscall(int sysnum, const uint64_t *args) {
+  int fd = (int)args[0];
+  if (fd != STDOUT_FILENO && fd != STDERR_FILENO)
+    return false;
+  return sysnum == SYS_write || sysnum == SYS_writev;
+}
+
+static void begin_output_turn(void *drcontext, int sysnum,
+                              const uint64_t *args) {
+  if (!is_shared_output_syscall(sysnum, args))
+    return;
+  activate_output_process(virtual_process_id);
+  /* The parent owns the first turn. A newly forked child is activated before
+   * either clone return resumes, so host scheduling cannot choose the writer. */
+  while (atomic_load_explicit(&virtual_identity_state->output_turn,
+                              memory_order_acquire) != virtual_process_id)
+    dr_sleep(1);
+  DR_ASSERT(drmgr_set_tls_field(drcontext, output_gate_index, (void *)1));
+}
+
+static void finish_output_turn(void *drcontext) {
+  if (drmgr_get_tls_field(drcontext, output_gate_index) == NULL)
+    return;
+  DR_ASSERT(drmgr_set_tls_field(drcontext, output_gate_index, NULL));
+  virtual_identity_lock();
+  atomic_store_explicit(
+      &virtual_identity_state->output_turn,
+      next_active_output_process(virtual_process_id), memory_order_release);
+  virtual_identity_unlock();
 }
 
 static int32_t allocate_virtual_identity(void) {
@@ -835,6 +930,8 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
   if ((flags & CLONE_THREAD) == 0 &&
       (result <= 0 || (flags & CLONE_VM) == 0))
     release_clone_identity_handoff(virtual_child);
+  if ((flags & CLONE_THREAD) == 0 && result >= 0)
+    activate_output_process(virtual_child);
   counters->pending_virtual_child = 0;
   counters->pending_clone_flags = 0;
   return virtual_child;
@@ -1318,35 +1415,17 @@ static void module_load(void *drcontext, const module_data_t *module,
 }
 
 static bool fd_matches_stdin(void *drcontext, int fd) {
-  if (fd == 0)
-    return true;
 #ifdef SYS_fstat
-  struct stat stdin_stat = {0};
   struct stat candidate_stat = {0};
-  uint64_t stat_args[6] = {0, (uint64_t)(uintptr_t)&stdin_stat};
+  uint64_t stat_args[6] = {(uint64_t)fd,
+                           (uint64_t)(uintptr_t)&candidate_stat};
+  if (!virtual_identity_state->initial_stdin_valid)
+    return false;
   if (invoke_syscall((uintptr_t)drcontext, SYS_fstat, stat_args) < 0)
     return false;
-  stat_args[0] = (uint64_t)fd;
-  stat_args[1] = (uint64_t)(uintptr_t)&candidate_stat;
-  if (invoke_syscall((uintptr_t)drcontext, SYS_fstat, stat_args) < 0)
-    return false;
-  if (stdin_stat.st_dev == candidate_stat.st_dev &&
-      stdin_stat.st_ino == candidate_stat.st_ino)
-    return true;
-#if defined(SYS_ioctl) && defined(TIOCGDEV)
-  unsigned int stdin_device = 0;
-  unsigned int candidate_device = 0;
-  uint64_t ioctl_args[6] = {0, TIOCGDEV, (uint64_t)(uintptr_t)&stdin_device};
-  if (invoke_syscall((uintptr_t)drcontext, SYS_ioctl, ioctl_args) < 0)
-    return false;
-  ioctl_args[0] = (uint64_t)fd;
-  ioctl_args[2] = (uint64_t)(uintptr_t)&candidate_device;
-  if (invoke_syscall((uintptr_t)drcontext, SYS_ioctl, ioctl_args) < 0)
-    return false;
-  return stdin_device == candidate_device;
-#else
-  return false;
-#endif
+  return virtual_identity_state->initial_stdin.st_dev == candidate_stat.st_dev &&
+         virtual_identity_state->initial_stdin.st_ino == candidate_stat.st_ino &&
+         virtual_identity_state->initial_stdin.st_rdev == candidate_stat.st_rdev;
 #else
   return false;
 #endif
@@ -1570,6 +1649,7 @@ static void post_syscall(void *drcontext, int sysnum) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
   DR_ASSERT(counters != NULL);
+  finish_output_turn(drcontext);
 
   if (counters->pending_virtual_child != 0 && is_clone_syscall(sysnum)) {
     int32_t virtual_child = complete_clone_identity(counters, syscall_result);
@@ -1768,6 +1848,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       dr_syscall_set_result(drcontext, (reg_t)result);
       return false;
     }
+    begin_output_turn(drcontext, sysnum, args);
     return prepare_original_identity_syscall(drcontext, counters, sysnum, args);
   }
   while (!reverie_dbi_runtime_ready(
@@ -1828,6 +1909,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       dr_syscall_set_result(drcontext, (reg_t)result);
       return false;
     }
+    begin_output_turn(drcontext, sysnum, args);
     return prepare_original_identity_syscall(drcontext, counters, sysnum, args);
   }
 
@@ -1842,6 +1924,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     dr_syscall_set_result(drcontext, (reg_t)result);
     return false;
   }
+  begin_output_turn(drcontext, sysnum, args);
   return prepare_original_identity_syscall(drcontext, counters, sysnum, args);
 }
 
@@ -1916,6 +1999,7 @@ static void thread_exit(void *drcontext) {
 }
 
 static void event_exit(void) {
+  deactivate_output_process(virtual_process_id);
   if (!has_copied_runtime())
     reverie_dbi_runtime_process_exit();
   uint64_t branches;
@@ -1941,6 +2025,7 @@ static void event_exit(void) {
   drwrap_exit();
   drx_exit();
   drmgr_unregister_tls_field(compat_gateway_index);
+  drmgr_unregister_tls_field(output_gate_index);
   drmgr_unregister_tls_field(thread_state_index);
   drreg_exit();
   drmgr_exit();
@@ -1993,6 +2078,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     virtual_parent_process_id = VIRTUAL_INIT_PID;
     remember_virtual_identity((int32_t)runtime_owner_pid, virtual_process_id);
   }
+  activate_output_process(virtual_process_id);
   atomic_store_explicit(&image_generation, reverie_dbi_runtime_image_init(),
                         memory_order_release);
   resource_lock = dr_mutex_create();
@@ -2040,7 +2126,9 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     DR_ASSERT(false);
   thread_state_index = drmgr_register_tls_field();
   compat_gateway_index = drmgr_register_tls_field();
-  if (thread_state_index == -1 || compat_gateway_index == -1)
+  output_gate_index = drmgr_register_tls_field();
+  if (thread_state_index == -1 || compat_gateway_index == -1 ||
+      output_gate_index == -1)
     DR_ASSERT(false);
   drmgr_register_exit_event(event_exit);
   if (!drmgr_register_module_load_event(module_load) ||
