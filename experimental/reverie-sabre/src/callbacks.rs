@@ -171,9 +171,7 @@ pub extern "C" fn handle_syscall<T: ToolGlobal>(
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-214): Review eager child registration before guest resume.
 extern "C" fn handle_clone_child_start<T: ToolGlobal>() {
-    if Thread::<T>::current().is_none() {
-        terminate(1);
-    }
+    thread::notify_current_thread_start::<T>();
 }
 
 /// Handle the critical section for the given system call on the given thread
