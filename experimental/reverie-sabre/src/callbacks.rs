@@ -336,13 +336,18 @@ fn exit_group_with_thread<T: ToolGlobal>(thread: &mut Thread<T>, exit_code: usiz
 fn prepare_group_exit<T: ToolGlobal>(thread: &mut Thread<T>) {
     thread.try_exit();
     if let Some(exiting_pid) = thread::exit_all(|_, process_and_thread_id| unsafe {
-        syscalls::syscall3(
+        // TODO-HUMAN-REVIEW(PR-214): Review exit_group ESRCH race handling.
+        let result = syscalls::syscall3(
             Sysno::tgkill,
             process_and_thread_id.pid as usize,
             process_and_thread_id.tid as usize,
             CONTROLLED_EXIT_SIGNAL as usize,
-        )
-        .expect("Signaling thread failed");
+        );
+        if let Err(errno) = result {
+            if errno != Errno::ESRCH {
+                panic!("Signaling thread failed: {errno}");
+            }
+        }
     }) {
         if !thread::wait_for_all_to_exit(exiting_pid, T::global().get_exit_timeout()) {
             let _ = T::global().on_exit_timeout();
