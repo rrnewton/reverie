@@ -18,6 +18,7 @@ use std::os::unix::fs::FileExt;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicI32;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use crate::GuestMemory;
@@ -796,6 +797,7 @@ pub(crate) struct ElfExecutor {
     output: Option<CapturedOutput>,
     owns_output: bool,
     next_pid: Arc<AtomicI32>,
+    monotonic_clock_ns: Arc<AtomicU64>,
     process_action: Option<ProcessAction>,
     pending_segment: Option<(SegmentBase, u64)>,
     exit_code: Option<i32>,
@@ -911,6 +913,7 @@ impl ElfExecutor {
             output: capture_output.then(CapturedOutput::default),
             owns_output: true,
             next_pid: Arc::new(AtomicI32::new(2)),
+            monotonic_clock_ns: Arc::new(AtomicU64::new(0)),
             process_action: None,
             pending_segment: None,
             exit_code: None,
@@ -1181,6 +1184,7 @@ impl ElfExecutor {
             output: self.output.is_some().then(CapturedOutput::default),
             owns_output: true,
             next_pid: self.next_pid.clone(),
+            monotonic_clock_ns: self.monotonic_clock_ns.clone(),
             process_action: None,
             pending_segment: None,
             exit_code: None,
@@ -1201,6 +1205,7 @@ impl ElfExecutor {
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
+            monotonic_clock_ns: self.monotonic_clock_ns.clone(),
             process_action: None,
             pending_segment: None,
             exit_code: None,
@@ -1322,6 +1327,20 @@ impl SyscallExecutor for ElfExecutor {
         }
         if let Some(result) = self.execute_process_action(request, memory) {
             return result;
+        }
+        if request.number() == libc::SYS_clock_gettime as u64 {
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-216): Review the shared direct-worker monotonic clock.
+            let tick = self
+                .monotonic_clock_ns
+                .fetch_add(1, Ordering::SeqCst)
+                .wrapping_add(1);
+            let time = libc::timespec {
+                tv_sec: (tick / 1_000_000_000) as libc::time_t,
+                tv_nsec: (tick % 1_000_000_000) as libc::c_long,
+            };
+            let mut memory = memory.clone();
+            return write_struct(&mut memory, request.args()[1], &time);
         }
         // Clones share the underlying MAP_SHARED mapping, so writes through this
         // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
@@ -11862,6 +11881,38 @@ mod tests {
                 [mapping, PAGE_SIZE, libc::PROT_READ as u64, 0, 0, 0],
             ),
             negative_errno(libc::ENOMEM)
+        );
+    }
+
+    #[test]
+    fn direct_worker_clock_is_shared_and_strictly_monotonic() {
+        const FIRST_TIME: u64 = 0x100;
+        const SECOND_TIME: u64 = 0x200;
+        const THIRD_TIME: u64 = 0x300;
+
+        let root = TestDir::new();
+        let mut parent = ElfExecutor::new(test_state(&root.0), false);
+        let mut child = parent.thread_child(2).unwrap();
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let request = |address| {
+            SyscallRequest::new(
+                libc::SYS_clock_gettime as u64,
+                [libc::CLOCK_MONOTONIC as u64, address, 0, 0, 0, 0],
+            )
+        };
+
+        assert_eq!(parent.execute(&request(FIRST_TIME), &memory), 0);
+        assert_eq!(child.execute(&request(SECOND_TIME), &memory), 0);
+        assert_eq!(parent.execute(&request(THIRD_TIME), &memory), 0);
+        let first: libc::timespec = read_struct(&memory, FIRST_TIME);
+        let second: libc::timespec = read_struct(&memory, SECOND_TIME);
+        let third: libc::timespec = read_struct(&memory, THIRD_TIME);
+        assert_eq!((first.tv_sec, first.tv_nsec), (0, 1));
+        assert_eq!((second.tv_sec, second.tv_nsec), (0, 2));
+        assert_eq!((third.tv_sec, third.tv_nsec), (0, 3));
+        assert_eq!(
+            child.execute(&request(u64::MAX), &memory),
+            negative_errno(libc::EFAULT)
         );
     }
 
