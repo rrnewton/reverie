@@ -117,6 +117,11 @@ pub(crate) struct LoadedStaticElf {
     // TODO-HUMAN-REVIEW(PR-132): Review single-vCPU thread identity transitions.
     pub tid: i32,
     pub ppid: i32,
+    // Direct KVM workers do not participate in Detcore's virtual clock. Keep a
+    // private logical clock so repeated observations advance deterministically
+    // without making host thread scheduling observable.
+    // TODO-HUMAN-REVIEW(PR-TBD): Review direct-worker logical clock semantics.
+    pub logical_clock_ns: u64,
     pub umask: libc::mode_t,
     // TODO-HUMAN-REVIEW(PR-181): Review virtual capability lifecycle state.
     pub keep_capabilities: bool,
@@ -193,6 +198,7 @@ impl LoadedStaticElf {
             pid: child_pid,
             tid: child_pid,
             ppid: self.pid,
+            logical_clock_ns: self.logical_clock_ns,
             umask: self.umask,
             keep_capabilities: self.keep_capabilities,
             capability_effective: self.capability_effective,
@@ -302,6 +308,7 @@ impl LoadedStaticElf {
         self.pid = previous.pid;
         self.tid = previous.tid;
         self.ppid = previous.ppid;
+        self.logical_clock_ns = previous.logical_clock_ns;
         self.umask = previous.umask;
         self.keep_capabilities = false;
         self.capability_bounding = previous.capability_bounding;
@@ -524,6 +531,7 @@ fn load_executable(
         pid: 1,
         tid: 1,
         ppid: 0,
+        logical_clock_ns: 0,
         umask: 0o022,
         keep_capabilities: false,
         capability_effective: GUEST_CAPABILITY_MASK,
