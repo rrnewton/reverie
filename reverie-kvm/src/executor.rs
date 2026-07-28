@@ -348,7 +348,7 @@ fn execute_basic_syscall_with_output(
         duplicate_fd(state, args[0], Some(args[1]), args[2], true)
     } else if number == libc::SYS_fcntl as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        fcntl(state, args)
+        fcntl(memory, state, args)
     } else if number == libc::SYS_open as u64 {
         open(memory, state, args)
     } else if number == libc::SYS_openat as u64 {
@@ -5420,7 +5420,7 @@ fn host_fd(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<RawFd> {
 }
 
 // TODO-HUMAN-REVIEW(PR-52): Review KVM guest fcntl compatibility boundaries.
-fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let guest_fd = args[0] as libc::c_int;
     let source_alias = output_alias(state, guest_fd);
     let source_proc_inode = state.proc_files.get(&guest_fd).copied();
@@ -5482,6 +5482,16 @@ fn fcntl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
             let flags = args[2] as libc::c_int & settable;
             // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
             zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
+        }
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-211): Review KVM advisory-lock forwarding.
+        command @ (libc::F_SETLK | libc::F_SETLKW | libc::F_OFD_SETLK | libc::F_OFD_SETLKW) => {
+            let lock = match read_guest_struct::<libc::flock>(memory, args[2]) {
+                Ok(lock) => lock,
+                Err(error) => return error,
+            };
+            // SAFETY: host_fd is live and lock is a fully initialized flock value.
+            zero_or_errno(unsafe { libc::fcntl(host_fd, command, &lock) })
         }
         _ => negative_errno(libc::ENOSYS),
     }
@@ -8103,6 +8113,69 @@ mod tests {
         );
         assert!(flags >= 0);
         assert_ne!(flags as libc::c_int & libc::O_NONBLOCK, 0);
+    }
+
+    #[test]
+    fn fcntl_advisory_locks_apply_to_host_descriptors() {
+        const LOCK: u64 = 0x100;
+
+        let root = TestDir::new();
+        let path = root.0.join("locked");
+        let first = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .unwrap();
+        let second = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(3, first);
+        state.files.insert(4, second);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut lock = libc::flock {
+            l_type: libc::F_WRLCK as libc::c_short,
+            l_whence: libc::SEEK_SET as libc::c_short,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+        };
+        assert_eq!(write_struct(&mut memory, LOCK, &lock), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [3, libc::F_OFD_SETLK as u64, LOCK, 0, 0, 0],
+            ),
+            0
+        );
+        let conflict = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [4, libc::F_OFD_SETLK as u64, LOCK, 0, 0, 0],
+        );
+        assert!(
+            conflict == negative_errno(libc::EAGAIN) || conflict == negative_errno(libc::EACCES),
+            "unexpected conflicting lock result: {conflict}"
+        );
+
+        lock.l_type = libc::F_UNLCK as libc::c_short;
+        assert_eq!(write_struct(&mut memory, LOCK, &lock), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [3, libc::F_OFD_SETLK as u64, LOCK, 0, 0, 0],
+            ),
+            0
+        );
     }
 
     #[test]
