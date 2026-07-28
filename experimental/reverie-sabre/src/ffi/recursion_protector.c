@@ -44,13 +44,14 @@ void exit_plugin() { from_plugin = false; }
 // Until them, we used a guard that will change value after glibc is
 // initialized.
 
-static _Thread_local bool vdso_ready
-    __attribute__((tls_model("initial-exec"))) = false;
+static bool vdso_ready = false;
 
 void vdso_are_ready() __attribute__((constructor));
-void vdso_are_ready() { vdso_ready = true; }
+void vdso_are_ready() { __atomic_store_n(&vdso_ready, true, __ATOMIC_RELEASE); }
 
-bool is_vdso_ready() { return vdso_ready; }
+bool is_vdso_ready() {
+  return __atomic_load_n(&vdso_ready, __ATOMIC_ACQUIRE);
+}
 
 __attribute__((weak)) void post_clone_hook(void *ctx) {
   (void)ctx; // unused

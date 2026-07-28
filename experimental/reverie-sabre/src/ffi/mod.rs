@@ -138,3 +138,16 @@ pub struct clone_args {
     // File descriptor for target cgroup of child (since Linux 5.7)
     pub cgroup: u64,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::is_vdso_ready;
+
+    #[test]
+    fn vdso_readiness_is_visible_to_new_threads() {
+        assert!(unsafe { is_vdso_ready() });
+        std::thread::spawn(|| assert!(unsafe { is_vdso_ready() }))
+            .join()
+            .expect("vDSO readiness thread should not panic");
+    }
+}
