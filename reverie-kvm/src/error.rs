@@ -98,6 +98,10 @@ pub enum Error {
     #[error("unexpected guest hypercall number {0}")]
     UnexpectedHypercall(u64),
 
+    /// The bounded bootstrap area cannot allocate another thread transport.
+    #[error("KVM guest thread limit exceeded by tid {0}")]
+    GuestThreadLimitExceeded(i32),
+
     /// The fixed long-mode bootstrap layout does not fit in guest memory.
     #[error("guest memory is too small for the long-mode bootstrap")]
     LongModeMemoryTooSmall,
