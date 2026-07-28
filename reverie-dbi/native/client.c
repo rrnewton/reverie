@@ -677,6 +677,9 @@ static bool preserve_internal_descriptors(uintptr_t context, int sysnum,
 // kill(-pgid)/wait4(-pgid) pass through untranslated; pgid/sid not yet modeled.
 static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   switch (sysnum) {
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-TBD): Review virtual get_robust_list target translation.
+  case SYS_get_robust_list:
   case SYS_kill:
   case SYS_tkill:
   case SYS_wait4:
