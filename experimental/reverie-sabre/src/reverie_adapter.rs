@@ -346,7 +346,7 @@ where
     socket_path: std::path::PathBuf,
     thread_states: Mutex<HashMap<i32, Arc<Mutex<RemoteThreadState<T>>>>>,
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-TBD): Review parent-state handoff for SaBRe thread clones.
+    // TODO-HUMAN-REVIEW(PR-209): Review parent-state handoff for SaBRe thread clones.
     thread_clone_pending: AtomicBool,
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-142): Review remote syscall-subscription caching and bypass.
