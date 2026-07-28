@@ -4957,6 +4957,7 @@ fn synthetic_proc_path_for_inode(inode: u64) -> Option<&'static [u8]> {
         b"/proc/stat",
         b"/proc/meminfo",
         b"/proc/cpuinfo",
+        b"/proc/locks",
         b"/proc/self/stat",
         b"/proc/self/status",
         b"/proc/self/cmdline",
@@ -4999,6 +5000,9 @@ fn synthetic_proc_relative_path(
 fn normalize_proc_path(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8>> {
     if path != b"/proc" && !path.starts_with(b"/proc/") {
         return None;
+    }
+    if path == b"/proc/self/../locks" {
+        return Some(b"/proc/locks".to_vec());
     }
     let pid = format!("/proc/{}", state.pid).into_bytes();
     if path == pid.as_slice() {
@@ -5064,12 +5068,36 @@ fn synthetic_proc_content(state: &LoadedStaticElf, path: &[u8]) -> Option<Vec<u8
         )
         .as_bytes()
         .to_vec(),
+        b"/proc/locks" => proc_locks_content(state),
         b"/proc/self/stat" => proc_self_stat_content(state),
         b"/proc/self/status" => proc_self_status_content(state),
         b"/proc/self/cmdline" => proc_self_cmdline_content(state),
         _ => return None,
     };
     Some(content)
+}
+
+// TODO-HUMAN-REVIEW(PR-211): Review guest-owned /proc/locks filtering.
+fn proc_locks_content(state: &LoadedStaticElf) -> Vec<u8> {
+    let rows = state
+        .files
+        .values()
+        .filter_map(|file| {
+            std::fs::read_to_string(format!("/proc/self/fdinfo/{}", file.as_raw_fd())).ok()
+        })
+        .flat_map(|fdinfo| {
+            fdinfo
+                .lines()
+                .filter_map(|line| line.strip_prefix("lock:").map(str::trim))
+                .filter_map(|line| line.split_once(' ').map(|(_, details)| details.to_owned()))
+                .collect::<Vec<_>>()
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    rows.into_iter()
+        .enumerate()
+        .map(|(index, details)| format!("{}: {details}\n", index + 1))
+        .collect::<String>()
+        .into_bytes()
 }
 
 /// The kernel's `comm`: the program basename, capped at 15 bytes.
@@ -8153,6 +8181,12 @@ mod tests {
                 [3, libc::F_OFD_SETLK as u64, LOCK, 0, 0, 0],
             ),
             0
+        );
+        let locks = synthetic_proc_content(&state, b"/proc/locks").unwrap();
+        assert!(!locks.is_empty());
+        assert_eq!(
+            synthetic_proc_content(&state, b"/proc/self/../locks").unwrap(),
+            locks
         );
         let conflict = syscall_result(
             &mut memory,
