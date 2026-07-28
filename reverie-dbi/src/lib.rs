@@ -1116,47 +1116,11 @@ pub fn run_tool_thread_start<T: Tool>(
     read_registers: RegisterReader,
     write_registers: RegisterWriter,
 ) -> Result<(), Error> {
-    run_tool_thread_start_with_parent(
-        tool,
-        context,
-        tid,
-        pid,
-        current_ppid(),
-        branch_count,
-        thread_state,
-        global_state,
-        config,
-        invoke_syscall,
-        read_registers,
-        write_registers,
-    )
-}
-
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-259): Review the explicit-parent DBI thread-start API.
-/// Drives a thread-start lifecycle hook with an explicitly supplied in-tree
-/// parent. External tool runtimes use this when they own the native callback
-/// that receives the process identity instead of Reverie's prototype callback.
-#[allow(clippy::too_many_arguments)]
-pub fn run_tool_thread_start_with_parent<T: Tool>(
-    tool: &T,
-    context: usize,
-    tid: Pid,
-    pid: Pid,
-    ppid: Option<Pid>,
-    branch_count: u64,
-    thread_state: &mut T::ThreadState,
-    global_state: &T::GlobalState,
-    config: &<T::GlobalState as GlobalTool>::Config,
-    invoke_syscall: SyscallInvoker,
-    read_registers: RegisterReader,
-    write_registers: RegisterWriter,
-) -> Result<(), Error> {
     let mut guest = DbiGuest::new(
         context,
         tid,
         pid,
-        ppid,
+        current_ppid(),
         branch_count,
         thread_state,
         global_state,

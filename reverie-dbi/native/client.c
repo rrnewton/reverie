@@ -523,7 +523,6 @@ static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
 static int32_t read_registers(uintptr_t context, struct user_regs_struct *out);
 static int32_t write_registers(uintptr_t context,
                                const struct user_regs_struct *in);
-static bool has_copied_runtime(void);
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-ratchet11): Review the in-tree parent-pid surface.
@@ -537,11 +536,6 @@ static bool has_copied_runtime(void);
 // `virtual_process_id` is a per-process constant, so this is stable for every
 // thread of the process.
 static int32_t in_tree_parent_pid(void) {
-  // AUTONOMOUS-BOT-IMPLEMENTED
-  // TODO-HUMAN-REVIEW(PR-259): Review copied-process parent discovery before
-  // virtual identity handoff completes.
-  if (has_copied_runtime())
-    return (int32_t)dr_get_parent_id();
   return virtual_process_id == VIRTUAL_ROOT_PID ? -1
                                                 : (int32_t)dr_get_parent_id();
 }
@@ -1499,6 +1493,7 @@ static bool syscall_reads_stdin(void *drcontext, int sysnum,
 
 static bool filter_syscall(void *drcontext, int sysnum) { return true; }
 
+static bool has_copied_runtime(void);
 static void ensure_runtime_background(void);
 static void runtime_background_init(void *argument);
 
