@@ -345,7 +345,7 @@ fn execute_basic_syscall_with_output(
         setsockopt(memory, state, args)
     } else if number == libc::SYS_getsockopt as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(reverie-kvm): Review bounded SO_TYPE copy-out semantics.
+        // TODO-HUMAN-REVIEW(PR-230): Review bounded SO_TYPE copy-out semantics.
         getsockopt(memory, state, args)
     } else if number == libc::SYS_bind as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -3496,7 +3496,7 @@ fn setsockopt(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(reverie-kvm): Review bounded SO_TYPE copy-out semantics.
+// TODO-HUMAN-REVIEW(PR-230): Review bounded SO_TYPE copy-out semantics.
 fn getsockopt(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
@@ -4215,7 +4215,7 @@ fn ioctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
             0
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
-        // TODO-HUMAN-REVIEW(reverie-kvm): Review the no-guest-NIC ioctl model.
+        // TODO-HUMAN-REVIEW(PR-230): Review the no-guest-NIC ioctl model.
         SIOCETHTOOL => negative_errno(libc::ENODEV),
         libc::TCGETS | libc::TIOCGWINSZ | libc::TIOCGPGRP => negative_errno(libc::ENOTTY),
         _ => negative_errno(libc::ENOTTY),
