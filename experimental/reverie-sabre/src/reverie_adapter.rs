@@ -508,7 +508,7 @@ where
         );
 
         let _pending_thread_clone = original
-            .filter(|(number, args)| is_thread_clone(*number, *args))
+            .filter(|(number, args)| is_thread_clone(pid, *number, *args))
             .map(|_| {
                 assert!(
                     !self.thread_clone_pending.swap(true, Ordering::AcqRel),
@@ -1170,7 +1170,7 @@ where
                 // TODO-HUMAN-REVIEW(PR-140): Review frame suspension on diverging injectors.
                 let _frame_suspended = crate::callbacks::SyscallFrameGuard::suspend();
                 let result = Errno::from_ret(inject()).map(|value| value as i64);
-                if is_thread_clone(number, args) {
+                if is_thread_clone(self.pid, number, args) {
                     if let Ok(child) = result {
                         self.initialize_child_thread(Pid::from_raw(child as i32))?;
                     }
@@ -1236,8 +1236,21 @@ where
     }
 }
 
-fn is_thread_clone(number: Sysno, args: SyscallArgs) -> bool {
-    number == Sysno::clone && args.arg0 & libc::CLONE_THREAD as usize != 0
+fn is_thread_clone(pid: Pid, number: Sysno, args: SyscallArgs) -> bool {
+    let flags = match number {
+        Sysno::clone => args.arg0 as u64,
+        Sysno::clone3 if args.arg1 >= std::mem::size_of::<u64>() => {
+            let Some(address) = Addr::<u64>::from_raw(args.arg0) else {
+                return false;
+            };
+            let Ok(flags) = SabreMemory::new(pid).read_value(address) else {
+                return false;
+            };
+            flags
+        }
+        _ => return false,
+    };
+    flags & libc::CLONE_THREAD as u64 != 0
 }
 
 const STACK_CAPACITY: usize = 4096;
@@ -1341,10 +1354,20 @@ mod tests {
     fn identifies_only_thread_clones_for_parent_state_handoff() {
         let thread_args = SyscallArgs::new(libc::CLONE_THREAD as usize, 0, 0, 0, 0, 0);
         let process_args = SyscallArgs::new(libc::SIGCHLD as usize, 0, 0, 0, 0, 0);
+        let clone3_flags = libc::CLONE_THREAD as u64;
+        let clone3_args = SyscallArgs::new(
+            &clone3_flags as *const u64 as usize,
+            std::mem::size_of_val(&clone3_flags),
+            0,
+            0,
+            0,
+            0,
+        );
 
-        assert!(is_thread_clone(Sysno::clone, thread_args));
-        assert!(!is_thread_clone(Sysno::clone, process_args));
-        assert!(!is_thread_clone(Sysno::fork, thread_args));
+        assert!(is_thread_clone(current_pid(), Sysno::clone, thread_args));
+        assert!(is_thread_clone(current_pid(), Sysno::clone3, clone3_args));
+        assert!(!is_thread_clone(current_pid(), Sysno::clone, process_args));
+        assert!(!is_thread_clone(current_pid(), Sysno::fork, thread_args));
     }
 
     #[test]
