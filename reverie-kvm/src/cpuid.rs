@@ -231,7 +231,12 @@ const DETERMINISTIC_STANDARD_CPUIDS: &[[u32; 4]] = &[
 
 const DETERMINISTIC_EXTENDED_CPUIDS: &[[u32; 4]] = &[
     [0x8000_000a, 0x756e_6547, 0x6c65_746e, 0x4965_6e69],
-    [0x0000_0663, 0x0000_0000, 0x0000_0001, 0x2010_0800],
+    [
+        0x0000_0663,
+        0x0000_0000,
+        0x0000_0001,
+        0x2010_0800 | bit(27), // RDTSCP is trapped and emulated deterministically.
+    ],
     [0x554d_4551, 0x7269_5620, 0x6c61_7574, 0x5543_5020],
     [0x7265_7620, 0x6e6f_6973, 0x352e_3220, 0x0000_002b],
     [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
@@ -324,6 +329,7 @@ mod tests {
         assert_eq!(leaf(0x8000_0000).ebx, u32::from_le_bytes(*b"Genu"));
         assert_eq!(leaf(0x8000_0000).ecx, u32::from_le_bytes(*b"ntel"));
         assert_eq!(leaf(0x8000_0000).edx, u32::from_le_bytes(*b"ineI"));
+        assert_ne!(leaf(0x8000_0001).edx & bit(27), 0);
     }
 
     #[test]

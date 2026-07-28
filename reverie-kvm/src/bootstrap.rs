@@ -70,6 +70,7 @@ const CR0_TS: u64 = 1 << 3;
 const CR0_ET: u64 = 1 << 4;
 const CR0_NE: u64 = 1 << 5;
 const CR0_PG: u64 = 1 << 31;
+const CR4_TSD: u64 = 1 << 2;
 const CR4_PAE: u64 = 1 << 5;
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
@@ -169,7 +170,9 @@ pub(crate) fn configure_long_mode_with_syscall_area(
     sregs.cr0 |= CR0_PE | CR0_MP | CR0_ET | CR0_NE | CR0_PG;
     sregs.cr0 &= !(CR0_EM | CR0_TS);
     sregs.cr3 = PML4_ADDRESS;
-    sregs.cr4 |= CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_OSXSAVE;
+    // Trap user-mode timestamp reads so the backend can provide a deterministic
+    // logical counter instead of exposing the host TSC.
+    sregs.cr4 |= CR4_TSD | CR4_PAE | CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_OSXSAVE;
     sregs.efer |= EFER_SCE | EFER_LME | EFER_LMA | EFER_NXE;
     vcpu.set_sregs(&sregs)?;
 

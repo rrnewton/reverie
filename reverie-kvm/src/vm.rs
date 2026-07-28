@@ -70,6 +70,8 @@ const VMMCALL: [u8; 3] = [0x0f, 0x01, 0xd9];
 const HLT: u8 = 0xf4;
 const VMWARE_BACKDOOR_MAGIC: u64 = 0x564d_5868;
 const VMWARE_BACKDOOR_PORT: u64 = 0x5658;
+const RDTSC: [u8; 2] = [0x0f, 0x31];
+const RDTSCP: [u8; 3] = [0x0f, 0x01, 0xf9];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct StaticElfException {
@@ -303,6 +305,8 @@ pub struct KvmBackend {
     thread_group: Arc<GuestThreadGroup>,
     thread_slot: Option<usize>,
     is_guest_thread: bool,
+    // TODO-HUMAN-REVIEW(PR-TBD): Review per-vCPU deterministic TSC semantics.
+    logical_tsc: u64,
     pub(crate) static_elf: Option<LoadedStaticElf>,
     stdin: Option<File>,
 }
@@ -313,6 +317,7 @@ struct KvmProcessSnapshot {
     xsave: kvm_xsave,
     stdin: Option<File>,
     cpuid_policy: CpuidPolicy,
+    logical_tsc: u64,
 }
 
 struct ForkedProcess {
@@ -400,6 +405,7 @@ impl KvmBackend {
             thread_group: Arc::new(GuestThreadGroup::default()),
             thread_slot: None,
             is_guest_thread: false,
+            logical_tsc: 0,
             static_elf: None,
             stdin,
         })
@@ -490,6 +496,7 @@ impl KvmBackend {
             xsave: self.vcpu.get_xsave()?,
             stdin: self.stdin.as_ref().map(File::try_clone).transpose()?,
             cpuid_policy: self.cpuid_policy,
+            logical_tsc: self.logical_tsc,
         })
     }
 
@@ -509,6 +516,7 @@ impl KvmBackend {
         child.vcpu.set_regs(&snapshot.registers)?;
         // SAFETY: this guest setup does not enable dynamically sized XSTATE features.
         unsafe { child.vcpu.set_xsave(&snapshot.xsave)? };
+        child.logical_tsc = snapshot.logical_tsc;
         Ok(child)
     }
 
@@ -748,6 +756,7 @@ impl KvmBackend {
                     child_tid,
                     self.thread_group.clone(),
                 )?;
+                child.logical_tsc = self.logical_tsc;
                 child
                     .memory
                     .write_raw(child.syscall_frame_address, &parent_syscall_frame)?;
@@ -931,6 +940,48 @@ impl KvmBackend {
         Ok(true)
     }
 
+    // AUTONOMOUS-BOT-IMPLEMENTED: Hide the host TSC from userspace guests.
+    // TODO-HUMAN-REVIEW(PR-TBD): Review deterministic RDTSC/RDTSCP emulation.
+    pub(crate) fn try_resume_timestamp_counter(&mut self) -> Result<bool> {
+        let Some(exception) = self.static_elf_exception()? else {
+            return Ok(false);
+        };
+        if !matches!(exception.vector, 6 | 13) {
+            return Ok(false);
+        }
+
+        let mut instruction = [0; 3];
+        if self
+            .memory
+            .read_raw(exception.instruction_pointer, &mut instruction)
+            .is_err()
+        {
+            return Ok(false);
+        }
+        let (instruction_len, writes_aux) = if instruction[..RDTSC.len()] == RDTSC {
+            (RDTSC.len() as u64, false)
+        } else if instruction == RDTSCP {
+            (RDTSCP.len() as u64, true)
+        } else {
+            return Ok(false);
+        };
+
+        let timestamp = self.logical_tsc;
+        self.logical_tsc = self.logical_tsc.saturating_add(1);
+        let mut registers = self.vcpu.get_regs()?;
+        registers.rax = timestamp & u64::from(u32::MAX);
+        registers.rdx = timestamp >> 32;
+        if writes_aux {
+            registers.rcx = 0;
+        }
+        registers.rip = exception.instruction_pointer + instruction_len;
+        registers.rsp = exception.stack_pointer;
+        registers.rflags = exception.rflags;
+        configure_user_segments(&self.vcpu)?;
+        self.vcpu.set_regs(&registers)?;
+        Ok(true)
+    }
+
     pub(crate) fn static_elf_halt_error(&self) -> Result<Error> {
         if let Some(exception) = self.static_elf_exception()? {
             return Ok(Error::GuestException {
@@ -1003,7 +1054,9 @@ impl KvmBackend {
                     (executor.take_segment(), executor.take_process_action())
                 }
                 VcpuExit::Hlt => {
-                    if self.try_resume_vmware_backdoor_probe()? {
+                    if self.try_resume_timestamp_counter()?
+                        || self.try_resume_vmware_backdoor_probe()?
+                    {
                         continue;
                     }
                     return Err(self.static_elf_halt_error()?);

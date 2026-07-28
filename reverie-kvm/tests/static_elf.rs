@@ -509,6 +509,57 @@ fn static_elf_vmware_probe_reports_non_vmware_in_direct_and_tool_runtimes() {
 }
 
 #[test]
+fn static_elf_timestamp_reads_are_deterministic_in_direct_and_tool_runtimes() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM timestamp test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let code = [
+        0x0f, 0x31, // rdtsc => 0
+        0x85, 0xc0, // test eax, eax
+        0x75, 0x1d, // jne failure
+        0x85, 0xd2, // test edx, edx
+        0x75, 0x19, // jne failure
+        0x0f, 0x01, 0xf9, // rdtscp => 1, aux => 0
+        0x83, 0xf8, 0x01, // cmp eax, 1
+        0x75, 0x11, // jne failure
+        0x85, 0xd2, // test edx, edx
+        0x75, 0x0d, // jne failure
+        0x85, 0xc9, // test ecx, ecx
+        0x75, 0x09, // jne failure
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // failure: mov eax, SYS_exit
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
+        0x0f, 0x05, // syscall
+    ];
+    let image = static_elf(&code);
+
+    let mut direct_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    direct_backend
+        .install_static_elf(&image, "/bin/timestamp-probe")
+        .unwrap();
+    assert_eq!(direct_backend.run_static_elf().unwrap(), 0);
+
+    let mut tool_backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    tool_backend
+        .install_static_elf(&image, "/bin/timestamp-probe")
+        .unwrap();
+    let (_, code, stdout, stderr) =
+        futures::executor::block_on(tool_backend.run_static_elf_with_tool::<StraceTool>((), true))
+            .unwrap();
+    assert_eq!(code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+}
+
+#[test]
 fn static_elf_cannot_copy_supervisor_bootstrap_memory() {
     match Kvm::new() {
         Ok(_) => {}

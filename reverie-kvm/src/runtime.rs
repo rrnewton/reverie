@@ -1032,7 +1032,9 @@ impl KvmBackend {
                     (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
                 }
                 VcpuExit::Hlt => {
-                    if self.try_resume_vmware_backdoor_probe()? {
+                    if self.try_resume_timestamp_counter()?
+                        || self.try_resume_vmware_backdoor_probe()?
+                    {
                         continue;
                     }
                     return Err(self.static_elf_halt_error()?);
