@@ -5518,8 +5518,16 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 Ok(lock) => lock,
                 Err(error) => return error,
             };
+            // FileTableState synchronizes descriptors with dup(2). Closing any
+            // duplicate releases process-associated POSIX locks, whereas OFD
+            // locks correctly remain attached to the shared open description.
+            let host_command = match command {
+                libc::F_SETLK => libc::F_OFD_SETLK,
+                libc::F_SETLKW => libc::F_OFD_SETLKW,
+                command => command,
+            };
             // SAFETY: host_fd is live and lock is a fully initialized flock value.
-            zero_or_errno(unsafe { libc::fcntl(host_fd, command, &lock) })
+            zero_or_errno(unsafe { libc::fcntl(host_fd, host_command, &lock) })
         }
         _ => negative_errno(libc::ENOSYS),
     }
@@ -8178,7 +8186,7 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_fcntl,
-                [3, libc::F_OFD_SETLK as u64, LOCK, 0, 0, 0],
+                [3, libc::F_SETLK as u64, LOCK, 0, 0, 0],
             ),
             0
         );
@@ -8206,7 +8214,7 @@ mod tests {
                 &mut memory,
                 &mut state,
                 libc::SYS_fcntl,
-                [3, libc::F_OFD_SETLK as u64, LOCK, 0, 0, 0],
+                [3, libc::F_SETLK as u64, LOCK, 0, 0, 0],
             ),
             0
         );
