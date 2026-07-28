@@ -121,6 +121,35 @@ struct OpenHow {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct GuestIovec {
+    base: u64,
+    len: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct GuestMessageHeader {
+    name: u64,
+    name_len: u32,
+    _name_padding: u32,
+    iovecs: u64,
+    iovec_count: u64,
+    control: u64,
+    control_len: u64,
+    flags: u32,
+    _flags_padding: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct GuestMultiMessageHeader {
+    message: GuestMessageHeader,
+    message_len: u32,
+    _padding: u32,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct GuestStack {
     sp: u64,
@@ -322,6 +351,9 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_shutdown as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         shutdown(state, args)
+    } else if number == libc::SYS_recvmmsg as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        recvmmsg(memory, state, args)
     } else if number == libc::SYS_ioctl as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         ioctl(state, args)
@@ -3351,6 +3383,200 @@ fn shutdown(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     // SAFETY: host_fd is a live guest-owned descriptor; shutdown validates
     // whether it refers to a socket.
     zero_or_errno(unsafe { libc::shutdown(host_fd, how) })
+}
+
+struct PreparedRecvMessage {
+    guest_address: u64,
+    header: GuestMultiMessageHeader,
+    iovecs: Vec<GuestIovec>,
+    buffers: Vec<Vec<u8>>,
+    name: Vec<u8>,
+}
+
+// TODO-HUMAN-REVIEW(PR-208): Review recvmmsg guest-memory translation and
+// intentionally unsupported ancillary-control and timeout behavior.
+fn recvmmsg(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Some(host_fd) = host_fd(state, guest_fd) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Ok(message_count) = usize::try_from(args[2]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    if message_count > libc::UIO_MAXIOV as usize {
+        return negative_errno(libc::EINVAL);
+    }
+    if args[3] > libc::c_int::MAX as u64 {
+        return negative_errno(libc::EINVAL);
+    }
+    // A host pointer cannot safely represent the guest timeout. Supporting it
+    // requires a backend wait primitive that can update guest virtual time.
+    if args[4] != 0 {
+        return negative_errno(libc::EOPNOTSUPP);
+    }
+
+    let mut prepared = Vec::with_capacity(message_count);
+    let mut total_allocation = 0usize;
+    for index in 0..message_count {
+        let Some(offset) = index.checked_mul(std::mem::size_of::<GuestMultiMessageHeader>()) else {
+            return negative_errno(libc::EINVAL);
+        };
+        let Some(guest_address) = args[1].checked_add(offset as u64) else {
+            return negative_errno(libc::EFAULT);
+        };
+        let header = match read_guest_struct::<GuestMultiMessageHeader>(memory, guest_address) {
+            Ok(header) => header,
+            Err(error) => return error,
+        };
+        if header.message.control != 0 || header.message.control_len != 0 {
+            // SCM_RIGHTS would expose supervisor descriptors unless each
+            // received fd were imported into the guest descriptor table.
+            return negative_errno(libc::EOPNOTSUPP);
+        }
+        let Ok(iovec_count) = usize::try_from(header.message.iovec_count) else {
+            return negative_errno(libc::EINVAL);
+        };
+        if iovec_count > libc::UIO_MAXIOV as usize {
+            return negative_errno(libc::EINVAL);
+        }
+        if iovec_count != 0 && header.message.iovecs == 0 {
+            return negative_errno(libc::EFAULT);
+        }
+
+        let mut iovecs = Vec::with_capacity(iovec_count);
+        let mut buffers = Vec::with_capacity(iovec_count);
+        for iovec_index in 0..iovec_count {
+            let Some(offset) = iovec_index.checked_mul(std::mem::size_of::<GuestIovec>()) else {
+                return negative_errno(libc::EINVAL);
+            };
+            let Some(address) = header.message.iovecs.checked_add(offset as u64) else {
+                return negative_errno(libc::EFAULT);
+            };
+            let iovec = match read_guest_struct::<GuestIovec>(memory, address) {
+                Ok(iovec) => iovec,
+                Err(error) => return error,
+            };
+            let Ok(length) = usize::try_from(iovec.len) else {
+                return negative_errno(libc::EINVAL);
+            };
+            total_allocation = match total_allocation.checked_add(length) {
+                Some(total) if total <= MAX_HOST_IO => total,
+                _ => return negative_errno(libc::EMSGSIZE),
+            };
+            if !range_is_valid(memory, iovec.base, iovec.len) {
+                return negative_errno(libc::EFAULT);
+            }
+            iovecs.push(iovec);
+            buffers.push(vec![0; length]);
+        }
+
+        let name_length = header.message.name_len as usize;
+        total_allocation = match total_allocation.checked_add(name_length) {
+            Some(total) if total <= MAX_HOST_IO => total,
+            _ => return negative_errno(libc::EMSGSIZE),
+        };
+        if name_length != 0
+            && (header.message.name == 0
+                || !range_is_valid(memory, header.message.name, name_length as u64))
+        {
+            return negative_errno(libc::EFAULT);
+        }
+        prepared.push(PreparedRecvMessage {
+            guest_address,
+            header,
+            iovecs,
+            buffers,
+            name: vec![0; name_length],
+        });
+    }
+
+    let guest_flags = args[3] as libc::c_int;
+    let mut completed = 0usize;
+    for message in &mut prepared {
+        let mut host_iovecs = message
+            .buffers
+            .iter_mut()
+            .map(|buffer| libc::iovec {
+                iov_base: buffer.as_mut_ptr().cast::<libc::c_void>(),
+                iov_len: buffer.len(),
+            })
+            .collect::<Vec<_>>();
+        // SAFETY: libc::msghdr is plain-old-data and every pointer populated
+        // below refers to a live host allocation for the duration of recvmsg.
+        let mut host_message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        host_message.msg_name = if message.name.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            message.name.as_mut_ptr().cast::<libc::c_void>()
+        };
+        host_message.msg_namelen = message.name.len() as libc::socklen_t;
+        host_message.msg_iov = host_iovecs.as_mut_ptr();
+        host_message.msg_iovlen = host_iovecs.len();
+        let mut host_flags = guest_flags & !libc::MSG_WAITFORONE;
+        if completed != 0 && guest_flags & libc::MSG_WAITFORONE != 0 {
+            host_flags |= libc::MSG_DONTWAIT;
+        }
+        // SAFETY: host_fd is live and host_message references the allocations
+        // above. recvmsg validates flags and initializes result metadata.
+        let result = unsafe { libc::recvmsg(host_fd, &mut host_message, host_flags) };
+        if result < 0 {
+            let error = io_error(std::io::Error::last_os_error());
+            return if completed == 0 {
+                error
+            } else {
+                completed as i64
+            };
+        }
+
+        let copied_length = (result as usize).min(
+            message
+                .buffers
+                .iter()
+                .map(Vec::len)
+                .fold(0usize, usize::saturating_add),
+        );
+        let mut remaining = copied_length;
+        for (iovec, buffer) in message.iovecs.iter().zip(&message.buffers) {
+            let count = remaining.min(buffer.len());
+            if count != 0 && memory.write(iovec.base, &buffer[..count]).is_err() {
+                return if completed == 0 {
+                    negative_errno(libc::EFAULT)
+                } else {
+                    completed as i64
+                };
+            }
+            remaining -= count;
+        }
+        if !message.name.is_empty() {
+            let count = (host_message.msg_namelen as usize).min(message.name.len());
+            if count != 0
+                && memory
+                    .write(message.header.message.name, &message.name[..count])
+                    .is_err()
+            {
+                return if completed == 0 {
+                    negative_errno(libc::EFAULT)
+                } else {
+                    completed as i64
+                };
+            }
+        }
+        message.header.message.name_len = host_message.msg_namelen;
+        message.header.message.control_len = host_message.msg_controllen as u64;
+        message.header.message.flags = host_message.msg_flags as u32;
+        message.header.message_len = result as u32;
+        if write_struct(memory, message.guest_address, &message.header) != 0 {
+            return if completed == 0 {
+                negative_errno(libc::EFAULT)
+            } else {
+                completed as i64
+            };
+        }
+        completed += 1;
+    }
+    completed as i64
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
@@ -8183,6 +8409,139 @@ mod tests {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .objects
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn recvmmsg_translates_multiple_guest_messages_and_iovecs() {
+        const PAIR_FDS: u64 = 0x100;
+        const FIRST_PAYLOAD: u64 = 0x200;
+        const SECOND_PAYLOAD: u64 = 0x210;
+        const FIRST_IOVECS: u64 = 0x300;
+        const SECOND_IOVECS: u64 = 0x340;
+        const HEADERS: u64 = 0x400;
+        const FIRST_BUFFER: u64 = 0x600;
+        const FIRST_BUFFER_TAIL: u64 = 0x610;
+        const SECOND_BUFFER: u64 = 0x700;
+
+        assert_eq!(std::mem::size_of::<GuestIovec>(), 16);
+        assert_eq!(std::mem::size_of::<GuestMessageHeader>(), 56);
+        assert_eq!(std::mem::size_of::<GuestMultiMessageHeader>(), 64);
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(FIRST_PAYLOAD, b"hello").unwrap();
+        memory.write(SECOND_PAYLOAD, b"world!").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [socket_fds[0] as u64, FIRST_PAYLOAD, 5, 0, 0, 0],
+            ),
+            5
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [socket_fds[0] as u64, SECOND_PAYLOAD, 6, 0, 0, 0],
+            ),
+            6
+        );
+
+        let first_iovecs = [
+            GuestIovec {
+                base: FIRST_BUFFER,
+                len: 2,
+            },
+            GuestIovec {
+                base: FIRST_BUFFER_TAIL,
+                len: 6,
+            },
+        ];
+        let second_iovec = GuestIovec {
+            base: SECOND_BUFFER,
+            len: 32,
+        };
+        assert_eq!(write_struct(&mut memory, FIRST_IOVECS, &first_iovecs), 0);
+        assert_eq!(write_struct(&mut memory, SECOND_IOVECS, &second_iovec), 0);
+        let headers = [
+            GuestMultiMessageHeader {
+                message: GuestMessageHeader {
+                    iovecs: FIRST_IOVECS,
+                    iovec_count: first_iovecs.len() as u64,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            GuestMultiMessageHeader {
+                message: GuestMessageHeader {
+                    iovecs: SECOND_IOVECS,
+                    iovec_count: 1,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        ];
+        assert_eq!(write_struct(&mut memory, HEADERS, &headers), 0);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [
+                    socket_fds[1] as u64,
+                    HEADERS,
+                    headers.len() as u64,
+                    libc::MSG_DONTWAIT as u64,
+                    0,
+                    0,
+                ],
+            ),
+            2
+        );
+        let received: [GuestMultiMessageHeader; 2] = read_struct(&memory, HEADERS);
+        assert_eq!(received[0].message_len, 5);
+        assert_eq!(received[1].message_len, 6);
+        let mut first_prefix = [0; 2];
+        let mut first_tail = [0; 3];
+        let mut second = [0; 6];
+        memory.read(FIRST_BUFFER, &mut first_prefix).unwrap();
+        memory.read(FIRST_BUFFER_TAIL, &mut first_tail).unwrap();
+        memory.read(SECOND_BUFFER, &mut second).unwrap();
+        assert_eq!(&first_prefix, b"he");
+        assert_eq!(&first_tail, b"llo");
+        assert_eq!(&second, b"world!");
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmmsg,
+                [socket_fds[1] as u64, HEADERS, 1, 0, 0x800, 0],
+            ),
+            negative_errno(libc::EOPNOTSUPP)
         );
     }
 
