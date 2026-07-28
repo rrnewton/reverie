@@ -1133,7 +1133,7 @@ pub fn run_tool_thread_start<T: Tool>(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review the explicit-parent DBI thread-start API.
+// TODO-HUMAN-REVIEW(PR-259): Review the explicit-parent DBI thread-start API.
 /// Drives a thread-start lifecycle hook with an explicitly supplied in-tree
 /// parent. External tool runtimes use this when they own the native callback
 /// that receives the process identity instead of Reverie's prototype callback.
