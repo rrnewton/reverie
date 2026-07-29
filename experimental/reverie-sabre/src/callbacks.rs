@@ -168,6 +168,14 @@ pub extern "C" fn handle_syscall<T: ToolGlobal>(
     }
 }
 
+// The raw clone child cannot allocate, lock, open the coordinator socket, or
+// invoke a Reverie lifecycle callback before pthread finishes startup. Keep
+// this handoff allocation-free; Thread::current performs registration at the
+// child's first normal intercepted syscall (the reviewed PR-226 path).
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-265): Review allocation-free clone-child return handoff.
+extern "C" fn handle_clone_child_return() {}
+
 /// Handle the critical section for the given system call on the given thread
 // The arguments intentionally mirror SaBRe's raw syscall callback ABI.
 #[allow(clippy::if_same_then_else, clippy::too_many_arguments)]
@@ -212,6 +220,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                         arg4 as *mut i32,
                         arg5,
                         return_address as *const libc::c_void,
+                        handle_clone_child_return,
                     )
                 })
                 .unwrap_or_else(|e| -e.into_raw() as usize)
@@ -282,6 +291,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                             0,
                             arg5,
                             return_address as *mut libc::c_void,
+                            handle_clone_child_return,
                         )
                     },
                 })

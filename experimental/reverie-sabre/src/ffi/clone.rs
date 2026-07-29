@@ -35,6 +35,7 @@ pub unsafe fn clone_syscall(
     child_tidptr: *mut i32,         // rcx
     tls: usize,                     // r8
     ret_addr: *const libc::c_void,  // r9
+    child_return: extern "C" fn(),
 ) -> usize {
     let mut ret: usize = Sysno::clone as usize;
 
@@ -52,17 +53,20 @@ pub unsafe fn clone_syscall(
         "push r10", // rcx
         "push r8",
         "push r9",
-        // CLONE_SETTLS installs fresh TLS before the child returns here, so
-        // restore plugin context before balancing the inherited callback's
-        // exit_plugin. Preserve both the guest register and unknown child-stack
-        // alignment without invoking Rust before pthread startup completes.
-        // TODO-HUMAN-REVIEW(PR-265): Review clone-child TLS guard restoration.
         "push r12",
-        "mov r12, rsp",
+        "push r13",
+        // The syscall preserves xmm0, but enter_plugin follows the C ABI and
+        // may clobber it. Move the allocation-free handoff into a callee-saved
+        // register before any call, while preserving the guest's r12/r13.
+        // TODO-HUMAN-REVIEW(PR-265): Review clone-child return handoff storage.
+        "movq r12, xmm0",
+        "mov r13, rsp",
         "and rsp, -16",
         "call qword ptr [rip + enter_plugin@GOTPCREL]",
+        "call r12",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
-        "mov rsp, r12",
+        "mov rsp, r13",
+        "pop r13",
         "pop r12",
         "pop r9",
         "pop r8",
@@ -91,6 +95,7 @@ pub unsafe fn clone_syscall(
         in("r10") child_tidptr,
         in("r8") tls,
         in("r9") ret_addr,
+        inlateout("xmm0") child_return as usize => _,
         // syscall instructions clobber rcx and r11
         lateout("rcx") _,
         lateout("r11") _,
@@ -196,6 +201,7 @@ pub unsafe fn clone3_syscall(
     unused: usize,               // rcx
     arg5: usize,                 // r8
     ret_addr: *mut libc::c_void, // r9
+    child_return: extern "C" fn(),
 ) -> usize {
     let mut ret: usize = Sysno::clone3 as usize;
 
@@ -212,15 +218,18 @@ pub unsafe fn clone3_syscall(
         "push rdx",
         "push r8",
         "push r9",
-        // See clone_syscall: clone3 children also begin with fresh TLS and an
-        // ABI stack whose incoming alignment is not a Rust-call guarantee.
-        // TODO-HUMAN-REVIEW(PR-265): Review clone3-child TLS guard restoration.
         "push r12",
-        "mov r12, rsp",
+        "push r13",
+        // See clone_syscall: preserve the handoff before any C-ABI call.
+        // TODO-HUMAN-REVIEW(PR-265): Review clone3-child return handoff storage.
+        "movq r12, xmm0",
+        "mov r13, rsp",
         "and rsp, -16",
         "call qword ptr [rip + enter_plugin@GOTPCREL]",
+        "call r12",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
-        "mov rsp, r12",
+        "mov rsp, r13",
+        "pop r13",
         "pop r12",
         "pop r9",
         "pop r8",
@@ -248,6 +257,7 @@ pub unsafe fn clone3_syscall(
         in("r10") unused,
         in("r8") arg5,
         in("r9") ret_addr,
+        inlateout("xmm0") child_return as usize => _,
         // syscall instructions clobber rcx and r11
         lateout("rcx") _,
         lateout("r11") _,
