@@ -80,6 +80,8 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
 use std::sync::Weak;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU8;
@@ -113,6 +115,14 @@ static NOTIFIER: LazyLock<Notifier> = LazyLock::new(Notifier::new);
 
 #[cfg(test)]
 static CAPTURE_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static CAPTURE_PERSISTENT_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static FORCE_RAW_CLAIM_REGISTRATION_RACE: LazyLock<Mutex<HashMap<Pid, ()>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
@@ -276,6 +286,8 @@ struct Event {
 
     /// Monotonic activity state owned by this exact Event generation.
     worker_state: AtomicI32,
+    #[cfg(test)]
+    worker_ever_started: AtomicBool,
     worker_done_lock: Mutex<()>,
     worker_done_changed: Condvar,
 }
@@ -315,6 +327,8 @@ impl Event {
             exit_capability: AtomicU8::new(EXIT_CAP_PENDING),
             registration_error: Mutex::new(None),
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
+            #[cfg(test)]
+            worker_ever_started: AtomicBool::new(false),
             worker_done_lock: Mutex::new(()),
             worker_done_changed: Condvar::new(),
         }
@@ -568,14 +582,20 @@ impl Event {
     }
 
     fn try_start_worker(&self) -> bool {
-        self.worker_state
+        let started = self
+            .worker_state
             .compare_exchange(
                 WORKER_NOT_STARTED,
                 WORKER_RUNNING,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
-            .is_ok()
+            .is_ok();
+        if started {
+            #[cfg(test)]
+            self.worker_ever_started.store(true, Ordering::Release);
+        }
+        started
     }
 
     fn worker_is_running(&self) -> bool {
@@ -770,6 +790,10 @@ struct WorkerIdentity {
 
 impl WorkerIdentity {
     fn capture(pid: Pid) -> Result<Self, Errno> {
+        #[cfg(test)]
+        if let Some(error) = CAPTURE_PERSISTENT_ERRORS.lock().get(&pid).copied() {
+            return Err(error);
+        }
         #[cfg(test)]
         if let Some(error) = CAPTURE_ERRORS.lock().remove(&pid) {
             return Err(error);
@@ -1184,6 +1208,19 @@ impl TerminalCleanup {
         *self.event.event().registration_error.lock()
     }
 
+    #[cfg(test)]
+    fn try_claim_unstarted_raw_cleanup(&self) -> bool {
+        self.event.event().try_begin_unstarted_completion()
+    }
+
+    #[cfg(test)]
+    fn finish_unstarted_raw_cleanup(&self) {
+        let event = self.event.event();
+        event.mark_echild();
+        event.mark_worker_done();
+        NOTIFIER.remove(self.pid, event);
+    }
+
     /// Returns true when both handles carry the same immutable Event generation.
     pub fn same_generation(&self, other: &Self) -> bool {
         self.event == other.event
@@ -1411,6 +1448,7 @@ mod test {
     const SUBPROCESS_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
     const PID_NAMESPACE_TEST_TIMEOUT: Duration = Duration::from_secs(5);
     const TRACEE_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+    const REGISTRATION_RETRY_TIMEOUT: Duration = Duration::from_millis(100);
 
     #[derive(Debug)]
     struct BoundedSubprocess {
@@ -1859,7 +1897,15 @@ mod test {
         NotifierOwned {
             terminal: TerminalCleanup,
             owns_claimed_exit: bool,
+            raw_cleanup_claimed: bool,
+            raw_cleanup_finishes_event: bool,
+            cleanup_signal_sent: bool,
         },
+    }
+
+    enum CleanupWaitOwner {
+        Notifier,
+        Raw { finish_event: bool },
     }
 
     struct TraceeCleanupGuard {
@@ -1888,6 +1934,9 @@ mod test {
                     self.ownership = TraceeCleanupOwnership::NotifierOwned {
                         terminal: candidate,
                         owns_claimed_exit: false,
+                        raw_cleanup_claimed: false,
+                        raw_cleanup_finishes_event: false,
+                        cleanup_signal_sent: false,
                     };
                 }
                 TraceeCleanupOwnership::NotifierOwned { terminal, .. } => {
@@ -1953,27 +2002,81 @@ mod test {
             }
         }
 
+        fn acquire_cleanup_wait_owner(
+            pid: Pid,
+            terminal: &TerminalCleanup,
+        ) -> io::Result<CleanupWaitOwner> {
+            let deadline = Instant::now() + REGISTRATION_RETRY_TIMEOUT;
+            let last_error = loop {
+                match terminal.ensure_registered() {
+                    Ok(()) => return Ok(CleanupWaitOwner::Notifier),
+                    Err(_) if Instant::now() < deadline => {
+                        thread::sleep(SUBPROCESS_POLL_INTERVAL);
+                    }
+                    Err(error) => break error,
+                }
+            };
+
+            // Deterministically force registration to win immediately before
+            // the raw-owner CAS. This models the only meaningful CAS loss.
+            if FORCE_RAW_CLAIM_REGISTRATION_RACE
+                .lock()
+                .remove(&pid.into())
+                .is_some()
+            {
+                CAPTURE_PERSISTENT_ERRORS.lock().remove(&pid.into());
+                terminal.ensure_registered().map_err(|error| {
+                    io::Error::other(format!("force cleanup registration race: {error}"))
+                })?;
+            }
+
+            if terminal.try_claim_unstarted_raw_cleanup() {
+                return Ok(CleanupWaitOwner::Raw { finish_event: true });
+            }
+
+            let event = terminal.event.event();
+            match event.worker_state.load(Ordering::Acquire) {
+                WORKER_RUNNING => Ok(CleanupWaitOwner::Notifier),
+                // FINISHING is reachable only through an unstarted synthetic
+                // completion, so no thread can own waitpid. DONE is equivalent
+                // only when no notifier worker ever started.
+                WORKER_FINISHING => Ok(CleanupWaitOwner::Raw {
+                    finish_event: false,
+                }),
+                WORKER_DONE if !event.worker_ever_started.load(Ordering::Acquire) => {
+                    Ok(CleanupWaitOwner::Raw {
+                        finish_event: false,
+                    })
+                }
+                WORKER_DONE => Ok(CleanupWaitOwner::Notifier),
+                state => Err(io::Error::other(format!(
+                    "cleanup registration remained {last_error} and raw-owner CAS lost in state {state}"
+                ))),
+            }
+        }
+
         fn cleanup_with_notifier(
             pid: Pid,
             pidfd: &OwnedFd,
             terminal: &TerminalCleanup,
             owns_claimed_exit: bool,
+            signal_sent: &mut bool,
         ) -> io::Result<()> {
-            terminal.ensure_registered().map_err(|error| {
-                io::Error::other(format!("retry cleanup notifier registration: {error}"))
-            })?;
-            match pidfd_send_signal(pidfd, libc::SIGKILL) {
-                Ok(()) => {}
-                Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {
-                    if terminal.wait(TRACEE_WAIT_TIMEOUT) {
-                        return Ok(());
+            if !*signal_sent {
+                match pidfd_send_signal(pidfd, libc::SIGKILL) {
+                    Ok(()) => *signal_sent = true,
+                    Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {
+                        *signal_sent = true;
+                        if terminal.wait(TRACEE_WAIT_TIMEOUT) {
+                            return Ok(());
+                        }
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            format!("notifier for dead tracee {pid} did not finish"),
+                        ));
                     }
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        format!("notifier for dead tracee {pid} did not finish"),
-                    ));
+                    Err(error) => return Err(error),
                 }
-                Err(error) => return Err(error),
             }
 
             if owns_claimed_exit {
@@ -2008,24 +2111,109 @@ mod test {
             }
         }
 
-        fn cleanup(&mut self) -> io::Result<()> {
-            if self.armed {
-                match &self.ownership {
-                    TraceeCleanupOwnership::PreRegistration => {
-                        Self::cleanup_before_registration(self.pid, &self.pidfd)
+        fn cleanup_with_raw_wait(
+            pid: Pid,
+            pidfd: &OwnedFd,
+            terminal: &TerminalCleanup,
+            finish_event: bool,
+            signal_sent: &mut bool,
+        ) -> io::Result<()> {
+            if !*signal_sent {
+                match pidfd_send_signal(pidfd, libc::SIGKILL) {
+                    Ok(()) => *signal_sent = true,
+                    Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {
+                        *signal_sent = true;
                     }
-                    TraceeCleanupOwnership::NotifierOwned {
-                        terminal,
-                        owns_claimed_exit,
-                    } => Self::cleanup_with_notifier(
-                        self.pid,
-                        &self.pidfd,
-                        terminal,
-                        *owns_claimed_exit,
-                    ),
-                }?;
-                self.armed = false;
+                    Err(error) => return Err(error),
+                }
             }
+            reap_tracee_bounded(pid)?;
+            if finish_event {
+                terminal.finish_unstarted_raw_cleanup();
+            } else if !terminal.wait(TRACEE_WAIT_TIMEOUT) {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "synthetic notifier completion did not finish after exact raw reap",
+                ));
+            }
+            Ok(())
+        }
+
+        fn cleanup(&mut self) -> io::Result<()> {
+            if !self.armed {
+                return Ok(());
+            }
+            if matches!(self.ownership, TraceeCleanupOwnership::PreRegistration) {
+                Self::cleanup_before_registration(self.pid, &self.pidfd)?;
+                self.armed = false;
+                return Ok(());
+            }
+
+            let needs_owner = matches!(
+                self.ownership,
+                TraceeCleanupOwnership::NotifierOwned {
+                    raw_cleanup_claimed: false,
+                    ..
+                }
+            );
+            if needs_owner {
+                let terminal = self
+                    .terminal()
+                    .expect("notifier-owned cleanup has terminal state");
+                match Self::acquire_cleanup_wait_owner(self.pid, terminal)? {
+                    CleanupWaitOwner::Notifier => {
+                        let TraceeCleanupOwnership::NotifierOwned {
+                            terminal,
+                            owns_claimed_exit,
+                            cleanup_signal_sent,
+                            ..
+                        } = &mut self.ownership
+                        else {
+                            unreachable!()
+                        };
+                        Self::cleanup_with_notifier(
+                            self.pid,
+                            &self.pidfd,
+                            terminal,
+                            *owns_claimed_exit,
+                            cleanup_signal_sent,
+                        )?;
+                        self.armed = false;
+                        return Ok(());
+                    }
+                    CleanupWaitOwner::Raw { finish_event } => {
+                        let TraceeCleanupOwnership::NotifierOwned {
+                            raw_cleanup_claimed,
+                            raw_cleanup_finishes_event,
+                            ..
+                        } = &mut self.ownership
+                        else {
+                            unreachable!()
+                        };
+                        *raw_cleanup_claimed = true;
+                        *raw_cleanup_finishes_event = finish_event;
+                    }
+                }
+            }
+
+            let TraceeCleanupOwnership::NotifierOwned {
+                terminal,
+                raw_cleanup_claimed: true,
+                raw_cleanup_finishes_event,
+                cleanup_signal_sent,
+                ..
+            } = &mut self.ownership
+            else {
+                unreachable!("cleanup wait ownership must be resolved")
+            };
+            Self::cleanup_with_raw_wait(
+                self.pid,
+                &self.pidfd,
+                terminal,
+                *raw_cleanup_finishes_event,
+                cleanup_signal_sent,
+            )?;
+            self.armed = false;
             Ok(())
         }
     }
@@ -2637,26 +2825,104 @@ mod test {
     }
 
     #[test]
-    fn failed_first_registration_unwind_stays_notifier_owned() {
+    fn persistent_registration_failure_claims_exact_raw_cleanup() {
         let (pid, mut cleanup) =
             spawn_stopped_process(None).expect("spawn failed-bind cleanup child");
         let identity = WorkerIdentity::capture_process(pid.into())
             .expect("capture failed-bind cleanup generation");
-        CAPTURE_ERRORS.lock().insert(pid.into(), Errno::EMFILE);
+        CAPTURE_PERSISTENT_ERRORS
+            .lock()
+            .insert(pid.into(), Errno::EMFILE);
         let running = Running::new(pid.into());
 
         cleanup
             .bind_running_notifier(&running)
-            .expect_err("inject first notifier registration failure");
+            .expect_err("inject persistent notifier registration failure");
         assert!(matches!(
             cleanup.ownership,
             TraceeCleanupOwnership::NotifierOwned { .. }
         ));
-        drop(cleanup);
+        cleanup
+            .cleanup()
+            .expect("persistent failure falls back to exact raw cleanup");
+        CAPTURE_PERSISTENT_ERRORS.lock().remove(&pid.into());
+        assert!(matches!(
+            cleanup.ownership,
+            TraceeCleanupOwnership::NotifierOwned {
+                raw_cleanup_claimed: true,
+                cleanup_signal_sent: true,
+                ..
+            }
+        ));
 
         assert!(
             !identity.is_same_process_generation(),
-            "failed notifier registration unwind orphaned its child"
+            "persistent notifier registration failure orphaned its child"
+        );
+    }
+
+    #[test]
+    fn persistent_registration_failure_drop_reaps_child() {
+        let (pid, mut cleanup) =
+            spawn_stopped_process(None).expect("spawn persistent-drop cleanup child");
+        let identity = WorkerIdentity::capture_process(pid.into())
+            .expect("capture persistent-drop cleanup generation");
+        CAPTURE_PERSISTENT_ERRORS
+            .lock()
+            .insert(pid.into(), Errno::EIO);
+        let running = Running::new(pid.into());
+
+        cleanup
+            .bind_running_notifier(&running)
+            .expect_err("inject persistent Drop registration failure");
+        drop(cleanup);
+        CAPTURE_PERSISTENT_ERRORS.lock().remove(&pid.into());
+
+        assert!(
+            !identity.is_same_process_generation(),
+            "persistent registration failure was ignored by Drop"
+        );
+    }
+
+    #[test]
+    fn registration_winning_raw_claim_race_uses_notifier_cleanup() {
+        let (pid, mut cleanup) = spawn_stopped_process(None).expect("spawn CAS-loss cleanup child");
+        let identity = WorkerIdentity::capture_process(pid.into())
+            .expect("capture CAS-loss cleanup generation");
+        CAPTURE_PERSISTENT_ERRORS
+            .lock()
+            .insert(pid.into(), Errno::EMFILE);
+        FORCE_RAW_CLAIM_REGISTRATION_RACE
+            .lock()
+            .insert(pid.into(), ());
+        let running = Running::new(pid.into());
+
+        cleanup
+            .bind_running_notifier(&running)
+            .expect_err("inject CAS-loss registration failure");
+        cleanup
+            .cleanup()
+            .expect("CAS loss transfers cleanup to notifier worker");
+        CAPTURE_PERSISTENT_ERRORS.lock().remove(&pid.into());
+        assert!(matches!(
+            cleanup.ownership,
+            TraceeCleanupOwnership::NotifierOwned {
+                raw_cleanup_claimed: false,
+                ..
+            }
+        ));
+        assert!(
+            cleanup
+                .terminal()
+                .expect("CAS-loss terminal cleanup")
+                .event
+                .event()
+                .worker_ever_started
+                .load(Ordering::Acquire)
+        );
+        assert!(
+            !identity.is_same_process_generation(),
+            "notifier-owned CAS-loss cleanup orphaned its child"
         );
     }
 
