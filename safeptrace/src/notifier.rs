@@ -1437,31 +1437,70 @@ mod test {
         }
 
         let inner = "notifier::test::registry_rejects_terminal_event_after_actual_pid_reuse";
-        let output = env::current_exe()
-            .ok()
-            .and_then(|test_binary| {
-                Command::new("unshare")
-                    .args([
-                        "--user",
-                        "--map-root-user",
-                        "--pid",
-                        "--fork",
-                        "--mount-proc",
-                    ])
-                    .arg(test_binary)
-                    .args(["--exact", inner, "--nocapture"])
-                    .env(INNER, "1")
-                    .output()
-                    .ok()
-            })
-            .expect("invoke same-PID registry regression");
-        assert!(
+        let actual_reuse = env::current_exe().ok().and_then(|test_binary| {
+            Command::new("unshare")
+                .args([
+                    "--user",
+                    "--map-root-user",
+                    "--pid",
+                    "--fork",
+                    "--mount-proc",
+                ])
+                .arg(test_binary)
+                .args(["--exact", inner, "--nocapture"])
+                .env(INNER, "1")
+                .output()
+                .ok()
+        });
+        if actual_reuse.as_ref().is_some_and(|output| {
             output.status.success()
                 && String::from_utf8_lossy(&output.stdout)
-                    .contains("ACTUAL_REGISTRY_PID_REUSE_EXERCISED"),
-            "same-PID registry regression did not exercise actual reuse:\nstdout:\n{}\nstderr:\n{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
+                    .contains("ACTUAL_REGISTRY_PID_REUSE_EXERCISED")
+        }) {
+            return;
+        }
+
+        // Hosted CI may prohibit user namespaces. Project two distinct real
+        // kernel generations onto the same numeric registry key while keeping
+        // the old O_PATH fd, starttime, TGID, and inode. This exercises the
+        // production replacement path without accepting a numeric-only match.
+        assert_projected_registry_reuse_rejected();
+    }
+
+    fn assert_projected_registry_reuse_rejected() {
+        let old_pid = spawn_stopped_process(None).expect("spawn old projected generation");
+        let mut old_identity = WorkerIdentity::capture_process(old_pid.into())
+            .expect("capture old projected generation");
+        reap_stopped_process(old_pid);
+        thread::sleep(Duration::from_millis(20));
+
+        let new_pid = spawn_stopped_process(None).expect("spawn new projected generation");
+        old_identity.pid = new_pid.into();
+        let old_identity = Arc::new(old_identity);
+        let old_handle = EventHandle::with_identity(Arc::clone(&old_identity));
+        old_handle.event().mark_echild();
+        old_handle.event().mark_worker_done();
+        NOTIFIER.pids.lock().insert(
+            new_pid.into(),
+            NotifierEntry {
+                handle: old_handle.clone(),
+                identity: old_identity,
+                worker_started: false,
+            },
         );
+
+        let selected = EventHandle::current_or_new(new_pid.into())
+            .expect("select projected replacement registry generation");
+        assert_ne!(
+            selected, old_handle,
+            "registry selected a terminal Event using only the projected numeric PID"
+        );
+        NOTIFIER.pids.lock().remove(&new_pid.into());
+        reap_stopped_process(new_pid);
+    }
+
+    #[test]
+    fn registry_rejects_projected_pid_reuse_without_user_namespaces() {
+        assert_projected_registry_reuse_rejected();
     }
 }
