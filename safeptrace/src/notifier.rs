@@ -79,6 +79,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering;
@@ -212,6 +213,10 @@ struct Event {
     /// event from a held [`ExitFuture`].
     exit_status: AtomicI32,
 
+    /// Linear claim for the one stopped-state capability represented by this
+    /// exact Event generation's retained exit-stop observation.
+    exit_stop_claimed: AtomicBool,
+
     /// Last notifier registration error. Resource/read failures are retryable
     /// and must not be collapsed into terminal ECHILD.
     registration_error: Mutex<Option<Errno>>,
@@ -253,6 +258,7 @@ impl Event {
             }),
             status_changed: Condvar::new(),
             exit_status: AtomicI32::new(EXIT_PENDING),
+            exit_stop_claimed: AtomicBool::new(false),
             registration_error: Mutex::new(None),
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
@@ -455,7 +461,16 @@ impl Event {
         self.exit_waker.register(waker);
 
         match self.exit_status.load(Ordering::SeqCst) {
-            EXIT_STOPPED => Poll::Ready(Ok(())),
+            EXIT_STOPPED => match self.exit_stop_claimed.compare_exchange(
+                false,
+                true,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(false) => Poll::Ready(Ok(())),
+                Err(true) => Poll::Ready(Err(Errno::EALREADY)),
+                Ok(true) | Err(false) => unreachable!("invalid exit-stop claim transition"),
+            },
             EXIT_ECHILD => Poll::Ready(Err(Errno::ECHILD)),
             EXIT_PENDING => Poll::Pending,
             state => unreachable!("invalid exit publication state {state}"),
@@ -1073,6 +1088,10 @@ impl Future for WaitFuture {
 /// even when in another ptrace stop state.
 ///
 /// The next state after this should be the final exit status.
+/// Exactly one future for an immutable Event generation can claim and return
+/// the stopped-state capability. Duplicate or re-polled futures return
+/// [`Errno::EALREADY`]; terminal status remains independently retained for
+/// ordinary waiters.
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-270): Trigger 2: review the public typed-error
 // ExitFuture contract and retained exit-stop generation semantics.
@@ -1125,6 +1144,7 @@ mod test {
     use nix::unistd::fork;
 
     use super::*;
+    use crate::Options;
 
     #[derive(Default)]
     struct WakeCounter(AtomicUsize);
@@ -1193,6 +1213,25 @@ mod test {
 
         assert_eq!(event.poll_exit(&waker), Poll::Ready(Ok(())));
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
+    }
+
+    #[test]
+    fn exit_stop_capability_is_single_claim_while_terminal_status_fans_out() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let event = Event::new();
+
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.poll_exit(&waker), Poll::Ready(Ok(())));
+        assert_eq!(
+            event.poll_exit(&waker),
+            Poll::Ready(Err(Errno::EALREADY)),
+            "one Event generation minted two exit-stop capabilities"
+        );
+
+        event.update(42 << 8);
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
+        assert_eq!(event.poll_exit(&waker), Poll::Ready(Err(Errno::EALREADY)));
     }
 
     #[test]
@@ -1405,6 +1444,178 @@ mod test {
             Poll::Ready(Ok(terminal)),
             "procfs disappearance replaced the old worker's final status with ECHILD"
         );
+    }
+
+    fn spawn_traced_process(requested_pid: Option<i32>) -> Option<(Pid, Stopped)> {
+        let child = if let Some(requested_pid) = requested_pid {
+            #[repr(C)]
+            #[derive(Default)]
+            struct CloneArgs {
+                flags: u64,
+                pidfd: u64,
+                child_tid: u64,
+                parent_tid: u64,
+                exit_signal: u64,
+                stack: u64,
+                stack_size: u64,
+                tls: u64,
+                set_tid: u64,
+                set_tid_size: u64,
+                cgroup: u64,
+            }
+
+            let mut set_tid = requested_pid as u64;
+            let args = CloneArgs {
+                exit_signal: libc::SIGCHLD as u64,
+                set_tid: std::ptr::from_mut(&mut set_tid) as u64,
+                set_tid_size: 1,
+                ..CloneArgs::default()
+            };
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_clone3,
+                    std::ptr::from_ref(&args),
+                    mem::size_of::<CloneArgs>(),
+                )
+            };
+            if result == -1 {
+                return None;
+            }
+            if result == 0 {
+                crate::traceme_and_stop().expect("TRACEME requested-PID child");
+                unsafe { libc::_exit(42) };
+            }
+            Pid::from_raw(result as i32)
+        } else {
+            match unsafe { fork() }.expect("fork duplicate-exit tracee") {
+                ForkResult::Parent { child } => child,
+                ForkResult::Child => {
+                    crate::traceme_and_stop().expect("TRACEME duplicate-exit child");
+                    unsafe { libc::_exit(42) };
+                }
+            }
+        };
+
+        let (stopped, event) = Running::new(child.into())
+            .wait()
+            .expect("wait duplicate-exit initial stop")
+            .assume_stopped();
+        assert_eq!(event, crate::Event::Signal(Signal::SIGSTOP));
+        Some((child, stopped))
+    }
+
+    async fn duplicate_exit_waiter_rejects_replacement(requested_pid: Option<i32>) -> bool {
+        let Some((old_pid, old_stopped)) = spawn_traced_process(requested_pid) else {
+            return false;
+        };
+        old_stopped
+            .setoptions(Options::PTRACE_O_TRACEEXIT)
+            .expect("enable exit stop for duplicate waiter");
+
+        // Register then cancel one waiter while the tracee is still stopped.
+        // A Pending poll must not consume the Event capability.
+        let mut cancelled = Box::pin(old_stopped.exit_event());
+        let waker = futures::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+        assert_eq!(cancelled.as_mut().poll(&mut context), Poll::Pending);
+        drop(cancelled);
+
+        let winner = old_stopped.exit_event();
+        let duplicate = old_stopped.exit_event();
+        let late = old_stopped.exit_event();
+        old_stopped
+            .resume(None)
+            .expect("resume old duplicate-waiter tracee");
+
+        let exit_stopped = winner.await.expect("claim old exit-stop capability");
+        assert_eq!(duplicate.await, Err(Error::Errno(Errno::EALREADY)));
+        let final_wait = exit_stopped
+            .resume(None)
+            .expect("resume claimed old exit stop")
+            .next_state()
+            .await
+            .expect("wait old final status");
+        assert_eq!(
+            final_wait.assume_exited(),
+            (old_pid.into(), crate::ExitStatus::Exited(42))
+        );
+
+        thread::sleep(Duration::from_millis(20));
+        let Some((replacement_pid, replacement)) = spawn_traced_process(requested_pid) else {
+            return false;
+        };
+        if requested_pid.is_some() {
+            assert_eq!(
+                replacement_pid, old_pid,
+                "clone3 did not reuse requested PID"
+            );
+        }
+
+        assert_eq!(late.await, Err(Error::Errno(Errno::EALREADY)));
+        replacement
+            .getregs()
+            .expect("late old waiter touched the stopped replacement");
+        assert_eq!(
+            replacement
+                .resume(None)
+                .expect("resume replacement tracee")
+                .wait()
+                .expect("wait replacement tracee")
+                .assume_exited(),
+            (replacement_pid.into(), crate::ExitStatus::Exited(42))
+        );
+        true
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn duplicate_exit_waiter_never_targets_reused_pid() {
+        const INNER: &str = "SAFEPTRACE_DUPLICATE_EXIT_REUSE_INNER";
+        if env::var_os(INNER).is_some() {
+            if duplicate_exit_waiter_rejects_replacement(Some(100)).await {
+                println!("ACTUAL_DUPLICATE_EXIT_PID_REUSE_EXERCISED");
+            } else {
+                println!("ACTUAL_DUPLICATE_EXIT_PID_REUSE_UNAVAILABLE");
+            }
+            return;
+        }
+
+        let inner = "notifier::test::duplicate_exit_waiter_never_targets_reused_pid";
+        let actual_reuse = env::current_exe().ok().and_then(|test_binary| {
+            Command::new("unshare")
+                .args([
+                    "--user",
+                    "--map-root-user",
+                    "--pid",
+                    "--fork",
+                    "--mount-proc",
+                ])
+                .arg(test_binary)
+                .args(["--exact", inner, "--nocapture"])
+                .env(INNER, "1")
+                .output()
+                .ok()
+        });
+        if let Some(output) = actual_reuse.as_ref() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if output.status.success()
+                && stdout.contains("ACTUAL_DUPLICATE_EXIT_PID_REUSE_EXERCISED")
+            {
+                return;
+            }
+            let unavailable = stdout.contains("ACTUAL_DUPLICATE_EXIT_PID_REUSE_UNAVAILABLE")
+                || stderr.contains("Operation not permitted")
+                || stderr.contains("unshare failed");
+            assert!(
+                output.status.success() || unavailable,
+                "actual PID-reuse regression failed:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+            );
+        }
+
+        // Restricted runners may deny user namespaces or clone3(set_tid).
+        // Still use two real kernel-created generations and prove the late
+        // duplicate cannot mint a second stopped capability.
+        assert!(duplicate_exit_waiter_rejects_replacement(None).await);
     }
 
     fn spawn_stopped_process(requested_pid: Option<i32>) -> Option<Pid> {

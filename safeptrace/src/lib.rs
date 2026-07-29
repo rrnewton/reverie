@@ -551,6 +551,10 @@ impl Stopped {
     /// the time. This is useful for canceling futures when a process enters a
     /// `PTRACE_EVENT_EXIT` (such as when one thread calls `exit_group` and
     /// causes all other threads to suddenly exit).
+    ///
+    /// Exactly one future for this immutable tracee generation can claim the
+    /// exit stop and return a [`Stopped`] capability. Duplicate or re-polled
+    /// futures return [`Errno::EALREADY`].
     #[cfg(feature = "notifier")]
     pub fn exit_event(&self) -> notifier::ExitFuture {
         notifier::ExitFuture::new(self.0, &self.1)
@@ -1059,6 +1063,10 @@ impl Running {
     /// canceling futures when a process enters a `PTRACE_EVENT_EXIT` (such as
     /// when one thread calls `exit_group` and causes all other threads to
     /// suddenly exit).
+    ///
+    /// Exactly one future for this immutable tracee generation can claim the
+    /// exit stop and return a [`Stopped`] capability. Duplicate or re-polled
+    /// futures return [`Errno::EALREADY`].
     #[cfg(feature = "notifier")]
     pub fn exit_event(&self) -> notifier::ExitFuture {
         notifier::ExitFuture::new(self.0, &self.1)
