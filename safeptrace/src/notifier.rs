@@ -1362,8 +1362,14 @@ impl Future for ExitFuture {
 #[cfg(test)]
 mod test {
     use std::env;
+    use std::io;
+    use std::io::Read;
+    use std::io::Write;
     use std::mem;
+    use std::os::unix::process::CommandExt;
     use std::process::Command;
+    use std::process::Output;
+    use std::process::Stdio;
     use std::sync::atomic::AtomicUsize;
     use std::sync::mpsc;
     use std::task::Wake;
@@ -1391,6 +1397,327 @@ mod test {
         }
     }
 
+    const SUBPROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
+    const SUBPROCESS_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+    const PID_NAMESPACE_TEST_TIMEOUT: Duration = Duration::from_secs(5);
+    const TRACEE_WAIT_TIMEOUT: Duration = Duration::from_secs(2);
+
+    #[derive(Debug)]
+    struct BoundedSubprocess {
+        output: Output,
+        timed_out: bool,
+    }
+
+    fn kill_process_group(process_group: i32) -> io::Result<()> {
+        let result = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+
+    fn process_group_exists(process_group: i32) -> bool {
+        let result = unsafe { libc::kill(-process_group, 0) };
+        result == 0 || io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+
+    fn wait_for_process_group_exit(process_group: i32, timeout: Duration) -> io::Result<()> {
+        let deadline = Instant::now() + timeout;
+        while process_group_exists(process_group) {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("process group {process_group} survived SIGKILL"),
+                ));
+            }
+            thread::sleep(SUBPROCESS_POLL_INTERVAL);
+        }
+        Ok(())
+    }
+
+    fn drain_pipe<R>(mut pipe: R) -> mpsc::Receiver<io::Result<Vec<u8>>>
+    where
+        R: Read + Send + 'static,
+    {
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = pipe.read_to_end(&mut bytes).map(|_| bytes);
+            let _ = sender.send(result);
+        });
+        receiver
+    }
+
+    fn collect_drained_pipe(
+        receiver: mpsc::Receiver<io::Result<Vec<u8>>>,
+        name: &str,
+    ) -> io::Result<Vec<u8>> {
+        receiver
+            .recv_timeout(SUBPROCESS_DRAIN_TIMEOUT)
+            .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("timed out draining exact-test {name}: {error}"),
+                )
+            })?
+    }
+
+    struct ChildProcessGroup {
+        child: std::process::Child,
+        process_group: i32,
+        reaped: bool,
+    }
+
+    impl ChildProcessGroup {
+        fn new(child: std::process::Child) -> Self {
+            let process_group = child.id() as i32;
+            Self {
+                child,
+                process_group,
+                reaped: false,
+            }
+        }
+
+        fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+            self.child.try_wait()
+        }
+
+        fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+            let status = self.child.wait()?;
+            self.reaped = true;
+            Ok(status)
+        }
+
+        fn terminate_and_reap(&mut self) -> io::Result<std::process::ExitStatus> {
+            kill_process_group(self.process_group)?;
+            self.wait()
+        }
+    }
+
+    impl Drop for ChildProcessGroup {
+        fn drop(&mut self) {
+            if !self.reaped {
+                let _ = kill_process_group(self.process_group);
+                let _ = self.child.wait();
+                self.reaped = true;
+            }
+        }
+    }
+
+    fn run_exact_test_bounded(
+        inner: &str,
+        environment: &[(&str, &str)],
+        pid_namespace: bool,
+        timeout: Duration,
+    ) -> io::Result<BoundedSubprocess> {
+        let test_binary = env::current_exe()?;
+        let mut command = if pid_namespace {
+            let mut command = Command::new("unshare");
+            command.args([
+                "--user",
+                "--map-root-user",
+                "--pid",
+                "--fork",
+                "--mount-proc",
+            ]);
+            command.arg(test_binary);
+            command
+        } else {
+            Command::new(test_binary)
+        };
+        command
+            .args(["--exact", inner, "--nocapture"])
+            .envs(environment.iter().copied())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+
+        let mut group = ChildProcessGroup::new(command.spawn()?);
+        let stdout = drain_pipe(
+            group
+                .child
+                .stdout
+                .take()
+                .expect("bounded child stdout pipe"),
+        );
+        let stderr = drain_pipe(
+            group
+                .child
+                .stderr
+                .take()
+                .expect("bounded child stderr pipe"),
+        );
+        let deadline = Instant::now() + timeout;
+        let (status, timed_out) = loop {
+            if let Some(status) = group.try_wait()? {
+                group.reaped = true;
+                break (status, false);
+            }
+            if Instant::now() >= deadline {
+                let status = group.terminate_and_reap()?;
+                wait_for_process_group_exit(group.process_group, SUBPROCESS_DRAIN_TIMEOUT)?;
+                break (status, true);
+            }
+            thread::sleep(SUBPROCESS_POLL_INTERVAL);
+        };
+        let stdout = match collect_drained_pipe(stdout, "stdout") {
+            Ok(stdout) => stdout,
+            Err(error) => {
+                kill_process_group(group.process_group)?;
+                wait_for_process_group_exit(group.process_group, SUBPROCESS_DRAIN_TIMEOUT)?;
+                return Err(error);
+            }
+        };
+        let stderr = match collect_drained_pipe(stderr, "stderr") {
+            Ok(stderr) => stderr,
+            Err(error) => {
+                kill_process_group(group.process_group)?;
+                wait_for_process_group_exit(group.process_group, SUBPROCESS_DRAIN_TIMEOUT)?;
+                return Err(error);
+            }
+        };
+        Ok(BoundedSubprocess {
+            output: Output {
+                status,
+                stdout,
+                stderr,
+            },
+            timed_out,
+        })
+    }
+
+    fn run_exact_in_pid_namespace_bounded(
+        inner: &str,
+        environment: &[(&str, &str)],
+    ) -> Option<Output> {
+        match run_exact_test_bounded(inner, environment, true, PID_NAMESPACE_TEST_TIMEOUT) {
+            Ok(result) if result.timed_out => panic!(
+                "PID-namespace exact test exceeded {:?}:\nstdout:\n{}\nstderr:\n{}",
+                PID_NAMESPACE_TEST_TIMEOUT,
+                String::from_utf8_lossy(&result.output.stdout),
+                String::from_utf8_lossy(&result.output.stderr),
+            ),
+            Ok(result) => Some(result.output),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => panic!("failed to run bounded PID-namespace exact test: {error}"),
+        }
+    }
+
+    fn waitpid_status_bounded(pid: Pid, flags: i32, timeout: Duration) -> io::Result<i32> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let mut status = 0;
+            let waited = unsafe { libc::waitpid(pid.as_raw(), &mut status, flags | libc::WNOHANG) };
+            if waited == pid.as_raw() {
+                return Ok(status);
+            }
+            if waited == -1 {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Err(error);
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("waitpid({pid}) exceeded {timeout:?}"),
+                ));
+            }
+            thread::sleep(SUBPROCESS_POLL_INTERVAL);
+        }
+    }
+
+    fn stopped_tracee_bounded(pid: Pid) -> io::Result<Stopped> {
+        let status = waitpid_status_bounded(pid, libc::WUNTRACED, TRACEE_WAIT_TIMEOUT)?;
+        if !libc::WIFSTOPPED(status) {
+            return Err(io::Error::other(format!(
+                "tracee {pid} reached non-stop status {status:#x}"
+            )));
+        }
+        if libc::WSTOPSIG(status) != libc::SIGSTOP {
+            return Err(io::Error::other(format!(
+                "tracee {pid} stopped with signal {} instead of SIGSTOP",
+                libc::WSTOPSIG(status)
+            )));
+        }
+        Ok(Stopped::new_unchecked(pid.into()))
+    }
+
+    fn terminate_tracee_bounded(pid: Pid) -> io::Result<()> {
+        let killed = unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) };
+        if killed == -1 {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() != Some(libc::ESRCH) {
+                return Err(error);
+            }
+        }
+        let _ = nix::sys::ptrace::cont(pid, None);
+
+        let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match waitpid_status_bounded(pid, libc::__WALL, remaining) {
+                Ok(status) if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) => return Ok(()),
+                Ok(status) if libc::WIFSTOPPED(status) => {
+                    let _ = nix::sys::ptrace::cont(pid, None);
+                }
+                Ok(status) => {
+                    return Err(io::Error::other(format!(
+                        "tracee {pid} cleanup reached unexpected status {status:#x}"
+                    )));
+                }
+                Err(error) if error.raw_os_error() == Some(libc::ECHILD) => {
+                    if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                        return Ok(());
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("tracee {pid} survived bounded cleanup"),
+                ));
+            }
+            thread::sleep(SUBPROCESS_POLL_INTERVAL);
+        }
+    }
+
+    struct TraceeCleanupGuard {
+        pid: Pid,
+        armed: bool,
+    }
+
+    impl TraceeCleanupGuard {
+        fn new(pid: Pid) -> Self {
+            Self { pid, armed: true }
+        }
+
+        fn disarm(&mut self) {
+            self.armed = false;
+        }
+
+        fn cleanup(&mut self) -> io::Result<()> {
+            if self.armed {
+                terminate_tracee_bounded(self.pid)?;
+                self.armed = false;
+            }
+            Ok(())
+        }
+    }
+
+    impl Drop for TraceeCleanupGuard {
+        fn drop(&mut self) {
+            let _ = self.cleanup();
+        }
+    }
+
     #[test]
     fn registration_is_reused_across_status_events() {
         let counter = Arc::new(WakeCounter::default());
@@ -1405,6 +1732,34 @@ mod test {
         assert_eq!(counter.0.load(Ordering::SeqCst), 1);
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(stopped)));
         assert!(!event.status_waker.register(&waker));
+    }
+
+    #[test]
+    fn bounded_test_subprocess_kills_and_reaps_hung_inner() {
+        const HANG: &str = "SAFEPTRACE_BOUNDED_INNER_HANG";
+        if env::var_os(HANG).is_some() {
+            println!("BOUNDED_INNER_HANG_READY");
+            io::stdout().flush().expect("flush hang marker");
+            loop {
+                thread::park();
+            }
+        }
+
+        let inner = "notifier::test::bounded_test_subprocess_kills_and_reaps_hung_inner";
+        let started = Instant::now();
+        let result =
+            run_exact_test_bounded(inner, &[(HANG, "1")], false, Duration::from_millis(100))
+                .expect("run deliberately hung exact-test subprocess");
+
+        assert!(result.timed_out, "hung subprocess unexpectedly completed");
+        assert!(
+            String::from_utf8_lossy(&result.output.stdout).contains("BOUNDED_INNER_HANG_READY"),
+            "hung subprocess output was not drained concurrently: {result:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "hung subprocess cleanup exceeded its external bound"
+        );
     }
 
     #[test]
@@ -1872,7 +2227,9 @@ mod test {
         );
     }
 
-    fn spawn_traced_process(requested_pid: Option<i32>) -> Option<(Pid, Stopped)> {
+    fn spawn_traced_process(
+        requested_pid: Option<i32>,
+    ) -> Option<(Pid, Stopped, TraceeCleanupGuard)> {
         let child = if let Some(requested_pid) = requested_pid {
             #[repr(C)]
             #[derive(Default)]
@@ -1922,16 +2279,19 @@ mod test {
             }
         };
 
-        let (stopped, event) = Running::new(child.into())
-            .wait()
-            .expect("wait duplicate-exit initial stop")
-            .assume_stopped();
-        assert_eq!(event, crate::Event::Signal(Signal::SIGSTOP));
-        Some((child, stopped))
+        let mut cleanup = TraceeCleanupGuard::new(child);
+        let stopped = stopped_tracee_bounded(child).unwrap_or_else(|error| {
+            cleanup
+                .cleanup()
+                .unwrap_or_else(|cleanup_error| panic!("{error}; cleanup: {cleanup_error}"));
+            panic!("wait duplicate-exit initial stop: {error}");
+        });
+        Some((child, stopped, cleanup))
     }
 
     async fn duplicate_exit_waiter_rejects_replacement(requested_pid: Option<i32>) -> bool {
-        let Some((old_pid, old_stopped)) = spawn_traced_process(requested_pid) else {
+        let Some((old_pid, old_stopped, mut old_cleanup)) = spawn_traced_process(requested_pid)
+        else {
             return false;
         };
         old_stopped
@@ -1953,21 +2313,33 @@ mod test {
             .resume(None)
             .expect("resume old duplicate-waiter tracee");
 
-        let exit_stopped = winner.await.expect("claim old exit-stop capability");
-        assert_eq!(duplicate.await, Err(Error::Errno(Errno::EALREADY)));
+        let exit_stopped = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, winner)
+            .await
+            .expect("old exit-stop winner timed out")
+            .expect("claim old exit-stop capability");
+        assert_eq!(
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, duplicate)
+                .await
+                .expect("old duplicate ExitFuture timed out"),
+            Err(Error::Errno(Errno::EALREADY))
+        );
         let final_wait = exit_stopped
             .resume(None)
-            .expect("resume claimed old exit stop")
-            .next_state()
+            .expect("resume claimed old exit stop");
+        let final_wait = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, final_wait.next_state())
             .await
+            .expect("old claimed exit final status timed out")
             .expect("wait old final status");
         assert_eq!(
             final_wait.assume_exited(),
             (old_pid.into(), crate::ExitStatus::Exited(42))
         );
+        old_cleanup.disarm();
 
         thread::sleep(Duration::from_millis(20));
-        let Some((replacement_pid, replacement)) = spawn_traced_process(requested_pid) else {
+        let Some((replacement_pid, replacement, mut replacement_cleanup)) =
+            spawn_traced_process(requested_pid)
+        else {
             return false;
         };
         if requested_pid.is_some() {
@@ -1977,26 +2349,33 @@ mod test {
             );
         }
 
-        assert_eq!(late.await, Err(Error::Errno(Errno::EALREADY)));
+        assert_eq!(
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, late)
+                .await
+                .expect("late old ExitFuture timed out"),
+            Err(Error::Errno(Errno::EALREADY))
+        );
         replacement
             .getregs()
             .expect("late old waiter touched the stopped replacement");
+        let replacement = replacement.resume(None).expect("resume replacement tracee");
+        let replacement = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, replacement.next_state())
+            .await
+            .expect("replacement final status timed out")
+            .expect("wait replacement tracee");
         assert_eq!(
-            replacement
-                .resume(None)
-                .expect("resume replacement tracee")
-                .wait()
-                .expect("wait replacement tracee")
-                .assume_exited(),
+            replacement.assume_exited(),
             (replacement_pid.into(), crate::ExitStatus::Exited(42))
         );
+        replacement_cleanup.disarm();
         true
     }
 
     async fn unclaimed_exit_waiter_expires_before_cleanup_replacement(
         requested_pid: Option<i32>,
     ) -> bool {
-        let Some((old_pid, old_stopped)) = spawn_traced_process(requested_pid) else {
+        let Some((old_pid, old_stopped, mut old_cleanup)) = spawn_traced_process(requested_pid)
+        else {
             return false;
         };
         old_stopped
@@ -2027,9 +2406,12 @@ mod test {
             terminal.wait(Duration::from_secs(1)),
             "cleanup notifier did not publish old final status"
         );
+        old_cleanup.disarm();
 
         thread::sleep(Duration::from_millis(20));
-        let Some((replacement_pid, replacement)) = spawn_traced_process(requested_pid) else {
+        let Some((replacement_pid, replacement, mut replacement_cleanup)) =
+            spawn_traced_process(requested_pid)
+        else {
             return false;
         };
         if requested_pid.is_some() {
@@ -2039,19 +2421,27 @@ mod test {
             );
         }
 
-        assert_eq!(late.await, Err(Error::Errno(Errno::EALREADY)));
+        assert_eq!(
+            tokio::time::timeout(TRACEE_WAIT_TIMEOUT, late)
+                .await
+                .expect("late unclaimed ExitFuture timed out"),
+            Err(Error::Errno(Errno::EALREADY))
+        );
         replacement
             .getregs()
             .expect("late unclaimed waiter touched the stopped replacement");
+        let replacement = replacement
+            .resume(None)
+            .expect("resume cleanup replacement tracee");
+        let replacement = tokio::time::timeout(TRACEE_WAIT_TIMEOUT, replacement.next_state())
+            .await
+            .expect("cleanup replacement final status timed out")
+            .expect("wait cleanup replacement tracee");
         assert_eq!(
-            replacement
-                .resume(None)
-                .expect("resume cleanup replacement tracee")
-                .wait()
-                .expect("wait cleanup replacement tracee")
-                .assume_exited(),
+            replacement.assume_exited(),
             (replacement_pid.into(), crate::ExitStatus::Exited(42))
         );
+        replacement_cleanup.disarm();
         true
     }
 
@@ -2070,21 +2460,7 @@ mod test {
         }
 
         let inner = "notifier::test::exit_waiters_never_target_reused_pid_after_claim_or_cleanup";
-        let actual_reuse = env::current_exe().ok().and_then(|test_binary| {
-            Command::new("unshare")
-                .args([
-                    "--user",
-                    "--map-root-user",
-                    "--pid",
-                    "--fork",
-                    "--mount-proc",
-                ])
-                .arg(test_binary)
-                .args(["--exact", inner, "--nocapture"])
-                .env(INNER, "1")
-                .output()
-                .ok()
-        });
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(INNER, "1")]);
         if let Some(output) = actual_reuse.as_ref() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2157,19 +2533,17 @@ mod test {
             }
         };
 
-        let mut status = 0;
-        let waited = unsafe { libc::waitpid(child.as_raw(), &mut status, libc::WUNTRACED) };
-        assert_eq!(waited, child.as_raw());
+        let status = waitpid_status_bounded(child, libc::WUNTRACED, TRACEE_WAIT_TIMEOUT)
+            .unwrap_or_else(|error| {
+                let cleanup = terminate_tracee_bounded(child);
+                panic!("wait replacement-generation tracee: {error}; cleanup: {cleanup:?}")
+            });
         assert!(libc::WIFSTOPPED(status));
         Some(child)
     }
 
     fn reap_stopped_process(pid: Pid) {
-        assert_eq!(unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) }, 0);
-        let mut status = 0;
-        let waited = unsafe { libc::waitpid(pid.as_raw(), &mut status, 0) };
-        assert_eq!(waited, pid.as_raw());
-        assert!(libc::WIFSIGNALED(status));
+        terminate_tracee_bounded(pid).expect("bounded stopped-process cleanup");
     }
 
     fn assert_live_replacement_rejected(first_pid: Option<i32>) -> bool {
@@ -2217,21 +2591,7 @@ mod test {
         // `clone3(set_tid)` there deterministically reuses PID 100 for two
         // different, real procfs generations.
         let inner = "notifier::test::worker_echild_rejects_live_replacement_generation";
-        let actual_reuse = env::current_exe().ok().and_then(|test_binary| {
-            Command::new("unshare")
-                .args([
-                    "--user",
-                    "--map-root-user",
-                    "--pid",
-                    "--fork",
-                    "--mount-proc",
-                ])
-                .arg(test_binary)
-                .args(["--exact", inner, "--nocapture"])
-                .env(INNER, "1")
-                .output()
-                .ok()
-        });
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(INNER, "1")]);
 
         if actual_reuse.as_ref().is_some_and(|output| {
             output.status.success()
@@ -2289,21 +2649,7 @@ mod test {
         }
 
         let inner = "notifier::test::registry_rejects_terminal_event_after_actual_pid_reuse";
-        let actual_reuse = env::current_exe().ok().and_then(|test_binary| {
-            Command::new("unshare")
-                .args([
-                    "--user",
-                    "--map-root-user",
-                    "--pid",
-                    "--fork",
-                    "--mount-proc",
-                ])
-                .arg(test_binary)
-                .args(["--exact", inner, "--nocapture"])
-                .env(INNER, "1")
-                .output()
-                .ok()
-        });
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(INNER, "1")]);
         if actual_reuse.as_ref().is_some_and(|output| {
             output.status.success()
                 && String::from_utf8_lossy(&output.stdout)
