@@ -10,10 +10,13 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 use std::ops::DerefMut;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -162,6 +165,111 @@ pub(crate) struct InjectedSyscallTrap {
     pub(crate) rip: u64,
 }
 
+#[derive(Clone)]
+pub(crate) struct LiteinstRuntimeConfig {
+    pub(crate) preload: PathBuf,
+    pub(crate) begin_marker: u64,
+    pub(crate) ready_marker: u64,
+    pub(crate) helper_return_marker: u64,
+    pub(crate) syscall_marker: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+struct LiteinstHandshakeFrame {
+    version: u64,
+    begin_rip: u64,
+    ready_rip: u64,
+    install_helper: u64,
+    helper_stack_top: u64,
+    helper_return: u64,
+    helper_return_rip: u64,
+    syscall_trap_rip: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LiteinstRuntimePhase {
+    Waiting,
+    Bootstrap,
+    Ready,
+}
+
+#[derive(Clone, Debug)]
+struct LiteinstRuntimeState {
+    phase: LiteinstRuntimePhase,
+    frame: Option<LiteinstHandshakeFrame>,
+    generation: u64,
+    ready_generation: Option<u64>,
+    attempted_sites: HashSet<u64>,
+    patched_sites: HashSet<u64>,
+}
+
+impl Default for LiteinstRuntimeState {
+    fn default() -> Self {
+        Self {
+            phase: LiteinstRuntimePhase::Waiting,
+            frame: None,
+            generation: 0,
+            ready_generation: None,
+            attempted_sites: HashSet::new(),
+            patched_sites: HashSet::new(),
+        }
+    }
+}
+
+enum LiteinstTrap {
+    Handshake,
+    Syscall(usize),
+}
+
+#[derive(Debug)]
+struct GuestMap {
+    start: u64,
+    end: u64,
+    writable: bool,
+    readable: bool,
+    executable: bool,
+    path: Option<PathBuf>,
+}
+
+impl GuestMap {
+    fn contains(&self, address: u64) -> bool {
+        self.start <= address && address < self.end
+    }
+}
+
+fn guest_maps(pid: Pid) -> Option<Vec<GuestMap>> {
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).ok()?;
+    let mut parsed = Vec::new();
+    for line in maps.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(range), Some(perms)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let Some((start, end)) = range.split_once('-') else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (u64::from_str_radix(start, 16), u64::from_str_radix(end, 16))
+        else {
+            continue;
+        };
+        let _offset = fields.next();
+        let _device = fields.next();
+        let _inode = fields.next();
+        let path = fields.next().map(PathBuf::from);
+        let permissions = perms.as_bytes();
+        parsed.push(GuestMap {
+            start,
+            end,
+            writable: permissions.get(1) == Some(&b'w'),
+            readable: permissions.first() == Some(&b'r'),
+            executable: permissions.get(2) == Some(&b'x'),
+            path,
+        });
+    }
+    Some(parsed)
+}
+
 /// All the info needed to be able to interact with the global state.
 struct GlobalState<G: GlobalTool> {
     /// The tool's static configuration data.
@@ -179,6 +287,9 @@ struct GlobalState<G: GlobalTool> {
 
     /// Marker and exact RIP identifying a binary-rewriter syscall trap.
     injected_syscall_trap: Option<InjectedSyscallTrap>,
+
+    /// Optional dynamic LiteInst runtime configuration.
+    liteinst_runtime: Option<LiteinstRuntimeConfig>,
 }
 
 impl<G: GlobalTool> Clone for GlobalState<G> {
@@ -189,6 +300,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             subscriptions: self.subscriptions.clone(),
             sequentialized_guest: self.sequentialized_guest.clone(),
             injected_syscall_trap: self.injected_syscall_trap,
+            liteinst_runtime: self.liteinst_runtime.clone(),
         }
     }
 }
@@ -197,6 +309,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
 pub(crate) struct TracedTaskOptions<'a> {
     pub(crate) events: &'a Subscription,
     pub(crate) injected_syscall_trap: Option<InjectedSyscallTrap>,
+    pub(crate) liteinst_runtime: Option<LiteinstRuntimeConfig>,
 }
 
 /// Our runtime representation of what Reverie knows about a guest thread. Its
@@ -227,8 +340,14 @@ pub struct TracedTask<L: Tool> {
     /// Set to `Some` if the syscall has not been injected yet. `None` if it has.
     pending_syscall: Option<(Sysno, SyscallArgs)>,
 
+    /// The pending syscall was converted out of its seccomp stop before Tool dispatch.
+    pending_syscall_already_skipped: bool,
+
     /// Address of the writable e9tool register frame for the active event.
     injected_syscall_frame: Option<usize>,
+
+    /// Per-process dynamic LiteInst handshake and patched-site state.
+    liteinst_runtime: Arc<StdMutex<LiteinstRuntimeState>>,
 
     /// pending signal to deliver. This can happen when
     /// syscall got interrupted (by signal)
@@ -375,6 +494,7 @@ impl<L: Tool> TracedTask<L> {
                     .unwrap_or(false),
             ),
             injected_syscall_trap: options.injected_syscall_trap,
+            liteinst_runtime: options.liteinst_runtime,
         };
         let thread_state = process_state.init_thread_state(tid, None);
         let (next_state, next_state_rx) = mpsc::channel(1);
@@ -391,7 +511,9 @@ impl<L: Tool> TracedTask<L> {
             global_state,
             has_cpuid_interception: false,
             pending_syscall: None,
+            pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
+            liteinst_runtime: Arc::new(StdMutex::new(LiteinstRuntimeState::default())),
             next_state,
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(tid, tid),
@@ -447,7 +569,9 @@ impl<L: Tool> TracedTask<L> {
             global_state,
             has_cpuid_interception: self.has_cpuid_interception,
             pending_syscall: None,
+            pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
+            liteinst_runtime: self.liteinst_runtime.clone(),
             next_state,
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(self.pid, child),
@@ -500,7 +624,11 @@ impl<L: Tool> TracedTask<L> {
             global_state: self.global_state.clone(),
             has_cpuid_interception: self.has_cpuid_interception,
             pending_syscall: None,
+            pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
+            liteinst_runtime: Arc::new(StdMutex::new(
+                self.liteinst_runtime.lock().unwrap().clone(),
+            )),
             next_state,
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(child, child),
@@ -1168,6 +1296,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         async {
             self.injected_syscall_frame = Some(frame_address);
             self.pending_syscall = Some((nr, args));
+            self.pending_syscall_already_skipped = false;
 
             let retval = cancellable(self.cancel_handler.clone(), async {
                 self.process_state
@@ -1188,6 +1317,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
 
             self.pending_syscall = None;
+            self.pending_syscall_already_skipped = false;
             self.injected_syscall_frame = None;
             let signal = self.pending_signal.take();
             let wait = task.resume(signal)?.next_state().await?;
@@ -1201,11 +1331,123 @@ impl<L: Tool + 'static> TracedTask<L> {
         .await
     }
 
+    fn validate_liteinst_handshake(
+        &self,
+        task: &Stopped,
+        frame_address: usize,
+        trap_rip: u64,
+        ready: bool,
+    ) -> Option<LiteinstHandshakeFrame> {
+        let config = self.global_state.liteinst_runtime.as_ref()?;
+        let address = Addr::from_raw(frame_address)?;
+        let frame: LiteinstHandshakeFrame = task.read_value(address).ok()?;
+        if frame.version != 1
+            || frame.helper_stack_top < 8
+            || frame.helper_stack_top & 0xf != 0
+            || trap_rip
+                != if ready {
+                    frame.ready_rip
+                } else {
+                    frame.begin_rip
+                }
+        {
+            return None;
+        }
+        let maps = guest_maps(task.pid())?;
+        let preload_code = |address| {
+            maps.iter().any(|mapping| {
+                mapping.executable
+                    && mapping.path.as_ref() == Some(&config.preload)
+                    && mapping.contains(address)
+            })
+        };
+        if ![
+            frame.begin_rip,
+            frame.ready_rip,
+            frame.install_helper,
+            frame.helper_return,
+            frame.helper_return_rip,
+            frame.syscall_trap_rip,
+        ]
+        .into_iter()
+        .all(preload_code)
+        {
+            return None;
+        }
+        let frame_readable = maps
+            .iter()
+            .any(|mapping| mapping.readable && mapping.contains(frame_address as u64));
+        let helper_stack_writable = maps.iter().any(|mapping| {
+            mapping.writable && mapping.contains(frame.helper_stack_top.saturating_sub(8))
+        });
+        (frame_readable && helper_stack_writable).then_some(frame)
+    }
+
+    fn classify_liteinst_trap(
+        &mut self,
+        task: &Stopped,
+        regs: &libc::user_regs_struct,
+    ) -> Option<LiteinstTrap> {
+        let config = self.global_state.liteinst_runtime.as_ref()?;
+        if regs.rax == config.begin_marker {
+            let frame =
+                self.validate_liteinst_handshake(task, regs.rdi as usize, regs.ip(), false)?;
+            let mut state = self.liteinst_runtime.lock().unwrap();
+            if state.phase != LiteinstRuntimePhase::Waiting {
+                return None;
+            }
+            state.phase = LiteinstRuntimePhase::Bootstrap;
+            state.frame = Some(frame);
+            return Some(LiteinstTrap::Handshake);
+        }
+        if regs.rax == config.ready_marker {
+            let frame =
+                self.validate_liteinst_handshake(task, regs.rdi as usize, regs.ip(), true)?;
+            let mut state = self.liteinst_runtime.lock().unwrap();
+            if state.phase != LiteinstRuntimePhase::Bootstrap || state.frame != Some(frame) {
+                return None;
+            }
+            state.phase = LiteinstRuntimePhase::Ready;
+            state.ready_generation = Some(state.generation);
+            return Some(LiteinstTrap::Handshake);
+        }
+        if regs.rax != config.syscall_marker {
+            return None;
+        }
+        let frame = self
+            .read_injected_syscall_frame(task, regs.rdi as usize)
+            .ok()?;
+        let state = self.liteinst_runtime.lock().unwrap();
+        let handshake = state.frame?;
+        if state.phase != LiteinstRuntimePhase::Ready
+            || state.ready_generation != Some(state.generation)
+            || regs.ip() != handshake.syscall_trap_rip
+            || !state.patched_sites.contains(&frame.instruction_pointer())
+        {
+            return None;
+        }
+        Some(LiteinstTrap::Syscall(regs.rdi as usize))
+    }
+
     async fn handle_sigtrap(&mut self, task: Stopped) -> Result<HandleSignalResult, TraceError> {
         let resumed_by_gdb_step = self
             .resumed_by_gdb
             .is_some_and(|action| matches!(action, ResumeAction::Step(_)));
         let mut regs = task.getregs()?;
+        match self.classify_liteinst_trap(&task, &regs) {
+            Some(LiteinstTrap::Handshake) => {
+                return Ok(HandleSignalResult::SignalSuppressed(
+                    task.resume(None)?.next_state().await?,
+                ));
+            }
+            Some(LiteinstTrap::Syscall(frame_address)) => {
+                let next_state = self
+                    .handle_injected_syscall(task, frame_address, regs.eflags)
+                    .await?;
+                return Ok(HandleSignalResult::SignalSuppressed(next_state));
+            }
+            None => {}
+        }
         // TODO-HUMAN-REVIEW(PR-103): Review rewritten-trap provenance validation.
         if let Some(trap) = self.global_state.injected_syscall_trap
             && regs.rax == trap.marker
@@ -1335,6 +1577,15 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     // handle ptrace exec event
     async fn handle_exec_event(&mut self, task: Stopped) -> Result<Wait, TraceError> {
+        if self.global_state.liteinst_runtime.is_some() {
+            let mut state = self.liteinst_runtime.lock().unwrap();
+            state.generation = state.generation.wrapping_add(1);
+            state.phase = LiteinstRuntimePhase::Waiting;
+            state.frame = None;
+            state.ready_generation = None;
+            state.attempted_sites.clear();
+            state.patched_sites.clear();
+        }
         // execve/execveat are tail injected, however, after exec, the new
         // program start as a clean slate, hence it is actually ok to do either
         // inject or tail inject after execve succeeded.
@@ -1407,8 +1658,121 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    async fn call_liteinst_install_helper(
+        &mut self,
+        task: Stopped,
+        frame: LiteinstHandshakeFrame,
+        site: u64,
+    ) -> Result<(Stopped, Option<u64>), TraceError> {
+        let saved_regs = task.getregs()?;
+        let stack_address = frame.helper_stack_top.saturating_sub(8) as usize;
+        let stack_read_address = Addr::from_raw(stack_address).ok_or(Errno::EFAULT)?;
+        let stack_write_address = AddrMut::from_raw(stack_address).ok_or(Errno::EFAULT)?;
+        let saved_stack: u64 = task.read_value(stack_read_address)?;
+        let mut task = task;
+        task.write_value(stack_write_address, &frame.helper_return)?;
+
+        let mut helper_regs = saved_regs;
+        *helper_regs.ip_mut() = frame.install_helper;
+        *helper_regs.stack_ptr_mut() = frame.helper_stack_top - 8;
+        helper_regs.rdi = site;
+        *helper_regs.orig_syscall_mut() = -1_i64 as u64;
+        task.setregs(&helper_regs)?;
+
+        let mut wait = task.resume(None)?.next_state().await?;
+        let (mut task, relocated_tail) = loop {
+            match wait {
+                Wait::Stopped(stopped, Event::Seccomp) => {
+                    // Controller-owned helper syscalls execute natively and are
+                    // never delivered to the user Tool.
+                    wait = stopped.resume(None)?.next_state().await?;
+                }
+                Wait::Stopped(stopped, Event::Signal(Signal::SIGTRAP)) => {
+                    let regs = stopped.getregs()?;
+                    if regs.r10
+                        != self
+                            .global_state
+                            .liteinst_runtime
+                            .as_ref()
+                            .ok_or(Errno::EIO)?
+                            .helper_return_marker
+                        || regs.ip() != frame.helper_return_rip
+                    {
+                        return Err(Errno::EPROTO.into());
+                    }
+                    let result = regs.rax as i64;
+                    break (stopped, u64::try_from(result).ok());
+                }
+                Wait::Stopped(_, _) => return Err(Errno::EINTR.into()),
+                Wait::Exited(_, exit_status) => self.exit(exit_status).await,
+            }
+        };
+
+        let stack_write_address = AddrMut::from_raw(stack_address).ok_or(Errno::EFAULT)?;
+        task.write_value(stack_write_address, &saved_stack)?;
+        task.setregs(&saved_regs)?;
+        Ok((task, relocated_tail))
+    }
+
+    async fn maybe_install_liteinst_site(
+        &mut self,
+        task: Stopped,
+    ) -> Result<(Stopped, bool, Option<u64>), TraceError> {
+        if self.global_state.liteinst_runtime.is_none() {
+            return Ok((task, false, None));
+        }
+        let regs = task.getregs()?;
+        let Some(site) = regs.ip().checked_sub(2) else {
+            return Ok((task, false, None));
+        };
+        let site_address = Addr::from_raw(site as usize).ok_or(Errno::EFAULT)?;
+        let instruction: u16 = task.read_value(site_address)?;
+        if instruction != 0x050f {
+            return Ok((task, false, None));
+        }
+        let frame = {
+            let mut state = self.liteinst_runtime.lock().unwrap();
+            if state.phase != LiteinstRuntimePhase::Ready
+                || state.ready_generation != Some(state.generation)
+                || !state.attempted_sites.insert(site)
+            {
+                return Ok((task, false, None));
+            }
+            state.frame.ok_or(Errno::EIO)?
+        };
+
+        // Convert the active seccomp stop into an ordinary stopped state before
+        // calling arbitrary tracee code. The original event is still serviced
+        // exactly once by the host Tool below.
+        let task = self.skip_seccomp_syscall(task).await?;
+        let (task, relocated_tail) = self.call_liteinst_install_helper(task, frame, site).await?;
+        if relocated_tail.is_some() {
+            self.liteinst_runtime
+                .lock()
+                .unwrap()
+                .patched_sites
+                .insert(site);
+        }
+        Ok((task, true, relocated_tail))
+    }
+
     async fn handle_seccomp(&mut self, mut task: Stopped) -> Result<Wait, Error> {
         let tid = self.tid();
+        let phase = self.liteinst_runtime.lock().unwrap().phase;
+        if self.global_state.liteinst_runtime.is_some() && phase == LiteinstRuntimePhase::Bootstrap
+        {
+            return task
+                .resume(None)
+                .tracee_context(tid, "resume LiteInst bootstrap syscall")?
+                .next_state()
+                .await
+                .tracee_context(tid, "wait after LiteInst bootstrap syscall");
+        }
+        let (installed_task, syscall_already_skipped, liteinst_resume_rip) = self
+            .maybe_install_liteinst_site(task)
+            .await
+            .tracee_context(tid, "install LiteInst syscall site")?;
+        task = installed_task;
         let syscall = self
             .get_syscall(&task)
             .tracee_context(tid, "read registers at seccomp stop")?;
@@ -1427,6 +1791,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 "intercepting guest syscall"
             );
             self.pending_syscall = Some((nr, args));
+            self.pending_syscall_already_skipped = syscall_already_skipped;
 
             let retval = cancellable(self.cancel_handler.clone(), async {
                 self.process_state
@@ -1436,7 +1801,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             })
             .await;
 
-            if self.pending_syscall.is_some() {
+            if self.pending_syscall.is_some() && !syscall_already_skipped {
                 task = self
                     .skip_seccomp_syscall(task)
                     .await
@@ -1452,6 +1817,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                 };
 
                 set_ret(&task, ret).tracee_context(tid, "set intercepted syscall result")?;
+            }
+
+            self.pending_syscall_already_skipped = false;
+
+            if let Some(resume_rip) = liteinst_resume_rip {
+                let mut regs = task
+                    .getregs()
+                    .tracee_context(tid, "read registers before LiteInst tail resume")?;
+                *regs.ip_mut() = resume_rip;
+                task.setregs(&regs)
+                    .tracee_context(tid, "resume after displaced LiteInst window")?;
             }
 
             let sig = self.pending_signal.take();
@@ -2087,14 +2463,25 @@ impl<L: Tool + 'static> TracedTask<L> {
                         *regs.ret_mut() = (-(Errno::ERESTARTSYS.into_raw()) as i64) as u64;
                         self.pending_signal = Some(sig);
                     }
+                    let result = Errno::from_ret(regs.ret() as usize).map(|x| x as i64);
                     if let Some(context) = context {
-                        // Restore syscall args to original values. This is
-                        // needed when we convert syscalls like SYS_open ->
-                        // SYS_openat, syscall args are modified need to restore
-                        // it back.
-                        restore_context(&stopped, context, None, child_context.is_some())?;
+                        if child_context.is_some() {
+                            // An injected-frame event temporarily replaces the
+                            // controller's live trap registers with the logical
+                            // guest frame. Restore every controller register;
+                            // leaving even a callee-saved register (notably R12,
+                            // used by LiteInst as its HookContext base) would
+                            // corrupt the callback that resumes after injection.
+                            stopped.setregs(&context)?;
+                        } else {
+                            // Restore syscall args to original values. This is
+                            // needed when we convert syscalls like SYS_open ->
+                            // SYS_openat, syscall args are modified need to restore
+                            // it back.
+                            restore_context(&stopped, context, None, false)?;
+                        }
                     }
-                    Ok(Errno::from_ret(regs.ret() as usize).map(|x| x as i64))
+                    Ok(result)
                 }
                 Event::NewChild(op, child) => {
                     let ret = child.pid().as_raw() as i64;
@@ -2139,7 +2526,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             args,
         );
 
-        if self.injected_syscall_frame.is_some() {
+        if self.injected_syscall_frame.is_some()
+            || (self.pending_syscall == Some((nr, args)) && self.pending_syscall_already_skipped)
+        {
             self.pending_syscall = None;
             self.untraced_syscall(task, nr, args).await
         } else if self.pending_syscall.take() == Some((nr, args)) {
@@ -2183,6 +2572,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             let result = self.untraced_syscall(task, nr, args).await?;
             let task = self.assume_stopped();
             self.write_injected_syscall_result(&task, result)?;
+            return Ok(result);
+        }
+
+        if self.pending_syscall == Some((nr, args)) && self.pending_syscall_already_skipped {
+            self.pending_syscall = None;
+            let result = self.untraced_syscall(task, nr, args).await?;
+            let task = self.assume_stopped();
+            set_ret(
+                &task,
+                result.unwrap_or_else(|errno| -(errno.into_raw() as i64)) as u64,
+            )?;
             return Ok(result);
         }
 

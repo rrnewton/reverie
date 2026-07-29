@@ -50,6 +50,7 @@ use crate::cp;
 use crate::gdbstub::GdbServer;
 use crate::task::Child;
 use crate::task::InjectedSyscallTrap;
+use crate::task::LiteinstRuntimeConfig;
 use crate::task::TracedTask;
 use crate::task::TracedTaskOptions;
 
@@ -350,6 +351,7 @@ async fn postspawn<L: Tool + 'static>(
     config: <L::GlobalState as GlobalTool>::Config,
     events: &Subscription,
     injected_syscall_trap: Option<InjectedSyscallTrap>,
+    liteinst_runtime: Option<LiteinstRuntimeConfig>,
     gdbserver: Option<GdbServer>,
 ) -> Result<BoxFuture<'static, Result<ExitStatus, Error>>, TraceError> {
     let pid = child.pid();
@@ -389,6 +391,7 @@ async fn postspawn<L: Tool + 'static>(
         TracedTaskOptions {
             events,
             injected_syscall_trap,
+            liteinst_runtime,
         },
         orphan_sender,
         daemon_kill,
@@ -472,6 +475,9 @@ pub struct TracerBuilder<T: Tool + 'static> {
 
     /// Marker and exact RIP identifying an injected syscall trap, when enabled.
     injected_syscall_trap: Option<InjectedSyscallTrap>,
+
+    /// Dynamic LiteInst runtime handshake and hot-site configuration.
+    liteinst_runtime: Option<LiteinstRuntimeConfig>,
 }
 
 impl<T: Tool + 'static> TracerBuilder<T> {
@@ -483,6 +489,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             gdbserver: None,
             sequentialized_guest: false,
             injected_syscall_trap: None,
+            liteinst_runtime: None,
         }
     }
 
@@ -522,6 +529,30 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     // TODO-HUMAN-REVIEW(PR-103): Review the injected syscall event provenance API.
     pub fn injected_syscall_trap(mut self, marker: u64, rip: u64) -> Self {
         self.injected_syscall_trap = Some(InjectedSyscallTrap { marker, rip });
+        self
+    }
+
+    /// Enables the dynamic LiteInst runtime handshake and injected hot-site path.
+    ///
+    /// The preload path is used to authenticate handshake instruction pointers.
+    /// Distinct markers identify constructor begin/ready stops, the controlled
+    /// patch-helper return, and installed syscall-hook events.
+    // TODO-HUMAN-REVIEW(PR-LITEINST-HYBRID): Review dynamic LiteInst provenance API.
+    pub fn liteinst_runtime(
+        mut self,
+        preload: impl Into<PathBuf>,
+        begin_marker: u64,
+        ready_marker: u64,
+        helper_return_marker: u64,
+        syscall_marker: u64,
+    ) -> Self {
+        self.liteinst_runtime = Some(LiteinstRuntimeConfig {
+            preload: preload.into(),
+            begin_marker,
+            ready_marker,
+            helper_return_marker,
+            syscall_marker,
+        });
         self
     }
 
@@ -586,6 +617,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             config,
             &events,
             self.injected_syscall_trap,
+            self.liteinst_runtime,
             gdbserver,
         )
         .await
@@ -713,11 +745,20 @@ where
 
             let stdout = read1.into();
             let stderr = read2.into();
-            let tracer =
-                match postspawn::<L>(child, gref.clone(), config, &events, None, None).await {
-                    Ok(tracer) => tracer,
-                    Err(err) => return Err(initialization_error(guest_pid, err).await),
-                };
+            let tracer = match postspawn::<L>(
+                child,
+                gref.clone(),
+                config,
+                &events,
+                None,
+                None,
+                None,
+            )
+            .await
+            {
+                Ok(tracer) => tracer,
+                Err(err) => return Err(initialization_error(guest_pid, err).await),
+            };
 
             Ok(Tracer {
                 guest_pid,

@@ -76,6 +76,10 @@ impl InjectedSyscallFrame {
         )
     }
 
+    pub(crate) fn instruction_pointer(&self) -> u64 {
+        self.rip
+    }
+
     pub(crate) fn emulate_syscall_entry(&mut self, trap_rflags: u64) {
         // A native x86-64 syscall places the continuation RIP in RCX and the
         // pre-syscall flags in R11 before seccomp delivers its ptrace stop.
