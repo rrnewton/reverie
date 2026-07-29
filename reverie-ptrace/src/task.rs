@@ -10,8 +10,10 @@
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fmt;
 use std::ops::DerefMut;
+use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -167,7 +169,8 @@ pub(crate) struct InjectedSyscallTrap {
 #[derive(Clone)]
 pub(crate) struct InjectedSyscallProvenance {
     pub(crate) image: PathBuf,
-    pub(crate) image_load_address: u64,
+    pub(crate) image_inode: u64,
+    pub(crate) image_entry_address: u64,
     pub(crate) patched_site_addresses: Arc<[u64]>,
 }
 
@@ -175,8 +178,8 @@ pub(crate) struct InjectedSyscallProvenance {
 struct GuestMap {
     start: u64,
     end: u64,
-    offset: u64,
     executable: bool,
+    inode: u64,
     path: Option<PathBuf>,
 }
 
@@ -199,65 +202,125 @@ fn guest_maps(pid: Pid) -> Option<Vec<GuestMap>> {
         let Some((start, end)) = range.split_once('-') else {
             continue;
         };
-        let (Ok(start), Ok(end), Ok(offset)) = (
+        let (Ok(start), Ok(end), Ok(_offset)) = (
             u64::from_str_radix(start, 16),
             u64::from_str_radix(end, 16),
             u64::from_str_radix(offset, 16),
         ) else {
             continue;
         };
-        let _device = fields.next();
-        let _inode = fields.next();
-        let path = fields.next().map(PathBuf::from);
+        let (Some(device), Some(inode)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let Some((device_major, device_minor)) = device.split_once(':') else {
+            continue;
+        };
+        if u64::from_str_radix(device_major, 16).is_err()
+            || u64::from_str_radix(device_minor, 16).is_err()
+        {
+            continue;
+        }
+        let Ok(inode) = inode.parse::<u64>() else {
+            continue;
+        };
+        let path = fields
+            .next()
+            .map(|first| {
+                std::iter::once(first)
+                    .chain(fields)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .map(|path| decode_proc_maps_path(&path));
         let permissions = perms.as_bytes();
         parsed.push(GuestMap {
             start,
             end,
-            offset,
             executable: permissions.get(2) == Some(&b'x'),
+            inode,
             path,
         });
     }
     Some(parsed)
 }
 
+fn decode_proc_maps_path(path: &str) -> PathBuf {
+    let bytes = path.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && index + 3 < bytes.len()
+            && bytes[index + 1..index + 4]
+                .iter()
+                .all(|byte| matches!(byte, b'0'..=b'7'))
+        {
+            let value = u16::from(bytes[index + 1] - b'0') * 64
+                + u16::from(bytes[index + 2] - b'0') * 8
+                + u16::from(bytes[index + 3] - b'0');
+            if let Ok(value) = u8::try_from(value) {
+                decoded.push(value);
+                index += 4;
+                continue;
+            }
+        }
+        decoded.push(bytes[index]);
+        index += 1;
+    }
+    PathBuf::from(OsString::from_vec(decoded))
+}
+
+fn guest_auxv_entry(pid: Pid, key: u64) -> Option<u64> {
+    let bytes = std::fs::read(format!("/proc/{pid}/auxv")).ok()?;
+    bytes.as_chunks::<16>().0.iter().find_map(|entry| {
+        let entry_key = u64::from_ne_bytes(entry[..8].try_into().ok()?);
+        let value = u64::from_ne_bytes(entry[8..].try_into().ok()?);
+        (entry_key == key).then_some(value)
+    })
+}
+
 impl InjectedSyscallTrap {
     // TODO-HUMAN-REVIEW(PR-271): Review rewritten-image load-bias and patched-site
-    // provenance validation before Tool dispatch.
-    fn authenticates(&self, pid: Pid, frame: &InjectedSyscallFrame) -> bool {
+    // collision filtering before Tool dispatch.
+    fn validates_site_provenance(
+        &self,
+        pid: Pid,
+        trap_rip: u64,
+        frame: &InjectedSyscallFrame,
+    ) -> bool {
         let Some(provenance) = &self.provenance else {
-            return true;
+            return trap_rip == self.rip;
         };
         let Some(maps) = guest_maps(pid) else {
             return false;
         };
-        if !maps
-            .iter()
-            .any(|mapping| mapping.executable && mapping.contains(self.rip))
-        {
+        let matches_image = |mapping: &&GuestMap| {
+            mapping.inode == provenance.image_inode
+                && mapping.path.as_ref() == Some(&provenance.image)
+        };
+        let Some(load_bias) = guest_auxv_entry(pid, libc::AT_ENTRY)
+            .and_then(|entry| entry.checked_sub(provenance.image_entry_address))
+        else {
             return false;
-        }
-        maps.iter()
-            .filter(|mapping| mapping.path.as_ref() == Some(&provenance.image))
-            .filter_map(|mapping| {
-                mapping
-                    .offset
-                    .checked_add(provenance.image_load_address)
-                    .and_then(|mapped_image_address| {
-                        mapping.start.checked_sub(mapped_image_address)
-                    })
-            })
-            .any(|load_bias| {
-                frame
-                    .instruction_pointer()
-                    .checked_sub(load_bias)
-                    .is_some_and(|address| {
-                        provenance
-                            .patched_site_addresses
-                            .binary_search(&address)
-                            .is_ok()
-                    })
-            })
+        };
+        self.rip.checked_add(load_bias) == Some(trap_rip)
+            && maps
+                .iter()
+                .filter(matches_image)
+                .any(|mapping| mapping.executable && mapping.contains(trap_rip))
+            && maps
+                .iter()
+                .filter(matches_image)
+                .any(|mapping| mapping.executable && mapping.contains(frame.instruction_pointer()))
+            && frame
+                .instruction_pointer()
+                .checked_sub(load_bias)
+                .is_some_and(|address| {
+                    provenance
+                        .patched_site_addresses
+                        .binary_search(&address)
+                        .is_ok()
+                })
     }
 }
 
@@ -1308,14 +1371,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         // TODO-HUMAN-REVIEW(PR-103): Review rewritten-trap provenance validation.
         if let Some(trap) = self.global_state.injected_syscall_trap.as_ref()
             && regs.rax == trap.marker
-            && regs.ip() == trap.rip
-            && let Ok(frame) = self.read_injected_syscall_frame(&task, regs.rdi as usize)
-            && trap.authenticates(task.pid(), &frame)
         {
-            let next_state = self
-                .handle_injected_syscall(task, regs.rdi as usize, regs.eflags)
-                .await?;
-            return Ok(HandleSignalResult::SignalSuppressed(next_state));
+            if let Ok(frame) = self.read_injected_syscall_frame(&task, regs.rdi as usize)
+                && trap.validates_site_provenance(task.pid(), regs.ip(), &frame)
+            {
+                let next_state = self
+                    .handle_injected_syscall(task, regs.rdi as usize, regs.eflags)
+                    .await?;
+                return Ok(HandleSignalResult::SignalSuppressed(next_state));
+            }
+            return Ok(HandleSignalResult::SignalToDeliver(task, Signal::SIGTRAP));
         }
 
         let rip_minus_one = regs.ip() - 1;
@@ -2903,6 +2968,14 @@ impl<'a, G: GlobalTool> GlobalRPC<G> for WrappedFrom<'a, G> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn proc_maps_paths_decode_kernel_octal_escapes() {
+        assert_eq!(
+            decode_proc_maps_path(r"/tmp/a\040space\011tab\134slash"),
+            PathBuf::from("/tmp/a space\ttab\\slash")
+        );
+    }
 
     #[test]
     fn cancellable_returns_a_completed_result() {

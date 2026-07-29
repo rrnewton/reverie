@@ -184,12 +184,12 @@ where
     T: Tool + 'static,
 {
     let builder = TracerBuilder::<T>::new(command).config(config);
-    let builder = if let Some((image, image_load_address, patched_site_addresses)) = provenance {
-        builder.authenticated_injected_syscall_trap(
+    let builder = if let Some((image, image_entry_address, patched_site_addresses)) = provenance {
+        builder.site_validated_injected_syscall_trap(
             E9PATCH_SYSCALL_TRAP_MARKER,
             E9PATCH_SYSCALL_TRAP_RIP,
             image,
-            image_load_address,
+            image_entry_address,
             patched_site_addresses,
         )?
     } else {
@@ -269,7 +269,7 @@ impl E9patchBackend {
 
         let prepared = E9patchRewriter::from_env()?.prepare(&source)?;
         let report = prepared.report();
-        let image_load_address = report.image_load_address();
+        let image_entry_address = report.image_entry_address();
         let patched_site_addresses = report.patched_site_addresses().to_vec();
         // TODO-HUMAN-REVIEW(PR-103): Review the stable backend coverage diagnostic.
         let event_source = if report.patched_sites() == 0 {
@@ -327,7 +327,7 @@ impl E9patchBackend {
         let spawn_result = spawn_tracer::<T>(
             command,
             config,
-            Some((mapped_image, image_load_address, patched_site_addresses)),
+            Some((mapped_image, image_entry_address, patched_site_addresses)),
         )
         .await;
         match spawn_result {
