@@ -190,62 +190,59 @@ impl GuestMap {
 }
 
 fn guest_maps(pid: Pid) -> Option<Vec<GuestMap>> {
-    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).ok()?;
-    let mut parsed = Vec::new();
-    for line in maps.lines() {
-        let mut fields = line.split_whitespace();
-        let (Some(range), Some(perms), Some(offset)) =
-            (fields.next(), fields.next(), fields.next())
-        else {
-            continue;
-        };
-        let Some((start, end)) = range.split_once('-') else {
-            continue;
-        };
-        let (Ok(start), Ok(end), Ok(_offset)) = (
-            u64::from_str_radix(start, 16),
-            u64::from_str_radix(end, 16),
-            u64::from_str_radix(offset, 16),
-        ) else {
-            continue;
-        };
-        let (Some(device), Some(inode)) = (fields.next(), fields.next()) else {
-            continue;
-        };
-        let Some((device_major, device_minor)) = device.split_once(':') else {
-            continue;
-        };
-        if u64::from_str_radix(device_major, 16).is_err()
-            || u64::from_str_radix(device_minor, 16).is_err()
-        {
-            continue;
-        }
-        let Ok(inode) = inode.parse::<u64>() else {
-            continue;
-        };
-        let path = fields
-            .next()
-            .map(|first| {
-                std::iter::once(first)
-                    .chain(fields)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .map(|path| decode_proc_maps_path(&path));
-        let permissions = perms.as_bytes();
-        parsed.push(GuestMap {
-            start,
-            end,
-            executable: permissions.get(2) == Some(&b'x'),
-            inode,
-            path,
-        });
-    }
-    Some(parsed)
+    let maps = std::fs::read(format!("/proc/{pid}/maps")).ok()?;
+    Some(
+        maps.split(|byte| *byte == b'\n')
+            .filter_map(parse_guest_map)
+            .collect(),
+    )
 }
 
-fn decode_proc_maps_path(path: &str) -> PathBuf {
-    let bytes = path.as_bytes();
+fn next_proc_maps_field<'a>(line: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
+    while line.get(*cursor).is_some_and(u8::is_ascii_whitespace) {
+        *cursor += 1;
+    }
+    let start = *cursor;
+    while line
+        .get(*cursor)
+        .is_some_and(|byte| !byte.is_ascii_whitespace())
+    {
+        *cursor += 1;
+    }
+    (start < *cursor).then(|| &line[start..*cursor])
+}
+
+fn parse_guest_map(line: &[u8]) -> Option<GuestMap> {
+    let mut cursor = 0;
+    let range = std::str::from_utf8(next_proc_maps_field(line, &mut cursor)?).ok()?;
+    let permissions = next_proc_maps_field(line, &mut cursor)?;
+    let offset = std::str::from_utf8(next_proc_maps_field(line, &mut cursor)?).ok()?;
+    let device = std::str::from_utf8(next_proc_maps_field(line, &mut cursor)?).ok()?;
+    let inode = std::str::from_utf8(next_proc_maps_field(line, &mut cursor)?).ok()?;
+
+    let (start, end) = range.split_once('-')?;
+    let start = u64::from_str_radix(start, 16).ok()?;
+    let end = u64::from_str_radix(end, 16).ok()?;
+    u64::from_str_radix(offset, 16).ok()?;
+    let (device_major, device_minor) = device.split_once(':')?;
+    u64::from_str_radix(device_major, 16).ok()?;
+    u64::from_str_radix(device_minor, 16).ok()?;
+    let inode = inode.parse::<u64>().ok()?;
+
+    while line.get(cursor) == Some(&b' ') {
+        cursor += 1;
+    }
+    let path = (cursor < line.len()).then(|| decode_proc_maps_path(&line[cursor..]));
+    Some(GuestMap {
+        start,
+        end,
+        executable: permissions.get(2) == Some(&b'x'),
+        inode,
+        path,
+    })
+}
+
+fn decode_proc_maps_path(bytes: &[u8]) -> PathBuf {
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
@@ -2970,10 +2967,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn proc_maps_paths_decode_kernel_octal_escapes() {
+    fn proc_maps_paths_preserve_literal_whitespace_and_decode_octal_escapes() {
+        let mapping = parse_guest_map(
+            br"00400000-00401000 r-xp 00000000 08:02 123 /tmp/a  double	tab\040space\011escaped\134slash",
+        )
+        .unwrap();
         assert_eq!(
-            decode_proc_maps_path(r"/tmp/a\040space\011tab\134slash"),
-            PathBuf::from("/tmp/a space\ttab\\slash")
+            mapping.path.unwrap(),
+            PathBuf::from("/tmp/a  double\ttab space\tescaped\\slash")
         );
     }
 
