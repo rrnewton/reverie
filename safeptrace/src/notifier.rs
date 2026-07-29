@@ -826,19 +826,11 @@ impl Notifier {
             return Ok(Arc::clone(requested));
         }
 
-        // Once this exact Event owns a running worker, its immutable identity
-        // has already been validated. In particular, /proc can disappear
-        // after PTRACE_EVENT_EXIT while the worker still owns the final wait
-        // status. Keep that typed state on its old worker; only fresh,
-        // unstarted, or replacement handles must capture before registration.
-        let exact_worker_started = self.pids.lock().get(&pid).is_some_and(|entry| {
-            entry.handle == *handle
-                && requested.worker_is_running()
-                && handle
-                    .identity()
-                    .is_some_and(|bound| bound.same_generation(&entry.identity))
-        });
-        if exact_worker_started {
+        // Event-local RUNNING is the ownership proof. Registry replacement is
+        // allowed while an old typed state still awaits its own worker, and
+        // that old worker must not consult the replacement generation or
+        // recapture /proc before publishing its final status.
+        if requested.worker_is_running() {
             return Ok(Arc::clone(requested));
         }
 
@@ -1342,6 +1334,41 @@ mod test {
         assert_eq!(
             terminal, INVALID_STATUS,
             "registry replacement terminalized an Event with its own active worker"
+        );
+    }
+
+    #[test]
+    fn running_old_event_bypasses_replacement_capture_failure() {
+        let child = spawn_stopped_process(None).expect("spawn old event fast-path tracee");
+        let pid = Pid::from_raw(child.as_raw());
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid.into()).expect("capture old event generation"),
+        );
+        let old_handle = EventHandle::with_identity(Arc::clone(&identity));
+        assert!(old_handle.event().try_start_worker());
+        let replacement = EventHandle::with_identity(Arc::clone(&identity));
+        NOTIFIER.pids.lock().insert(
+            pid.into(),
+            NotifierEntry {
+                handle: replacement,
+                identity,
+            },
+        );
+
+        inject_capture_error_for_current_thread(Errno::EMFILE);
+        let selected = NOTIFIER
+            .event(pid.into(), &old_handle)
+            .expect("running old Event must not recapture replacement identity");
+        assert!(matches!(
+            NOTIFIER.capture_identity(pid.into()),
+            Err(Errno::EMFILE)
+        ));
+
+        NOTIFIER.pids.lock().remove(&pid.into());
+        reap_stopped_process(child);
+        assert!(
+            Arc::ptr_eq(&selected, old_handle.event()),
+            "replacement registry entry displaced the old Event worker"
         );
     }
 

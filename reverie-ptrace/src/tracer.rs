@@ -149,7 +149,7 @@ pub(crate) struct NewbornTracee {
     terminal: TerminalCleanup,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EventChildLink {
     tid: Pid,
     parent_tid: Pid,
@@ -163,6 +163,7 @@ pub(crate) struct HeldRootStop {
     armed: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HeldRootStopStatus {
     Signal(Signal),
     NewChild(EventChildLink),
@@ -200,6 +201,65 @@ impl HeldRootStop {
 
     pub(crate) fn disarm(&mut self) {
         self.armed = false;
+    }
+
+    fn same_root_generation(&self, other: &Self) -> bool {
+        self.root_tid == other.root_tid && self.terminal.same_generation(&other.terminal)
+    }
+
+    pub(crate) fn arm_empty(
+        slot: &Arc<StdMutex<Option<Self>>>,
+        task: &Stopped,
+        event: &Event,
+    ) -> Result<(), TraceError> {
+        let mut held = slot.lock().unwrap();
+        if held.is_some() {
+            return Err(Errno::EINVAL.into());
+        }
+        *held = Some(Self::from_event(task, event));
+        Ok(())
+    }
+
+    pub(crate) fn ensure_current(
+        slot: &Arc<StdMutex<Option<Self>>>,
+        task: &Stopped,
+        event: &Event,
+    ) -> Result<(), TraceError> {
+        let replacement = Self::from_event(task, event);
+        let mut held = slot.lock().unwrap();
+        match held.as_ref() {
+            None => {
+                *held = Some(replacement);
+                Ok(())
+            }
+            Some(current)
+                if current.armed
+                    && current.same_root_generation(&replacement)
+                    && current.status == replacement.status =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(Errno::EINVAL.into()),
+        }
+    }
+
+    pub(crate) fn supersede_with_exit(
+        slot: &Arc<StdMutex<Option<Self>>>,
+        task: &Stopped,
+    ) -> Result<(), TraceError> {
+        let replacement = Self::from_event(task, &Event::Exit);
+        let mut held = slot.lock().unwrap();
+        match held.as_ref() {
+            None => {
+                *held = Some(replacement);
+                Ok(())
+            }
+            Some(current) if current.armed && current.same_root_generation(&replacement) => {
+                *held = Some(replacement);
+                Ok(())
+            }
+            Some(_) => Err(Errno::EINVAL.into()),
+        }
     }
 }
 
@@ -1811,6 +1871,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             pause_root_stop: None,
             #[cfg(test)]
             pause_preinit_step: None,
+            #[cfg(test)]
+            pause_precise_timer_step: None,
         });
         self
     }
@@ -1905,6 +1967,18 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .as_mut()
             .expect("LiteInst runtime must be configured before preinit pause")
             .pause_preinit_step = Some((step, sender));
+        self
+    }
+
+    #[cfg(test)]
+    fn pause_liteinst_precise_timer_step_for_test(
+        mut self,
+        sender: mpsc::UnboundedSender<Pid>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before precise-timer pause")
+            .pause_precise_timer_step = Some(sender);
         self
     }
 
@@ -2343,6 +2417,106 @@ mod tests {
         assert_eq!(exited.assume_exited().1, ExitStatus::Exited(0));
     }
 
+    fn spawn_held_stop_child(role: &str) -> (Pid, Stopped) {
+        let pid = match unsafe { unistd::fork() }
+            .unwrap_or_else(|error| panic!("fork {role}: {error}"))
+        {
+            ForkResult::Child => {
+                safeptrace::traceme_and_stop()
+                    .unwrap_or_else(|error| panic!("TRACEME {role}: {error}"));
+                unsafe { libc::_exit(0) };
+            }
+            ForkResult::Parent { child } => Pid::from(child),
+        };
+        let (stopped, event) = Running::new(pid)
+            .wait()
+            .unwrap_or_else(|error| panic!("wait {role}: {error}"))
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+        (pid, stopped)
+    }
+
+    async fn resume_held_stop_child(role: &str, stopped: Stopped) {
+        let wait = stopped
+            .resume(None)
+            .unwrap_or_else(|error| panic!("resume {role}: {error}"))
+            .next_state()
+            .await
+            .unwrap_or_else(|error| panic!("wait resumed {role}: {error}"));
+        assert_eq!(wait.assume_exited().1, ExitStatus::Exited(0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exit_stop_atomically_supersedes_same_generation_lease() {
+        let (_pid, stopped) = spawn_held_stop_child("exit supersession child");
+        let generation = stopped.terminal_cleanup();
+        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
+            &stopped,
+            &Event::Signal(Signal::SIGSTOP),
+        ))));
+
+        HeldRootStop::supersede_with_exit(&slot, &stopped)
+            .expect("same-generation exit stop must supersede existing lease");
+        {
+            let held = slot.lock().unwrap();
+            let held = held.as_ref().expect("exit supersession cleared the lease");
+            assert!(held.armed);
+            assert!(held.terminal.same_generation(&generation));
+            assert!(matches!(held.status, HeldRootStopStatus::Exit));
+        }
+
+        slot.lock().unwrap().take();
+        resume_held_stop_child("exit supersession child", stopped).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn async_exit_path_supersedes_preempted_same_generation_lease() {
+        let (_pid, stopped) = spawn_held_stop_child("async exit supersession child");
+        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
+            &stopped,
+            &Event::Signal(Signal::SIGSTOP),
+        ))));
+
+        let status =
+            TracedTask::<InitFailureTool>::handle_exit_event(stopped, Some(Arc::clone(&slot)))
+                .await
+                .expect("async exit path rejected same-generation lease supersession");
+        assert_eq!(status, ExitStatus::Exited(0));
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "async exit path left its superseded lease armed"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exit_stop_rejects_mismatched_generation_without_replacement() {
+        let (_first_pid, first) = spawn_held_stop_child("first generation child");
+        let (_second_pid, second) = spawn_held_stop_child("second generation child");
+        let first_generation = first.terminal_cleanup();
+        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
+            &first,
+            &Event::Signal(Signal::SIGSTOP),
+        ))));
+
+        assert_eq!(
+            HeldRootStop::supersede_with_exit(&slot, &second),
+            Err(TraceError::Errno(Errno::EINVAL))
+        );
+        {
+            let held = slot.lock().unwrap();
+            let held = held.as_ref().expect("mismatch removed the original lease");
+            assert!(held.terminal.same_generation(&first_generation));
+            assert!(matches!(
+                held.status,
+                HeldRootStopStatus::Signal(Signal::SIGSTOP)
+            ));
+        }
+
+        slot.lock().unwrap().take();
+        resume_held_stop_child("first generation child", first).await;
+        resume_held_stop_child("second generation child", second).await;
+    }
+
     #[derive(Default)]
     struct InitFailureTool;
 
@@ -2377,7 +2551,28 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct PreciseTimerTool;
+
+    #[reverie::tool]
+    impl Tool for PreciseTimerTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::none()
+        }
+
+        async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+            guest.set_timer_precise(reverie::TimerSchedule::RcbsAndInstructions(100, 8))?;
+            Ok(())
+        }
+    }
+
     fn root_stop_guest_command(mode: &str) -> Command {
+        if mode == "timer" {
+            return Command::new("/bin/true");
+        }
         if mode == "signal" {
             let mut command = Command::new("/bin/sh");
             command.args(["-c", "kill -USR1 $$; while :; do :; done"]);
@@ -2444,6 +2639,72 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn cancellation_at_signal_handler_reaps_root() {
         cancel_at_root_stop(RootStopPause::Signal(Signal::SIGUSR1), "signal").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_during_liteinst_precise_timer_step_reaps_root() {
+        if !crate::perf::is_perf_supported() {
+            return;
+        }
+        let (step_tx, mut step_rx) = mpsc::unbounded_channel();
+        let builder = TracerBuilder::<PreciseTimerTool>::new(root_stop_guest_command("timer"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .pause_liteinst_precise_timer_step_for_test(step_tx);
+        let held = Arc::clone(
+            &builder
+                .liteinst_runtime
+                .as_ref()
+                .expect("LiteInst runtime configured")
+                .held_root_stop,
+        );
+        let tracer = builder.spawn().await.expect("spawn precise-timer tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let stopped_pid = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => panic!("precise-timer tracee completed before cancellation: {result:?}"),
+                pid = step_rx.recv() => pid.expect("precise-timer pause channel closed"),
+            }
+        })
+        .await
+        .expect("precise timer did not reach its lease-backed step");
+        assert_eq!(stopped_pid, root_pid);
+        assert!(
+            matches!(
+                held.lock().unwrap().as_ref().map(|held| &held.status),
+                Some(HeldRootStopStatus::Signal(Signal::SIGTRAP))
+            ),
+            "precise-timer step did not rearm the returned SIGTRAP stop"
+        );
+
+        drop(wait);
+        assert_reaped("cancelled precise-timer step", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn normal_liteinst_precise_timer_completion_clears_root_lease() {
+        if !crate::perf::is_perf_supported() {
+            return;
+        }
+        let builder = TracerBuilder::<PreciseTimerTool>::new(root_stop_guest_command("timer"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4);
+        let held = Arc::clone(
+            &builder
+                .liteinst_runtime
+                .as_ref()
+                .expect("LiteInst runtime configured")
+                .held_root_stop,
+        );
+        let tracer = builder.spawn().await.expect("spawn precise-timer tracee");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .expect("normal precise-timer tracee timed out")
+            .expect("wait normal precise-timer tracee");
+        assert_eq!(status, ExitStatus::Exited(0));
+        assert!(
+            held.lock().unwrap().is_none(),
+            "normal precise-timer path left a stale lease"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

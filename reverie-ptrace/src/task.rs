@@ -390,6 +390,8 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) pause_root_stop: Option<(RootStopPause, mpsc::UnboundedSender<Pid>)>,
     #[cfg(test)]
     pub(crate) pause_preinit_step: Option<(usize, mpsc::UnboundedSender<Pid>)>,
+    #[cfg(test)]
+    pub(crate) pause_precise_timer_step: Option<mpsc::UnboundedSender<Pid>>,
 }
 
 #[cfg(test)]
@@ -397,6 +399,43 @@ pub(crate) struct LiteinstRuntimeConfig {
 pub(crate) enum RootStopPause {
     Seccomp,
     Signal(Signal),
+}
+
+#[derive(Clone)]
+struct LiteinstRootStopArmer {
+    root_tid: Pid,
+    held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+    newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
+}
+
+impl LiteinstRootStopArmer {
+    fn arm(&self, task: &Stopped, event: &Event) -> Result<(), TraceError> {
+        if task.pid() != self.root_tid {
+            return Ok(());
+        }
+        if let Event::NewChild(op, child) = event {
+            self.newborn_tracees
+                .lock()
+                .unwrap()
+                .entry(child.pid())
+                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
+        }
+        HeldRootStop::arm_empty(&self.held_root_stop, task, event)
+    }
+
+    fn ensure(&self, task: &Stopped, event: &Event) -> Result<(), TraceError> {
+        if task.pid() != self.root_tid {
+            return Ok(());
+        }
+        if let Event::NewChild(op, child) = event {
+            self.newborn_tracees
+                .lock()
+                .unwrap()
+                .entry(child.pid())
+                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
+        }
+        HeldRootStop::ensure_current(&self.held_root_stop, task, event)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1609,13 +1648,38 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Returns `true` if the signal was actually meant for the timer, and
     /// therefore should not be forwarded to the tool / guest.
     async fn handle_timer(&mut self, task: Stopped) -> Result<(bool, Stopped), TraceError> {
-        let task = match self.timer.handle_signal(task).await {
+        let armer = self.liteinst_root_stop_armer(&task);
+        let held_root_stop = armer
+            .as_ref()
+            .map(|armer| Arc::clone(&armer.held_root_stop));
+        let mut step = move |task| RootStopLease::new(task, held_root_stop.clone()).step(None);
+        let mut observe = |wait: &Wait| {
+            if let (Some(armer), Wait::Stopped(task, event)) = (armer.as_ref(), wait) {
+                armer.arm(task, event)?;
+            }
+            Ok(())
+        };
+        let task = match self
+            .timer
+            .handle_signal(task, &mut step, &mut observe)
+            .await
+        {
             Err(HandleFailure::ImproperSignal(task)) => return Ok((false, task)),
             Err(HandleFailure::Cancelled(task)) => return Ok((true, task)),
             Err(HandleFailure::TraceError(e)) => return Err(e),
             Err(HandleFailure::Event(wait)) => self.abort(Ok(wait)).await,
             Ok(task) => task,
         };
+        #[cfg(test)]
+        if let Some(sender) = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.pause_precise_timer_step.as_ref())
+        {
+            let _ = sender.send(task.pid());
+            future::pending::<()>().await;
+        }
         self.process_state.clone().handle_timer_event(self).await;
         self.timer.finalize_requests();
         Ok((true, task))
@@ -2743,32 +2807,44 @@ impl<L: Tool + 'static> TracedTask<L> {
             .flatten()
     }
 
+    fn liteinst_root_stop_armer(&self, task: &Stopped) -> Option<LiteinstRootStopArmer> {
+        (task.pid() == self.pid() && self.tid() == self.pid())
+            .then(|| {
+                self.global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .map(|runtime| LiteinstRootStopArmer {
+                        root_tid: self.pid(),
+                        held_root_stop: Arc::clone(&runtime.held_root_stop),
+                        newborn_tracees: Arc::clone(&runtime.newborn_tracees),
+                    })
+            })
+            .flatten()
+    }
+
     pub(crate) fn arm_liteinst_root_stop(&self, task: &Stopped, event: &Event) {
-        let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
+        let Some(armer) = self.liteinst_root_stop_armer(task) else {
             return;
         };
-        if task.pid() != self.pid() || self.tid() != self.pid() {
-            return;
-        }
-        if let Event::NewChild(op, child) = event {
-            runtime
-                .newborn_tracees
-                .lock()
-                .unwrap()
-                .entry(child.pid())
-                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
-        }
-        let previous = runtime
-            .held_root_stop
-            .lock()
-            .unwrap()
-            .replace(HeldRootStop::from_event(task, event));
-        debug_assert!(previous.is_none(), "rearmed an undisarmed root stop lease");
+        armer
+            .arm(task, event)
+            .expect("rearmed an undisarmed or mismatched root stop lease");
     }
 
     fn arm_liteinst_wait(&self, wait: &Wait) {
         if let Wait::Stopped(task, event) = wait {
             self.arm_liteinst_root_stop(task, event);
+        }
+    }
+
+    fn ensure_liteinst_wait(&self, wait: &Wait) {
+        if let Wait::Stopped(task, event) = wait {
+            let Some(armer) = self.liteinst_root_stop_armer(task) else {
+                return;
+            };
+            armer
+                .ensure(task, event)
+                .expect("run-loop stop mismatched its armed root lease");
         }
     }
 
@@ -3104,17 +3180,13 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.resume_stopped(stopped, None)?.next_state().await
     }
 
-    async fn handle_exit_event(
+    pub(crate) async fn handle_exit_event(
         task: Stopped,
         held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
     ) -> Result<ExitStatus, TraceError> {
         // Nothing to do but resume and wait for the final exit status.
         if let Some(slot) = held_root_stop.as_ref() {
-            let previous = slot
-                .lock()
-                .unwrap()
-                .replace(HeldRootStop::from_event(&task, &Event::Exit));
-            debug_assert!(previous.is_none(), "rearmed an undisarmed exit stop lease");
+            HeldRootStop::supersede_with_exit(slot, &task)?;
         }
         let wait = RootStopLease::new(task, held_root_stop)
             .resume(None)?
@@ -3321,7 +3393,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         })?;
 
         loop {
-            self.arm_liteinst_wait(&task_state);
+            // A nested handler may forward a stop it already armed before
+            // inspecting the status. Accept only that exact generation/status;
+            // every ordinary returned transition still requires an empty slot.
+            self.ensure_liteinst_wait(&task_state);
             match task_state {
                 Wait::Stopped(stopped, event) => {
                     // Allow short-circuiting of the event stream. This makes it
