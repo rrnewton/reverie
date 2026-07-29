@@ -447,6 +447,7 @@ fn host_page_size() -> Result<u64, Errno> {
 }
 
 fn is_liteinst_mapping_syscall(nr: Sysno) -> bool {
+    // TODO-HUMAN-REVIEW(PR-270): Review pkey_mprotect mapping-lifecycle classification.
     matches!(
         nr,
         // AUTONOMOUS-BOT-IMPLEMENTED
