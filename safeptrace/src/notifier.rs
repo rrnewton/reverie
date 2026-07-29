@@ -247,6 +247,11 @@ struct Event {
     /// Cancellation-safe weak registrations for every pending exit waiter.
     exit_waiters: ExitWaiters,
 
+    /// Serializes the two-phase exit-stop publication with terminal
+    /// finalization. The notifier worker normally supplies statuses in order,
+    /// but unstarted-completion paths may publish ECHILD independently.
+    exit_publication: Mutex<()>,
+
     /// Waker for regular status events.
     status_waker: WakerSlot,
 
@@ -299,6 +304,7 @@ impl Event {
     pub fn new() -> Self {
         Self {
             exit_waiters: ExitWaiters::default(),
+            exit_publication: Mutex::new(()),
             status_waker: WakerSlot::default(),
             status: Mutex::new(StatusState {
                 pending: VecDeque::new(),
@@ -381,57 +387,76 @@ impl Event {
         }
     }
 
-    /// Replaces the status and notifies the notifier of the change. Returns the
-    /// old status if there was one.
-    pub fn update(&self, status: i32) -> Option<i32> {
-        if status == PTRACE_EVENT_EXIT_STOP {
+    fn publish_exit_stop(&self, between_status_and_capability: impl FnOnce()) {
+        // Publish STOPPED first. A waiter that observes this half-published
+        // state is already registered and returns Pending until AVAILABLE is
+        // released and wake_all runs below.
+        let publication = self.exit_publication.lock();
+        let previous = self.exit_status.compare_exchange(
+            EXIT_PENDING,
+            EXIT_STOPPED,
+            Ordering::Release,
+            Ordering::Acquire,
+        );
+        debug_assert!(matches!(
+            previous,
+            Ok(EXIT_PENDING) | Err(EXIT_STOPPED | EXIT_ECHILD)
+        ));
+        if previous.is_ok() {
+            between_status_and_capability();
             let capability = self.exit_capability.compare_exchange(
                 EXIT_CAP_PENDING,
                 EXIT_CAP_AVAILABLE,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             );
+            // Cleanup may expire the capability during the publication gap.
+            // Terminal finalization cannot interleave because it takes the
+            // same exit_publication lock.
             debug_assert!(matches!(
                 capability,
-                Ok(EXIT_CAP_PENDING)
-                    | Err(EXIT_CAP_AVAILABLE
-                        | EXIT_CAP_CLAIMED
-                        | EXIT_CAP_EXPIRED
-                        | EXIT_CAP_FINALIZING)
+                Ok(EXIT_CAP_PENDING) | Err(EXIT_CAP_EXPIRED)
             ));
-            let previous = self.exit_status.compare_exchange(
-                EXIT_PENDING,
-                EXIT_STOPPED,
-                Ordering::Release,
-                Ordering::Acquire,
-            );
-            debug_assert!(matches!(previous, Ok(_) | Err(EXIT_STOPPED)));
-            self.status_changed.notify_all();
-            self.exit_waiters.wake_all();
+        }
+        drop(publication);
+        self.status_changed.notify_all();
+        self.exit_waiters.wake_all();
+    }
+
+    fn publish_terminal_exit_state(&self) {
+        let _publication = self.exit_publication.lock();
+        // Expire an unclaimed capability before terminal status or ECHILD
+        // becomes visible. CLAIMED is already a non-duplicating state.
+        let finalizing = self.expire_unclaimed_exit_capability();
+        let _ = self.exit_status.compare_exchange(
+            EXIT_PENDING,
+            EXIT_ECHILD,
+            Ordering::Release,
+            Ordering::Acquire,
+        );
+        if finalizing {
+            self.exit_capability
+                .compare_exchange(
+                    EXIT_CAP_FINALIZING,
+                    EXIT_CAP_EXPIRED,
+                    Ordering::Release,
+                    Ordering::Acquire,
+                )
+                .expect("terminal exit-capability publication changed");
+        }
+    }
+
+    /// Replaces the status and notifies the notifier of the change. Returns the
+    /// old status if there was one.
+    pub fn update(&self, status: i32) -> Option<i32> {
+        if status == PTRACE_EVENT_EXIT_STOP {
+            self.publish_exit_stop(|| {});
             return None;
         }
 
         let terminal = libc::WIFEXITED(status) || libc::WIFSIGNALED(status);
         if terminal {
-            // Expire an unclaimed capability before terminal status or ECHILD
-            // becomes visible. CLAIMED is already a non-duplicating state.
-            let finalizing = self.expire_unclaimed_exit_capability();
-            let _ = self.exit_status.compare_exchange(
-                EXIT_PENDING,
-                EXIT_ECHILD,
-                Ordering::Release,
-                Ordering::Acquire,
-            );
-            if finalizing {
-                self.exit_capability
-                    .compare_exchange(
-                        EXIT_CAP_FINALIZING,
-                        EXIT_CAP_EXPIRED,
-                        Ordering::Release,
-                        Ordering::Acquire,
-                    )
-                    .expect("terminal exit-capability publication changed");
-            }
+            self.publish_terminal_exit_state();
         }
         let mut state = self.status.lock();
         let previous = if terminal {
@@ -464,23 +489,7 @@ impl Event {
 
     /// Publishes a terminal `ECHILD` observation to every kind of waiter.
     fn mark_echild(&self) {
-        let finalizing = self.expire_unclaimed_exit_capability();
-        let _ = self.exit_status.compare_exchange(
-            EXIT_PENDING,
-            EXIT_ECHILD,
-            Ordering::Release,
-            Ordering::Acquire,
-        );
-        if finalizing {
-            self.exit_capability
-                .compare_exchange(
-                    EXIT_CAP_FINALIZING,
-                    EXIT_CAP_EXPIRED,
-                    Ordering::Release,
-                    Ordering::Acquire,
-                )
-                .expect("ECHILD exit-capability publication changed");
-        }
+        self.publish_terminal_exit_state();
         let mut state = self.status.lock();
         if state.terminal == INVALID_STATUS {
             state.terminal = ECHILD_STATUS;
@@ -616,9 +625,9 @@ impl Event {
         // Event registration is pruned automatically if this future is dropped.
         self.exit_waiters.register(waiter, waker);
 
-        match self.exit_status.load(Ordering::Acquire) {
-            EXIT_STOPPED => loop {
-                match self.exit_capability.load(Ordering::Acquire) {
+        loop {
+            match self.exit_status.load(Ordering::Acquire) {
+                EXIT_STOPPED => match self.exit_capability.load(Ordering::Acquire) {
                     EXIT_CAP_AVAILABLE => {
                         if self
                             .exit_capability
@@ -630,29 +639,45 @@ impl Event {
                             )
                             .is_ok()
                         {
-                            break Poll::Ready(Ok(()));
+                            return Poll::Ready(Ok(()));
                         }
                     }
                     EXIT_CAP_CLAIMED | EXIT_CAP_EXPIRED => {
-                        break Poll::Ready(Err(Errno::EALREADY));
+                        return Poll::Ready(Err(Errno::EALREADY));
                     }
-                    EXIT_CAP_PENDING | EXIT_CAP_FINALIZING => std::hint::spin_loop(),
+                    EXIT_CAP_PENDING | EXIT_CAP_FINALIZING => return Poll::Pending,
                     state => unreachable!("invalid exit capability state {state}"),
-                }
-            },
-            EXIT_ECHILD => Poll::Ready(Err(Errno::ECHILD)),
-            EXIT_PENDING => match self.exit_capability.load(Ordering::Acquire) {
-                EXIT_CAP_EXPIRED => Poll::Ready(Err(Errno::EALREADY)),
-                EXIT_CAP_PENDING => Poll::Pending,
-                EXIT_CAP_FINALIZING => {
-                    while self.exit_capability.load(Ordering::Acquire) == EXIT_CAP_FINALIZING {
-                        std::hint::spin_loop();
+                },
+                EXIT_ECHILD => return Poll::Ready(Err(Errno::ECHILD)),
+                EXIT_PENDING => match self.exit_capability.load(Ordering::Acquire) {
+                    EXIT_CAP_PENDING | EXIT_CAP_FINALIZING => return Poll::Pending,
+                    EXIT_CAP_AVAILABLE => {
+                        // AVAILABLE is released after STOPPED. Re-read after
+                        // the Acquire so a stale first status load cannot miss
+                        // a publication whose wake already happened. Keep
+                        // Pending only for the defensively modeled old order.
+                        match self.exit_status.load(Ordering::Acquire) {
+                            EXIT_PENDING => return Poll::Pending,
+                            EXIT_STOPPED | EXIT_ECHILD => continue,
+                            state => unreachable!("invalid exit publication state {state}"),
+                        }
                     }
-                    self.poll_exit(waiter, waker)
-                }
-                state => unreachable!("unpublished exit capability state {state}"),
-            },
-            state => unreachable!("invalid exit publication state {state}"),
+                    EXIT_CAP_CLAIMED => return Poll::Ready(Err(Errno::EALREADY)),
+                    EXIT_CAP_EXPIRED => {
+                        // Acquiring EXPIRED observes the finalizer's prior
+                        // ECHILD release when expiration came from terminal
+                        // publication. Re-read because the first status load
+                        // may predate it.
+                        return match self.exit_status.load(Ordering::Acquire) {
+                            EXIT_ECHILD => Poll::Ready(Err(Errno::ECHILD)),
+                            EXIT_PENDING | EXIT_STOPPED => Poll::Ready(Err(Errno::EALREADY)),
+                            state => unreachable!("invalid exit publication state {state}"),
+                        };
+                    }
+                    state => unreachable!("unpublished exit capability state {state}"),
+                },
+                state => unreachable!("invalid exit publication state {state}"),
+            }
         }
     }
 }
@@ -1340,6 +1365,7 @@ mod test {
     use std::mem;
     use std::process::Command;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::mpsc;
     use std::task::Wake;
     use std::time::Duration;
 
@@ -1498,6 +1524,113 @@ mod test {
                 Poll::Ready(Err(Errno::EALREADY))
             );
         }
+    }
+
+    #[test]
+    fn exit_waiter_retries_capability_before_status_publication() {
+        let counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&counter));
+        let event = Event::new();
+        let waiter = Arc::new(ExitWaiter::default());
+
+        // Deterministically model the Round 12 publication order between its
+        // two atomic writes. A poll in this gap must remain retryable.
+        event
+            .exit_capability
+            .store(EXIT_CAP_AVAILABLE, Ordering::Release);
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Pending);
+
+        event.exit_status.store(EXIT_STOPPED, Ordering::Release);
+        event.exit_waiters.wake_all();
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+    }
+
+    #[test]
+    fn exit_waiter_retries_forced_status_before_capability_publication() {
+        let counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&counter));
+        let event = Arc::new(Event::new());
+        let waiter = Arc::new(ExitWaiter::default());
+        let (paused_tx, paused_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let publisher_event = Arc::clone(&event);
+
+        let publisher = thread::spawn(move || {
+            publisher_event.publish_exit_stop(|| {
+                paused_tx.send(()).expect("report exit publication gap");
+                resume_rx.recv().expect("resume exit publication");
+            });
+        });
+        paused_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("exit publication did not reach forced gap");
+
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_STOPPED);
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_PENDING
+        );
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Pending);
+
+        resume_tx.send(()).expect("release exit publication");
+        publisher.join().expect("join exit publisher");
+        assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+    }
+
+    #[test]
+    fn terminal_finalization_waits_for_exit_capability_publication() {
+        let event = Arc::new(Event::new());
+        let waiter = Arc::new(ExitWaiter::default());
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let (paused_tx, paused_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let publisher_event = Arc::clone(&event);
+        let publisher = thread::spawn(move || {
+            publisher_event.publish_exit_stop(|| {
+                paused_tx.send(()).expect("report exit publication gap");
+                resume_rx.recv().expect("resume exit publication");
+            });
+        });
+        paused_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("exit publication did not reach forced gap");
+
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let finalizer_event = Arc::clone(&event);
+        let finalizer = thread::spawn(move || {
+            started_tx.send(()).expect("report terminal attempt");
+            finalizer_event.update(42 << 8);
+            done_tx.send(()).expect("report terminal completion");
+        });
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("terminal finalizer did not start");
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_millis(20)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "terminal publication interleaved the exit-stop atomic gap"
+        );
+
+        resume_tx.send(()).expect("release exit publication");
+        publisher.join().expect("join exit publisher");
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("terminal finalizer stayed blocked");
+        finalizer.join().expect("join terminal finalizer");
+
+        assert_eq!(event.exit_status.load(Ordering::Acquire), EXIT_STOPPED);
+        assert_eq!(
+            event.exit_capability.load(Ordering::Acquire),
+            EXIT_CAP_EXPIRED
+        );
+        assert_eq!(
+            event.poll_exit(&waiter, &waker),
+            Poll::Ready(Err(Errno::EALREADY))
+        );
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
     }
 
     #[test]
