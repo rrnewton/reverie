@@ -554,10 +554,10 @@ async fn cancel_host_wait(capture_output: bool) {
     };
     let wait_for_pid = async {
         loop {
-            if let Ok(contents) = fs::read_to_string(&pid_file) {
-                if let Ok(pid) = contents.trim().parse::<u32>() {
-                    break pid;
-                }
+            if let Ok(contents) = fs::read_to_string(&pid_file)
+                && let Ok(pid) = contents.trim().parse::<u32>()
+            {
+                break pid;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
