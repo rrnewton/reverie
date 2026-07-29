@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use reverie::Error;
 use reverie::GlobalTool;
@@ -103,6 +104,28 @@ impl Tool for PassthroughGetpid {
         syscall: Syscall,
     ) -> Result<i64, Error> {
         assert_eq!(syscall.number(), Sysno::getpid);
+        guest.send_rpc(1).await;
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[derive(Default)]
+struct ObservePkey;
+
+#[reverie::tool]
+impl Tool for ObservePkey {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [Sysno::getpid, Sysno::pkey_mprotect].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
         guest.send_rpc(1).await;
         Ok(guest.inject(syscall).await?)
     }
@@ -223,6 +246,24 @@ fn processes_named(name: &str) -> Vec<u32> {
     found
 }
 
+fn assert_pid_reaped(pid: u32) {
+    assert!(
+        !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+        "failed LiteInst process {pid} remains stopped or unreaped"
+    );
+    let mut status = 0;
+    assert_eq!(
+        unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) },
+        -1,
+        "failed LiteInst process {pid} still has a waitable state"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD),
+        "failed LiteInst process {pid} was not fully reaped"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn host_lifecycle_observes_allocator_and_explicit_getrandom() {
     let (_directory, guest) = compile_fixture("allocator_getrandom.c");
@@ -341,27 +382,13 @@ async fn hybrid_fails_closed_when_the_guest_forks() {
     )
     .await;
 
-    let error = result.expect_err("hybrid unexpectedly followed a child");
+    let _error = result.expect_err("hybrid unexpectedly followed a child");
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
         .parse()
         .unwrap();
-    assert!(
-        !std::path::Path::new(&format!("/proc/{root_pid}")).exists(),
-        "failed LiteInst root remains stopped or unreaped: {error}"
-    );
-    let mut status = 0;
-    assert_eq!(
-        unsafe { libc::waitpid(root_pid as i32, &mut status, libc::WNOHANG) },
-        -1,
-        "failed LiteInst root still has a waitable state"
-    );
-    assert_eq!(
-        std::io::Error::last_os_error().raw_os_error(),
-        Some(libc::ECHILD),
-        "failed LiteInst root was not fully reaped"
-    );
+    assert_pid_reaped(root_pid);
     assert!(
         processes_named(&marker).is_empty(),
         "failed LiteInst root/child remains stopped or as a zombie"
@@ -424,23 +451,135 @@ async fn run_active_footprint_mode(
 
 #[tokio::test(flavor = "current_thread")]
 async fn active_hook_noop_mprotect_preserves_the_hook() {
-    let (output, global) = run_active_footprint_mode("noop").await.unwrap();
-    assert_eq!(output.stdout, b"active no-op protection preserved\n");
-    assert_eq!(global.delivered.load(Ordering::SeqCst), 3);
-    assert!(output.status.success(), "{output:?}");
+    for (mode, stdout) in [
+        ("noop", "active no-op protection preserved\n"),
+        ("short-noop", "active short no-op protection preserved\n"),
+    ] {
+        let (output, global) = run_active_footprint_mode(mode).await.unwrap();
+        assert_eq!(output.stdout, stdout.as_bytes());
+        assert_eq!(global.delivered.load(Ordering::SeqCst), 3);
+        assert!(output.status.success(), "{output:?}");
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn active_hook_mapping_footprints_reject_mprotect_before_mutation() {
-    for mode in ["site", "trampoline", "arena-rw"] {
+    for (mode, syscall) in [
+        ("site", "mprotect"),
+        ("trampoline", "mprotect"),
+        ("arena-rw", "mprotect"),
+        ("short-site", "mprotect"),
+        ("short-trampoline", "mprotect"),
+        ("short-arena-rw", "mprotect"),
+        ("short-munmap", "munmap"),
+        ("short-map-fixed", "mmap"),
+        ("short-mremap", "mremap"),
+        ("short-mremap-fixed", "mremap"),
+    ] {
         let error = run_active_footprint_mode(mode)
             .await
             .expect_err("active footprint mutation unexpectedly completed");
         assert!(
-            error
-                .to_string()
-                .contains("mprotect overlaps an active LiteInst hook footprint"),
+            error.to_string().contains(&format!(
+                "{syscall} overlaps an active LiteInst hook footprint"
+            )),
             "{mode} footprint was not rejected before mutation: {error}"
         );
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pkey_mprotect_is_controller_owned_unless_subscribed() {
+    let (_directory, guest) = compile_fixture("hybrid_active_footprint.c");
+    let mut command = Command::new(&guest);
+    command.arg("pkey-noop");
+    let (unsubscribed_output, unsubscribed) = LiteinstBackend::run_host_with_output_and_preload::<
+        PassthroughGetpid,
+    >(command, (), preload_path())
+    .await
+    .unwrap();
+
+    let mut command = Command::new(guest);
+    command.arg("pkey-noop");
+    let (subscribed_output, subscribed) = LiteinstBackend::run_host_with_output_and_preload::<
+        ObservePkey,
+    >(command, (), preload_path())
+    .await
+    .unwrap();
+    assert_eq!(unsubscribed_output.stdout, subscribed_output.stdout);
+    assert_eq!(
+        subscribed.delivered.load(Ordering::SeqCst),
+        unsubscribed.delivered.load(Ordering::SeqCst) + 1,
+        "pkey_mprotect must reach the Tool exactly when subscribed"
+    );
+
+    let error = run_active_footprint_mode("pkey-site")
+        .await
+        .expect_err("destructive pkey_mprotect unexpectedly completed");
+    assert!(
+        error
+            .to_string()
+            .contains("pkey_mprotect overlaps an active LiteInst hook footprint"),
+        "pkey_mprotect was not rejected before mutation: {error}"
+    );
+}
+
+async fn cancel_host_wait(capture_output: bool) {
+    let (_directory, guest) = compile_fixture("hybrid_wait_cancel.c");
+    let pid_directory = tempfile::tempdir().unwrap();
+    let pid_file = pid_directory.path().join("guest.pid");
+    let mut command = Command::new(guest);
+    command.arg(&pid_file);
+
+    let mut run = if capture_output {
+        Box::pin(LiteinstBackend::run_host_with_output_and_preload::<
+            PassthroughGetpid,
+        >(command, (), preload_path()))
+            as std::pin::Pin<Box<dyn std::future::Future<Output = _>>>
+    } else {
+        Box::pin(async move {
+            LiteinstBackend::run_host_with_preload::<PassthroughGetpid>(command, (), preload_path())
+                .await
+                .map(|(status, global)| {
+                    (
+                        reverie::process::Output {
+                            status,
+                            stdout: Vec::new(),
+                            stderr: Vec::new(),
+                        },
+                        global,
+                    )
+                })
+        })
+    };
+    let wait_for_pid = async {
+        loop {
+            if let Ok(contents) = fs::read_to_string(&pid_file) {
+                if let Ok(pid) = contents.trim().parse::<u32>() {
+                    break pid;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    let pid = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::select! {
+            result = &mut run => panic!("wait completed before cancellation: {result:?}"),
+            pid = wait_for_pid => pid,
+        }
+    })
+    .await
+    .expect("guest did not enter the wait phase");
+    drop(run);
+    assert_pid_reaped(pid);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelling_wait_reaps_and_unregisters_liteinst_root() {
+    cancel_host_wait(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelling_wait_with_output_reaps_and_unregisters_liteinst_root() {
+    cancel_host_wait(true).await;
 }

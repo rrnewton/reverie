@@ -366,6 +366,8 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) ready_marker: u64,
     pub(crate) helper_return_marker: u64,
     pub(crate) syscall_marker: u64,
+    #[cfg(test)]
+    pub(crate) fail_preinit: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -420,6 +422,38 @@ impl GuestRange {
     }
 }
 
+fn kernel_page_range(start: u64, len: u64, page_size: u64) -> Result<Option<GuestRange>, ()> {
+    if page_size == 0 || !page_size.is_power_of_two() {
+        return Err(());
+    }
+    if len == 0 {
+        return Ok(None);
+    }
+
+    let end = start.checked_add(len).ok_or(())?;
+    let page_mask = page_size - 1;
+    let start = start & !page_mask;
+    let end = end.checked_add(page_mask).ok_or(())? & !page_mask;
+    Ok(Some(GuestRange { start, end }))
+}
+
+fn host_page_size() -> Result<u64, Errno> {
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let page_size = u64::try_from(page_size).map_err(|_| Errno::EIO)?;
+    page_size
+        .is_power_of_two()
+        .then_some(page_size)
+        .ok_or(Errno::EIO)
+}
+
+fn is_liteinst_mapping_syscall(nr: Sysno) -> bool {
+    matches!(
+        nr,
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        Sysno::mmap | Sysno::munmap | Sysno::mremap | Sysno::mprotect | Sysno::pkey_mprotect
+    )
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ActiveHookFootprint {
     site: GuestRange,
@@ -470,22 +504,28 @@ impl Default for LiteinstRuntimeState {
 }
 
 impl LiteinstRuntimeState {
-    fn mapping_mutates_active_hook(&self, nr: Sysno, args: SyscallArgs) -> bool {
+    fn mapping_mutates_active_hook(&self, nr: Sysno, args: SyscallArgs, page_size: u64) -> bool {
         let operation_range = match nr {
             // AUTONOMOUS-BOT-IMPLEMENTED
             Sysno::mmap if args.arg3 as i32 & libc::MAP_FIXED != 0 => {
-                GuestRange::new(args.arg0 as u64, args.arg1 as u64)
+                kernel_page_range(args.arg0 as u64, args.arg1 as u64, page_size)
             }
             // AUTONOMOUS-BOT-IMPLEMENTED
-            Sysno::munmap | Sysno::mprotect | Sysno::mremap => {
-                GuestRange::new(args.arg0 as u64, args.arg1 as u64)
+            Sysno::munmap | Sysno::mprotect | Sysno::pkey_mprotect | Sysno::mremap => {
+                kernel_page_range(args.arg0 as u64, args.arg1 as u64, page_size)
             }
             _ => return false,
         };
-        let Some(operation_range) = operation_range else {
-            return args.arg1 != 0 && !self.active_hooks.is_empty();
+        let operation_range = match operation_range {
+            Ok(Some(range)) => range,
+            Ok(None) => return false,
+            Err(()) => return !self.active_hooks.is_empty(),
         };
-        let requested_protection = (nr == Sysno::mprotect).then_some(args.arg2 as i32);
+        let requested_protection = match nr {
+            Sysno::mprotect => Some(args.arg2 as i32),
+            Sysno::pkey_mprotect if args.arg3 == 0 => Some(args.arg2 as i32),
+            _ => None,
+        };
         if self.active_hooks.values().any(|hook| {
             hook.protected_ranges()
                 .into_iter()
@@ -496,8 +536,11 @@ impl LiteinstRuntimeState {
             return true;
         }
         if nr == Sysno::mremap && args.arg3 as i32 & libc::MREMAP_FIXED != 0 {
-            let Some(destination) = GuestRange::new(args.arg4 as u64, args.arg2 as u64) else {
-                return !self.active_hooks.is_empty();
+            let destination = match kernel_page_range(args.arg4 as u64, args.arg2 as u64, page_size)
+            {
+                Ok(Some(range)) => range,
+                Ok(None) => return false,
+                Err(()) => return !self.active_hooks.is_empty(),
             };
             return self.active_hooks.values().any(|hook| {
                 hook.protected_ranges()
@@ -508,16 +551,21 @@ impl LiteinstRuntimeState {
         false
     }
 
-    fn invalidate_attempted_range(&mut self, start: u64, len: u64) {
-        if len == 0 {
-            return;
-        }
-        let Some(end) = start.checked_add(len) else {
+    fn invalidate_attempted_pages(&mut self, start: u64, len: u64, page_size: u64) {
+        let range = match kernel_page_range(start, len, page_size) {
+            Ok(Some(range)) => range,
+            Ok(None) => return,
+            Err(()) => {
+                self.attempted_sites.clear();
+                return;
+            }
+        };
+        if range.start >= range.end {
             self.attempted_sites.clear();
             return;
-        };
+        }
         self.attempted_sites
-            .retain(|address| !(*address >= start && *address < end));
+            .retain(|address| !(*address >= range.start && *address < range.end));
     }
 }
 
@@ -1184,6 +1232,16 @@ impl<L: Tool + 'static> TracedTask<L> {
         fields(pid = %task.pid())
     )]
     pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        #[cfg(test)]
+        if self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.fail_preinit)
+        {
+            return Err(Errno::EPERM.into());
+        }
+
         type SavedInstructions = [u8; 8];
 
         /// Helper function for tracee_preinit that does the core work.
@@ -2338,24 +2396,17 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok((task, true, relocated_tail))
     }
 
-    fn is_liteinst_mapping_syscall(nr: Sysno) -> bool {
-        matches!(
-            nr,
-            // AUTONOMOUS-BOT-IMPLEMENTED
-            Sysno::mmap | Sysno::munmap | Sysno::mremap | Sysno::mprotect
-        )
-    }
-
     fn validate_liteinst_mapping_execution(
         &self,
         nr: Sysno,
         args: SyscallArgs,
     ) -> Result<(), Errno> {
+        let page_size = host_page_size()?;
         if self
             .liteinst_runtime
             .lock()
             .unwrap()
-            .mapping_mutates_active_hook(nr, args)
+            .mapping_mutates_active_hook(nr, args, page_size)
         {
             Err(Errno::ENOTSUPP)
         } else {
@@ -2376,22 +2427,26 @@ impl<L: Tool + 'static> TracedTask<L> {
             return;
         };
         let mut state = self.liteinst_runtime.lock().unwrap();
+        let Ok(page_size) = host_page_size() else {
+            state.attempted_sites.clear();
+            return;
+        };
         match nr {
             // AUTONOMOUS-BOT-IMPLEMENTED
             Sysno::mmap => {
                 if let Ok(start) = u64::try_from(result) {
-                    state.invalidate_attempted_range(start, args.arg1 as u64);
+                    state.invalidate_attempted_pages(start, args.arg1 as u64, page_size);
                 }
             }
             // AUTONOMOUS-BOT-IMPLEMENTED
-            Sysno::munmap | Sysno::mprotect => {
-                state.invalidate_attempted_range(args.arg0 as u64, args.arg1 as u64);
+            Sysno::munmap | Sysno::mprotect | Sysno::pkey_mprotect => {
+                state.invalidate_attempted_pages(args.arg0 as u64, args.arg1 as u64, page_size);
             }
             // AUTONOMOUS-BOT-IMPLEMENTED
             Sysno::mremap => {
-                state.invalidate_attempted_range(args.arg0 as u64, args.arg1 as u64);
+                state.invalidate_attempted_pages(args.arg0 as u64, args.arg1 as u64, page_size);
                 if let Ok(start) = u64::try_from(result) {
-                    state.invalidate_attempted_range(start, args.arg2 as u64);
+                    state.invalidate_attempted_pages(start, args.arg2 as u64, page_size);
                 }
             }
             _ => {}
@@ -2462,7 +2517,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             .subscriptions
             .iter_syscalls()
             .any(|subscribed| subscribed == nr);
-        if Self::is_liteinst_mapping_syscall(nr) && !tool_subscribed {
+        if is_liteinst_mapping_syscall(nr) && !tool_subscribed {
             return self.handle_liteinst_mapping_syscall(task, nr, args).await;
         }
         let (installed_task, syscall_already_skipped, liteinst_resume_rip) =
@@ -3356,7 +3411,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Ok(result);
         }
 
-        if Self::is_liteinst_mapping_syscall(nr) && self.pending_syscall == Some((nr, args)) {
+        if is_liteinst_mapping_syscall(nr) && self.pending_syscall == Some((nr, args)) {
             self.pending_syscall = None;
             let result = self.private_inject(task, nr, args).await?;
             let task = self.assume_stopped();
@@ -4002,6 +4057,30 @@ mod tests {
     }
 
     #[test]
+    fn kernel_page_ranges_floor_ceil_and_reject_overflow() {
+        assert_eq!(
+            kernel_page_range(0x401005, 1, 4096),
+            Ok(Some(GuestRange {
+                start: 0x401000,
+                end: 0x402000,
+            }))
+        );
+        assert_eq!(kernel_page_range(0x401000, 0, 4096), Ok(None));
+        assert_eq!(kernel_page_range(u64::MAX - 1, 4, 4096), Err(()));
+        assert_eq!(kernel_page_range(0x401000, 1, 3000), Err(()));
+    }
+
+    #[test]
+    fn short_successful_mapping_invalidates_the_whole_attempted_page() {
+        let mut state = LiteinstRuntimeState::default();
+        state.attempted_sites.extend([0x401005, 0x401fff, 0x402005]);
+
+        state.invalidate_attempted_pages(0x401000, 1, 4096);
+
+        assert_eq!(state.attempted_sites, HashSet::from([0x402005]));
+    }
+
+    #[test]
     fn proc_maps_paths_preserve_literal_whitespace_and_decode_octal_escapes() {
         let mapping = parse_guest_map(
             br"00400000-00401000 r-xp 00000000 08:02 123 /tmp/a  double	tab\040space\011escaped\134slash",
@@ -4045,14 +4124,17 @@ mod tests {
         assert!(state.mapping_mutates_active_hook(
             Sysno::mprotect,
             SyscallArgs::new(0x401000, 0x1000, libc::PROT_NONE as usize, 0, 0, 0),
+            4096,
         ));
         assert!(state.mapping_mutates_active_hook(
             Sysno::mremap,
             SyscallArgs::new(0x7000_1000, 0x1000, 0x2000, 0, 0, 0),
+            4096,
         ));
         assert!(state.mapping_mutates_active_hook(
             Sysno::munmap,
             SyscallArgs::new(0x7100_0000, 0x1000, 0, 0, 0, 0),
+            4096,
         ));
         assert!(state.mapping_mutates_active_hook(
             Sysno::mmap,
@@ -4064,7 +4146,40 @@ mod tests {
                 usize::MAX,
                 0,
             ),
+            4096,
         ));
+    }
+
+    #[test]
+    fn short_mapping_lengths_cover_the_whole_active_page() {
+        let state = active_state();
+        for nr in [Sysno::mprotect, Sysno::pkey_mprotect, Sysno::munmap] {
+            assert!(state.mapping_mutates_active_hook(
+                nr,
+                SyscallArgs::new(0x401000, 1, libc::PROT_NONE as usize, 0, 0, 0),
+                4096,
+            ));
+        }
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mmap,
+            SyscallArgs::new(0x401000, 1, 0, libc::MAP_FIXED as usize, 0, 0),
+            4096,
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mremap,
+            SyscallArgs::new(0x5000_0000, 1, 1, libc::MREMAP_FIXED as usize, 0x401000, 0,),
+            4096,
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mprotect,
+            SyscallArgs::new(u64::MAX as usize - 1, 4, libc::PROT_NONE as usize, 0, 0, 0),
+            4096,
+        ));
+    }
+
+    #[test]
+    fn pkey_mprotect_is_a_controller_mapping_syscall() {
+        assert!(is_liteinst_mapping_syscall(Sysno::pkey_mprotect));
     }
 
     #[test]
@@ -4080,8 +4195,9 @@ mod tests {
                 0,
                 0,
             ),
+            4096,
         ));
-        state.invalidate_attempted_range(0x401000, 0x1000);
+        state.invalidate_attempted_pages(0x401000, 1, 4096);
         assert_eq!(state.active_hooks.len(), 1);
     }
 

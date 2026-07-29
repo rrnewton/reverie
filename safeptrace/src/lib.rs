@@ -34,6 +34,8 @@ pub use syscalls::Errno;
 use syscalls::Sysno;
 use thiserror::Error;
 
+#[cfg(feature = "notifier")]
+pub use crate::notifier::TerminalCleanup;
 pub use crate::regs::*;
 use crate::waitid::IdType;
 use crate::waitid::waitid;
@@ -953,6 +955,13 @@ impl Running {
     #[cfg(feature = "notifier")]
     pub fn exit_event(&self) -> notifier::ExitFuture {
         notifier::ExitFuture::new(self.0)
+    }
+
+    /// Registers this process with the async notifier and returns a bounded
+    /// synchronous acknowledgment handle for terminal cleanup.
+    #[cfg(feature = "notifier")]
+    pub fn terminal_cleanup(&self) -> TerminalCleanup {
+        TerminalCleanup::new(self.0)
     }
 
     /// Like `wait`, but wait asynchronously for the next state change.

@@ -14,6 +14,9 @@ use std::os::fd::BorrowedFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread::ThreadId;
+use std::time::Duration;
+use std::time::Instant;
 
 use anyhow::Context;
 use close_err::Closable;
@@ -44,6 +47,7 @@ use safeptrace::Error as TraceError;
 use safeptrace::Event;
 use safeptrace::Running;
 use safeptrace::Stopped;
+use safeptrace::TerminalCleanup;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 
@@ -87,11 +91,24 @@ pub struct Tracer<G> {
 struct LiteinstTraceeCleanup {
     pid: Pid,
     armed: bool,
+    terminal: Option<TerminalCleanup>,
+    notifier_owner: Option<ThreadId>,
 }
 
 impl LiteinstTraceeCleanup {
     fn new(pid: Pid) -> Self {
-        Self { pid, armed: true }
+        Self {
+            pid,
+            armed: true,
+            terminal: None,
+            notifier_owner: None,
+        }
+    }
+
+    fn register_notifier(&mut self) {
+        debug_assert!(self.terminal.is_none());
+        self.notifier_owner = Some(std::thread::current().id());
+        self.terminal = Some(Running::new(self.pid).terminal_cleanup());
     }
 
     fn disarm(&mut self) {
@@ -114,6 +131,50 @@ impl LiteinstTraceeCleanup {
             ))
         }
     }
+
+    fn terminate_and_confirm(&mut self) -> std::io::Result<()> {
+        if self.confirm_reaped().is_ok() {
+            return Ok(());
+        }
+
+        if self.terminal.is_none() {
+            terminate_and_reap_new_child(Running::new(self.pid)).map_err(|error| {
+                std::io::Error::other(format!("pre-registration LiteInst cleanup: {error}"))
+            })?;
+            self.armed = false;
+            return Ok(());
+        }
+
+        unsafe {
+            libc::kill(self.pid.as_raw(), libc::SIGKILL);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if self
+                .terminal
+                .as_ref()
+                .is_some_and(|terminal| terminal.wait(Duration::from_millis(1)))
+            {
+                self.armed = false;
+                return Ok(());
+            }
+
+            // A killed ptrace tracee can stop first at PTRACE_EVENT_EXIT. Only
+            // the thread that created the tracee may resume it; the notifier
+            // worker remains the sole owner of wait statuses.
+            if self.notifier_owner == Some(std::thread::current().id()) {
+                let _ = ptrace::cont(self.pid.into(), Some(Signal::SIGKILL));
+            }
+        }
+
+        Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "notifier did not acknowledge terminal cleanup for LiteInst tracee {}",
+                self.pid
+            ),
+        ))
+    }
 }
 
 impl Drop for LiteinstTraceeCleanup {
@@ -121,10 +182,11 @@ impl Drop for LiteinstTraceeCleanup {
         if !self.armed {
             return;
         }
-        // Cancellation cannot await an orderly drain. The typed task path owns
-        // explicit error cleanup; Drop is a last-resort kill only.
-        unsafe {
-            libc::kill(self.pid.as_raw(), libc::SIGKILL);
+        // Cancellation cannot await an orderly drain, so synchronously request
+        // termination and wait for the notifier-owned final reap. Before async
+        // registration, the bounded raw-wait fallback owns cleanup instead.
+        if let Err(error) = self.terminate_and_confirm() {
+            tracing::error!(pid = %self.pid, %error, "LiteInst cancellation cleanup failed");
         }
     }
 }
@@ -133,19 +195,6 @@ pub(crate) fn terminate_and_reap_new_child(task: Running) -> Result<(), TraceErr
     let pid = task.pid();
     unsafe {
         libc::kill(pid.as_raw(), libc::SIGKILL);
-    }
-    match task.wait() {
-        Ok(safeptrace::Wait::Stopped(stopped, _)) => {
-            let _ = stopped.resume(Signal::SIGKILL)?;
-        }
-        Ok(safeptrace::Wait::Exited(_, _)) => return Ok(()),
-        Err(TraceError::Died(_)) => {}
-        Err(TraceError::Errno(Errno::ECHILD)) => {
-            if unsafe { libc::kill(pid.as_raw(), 0) } == -1 && Errno::last() == Errno::ESRCH {
-                return Ok(());
-            }
-        }
-        Err(error) => return Err(error),
     }
     for _ in 0..2_000 {
         let mut status = 0;
@@ -252,7 +301,7 @@ impl<G: Default> Tracer<G> {
             }
             Err(error) => {
                 if let Some(cleanup) = self.liteinst_cleanup.as_mut()
-                    && let Err(cleanup_error) = cleanup.confirm_reaped()
+                    && let Err(cleanup_error) = cleanup.terminate_and_confirm()
                 {
                     return Err(anyhow::anyhow!(
                         "LiteInst tracee cleanup failed after {error}: {cleanup_error}"
@@ -681,7 +730,18 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             ready_marker,
             helper_return_marker,
             syscall_marker,
+            #[cfg(test)]
+            fail_preinit: false,
         });
+        self
+    }
+
+    #[cfg(test)]
+    fn fail_liteinst_preinit_for_test(mut self) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before preinit failure injection")
+            .fail_preinit = true;
         self
     }
 
@@ -741,7 +801,13 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             // Mapping operations are controller-only lifecycle observations:
             // trace them so successful VMA churn can invalidate patched-site
             // provenance, without adding them to the Tool's subscription set.
-            traced_events.syscalls([Sysno::mmap, Sysno::munmap, Sysno::mremap, Sysno::mprotect]);
+            traced_events.syscalls([
+                Sysno::mmap,
+                Sysno::munmap,
+                Sysno::mremap,
+                Sysno::mprotect,
+                Sysno::pkey_mprotect,
+            ]);
         }
         let gref = Arc::new(global_state);
 
@@ -791,6 +857,14 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             }
         };
 
+        // From this point on, every wait status belongs to safeptrace's
+        // notifier. Cancellation and initialization errors must request
+        // termination through the guard and await notifier unregistration;
+        // they must never call raw waitpid for this PID.
+        if let Some(cleanup) = liteinst_cleanup.as_mut() {
+            cleanup.register_notifier();
+        }
+
         let tracer = match postspawn::<T>(
             running_child,
             gref.clone(),
@@ -806,7 +880,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             Err(err) => {
                 let error = initialization_error(guest_pid, err).await;
                 if let Some(cleanup) = liteinst_cleanup.as_mut()
-                    && let Err(cleanup_error) = cleanup.confirm_reaped()
+                    && let Err(cleanup_error) = cleanup.terminate_and_confirm()
                 {
                     return Err(anyhow::anyhow!(
                         "LiteInst tracee cleanup failed after {error}: {cleanup_error}"
@@ -969,6 +1043,19 @@ where
 mod tests {
     use super::*;
 
+    #[derive(Default)]
+    struct InitFailureTool;
+
+    #[reverie::tool]
+    impl Tool for InitFailureTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::none()
+        }
+    }
+
     #[test]
     fn resolving_program_preserves_explicit_arg0() {
         let mut command = Command::new("/bin/echo");
@@ -976,5 +1063,40 @@ mod tests {
         resolve_program(&mut command).unwrap();
         assert_eq!(command.get_program(), "/bin/echo");
         assert_eq!(command.get_arg0(), "chosen-name");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn liteinst_preinit_failure_reaps_and_unregisters_root() {
+        let error = match TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .fail_liteinst_preinit_for_test()
+            .spawn()
+            .await
+        {
+            Ok(_) => panic!("injected LiteInst preinit failure unexpectedly succeeded"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        let pid = message
+            .split("tracee ")
+            .nth(1)
+            .and_then(|suffix| suffix.split(':').next())
+            .and_then(|pid| pid.parse::<i32>().ok())
+            .unwrap_or_else(|| panic!("preinit error omitted tracee PID: {message}"));
+
+        assert!(
+            !std::path::Path::new(&format!("/proc/{pid}")).exists(),
+            "failed LiteInst preinit left tracee {pid} in procfs: {message}"
+        );
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD),
+            "failed LiteInst preinit left tracee {pid} waitable"
+        );
     }
 }

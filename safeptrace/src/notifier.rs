@@ -78,9 +78,12 @@ use std::task::RawWakerVTable;
 use std::task::Waker;
 use std::thread;
 use std::thread::JoinHandle;
+use std::time::Duration;
+use std::time::Instant;
 
 use nix::sys::wait::WaitPidFlag;
 use nix::sys::wait::WaitStatus;
+use parking_lot::Condvar;
 use parking_lot::Mutex;
 
 use super::Errno;
@@ -266,6 +269,7 @@ fn worker_thread(pid: Pid, event: Arc<Event>) {
         if let Some(old_status) = event.update(status)
             && status != PTRACE_EVENT_EXIT_STOP
             && !libc::WIFEXITED(status)
+            && !libc::WIFSIGNALED(status)
         {
             panic!(
                 "Got unexpected event: Event {:?} replaced {:?}",
@@ -280,18 +284,27 @@ fn worker_thread(pid: Pid, event: Arc<Event>) {
             break;
         }
     }
+    // The worker owns terminal registry cleanup. A WaitFuture may be dropped
+    // before the final status is polled, and leaving cleanup to that future
+    // would retain a stale event if the kernel later reuses this PID.
+    NOTIFIER.remove(pid, &event);
 }
 
 struct Notifier {
     /// Mapping of pids to wakers.
     pids: Mutex<HashMap<Pid, Arc<Event>>>,
+    /// Notifies synchronous cancellation cleanup after the worker unregisters.
+    removed: Condvar,
 }
 
 impl Notifier {
     /// Creates the notifier.
     pub fn new() -> Self {
         let pids = Mutex::new(HashMap::new());
-        Notifier { pids }
+        Notifier {
+            pids,
+            removed: Condvar::new(),
+        }
     }
 
     /// Gets the event state for a PID, creating its notifier thread if needed.
@@ -318,6 +331,7 @@ impl Notifier {
             .is_some_and(|current| Arc::ptr_eq(current, event))
         {
             pids.remove(&pid);
+            self.removed.notify_all();
         }
     }
 }
@@ -332,6 +346,47 @@ impl Drop for Notifier {
             "Some tracees have not exited yet:\n{:#?}",
             pids
         );
+    }
+}
+
+/// A synchronous acknowledgment that a PID's notifier worker has observed a
+/// terminal state and removed its registry entry.
+pub struct TerminalCleanup {
+    pid: Pid,
+    event: Arc<Event>,
+}
+
+impl TerminalCleanup {
+    pub(super) fn new(pid: Pid) -> Self {
+        Self {
+            pid,
+            event: NOTIFIER.event(pid),
+        }
+    }
+
+    /// Waits up to `timeout` for the notifier worker to unregister this PID.
+    ///
+    /// This does not call `waitpid`: after notifier registration, the worker
+    /// thread remains the sole owner of wait statuses for the PID.
+    pub fn wait(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        let mut pids = NOTIFIER.pids.lock();
+        loop {
+            let registered = pids
+                .get(&self.pid)
+                .is_some_and(|current| Arc::ptr_eq(current, &self.event));
+            if !registered {
+                return true;
+            }
+
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            NOTIFIER.removed.wait_for(&mut pids, remaining);
+        }
     }
 }
 
@@ -400,6 +455,7 @@ impl Future for ExitFuture {
 mod test {
     use std::sync::atomic::AtomicUsize;
     use std::task::Wake;
+    use std::time::Duration;
 
     use nix::sys::signal::Signal;
     use nix::sys::wait::WaitStatus;
@@ -459,6 +515,20 @@ mod test {
                 Signal::SIGTRAP,
                 libc::PTRACE_EVENT_EXIT
             ))
+        );
+    }
+
+    #[test]
+    fn terminal_cleanup_removes_stale_pid_registration() {
+        let pid = Pid::from_raw(i32::MAX - 17);
+        let cleanup = TerminalCleanup::new(pid.into());
+        let old_event = Arc::clone(&cleanup.event);
+
+        assert!(cleanup.wait(Duration::from_secs(1)));
+        let replacement = NOTIFIER.event(pid.into());
+        assert!(
+            !Arc::ptr_eq(&old_event, &replacement),
+            "terminal cleanup retained a stale PID registry entry"
         );
     }
 }
