@@ -739,6 +739,22 @@ impl Notifier {
             return Ok(Arc::clone(requested));
         }
 
+        // Once this exact Event owns a running worker, its immutable identity
+        // has already been validated. In particular, /proc can disappear
+        // after PTRACE_EVENT_EXIT while the worker still owns the final wait
+        // status. Keep that typed state on its old worker; only fresh,
+        // unstarted, or replacement handles must capture before registration.
+        let exact_worker_started = self.pids.lock().get(&pid).is_some_and(|entry| {
+            entry.handle == *handle
+                && entry.worker_started
+                && handle
+                    .identity()
+                    .is_some_and(|bound| bound.same_generation(&entry.identity))
+        });
+        if exact_worker_started {
+            return Ok(Arc::clone(requested));
+        }
+
         let current = match self.capture_identity(pid) {
             Ok(identity) => identity,
             Err(Errno::ENOENT | Errno::ESRCH) => {
@@ -1202,6 +1218,41 @@ mod test {
         assert_eq!(unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) }, 0);
         assert!(cleanup.wait(Duration::from_secs(1)));
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[test]
+    fn registered_exit_stop_survives_procfs_disappearance_until_final_status() {
+        let child = spawn_stopped_process(None).expect("spawn exiting notifier tracee");
+        let pid = Pid::from_raw(child.as_raw());
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid.into()).expect("capture notifier generation"),
+        );
+        let handle = EventHandle::with_identity(Arc::clone(&identity));
+        handle.event().update(PTRACE_EVENT_EXIT_STOP);
+        NOTIFIER.pids.lock().insert(
+            pid.into(),
+            NotifierEntry {
+                handle: handle.clone(),
+                identity,
+                worker_started: true,
+            },
+        );
+
+        reap_stopped_process(child);
+        NOTIFIER
+            .event(pid.into(), &handle)
+            .expect("reuse exact registered notifier generation");
+        let terminal = Signal::SIGKILL as i32;
+        handle.event().update(terminal);
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let observed = handle.event().poll_status(&waker);
+        NOTIFIER.pids.lock().remove(&pid.into());
+
+        assert_eq!(
+            observed,
+            Poll::Ready(Ok(terminal)),
+            "procfs disappearance replaced the old worker's final status with ECHILD"
+        );
     }
 
     fn spawn_stopped_process(requested_pid: Option<i32>) -> Option<Pid> {
