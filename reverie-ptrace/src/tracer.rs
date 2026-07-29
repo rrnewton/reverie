@@ -532,7 +532,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
     /// Routes a binary-rewriter trap only when its logical instruction address
     /// names an ahead-of-time patched site in the exact executable image.
-    // TODO-HUMAN-REVIEW(PR-PENDING): Review authenticated binary-rewriter trap API.
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-271): Review authenticated binary-rewriter trap API.
     pub fn authenticated_injected_syscall_trap(
         mut self,
         marker: u64,

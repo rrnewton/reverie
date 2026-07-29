@@ -222,6 +222,8 @@ fn guest_maps(pid: Pid) -> Option<Vec<GuestMap>> {
 }
 
 impl InjectedSyscallTrap {
+    // TODO-HUMAN-REVIEW(PR-271): Review rewritten-image load-bias and patched-site
+    // provenance validation before Tool dispatch.
     fn authenticates(&self, pid: Pid, frame: &InjectedSyscallFrame) -> bool {
         let Some(provenance) = &self.provenance else {
             return true;
