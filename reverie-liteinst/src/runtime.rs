@@ -34,7 +34,8 @@ pub(crate) const HOST_BEGIN_MARKER: u64 = 0x7265_766c_6900_0001;
 pub(crate) const HOST_READY_MARKER: u64 = 0x7265_766c_6900_0002;
 pub(crate) const HOST_HELPER_RETURN_MARKER: u64 = 0x7265_766c_6900_0003;
 pub(crate) const HOST_SYSCALL_MARKER: u64 = 0x7265_766c_6900_0004;
-const HOST_HANDSHAKE_VERSION: u64 = 2;
+const HOST_HANDSHAKE_VERSION: u64 = 3;
+const HOST_INSTALL_RESULT_VERSION: u64 = 1;
 const HOST_HELPER_STACK_BYTES: usize = 256 * 1024;
 
 global_asm!(
@@ -130,12 +131,42 @@ struct HostHandshakeFrame {
     helper_return_rip: u64,
     syscall_trap_rip: u64,
     syscall_trap_return_rip: u64,
+    install_result: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+#[repr(C)]
+struct HostInstallResult {
+    version: u64,
+    site_start: u64,
+    site_len: u64,
+    relocated_tail: u64,
+    trampoline_start: u64,
+    trampoline_len: u64,
+    arena_writable_start: u64,
+    arena_writable_len: u64,
+    arena_executable_start: u64,
+    arena_executable_len: u64,
+    complete: u64,
 }
 
 #[repr(align(16))]
 struct HostHelperStack([u8; HOST_HELPER_STACK_BYTES]);
 
 static mut HOST_HELPER_STACK: HostHelperStack = HostHelperStack([0; HOST_HELPER_STACK_BYTES]);
+static mut HOST_INSTALL_RESULT: HostInstallResult = HostInstallResult {
+    version: 0,
+    site_start: 0,
+    site_len: 0,
+    relocated_tail: 0,
+    trampoline_start: 0,
+    trampoline_len: 0,
+    arena_writable_start: 0,
+    arena_writable_len: 0,
+    arena_executable_start: 0,
+    arena_executable_len: 0,
+    complete: 0,
+};
 
 const UNSET_RESULT: i64 = i64::MIN;
 const SYS_IO_PGETEVENTS: i64 = 333;
@@ -189,7 +220,24 @@ pub(crate) fn reserve_coordinator_fd(fd: libc::c_int) -> io::Result<()> {
 struct RuntimeArena {
     mapping_start: u64,
     mapping_end: u64,
+    writable_start: u64,
+    writable_end: u64,
+    executable_start: u64,
+    executable_end: u64,
     arena: TrampolineArena,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeMap {
+    start: u64,
+    end: u64,
+    offset: u64,
+    device: String,
+    inode: u64,
+    readable: bool,
+    writable: bool,
+    executable: bool,
+    shared: bool,
 }
 
 struct SiteSlot {
@@ -383,6 +431,7 @@ fn host_handshake_frame() -> HostHandshakeFrame {
             as u64,
         syscall_trap_return_rip: core::ptr::addr_of!(reverie_liteinst_host_syscall_trap_return_rip)
             as usize as u64,
+        install_result: core::ptr::addr_of!(HOST_INSTALL_RESULT) as usize as u64,
     }
 }
 
@@ -505,6 +554,76 @@ fn compatibility_event_channel() -> io::Result<Option<CompatibilityEventChannel>
     }))
 }
 
+fn read_runtime_maps() -> io::Result<Vec<RuntimeMap>> {
+    let maps = std::fs::read_to_string("/proc/self/maps")?;
+    Ok(maps
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (range, permissions, offset, device, inode) = (
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+                fields.next()?,
+            );
+            let (start, end) = range.split_once('-')?;
+            let permissions = permissions.as_bytes();
+            Some(RuntimeMap {
+                start: u64::from_str_radix(start, 16).ok()?,
+                end: u64::from_str_radix(end, 16).ok()?,
+                offset: u64::from_str_radix(offset, 16).ok()?,
+                device: device.to_owned(),
+                inode: inode.parse().ok()?,
+                readable: permissions.first() == Some(&b'r'),
+                writable: permissions.get(1) == Some(&b'w'),
+                executable: permissions.get(2) == Some(&b'x'),
+                shared: permissions.get(3) == Some(&b's'),
+            })
+        })
+        .collect())
+}
+
+fn discover_arena_aliases(
+    before: &[RuntimeMap],
+    after: &[RuntimeMap],
+) -> io::Result<(RuntimeMap, RuntimeMap)> {
+    let expected_len = (ARENA_SLOTS * 4096) as u64;
+    let new_maps = after
+        .iter()
+        .filter(|mapping| {
+            !before
+                .iter()
+                .any(|old| old.start == mapping.start && old.end == mapping.end)
+                && mapping.end.checked_sub(mapping.start) == Some(expected_len)
+                && mapping.offset == 0
+                && mapping.inode != 0
+                && mapping.shared
+                && mapping.readable
+        })
+        .collect::<Vec<_>>();
+    let pairs = new_maps
+        .iter()
+        .filter_map(|writable| {
+            (writable.writable && !writable.executable).then_some(())?;
+            let executable = new_maps.iter().find(|executable| {
+                !executable.writable
+                    && executable.executable
+                    && executable.device == writable.device
+                    && executable.inode == writable.inode
+            })?;
+            Some(((*writable).clone(), (**executable).clone()))
+        })
+        .collect::<Vec<_>>();
+    match pairs.as_slice() {
+        [(writable, executable)] => Ok((writable.clone(), executable.clone())),
+        _ => Err(io::Error::other(format!(
+            "LiteInst arena allocation produced {} identity-matched alias pairs",
+            pairs.len()
+        ))),
+    }
+}
+
 fn prepare_instrumentation() -> io::Result<()> {
     prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
@@ -551,12 +670,19 @@ fn prepare_instrumentation() -> io::Result<()> {
         if mapping_start >= mapping_end {
             continue;
         }
+        let before = read_runtime_maps()?;
         let Ok(arena) = TrampolineArena::allocate_near(mapping_start, ARENA_SLOTS) else {
             continue;
         };
+        let after = read_runtime_maps()?;
+        let (writable, executable) = discover_arena_aliases(&before, &after)?;
         arenas.push(RuntimeArena {
             mapping_start,
             mapping_end,
+            writable_start: writable.start,
+            writable_end: writable.end,
+            executable_start: executable.start,
+            executable_end: executable.end,
             arena,
         });
     }
@@ -859,7 +985,7 @@ unsafe fn install_site_hook(
     address: u64,
     slot: &'static SiteSlot,
     callback: liteinst2::trampoline::HookCallback,
-) -> io::Result<u64> {
+) -> io::Result<HostInstallResult> {
     let _install_guard = lock_installation()?;
     let _allocation_scope = crate::patch_alloc::enter();
     let arena = arena_for(address)
@@ -926,15 +1052,38 @@ unsafe fn install_site_hook(
     }
 
     let relocated_tail = installed.trampoline().relocated_tail_address();
+    let trampoline_start = installed.trampoline().address();
+    let trampoline_len = installed.trampoline().allocation_len() as u64;
+    let result = HostInstallResult {
+        version: HOST_INSTALL_RESULT_VERSION,
+        site_start: address,
+        site_len: liteinst2::patcher::WORD_PATCH_BYTES as u64,
+        relocated_tail,
+        trampoline_start,
+        trampoline_len,
+        arena_writable_start: arena.writable_start,
+        arena_writable_len: arena.writable_end - arena.writable_start,
+        arena_executable_start: arena.executable_start,
+        arena_executable_len: arena.executable_end - arena.executable_start,
+        complete: 1,
+    };
     let installed = Box::into_raw(Box::new(installed));
     slot.hook.store(installed, Ordering::Release);
     slot.state.store(SITE_ACTIVE, Ordering::Release);
-    Ok(relocated_tail)
+    Ok(result)
 }
 
 // TODO-HUMAN-REVIEW(PR-270): Review stopped-tracee patch helper ABI.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(address: u64) -> i64 {
+    // SAFETY: the ptrace helper is serialized and the controller reads this
+    // fixed-size record only after the helper-return trap.
+    unsafe {
+        core::ptr::write_volatile(
+            core::ptr::addr_of_mut!(HOST_INSTALL_RESULT),
+            HostInstallResult::default(),
+        );
+    }
     if let Some(site) = find_site(address) {
         // The controller calls this helper only after observing the original
         // syscall bytes at the address. If a prior generation is still marked
@@ -955,10 +1104,10 @@ pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(address: u64) 
         return -i64::from(libc::ENOSPC);
     };
     site.trap_count.fetch_add(1, Ordering::Relaxed);
-    let mut relocated_tail = None;
+    let mut install_result = None;
     if claimed {
         match unsafe { install_site_hook(address, site, host_syscall_hook) } {
-            Ok(address) => relocated_tail = Some(address),
+            Ok(result) => install_result = Some(result),
             Err(_) => site.state.store(SITE_FALLBACK, Ordering::Release),
         }
     }
@@ -966,12 +1115,36 @@ pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(address: u64) 
         core::hint::spin_loop();
     }
     if site.state.load(Ordering::Acquire) == SITE_ACTIVE {
-        let address = relocated_tail.or_else(|| {
+        let result = install_result.or_else(|| {
             let hook = site.hook.load(Ordering::Acquire);
-            (!hook.is_null()).then(|| unsafe { (*hook).trampoline().relocated_tail_address() })
+            if hook.is_null() {
+                return None;
+            }
+            let hook = unsafe { &*hook };
+            let arena = arena_for(address)?;
+            Some(HostInstallResult {
+                version: HOST_INSTALL_RESULT_VERSION,
+                site_start: address,
+                site_len: liteinst2::patcher::WORD_PATCH_BYTES as u64,
+                relocated_tail: hook.trampoline().relocated_tail_address(),
+                trampoline_start: hook.trampoline().address(),
+                trampoline_len: hook.trampoline().allocation_len() as u64,
+                arena_writable_start: arena.writable_start,
+                arena_writable_len: arena.writable_end - arena.writable_start,
+                arena_executable_start: arena.executable_start,
+                arena_executable_len: arena.executable_end - arena.executable_start,
+                complete: 1,
+            })
         });
-        address
-            .and_then(|address| i64::try_from(address).ok())
+        if let Some(result) = result {
+            // SAFETY: see the reset above. Publishing `complete` is part of the
+            // same stopped-helper call and the host validates every field.
+            unsafe {
+                core::ptr::write_volatile(core::ptr::addr_of_mut!(HOST_INSTALL_RESULT), result);
+            }
+        }
+        result
+            .and_then(|result| i64::try_from(result.relocated_tail).ok())
             .unwrap_or(-i64::from(libc::EOVERFLOW))
     } else {
         -i64::from(libc::EOPNOTSUPP)

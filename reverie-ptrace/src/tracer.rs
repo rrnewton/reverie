@@ -76,6 +76,109 @@ pub struct Tracer<G> {
     stdin: Option<ChildStdin>,
     stdout: Option<ChildStdout>,
     stderr: Option<ChildStderr>,
+
+    // Present only for the single-process dynamic LiteInst host. Ordinary
+    // ptrace and e9patch lifecycles retain their existing teardown behavior.
+    liteinst_cleanup: Option<LiteinstTraceeCleanup>,
+}
+
+struct LiteinstTraceeCleanup {
+    pid: Pid,
+    armed: bool,
+}
+
+impl LiteinstTraceeCleanup {
+    fn new(pid: Pid) -> Self {
+        Self { pid, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn confirm_reaped(&mut self) -> std::io::Result<()> {
+        if !self.armed {
+            return Ok(());
+        }
+        if unsafe { libc::kill(self.pid.as_raw(), 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+        {
+            self.armed = false;
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "LiteInst root still exists after typed task cleanup",
+            ))
+        }
+    }
+}
+
+impl Drop for LiteinstTraceeCleanup {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Cancellation cannot await an orderly drain. The typed task path owns
+        // explicit error cleanup; Drop is a last-resort kill only.
+        unsafe {
+            libc::kill(self.pid.as_raw(), libc::SIGKILL);
+        }
+    }
+}
+
+pub(crate) fn terminate_and_reap_new_child(task: Running) -> Result<(), TraceError> {
+    let pid = task.pid();
+    unsafe {
+        libc::kill(pid.as_raw(), libc::SIGKILL);
+    }
+    match task.wait() {
+        Ok(safeptrace::Wait::Stopped(stopped, _)) => {
+            let _ = stopped.resume(Signal::SIGKILL)?;
+        }
+        Ok(safeptrace::Wait::Exited(_, _)) => return Ok(()),
+        Err(TraceError::Died(_)) => {}
+        Err(TraceError::Errno(Errno::ECHILD)) => {
+            if unsafe { libc::kill(pid.as_raw(), 0) } == -1 && Errno::last() == Errno::ESRCH {
+                return Ok(());
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    for _ in 0..2_000 {
+        let mut status = 0;
+        let waited =
+            unsafe { libc::waitpid(pid.as_raw(), &mut status, libc::__WALL | libc::WNOHANG) };
+        if waited == 0 {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            continue;
+        }
+        if waited == -1 {
+            let errno = Errno::last();
+            match errno {
+                Errno::EINTR => continue,
+                Errno::ECHILD
+                    if unsafe { libc::kill(pid.as_raw(), 0) } == -1
+                        && Errno::last() == Errno::ESRCH =>
+                {
+                    return Ok(());
+                }
+                Errno::ECHILD => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    continue;
+                }
+                _ => return Err(errno.into()),
+            }
+        }
+        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+            return Ok(());
+        }
+        if libc::WIFSTOPPED(status) {
+            let stopped = Stopped::new_unchecked(pid);
+            let _ = stopped.resume(Signal::SIGKILL)?;
+        }
+    }
+    Err(Errno::ETIMEDOUT.into())
 }
 
 impl<G: Default> Tracer<G> {
@@ -128,7 +231,7 @@ impl<G: Default> Tracer<G> {
 
     /// Waits for the tracee to exit and returns its exit status and global
     /// state.
-    pub async fn wait(self) -> Result<(ExitStatus, G), Error> {
+    pub async fn wait(mut self) -> Result<(ExitStatus, G), Error> {
         // Note: The usage of LocalSet is *very* important here. Once polled,
         // the `tracer` future drives all tracees to completion. The `fork` for
         // the root tracee and all subsequent ptrace operations *MUST* be done
@@ -138,7 +241,25 @@ impl<G: Default> Tracer<G> {
         // `ESRCH` errors and they will be (incorrectly) interpretted to mean
         // that the tracee has died unexpectedly.
         let local_set = tokio::task::LocalSet::new();
-        let exit_status = local_set.run_until(self.tracer).await?;
+        let exit_status = match local_set.run_until(self.tracer).await {
+            Ok(status) => {
+                if let Some(cleanup) = self.liteinst_cleanup.as_mut() {
+                    cleanup.disarm();
+                }
+                status
+            }
+            Err(error) => {
+                if let Some(cleanup) = self.liteinst_cleanup.as_mut()
+                    && let Err(cleanup_error) = cleanup.confirm_reaped()
+                {
+                    return Err(anyhow::anyhow!(
+                        "LiteInst tracee cleanup failed after {error}: {cleanup_error}"
+                    )
+                    .into());
+                }
+                return Err(error);
+            }
+        };
 
         let g = Arc::try_unwrap(self.gref).unwrap_or_else(|_| {
             panic!("Reverie internal invariant broken. Arc::try_unwrap on global state failed.")
@@ -562,6 +683,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     pub async fn spawn(self) -> Result<Tracer<T::GlobalState>, Error> {
         let mut command = self.command;
         let config = self.config.unwrap_or_default();
+        let liteinst_fail_closed = self.liteinst_runtime.is_some();
 
         // Because this ptrace backend is CENTRALIZED, it can keep all the
         // tool's state here in a single address space.
@@ -598,6 +720,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         let mut child = command.spawn().context("Failed to spawn tracee")?;
         let guest_pid = child.id();
         let running_child = Running::new(guest_pid);
+        let mut liteinst_cleanup =
+            liteinst_fail_closed.then(|| LiteinstTraceeCleanup::new(guest_pid));
 
         // Configure the gdb server (if any).
         let gdbserver = match self.gdbserver {
@@ -632,7 +756,18 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         .await
         {
             Ok(tracer) => tracer,
-            Err(err) => return Err(initialization_error(guest_pid, err).await),
+            Err(err) => {
+                let error = initialization_error(guest_pid, err).await;
+                if let Some(cleanup) = liteinst_cleanup.as_mut()
+                    && let Err(cleanup_error) = cleanup.confirm_reaped()
+                {
+                    return Err(anyhow::anyhow!(
+                        "LiteInst tracee cleanup failed after {error}: {cleanup_error}"
+                    )
+                    .into());
+                }
+                return Err(error);
+            }
         };
 
         let stdin = child.stdin.take();
@@ -653,6 +788,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             stdin,
             stdout,
             stderr,
+            liteinst_cleanup,
         })
     }
 }
@@ -776,6 +912,7 @@ where
                 stdin: None,
                 stdout: Some(stdout),
                 stderr: Some(stderr),
+                liteinst_cleanup: None,
             })
         }
     }

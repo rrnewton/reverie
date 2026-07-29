@@ -90,6 +90,26 @@ use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
 use crate::vdso;
 
+fn validate_liteinst_user_regs_update(
+    current: &libc::user_regs_struct,
+    requested: &libc::user_regs_struct,
+) -> Result<(), Errno> {
+    if current.rsp == requested.rsp {
+        Ok(())
+    } else {
+        Err(Errno::ENOTSUPP)
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn liteinst_helper_entry_rflags(flags: u64) -> u64 {
+    const RFLAGS_TF: u64 = 1 << 8;
+    const RFLAGS_DF: u64 = 1 << 10;
+    const RFLAGS_RF: u64 = 1 << 16;
+    const RFLAGS_AC: u64 = 1 << 18;
+    flags & !(RFLAGS_TF | RFLAGS_DF | RFLAGS_RF | RFLAGS_AC)
+}
+
 #[derive(Debug)]
 struct Suspended {
     waker: Option<mpsc::Sender<Pid>>,
@@ -186,6 +206,63 @@ struct LiteinstHandshakeFrame {
     helper_return_rip: u64,
     syscall_trap_rip: u64,
     syscall_trap_return_rip: u64,
+    install_result: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[repr(C)]
+struct LiteinstInstallResult {
+    version: u64,
+    site_start: u64,
+    site_len: u64,
+    relocated_tail: u64,
+    trampoline_start: u64,
+    trampoline_len: u64,
+    arena_writable_start: u64,
+    arena_writable_len: u64,
+    arena_executable_start: u64,
+    arena_executable_len: u64,
+    complete: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct GuestRange {
+    start: u64,
+    end: u64,
+}
+
+impl GuestRange {
+    fn new(start: u64, len: u64) -> Option<Self> {
+        let end = start.checked_add(len)?;
+        (start < end).then_some(Self { start, end })
+    }
+
+    fn overlaps(self, other: Self) -> bool {
+        self.start < other.end && other.start < self.end
+    }
+
+    fn contains(self, other: Self) -> bool {
+        self.start <= other.start && other.end <= self.end
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ActiveHookFootprint {
+    site: GuestRange,
+    trampoline: GuestRange,
+    arena_writable: GuestRange,
+    arena_executable: GuestRange,
+}
+
+impl ActiveHookFootprint {
+    fn protected_ranges(&self) -> [(GuestRange, i32); 4] {
+        [
+            (self.site, libc::PROT_READ | libc::PROT_EXEC),
+            (self.trampoline, libc::PROT_READ | libc::PROT_EXEC),
+            (self.arena_writable, libc::PROT_READ | libc::PROT_WRITE),
+            (self.arena_executable, libc::PROT_READ | libc::PROT_EXEC),
+        ]
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -202,7 +279,7 @@ struct LiteinstRuntimeState {
     generation: u64,
     ready_generation: Option<u64>,
     attempted_sites: HashSet<u64>,
-    patched_sites: HashSet<u64>,
+    active_hooks: HashMap<u64, ActiveHookFootprint>,
 }
 
 impl Default for LiteinstRuntimeState {
@@ -213,38 +290,59 @@ impl Default for LiteinstRuntimeState {
             generation: 0,
             ready_generation: None,
             attempted_sites: HashSet::new(),
-            patched_sites: HashSet::new(),
+            active_hooks: HashMap::new(),
         }
     }
 }
 
 impl LiteinstRuntimeState {
-    fn patched_range_overlaps(&self, start: u64, len: u64) -> bool {
-        if len == 0 {
-            return false;
-        }
-        let Some(end) = start.checked_add(len) else {
-            return !self.patched_sites.is_empty();
+    fn mapping_mutates_active_hook(&self, nr: Sysno, args: SyscallArgs) -> bool {
+        let operation_range = match nr {
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            Sysno::mmap if args.arg3 as i32 & libc::MAP_FIXED != 0 => {
+                GuestRange::new(args.arg0 as u64, args.arg1 as u64)
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            Sysno::munmap | Sysno::mprotect | Sysno::mremap => {
+                GuestRange::new(args.arg0 as u64, args.arg1 as u64)
+            }
+            _ => return false,
         };
-        self.patched_sites
-            .iter()
-            .any(|address| *address >= start && *address < end)
+        let Some(operation_range) = operation_range else {
+            return args.arg1 != 0 && !self.active_hooks.is_empty();
+        };
+        let requested_protection = (nr == Sysno::mprotect).then_some(args.arg2 as i32);
+        if self.active_hooks.values().any(|hook| {
+            hook.protected_ranges()
+                .into_iter()
+                .any(|(range, protection)| {
+                    range.overlaps(operation_range) && requested_protection != Some(protection)
+                })
+        }) {
+            return true;
+        }
+        if nr == Sysno::mremap && args.arg3 as i32 & libc::MREMAP_FIXED != 0 {
+            let Some(destination) = GuestRange::new(args.arg4 as u64, args.arg2 as u64) else {
+                return !self.active_hooks.is_empty();
+            };
+            return self.active_hooks.values().any(|hook| {
+                hook.protected_ranges()
+                    .into_iter()
+                    .any(|(range, _)| range.overlaps(destination))
+            });
+        }
+        false
     }
 
-    fn invalidate_range(&mut self, start: u64, len: u64) {
+    fn invalidate_attempted_range(&mut self, start: u64, len: u64) {
         if len == 0 {
             return;
         }
         let Some(end) = start.checked_add(len) else {
-            // A wrapped VMA range is invalid input, but clearing all provenance
-            // is safer than retaining any address that may have been replaced.
             self.attempted_sites.clear();
-            self.patched_sites.clear();
             return;
         };
         self.attempted_sites
-            .retain(|address| !(*address >= start && *address < end));
-        self.patched_sites
             .retain(|address| !(*address >= start && *address < end));
     }
 }
@@ -259,15 +357,23 @@ enum LiteinstTrap {
 struct GuestMap {
     start: u64,
     end: u64,
+    offset: u64,
+    device: String,
+    inode: u64,
     writable: bool,
     readable: bool,
     executable: bool,
+    shared: bool,
     path: Option<PathBuf>,
 }
 
 impl GuestMap {
     fn contains(&self, address: u64) -> bool {
         self.start <= address && address < self.end
+    }
+
+    fn contains_range(&self, range: GuestRange) -> bool {
+        self.start <= range.start && range.end <= self.end
     }
 }
 
@@ -286,17 +392,21 @@ fn guest_maps(pid: Pid) -> Option<Vec<GuestMap>> {
         else {
             continue;
         };
-        let _offset = fields.next();
-        let _device = fields.next();
-        let _inode = fields.next();
+        let offset = u64::from_str_radix(fields.next()?, 16).ok()?;
+        let device = fields.next()?.to_owned();
+        let inode = fields.next()?.parse().ok()?;
         let path = fields.next().map(PathBuf::from);
         let permissions = perms.as_bytes();
         parsed.push(GuestMap {
             start,
             end,
+            offset,
+            device,
+            inode,
             writable: permissions.get(1) == Some(&b'w'),
             readable: permissions.first() == Some(&b'r'),
             executable: permissions.get(2) == Some(&b'x'),
+            shared: permissions.get(3) == Some(&b's'),
             path,
         });
     }
@@ -381,6 +491,9 @@ pub struct TracedTask<L: Tool> {
 
     /// Per-process dynamic LiteInst handshake and patched-site state.
     liteinst_runtime: Arc<StdMutex<LiteinstRuntimeState>>,
+
+    /// Original fail-closed error retained while the exit waiter reaps root.
+    liteinst_failure: Option<String>,
 
     /// pending signal to deliver. This can happen when
     /// syscall got interrupted (by signal)
@@ -547,6 +660,7 @@ impl<L: Tool> TracedTask<L> {
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
             liteinst_runtime: Arc::new(StdMutex::new(LiteinstRuntimeState::default())),
+            liteinst_failure: None,
             next_state,
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(tid, tid),
@@ -605,6 +719,7 @@ impl<L: Tool> TracedTask<L> {
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
             liteinst_runtime: self.liteinst_runtime.clone(),
+            liteinst_failure: None,
             next_state,
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(self.pid, child),
@@ -662,6 +777,7 @@ impl<L: Tool> TracedTask<L> {
             liteinst_runtime: Arc::new(StdMutex::new(
                 self.liteinst_runtime.lock().unwrap().clone(),
             )),
+            liteinst_failure: None,
             next_state,
             next_state_rx: Some(next_state_rx),
             timer: Timer::new(child, child),
@@ -745,6 +861,9 @@ impl<L: Tool> TracedTask<L> {
             let mut frame = self.read_injected_syscall_frame(task, address)?;
             let current = self.read_guest_registers(task)?;
             InjectedSyscallFrame::validate_user_regs_update(&current, regs)?;
+            if self.global_state.liteinst_runtime.is_some() {
+                validate_liteinst_user_regs_update(&current, regs)?;
+            }
             frame.copy_from_user_regs(regs);
             self.write_injected_syscall_frame(task, address, &frame)
         } else {
@@ -1374,7 +1493,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let config = self.global_state.liteinst_runtime.as_ref()?;
         let address = Addr::from_raw(frame_address)?;
         let frame: LiteinstHandshakeFrame = task.read_value(address).ok()?;
-        if frame.version != 2
+        if frame.version != 3
             || frame.helper_stack_top < 8
             || frame.helper_stack_top & 0xf != 0
             || trap_rip
@@ -1411,10 +1530,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         let frame_readable = maps
             .iter()
             .any(|mapping| mapping.readable && mapping.contains(frame_address as u64));
-        let helper_stack_writable = maps.iter().any(|mapping| {
+        let helper_stack_map = maps.iter().find(|mapping| {
             mapping.writable && mapping.contains(frame.helper_stack_top.saturating_sub(8))
         });
-        (frame_readable && helper_stack_writable).then_some(frame)
+        let install_result = GuestRange::new(
+            frame.install_result,
+            core::mem::size_of::<LiteinstInstallResult>() as u64,
+        )?;
+        let install_result_writable = maps.iter().any(|mapping| {
+            Some((mapping.start, mapping.end))
+                == helper_stack_map.map(|stack| (stack.start, stack.end))
+                && mapping.readable
+                && mapping.writable
+                && mapping.contains_range(install_result)
+        });
+        (frame_readable && helper_stack_map.is_some() && install_result_writable).then_some(frame)
     }
 
     fn classify_liteinst_trap(
@@ -1485,7 +1615,9 @@ impl<L: Tool + 'static> TracedTask<L> {
         let state = self.liteinst_runtime.lock().unwrap();
         if state.phase != LiteinstRuntimePhase::Ready
             || state.ready_generation != Some(state.generation)
-            || !state.patched_sites.contains(&frame.instruction_pointer())
+            || !state
+                .active_hooks
+                .contains_key(&frame.instruction_pointer())
         {
             return Some(LiteinstTrap::Invalid);
         }
@@ -1648,7 +1780,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             state.frame = None;
             state.ready_generation = None;
             state.attempted_sites.clear();
-            state.patched_sites.clear();
+            state.active_hooks.clear();
         }
         // execve/execveat are tail injected, however, after exec, the new
         // program start as a clean slate, hence it is actually ok to do either
@@ -1763,13 +1895,85 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    fn validate_liteinst_install_result(
+        &self,
+        task: &Stopped,
+        frame: LiteinstHandshakeFrame,
+        site: u64,
+    ) -> Option<(u64, ActiveHookFootprint)> {
+        let address = Addr::from_raw(frame.install_result as usize)?;
+        let result: LiteinstInstallResult = task.read_value(address).ok()?;
+        if result.version != 1
+            || result.complete != 1
+            || result.site_start != site
+            || result.site_len != 8
+        {
+            return None;
+        }
+        let site = GuestRange::new(result.site_start, result.site_len)?;
+        let trampoline = GuestRange::new(result.trampoline_start, result.trampoline_len)?;
+        let arena_writable =
+            GuestRange::new(result.arena_writable_start, result.arena_writable_len)?;
+        let arena_executable =
+            GuestRange::new(result.arena_executable_start, result.arena_executable_len)?;
+        if !arena_executable.contains(trampoline)
+            || !trampoline.contains(GuestRange::new(result.relocated_tail, 1)?)
+        {
+            return None;
+        }
+        let maps = guest_maps(task.pid())?;
+        let site_map = maps.iter().find(|mapping| {
+            mapping.readable
+                && !mapping.writable
+                && mapping.executable
+                && mapping.contains_range(site)
+        })?;
+        let writable_map = maps.iter().find(|mapping| {
+            mapping.start == arena_writable.start
+                && mapping.end == arena_writable.end
+                && mapping.offset == 0
+                && mapping.inode != 0
+                && mapping.shared
+                && mapping.readable
+                && mapping.writable
+                && !mapping.executable
+        })?;
+        let executable_map = maps.iter().find(|mapping| {
+            mapping.start == arena_executable.start
+                && mapping.end == arena_executable.end
+                && mapping.offset == 0
+                && mapping.inode != 0
+                && mapping.shared
+                && mapping.readable
+                && !mapping.writable
+                && mapping.executable
+        })?;
+        if writable_map.device != executable_map.device
+            || writable_map.inode != executable_map.inode
+            || writable_map.end - writable_map.start != executable_map.end - executable_map.start
+            || site_map.start == writable_map.start
+            || site_map.start == executable_map.start
+        {
+            return None;
+        }
+        Some((
+            result.relocated_tail,
+            ActiveHookFootprint {
+                site,
+                trampoline,
+                arena_writable,
+                arena_executable,
+            },
+        ))
+    }
+
     #[cfg(target_arch = "x86_64")]
     async fn call_liteinst_install_helper(
         &mut self,
         task: Stopped,
         frame: LiteinstHandshakeFrame,
         site: u64,
-    ) -> Result<(Stopped, Option<u64>), Error> {
+    ) -> Result<(Stopped, Option<(u64, ActiveHookFootprint)>), Error> {
         let helper_return_marker = self
             .global_state
             .liteinst_runtime
@@ -1790,6 +1994,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         *helper_regs.stack_ptr_mut() = frame.helper_stack_top - 8;
         helper_regs.rdi = site;
         *helper_regs.orig_syscall_mut() = -1_i64 as u64;
+        helper_regs.eflags = liteinst_helper_entry_rflags(saved_regs.eflags);
         if let Err(error) = task.setregs(&helper_regs) {
             let original = Error::Internal(error);
             let rollback = Self::restore_liteinst_helper_state(
@@ -1802,13 +2007,71 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(self.liteinst_helper_failure(original, rollback));
         }
 
-        let mut wait = task.resume(None)?.next_state().await?;
+        let running = match task.resume(None) {
+            Ok(running) => running,
+            Err(error) => {
+                let mut stopped = Stopped::new_unchecked(self.tid());
+                let rollback = Self::restore_liteinst_helper_state(
+                    &mut stopped,
+                    &saved_regs,
+                    &saved_xstate,
+                    stack_address,
+                    saved_stack,
+                );
+                return Err(self.liteinst_helper_failure(Error::Internal(error), rollback));
+            }
+        };
+        let mut wait = match running.next_state().await {
+            Ok(wait) => wait,
+            Err(error) => {
+                let mut stopped = Stopped::new_unchecked(self.tid());
+                let rollback = Self::restore_liteinst_helper_state(
+                    &mut stopped,
+                    &saved_regs,
+                    &saved_xstate,
+                    stack_address,
+                    saved_stack,
+                );
+                return Err(self.liteinst_helper_failure(Error::Internal(error), rollback));
+            }
+        };
         loop {
             match wait {
                 Wait::Stopped(stopped, Event::Seccomp) => {
                     // Controller-owned helper syscalls execute natively and are
                     // never delivered to the user Tool.
-                    wait = stopped.resume(None)?.next_state().await?;
+                    let running = match stopped.resume(None) {
+                        Ok(running) => running,
+                        Err(error) => {
+                            let mut stopped = Stopped::new_unchecked(self.tid());
+                            let rollback = Self::restore_liteinst_helper_state(
+                                &mut stopped,
+                                &saved_regs,
+                                &saved_xstate,
+                                stack_address,
+                                saved_stack,
+                            );
+                            return Err(
+                                self.liteinst_helper_failure(Error::Internal(error), rollback)
+                            );
+                        }
+                    };
+                    wait = match running.next_state().await {
+                        Ok(wait) => wait,
+                        Err(error) => {
+                            let mut stopped = Stopped::new_unchecked(self.tid());
+                            let rollback = Self::restore_liteinst_helper_state(
+                                &mut stopped,
+                                &saved_regs,
+                                &saved_xstate,
+                                stack_address,
+                                saved_stack,
+                            );
+                            return Err(
+                                self.liteinst_helper_failure(Error::Internal(error), rollback)
+                            );
+                        }
+                    };
                 }
                 Wait::Stopped(stopped, Event::Signal(Signal::SIGTRAP)) => {
                     let mut stopped = stopped;
@@ -1842,7 +2105,28 @@ impl<L: Tool + 'static> TracedTask<L> {
                         return Err(self.liteinst_helper_failure(original, rollback));
                     }
                     let result = regs.rax as i64;
-                    let relocated_tail = u64::try_from(result).ok();
+                    let install = if u64::try_from(result).is_ok() {
+                        match self.validate_liteinst_install_result(&stopped, frame, site) {
+                            Some(install) => Some(install),
+                            None => {
+                                let original = Error::runtime(
+                                    self.tid(),
+                                    "validate LiteInst patch-helper result",
+                                    "successful helper returned invalid active-hook metadata",
+                                );
+                                let rollback = Self::restore_liteinst_helper_state(
+                                    &mut stopped,
+                                    &saved_regs,
+                                    &saved_xstate,
+                                    stack_address,
+                                    saved_stack,
+                                );
+                                return Err(self.liteinst_helper_failure(original, rollback));
+                            }
+                        }
+                    } else {
+                        None
+                    };
                     let rollback = Self::restore_liteinst_helper_state(
                         &mut stopped,
                         &saved_regs,
@@ -1851,7 +2135,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         saved_stack,
                     );
                     if rollback.is_empty() {
-                        return Ok((stopped, relocated_tail));
+                        return Ok((stopped, install));
                     }
                     let original = Error::runtime(
                         self.tid(),
@@ -1887,7 +2171,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         _task: Stopped,
         _frame: LiteinstHandshakeFrame,
         _site: u64,
-    ) -> Result<(Stopped, Option<u64>), Error> {
+    ) -> Result<(Stopped, Option<(u64, ActiveHookFootprint)>), Error> {
         Err(Error::runtime(
             self.tid(),
             "run LiteInst patch helper",
@@ -1926,13 +2210,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         // calling arbitrary tracee code. The original event is still serviced
         // exactly once by the host Tool below.
         let task = self.skip_seccomp_syscall(task).await?;
-        let (task, relocated_tail) = self.call_liteinst_install_helper(task, frame, site).await?;
-        if relocated_tail.is_some() {
+        let (task, install) = self.call_liteinst_install_helper(task, frame, site).await?;
+        let relocated_tail = install.as_ref().map(|(address, _)| *address);
+        if let Some((_, footprint)) = install {
             self.liteinst_runtime
                 .lock()
                 .unwrap()
-                .patched_sites
-                .insert(site);
+                .active_hooks
+                .insert(site, footprint);
         }
         Ok((task, true, relocated_tail))
     }
@@ -1940,6 +2225,7 @@ impl<L: Tool + 'static> TracedTask<L> {
     fn is_liteinst_mapping_syscall(nr: Sysno) -> bool {
         matches!(
             nr,
+            // AUTONOMOUS-BOT-IMPLEMENTED
             Sysno::mmap | Sysno::munmap | Sysno::mremap | Sysno::mprotect
         )
     }
@@ -1949,12 +2235,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         nr: Sysno,
         args: SyscallArgs,
     ) -> Result<(), Errno> {
-        if nr == Sysno::mremap
-            && self
-                .liteinst_runtime
-                .lock()
-                .unwrap()
-                .patched_range_overlaps(args.arg0 as u64, args.arg1 as u64)
+        if self
+            .liteinst_runtime
+            .lock()
+            .unwrap()
+            .mapping_mutates_active_hook(nr, args)
         {
             Err(Errno::ENOTSUPP)
         } else {
@@ -1976,18 +2261,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         };
         let mut state = self.liteinst_runtime.lock().unwrap();
         match nr {
+            // AUTONOMOUS-BOT-IMPLEMENTED
             Sysno::mmap => {
                 if let Ok(start) = u64::try_from(result) {
-                    state.invalidate_range(start, args.arg1 as u64);
+                    state.invalidate_attempted_range(start, args.arg1 as u64);
                 }
             }
+            // AUTONOMOUS-BOT-IMPLEMENTED
             Sysno::munmap | Sysno::mprotect => {
-                state.invalidate_range(args.arg0 as u64, args.arg1 as u64);
+                state.invalidate_attempted_range(args.arg0 as u64, args.arg1 as u64);
             }
+            // AUTONOMOUS-BOT-IMPLEMENTED
             Sysno::mremap => {
-                state.invalidate_range(args.arg0 as u64, args.arg1 as u64);
+                state.invalidate_attempted_range(args.arg0 as u64, args.arg1 as u64);
                 if let Ok(start) = u64::try_from(result) {
-                    state.invalidate_range(start, args.arg2 as u64);
+                    state.invalidate_attempted_range(start, args.arg2 as u64);
                 }
             }
             _ => {}
@@ -2004,8 +2292,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         if self.validate_liteinst_mapping_execution(nr, args).is_err() {
             return Err(Error::runtime(
                 tid,
-                "validate LiteInst mapping move",
-                "mremap overlaps an installed LiteInst site; live-hook relocation is unsupported",
+                "validate LiteInst mapping mutation",
+                format!("{nr} overlaps an active LiteInst hook footprint"),
             ));
         }
         let wait = task
@@ -2147,11 +2435,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             // This first hybrid slice intentionally has one tracee and one
             // thread: its patch-helper stack and bootstrap phase are
             // process-global. Both sides of a ptrace child event are stopped,
-            // so kill the unregistered child before returning the fail-closed
-            // error. Tracer teardown owns deterministic cleanup of the already
-            // registered parent without racing its exit notifier.
-            unsafe {
-                libc::kill(child.pid().as_raw(), libc::SIGKILL);
+            // so reap the unregistered child before returning the fail-closed
+            // error. The typed root run loop then drives its own SIGKILL while
+            // the existing exit waiter owns the final reap.
+            let child_pid = child.pid();
+            if let Err(error) = crate::tracer::terminate_and_reap_new_child(child) {
+                tracing::error!(
+                    child = %child_pid,
+                    %error,
+                    "failed to terminate and reap unsupported LiteInst child"
+                );
+                return Err(error);
             }
             return Err(Errno::ENOTSUPP.into());
         }
@@ -2490,11 +2784,62 @@ impl<L: Tool + 'static> TracedTask<L> {
         match self.run_loop_internal(task).await {
             Ok(exit_status) => Ok(exit_status),
             Err(err) => {
+                if self.global_state.liteinst_runtime.is_some() {
+                    let original = err.to_string();
+                    self.liteinst_failure = Some(original.clone());
+                    if let Err(cleanup) = self.terminate_failed_liteinst_root().await {
+                        let combined =
+                            format!("{original}; LiteInst root cleanup also failed: {cleanup}");
+                        self.liteinst_failure = Some(combined.clone());
+                        return Err(anyhow::anyhow!(combined).into());
+                    }
+                    debug_assert!(
+                        unsafe { libc::kill(self.tid().as_raw(), 0) } == -1
+                            && Errno::last() == Errno::ESRCH,
+                        "LiteInst cleanup must complete before error propagation"
+                    );
+                }
                 // Note: Calling handle_internal_error cannot happen in the
                 // `select!()` of the `run` function because then the exit
                 // events that get generated in here cannot be caught by the
                 // `select!()`.
                 handle_internal_error(err).await
+            }
+        }
+    }
+
+    async fn terminate_failed_liteinst_root(&self) -> Result<(), TraceError> {
+        let pid = self.tid();
+        unsafe {
+            libc::kill(pid.as_raw(), libc::SIGKILL);
+        }
+        let mut running = match Stopped::new_unchecked(pid).resume(Signal::SIGKILL) {
+            Ok(running) => running,
+            Err(TraceError::Died(zombie)) => {
+                zombie.reap().await;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        loop {
+            match running.next_state().await {
+                Ok(Wait::Stopped(stopped, _)) => {
+                    running = match stopped.resume(Signal::SIGKILL) {
+                        Ok(running) => running,
+                        Err(TraceError::Died(zombie)) => {
+                            zombie.reap().await;
+                            return Ok(());
+                        }
+                        Err(error) => return Err(error),
+                    };
+                }
+                Ok(Wait::Exited(_, _)) => return Ok(()),
+                Err(TraceError::Died(zombie)) => {
+                    zombie.reap().await;
+                    return Ok(());
+                }
+                Err(TraceError::Errno(Errno::ECHILD)) => return Ok(()),
+                Err(error) => return Err(error),
             }
         }
     }
@@ -2584,18 +2929,23 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Drive a single guest thread to completion. Returns the final exit code
     /// when that guest thread exits.
     pub async fn run(mut self, child: Stopped) -> Result<ExitStatus, reverie::Error> {
-        let exit_status = {
+        let outcome = {
             let exit_event = child.exit_event().fuse();
             let run_loop = self.run_loop(child).fuse();
             futures::pin_mut!(exit_event, run_loop);
 
             futures::select_biased! {
                 task = exit_event => match Self::handle_exit_event(task).await {
-                    Ok(exit_status) => exit_status,
-                    Err(err) => handle_internal_error(err.into()).await?,
+                    Ok(exit_status) => Ok(exit_status),
+                    Err(err) => handle_internal_error(err.into()).await,
                 },
-                exit_status = run_loop => exit_status?,
+                exit_status = run_loop => exit_status,
             }
+        };
+        let exit_status = match (outcome, self.liteinst_failure.take()) {
+            (Ok(_), Some(original)) => return Err(anyhow::anyhow!(original).into()),
+            (Ok(exit_status), None) => exit_status,
+            (Err(error), _) => return Err(error),
         };
 
         log_guest_exit(self.tid(), self.pid(), exit_status);
@@ -3521,6 +3871,20 @@ impl<'a, G: GlobalTool> GlobalRPC<G> for WrappedFrom<'a, G> {
 mod tests {
     use super::*;
 
+    fn active_state() -> LiteinstRuntimeState {
+        let mut state = LiteinstRuntimeState::default();
+        state.active_hooks.insert(
+            0x401005,
+            ActiveHookFootprint {
+                site: GuestRange::new(0x401005, 8).unwrap(),
+                trampoline: GuestRange::new(0x7000_1000, 0x1000).unwrap(),
+                arena_writable: GuestRange::new(0x7100_0000, 0x80_000).unwrap(),
+                arena_executable: GuestRange::new(0x7000_0000, 0x80_000).unwrap(),
+            },
+        );
+        state
+    }
+
     #[test]
     fn cancellable_returns_a_completed_result() {
         let cancel_handler = Arc::new(AtomicBool::new(false));
@@ -3545,5 +3909,78 @@ mod tests {
             None
         );
         assert!(!cancel_handler.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn active_hook_footprint_rejects_destructive_mapping_overlap() {
+        let state = active_state();
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mprotect,
+            SyscallArgs::new(0x401000, 0x1000, libc::PROT_NONE as usize, 0, 0, 0),
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mremap,
+            SyscallArgs::new(0x7000_1000, 0x1000, 0x2000, 0, 0, 0),
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::munmap,
+            SyscallArgs::new(0x7100_0000, 0x1000, 0, 0, 0, 0),
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mmap,
+            SyscallArgs::new(
+                0x7000_0000,
+                0x1000,
+                libc::PROT_READ as usize,
+                (libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_FIXED) as usize,
+                usize::MAX,
+                0,
+            ),
+        ));
+    }
+
+    #[test]
+    fn active_hook_noop_protection_retains_provenance() {
+        let mut state = active_state();
+        assert!(!state.mapping_mutates_active_hook(
+            Sysno::mprotect,
+            SyscallArgs::new(
+                0x401000,
+                0x1000,
+                (libc::PROT_READ | libc::PROT_EXEC) as usize,
+                0,
+                0,
+                0,
+            ),
+        ));
+        state.invalidate_attempted_range(0x401000, 0x1000);
+        assert_eq!(state.active_hooks.len(), 1);
+    }
+
+    #[test]
+    fn liteinst_rejects_stack_pointer_updates_without_weakening_shared_frame() {
+        let current = libc::user_regs_struct {
+            rsp: 0x7fff_1000,
+            ..unsafe { core::mem::zeroed() }
+        };
+        let requested = libc::user_regs_struct {
+            rsp: current.rsp + 8,
+            ..current
+        };
+        assert_eq!(
+            validate_liteinst_user_regs_update(&current, &requested),
+            Err(Errno::ENOTSUPP)
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn liteinst_helper_clears_only_abi_sensitive_transient_flags() {
+        let transient = (1 << 8) | (1 << 10) | (1 << 16) | (1 << 18);
+        let preserved = (1 << 0) | (1 << 2) | (1 << 6) | (1 << 9) | (1 << 11);
+        assert_eq!(
+            liteinst_helper_entry_rflags(transient | preserved),
+            preserved
+        );
     }
 }

@@ -1,4 +1,5 @@
 use std::ffi::OsString;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::AtomicU64;
@@ -205,6 +206,23 @@ fn symbol_address(binary: &std::path::Path, symbol: &str) -> u64 {
         .unwrap_or_else(|| panic!("missing symbol {symbol}"))
 }
 
+fn processes_named(name: &str) -> Vec<u32> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir("/proc").unwrap() {
+        let Ok(entry) = entry else { continue };
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+            continue;
+        };
+        let Ok(comm) = fs::read_to_string(entry.path().join("comm")) else {
+            continue;
+        };
+        if comm.trim() == name {
+            found.push(pid);
+        }
+    }
+    found
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn host_lifecycle_observes_allocator_and_explicit_getrandom() {
     let (_directory, guest) = compile_fixture("allocator_getrandom.c");
@@ -311,16 +329,42 @@ async fn first_discovery_event_can_inject_more_than_once() {
 #[tokio::test(flavor = "current_thread")]
 async fn hybrid_fails_closed_when_the_guest_forks() {
     let (_directory, guest) = compile_fixture("hybrid_fork.c");
+    let marker = format!("li{:x}", std::process::id());
+    let pid_directory = tempfile::tempdir().unwrap();
+    let pid_file = pid_directory.path().join("root.pid");
+    let mut command = Command::new(guest);
+    command.arg(&marker).arg(&pid_file);
     let result = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
-        Command::new(guest),
+        command,
         (),
         preload_path(),
     )
     .await;
 
+    let error = result.expect_err("hybrid unexpectedly followed a child");
+    let root_pid: u32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
     assert!(
-        result.is_err(),
-        "hybrid unexpectedly followed a child: {result:?}"
+        !std::path::Path::new(&format!("/proc/{root_pid}")).exists(),
+        "failed LiteInst root remains stopped or unreaped: {error}"
+    );
+    let mut status = 0;
+    assert_eq!(
+        unsafe { libc::waitpid(root_pid as i32, &mut status, libc::WNOHANG) },
+        -1,
+        "failed LiteInst root still has a waitable state"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ECHILD),
+        "failed LiteInst root was not fully reaped"
+    );
+    assert!(
+        processes_named(&marker).is_empty(),
+        "failed LiteInst root/child remains stopped or as a zombie"
     );
 }
 
@@ -359,7 +403,44 @@ async fn moving_a_patched_mapping_rejects_stale_hot_provenance() {
     assert!(
         error
             .to_string()
-            .contains("mremap overlaps an installed LiteInst site"),
+            .contains("mremap overlaps an active LiteInst hook footprint"),
         "mapping was not rejected by the pre-mutation provenance check: {error}"
     );
+}
+
+async fn run_active_footprint_mode(
+    mode: &str,
+) -> Result<(reverie::process::Output, EventCounter), Error> {
+    let (_directory, guest) = compile_fixture("hybrid_active_footprint.c");
+    let mut command = Command::new(guest);
+    command.arg(mode);
+    LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+        command,
+        (),
+        preload_path(),
+    )
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn active_hook_noop_mprotect_preserves_the_hook() {
+    let (output, global) = run_active_footprint_mode("noop").await.unwrap();
+    assert_eq!(output.stdout, b"active no-op protection preserved\n");
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 3);
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn active_hook_mapping_footprints_reject_mprotect_before_mutation() {
+    for mode in ["site", "trampoline", "arena-rw"] {
+        let error = run_active_footprint_mode(mode)
+            .await
+            .expect_err("active footprint mutation unexpectedly completed");
+        assert!(
+            error
+                .to_string()
+                .contains("mprotect overlaps an active LiteInst hook footprint"),
+            "{mode} footprint was not rejected before mutation: {error}"
+        );
+    }
 }

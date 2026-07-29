@@ -15,6 +15,8 @@ pub use libc::user_regs_struct as Regs;
 /// This includes the legacy x87/SSE state plus every kernel-exposed XSAVE
 /// component enabled for the tracee. The bytes are intentionally opaque: a
 /// caller may save and restore them, but should not assume a fixed layout.
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-270): Review public opaque XSTATE save/restore storage.
 #[cfg(target_arch = "x86_64")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct XState(pub(crate) Vec<u8>);
