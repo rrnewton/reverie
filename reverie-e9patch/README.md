@@ -234,6 +234,8 @@ callbacks, and protects nested Tool syscalls plus the coordinator descriptor.
 `E9patchBackend::run_direct_with_preload` owns the coordinator and rewritten
 guest for this opt-in path and returns its exit status without capturing or
 overriding the command's stdio, matching LiteInst's explicit-preload launch.
+Caller-created stdout and stderr pipes are drained concurrently and discarded,
+so output beyond pipe capacity cannot deadlock a status-only launch.
 `run_direct_with_output_and_preload` remains available when the caller needs
 captured stdout and stderr. The legacy coordinator environment contract remains
 available for existing tool DSOs. New selectors use

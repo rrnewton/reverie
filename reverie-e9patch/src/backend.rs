@@ -402,7 +402,9 @@ impl E9patchBackend {
     ///
     /// This matches LiteInst's explicit-preload status launch: the command's
     /// stdio configuration is left unchanged and the result contains only the
-    /// guest's exit status plus the coordinator-owned global state.
+    /// guest's exit status plus the coordinator-owned global state. Any piped
+    /// stdout or stderr is drained concurrently and discarded so a noisy guest
+    /// cannot block on an unread caller pipe.
     pub async fn run_direct_with_preload<T>(
         command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
@@ -720,6 +722,41 @@ fn into_reverie_output(output: std::process::Output) -> Output {
     }
 }
 
+fn drain_pipe<R>(mut pipe: R) -> std::thread::JoinHandle<io::Result<u64>>
+where
+    R: Read + Send + 'static,
+{
+    std::thread::spawn(move || io::copy(&mut pipe, &mut io::sink()))
+}
+
+fn wait_without_output(mut child: std::process::Child) -> io::Result<std::process::ExitStatus> {
+    let drainers = [
+        child.stdout.take().map(drain_pipe),
+        child.stderr.take().map(drain_pipe),
+    ];
+    let status = child.wait();
+    if status.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    let mut drain_error = None;
+    for drainer in drainers.into_iter().flatten() {
+        let result = drainer
+            .join()
+            .map_err(|_| io::Error::other("e9patch stdio drainer panicked"))
+            .and_then(|result| result.map(|_| ()));
+        if let Err(error) = result {
+            drain_error.get_or_insert(error);
+        }
+    }
+    let status = status?;
+    if let Some(error) = drain_error {
+        return Err(error);
+    }
+    Ok(status)
+}
+
 async fn launch_direct<T>(
     mut command: Command,
     config: <T::GlobalState as GlobalTool>::Config,
@@ -824,7 +861,7 @@ where
         }
     };
 
-    let mut child = match child_command.spawn() {
+    let child = match child_command.spawn() {
         Ok(child) => child,
         Err(error) => {
             let _ = executable.close();
@@ -836,7 +873,7 @@ where
         if capture_output {
             child.wait_with_output().map(ChildWait::Output)
         } else {
-            child.wait().map(ChildWait::Status)
+            wait_without_output(child).map(ChildWait::Status)
         }
     });
     let wait = serve_rpc_until(server, async move {
@@ -967,6 +1004,46 @@ mod tests {
         assert!(child.stderr.is_none());
         let status = child.wait().unwrap();
         assert!(status.success());
+    }
+
+    #[test]
+    fn status_wait_drains_piped_output_without_deadlock() {
+        const CHILD_ENV: &str = "REVERIE_E9PATCH_STATUS_DRAIN_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let chunk = [b'x'; 16 * 1024];
+            for _ in 0..128 {
+                io::stdout().write_all(&chunk).unwrap();
+                io::stderr().write_all(&chunk).unwrap();
+            }
+            return;
+        }
+
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backend::tests::status_wait_drains_piped_output_without_deadlock",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            sender.send(wait_without_output(child)).unwrap();
+        });
+        let result = match receiver.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(result) => result,
+            Err(error) => {
+                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+                let _ = waiter.join();
+                panic!("status wait did not drain piped output before timeout: {error}");
+            }
+        };
+        waiter.join().unwrap();
+        assert!(result.unwrap().success());
     }
 
     #[test]
