@@ -238,7 +238,10 @@ contract remains available for existing tool DSOs. New selectors use
 and bounded opaque bytes in a sealed inherited memfd. A constructor consumes
 exactly one matching descriptor with `take_preload_bootstrap`, closes it before
 guest `main`, and calls `install_tool_from_bootstrap::<T>` without mutating the
-environment; multiple matching bootstraps fail closed and are all closed.
+environment. The selector must install the same concrete `T` as the
+coordinator; unknown selectors fail before connection. Multiple matching or
+malformed e9patch bootstraps fail closed and every matching descriptor is
+closed.
 
 `E9patchBackend::run` deliberately still drives generic tools through ptrace:
 the direct host does not yet cover process trees, exec rebootstrap, guest signal

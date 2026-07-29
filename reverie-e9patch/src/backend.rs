@@ -71,7 +71,9 @@ pub struct PreloadBootstrap {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-272): Review inherited bootstrap discovery and consumption.
 pub unsafe fn take_preload_bootstrap() -> io::Result<Option<PreloadBootstrap>> {
+    let mut matching_fds = Vec::new();
     let mut found = Vec::new();
+    let mut protocol_error = None;
     for entry in std::fs::read_dir("/proc/self/fd")? {
         let entry = entry?;
         let Some(fd) = entry
@@ -86,21 +88,22 @@ pub unsafe fn take_preload_bootstrap() -> io::Result<Option<PreloadBootstrap>> {
         }
         match read_preload_bootstrap(fd) {
             Ok(Some(bootstrap)) => {
-                found.push((unsafe { OwnedFd::from_raw_fd(fd) }, bootstrap));
+                matching_fds.push(unsafe { OwnedFd::from_raw_fd(fd) });
+                found.push(bootstrap);
             }
             Ok(None) => {}
             Err(error) => {
-                let _matching_fd = unsafe { OwnedFd::from_raw_fd(fd) };
-                return Err(error);
+                matching_fds.push(unsafe { OwnedFd::from_raw_fd(fd) });
+                protocol_error.get_or_insert(error);
             }
         }
     }
+    if let Some(error) = protocol_error {
+        return Err(error);
+    }
     match found.len() {
         0 => Ok(None),
-        1 => {
-            let (_fd, bootstrap) = found.pop().unwrap();
-            Ok(Some(bootstrap))
-        }
+        1 => Ok(found.pop()),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "multiple e9patch preload bootstraps",
@@ -116,6 +119,12 @@ fn read_preload_bootstrap(fd: libc::c_int) -> io::Result<Option<PreloadBootstrap
         return Ok(None);
     }
 
+    let mut magic = [0_u8; PRELOAD_BOOTSTRAP_MAGIC.len()];
+    let magic_read = unsafe { libc::pread(fd, magic.as_mut_ptr().cast(), magic.len(), 0) };
+    if magic_read != magic.len() as isize || magic != *PRELOAD_BOOTSTRAP_MAGIC {
+        return Ok(None);
+    }
+
     let mut stat = MaybeUninit::<libc::stat>::uninit();
     if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } == -1 {
         return Ok(None);
@@ -126,14 +135,20 @@ fn read_preload_bootstrap(fd: libc::c_int) -> io::Result<Option<PreloadBootstrap
         {
             size
         }
-        _ => return Ok(None),
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid e9patch preload bootstrap size",
+            ));
+        }
     };
     let mut packet = vec![0_u8; size];
     let read = unsafe { libc::pread(fd, packet.as_mut_ptr().cast(), packet.len(), 0) };
-    if read != size as isize
-        || packet.get(..PRELOAD_BOOTSTRAP_MAGIC.len()) != Some(PRELOAD_BOOTSTRAP_MAGIC)
-    {
-        return Ok(None);
+    if read != size as isize {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "truncated e9patch preload bootstrap",
+        ));
     }
 
     let lengths = &packet[PRELOAD_BOOTSTRAP_MAGIC.len()..PRELOAD_BOOTSTRAP_HEADER_BYTES];
@@ -191,7 +206,23 @@ fn create_preload_bootstrap(coordinator: &Path, tool_data: &[u8]) -> io::Result<
     if fd == -1 {
         return Err(io::Error::last_os_error());
     }
-    let mut file = unsafe { File::from_raw_fd(fd) };
+    let original = unsafe { OwnedFd::from_raw_fd(fd) };
+    let fd = if original.as_raw_fd() <= libc::STDERR_FILENO {
+        let promoted = unsafe {
+            libc::fcntl(
+                original.as_raw_fd(),
+                libc::F_DUPFD_CLOEXEC,
+                libc::STDERR_FILENO + 1,
+            )
+        };
+        if promoted == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        unsafe { OwnedFd::from_raw_fd(promoted) }
+    } else {
+        original
+    };
+    let mut file = File::from(fd);
     file.write_all(&packet)?;
     let seals = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
     if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) } == -1 {
@@ -401,6 +432,11 @@ impl E9patchBackend {
     /// without adding either value to the guest environment. The tool-specific
     /// preload consumes it with [`crate::take_preload_bootstrap`] before guest
     /// `main` and selects the concrete `T` represented by the bytes.
+    ///
+    /// The preload must reject unknown selectors and install the same concrete
+    /// `T` used to instantiate this coordinator. Selecting another Tool is a
+    /// protocol violation even when its serialized types happen to be layout-
+    /// compatible.
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-272): Review the sealed tool-data launcher API.
     pub async fn run_direct_with_output_and_preload_data<T>(
@@ -806,9 +842,29 @@ impl Backend for E9patchBackend {
 #[cfg(test)]
 mod tests {
     use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
     use std::os::fd::IntoRawFd;
 
     use super::*;
+
+    fn create_sealed_packet(packet: &[u8]) -> libc::c_int {
+        let fd = unsafe {
+            libc::memfd_create(
+                c"reverie-e9patch-malformed-test".as_ptr(),
+                libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+            )
+        };
+        assert_ne!(fd, -1);
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        file.write_all(packet).unwrap();
+        let seals =
+            libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+        assert_ne!(
+            unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) },
+            -1
+        );
+        file.into_raw_fd()
+    }
 
     #[test]
     fn bootstrap_is_bounded_consumed_and_duplicate_safe() {
@@ -852,5 +908,51 @@ mod tests {
             assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
             assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
         }
+
+        let malformed = create_sealed_packet(PRELOAD_BOOTSTRAP_MAGIC);
+        let valid = create_preload_bootstrap(Path::new("/tmp/valid.sock"), b"valid")
+            .unwrap()
+            .into_raw_fd();
+        let error = match unsafe { take_preload_bootstrap() } {
+            Err(error) => error,
+            Ok(_) => panic!("malformed bootstrap must fail"),
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "invalid e9patch preload bootstrap size");
+        for fd in [malformed, valid] {
+            assert_eq!(unsafe { libc::fcntl(fd, libc::F_GETFD) }, -1);
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
+        }
+    }
+
+    #[test]
+    fn bootstrap_promotes_closed_standard_descriptors() {
+        const CHILD_ENV: &str = "REVERIE_E9PATCH_BOOTSTRAP_CLOSED_STDIO_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let bootstrap =
+                create_preload_bootstrap(Path::new("/tmp/stdio.sock"), b"stdio").unwrap();
+            assert!(bootstrap.as_raw_fd() > libc::STDERR_FILENO);
+            let bootstrap_fd = bootstrap.into_raw_fd();
+            let consumed = unsafe { take_preload_bootstrap() }.unwrap().unwrap();
+            assert_eq!(consumed.coordinator, Path::new("/tmp/stdio.sock"));
+            assert_eq!(consumed.tool_data, b"stdio");
+            assert_eq!(unsafe { libc::fcntl(bootstrap_fd, libc::F_GETFD) }, -1);
+            return;
+        }
+
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .arg("--exact")
+            .arg("backend::tests::bootstrap_promotes_closed_standard_descriptors")
+            .env(CHILD_ENV, "1");
+        unsafe {
+            child.pre_exec(|| {
+                for fd in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+                    libc::close(fd);
+                }
+                Ok(())
+            });
+        }
+        assert!(child.status().unwrap().success());
     }
 }
