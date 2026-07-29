@@ -351,7 +351,7 @@ where
     // TODO-HUMAN-REVIEW(PR-209): Review parent-state handoff for SaBRe thread clones.
     thread_clone_pending: AtomicBool,
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-TBD): Review lazy parent-state handoff for SaBRe process forks.
+    // TODO-HUMAN-REVIEW(PR-273): Review lazy parent-state handoff for SaBRe process forks.
     process_fork_parent_tid: AtomicI32,
     process_fork_parent_state: Mutex<Option<Vec<u8>>>,
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -742,7 +742,7 @@ where
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-TBD): Review fork-child restoration from serialized parent state.
+    // TODO-HUMAN-REVIEW(PR-273): Review fork-child restoration from serialized parent state.
     fn inherit_process_fork_state(
         &self,
         child: Pid,
@@ -1376,7 +1376,7 @@ fn is_thread_clone(pid: Pid, number: Sysno, args: SyscallArgs) -> bool {
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-TBD): Review process-fork classification for state inheritance.
+// TODO-HUMAN-REVIEW(PR-273): Review process-fork classification for state inheritance.
 fn is_process_fork(pid: Pid, number: Sysno, args: SyscallArgs) -> bool {
     if number == Sysno::fork {
         return true;
