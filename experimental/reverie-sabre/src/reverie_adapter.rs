@@ -351,10 +351,6 @@ where
     // TODO-HUMAN-REVIEW(PR-209): Review parent-state handoff for SaBRe thread clones.
     thread_clone_pending: AtomicBool,
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-273): Review lazy parent-state handoff for SaBRe process forks.
-    process_fork_parent_tid: AtomicI32,
-    process_fork_parent_state: Mutex<Option<Vec<u8>>>,
-    // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-142): Review remote syscall-subscription caching and bypass.
     syscall_subscriptions: BTreeSet<Sysno>,
 }
@@ -378,22 +374,29 @@ impl Drop for PendingThreadClone<'_> {
     }
 }
 
-struct PendingProcessFork<'a> {
-    parent_tid: &'a AtomicI32,
-    parent_state: &'a Mutex<Option<Vec<u8>>>,
+struct PendingProcessFork {
     parent_pid: Pid,
 }
 
-impl Drop for PendingProcessFork<'_> {
+impl Drop for PendingProcessFork {
     fn drop(&mut self) {
         // A fork child resumes directly in guest code without unwinding the
         // plugin callback. Only the returning parent may clear its copy.
         if current_pid() == self.parent_pid {
-            self.parent_state.lock().take();
-            self.parent_tid.store(0, Ordering::Release);
+            PROCESS_FORK_HANDOFF.lock().take();
         }
     }
 }
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-273): Review fork-safe state transfer across ProcessCell reinitialization.
+struct ProcessForkHandoff {
+    parent_pid: Pid,
+    parent_tid: Pid,
+    thread_state: Vec<u8>,
+}
+
+static PROCESS_FORK_HANDOFF: Mutex<Option<ProcessForkHandoff>> = Mutex::new(None);
 
 struct ChildThreadRegistry<'a, T>
 where
@@ -401,8 +404,6 @@ where
 {
     states: &'a Mutex<HashMap<i32, Arc<Mutex<RemoteThreadState<T>>>>>,
     socket_path: &'a Path,
-    process_fork_parent_tid: &'a AtomicI32,
-    process_fork_parent_state: &'a Mutex<Option<Vec<u8>>>,
 }
 
 impl<T> RemoteReverieAdapter<T>
@@ -418,7 +419,8 @@ where
         let rpc = protect_with(|| BlockingRpcClient::<T::GlobalState>::connect(&socket_path, tid))?;
         let config = rpc.as_ref().config().clone();
         let tool = T::new(current_pid(), &config);
-        let thread_state = tool.init_thread_state(tid, None);
+        let thread_state = take_process_fork_handoff(&tool, tid)?
+            .unwrap_or_else(|| tool.init_thread_state(tid, None));
         let syscall_subscriptions = T::subscriptions(&config).iter_syscalls().collect();
         let mut thread_states = HashMap::new();
         thread_states.insert(
@@ -435,8 +437,6 @@ where
             socket_path,
             thread_states: Mutex::new(thread_states),
             thread_clone_pending: AtomicBool::new(false),
-            process_fork_parent_tid: AtomicI32::new(0),
-            process_fork_parent_state: Mutex::new(None),
             syscall_subscriptions,
         })
     }
@@ -530,8 +530,6 @@ where
                 Some(ChildThreadRegistry {
                     states: &self.thread_states,
                     socket_path: &self.socket_path,
-                    process_fork_parent_tid: &self.process_fork_parent_tid,
-                    process_fork_parent_state: &self.process_fork_parent_state,
                 }),
             )),
             original,
@@ -723,10 +721,6 @@ where
             std::thread::yield_now();
         }
 
-        if let Some(state) = self.inherit_process_fork_state(tid)? {
-            return Ok(state);
-        }
-
         let rpc = protect_with(|| BlockingRpcClient::connect(&self.socket_path, tid))?;
         let state = Arc::new(Mutex::new(RemoteThreadState {
             thread_state: Some(self.tool.init_thread_state(tid, None)),
@@ -740,45 +734,26 @@ where
             .or_insert_with(|| state.clone())
             .clone())
     }
+}
 
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-273): Review fork-child restoration from serialized parent state.
-    fn inherit_process_fork_state(
-        &self,
-        child: Pid,
-    ) -> Result<Option<Arc<Mutex<RemoteThreadState<T>>>>, RpcError> {
-        let parent_raw = self.process_fork_parent_tid.swap(0, Ordering::AcqRel);
-        if parent_raw == 0 {
-            return Ok(None);
-        }
-
-        let snapshot = self
-            .process_fork_parent_state
-            .lock()
-            .take()
-            .ok_or_else(|| {
-                RpcError::Io(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("fork parent thread-state snapshot {parent_raw} is unavailable"),
-                ))
-            })?;
-        let parent_thread_state = reverie_rpc_transport::codec::decode(&snapshot)?;
-        let rpc = protect_with(|| BlockingRpcClient::connect(&self.socket_path, child))?;
-        let thread_state = self.tool.init_thread_state(
-            child,
-            Some((Pid::from_raw(parent_raw), &parent_thread_state)),
-        );
-
-        let state = Arc::new(Mutex::new(RemoteThreadState {
-            thread_state: Some(thread_state),
-            rpc,
-            exit_handled: false,
-        }));
-        let mut states = self.thread_states.lock();
-        states.clear();
-        states.insert(child.as_raw(), state.clone());
-        Ok(Some(state))
+fn take_process_fork_handoff<T>(tool: &T, child: Pid) -> Result<Option<T::ThreadState>, RpcError>
+where
+    T: ReverieTool,
+{
+    let mut slot = PROCESS_FORK_HANDOFF.lock();
+    let Some(handoff) = slot.as_ref() else {
+        return Ok(None);
+    };
+    if handoff.parent_pid == current_pid() {
+        return Ok(None);
     }
+    let handoff = slot.take().unwrap();
+    drop(slot);
+    let parent_state = reverie_rpc_transport::codec::decode(&handoff.thread_state)?;
+    Ok(Some(tool.init_thread_state(
+        child,
+        Some((handoff.parent_tid, &parent_state)),
+    )))
 }
 
 fn remote_rpc_error(error: RpcError) -> Errno {
@@ -1248,33 +1223,28 @@ where
         }
         if self.original == Some((number, args)) {
             if let Some(inject) = self.special_inject.take() {
-                let _pending_process_fork = if let Some(registry) = self
-                    .child_threads
-                    .as_ref()
-                    .filter(|_| is_process_fork(self.pid, number, args))
-                {
-                    let Some(parent_state) = self.thread_state.as_ref() else {
-                        return Err(Errno::EIO);
+                let _pending_process_fork =
+                    if self.child_threads.is_some() && is_process_fork(self.pid, number, args) {
+                        let Some(parent_state) = self.thread_state.as_ref() else {
+                            return Err(Errno::EIO);
+                        };
+                        let snapshot = reverie_rpc_transport::codec::encode(parent_state)
+                            .map_err(remote_rpc_error)?;
+                        let replaced = PROCESS_FORK_HANDOFF.lock().replace(ProcessForkHandoff {
+                            parent_pid: self.pid,
+                            parent_tid: self.tid,
+                            thread_state: snapshot,
+                        });
+                        assert!(
+                            replaced.is_none(),
+                            "nested SaBRe process-fork snapshots are unsupported"
+                        );
+                        Some(PendingProcessFork {
+                            parent_pid: self.pid,
+                        })
+                    } else {
+                        None
                     };
-                    let snapshot = reverie_rpc_transport::codec::encode(parent_state)
-                        .map_err(remote_rpc_error)?;
-                    registry
-                        .process_fork_parent_tid
-                        .compare_exchange(0, self.tid.as_raw(), Ordering::AcqRel, Ordering::Acquire)
-                        .expect("nested SaBRe process forks are unsupported");
-                    let replaced = registry.process_fork_parent_state.lock().replace(snapshot);
-                    assert!(
-                        replaced.is_none(),
-                        "nested SaBRe process-fork snapshots are unsupported"
-                    );
-                    Some(PendingProcessFork {
-                        parent_tid: registry.process_fork_parent_tid,
-                        parent_state: registry.process_fork_parent_state,
-                        parent_pid: self.pid,
-                    })
-                } else {
-                    None
-                };
                 // Fork/exit injectors may resume the child or terminate without
                 // unwinding this callback. Do not carry its parent stack pointer
                 // into that execution path.
