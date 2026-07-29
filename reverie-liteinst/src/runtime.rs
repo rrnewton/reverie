@@ -909,7 +909,7 @@ unsafe fn install_site_hook(
     Ok(relocated_tail)
 }
 
-// TODO-HUMAN-REVIEW(PR-LITEINST-HYBRID): Review stopped-tracee patch helper ABI.
+// TODO-HUMAN-REVIEW(PR-270): Review stopped-tracee patch helper ABI.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(address: u64) -> i64 {
     let Some((site, claimed)) = claim_site(address) else {
@@ -1150,7 +1150,7 @@ struct HostSyscallFrame {
     rip: u64,
 }
 
-// TODO-HUMAN-REVIEW(PR-LITEINST-HYBRID): Review host-trap marker/frame C ABI.
+// TODO-HUMAN-REVIEW(PR-270): Review host-trap marker/frame C ABI.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_liteinst_host_syscall_trap(frame: *mut libc::c_void) {
     unsafe { reverie_liteinst_host_syscall_trap_asm(frame.cast()) };

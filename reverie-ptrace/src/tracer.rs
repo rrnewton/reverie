@@ -537,7 +537,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     /// The preload path is used to authenticate handshake instruction pointers.
     /// Distinct markers identify constructor begin/ready stops, the controlled
     /// patch-helper return, and installed syscall-hook events.
-    // TODO-HUMAN-REVIEW(PR-LITEINST-HYBRID): Review dynamic LiteInst provenance API.
+    // TODO-HUMAN-REVIEW(PR-270): Review dynamic LiteInst provenance API.
     pub fn liteinst_runtime(
         mut self,
         preload: impl Into<PathBuf>,

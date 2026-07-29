@@ -197,7 +197,7 @@ impl LiteinstBackend {
     ///
     /// Ptrace owns the sole Tool and GlobalTool from exec onward; the preload
     /// contributes only dynamic site installation and injected hot-site traps.
-    // TODO-HUMAN-REVIEW(PR-LITEINST-HYBRID): Review public host-hybrid launch API.
+    // TODO-HUMAN-REVIEW(PR-270): Review public host-hybrid launch API.
     pub async fn run_host_with_preload<T>(
         mut command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
@@ -223,7 +223,7 @@ impl LiteinstBackend {
     }
 
     /// Runs a Tool under the ptrace-owned LiteInst hybrid and captures output.
-    // TODO-HUMAN-REVIEW(PR-LITEINST-HYBRID): Review public host-hybrid output API.
+    // TODO-HUMAN-REVIEW(PR-270): Review public host-hybrid output API.
     pub async fn run_host_with_output_and_preload<T>(
         mut command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
