@@ -52,18 +52,7 @@ pub unsafe fn clone_syscall(
         "push r10", // rcx
         "push r8",
         "push r9",
-        // CLONE_SETTLS installs fresh TLS before the child returns here, so
-        // restore plugin context before balancing the inherited callback's
-        // exit_plugin. Preserve both the guest register and unknown child-stack
-        // alignment without invoking Rust before pthread startup completes.
-        // TODO-HUMAN-REVIEW(PR-265): Review clone-child TLS guard restoration.
-        "push r12",
-        "mov r12, rsp",
-        "and rsp, -16",
-        "call qword ptr [rip + enter_plugin@GOTPCREL]",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
-        "mov rsp, r12",
-        "pop r12",
         "pop r9",
         "pop r8",
         "pop r10",
@@ -212,16 +201,7 @@ pub unsafe fn clone3_syscall(
         "push rdx",
         "push r8",
         "push r9",
-        // See clone_syscall: clone3 children also begin with fresh TLS and an
-        // ABI stack whose incoming alignment is not a Rust-call guarantee.
-        // TODO-HUMAN-REVIEW(PR-265): Review clone3-child TLS guard restoration.
-        "push r12",
-        "mov r12, rsp",
-        "and rsp, -16",
-        "call qword ptr [rip + enter_plugin@GOTPCREL]",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
-        "mov rsp, r12",
-        "pop r12",
         "pop r9",
         "pop r8",
         "pop rdx",
