@@ -6,7 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-//! LiteInst hosting support for the production Reverie example tools.
+//! Preload hosting support for production Reverie example tools.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 // The reused production tool sources each declare the same test-only KVM helper.
@@ -17,6 +17,9 @@ use std::ffi::OsStr;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+
+/// Narrow concrete Tool shared by the e9patch preload and its real-tool test.
+pub mod e9patch_smoke;
 
 #[allow(dead_code)]
 #[path = "../chaos.rs"]
@@ -54,11 +57,13 @@ pub(crate) use strace::global_state;
 // TODO-HUMAN-REVIEW(PR-139): Review the example-tool preload constructor and selector boundary.
 #[used]
 #[unsafe(link_section = ".init_array")]
-static LITEINST_EXAMPLE_INIT: unsafe extern "C" fn(
+static REVERIE_EXAMPLE_INIT: unsafe extern "C" fn(
     libc::c_int,
     *mut *mut libc::c_char,
     *mut *mut libc::c_char,
 ) = initialize;
+
+const E9PATCH_EXAMPLE_TOOL_ENV: &str = "REVERIE_E9PATCH_EXAMPLE_TOOL";
 
 unsafe fn loaded_as_preload() -> bool {
     let mut info = MaybeUninit::<libc::Dl_info>::uninit();
@@ -92,6 +97,54 @@ unsafe extern "C" fn initialize(
     _environment: *mut *mut libc::c_char,
 ) {
     if !unsafe { loaded_as_preload() } {
+        return;
+    }
+    let e9patch_bootstrap = match unsafe { reverie_e9patch::take_preload_bootstrap() } {
+        Ok(bootstrap) => bootstrap,
+        Err(error) => fail(&format!("invalid e9patch preload bootstrap: {error}")),
+    };
+    if let Some(bootstrap) = e9patch_bootstrap {
+        match unsafe { reverie_e9patch::take_preload_bootstrap() } {
+            Ok(None) => {}
+            Ok(Some(_)) => fail("e9patch preload bootstrap was not consumed"),
+            Err(error) => fail(&format!("invalid residual e9patch bootstrap: {error}")),
+        }
+        let selected = match String::from_utf8(bootstrap.tool_data) {
+            Ok(selected) => selected,
+            Err(_) => fail("e9patch example tool selector is not valid UTF-8"),
+        };
+        let result = match selected.as_str() {
+            "e9patch-smoke" => unsafe {
+                reverie_e9patch::install_tool_from_bootstrap::<e9patch_smoke::AotCounterTool>(
+                    &bootstrap.coordinator,
+                )
+            },
+            other => fail(&format!("unknown e9patch bootstrap tool {other:?}")),
+        };
+        if let Err(error) = result {
+            fail(&format!(
+                "e9patch bootstrap tool initialization failed: {error}"
+            ));
+        }
+        return;
+    }
+    if let Some(socket) = std::env::var_os(reverie_e9patch::COORDINATOR_ENV) {
+        let selected = std::env::var_os(E9PATCH_EXAMPLE_TOOL_ENV)
+            .and_then(|value| value.into_string().ok())
+            .unwrap_or_else(|| fail(&format!("missing {E9PATCH_EXAMPLE_TOOL_ENV}")));
+        // SAFETY: this constructor runs before application-created threads.
+        unsafe { std::env::remove_var(E9PATCH_EXAMPLE_TOOL_ENV) };
+        let result = match selected.as_str() {
+            // TODO-HUMAN-REVIEW(PR-269): Review the
+            // concrete e9patch Tool selection used by the direct AOT proof.
+            "e9patch-smoke" => unsafe {
+                reverie_e9patch::install_tool::<e9patch_smoke::AotCounterTool>(socket)
+            },
+            other => fail(&format!("unknown e9patch example tool {other:?}")),
+        };
+        if let Err(error) = result {
+            fail(&format!("e9patch tool initialization failed: {error}"));
+        }
         return;
     }
     let bootstrap = match unsafe { reverie_liteinst::take_preload_bootstrap() } {
@@ -143,6 +196,6 @@ unsafe extern "C" fn initialize(
 }
 
 fn fail(message: &str) -> ! {
-    eprintln!("reverie-liteinst-examples: {message}");
+    eprintln!("reverie-examples preload: {message}");
     unsafe { libc::_exit(127) }
 }

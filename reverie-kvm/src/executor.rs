@@ -1555,6 +1555,36 @@ impl ElfExecutor {
             .contains(&(request.args()[0] as libc::c_int))
     }
 
+    // AUTONOMOUS-BOT-IMPLEMENTED: Route ordinary reads to the Tool for accounting parity.
+    // TODO-HUMAN-REVIEW(PR-266): Review tool-visible vs backend-owned read classification.
+    //
+    // `read`/`readv` are otherwise backend-owned (see
+    // `runtime::is_backend_owned_syscall`) so the backend's own event loop can
+    // drain worker-created eventfds/pipes through the shared descriptor table
+    // without going through Detcore's scheduler (which would deadlock). That
+    // ownership, however, also hides ordinary guest file and stream reads from
+    // the Tool, breaking faithful syscall accounting (e.g. the dynamic linker's
+    // ELF-header `read` on a shared library) and cross-backend parity with
+    // ptrace. This narrows the hiding to exactly the worker-shared case:
+    // reads on regular files and on the standard streams are ordinary guest I/O
+    // and must reach `Tool::handle_syscall_event`; only non-regular,
+    // non-standard descriptors (eventfd/pipe/socket) stay backend-owned.
+    pub(crate) fn is_tool_visible_read(&self, request: &SyscallRequest) -> bool {
+        let number = request.number();
+        if number != libc::SYS_read as u64 && number != libc::SYS_readv as u64 {
+            return false;
+        }
+        let fd = request.args()[0] as libc::c_int;
+        if is_open_standard(&self.state, fd) {
+            return true;
+        }
+        self.state
+            .files
+            .get(&fd)
+            .and_then(|file| file.metadata().ok())
+            .is_some_and(|metadata| metadata.file_type().is_file())
+    }
+
     // TODO-HUMAN-REVIEW(PR-235): Review virtual parent identity for KVM Tool callbacks.
     pub(crate) fn parent_pid(&self) -> Option<reverie::Pid> {
         (self.state.ppid != 0).then(|| reverie::Pid::from_raw(self.state.ppid))
@@ -13531,15 +13561,45 @@ mod tests {
             revents: 0,
         };
         assert_eq!(write_struct(&mut memory, POLL_FD, &poll_fd), 0);
+        // The one-shot timerfd was armed with an absolute expiration in the past
+        // (`it_value` one nanosecond after the monotonic epoch), so
+        // `timerfd_settime` marks it expired and the timer *will* fire. The
+        // guest's `SYS_poll` is deterministically non-blocking here (see
+        // `poll_with_timeout`, timeout 0), so on a loaded host it can observe the
+        // underlying real timerfd before the kernel has finished propagating the
+        // expiration to a non-blocking poll — a timing race, not a logic error.
+        //
+        // Eliminate the race deterministically by synchronizing on the actual
+        // kernel event instead of guessing at a delay: block on the *real* host
+        // timerfd until the kernel reports it readable, then issue the guest's
+        // non-blocking poll. The blocking wait returns exactly when the timer
+        // has fired (promptly, since it was armed in the past) and no sooner, so
+        // there is no sleep, no retry budget, and no timing assumption. Once the
+        // real fd is readable the non-blocking guest poll is guaranteed to see
+        // POLLIN. A large timeout bounds only a genuine kernel/logic bug so the
+        // test fails loudly instead of hanging CI forever.
+        let real_timerfd = host_fd(&state, timerfd as libc::c_int)
+            .expect("guest timerfd must map to a live host descriptor");
+        let mut host_poll = libc::pollfd {
+            fd: real_timerfd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: host_poll points at a single initialized pollfd naming a live
+        // host descriptor; the kernel only reads/writes that one entry.
+        let host_ready = unsafe { libc::poll(&mut host_poll, 1, 60_000) };
         assert_eq!(
-            syscall_result(
-                &mut memory,
-                &mut state,
-                libc::SYS_poll,
-                [POLL_FD, 1, 0, 0, 0, 0],
-            ),
-            1
+            host_ready, 1,
+            "real host timerfd did not become readable within 60s (kernel/logic bug, not jitter)"
         );
+        assert_ne!(host_poll.revents & libc::POLLIN, 0);
+        let ready = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_poll,
+            [POLL_FD, 1, 0, 0, 0, 0],
+        );
+        assert_eq!(ready, 1);
         assert_eq!(
             syscall_result(
                 &mut memory,
