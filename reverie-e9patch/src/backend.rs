@@ -52,6 +52,8 @@ const PRELOAD_BOOTSTRAP_MAX_BYTES: usize = 4096;
 
 /// Coordinator path and opaque tool-specific bytes consumed by an e9patch
 /// preload constructor.
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-272): Review the sealed generic-Tool bootstrap contract.
 pub struct PreloadBootstrap {
     /// Unix-domain socket path for the generic Tool coordinator.
     pub coordinator: PathBuf,
@@ -66,6 +68,8 @@ pub struct PreloadBootstrap {
 /// Call only from a preload constructor launched by [`E9patchBackend`]. This
 /// scans inherited descriptors and consumes only a sealed, protocol-matching
 /// memfd.
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-272): Review inherited bootstrap discovery and consumption.
 pub unsafe fn take_preload_bootstrap() -> io::Result<Option<PreloadBootstrap>> {
     let mut found = Vec::new();
     for entry in std::fs::read_dir("/proc/self/fd")? {
@@ -397,6 +401,8 @@ impl E9patchBackend {
     /// without adding either value to the guest environment. The tool-specific
     /// preload consumes it with [`crate::take_preload_bootstrap`] before guest
     /// `main` and selects the concrete `T` represented by the bytes.
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-272): Review the sealed tool-data launcher API.
     pub async fn run_direct_with_output_and_preload_data<T>(
         mut command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
