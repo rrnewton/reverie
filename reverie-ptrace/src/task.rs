@@ -90,8 +90,10 @@ use crate::stack::GuestStack;
 use crate::timer::HandleFailure;
 use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
+use crate::tracer::HeldRootStop;
 use crate::tracer::NewbornTracee;
 use crate::tracer::TraceeIdentity;
+use crate::tracer::disarm_held_root_stop;
 use crate::vdso;
 
 fn validate_liteinst_user_regs_update(
@@ -369,6 +371,7 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) helper_return_marker: u64,
     pub(crate) syscall_marker: u64,
     pub(crate) newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
+    pub(crate) held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
     #[cfg(test)]
     pub(crate) fail_preinit: bool,
     #[cfg(test)]
@@ -379,6 +382,10 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) pause_before_new_task: Option<mpsc::UnboundedSender<Pid>>,
     #[cfg(test)]
     pub(crate) fail_discovery_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) fail_after_scan_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_task_scan_once: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1988,6 +1995,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             .assume_stopped();
         assert_eq!(event, Event::Signal(Signal::SIGTRAP));
 
+        self.arm_liteinst_root_stop(&task, Signal::SIGTRAP);
         let task = self.tracee_preinit(task).await?;
 
         self.process_state.clone().handle_post_exec(self).await?;
@@ -2031,6 +2039,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     "GDB stop channel closed while reporting exec"
                 );
                 self.attached_by_gdb = false;
+                self.disarm_liteinst_root_stop();
                 return task.step(None)?.next_state().await;
             }
             let running = self
@@ -2038,6 +2047,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await?;
             Ok(running.next_state().await?)
         } else {
+            self.disarm_liteinst_root_stop();
             Ok(task.step(None)?.next_state().await?)
         }
     }
@@ -2619,6 +2629,19 @@ impl<L: Tool + 'static> TracedTask<L> {
             .unwrap()
             .entry(child.pid())
             .or_insert_with(|| NewbornTracee::from_event(parent.pid(), op, child));
+        *runtime.held_root_stop.lock().unwrap() = Some(HeldRootStop::new(parent, op, child));
+    }
+
+    pub(crate) fn arm_liteinst_root_stop(&self, task: &Stopped, signal: Signal) {
+        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
+            *runtime.held_root_stop.lock().unwrap() = Some(HeldRootStop::from_signal(task, signal));
+        }
+    }
+
+    fn disarm_liteinst_root_stop(&self) {
+        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
+            disarm_held_root_stop(&runtime.held_root_stop);
+        }
     }
 
     async fn dispatch_new_task(
@@ -2643,8 +2666,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             let _ = sender.send(child.pid());
             future::pending::<()>().await;
         }
-        self.handle_new_task(op, parent, child, context, child_context)
-            .await
+        let result = self
+            .handle_new_task(op, parent, child, context, child_context)
+            .await;
+        if result.is_ok()
+            && let Some(runtime) = self.global_state.liteinst_runtime.as_ref()
+        {
+            disarm_held_root_stop(&runtime.held_root_stop);
+        }
+        result
     }
 
     async fn handle_new_task(
@@ -2658,6 +2688,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
             let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
             let child_pid = child.pid();
+            if let Some(error) = newborn_tracees
+                .lock()
+                .unwrap()
+                .get(&child_pid)
+                .expect("stored child event ownership must remain registered")
+                .registration_error()
+            {
+                return Err(error.into());
+            }
             let child_identity = TraceeIdentity::capture_event_child(child_pid, parent.pid(), op)?;
             newborn_tracees
                 .lock()
@@ -3550,10 +3589,12 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     async fn handle_gdb_resume(
+        &mut self,
         resume: Option<ResumeInferior>,
         task: Stopped,
         resume_action: ExpectedGdbResume,
     ) -> Result<(Running, Option<ResumeInferior>), TraceError> {
+        self.disarm_liteinst_root_stop();
         match resume {
             None => Ok((task.resume(None)?, None)),
             Some(resume) => {
@@ -3593,6 +3634,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         resume_action: ExpectedGdbResume,
     ) -> Result<Running, TraceError> {
         if !self.attached_by_gdb {
+            self.disarm_liteinst_root_stop();
             return task.resume(None);
         }
 
@@ -3610,7 +3652,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                     resume_future = pending_resume_future;
                 }
                 Either::Right((resume_request, _)) => {
-                    break Self::handle_gdb_resume(resume_request, task, resume_action).await?;
+                    break self
+                        .handle_gdb_resume(resume_request, task, resume_action)
+                        .await?;
                 }
             }
         };

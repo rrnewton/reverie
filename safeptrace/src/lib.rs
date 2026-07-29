@@ -55,12 +55,21 @@ impl TraceeToken {
         }
     }
 
-    fn current_or_new(pid: Pid) -> Self {
+    fn current_or_new(pid: Pid) -> Result<Self, Errno> {
+        #[cfg(not(feature = "notifier"))]
+        let _ = pid;
+        Ok(Self {
+            #[cfg(feature = "notifier")]
+            event: notifier::EventHandle::current_or_new(pid)?,
+        })
+    }
+
+    fn current_or_error(pid: Pid) -> Self {
         #[cfg(not(feature = "notifier"))]
         let _ = pid;
         Self {
             #[cfg(feature = "notifier")]
-            event: notifier::EventHandle::current_or_new(pid),
+            event: notifier::EventHandle::current_or_error(pid),
         }
     }
 
@@ -186,7 +195,7 @@ impl Event {
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
                 Ok(Self::NewChild(
                     ChildOp::Fork,
-                    Running::from_current_or_new(child_pid),
+                    Running::from_current_or_new(child_pid)?,
                 ))
             }
             libc::PTRACE_EVENT_VFORK => {
@@ -195,7 +204,7 @@ impl Event {
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
                 Ok(Self::NewChild(
                     ChildOp::Vfork,
-                    Running::from_current_or_new(child_pid),
+                    Running::from_current_or_new(child_pid)?,
                 ))
             }
             libc::PTRACE_EVENT_CLONE => {
@@ -204,7 +213,7 @@ impl Event {
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
                 Ok(Self::NewChild(
                     ChildOp::Clone,
-                    Running::from_current_or_new(child_pid),
+                    Running::from_current_or_new(child_pid)?,
                 ))
             }
             libc::PTRACE_EVENT_EXEC => {
@@ -564,7 +573,19 @@ impl Stopped {
     /// pid really is in a stopped state. It is better to arrive at a stopped
     /// state via other methods such as `Running::wait`.
     pub fn new_unchecked(pid: Pid) -> Self {
-        Self::from_token(pid, TraceeToken::current_or_new(pid))
+        Self::from_token(pid, TraceeToken::current_or_error(pid))
+    }
+
+    /// Creates an unchecked stopped state joined to the currently registered
+    /// proc generation for `pid`.
+    ///
+    /// Like [`Stopped::new_unchecked`], the caller must independently prove
+    /// that the exact TID is stopped. Unlike that constructor, generation
+    /// capture/read failures are returned rather than creating an unbound
+    /// notifier state.
+    #[cfg(feature = "notifier")]
+    pub fn try_new_current_unchecked(pid: Pid) -> Result<Self, Errno> {
+        Ok(Self::from_token(pid, TraceeToken::current_or_new(pid)?))
     }
 
     fn from_token(pid: Pid, token: TraceeToken) -> Self {
@@ -931,8 +952,8 @@ impl Running {
         Self(pid, token)
     }
 
-    fn from_current_or_new(pid: Pid) -> Self {
-        Self::from_token(pid, TraceeToken::current_or_new(pid))
+    fn from_current_or_new(pid: Pid) -> Result<Self, Errno> {
+        Ok(Self::from_token(pid, TraceeToken::current_or_new(pid)?))
     }
 
     #[cfg(feature = "notifier")]
