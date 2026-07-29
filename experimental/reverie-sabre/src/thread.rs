@@ -37,7 +37,7 @@ thread_local! {
 /// deferring allocation of the SaBRe thread-registry slot until its first
 /// callback after pthread has initialized child TLS.
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-214): Review allocation-free clone-child notification.
+// TODO-HUMAN-REVIEW(PR-265): Review allocation-free clone-child notification.
 pub(crate) fn notify_current_thread_start<E: EventSink>() {
     let pid_tid = PidTid::current();
     THREAD_START_NOTIFIED.with(|notified| notified.set(true));

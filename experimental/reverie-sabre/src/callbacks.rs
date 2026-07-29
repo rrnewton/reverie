@@ -169,7 +169,7 @@ pub extern "C" fn handle_syscall<T: ToolGlobal>(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-214): Review eager child registration before guest resume.
+// TODO-HUMAN-REVIEW(PR-265): Review pre-resume clone-child notification.
 extern "C" fn handle_clone_child_start<T: ToolGlobal>() {
     thread::notify_current_thread_start::<T>();
 }
@@ -200,11 +200,8 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
     let _frame_guard = SyscallFrameGuard::enter(wrapper_sp);
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-214): Review eager child registration before guest resume.
-    // Register clone children lazily at their first intercepted syscall. Rust
-    // bookkeeping at the raw clone return can allocate before pthread startup
-    // completes, deadlocking the in-guest allocator under concurrent clones.
-    // TODO-HUMAN-REVIEW(PR-226): Review deferred clone-child registration.
+    // TODO-HUMAN-REVIEW(PR-265): Review pre-resume notification with deferred
+    // registry-slot allocation in normal callback context.
     let result = if sys_no == Sysno::clone && arg2 != 0 {
         // New thread with its own stack: the kernel sets the child's %rsp to
         // `child_stack`, so clone_syscall's `jmp r9` shortcut is correct.
@@ -342,7 +339,7 @@ fn exit_group_with_thread<T: ToolGlobal>(thread: &mut Thread<T>, exit_code: usiz
 fn prepare_group_exit<T: ToolGlobal>(thread: &mut Thread<T>) {
     thread.try_exit();
     if let Some(exiting_pid) = thread::exit_all(|_, process_and_thread_id| unsafe {
-        // TODO-HUMAN-REVIEW(PR-214): Review exit_group ESRCH race handling.
+        // TODO-HUMAN-REVIEW(PR-265): Review exit_group ESRCH race handling.
         let result = syscalls::syscall3(
             Sysno::tgkill,
             process_and_thread_id.pid as usize,

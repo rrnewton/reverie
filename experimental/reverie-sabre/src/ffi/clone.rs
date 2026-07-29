@@ -26,7 +26,7 @@ extern "C" {
 /// All pointers and the return address must be valid for the kernel ABI and
 /// SaBRe trampoline used by the current guest thread.
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-214): Review eager child-start callback ABI.
+// TODO-HUMAN-REVIEW(PR-265): Review eager child-start callback ABI.
 pub unsafe fn clone_syscall(
     clone_flags: usize,             // rdi
     child_stack: *mut libc::c_void, // rsi
@@ -185,7 +185,7 @@ pub unsafe fn fork_syscall(
 /// All pointers and the return address must be valid for the kernel ABI and
 /// SaBRe trampoline used by the current guest thread.
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-214): Review eager child-start callback ABI.
+// TODO-HUMAN-REVIEW(PR-265): Review eager child-start callback ABI.
 pub unsafe fn clone3_syscall(
     arg1: usize,                 // rdi
     arg2: usize,                 // rsi
