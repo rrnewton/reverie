@@ -97,8 +97,6 @@ where
 ///
 /// Installs process-global signal, seccomp, dispatcher, and AOT callback state.
 /// Call exactly once before application-created threads start.
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-272): Review environment-preserving Tool installation.
 pub unsafe fn install_tool_from_bootstrap<T>(coordinator: impl AsRef<Path>) -> io::Result<()>
 where
     T: Tool + 'static,

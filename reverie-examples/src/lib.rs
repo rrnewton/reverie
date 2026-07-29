@@ -114,8 +114,6 @@ unsafe extern "C" fn initialize(
             Err(_) => fail("e9patch example tool selector is not valid UTF-8"),
         };
         let result = match selected.as_str() {
-            // AUTONOMOUS-BOT-IMPLEMENTED
-            // TODO-HUMAN-REVIEW(PR-272): Review sealed e9patch Tool selection.
             "e9patch-smoke" => unsafe {
                 reverie_e9patch::install_tool_from_bootstrap::<e9patch_smoke::AotCounterTool>(
                     &bootstrap.coordinator,
