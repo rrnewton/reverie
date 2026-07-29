@@ -18,6 +18,13 @@ trusted page, writes the result into the e9patch frame, and resumes after the
 replaced instruction. Thus rewritten sites genuinely originate in e9patch;
 this is not preprocessing followed by an unrelated ptrace syscall event.
 
+The ptrace controller authenticates that boundary against the exact rewritten
+executable mapping and the set of syscall virtual addresses recovered by the
+same e9tool invocation. A readable frame plus the public marker/fixed trap RIP
+is not sufficient: a frame naming an address that e9tool did not patch remains
+an ordinary `SIGTRAP` and is never delivered to the selected `Tool`. This is the
+ahead-of-time counterpart of LiteInst's registered-hot-site provenance check.
+
 Ptrace remains attached for process lifecycle, signals, timers, CPUID/RDTSC,
 syscalls in the loader and shared libraries, and complete arbitrary-tool
 `Guest` semantics. The current hybrid therefore prioritizes correctness over
@@ -34,8 +41,11 @@ shrink, and further-seal protections.
 
 The accompanying `RewriteReport` records SHA-256 digests for the input, output,
 e9tool, and e9patch executable bytes, plus the reported coverage counts. The
-rewriter rejects partial recovered-site coverage, signal-based B0 fallback,
-privilege-bearing inputs, non-executable tools, and malformed output.
+launcher also consumes e9tool's disassembly manifest and binds every reported
+recovered syscall to its exact ELF virtual address before execution. The
+rewriter rejects partial or internally inconsistent recovered-site coverage,
+signal-based B0 fallback, privilege-bearing inputs, non-executable tools, and
+malformed output.
 
 ## Shared With LiteInst Versus Different
 

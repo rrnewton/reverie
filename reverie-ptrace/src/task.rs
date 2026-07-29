@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fmt;
 use std::ops::DerefMut;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -156,10 +157,106 @@ enum HandleSignalResult {
     /// signal needs to be delivered.
     SignalToDeliver(Stopped, Signal),
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct InjectedSyscallTrap {
     pub(crate) marker: u64,
     pub(crate) rip: u64,
+    pub(crate) provenance: Option<InjectedSyscallProvenance>,
+}
+
+#[derive(Clone)]
+pub(crate) struct InjectedSyscallProvenance {
+    pub(crate) image: PathBuf,
+    pub(crate) image_load_address: u64,
+    pub(crate) patched_site_addresses: Arc<[u64]>,
+}
+
+#[derive(Debug)]
+struct GuestMap {
+    start: u64,
+    end: u64,
+    offset: u64,
+    executable: bool,
+    path: Option<PathBuf>,
+}
+
+impl GuestMap {
+    fn contains(&self, address: u64) -> bool {
+        self.start <= address && address < self.end
+    }
+}
+
+fn guest_maps(pid: Pid) -> Option<Vec<GuestMap>> {
+    let maps = std::fs::read_to_string(format!("/proc/{pid}/maps")).ok()?;
+    let mut parsed = Vec::new();
+    for line in maps.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(range), Some(perms), Some(offset)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let Some((start, end)) = range.split_once('-') else {
+            continue;
+        };
+        let (Ok(start), Ok(end), Ok(offset)) = (
+            u64::from_str_radix(start, 16),
+            u64::from_str_radix(end, 16),
+            u64::from_str_radix(offset, 16),
+        ) else {
+            continue;
+        };
+        let _device = fields.next();
+        let _inode = fields.next();
+        let path = fields.next().map(PathBuf::from);
+        let permissions = perms.as_bytes();
+        parsed.push(GuestMap {
+            start,
+            end,
+            offset,
+            executable: permissions.get(2) == Some(&b'x'),
+            path,
+        });
+    }
+    Some(parsed)
+}
+
+impl InjectedSyscallTrap {
+    fn authenticates(&self, pid: Pid, frame: &InjectedSyscallFrame) -> bool {
+        let Some(provenance) = &self.provenance else {
+            return true;
+        };
+        let Some(maps) = guest_maps(pid) else {
+            return false;
+        };
+        if !maps
+            .iter()
+            .any(|mapping| mapping.executable && mapping.contains(self.rip))
+        {
+            return false;
+        }
+        maps.iter()
+            .filter(|mapping| mapping.path.as_ref() == Some(&provenance.image))
+            .filter_map(|mapping| {
+                mapping
+                    .offset
+                    .checked_add(provenance.image_load_address)
+                    .and_then(|mapped_image_address| {
+                        mapping.start.checked_sub(mapped_image_address)
+                    })
+            })
+            .any(|load_bias| {
+                frame
+                    .instruction_pointer()
+                    .checked_sub(load_bias)
+                    .is_some_and(|address| {
+                        provenance
+                            .patched_site_addresses
+                            .binary_search(&address)
+                            .is_ok()
+                    })
+            })
+    }
 }
 
 /// All the info needed to be able to interact with the global state.
@@ -188,7 +285,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             gs_ref: self.gs_ref.clone(),
             subscriptions: self.subscriptions.clone(),
             sequentialized_guest: self.sequentialized_guest.clone(),
-            injected_syscall_trap: self.injected_syscall_trap,
+            injected_syscall_trap: self.injected_syscall_trap.clone(),
         }
     }
 }
@@ -374,7 +471,7 @@ impl<L: Tool> TracedTask<L> {
                     .map(|s| s.sequentialized_guest)
                     .unwrap_or(false),
             ),
-            injected_syscall_trap: options.injected_syscall_trap,
+            injected_syscall_trap: options.injected_syscall_trap.clone(),
         };
         let thread_state = process_state.init_thread_state(tid, None);
         let (next_state, next_state_rx) = mpsc::channel(1);
@@ -1207,12 +1304,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             .is_some_and(|action| matches!(action, ResumeAction::Step(_)));
         let mut regs = task.getregs()?;
         // TODO-HUMAN-REVIEW(PR-103): Review rewritten-trap provenance validation.
-        if let Some(trap) = self.global_state.injected_syscall_trap
+        if let Some(trap) = self.global_state.injected_syscall_trap.as_ref()
             && regs.rax == trap.marker
             && regs.ip() == trap.rip
-            && self
-                .read_injected_syscall_frame(&task, regs.rdi as usize)
-                .is_ok()
+            && let Ok(frame) = self.read_injected_syscall_frame(&task, regs.rdi as usize)
+            && trap.authenticates(task.pid(), &frame)
         {
             let next_state = self
                 .handle_injected_syscall(task, regs.rdi as usize, regs.eflags)

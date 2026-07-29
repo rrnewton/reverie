@@ -176,6 +176,29 @@ impl Tool for CountRead {
     }
 }
 
+#[derive(Default)]
+struct CountGetpid;
+
+#[reverie::tool]
+impl Tool for CountGetpid {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        subscriptions()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        assert_eq!(syscall.number(), Sysno::getpid);
+        guest.send_rpc(1).await;
+        Ok(1234)
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires a built e9tool/e9patch pair and direct-syscall guest"]
 async fn rewritten_syscall_is_delivered_and_emulated() {
@@ -263,6 +286,17 @@ fn standalone_configuration_selects_direct_passthrough() {
 async fn marker_collision_at_another_rip_is_not_a_syscall_event() {
     let (_directory, guest) = compile_fixture("marker_collision.c");
     let (status, global) = E9patchBackend::run::<CountRead>(Command::new(guest), ())
+        .await
+        .unwrap();
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 0);
+    assert_eq!(status, ExitStatus::Exited(0));
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a built e9tool/e9patch pair and a C compiler"]
+async fn exact_trap_with_unpatched_site_is_not_a_syscall_event() {
+    let (_directory, guest) = compile_fixture("exact_trap_spoof.c");
+    let (status, global) = E9patchBackend::run::<CountGetpid>(Command::new(guest), ())
         .await
         .unwrap();
     assert_eq!(global.delivered.load(Ordering::SeqCst), 0);

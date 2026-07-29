@@ -49,6 +49,7 @@ use tokio::sync::mpsc;
 use crate::cp;
 use crate::gdbstub::GdbServer;
 use crate::task::Child;
+use crate::task::InjectedSyscallProvenance;
 use crate::task::InjectedSyscallTrap;
 use crate::task::TracedTask;
 use crate::task::TracedTaskOptions;
@@ -521,8 +522,46 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     /// All other traps retain their normal signal/debugger semantics.
     // TODO-HUMAN-REVIEW(PR-103): Review the injected syscall event provenance API.
     pub fn injected_syscall_trap(mut self, marker: u64, rip: u64) -> Self {
-        self.injected_syscall_trap = Some(InjectedSyscallTrap { marker, rip });
+        self.injected_syscall_trap = Some(InjectedSyscallTrap {
+            marker,
+            rip,
+            provenance: None,
+        });
         self
+    }
+
+    /// Routes a binary-rewriter trap only when its logical instruction address
+    /// names an ahead-of-time patched site in the exact executable image.
+    // TODO-HUMAN-REVIEW(PR-PENDING): Review authenticated binary-rewriter trap API.
+    pub fn authenticated_injected_syscall_trap(
+        mut self,
+        marker: u64,
+        rip: u64,
+        image: impl Into<PathBuf>,
+        image_load_address: u64,
+        patched_site_addresses: impl IntoIterator<Item = u64>,
+    ) -> Result<Self, Error> {
+        let image = std::fs::canonicalize(image.into())?;
+        let mut patched_site_addresses = patched_site_addresses.into_iter().collect::<Vec<_>>();
+        patched_site_addresses.sort_unstable();
+        patched_site_addresses.dedup();
+        if patched_site_addresses.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "authenticated injected-syscall traps require at least one patched site",
+            )
+            .into());
+        }
+        self.injected_syscall_trap = Some(InjectedSyscallTrap {
+            marker,
+            rip,
+            provenance: Some(InjectedSyscallProvenance {
+                image,
+                image_load_address,
+                patched_site_addresses: patched_site_addresses.into(),
+            }),
+        });
+        Ok(self)
     }
 
     /// Spawns the tracer.
