@@ -554,7 +554,9 @@ impl Stopped {
     ///
     /// Exactly one future for this immutable tracee generation can claim the
     /// exit stop and return a [`Stopped`] capability. Duplicate or re-polled
-    /// futures return [`Errno::EALREADY`].
+    /// futures return [`Errno::EALREADY`]. An unclaimed capability also expires
+    /// before terminal publication or cancellation cleanup advances the
+    /// tracee.
     #[cfg(feature = "notifier")]
     pub fn exit_event(&self) -> notifier::ExitFuture {
         notifier::ExitFuture::new(self.0, &self.1)
@@ -1066,7 +1068,9 @@ impl Running {
     ///
     /// Exactly one future for this immutable tracee generation can claim the
     /// exit stop and return a [`Stopped`] capability. Duplicate or re-polled
-    /// futures return [`Errno::EALREADY`].
+    /// futures return [`Errno::EALREADY`]. An unclaimed capability also expires
+    /// before terminal publication or cancellation cleanup advances the
+    /// tracee.
     #[cfg(feature = "notifier")]
     pub fn exit_event(&self) -> notifier::ExitFuture {
         notifier::ExitFuture::new(self.0, &self.1)

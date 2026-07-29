@@ -79,9 +79,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::OnceLock;
-use std::sync::atomic::AtomicBool;
+use std::sync::Weak;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
@@ -142,6 +143,12 @@ const EXIT_STOPPED: i32 = 1;
 /// The tracee became terminal without an observed `PTRACE_EVENT_EXIT`.
 const EXIT_ECHILD: i32 = 2;
 
+const EXIT_CAP_PENDING: u8 = 0;
+const EXIT_CAP_AVAILABLE: u8 = 1;
+const EXIT_CAP_CLAIMED: u8 = 2;
+const EXIT_CAP_EXPIRED: u8 = 3;
+const EXIT_CAP_FINALIZING: u8 = 4;
+
 const WORKER_NOT_STARTED: i32 = 0;
 const WORKER_RUNNING: i32 = 1;
 const WORKER_FINISHING: i32 = 2;
@@ -194,10 +201,51 @@ impl WakerSlot {
     }
 }
 
+#[derive(Debug, Default)]
+struct ExitWaiter {
+    waker: WakerSlot,
+}
+
+#[derive(Debug, Default)]
+struct ExitWaiters {
+    waiters: Mutex<Vec<Weak<ExitWaiter>>>,
+}
+
+impl ExitWaiters {
+    fn register(&self, waiter: &Arc<ExitWaiter>, waker: &Waker) {
+        waiter.waker.register(waker);
+        let weak = Arc::downgrade(waiter);
+        let mut waiters = self.waiters.lock();
+        waiters.retain(|registered| registered.strong_count() != 0);
+        if !waiters.iter().any(|registered| registered.ptr_eq(&weak)) {
+            waiters.push(weak);
+        }
+    }
+
+    fn wake_all(&self) {
+        let live = {
+            let mut waiters = self.waiters.lock();
+            let mut live = Vec::with_capacity(waiters.len());
+            waiters.retain(|waiter| {
+                if let Some(waiter) = waiter.upgrade() {
+                    live.push(waiter);
+                    true
+                } else {
+                    false
+                }
+            });
+            live
+        };
+        for waiter in live {
+            waiter.waker.wake();
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Event {
-    /// Waker for exit events.
-    exit_waker: WakerSlot,
+    /// Cancellation-safe weak registrations for every pending exit waiter.
+    exit_waiters: ExitWaiters,
 
     /// Waker for regular status events.
     status_waker: WakerSlot,
@@ -215,7 +263,7 @@ struct Event {
 
     /// Linear claim for the one stopped-state capability represented by this
     /// exact Event generation's retained exit-stop observation.
-    exit_stop_claimed: AtomicBool,
+    exit_capability: AtomicU8,
 
     /// Last notifier registration error. Resource/read failures are retryable
     /// and must not be collapsed into terminal ECHILD.
@@ -250,7 +298,7 @@ impl StatusReservation<'_> {
 impl Event {
     pub fn new() -> Self {
         Self {
-            exit_waker: WakerSlot::default(),
+            exit_waiters: ExitWaiters::default(),
             status_waker: WakerSlot::default(),
             status: Mutex::new(StatusState {
                 pending: VecDeque::new(),
@@ -258,7 +306,7 @@ impl Event {
             }),
             status_changed: Condvar::new(),
             exit_status: AtomicI32::new(EXIT_PENDING),
-            exit_stop_claimed: AtomicBool::new(false),
+            exit_capability: AtomicU8::new(EXIT_CAP_PENDING),
             registration_error: Mutex::new(None),
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
@@ -266,23 +314,125 @@ impl Event {
         }
     }
 
+    fn expire_unclaimed_exit_capability(&self) -> bool {
+        loop {
+            let state = self.exit_capability.load(Ordering::Acquire);
+            match state {
+                EXIT_CAP_PENDING | EXIT_CAP_AVAILABLE => {
+                    let replacement = if state == EXIT_CAP_PENDING {
+                        EXIT_CAP_FINALIZING
+                    } else {
+                        EXIT_CAP_EXPIRED
+                    };
+                    if self
+                        .exit_capability
+                        .compare_exchange(state, replacement, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        return state == EXIT_CAP_PENDING;
+                    }
+                }
+                EXIT_CAP_CLAIMED | EXIT_CAP_EXPIRED => return false,
+                EXIT_CAP_FINALIZING => std::hint::spin_loop(),
+                state => unreachable!("invalid exit capability state {state}"),
+            }
+        }
+    }
+
+    fn prepare_exit_capability_for_cleanup(&self, owns_claimed: bool) -> Result<(), Errno> {
+        loop {
+            let state = self.exit_capability.load(Ordering::Acquire);
+            match state {
+                EXIT_CAP_PENDING | EXIT_CAP_AVAILABLE => {
+                    if self
+                        .exit_capability
+                        .compare_exchange(
+                            state,
+                            EXIT_CAP_EXPIRED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        self.exit_waiters.wake_all();
+                        return Ok(());
+                    }
+                }
+                EXIT_CAP_CLAIMED if owns_claimed => {
+                    if self
+                        .exit_capability
+                        .compare_exchange(
+                            EXIT_CAP_CLAIMED,
+                            EXIT_CAP_EXPIRED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        self.exit_waiters.wake_all();
+                        return Ok(());
+                    }
+                }
+                EXIT_CAP_CLAIMED => return Err(Errno::EALREADY),
+                EXIT_CAP_EXPIRED => return Ok(()),
+                EXIT_CAP_FINALIZING => std::hint::spin_loop(),
+                state => unreachable!("invalid exit capability state {state}"),
+            }
+        }
+    }
+
     /// Replaces the status and notifies the notifier of the change. Returns the
     /// old status if there was one.
     pub fn update(&self, status: i32) -> Option<i32> {
         if status == PTRACE_EVENT_EXIT_STOP {
+            let capability = self.exit_capability.compare_exchange(
+                EXIT_CAP_PENDING,
+                EXIT_CAP_AVAILABLE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            debug_assert!(matches!(
+                capability,
+                Ok(EXIT_CAP_PENDING)
+                    | Err(EXIT_CAP_AVAILABLE
+                        | EXIT_CAP_CLAIMED
+                        | EXIT_CAP_EXPIRED
+                        | EXIT_CAP_FINALIZING)
+            ));
             let previous = self.exit_status.compare_exchange(
                 EXIT_PENDING,
                 EXIT_STOPPED,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
+                Ordering::Release,
+                Ordering::Acquire,
             );
             debug_assert!(matches!(previous, Ok(_) | Err(EXIT_STOPPED)));
             self.status_changed.notify_all();
-            self.exit_waker.wake();
+            self.exit_waiters.wake_all();
             return None;
         }
 
         let terminal = libc::WIFEXITED(status) || libc::WIFSIGNALED(status);
+        if terminal {
+            // Expire an unclaimed capability before terminal status or ECHILD
+            // becomes visible. CLAIMED is already a non-duplicating state.
+            let finalizing = self.expire_unclaimed_exit_capability();
+            let _ = self.exit_status.compare_exchange(
+                EXIT_PENDING,
+                EXIT_ECHILD,
+                Ordering::Release,
+                Ordering::Acquire,
+            );
+            if finalizing {
+                self.exit_capability
+                    .compare_exchange(
+                        EXIT_CAP_FINALIZING,
+                        EXIT_CAP_EXPIRED,
+                        Ordering::Release,
+                        Ordering::Acquire,
+                    )
+                    .expect("terminal exit-capability publication changed");
+            }
+        }
         let mut state = self.status.lock();
         let previous = if terminal {
             let previous = state.terminal;
@@ -300,17 +450,11 @@ impl Event {
         drop(state);
         self.status_changed.notify_all();
         if terminal {
-            let _ = self.exit_status.compare_exchange(
-                EXIT_PENDING,
-                EXIT_ECHILD,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            );
             // A terminal publication resolves both waiter classes. ExitFuture
             // observes either the retained exit stop or typed ECHILD, while
             // WaitFuture retains the exact final status.
             self.status_waker.wake();
-            self.exit_waker.wake();
+            self.exit_waiters.wake_all();
         } else {
             self.status_waker.wake();
         }
@@ -320,20 +464,31 @@ impl Event {
 
     /// Publishes a terminal `ECHILD` observation to every kind of waiter.
     fn mark_echild(&self) {
+        let finalizing = self.expire_unclaimed_exit_capability();
+        let _ = self.exit_status.compare_exchange(
+            EXIT_PENDING,
+            EXIT_ECHILD,
+            Ordering::Release,
+            Ordering::Acquire,
+        );
+        if finalizing {
+            self.exit_capability
+                .compare_exchange(
+                    EXIT_CAP_FINALIZING,
+                    EXIT_CAP_EXPIRED,
+                    Ordering::Release,
+                    Ordering::Acquire,
+                )
+                .expect("ECHILD exit-capability publication changed");
+        }
         let mut state = self.status.lock();
         if state.terminal == INVALID_STATUS {
             state.terminal = ECHILD_STATUS;
         }
         drop(state);
         self.status_changed.notify_all();
-        let _ = self.exit_status.compare_exchange(
-            EXIT_PENDING,
-            EXIT_ECHILD,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        );
         self.status_waker.wake();
-        self.exit_waker.wake();
+        self.exit_waiters.wake_all();
     }
 
     fn is_terminal(&self) -> bool {
@@ -456,23 +611,47 @@ impl Event {
     }
 
     /// Polls the event to check if there is a new status ready to be consumed.
-    pub fn poll_exit(&self, waker: &Waker) -> Poll<Result<(), Errno>> {
-        // Register the waker *before* checking the status to avoid a race condition.
-        self.exit_waker.register(waker);
+    pub fn poll_exit(&self, waiter: &Arc<ExitWaiter>, waker: &Waker) -> Poll<Result<(), Errno>> {
+        // Register before checking publication to avoid a lost wake. The weak
+        // Event registration is pruned automatically if this future is dropped.
+        self.exit_waiters.register(waiter, waker);
 
-        match self.exit_status.load(Ordering::SeqCst) {
-            EXIT_STOPPED => match self.exit_stop_claimed.compare_exchange(
-                false,
-                true,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(false) => Poll::Ready(Ok(())),
-                Err(true) => Poll::Ready(Err(Errno::EALREADY)),
-                Ok(true) | Err(false) => unreachable!("invalid exit-stop claim transition"),
+        match self.exit_status.load(Ordering::Acquire) {
+            EXIT_STOPPED => loop {
+                match self.exit_capability.load(Ordering::Acquire) {
+                    EXIT_CAP_AVAILABLE => {
+                        if self
+                            .exit_capability
+                            .compare_exchange(
+                                EXIT_CAP_AVAILABLE,
+                                EXIT_CAP_CLAIMED,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            break Poll::Ready(Ok(()));
+                        }
+                    }
+                    EXIT_CAP_CLAIMED | EXIT_CAP_EXPIRED => {
+                        break Poll::Ready(Err(Errno::EALREADY));
+                    }
+                    EXIT_CAP_PENDING | EXIT_CAP_FINALIZING => std::hint::spin_loop(),
+                    state => unreachable!("invalid exit capability state {state}"),
+                }
             },
             EXIT_ECHILD => Poll::Ready(Err(Errno::ECHILD)),
-            EXIT_PENDING => Poll::Pending,
+            EXIT_PENDING => match self.exit_capability.load(Ordering::Acquire) {
+                EXIT_CAP_EXPIRED => Poll::Ready(Err(Errno::EALREADY)),
+                EXIT_CAP_PENDING => Poll::Pending,
+                EXIT_CAP_FINALIZING => {
+                    while self.exit_capability.load(Ordering::Acquire) == EXIT_CAP_FINALIZING {
+                        std::hint::spin_loop();
+                    }
+                    self.poll_exit(waiter, waker)
+                }
+                state => unreachable!("unpublished exit capability state {state}"),
+            },
             state => unreachable!("invalid exit publication state {state}"),
         }
     }
@@ -1021,6 +1200,30 @@ impl TerminalCleanup {
     pub fn exit_stop_observed(&self) -> bool {
         self.event.event().exit_status.load(Ordering::Acquire) == EXIT_STOPPED
     }
+
+    /// Revokes any not-yet-claimed exit-stop capability before cancellation
+    /// cleanup performs a raw ptrace transition.
+    ///
+    /// Returns [`Errno::EALREADY`] rather than advancing behind a capability
+    /// already minted as [`Stopped`].
+    pub fn revoke_unclaimed_exit_stop(&self) -> Result<(), Errno> {
+        self.event
+            .event()
+            .prepare_exit_capability_for_cleanup(false)
+    }
+
+    /// Transfers a previously claimed exit-stop capability to cancellation
+    /// cleanup and revokes all future claims.
+    ///
+    /// # Safety
+    ///
+    /// The caller must prove exclusive ownership of the exact stopped tracee
+    /// generation and that the previously returned [`Stopped`] value has been
+    /// destroyed or transferred to the cleanup path. Revocation cannot make an
+    /// independently retained `Stopped` value safe.
+    pub unsafe fn revoke_owned_exit_stop(&self) -> Result<(), Errno> {
+        self.event.event().prepare_exit_capability_for_cleanup(true)
+    }
 }
 
 /// A rollback-safe reservation of one exact-generation notifier FIFO front.
@@ -1090,14 +1293,16 @@ impl Future for WaitFuture {
 /// The next state after this should be the final exit status.
 /// Exactly one future for an immutable Event generation can claim and return
 /// the stopped-state capability. Duplicate or re-polled futures return
-/// [`Errno::EALREADY`]; terminal status remains independently retained for
-/// ordinary waiters.
+/// [`Errno::EALREADY`]. An unclaimed capability also expires before terminal
+/// publication or cancellation cleanup advances the tracee; terminal status
+/// remains independently retained for ordinary waiters.
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-270): Trigger 2: review the public typed-error
 // ExitFuture contract and retained exit-stop generation semantics.
 pub struct ExitFuture {
     pid: Pid,
     event: EventHandle,
+    waiter: Arc<ExitWaiter>,
 }
 
 impl ExitFuture {
@@ -1105,6 +1310,7 @@ impl ExitFuture {
         Self {
             pid,
             event: token.event().clone(),
+            waiter: Arc::new(ExitWaiter::default()),
         }
     }
 }
@@ -1118,7 +1324,7 @@ impl Future for ExitFuture {
             Ok(event) => event,
             Err(error) => return Poll::Ready(Err(error.into())),
         };
-        match futures::ready!(event.poll_exit(cx.waker())) {
+        match futures::ready!(event.poll_exit(&this.waiter, cx.waker())) {
             Ok(()) => Poll::Ready(Ok(Stopped::from_token(
                 this.pid,
                 TraceeToken::from_event(this.event.clone()),
@@ -1202,16 +1408,20 @@ mod test {
     }
 
     #[test]
-    fn held_exit_waiter_survives_terminal_final_update() {
+    fn held_unclaimed_exit_waiter_expires_before_terminal_publication() {
         let counter = Arc::new(WakeCounter::default());
         let waker = Waker::from(Arc::clone(&counter));
         let event = Event::new();
+        let waiter = Arc::new(ExitWaiter::default());
 
-        assert_eq!(event.poll_exit(&waker), Poll::Pending);
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Pending);
         event.update(PTRACE_EVENT_EXIT_STOP);
         event.update(42 << 8);
 
-        assert_eq!(event.poll_exit(&waker), Poll::Ready(Ok(())));
+        assert_eq!(
+            event.poll_exit(&waiter, &waker),
+            Poll::Ready(Err(Errno::EALREADY))
+        );
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
     }
 
@@ -1219,11 +1429,13 @@ mod test {
     fn exit_stop_capability_is_single_claim_while_terminal_status_fans_out() {
         let waker = Waker::from(Arc::new(WakeCounter::default()));
         let event = Event::new();
+        let winner = Arc::new(ExitWaiter::default());
+        let duplicate = Arc::new(ExitWaiter::default());
 
         event.update(PTRACE_EVENT_EXIT_STOP);
-        assert_eq!(event.poll_exit(&waker), Poll::Ready(Ok(())));
+        assert_eq!(event.poll_exit(&winner, &waker), Poll::Ready(Ok(())));
         assert_eq!(
-            event.poll_exit(&waker),
+            event.poll_exit(&duplicate, &waker),
             Poll::Ready(Err(Errno::EALREADY)),
             "one Event generation minted two exit-stop capabilities"
         );
@@ -1231,7 +1443,84 @@ mod test {
         event.update(42 << 8);
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
         assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
-        assert_eq!(event.poll_exit(&waker), Poll::Ready(Err(Errno::EALREADY)));
+        assert_eq!(
+            event.poll_exit(&winner, &waker),
+            Poll::Ready(Err(Errno::EALREADY))
+        );
+    }
+
+    #[test]
+    fn cleanup_requires_exclusive_transfer_of_claimed_exit_stop() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let event = Event::new();
+        let waiter = Arc::new(ExitWaiter::default());
+
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        assert_eq!(event.poll_exit(&waiter, &waker), Poll::Ready(Ok(())));
+        assert_eq!(
+            event.prepare_exit_capability_for_cleanup(false),
+            Err(Errno::EALREADY)
+        );
+        event
+            .prepare_exit_capability_for_cleanup(true)
+            .expect("exclusive cleanup transfer rejected claimed exit stop");
+        assert_eq!(
+            event.poll_exit(&waiter, &waker),
+            Poll::Ready(Err(Errno::EALREADY))
+        );
+    }
+
+    #[test]
+    fn simultaneous_exit_waiters_are_all_woken_for_one_claim() {
+        for claim_a_first in [true, false] {
+            let counter_a = Arc::new(WakeCounter::default());
+            let counter_b = Arc::new(WakeCounter::default());
+            let waker_a = Waker::from(Arc::clone(&counter_a));
+            let waker_b = Waker::from(Arc::clone(&counter_b));
+            let event = Event::new();
+            let waiter_a = Arc::new(ExitWaiter::default());
+            let waiter_b = Arc::new(ExitWaiter::default());
+
+            assert_eq!(event.poll_exit(&waiter_a, &waker_a), Poll::Pending);
+            assert_eq!(event.poll_exit(&waiter_b, &waker_b), Poll::Pending);
+            event.update(PTRACE_EVENT_EXIT_STOP);
+
+            assert_eq!(counter_a.0.load(Ordering::SeqCst), 1);
+            assert_eq!(counter_b.0.load(Ordering::SeqCst), 1);
+            let (winner, winner_waker, duplicate, duplicate_waker) = if claim_a_first {
+                (&waiter_a, &waker_a, &waiter_b, &waker_b)
+            } else {
+                (&waiter_b, &waker_b, &waiter_a, &waker_a)
+            };
+            assert_eq!(event.poll_exit(winner, winner_waker), Poll::Ready(Ok(())));
+            assert_eq!(
+                event.poll_exit(duplicate, duplicate_waker),
+                Poll::Ready(Err(Errno::EALREADY))
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_last_exit_waiter_does_not_orphan_first_waiter() {
+        let counter_a = Arc::new(WakeCounter::default());
+        let counter_b = Arc::new(WakeCounter::default());
+        let waker_a = Waker::from(Arc::clone(&counter_a));
+        let waker_b = Waker::from(Arc::clone(&counter_b));
+        let event = Event::new();
+        let waiter_a = Arc::new(ExitWaiter::default());
+        let waiter_b = Arc::new(ExitWaiter::default());
+
+        assert_eq!(event.poll_exit(&waiter_a, &waker_a), Poll::Pending);
+        assert_eq!(event.poll_exit(&waiter_b, &waker_b), Poll::Pending);
+        drop(waiter_b);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+
+        assert_eq!(counter_a.0.load(Ordering::SeqCst), 1);
+        assert_eq!(counter_b.0.load(Ordering::SeqCst), 0);
+        assert_eq!(event.poll_exit(&waiter_a, &waker_a), Poll::Ready(Ok(())));
+        event.update(42 << 8);
+        assert_eq!(event.poll_status(&waker_a), Poll::Ready(Ok(42 << 8)));
+        assert_eq!(event.poll_status(&waker_a), Poll::Ready(Ok(42 << 8)));
     }
 
     #[test]
@@ -1240,12 +1529,16 @@ mod test {
 
         for terminal in [42 << 8, Signal::SIGILL as i32] {
             let event = Event::new();
+            let waiter = Arc::new(ExitWaiter::default());
             event.update(PTRACE_EVENT_EXIT_STOP);
             event.update(terminal);
 
             assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(terminal)));
             assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(terminal)));
-            assert_eq!(event.poll_exit(&waker), Poll::Ready(Ok(())));
+            assert_eq!(
+                event.poll_exit(&waiter, &waker),
+                Poll::Ready(Err(Errno::EALREADY))
+            );
         }
     }
 
@@ -1567,19 +1860,83 @@ mod test {
         true
     }
 
+    async fn unclaimed_exit_waiter_expires_before_cleanup_replacement(
+        requested_pid: Option<i32>,
+    ) -> bool {
+        let Some((old_pid, old_stopped)) = spawn_traced_process(requested_pid) else {
+            return false;
+        };
+        old_stopped
+            .setoptions(Options::PTRACE_O_TRACEEXIT)
+            .expect("enable exit stop for cleanup expiration");
+        let terminal = old_stopped.terminal_cleanup();
+        let mut late = Box::pin(old_stopped.exit_event());
+        let waker = futures::task::noop_waker();
+        let mut context = Context::from_waker(&waker);
+        assert_eq!(late.as_mut().poll(&mut context), Poll::Pending);
+        old_stopped
+            .resume(None)
+            .expect("resume unclaimed exit-stop tracee");
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !terminal.exit_stop_observed() {
+            assert!(
+                Instant::now() < deadline,
+                "unclaimed cleanup tracee did not reach exit stop"
+            );
+            thread::yield_now();
+        }
+        terminal
+            .revoke_unclaimed_exit_stop()
+            .expect("cleanup failed to expire unclaimed exit stop");
+        nix::sys::ptrace::cont(old_pid, None).expect("raw cleanup resume old exit stop");
+        assert!(
+            terminal.wait(Duration::from_secs(1)),
+            "cleanup notifier did not publish old final status"
+        );
+
+        thread::sleep(Duration::from_millis(20));
+        let Some((replacement_pid, replacement)) = spawn_traced_process(requested_pid) else {
+            return false;
+        };
+        if requested_pid.is_some() {
+            assert_eq!(
+                replacement_pid, old_pid,
+                "clone3 did not reuse cleanup test PID"
+            );
+        }
+
+        assert_eq!(late.await, Err(Error::Errno(Errno::EALREADY)));
+        replacement
+            .getregs()
+            .expect("late unclaimed waiter touched the stopped replacement");
+        assert_eq!(
+            replacement
+                .resume(None)
+                .expect("resume cleanup replacement tracee")
+                .wait()
+                .expect("wait cleanup replacement tracee")
+                .assume_exited(),
+            (replacement_pid.into(), crate::ExitStatus::Exited(42))
+        );
+        true
+    }
+
     #[tokio::test(flavor = "current_thread")]
-    async fn duplicate_exit_waiter_never_targets_reused_pid() {
-        const INNER: &str = "SAFEPTRACE_DUPLICATE_EXIT_REUSE_INNER";
+    async fn exit_waiters_never_target_reused_pid_after_claim_or_cleanup() {
+        const INNER: &str = "SAFEPTRACE_EXIT_REUSE_INNER";
         if env::var_os(INNER).is_some() {
-            if duplicate_exit_waiter_rejects_replacement(Some(100)).await {
-                println!("ACTUAL_DUPLICATE_EXIT_PID_REUSE_EXERCISED");
+            if duplicate_exit_waiter_rejects_replacement(Some(100)).await
+                && unclaimed_exit_waiter_expires_before_cleanup_replacement(Some(100)).await
+            {
+                println!("ACTUAL_EXIT_PID_REUSE_EXERCISED");
             } else {
-                println!("ACTUAL_DUPLICATE_EXIT_PID_REUSE_UNAVAILABLE");
+                println!("ACTUAL_EXIT_PID_REUSE_UNAVAILABLE");
             }
             return;
         }
 
-        let inner = "notifier::test::duplicate_exit_waiter_never_targets_reused_pid";
+        let inner = "notifier::test::exit_waiters_never_target_reused_pid_after_claim_or_cleanup";
         let actual_reuse = env::current_exe().ok().and_then(|test_binary| {
             Command::new("unshare")
                 .args([
@@ -1598,12 +1955,10 @@ mod test {
         if let Some(output) = actual_reuse.as_ref() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            if output.status.success()
-                && stdout.contains("ACTUAL_DUPLICATE_EXIT_PID_REUSE_EXERCISED")
-            {
+            if output.status.success() && stdout.contains("ACTUAL_EXIT_PID_REUSE_EXERCISED") {
                 return;
             }
-            let unavailable = stdout.contains("ACTUAL_DUPLICATE_EXIT_PID_REUSE_UNAVAILABLE")
+            let unavailable = stdout.contains("ACTUAL_EXIT_PID_REUSE_UNAVAILABLE")
                 || stderr.contains("Operation not permitted")
                 || stderr.contains("unshare failed");
             assert!(
@@ -1616,6 +1971,7 @@ mod test {
         // Still use two real kernel-created generations and prove the late
         // duplicate cannot mint a second stopped capability.
         assert!(duplicate_exit_waiter_rejects_replacement(None).await);
+        assert!(unclaimed_exit_waiter_expires_before_cleanup_replacement(None).await);
     }
 
     fn spawn_stopped_process(requested_pid: Option<i32>) -> Option<Pid> {

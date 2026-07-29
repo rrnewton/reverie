@@ -618,6 +618,7 @@ impl LiteinstTraceeCleanup {
             return self.capture_pending_children(terminal);
         }
         if let Some(mut held) = self.held_root_stop.lock().unwrap().take() {
+            let owns_claimed_exit = matches!(held.status, HeldRootStopStatus::Exit);
             let matching_status = match held.status {
                 HeldRootStopStatus::Signal(signal) => {
                     let _exact_signal = signal;
@@ -651,6 +652,16 @@ impl LiteinstTraceeCleanup {
                     "held root stop lease did not match the exact event generation/status",
                 ));
             }
+            if owns_claimed_exit {
+                // SAFETY: taking the exact-generation held lease is the
+                // cancellation handoff for the ExitFuture-minted Stopped. The
+                // handler future has been dropped, so no independent Stopped
+                // capability survives this exclusive slot transfer.
+                unsafe { terminal.revoke_owned_exit_stop() }
+            } else {
+                terminal.revoke_unclaimed_exit_stop()
+            }
+            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
             held.disarm();
             self.root_frozen = true;
             return self.capture_pending_children(terminal);
@@ -679,6 +690,9 @@ impl LiteinstTraceeCleanup {
                         .entry(child_pid)
                         .or_insert_with(|| NewbornTracee::from_event(stopped.pid(), op, &child));
                 }
+                terminal
+                    .revoke_unclaimed_exit_stop()
+                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
                 reservation.commit();
                 // Any exact-generation nonterminal wait status means the root
                 // is kernel-stopped. Drain the remaining FIFO while it cannot
@@ -687,9 +701,14 @@ impl LiteinstTraceeCleanup {
                 self.root_frozen = true;
                 return Ok(());
             }
-            if terminal.exit_stop_observed()
-                || (terminal.wait(Duration::ZERO) && terminal.pending_is_empty())
-            {
+            if terminal.exit_stop_observed() {
+                terminal
+                    .revoke_unclaimed_exit_stop()
+                    .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
+                self.root_frozen = true;
+                return Ok(());
+            }
+            if terminal.wait(Duration::ZERO) && terminal.pending_is_empty() {
                 self.root_frozen = true;
                 return Ok(());
             }
@@ -851,10 +870,17 @@ impl LiteinstTraceeCleanup {
                 // reaped. Otherwise an auto-attached child can be reparented
                 // before its notifier consumes the final wait status.
                 if !root_done && descendants.is_empty() && self.identity.is_our_tracee() {
+                    root_terminal
+                        .revoke_unclaimed_exit_stop()
+                        .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
                     let _ = ptrace::cont(self.pid().into(), None);
                 }
                 for tracee in descendants.values() {
                     if tracee.identity.is_our_tracee() {
+                        tracee
+                            .terminal
+                            .revoke_unclaimed_exit_stop()
+                            .map_err(|error| std::io::Error::from_raw_os_error(error.into_raw()))?;
                         let _ = ptrace::cont(tracee.identity.tid.into(), None);
                     }
                 }
