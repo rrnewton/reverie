@@ -2613,12 +2613,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Wait, TraceError> {
-        if self.global_state.liteinst_runtime.is_some() {
-            let runtime = self
-                .global_state
-                .liteinst_runtime
-                .as_ref()
-                .expect("LiteInst runtime must exist in fail-closed new-task path");
+        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
             // Bind the kernel-reported child identity before any await.
             let child_identity = TraceeIdentity::capture_newborn(child.pid(), parent.pid(), op)?;
             let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
