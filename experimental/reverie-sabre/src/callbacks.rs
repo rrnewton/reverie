@@ -168,12 +168,6 @@ pub extern "C" fn handle_syscall<T: ToolGlobal>(
     }
 }
 
-// AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-265): Review pre-resume clone-child notification.
-extern "C" fn handle_clone_child_start<T: ToolGlobal>() {
-    thread::notify_current_thread_start::<T>();
-}
-
 /// Handle the critical section for the given system call on the given thread
 // The arguments intentionally mirror SaBRe's raw syscall callback ABI.
 #[allow(clippy::if_same_then_else, clippy::too_many_arguments)]
@@ -200,8 +194,11 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
     let _frame_guard = SyscallFrameGuard::enter(wrapper_sp);
 
     // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-265): Review pre-resume notification with deferred
-    // registry-slot allocation in normal callback context.
+    // TODO-HUMAN-REVIEW(PR-214): Review eager child registration before guest resume.
+    // Register clone children lazily at their first intercepted syscall. Rust
+    // bookkeeping at the raw clone return can allocate before pthread startup
+    // completes, deadlocking the in-guest allocator under concurrent clones.
+    // TODO-HUMAN-REVIEW(PR-226): Review deferred clone-child registration.
     let result = if sys_no == Sysno::clone && arg2 != 0 {
         // New thread with its own stack: the kernel sets the child's %rsp to
         // `child_stack`, so clone_syscall's `jmp r9` shortcut is correct.
@@ -215,7 +212,6 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                         arg4 as *mut i32,
                         arg5,
                         return_address as *const libc::c_void,
-                        handle_clone_child_start::<T>,
                     )
                 })
                 .unwrap_or_else(|e| -e.into_raw() as usize)
@@ -286,7 +282,6 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                             0,
                             arg5,
                             return_address as *mut libc::c_void,
-                            handle_clone_child_start::<T>,
                         )
                     },
                 })
@@ -336,22 +331,28 @@ fn exit_group_with_thread<T: ToolGlobal>(thread: &mut Thread<T>, exit_code: usiz
     terminate_group(exit_code)
 }
 
-fn prepare_group_exit<T: ToolGlobal>(thread: &mut Thread<T>) {
-    thread.try_exit();
-    if let Some(exiting_pid) = thread::exit_all(|_, process_and_thread_id| unsafe {
-        // TODO-HUMAN-REVIEW(PR-265): Review exit_group ESRCH race handling.
-        let result = syscalls::syscall3(
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-265): Review exit_group ESRCH race handling.
+fn signal_controlled_exit(process_and_thread_id: PidTid) {
+    let result = unsafe {
+        syscalls::syscall3(
             Sysno::tgkill,
             process_and_thread_id.pid as usize,
             process_and_thread_id.tid as usize,
             CONTROLLED_EXIT_SIGNAL as usize,
-        );
-        if let Err(errno) = result {
-            if errno != Errno::ESRCH {
-                panic!("Signaling thread failed: {errno}");
-            }
-        }
-    }) {
+        )
+    };
+    match result {
+        Err(errno) if errno != Errno::ESRCH => panic!("Signaling thread failed: {errno}"),
+        _ => {}
+    }
+}
+
+fn prepare_group_exit<T: ToolGlobal>(thread: &mut Thread<T>) {
+    thread.try_exit();
+    if let Some(exiting_pid) =
+        thread::exit_all(|_, process_and_thread_id| signal_controlled_exit(process_and_thread_id))
+    {
         if !thread::wait_for_all_to_exit(exiting_pid, T::global().get_exit_timeout()) {
             let _ = T::global().on_exit_timeout();
         }
@@ -476,7 +477,9 @@ mod exit_group_tests {
     use syscalls::Errno;
 
     use super::read_clone3_stack;
+    use super::signal_controlled_exit;
     use super::terminate_group;
+    use crate::thread::PidTid;
 
     #[test]
     fn clone3_stack_read_rejects_invalid_guest_pointer() {
@@ -484,6 +487,15 @@ mod exit_group_tests {
             read_clone3_stack(std::process::id(), 1, 88),
             Err(Errno::EFAULT)
         );
+    }
+
+    #[test]
+    fn exited_group_member_is_a_successful_teardown_target() {
+        signal_controlled_exit(PidTid {
+            pid: std::process::id(),
+            // Linux's configured PID maximum is far below i32::MAX.
+            tid: i32::MAX as u32,
+        });
     }
 
     #[test]
