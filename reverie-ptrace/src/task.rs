@@ -366,8 +366,11 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) ready_marker: u64,
     pub(crate) helper_return_marker: u64,
     pub(crate) syscall_marker: u64,
+    pub(crate) newborn_tracees: Arc<StdMutex<HashSet<Pid>>>,
     #[cfg(test)]
     pub(crate) fail_preinit: bool,
+    #[cfg(test)]
+    pub(crate) pause_new_task: Option<mpsc::UnboundedSender<Pid>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -517,23 +520,23 @@ impl LiteinstRuntimeState {
             }
             _ => return false,
         };
-        let operation_range = match operation_range {
-            Ok(Some(range)) => range,
-            Ok(None) => return false,
-            Err(()) => return !self.active_hooks.is_empty(),
-        };
         let requested_protection = match nr {
             Sysno::mprotect => Some(args.arg2 as i32),
             Sysno::pkey_mprotect if args.arg3 == 0 => Some(args.arg2 as i32),
             _ => None,
         };
-        if self.active_hooks.values().any(|hook| {
-            hook.protected_ranges()
-                .into_iter()
-                .any(|(range, protection)| {
-                    range.overlaps(operation_range) && requested_protection != Some(protection)
-                })
-        }) {
+        let source_mutates_active_hook = match operation_range {
+            Ok(Some(operation_range)) => self.active_hooks.values().any(|hook| {
+                hook.protected_ranges()
+                    .into_iter()
+                    .any(|(range, protection)| {
+                        range.overlaps(operation_range) && requested_protection != Some(protection)
+                    })
+            }),
+            Ok(None) => false,
+            Err(()) => !self.active_hooks.is_empty(),
+        };
+        if source_mutates_active_hook {
             return true;
         }
         if nr == Sysno::mremap && args.arg3 as i32 & libc::MREMAP_FIXED != 0 {
@@ -2604,6 +2607,19 @@ impl<L: Tool + 'static> TracedTask<L> {
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Wait, TraceError> {
         if self.global_state.liteinst_runtime.is_some() {
+            if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
+                runtime.newborn_tracees.lock().unwrap().insert(child.pid());
+            }
+            #[cfg(test)]
+            if let Some(sender) = self
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.pause_new_task.as_ref())
+            {
+                let _ = sender.send(child.pid());
+                future::pending::<()>().await;
+            }
             // This first hybrid slice intentionally has one tracee and one
             // thread: its patch-helper stack and bootstrap phase are
             // process-global. Both sides of a ptrace child event are stopped,
@@ -3107,8 +3123,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             futures::pin_mut!(exit_event, run_loop);
 
             futures::select_biased! {
-                task = exit_event => match Self::handle_exit_event(task).await {
-                    Ok(exit_status) => Ok(exit_status),
+                task = exit_event => match task {
+                    Ok(task) => match Self::handle_exit_event(task).await {
+                        Ok(exit_status) => Ok(exit_status),
+                        Err(err) => handle_internal_error(err.into()).await,
+                    },
                     Err(err) => handle_internal_error(err.into()).await,
                 },
                 exit_status = run_loop => exit_status,
@@ -4169,6 +4188,11 @@ mod tests {
         assert!(state.mapping_mutates_active_hook(
             Sysno::mremap,
             SyscallArgs::new(0x5000_0000, 1, 1, libc::MREMAP_FIXED as usize, 0x401000, 0,),
+            4096,
+        ));
+        assert!(state.mapping_mutates_active_hook(
+            Sysno::mremap,
+            SyscallArgs::new(0x5000_0000, 0, 1, libc::MREMAP_FIXED as usize, 0x401000, 0,),
             4096,
         ));
         assert!(state.mapping_mutates_active_hook(

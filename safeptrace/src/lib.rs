@@ -1350,6 +1350,39 @@ mod test {
         Ok(())
     }
 
+    #[cfg(feature = "notifier")]
+    #[cfg(not(sanitized))]
+    #[tokio::test]
+    async fn late_waits_after_terminal_reap_return_echild() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (pid, tracee) = trace(|| 42, Options::empty())?;
+        assert_eq!(
+            tracee.resume(None)?.next_state().await?,
+            Wait::Exited(pid, ExitStatus::Exited(42))
+        );
+
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                Running::new(pid).next_state(),
+            )
+            .await
+            .expect("late next_state hung after terminal reap"),
+            Err(Error::Errno(Errno::ECHILD))
+        );
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                Running::new(pid).exit_event(),
+            )
+            .await
+            .expect("late exit_event hung after terminal reap"),
+            Err(Error::Errno(Errno::ECHILD))
+        );
+
+        Ok(())
+    }
+
     // kernel_sigset_t used by naked syscall
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     struct KernelSigset(u64);

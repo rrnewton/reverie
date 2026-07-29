@@ -475,6 +475,7 @@ async fn active_hook_mapping_footprints_reject_mprotect_before_mutation() {
         ("short-map-fixed", "mmap"),
         ("short-mremap", "mremap"),
         ("short-mremap-fixed", "mremap"),
+        ("zero-old-mremap-fixed", "mremap"),
     ] {
         let error = run_active_footprint_mode(mode)
             .await

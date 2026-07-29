@@ -131,6 +131,16 @@ int main(int argc, char **argv) {
                           (void *)site_page);
     return result == MAP_FAILED ? 38 : 39;
   }
+  if (strcmp(argv[1], "zero-old-mremap-fixed") == 0) {
+    void *source = mmap(NULL, page, PROT_READ | PROT_WRITE,
+                        MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (source == MAP_FAILED) {
+      return 41;
+    }
+    void *result = mremap(source, 0, 1, MREMAP_MAYMOVE | MREMAP_FIXED,
+                          (void *)site_page);
+    return result == MAP_FAILED ? 42 : 43;
+  }
   if (strcmp(argv[1], "pkey-noop") == 0) {
     errno = 0;
     long result = syscall(SYS_pkey_mprotect, (void *)site_page, 1,

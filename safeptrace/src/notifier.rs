@@ -65,6 +65,7 @@
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::fs;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -98,6 +99,9 @@ static NOTIFIER: LazyLock<Notifier> = LazyLock::new(Notifier::new);
 
 /// A place-holder status used to indicate that no status has been set.
 const INVALID_STATUS: i32 = -1;
+
+/// The notifier worker found that the PID is no longer a waitable child.
+const ECHILD_STATUS: i32 = -2;
 
 /// The number we get when in a PTRACE_EVENT_EXIT stop.
 const PTRACE_EVENT_EXIT_STOP: i32 = (libc::PTRACE_EVENT_EXIT << 16) | (libc::SIGTRAP << 8) | 0x7f;
@@ -186,8 +190,15 @@ impl Event {
         }
     }
 
+    /// Publishes a terminal `ECHILD` observation to every kind of waiter.
+    fn mark_echild(&self) {
+        self.status.store(ECHILD_STATUS, Ordering::SeqCst);
+        self.status_waker.wake();
+        self.exit_waker.wake();
+    }
+
     /// Polls the event to check if there is a new status ready to be consumed.
-    pub fn poll_status(&self, waker: &Waker) -> Poll<i32> {
+    pub fn poll_status(&self, waker: &Waker) -> Poll<Result<i32, Errno>> {
         // Register the waker *before* checking the status to avoid a race condition.
         self.status_waker.register(waker);
 
@@ -196,7 +207,8 @@ impl Event {
         let status = self
             .status
             .try_update(Ordering::SeqCst, Ordering::SeqCst, |prev| {
-                if prev == INVALID_STATUS || prev == PTRACE_EVENT_EXIT_STOP {
+                if prev == INVALID_STATUS || prev == ECHILD_STATUS || prev == PTRACE_EVENT_EXIT_STOP
+                {
                     // Don't update if we're exiting or if there is no status to
                     // be consumed.
                     None
@@ -207,7 +219,8 @@ impl Event {
             });
 
         match status {
-            Ok(status) => Poll::Ready(status),
+            Ok(status) => Poll::Ready(Ok(status)),
+            Err(ECHILD_STATUS) => Poll::Ready(Err(Errno::ECHILD)),
             Err(_) => {
                 // There is either no status available or the guest is exiting.
                 Poll::Pending
@@ -216,7 +229,7 @@ impl Event {
     }
 
     /// Polls the event to check if there is a new status ready to be consumed.
-    pub fn poll_exit(&self, waker: &Waker) -> Poll<()> {
+    pub fn poll_exit(&self, waker: &Waker) -> Poll<Result<(), Errno>> {
         // Register the waker *before* checking the status to avoid a race condition.
         self.exit_waker.register(waker);
 
@@ -230,7 +243,8 @@ impl Event {
         );
 
         match status {
-            Ok(_) => Poll::Ready(()),
+            Ok(_) => Poll::Ready(Ok(())),
+            Err(ECHILD_STATUS) => Poll::Ready(Err(Errno::ECHILD)),
             Err(_) => Poll::Pending,
         }
     }
@@ -265,7 +279,20 @@ fn wait(pid: Pid) -> Option<i32> {
 
 /// A worker thread that simply wakes a future when a process changes state.
 fn worker_thread(pid: Pid, event: Arc<Event>) {
-    while let Some(status) = wait(pid) {
+    loop {
+        let Some(status) = wait(pid) else {
+            if is_our_tracee(pid) {
+                // A newborn auto-attached ptrace child can briefly exist with
+                // our TracerPid before its first wait status becomes visible.
+                // ECHILD is transient in that window, not terminal.
+                thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            // Publish before unregistering so held and newly registered late
+            // waiters both receive a typed terminal result instead of hanging.
+            event.mark_echild();
+            break;
+        };
         if let Some(old_status) = event.update(status)
             && status != PTRACE_EVENT_EXIT_STOP
             && !libc::WIFEXITED(status)
@@ -288,6 +315,21 @@ fn worker_thread(pid: Pid, event: Arc<Event>) {
     // before the final status is polled, and leaving cleanup to that future
     // would retain a stale event if the kernel later reuses this PID.
     NOTIFIER.remove(pid, &event);
+}
+
+fn is_our_tracee(pid: Pid) -> bool {
+    let Ok(status) = fs::read_to_string(format!("/proc/{pid}/status")) else {
+        return false;
+    };
+    status.lines().any(|line| {
+        let Some(tracer_tid) = line
+            .strip_prefix("TracerPid:")
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+        else {
+            return false;
+        };
+        tracer_tid != 0 && std::path::Path::new(&format!("/proc/self/task/{tracer_tid}")).exists()
+    })
 }
 
 struct Notifier {
@@ -412,7 +454,10 @@ impl Future for WaitFuture {
         let this = self.get_mut();
         let pid = this.running.pid();
         let event = this.event.get_or_insert_with(|| NOTIFIER.event(pid));
-        let status = futures::ready!(event.poll_status(cx.waker()));
+        let status = match futures::ready!(event.poll_status(cx.waker())) {
+            Ok(status) => status,
+            Err(errno) => return Poll::Ready(Err(errno.into())),
+        };
 
         // This should be the last event. Remove the PID so a future reuse can
         // create a fresh notifier thread.
@@ -441,13 +486,15 @@ impl ExitFuture {
 }
 
 impl Future for ExitFuture {
-    type Output = Stopped;
+    type Output = Result<Stopped, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         let event = this.event.get_or_insert_with(|| NOTIFIER.event(this.pid));
-        futures::ready!(event.poll_exit(cx.waker()));
-        Poll::Ready(Stopped::new_unchecked(this.pid))
+        match futures::ready!(event.poll_exit(cx.waker())) {
+            Ok(()) => Poll::Ready(Ok(Stopped::new_unchecked(this.pid))),
+            Err(errno) => Poll::Ready(Err(errno.into())),
+        }
     }
 }
 
@@ -488,7 +535,7 @@ mod test {
         let stopped = (libc::SIGSTOP << 8) | 0x7f;
         assert_eq!(event.update(stopped), None);
         assert_eq!(counter.0.load(Ordering::SeqCst), 1);
-        assert_eq!(event.poll_status(&waker), Poll::Ready(stopped));
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(stopped)));
         assert!(!event.status_waker.register(&waker));
     }
 
