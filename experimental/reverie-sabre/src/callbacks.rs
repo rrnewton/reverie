@@ -32,6 +32,7 @@ use crate::signal::guard;
 thread_local! {
     static CURRENT_SYSCALL_FRAME: std::cell::Cell<*mut ffi::syscall_stackframe> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
+    static TAIL_INJECTED_EXIT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 /// Keeps the loader's live syscall frame available to the synchronous shared-tool callback.
@@ -61,6 +62,26 @@ pub(crate) fn current_syscall_frame() -> Option<*mut ffi::syscall_stackframe> {
         let frame = frame.get();
         (!frame.is_null()).then_some(frame)
     })
+}
+
+pub(crate) fn request_tail_injected_exit(exit_code: usize) {
+    TAIL_INJECTED_EXIT.with(|status| {
+        assert!(
+            status.replace(Some(exit_code)).is_none(),
+            "nested tail-injected exits are unsupported"
+        );
+    });
+}
+
+pub(crate) fn terminate_tail_injected_exit_if_requested<E: thread::EventSink>(
+    thread: &mut Thread<E>,
+) {
+    if let Some(exit_code) = TAIL_INJECTED_EXIT.with(std::cell::Cell::take) {
+        // Publish the runtime slot before the raw exit. Group teardown waits on this state and a
+        // direct raw exit would otherwise leave the slot permanently in Handler.
+        let _ = thread.try_exit();
+        terminate(exit_code);
+    }
 }
 
 pub const CONTROLLED_EXIT_SIGNAL: libc::c_int = libc::SIGSTKFLT;
@@ -309,6 +330,10 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                 .unwrap_or_else(|e| -e.into_raw() as usize)
         })?
     };
+
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-265): Review callback-bound tail-injected thread termination.
+    terminate_tail_injected_exit_if_requested(thread);
 
     guard::drain_pending();
     thread.enter_guest_execution()?;

@@ -1196,14 +1196,12 @@ where
         }
         if rewritten_thread_exit {
             // A Tool can replace an intercepted syscall with a terminal thread exit. Cleanup was
-            // completed above, so execute that replacement directly and never restore the
-            // original SaBRe callback frame.
+            // completed above. Ask the outer SaBRe callback to publish the runtime thread's
+            // Exited state before it performs the non-returning raw exit.
             // AUTONOMOUS-BOT-IMPLEMENTED
             // TODO-HUMAN-REVIEW(PR-265): Review non-original tail-injected thread exit.
-            return match unsafe { syscalls::syscall1(Sysno::exit, args.arg0) } {
-                Err(errno) => Err(errno),
-                Ok(_) => unreachable!("thread exit unexpectedly returned"),
-            };
+            crate::callbacks::request_tail_injected_exit(args.arg0);
+            return Ok(0);
         }
         if matches!(
             number,
@@ -1738,11 +1736,20 @@ mod tests {
     }
 
     #[test]
-    fn rewritten_tail_exit_cleans_up_once_and_never_returns() {
-        #[derive(Default)]
-        struct ExitTool {
-            notification_fd: libc::c_int,
+    fn rewritten_tail_exit_publishes_runtime_exit_before_sibling_group_exit() {
+        static CLEANUPS: AtomicUsize = AtomicUsize::new(0);
+        static RUNTIME_EXITS: AtomicBool = AtomicBool::new(false);
+
+        struct ExitEventSink;
+
+        impl crate::thread::EventSink for ExitEventSink {
+            fn on_thread_exit(_pid_tid: crate::thread::PidTid) {
+                RUNTIME_EXITS.store(true, Ordering::Release);
+            }
         }
+
+        #[derive(Default)]
+        struct ExitTool;
 
         #[reverie::tool]
         impl ReverieTool for ExitTool {
@@ -1767,40 +1774,55 @@ mod tests {
                 exit_status: ExitStatus,
             ) -> Result<(), Error> {
                 assert_eq!(exit_status, ExitStatus::Exited(23));
-                let marker = [23_u8];
-                assert_eq!(
-                    unsafe {
-                        libc::write(self.notification_fd, marker.as_ptr().cast(), marker.len())
-                    },
-                    1
-                );
+                CLEANUPS.fetch_add(1, Ordering::AcqRel);
                 Ok(())
             }
         }
 
-        let mut pipe_fds = [-1; 2];
-        assert_eq!(unsafe { libc::pipe(pipe_fds.as_mut_ptr()) }, 0);
         let child = unsafe { libc::fork() };
         assert!(child >= 0);
         if child == 0 {
-            unsafe {
-                libc::close(pipe_fds[0]);
+            CLEANUPS.store(0, Ordering::Release);
+            RUNTIME_EXITS.store(false, Ordering::Release);
+            let worker = thread::spawn(|| {
+                let mut runtime_thread = crate::thread::Thread::<ExitEventSink>::current()
+                    .expect("worker should acquire a runtime slot");
+                runtime_thread
+                    .leave_guest_execution()
+                    .expect("worker should enter handler state");
+
+                let adapter = ReverieAdapter::new(ExitTool, (), ());
+                let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+                assert_eq!(adapter.handle_syscall(syscall), Ok(0));
+                assert_eq!(CLEANUPS.load(Ordering::Acquire), 1);
+                crate::callbacks::terminate_tail_injected_exit_if_requested(&mut runtime_thread);
+                unsafe { libc::_exit(99) };
+            });
+            drop(worker);
+
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !RUNTIME_EXITS.load(Ordering::Acquire) && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(1));
             }
-            let adapter = ReverieAdapter::new(
-                ExitTool {
-                    notification_fd: pipe_fds[1],
-                },
-                (),
-                (),
-            );
-            let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
-            let _ = adapter.handle_syscall(syscall);
-            unsafe { libc::_exit(99) };
+            if !RUNTIME_EXITS.load(Ordering::Acquire) {
+                unsafe { libc::_exit(98) };
+            }
+
+            let Some(exiting_pid) = crate::thread::exit_all(|_, _| {}) else {
+                unsafe { libc::_exit(97) };
+            };
+            let group_exit_completed =
+                crate::thread::wait_for_all_to_exit(exiting_pid, Some(Duration::from_millis(100)));
+            let cleanup_once = CLEANUPS.load(Ordering::Acquire) == 1;
+            unsafe {
+                libc::_exit(if group_exit_completed && cleanup_once {
+                    0
+                } else {
+                    96
+                })
+            };
         }
 
-        unsafe {
-            libc::close(pipe_fds[1]);
-        }
         let started = Instant::now();
         let mut status = 0;
         loop {
@@ -1819,22 +1841,7 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(libc::WIFEXITED(status));
-        assert_eq!(libc::WEXITSTATUS(status), 23);
-
-        let mut markers = [0_u8; 2];
-        assert_eq!(
-            unsafe { libc::read(pipe_fds[0], markers.as_mut_ptr().cast(), markers.len()) },
-            1
-        );
-        assert_eq!(markers[0], 23);
-        assert_eq!(
-            unsafe { libc::read(pipe_fds[0], markers.as_mut_ptr().cast(), markers.len()) },
-            0,
-            "thread cleanup wrote more than one marker"
-        );
-        unsafe {
-            libc::close(pipe_fds[0]);
-        }
+        assert_eq!(libc::WEXITSTATUS(status), 0);
     }
 
     #[test]
