@@ -1145,8 +1145,9 @@ where
         let terminal_original = self.original == Some((number, args))
             && self.special_inject.is_some()
             && matches!(number, Sysno::exit | Sysno::exit_group);
+        let rewritten_thread_exit = number == Sysno::exit && self.original != Some((number, args));
         let mut terminal_tool = None;
-        if terminal_original {
+        if terminal_original || rewritten_thread_exit {
             if let (Some(tool), Some(exit_handled)) = (self.tool, self.exit_handled.as_deref_mut())
             {
                 if !*exit_handled {
@@ -1192,6 +1193,17 @@ where
                 }
                 return result;
             }
+        }
+        if rewritten_thread_exit {
+            // A Tool can replace an intercepted syscall with a terminal thread exit. Cleanup was
+            // completed above, so execute that replacement directly and never restore the
+            // original SaBRe callback frame.
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-265): Review non-original tail-injected thread exit.
+            return match unsafe { syscalls::syscall1(Sysno::exit, args.arg0) } {
+                Err(errno) => Err(errno),
+                Ok(_) => unreachable!("thread exit unexpectedly returned"),
+            };
         }
         if matches!(
             number,
@@ -1357,6 +1369,7 @@ mod tests {
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
+    use std::time::Instant;
 
     use reverie_syscalls::SyscallArgs;
     use syscalls::Sysno;
@@ -1722,6 +1735,106 @@ mod tests {
             adapter.handle_syscall(syscall),
             Ok(std::process::id() as usize)
         );
+    }
+
+    #[test]
+    fn rewritten_tail_exit_cleans_up_once_and_never_returns() {
+        #[derive(Default)]
+        struct ExitTool {
+            notification_fd: libc::c_int,
+        }
+
+        #[reverie::tool]
+        impl ReverieTool for ExitTool {
+            type GlobalState = ();
+            type ThreadState = ();
+
+            async fn handle_syscall_event<G: Guest<Self>>(
+                &self,
+                guest: &mut G,
+                _syscall: Syscall,
+            ) -> Result<i64, Error> {
+                guest
+                    .tail_inject(reverie_syscalls::Exit::new().with_status(23))
+                    .await
+            }
+
+            async fn on_exit_thread<G: GlobalRPC<Self::GlobalState>>(
+                &self,
+                _tid: Pid,
+                _global_state: &G,
+                _thread_state: Self::ThreadState,
+                exit_status: ExitStatus,
+            ) -> Result<(), Error> {
+                assert_eq!(exit_status, ExitStatus::Exited(23));
+                let marker = [23_u8];
+                assert_eq!(
+                    unsafe {
+                        libc::write(self.notification_fd, marker.as_ptr().cast(), marker.len())
+                    },
+                    1
+                );
+                Ok(())
+            }
+        }
+
+        let mut pipe_fds = [-1; 2];
+        assert_eq!(unsafe { libc::pipe(pipe_fds.as_mut_ptr()) }, 0);
+        let child = unsafe { libc::fork() };
+        assert!(child >= 0);
+        if child == 0 {
+            unsafe {
+                libc::close(pipe_fds[0]);
+            }
+            let adapter = ReverieAdapter::new(
+                ExitTool {
+                    notification_fd: pipe_fds[1],
+                },
+                (),
+                (),
+            );
+            let syscall = Syscall::from_raw(Sysno::getpid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+            let _ = adapter.handle_syscall(syscall);
+            unsafe { libc::_exit(99) };
+        }
+
+        unsafe {
+            libc::close(pipe_fds[1]);
+        }
+        let started = Instant::now();
+        let mut status = 0;
+        loop {
+            let waited = unsafe { libc::waitpid(child, &mut status, libc::WNOHANG) };
+            assert!(waited >= 0);
+            if waited == child {
+                break;
+            }
+            if started.elapsed() >= Duration::from_secs(2) {
+                unsafe {
+                    libc::kill(child, libc::SIGKILL);
+                    libc::waitpid(child, &mut status, 0);
+                }
+                panic!("tail-injected thread exit did not terminate");
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(libc::WIFEXITED(status));
+        assert_eq!(libc::WEXITSTATUS(status), 23);
+
+        let mut markers = [0_u8; 2];
+        assert_eq!(
+            unsafe { libc::read(pipe_fds[0], markers.as_mut_ptr().cast(), markers.len()) },
+            1
+        );
+        assert_eq!(markers[0], 23);
+        assert_eq!(
+            unsafe { libc::read(pipe_fds[0], markers.as_mut_ptr().cast(), markers.len()) },
+            0,
+            "thread cleanup wrote more than one marker"
+        );
+        unsafe {
+            libc::close(pipe_fds[0]);
+        }
     }
 
     #[test]
