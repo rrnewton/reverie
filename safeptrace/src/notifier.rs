@@ -88,6 +88,8 @@ use std::task::RawWakerVTable;
 use std::task::Waker;
 use std::thread;
 use std::thread::JoinHandle;
+#[cfg(test)]
+use std::thread::ThreadId;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -111,6 +113,19 @@ static NOTIFIER: LazyLock<Notifier> = LazyLock::new(Notifier::new);
 static CAPTURE_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+#[cfg(test)]
+static CAPTURE_THREAD_ERRORS: LazyLock<Mutex<HashMap<ThreadId, VecDeque<Errno>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+pub(super) fn inject_capture_error_for_current_thread(error: Errno) {
+    CAPTURE_THREAD_ERRORS
+        .lock()
+        .entry(thread::current().id())
+        .or_default()
+        .push_back(error);
+}
+
 /// A place-holder status used to indicate that no status has been set.
 const INVALID_STATUS: i32 = -1;
 
@@ -125,6 +140,11 @@ const EXIT_STOPPED: i32 = 1;
 
 /// The tracee became terminal without an observed `PTRACE_EVENT_EXIT`.
 const EXIT_ECHILD: i32 = 2;
+
+const WORKER_NOT_STARTED: i32 = 0;
+const WORKER_RUNNING: i32 = 1;
+const WORKER_FINISHING: i32 = 2;
+const WORKER_DONE: i32 = 3;
 
 /// The number we get when in a PTRACE_EVENT_EXIT stop.
 const PTRACE_EVENT_EXIT_STOP: i32 = (libc::PTRACE_EVENT_EXIT << 16) | (libc::SIGTRAP << 8) | 0x7f;
@@ -196,9 +216,8 @@ struct Event {
     /// and must not be collapsed into terminal ECHILD.
     registration_error: Mutex<Option<Errno>>,
 
-    /// Completion is event-local so a replaced registry entry cannot make an
-    /// old generation appear acknowledged before its worker actually exits.
-    worker_done: AtomicI32,
+    /// Monotonic activity state owned by this exact Event generation.
+    worker_state: AtomicI32,
     worker_done_lock: Mutex<()>,
     worker_done_changed: Condvar,
 }
@@ -207,6 +226,20 @@ struct Event {
 struct StatusState {
     pending: VecDeque<i32>,
     terminal: i32,
+}
+
+struct StatusReservation<'a> {
+    status: i32,
+    state: Option<MutexGuard<'a, StatusState>>,
+}
+
+impl StatusReservation<'_> {
+    fn commit(mut self) {
+        if let Some(state) = self.state.as_mut() {
+            let committed = state.pending.pop_front();
+            debug_assert_eq!(committed, Some(self.status));
+        }
+    }
 }
 
 impl Event {
@@ -221,7 +254,7 @@ impl Event {
             status_changed: Condvar::new(),
             exit_status: AtomicI32::new(EXIT_PENDING),
             registration_error: Mutex::new(None),
-            worker_done: AtomicI32::new(0),
+            worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
             worker_done_changed: Condvar::new(),
         }
@@ -301,14 +334,17 @@ impl Event {
         self.status.lock().terminal != INVALID_STATUS
     }
 
-    /// Polls the event to check if there is a new status ready to be consumed.
-    pub fn poll_status(&self, waker: &Waker) -> Poll<Result<i32, Errno>> {
+    /// Reserves the next status without removing a fallibly decoded FIFO front.
+    fn poll_status_reservation(&self, waker: &Waker) -> Poll<Result<StatusReservation<'_>, Errno>> {
         // Register the waker *before* checking the status to avoid a race condition.
         self.status_waker.register(waker);
 
-        let mut state = self.status.lock();
-        if let Some(status) = state.pending.pop_front() {
-            return Poll::Ready(Ok(status));
+        let state = self.status.lock();
+        if let Some(status) = state.pending.front().copied() {
+            return Poll::Ready(Ok(StatusReservation {
+                status,
+                state: Some(state),
+            }));
         }
         match state.terminal {
             INVALID_STATUS => Poll::Pending,
@@ -316,8 +352,24 @@ impl Event {
             status => {
                 // Final status is immutable so old state generations retain
                 // the actual exit code or terminating signal after removal.
+                Poll::Ready(Ok(StatusReservation {
+                    status,
+                    state: None,
+                }))
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn poll_status(&self, waker: &Waker) -> Poll<Result<i32, Errno>> {
+        match self.poll_status_reservation(waker) {
+            Poll::Ready(Ok(reservation)) => {
+                let status = reservation.status;
+                reservation.commit();
                 Poll::Ready(Ok(status))
             }
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Pending => Poll::Pending,
         }
     }
 
@@ -345,13 +397,40 @@ impl Event {
         self.status.lock().pending.is_empty()
     }
 
+    fn try_start_worker(&self) -> bool {
+        self.worker_state
+            .compare_exchange(
+                WORKER_NOT_STARTED,
+                WORKER_RUNNING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn worker_is_running(&self) -> bool {
+        self.worker_state.load(Ordering::Acquire) == WORKER_RUNNING
+    }
+
+    fn try_begin_unstarted_completion(&self) -> bool {
+        self.worker_state
+            .compare_exchange(
+                WORKER_NOT_STARTED,
+                WORKER_FINISHING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
     fn mark_worker_done(&self) {
-        self.worker_done.store(1, Ordering::Release);
+        let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
+        debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
         self.worker_done_changed.notify_all();
     }
 
     fn wait_worker_done(&self, timeout: Duration) -> bool {
-        if self.worker_done.load(Ordering::Acquire) != 0 {
+        if self.worker_state.load(Ordering::Acquire) == WORKER_DONE {
             return true;
         }
         let deadline = Instant::now()
@@ -359,7 +438,7 @@ impl Event {
             .unwrap_or_else(Instant::now);
         let mut guard = self.worker_done_lock.lock();
         loop {
-            if self.worker_done.load(Ordering::Acquire) != 0 {
+            if self.worker_state.load(Ordering::Acquire) == WORKER_DONE {
                 return true;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -475,6 +554,17 @@ impl WorkerIdentity {
         #[cfg(test)]
         if let Some(error) = CAPTURE_ERRORS.lock().remove(&pid) {
             return Err(error);
+        }
+        #[cfg(test)]
+        {
+            let thread = thread::current().id();
+            let mut errors = CAPTURE_THREAD_ERRORS.lock();
+            if let Some(error) = errors.get_mut(&thread).and_then(VecDeque::pop_front) {
+                if errors.get(&thread).is_some_and(VecDeque::is_empty) {
+                    errors.remove(&thread);
+                }
+                return Err(error);
+            }
         }
         // Ordinary direct children have TracerPid 0 and are still valid
         // waitpid targets. The tracer binding is part of the immutable
@@ -666,7 +756,6 @@ fn io_errno(error: std::io::Error) -> Errno {
 struct NotifierEntry {
     handle: EventHandle,
     identity: Arc<WorkerIdentity>,
-    worker_started: bool,
 }
 
 struct Notifier {
@@ -699,7 +788,6 @@ impl Notifier {
                 occupied.insert(NotifierEntry {
                     handle: handle.clone(),
                     identity: current,
-                    worker_started: false,
                 });
                 Ok(handle)
             }
@@ -715,13 +803,12 @@ impl Notifier {
 
     fn resolve_echild(&self, pid: Pid, handle: &EventHandle) -> Arc<Event> {
         let event = Arc::clone(handle.event());
-        event.mark_echild();
-        let active_worker = self
-            .pids
-            .lock()
-            .get(&pid)
-            .is_some_and(|entry| entry.handle == *handle && entry.worker_started);
-        if !active_worker {
+        if event.worker_is_running() {
+            return event;
+        }
+        if event.try_begin_unstarted_completion() {
+            // Publish the terminal result before completion becomes visible.
+            event.mark_echild();
             event.mark_worker_done();
             self.remove(pid, &event);
         }
@@ -746,7 +833,7 @@ impl Notifier {
         // unstarted, or replacement handles must capture before registration.
         let exact_worker_started = self.pids.lock().get(&pid).is_some_and(|entry| {
             entry.handle == *handle
-                && entry.worker_started
+                && requested.worker_is_running()
                 && handle
                     .identity()
                     .is_some_and(|bound| bound.same_generation(&entry.identity))
@@ -776,13 +863,12 @@ impl Notifier {
         let mut pids = self.pids.lock();
         let mut worker_identity = None;
         let event = match pids.entry(pid) {
-            Entry::Occupied(mut occupied) if occupied.get().handle == *handle => {
+            Entry::Occupied(occupied) if occupied.get().handle == *handle => {
                 if !occupied.get().identity.same_generation(&current) {
                     drop(pids);
                     return Ok(self.resolve_echild(pid, handle));
                 }
-                if !occupied.get().worker_started {
-                    occupied.get_mut().worker_started = true;
+                if requested.try_start_worker() {
                     worker_identity = Some(Arc::clone(&occupied.get().identity));
                 }
                 Arc::clone(requested)
@@ -800,9 +886,10 @@ impl Notifier {
                 occupied.insert(NotifierEntry {
                     handle: handle.clone(),
                     identity: Arc::clone(&current),
-                    worker_started: true,
                 });
-                worker_identity = Some(current);
+                if requested.try_start_worker() {
+                    worker_identity = Some(current);
+                }
                 Arc::clone(requested)
             }
             Entry::Vacant(vacant) => {
@@ -814,9 +901,10 @@ impl Notifier {
                 vacant.insert(NotifierEntry {
                     handle: handle.clone(),
                     identity: Arc::clone(&current),
-                    worker_started: true,
                 });
-                worker_identity = Some(current);
+                if requested.try_start_worker() {
+                    worker_identity = Some(current);
+                }
                 Arc::clone(requested)
             }
         };
@@ -975,16 +1063,16 @@ impl Future for WaitFuture {
             Ok(event) => event,
             Err(error) => return Poll::Ready(Err(error.into())),
         };
-        let status = match futures::ready!(event.poll_status(cx.waker())) {
-            Ok(status) => status,
+        let reservation = match futures::ready!(event.poll_status_reservation(cx.waker())) {
+            Ok(reservation) => reservation,
             Err(errno) => return Poll::Ready(Err(errno.into())),
         };
-
-        Poll::Ready(Wait::from_raw_with_token(
-            pid,
-            status,
-            this.running.token().clone(),
-        ))
+        let decoded =
+            Wait::from_raw_with_token(pid, reservation.status, this.running.token().clone());
+        if decoded.is_ok() {
+            reservation.commit();
+        }
+        Poll::Ready(decoded)
     }
 }
 
@@ -1173,6 +1261,7 @@ mod test {
         let handle = EventHandle::new();
         let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
         handle.event().update(stopped);
+        assert!(handle.event().try_start_worker());
         handle.event().mark_worker_done();
         let cleanup = TerminalCleanup {
             pid: pid.into(),
@@ -1221,6 +1310,42 @@ mod test {
     }
 
     #[test]
+    fn registry_replacement_does_not_terminalize_running_old_event() {
+        let child = spawn_stopped_process(None).expect("spawn old active registry tracee");
+        let pid = Pid::from_raw(child.as_raw());
+        let identity = Arc::new(
+            WorkerIdentity::capture_process(pid.into()).expect("capture old active generation"),
+        );
+        let old_handle = EventHandle::with_identity(Arc::clone(&identity));
+        assert!(old_handle.event().try_start_worker());
+        NOTIFIER.pids.lock().insert(
+            pid.into(),
+            NotifierEntry {
+                handle: old_handle.clone(),
+                identity: Arc::clone(&identity),
+            },
+        );
+        let replacement = EventHandle::with_identity(Arc::clone(&identity));
+        NOTIFIER.pids.lock().insert(
+            pid.into(),
+            NotifierEntry {
+                handle: replacement,
+                identity,
+            },
+        );
+
+        NOTIFIER.resolve_echild(pid.into(), &old_handle);
+        let terminal = old_handle.event().status.lock().terminal;
+        NOTIFIER.pids.lock().remove(&pid.into());
+        reap_stopped_process(child);
+
+        assert_eq!(
+            terminal, INVALID_STATUS,
+            "registry replacement terminalized an Event with its own active worker"
+        );
+    }
+
+    #[test]
     fn registered_exit_stop_survives_procfs_disappearance_until_final_status() {
         let child = spawn_stopped_process(None).expect("spawn exiting notifier tracee");
         let pid = Pid::from_raw(child.as_raw());
@@ -1229,12 +1354,12 @@ mod test {
         );
         let handle = EventHandle::with_identity(Arc::clone(&identity));
         handle.event().update(PTRACE_EVENT_EXIT_STOP);
+        assert!(handle.event().try_start_worker());
         NOTIFIER.pids.lock().insert(
             pid.into(),
             NotifierEntry {
                 handle: handle.clone(),
                 identity,
-                worker_started: true,
             },
         );
 
@@ -1412,9 +1537,9 @@ mod test {
                 NotifierEntry {
                     handle: old_handle.clone(),
                     identity: old_identity,
-                    worker_started: false,
                 },
             );
+            assert!(old_handle.event().try_begin_unstarted_completion());
             old_handle.event().mark_echild();
             old_handle.event().mark_worker_done();
             reap_stopped_process(old_pid);
@@ -1478,6 +1603,7 @@ mod test {
         old_identity.pid = new_pid.into();
         let old_identity = Arc::new(old_identity);
         let old_handle = EventHandle::with_identity(Arc::clone(&old_identity));
+        assert!(old_handle.event().try_begin_unstarted_completion());
         old_handle.event().mark_echild();
         old_handle.event().mark_worker_done();
         NOTIFIER.pids.lock().insert(
@@ -1485,7 +1611,6 @@ mod test {
             NotifierEntry {
                 handle: old_handle.clone(),
                 identity: old_identity,
-                worker_started: false,
             },
         );
 

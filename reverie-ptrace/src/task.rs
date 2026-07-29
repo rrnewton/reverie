@@ -92,8 +92,8 @@ use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
 use crate::tracer::HeldRootStop;
 use crate::tracer::NewbornTracee;
+use crate::tracer::RootStopLease;
 use crate::tracer::TraceeIdentity;
-use crate::tracer::disarm_held_root_stop;
 use crate::vdso;
 
 fn validate_liteinst_user_regs_update(
@@ -386,6 +386,17 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) fail_after_scan_once: Option<Arc<AtomicBool>>,
     #[cfg(test)]
     pub(crate) force_task_scan_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) pause_root_stop: Option<(RootStopPause, mpsc::UnboundedSender<Pid>)>,
+    #[cfg(test)]
+    pub(crate) pause_preinit_step: Option<(usize, mpsc::UnboundedSender<Pid>)>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) enum RootStopPause {
+    Seccomp,
+    Signal(Signal),
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1254,6 +1265,49 @@ impl<L: Tool + 'static> TracedTask<L> {
         fields(pid = %task.pid())
     )]
     pub async fn tracee_preinit(&mut self, task: Stopped) -> Result<Stopped, TraceError> {
+        let held_root_stop = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        #[cfg(test)]
+        let pause_preinit_step = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.pause_preinit_step.clone());
+
+        fn arm_preinit_stop(
+            held_root_stop: &Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+            task: &Stopped,
+            event: &Event,
+        ) {
+            if let Some(slot) = held_root_stop {
+                let previous = slot
+                    .lock()
+                    .unwrap()
+                    .replace(HeldRootStop::from_event(task, event));
+                debug_assert!(
+                    previous.is_none(),
+                    "rearmed an undisarmed preinit stop lease"
+                );
+            }
+        }
+
+        #[cfg(test)]
+        async fn pause_preinit(
+            pause: &Option<(usize, mpsc::UnboundedSender<Pid>)>,
+            step: usize,
+            task: &Stopped,
+        ) {
+            if let Some((target, sender)) = pause
+                && *target == step
+            {
+                let _ = sender.send(task.pid());
+                future::pending::<()>().await;
+            }
+        }
+
         #[cfg(test)]
         if self
             .global_state
@@ -1270,6 +1324,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         async fn setup_special_mmap_page(
             task: Stopped,
             saved_regs: &libc::user_regs_struct,
+            held_root_stop: &Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+            #[cfg(test)] pause_preinit_step: &Option<(usize, mpsc::UnboundedSender<Pid>)>,
         ) -> Result<Stopped, TraceError> {
             // NOTE: This point in the code assumes that a specific instruction
             // sequence "SYSCALL; INT3", has been patched into the guest, and
@@ -1291,11 +1347,25 @@ impl<L: Tool + 'static> TracedTask<L> {
 
             task.setregs(&regs)?;
             // Execute the injected mmap call.
-            let mut running = task.step(None)?;
+            let mut running = RootStopLease::new(task, held_root_stop.clone()).step(None)?;
 
             // loop until second breakpoint hit after injected syscall.
+            #[cfg(test)]
+            let mut step = 0;
             let task = loop {
                 let (task, event) = running.next_state().await?.assume_stopped();
+                arm_preinit_stop(held_root_stop, &task, &event);
+                #[cfg(test)]
+                if let Some((target, sender)) = pause_preinit_step
+                    && *target == step
+                {
+                    let _ = sender.send(task.pid());
+                    future::pending::<()>().await;
+                }
+                #[cfg(test)]
+                {
+                    step += 1;
+                }
                 match event {
                     Event::Signal(Signal::SIGTRAP) => break task,
                     Event::Signal(sig) => {
@@ -1306,13 +1376,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                             task.pid(),
                             event
                         );
-                        running = task.resume(sig)?;
+                        running = RootStopLease::new(task, held_root_stop.clone()).resume(sig)?;
                     }
                     Event::Seccomp => {
                         // Injected mmap trapped. We may not necessarily
                         // intercept a seccomp event here if the tool hasn't
                         // subscribed to the mmap syscall.
-                        running = task.resume(None)?;
+                        running = RootStopLease::new(task, held_root_stop.clone()).resume(None)?;
                     }
                     unknown => {
                         panic!("task {} returned unknown event {:?}", task.pid(), unknown);
@@ -1390,12 +1460,23 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
 
         let (task, regs, prev_state) = establish_injection_state(task).await?;
-        let mut task = setup_special_mmap_page(task, &regs).await?;
+        let mut task = setup_special_mmap_page(
+            task,
+            &regs,
+            &held_root_stop,
+            #[cfg(test)]
+            &pause_preinit_step,
+        )
+        .await?;
+        #[cfg(test)]
+        pause_preinit(&pause_preinit_step, 1, &task).await;
 
         // Restore registers after adding our temporary injection state.
         remove_injection_state(&mut task, regs, prev_state)?;
 
         vdso::vdso_patch(self).await.expect("unable to patch vdso");
+        #[cfg(test)]
+        pause_preinit(&pause_preinit_step, 2, &task).await;
 
         // Protect our trampoline page from being written to. We won't need to
         // change this again for the lifetime of the guest process.
@@ -1406,6 +1487,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .with_protection(ProtFlags::PROT_READ | ProtFlags::PROT_EXEC),
         )
         .await?;
+        #[cfg(test)]
+        pause_preinit(&pause_preinit_step, 3, &task).await;
 
         // Try to intercept cpuid instructions on x86_64
         #[cfg(target_arch = "x86_64")]
@@ -1466,6 +1549,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                 }
             };
         }
+        #[cfg(test)]
+        pause_preinit(&pause_preinit_step, 4, &task).await;
 
         // Restore registers again after we've injected syscalls so that we
         // don't leave the return value register (%rax) in a dirty state.
@@ -1548,6 +1633,24 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.timer.observe_event();
         let tid = self.tid();
 
+        #[cfg(test)]
+        if let Some((pause, sender)) = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.pause_root_stop.as_ref())
+        {
+            let selected = match (pause, &event) {
+                (RootStopPause::Seccomp, Event::Seccomp) => true,
+                (RootStopPause::Signal(expected), Event::Signal(actual)) => expected == actual,
+                _ => false,
+            };
+            if selected {
+                let _ = sender.send(stopped.pid());
+                future::pending::<()>().await;
+            }
+        }
+
         match event {
             Event::Signal(sig) => self
                 .handle_signal(stopped, sig)
@@ -1595,7 +1698,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // seccomp-allowed private page, then follow the restored guest state.
         *regs.ip_mut() = cp::PRIVATE_PAGE_OFFSET as Reg;
         task.setregs(&regs)?;
-        task.resume(None)?.next_state().await
+        self.resume_stopped(task, None)?.next_state().await
     }
 
     // TODO-HUMAN-REVIEW(PR-102): Review rewritten-syscall dispatch and result handling.
@@ -1627,7 +1730,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             let task = self.assume_stopped();
             self.write_injected_syscall_result(&task, result)?;
             self.injected_syscall_frame = None;
-            return task.resume(self.pending_signal.take())?.next_state().await;
+            let signal = self.pending_signal.take();
+            return self.resume_stopped(task, signal)?.next_state().await;
         }
 
         let span = tracing::trace_span!(
@@ -1666,7 +1770,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.pending_syscall_already_skipped = false;
             self.injected_syscall_frame = None;
             let signal = self.pending_signal.take();
-            let wait = task.resume(signal)?.next_state().await?;
+            let wait = self.resume_stopped(task, signal)?.next_state().await?;
             tracing::trace!(
                 target: "reverie_ptrace::syscall",
                 "completed injected syscall interception"
@@ -1826,7 +1930,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         match self.classify_liteinst_trap(&task, &regs) {
             Some(LiteinstTrap::Handshake) => {
                 return Ok(HandleSignalResult::SignalSuppressed(
-                    task.resume(None)?.next_state().await?,
+                    self.resume_stopped(task, None)?.next_state().await?,
                 ));
             }
             Some(LiteinstTrap::Syscall(frame_address)) => {
@@ -1872,7 +1976,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
         } else {
-            let running = task.resume(None)?;
+            let running = self.resume_stopped(task, None)?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
         })
     }
@@ -1904,7 +2008,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         }
         Ok(HandleSignalResult::SignalSuppressed(
-            task.resume(None)?.next_state().await?,
+            self.resume_stopped(task, None)?.next_state().await?,
         ))
     }
 
@@ -1918,12 +2022,16 @@ impl<L: Tool + 'static> TracedTask<L> {
             Some(SegfaultTrapInfo::Cpuid) => {
                 let regs = self.handle_cpuid(regs).await?;
                 task.setregs(&regs)?;
-                HandleSignalResult::SignalSuppressed(task.resume(None)?.next_state().await?)
+                HandleSignalResult::SignalSuppressed(
+                    self.resume_stopped(task, None)?.next_state().await?,
+                )
             }
             Some(SegfaultTrapInfo::Rdtscs(req)) => {
                 let regs = self.handle_rdtscs(regs, req).await?;
                 task.setregs(&regs)?;
-                HandleSignalResult::SignalSuppressed(task.resume(None)?.next_state().await?)
+                HandleSignalResult::SignalSuppressed(
+                    self.resume_stopped(task, None)?.next_state().await?,
+                )
             }
             None => HandleSignalResult::SignalToDeliver(task, Signal::SIGSEGV),
         })
@@ -1944,7 +2052,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             sig if sig == Timer::signal_type() => {
                 let (was_timer, task) = self.handle_timer(task).await?;
                 if was_timer {
-                    HandleSignalResult::SignalSuppressed(task.resume(None)?.next_state().await?)
+                    HandleSignalResult::SignalSuppressed(
+                        self.resume_stopped(task, None)?.next_state().await?,
+                    )
                 } else {
                     HandleSignalResult::SignalToDeliver(task, sig)
                 }
@@ -1961,7 +2071,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .handle_signal_event(self, sig)
                     .await?;
                 self.timer.finalize_requests();
-                Ok(task.resume(sig)?.next_state().await?)
+                Ok(self.resume_stopped(task, sig)?.next_state().await?)
             }
         }
     }
@@ -1988,14 +2098,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         // PTRACE_EVENT_EXEC. We can't call `tracee_preinit` until after this
         // because when it tries to step the tracee, it'll get this SIGTRAP
         // signal instead.
-        let (task, event) = task
-            .step(None)?
+        let (task, event) = self
+            .step_stopped(task, None)?
             .wait_for_signal(Signal::SIGTRAP)
             .await?
             .assume_stopped();
         assert_eq!(event, Event::Signal(Signal::SIGTRAP));
+        self.arm_liteinst_root_stop(&task, &event);
 
-        self.arm_liteinst_root_stop(&task, Signal::SIGTRAP);
         let task = self.tracee_preinit(task).await?;
 
         self.process_state.clone().handle_post_exec(self).await?;
@@ -2039,16 +2149,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                     "GDB stop channel closed while reporting exec"
                 );
                 self.attached_by_gdb = false;
-                self.disarm_liteinst_root_stop();
-                return task.step(None)?.next_state().await;
+                return self.step_stopped(task, None)?.next_state().await;
             }
             let running = self
                 .await_gdb_resume(task, ExpectedGdbResume::Resume)
                 .await?;
             Ok(running.next_state().await?)
         } else {
-            self.disarm_liteinst_root_stop();
-            Ok(task.step(None)?.next_state().await?)
+            Ok(self.step_stopped(task, None)?.next_state().await?)
         }
     }
 
@@ -2206,7 +2314,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(self.liteinst_helper_failure(original, rollback));
         }
 
-        let running = match task.resume(None) {
+        let running = match self.resume_stopped(task, None) {
             Ok(running) => running,
             Err(error) => {
                 let mut stopped = Stopped::new_unchecked(self.tid());
@@ -2234,12 +2342,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(self.liteinst_helper_failure(Error::Internal(error), rollback));
             }
         };
+        self.arm_liteinst_wait(&wait);
         loop {
             match wait {
                 Wait::Stopped(stopped, Event::Seccomp) => {
                     // Controller-owned helper syscalls execute natively and are
                     // never delivered to the user Tool.
-                    let running = match stopped.resume(None) {
+                    let running = match self.resume_stopped(stopped, None) {
                         Ok(running) => running,
                         Err(error) => {
                             let mut stopped = Stopped::new_unchecked(self.tid());
@@ -2271,6 +2380,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             );
                         }
                     };
+                    self.arm_liteinst_wait(&wait);
                 }
                 Wait::Stopped(stopped, Event::Signal(Signal::SIGTRAP)) => {
                     let mut stopped = stopped;
@@ -2492,12 +2602,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                 format!("{nr} overlaps an active LiteInst hook footprint"),
             ));
         }
-        let wait = task
-            .syscall(None)
+        let wait = self
+            .syscall_stopped(task, None)
             .tracee_context(tid, "resume controller-observed mapping syscall")?
             .next_state()
             .await
             .tracee_context(tid, "wait for controller-observed mapping syscall")?;
+        self.arm_liteinst_wait(&wait);
         match wait {
             Wait::Stopped(stopped, Event::Syscall) => {
                 let regs = stopped
@@ -2505,8 +2616,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .tracee_context(tid, "read controller-observed mapping result")?;
                 let result = Errno::from_ret(regs.ret() as usize).map(|value| value as i64);
                 self.observe_liteinst_mapping_result(nr, args, result);
-                stopped
-                    .resume(None)
+                self.resume_stopped(stopped, None)
                     .tracee_context(tid, "resume after controller-observed mapping syscall")?
                     .next_state()
                     .await
@@ -2526,8 +2636,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let phase = self.liteinst_runtime.lock().unwrap().phase;
         if self.global_state.liteinst_runtime.is_some() && phase == LiteinstRuntimePhase::Bootstrap
         {
-            return task
-                .resume(None)
+            return self
+                .resume_stopped(task, None)
                 .tracee_context(tid, "resume LiteInst bootstrap syscall")?
                 .next_state()
                 .await
@@ -2602,8 +2712,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
 
             let sig = self.pending_signal.take();
-            let running = task
-                .resume(sig)
+            let running = self
+                .resume_stopped(task, sig)
                 .tracee_context(tid, "resume after seccomp stop")?;
             let wait = running
                 .next_state()
@@ -2619,29 +2729,76 @@ impl<L: Tool + 'static> TracedTask<L> {
         .await
     }
 
-    fn own_liteinst_new_child_event(&self, parent: &Stopped, op: ChildOp, child: &Running) {
+    fn liteinst_root_stop_slot(
+        &self,
+        task: &Stopped,
+    ) -> Option<Arc<StdMutex<Option<HeldRootStop>>>> {
+        (task.pid() == self.pid() && self.tid() == self.pid())
+            .then(|| {
+                self.global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .map(|runtime| Arc::clone(&runtime.held_root_stop))
+            })
+            .flatten()
+    }
+
+    pub(crate) fn arm_liteinst_root_stop(&self, task: &Stopped, event: &Event) {
         let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
             return;
         };
-        runtime
-            .newborn_tracees
+        if task.pid() != self.pid() || self.tid() != self.pid() {
+            return;
+        }
+        if let Event::NewChild(op, child) = event {
+            runtime
+                .newborn_tracees
+                .lock()
+                .unwrap()
+                .entry(child.pid())
+                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
+        }
+        let previous = runtime
+            .held_root_stop
             .lock()
             .unwrap()
-            .entry(child.pid())
-            .or_insert_with(|| NewbornTracee::from_event(parent.pid(), op, child));
-        *runtime.held_root_stop.lock().unwrap() = Some(HeldRootStop::new(parent, op, child));
+            .replace(HeldRootStop::from_event(task, event));
+        debug_assert!(previous.is_none(), "rearmed an undisarmed root stop lease");
     }
 
-    pub(crate) fn arm_liteinst_root_stop(&self, task: &Stopped, signal: Signal) {
-        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
-            *runtime.held_root_stop.lock().unwrap() = Some(HeldRootStop::from_signal(task, signal));
+    fn arm_liteinst_wait(&self, wait: &Wait) {
+        if let Wait::Stopped(task, event) = wait {
+            self.arm_liteinst_root_stop(task, event);
         }
     }
 
-    fn disarm_liteinst_root_stop(&self) {
-        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
-            disarm_held_root_stop(&runtime.held_root_stop);
-        }
+    fn lease_liteinst_root_stop(&self, task: Stopped) -> RootStopLease {
+        let slot = self.liteinst_root_stop_slot(&task);
+        RootStopLease::new(task, slot)
+    }
+
+    fn resume_stopped<T: Into<Option<Signal>>>(
+        &self,
+        task: Stopped,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.lease_liteinst_root_stop(task).resume(signal)
+    }
+
+    fn step_stopped<T: Into<Option<Signal>>>(
+        &self,
+        task: Stopped,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.lease_liteinst_root_stop(task).step(signal)
+    }
+
+    fn syscall_stopped<T: Into<Option<Signal>>>(
+        &self,
+        task: Stopped,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.lease_liteinst_root_stop(task).syscall(signal)
     }
 
     async fn dispatch_new_task(
@@ -2652,10 +2809,6 @@ impl<L: Tool + 'static> TracedTask<L> {
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Wait, TraceError> {
-        // Store the exact kernel event child before the handler future reaches
-        // any cancellation point. This also owns CLONE_PARENT siblings that
-        // proc ancestry cannot rediscover.
-        self.own_liteinst_new_child_event(&parent, op, &child);
         #[cfg(test)]
         if let Some(sender) = self
             .global_state
@@ -2666,15 +2819,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             let _ = sender.send(child.pid());
             future::pending::<()>().await;
         }
-        let result = self
-            .handle_new_task(op, parent, child, context, child_context)
-            .await;
-        if result.is_ok()
-            && let Some(runtime) = self.global_state.liteinst_runtime.as_ref()
-        {
-            disarm_held_root_stop(&runtime.held_root_stop);
-        }
-        result
+        self.handle_new_task(op, parent, child, context, child_context)
+            .await
     }
 
     async fn handle_new_task(
@@ -2832,6 +2978,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
 
             let tid = child.pid();
+            let detach_held_root_stop = (child_task.tid() == child_task.pid())
+                .then(|| {
+                    child_task
+                        .global_state
+                        .liteinst_runtime
+                        .as_ref()
+                        .map(|runtime| Arc::clone(&runtime.held_root_stop))
+                })
+                .flatten();
             match child_task.run(child).await {
                 Err(err) => {
                     tracing::error!("Error in tracee tid {}: {}", tid, err);
@@ -2847,7 +3002,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                         reason = "handler error"
                     );
                     let detach_guard = detach_span.enter();
-                    let running = match Stopped::new_unchecked(tid).detach(None) {
+                    let running = match RootStopLease::new(
+                        Stopped::new_unchecked(tid),
+                        detach_held_root_stop,
+                    )
+                    .detach(None)
+                    {
                         Err(err) => {
                             // If we get an error here, the child process may
                             // not be in a ptrace stop.
@@ -2936,17 +3096,30 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .and_then(|wait| self.check_swbreak(wait))
                 .await
         } else {
-            Ok(parent.step(None)?.next_state().await?)
+            Ok(self.step_stopped(parent, None)?.next_state().await?)
         }
     }
 
     async fn handle_vfork_done_event(&mut self, stopped: Stopped) -> Result<Wait, TraceError> {
-        stopped.resume(None)?.next_state().await
+        self.resume_stopped(stopped, None)?.next_state().await
     }
 
-    async fn handle_exit_event(task: Stopped) -> Result<ExitStatus, TraceError> {
+    async fn handle_exit_event(
+        task: Stopped,
+        held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+    ) -> Result<ExitStatus, TraceError> {
         // Nothing to do but resume and wait for the final exit status.
-        let wait = task.resume(None)?.next_state().await?;
+        if let Some(slot) = held_root_stop.as_ref() {
+            let previous = slot
+                .lock()
+                .unwrap()
+                .replace(HeldRootStop::from_event(&task, &Event::Exit));
+            debug_assert!(previous.is_none(), "rearmed an undisarmed exit stop lease");
+        }
+        let wait = RootStopLease::new(task, held_root_stop)
+            .resume(None)?
+            .next_state()
+            .await?;
         let (_pid, exit_status) = wait.assume_exited();
         Ok(exit_status)
     }
@@ -3148,6 +3321,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         })?;
 
         loop {
+            self.arm_liteinst_wait(&task_state);
             match task_state {
                 Wait::Stopped(stopped, event) => {
                     // Allow short-circuiting of the event stream. This makes it
@@ -3186,6 +3360,11 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Drive a single guest thread to completion. Returns the final exit code
     /// when that guest thread exits.
     pub async fn run(mut self, child: Stopped) -> Result<ExitStatus, reverie::Error> {
+        let exit_held_root_stop = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .map(|runtime| Arc::clone(&runtime.held_root_stop));
         let outcome = {
             let exit_event = child.exit_event().fuse();
             let run_loop = self.run_loop(child).fuse();
@@ -3193,10 +3372,12 @@ impl<L: Tool + 'static> TracedTask<L> {
 
             futures::select_biased! {
                 task = exit_event => match task {
-                    Ok(task) => match Self::handle_exit_event(task).await {
+                    Ok(task) => {
+                        match Self::handle_exit_event(task, exit_held_root_stop).await {
                         Ok(exit_status) => Ok(exit_status),
                         Err(err) => handle_internal_error(err.into()).await,
-                    },
+                        }
+                    }
                     Err(err) => handle_internal_error(err.into()).await,
                 },
                 exit_status = run_loop => exit_status,
@@ -3247,13 +3428,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         #[cfg(target_arch = "aarch64")]
         task.set_syscall(-1)?;
 
-        let mut running = task.step(None)?;
+        let mut running = self.step_stopped(task, None)?;
 
         // After the step, wait for the next transition. Note that this can return
         // an exited state if there is a group exit while some thread is blocked on
         // a syscall.
         loop {
-            match running.next_state().await? {
+            let wait = running.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            match wait {
                 Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)) => {
                     #[cfg(target_arch = "x86_64")]
                     task.setregs(&regs)?;
@@ -3262,7 +3445,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Wait::Stopped(task, Event::Signal(sig)) => {
                     // We can get a spurious signal here, such as SIGWINCH. Skip
                     // past them until the tracee eventually arrives at SIGTRAP.
-                    running = task.step(sig)?;
+                    running = self.step_stopped(task, sig)?;
                 }
                 Wait::Stopped(task, event) => {
                     panic!(
@@ -3327,7 +3510,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         task.setregs(&regs)?;
 
         // Step to run the syscall instruction.
-        let wait = task.step(None)?.next_state().await?;
+        let wait = self.step_stopped(task, None)?.next_state().await?;
+        self.arm_liteinst_wait(&wait);
 
         // Get the result of the syscall to return to the caller.
         let result = self
@@ -3446,7 +3630,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             // If we're reinjecting the same syscall with the same arguments,
             // then we can just let the tracee continue and stop at sysexit.
             self.validate_liteinst_mapping_execution(nr, args)?;
-            let wait = task.syscall(None)?.next_state().await?;
+            let wait = self.syscall_stopped(task, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
             let result = self.status_to_result(wait, None, None).await?;
             self.observe_liteinst_mapping_result(nr, args, result);
             Ok(result)
@@ -3594,9 +3779,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         task: Stopped,
         resume_action: ExpectedGdbResume,
     ) -> Result<(Running, Option<ResumeInferior>), TraceError> {
-        self.disarm_liteinst_root_stop();
         match resume {
-            None => Ok((task.resume(None)?, None)),
+            None => Ok((self.resume_stopped(task, None)?, None)),
             Some(resume) => {
                 let is_resume = resume_action == ExpectedGdbResume::Resume || resume.detach;
                 let is_step_only = resume_action == ExpectedGdbResume::StepOnly;
@@ -3612,10 +3796,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 // panic here).
                 let is_step_over = resume_action == ExpectedGdbResume::StepOver;
                 let running = match resume.action {
-                    ResumeAction::Step(sig) => task.step(sig)?,
-                    ResumeAction::Continue(sig) if is_resume => task.resume(sig)?,
-                    ResumeAction::Continue(sig) if is_step_only => task.step(sig)?,
-                    ResumeAction::Continue(sig) if is_step_over => task.resume(sig)?,
+                    ResumeAction::Step(sig) => self.step_stopped(task, sig)?,
+                    ResumeAction::Continue(sig) if is_resume => self.resume_stopped(task, sig)?,
+                    ResumeAction::Continue(sig) if is_step_only => self.step_stopped(task, sig)?,
+                    ResumeAction::Continue(sig) if is_step_over => {
+                        self.resume_stopped(task, sig)?
+                    }
                     action => panic!(
                         "[pid = {}] unexpected resume action {:?}, expecting: {:?}",
                         task.pid(),
@@ -3634,8 +3820,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         resume_action: ExpectedGdbResume,
     ) -> Result<Running, TraceError> {
         if !self.attached_by_gdb {
-            self.disarm_liteinst_root_stop();
-            return task.resume(None);
+            return self.resume_stopped(task, None);
         }
 
         let mut resume_rx = self.gdb_resume_rx.take().ok_or(Errno::EIO)?;
@@ -3749,6 +3934,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // stops again.
         if !matches!(self.resumed_by_gdb, Some(ResumeAction::Step(_))) {
             let wait = running.next_state().await?;
+            self.arm_liteinst_wait(&wait);
             self.thaw_all().await?;
             return Ok(wait);
         }
@@ -3756,6 +3942,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let wait = running.next_state().await?.assume_stopped();
         let mut task = wait.0;
         let mut event = wait.1;
+        self.arm_liteinst_root_stop(&task, &event);
 
         // Detached by client.
         if !self.attached_by_gdb {
@@ -3767,17 +3954,19 @@ impl<L: Tool + 'static> TracedTask<L> {
             match event {
                 Event::Signal(Signal::SIGTRAP) => break task,
                 Event::Signal(Signal::SIGSTOP) => {
-                    let running = task.step(None)?;
+                    let running = self.step_stopped(task, None)?;
                     let wait = running.next_state().await?.assume_stopped();
                     task = wait.0;
                     event = wait.1;
+                    self.arm_liteinst_root_stop(&task, &event);
                 }
                 // TODO: combine with handle_signal!
                 Event::Signal(Signal::SIGCHLD) => {
-                    let running = task.step(Signal::SIGCHLD)?;
+                    let running = self.step_stopped(task, Signal::SIGCHLD)?;
                     let wait = running.next_state().await?.assume_stopped();
                     task = wait.0;
                     event = wait.1;
+                    self.arm_liteinst_root_stop(&task, &event);
                 }
                 unknown => panic!("[pid = {}] got unexpected event {:?}", self.tid(), unknown),
             }
@@ -3794,12 +3983,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             .await_gdb_resume(task, ExpectedGdbResume::Resume)
             .await?;
         let wait = running.next_state().await?;
+        self.arm_liteinst_wait(&wait);
         self.thaw_all().await?;
         Ok(wait)
     }
 
     /// check if the stop is caused by sw breakpoint.
     async fn check_swbreak(&mut self, wait: Wait) -> Result<Wait, TraceError> {
+        self.arm_liteinst_wait(&wait);
         match wait {
             Wait::Stopped(task, event) if event == Event::Signal(Signal::SIGTRAP) => {
                 let mut regs = task.getregs()?;

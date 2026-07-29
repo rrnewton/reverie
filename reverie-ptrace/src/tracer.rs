@@ -74,6 +74,8 @@ use crate::task::Child;
 use crate::task::InjectedSyscallProvenance;
 use crate::task::InjectedSyscallTrap;
 use crate::task::LiteinstRuntimeConfig;
+#[cfg(test)]
+use crate::task::RootStopPause;
 use crate::task::TracedTask;
 use crate::task::TracedTaskOptions;
 
@@ -164,27 +166,34 @@ pub(crate) struct HeldRootStop {
 enum HeldRootStopStatus {
     Signal(Signal),
     NewChild(EventChildLink),
+    Exec(Pid),
+    VforkDone,
+    Exit,
+    Seccomp,
+    Stop,
+    Syscall,
 }
 
 impl HeldRootStop {
-    pub(crate) fn new(parent: &Stopped, op: ChildOp, child: &Running) -> Self {
-        Self {
-            terminal: parent.terminal_cleanup(),
-            root_tid: parent.pid(),
-            status: HeldRootStopStatus::NewChild(EventChildLink {
+    pub(crate) fn from_event(task: &Stopped, event: &Event) -> Self {
+        let status = match event {
+            Event::Signal(signal) => HeldRootStopStatus::Signal(*signal),
+            Event::NewChild(op, child) => HeldRootStopStatus::NewChild(EventChildLink {
                 tid: child.pid(),
-                parent_tid: parent.pid(),
-                op,
+                parent_tid: task.pid(),
+                op: *op,
             }),
-            armed: true,
-        }
-    }
-
-    pub(crate) fn from_signal(task: &Stopped, signal: Signal) -> Self {
+            Event::Exec(pid) => HeldRootStopStatus::Exec(*pid),
+            Event::VforkDone => HeldRootStopStatus::VforkDone,
+            Event::Exit => HeldRootStopStatus::Exit,
+            Event::Seccomp => HeldRootStopStatus::Seccomp,
+            Event::Stop => HeldRootStopStatus::Stop,
+            Event::Syscall => HeldRootStopStatus::Syscall,
+        };
         Self {
             terminal: task.terminal_cleanup(),
             root_tid: task.pid(),
-            status: HeldRootStopStatus::Signal(signal),
+            status,
             armed: true,
         }
     }
@@ -194,9 +203,84 @@ impl HeldRootStop {
     }
 }
 
-pub(crate) fn disarm_held_root_stop(held_root_stop: &Arc<StdMutex<Option<HeldRootStop>>>) {
-    if let Some(mut held) = held_root_stop.lock().unwrap().take() {
-        held.disarm();
+/// Exclusive transition capability for a stopped LiteInst root generation.
+///
+/// Dropping this value without a transition intentionally leaves the shared
+/// cleanup lease armed. Every transition consumes the value and disarms only
+/// after validating the exact carried Event generation.
+pub(crate) struct RootStopLease {
+    task: Option<Stopped>,
+    held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+}
+
+impl RootStopLease {
+    pub(crate) fn new(
+        task: Stopped,
+        held_root_stop: Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+    ) -> Self {
+        Self {
+            task: Some(task),
+            held_root_stop,
+        }
+    }
+
+    fn take_for_transition(&mut self) -> Result<Stopped, TraceError> {
+        let task = self.task.take().expect("root stop lease consumed once");
+        if let Some(slot) = self.held_root_stop.as_ref() {
+            let mut held = slot.lock().unwrap().take().ok_or(Errno::EINVAL)?;
+            let current = task.terminal_cleanup();
+            if held.root_tid != task.pid()
+                || !held.armed
+                || !held.terminal.same_generation(&current)
+            {
+                *slot.lock().unwrap() = Some(held);
+                return Err(Errno::EINVAL.into());
+            }
+            held.disarm();
+        }
+        Ok(task)
+    }
+
+    pub(crate) fn resume<T: Into<Option<Signal>>>(
+        mut self,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.take_for_transition()?.resume(signal)
+    }
+
+    pub(crate) fn step<T: Into<Option<Signal>>>(
+        mut self,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.take_for_transition()?.step(signal)
+    }
+
+    pub(crate) fn syscall<T: Into<Option<Signal>>>(
+        mut self,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.take_for_transition()?.syscall(signal)
+    }
+
+    pub(crate) fn detach<T: Into<Option<Signal>>>(
+        mut self,
+        signal: T,
+    ) -> Result<Running, TraceError> {
+        self.take_for_transition()?.detach(signal)
+    }
+}
+
+impl std::ops::Deref for RootStopLease {
+    type Target = Stopped;
+
+    fn deref(&self) -> &Self::Target {
+        self.task.as_ref().expect("root stop lease consumed once")
+    }
+}
+
+impl std::ops::DerefMut for RootStopLease {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.task.as_mut().expect("root stop lease consumed once")
     }
 }
 
@@ -476,7 +560,8 @@ impl LiteinstTraceeCleanup {
         if let Some(mut held) = self.held_root_stop.lock().unwrap().take() {
             let matching_status = match held.status {
                 HeldRootStopStatus::Signal(signal) => {
-                    matches!(signal, Signal::SIGSTOP | Signal::SIGTRAP)
+                    let _exact_signal = signal;
+                    true
                 }
                 HeldRootStopStatus::NewChild(link) => self
                     .newborn_tracees
@@ -486,6 +571,15 @@ impl LiteinstTraceeCleanup {
                     .is_some_and(|newborn| {
                         newborn.link.parent_tid == link.parent_tid && newborn.link.op == link.op
                     }),
+                HeldRootStopStatus::Exec(replaced_tid) => {
+                    let _exact_replaced_tid = replaced_tid;
+                    true
+                }
+                HeldRootStopStatus::VforkDone
+                | HeldRootStopStatus::Exit
+                | HeldRootStopStatus::Seccomp
+                | HeldRootStopStatus::Stop
+                | HeldRootStopStatus::Syscall => true,
             };
             if !held.armed
                 || held.root_tid != self.pid()
@@ -946,8 +1040,22 @@ impl Drop for LiteinstTraceeCleanup {
         // Cancellation cannot await an orderly drain, so synchronously request
         // termination and wait for the notifier-owned final reap. Before async
         // registration, the bounded raw-wait fallback owns cleanup instead.
-        if let Err(error) = self.terminate_and_confirm() {
-            tracing::error!(pid = %self.pid(), %error, "LiteInst cancellation cleanup failed");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match self.terminate_and_confirm() {
+                Ok(()) => return,
+                Err(error) if Instant::now() < deadline => {
+                    // Every failed attempt restores all descendant/newborn
+                    // ownership to this guard. Retry transient discovery and
+                    // registration errors without dropping cleanup records.
+                    std::thread::sleep(Duration::from_millis(1));
+                    tracing::debug!(pid = %self.pid(), %error, "retrying LiteInst cancellation cleanup");
+                }
+                Err(error) => {
+                    tracing::error!(pid = %self.pid(), %error, "LiteInst cancellation cleanup failed");
+                    return;
+                }
+            }
         }
     }
 }
@@ -1522,7 +1630,7 @@ async fn postspawn<L: Tool + 'static>(
         gdbserver,
     );
 
-    tracer.arm_liteinst_root_stop(&child, Signal::SIGSTOP);
+    tracer.arm_liteinst_root_stop(&child, &Event::Signal(Signal::SIGSTOP));
     child = tracer.tracee_preinit(child).await?;
 
     let tracer = Box::pin(run_task_tree(tracer, child, orphan_receiver));
@@ -1699,6 +1807,10 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             fail_after_scan_once: None,
             #[cfg(test)]
             force_task_scan_once: None,
+            #[cfg(test)]
+            pause_root_stop: None,
+            #[cfg(test)]
+            pause_preinit_step: None,
         });
         self
     }
@@ -1767,6 +1879,32 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .expect("LiteInst runtime must be configured before scan failure injection");
         runtime.fail_after_scan_once = Some(fail);
         runtime.force_task_scan_once = Some(force_scan);
+        self
+    }
+
+    #[cfg(test)]
+    fn pause_liteinst_root_stop_for_test(
+        mut self,
+        stop: RootStopPause,
+        sender: mpsc::UnboundedSender<Pid>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before root-stop pause")
+            .pause_root_stop = Some((stop, sender));
+        self
+    }
+
+    #[cfg(test)]
+    fn pause_liteinst_preinit_step_for_test(
+        mut self,
+        step: usize,
+        sender: mpsc::UnboundedSender<Pid>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before preinit pause")
+            .pause_preinit_step = Some((step, sender));
         self
     }
 
@@ -2124,6 +2262,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use reverie::Guest;
+    use reverie::syscalls::Syscall;
+
     use super::*;
 
     fn fork_paused_child() -> Pid {
@@ -2183,19 +2324,19 @@ mod tests {
             .assume_stopped();
         assert_eq!(event, Event::Signal(Signal::SIGSTOP));
 
-        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_signal(
+        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
             &stopped,
-            Signal::SIGSTOP,
+            &Event::Signal(Signal::SIGSTOP),
         ))));
-        disarm_held_root_stop(&slot);
+        let running = RootStopLease::new(stopped, Some(Arc::clone(&slot)))
+            .resume(None)
+            .expect("resume held-stop child");
         assert!(
             slot.lock().unwrap().is_none(),
             "normal transition left a stale lease"
         );
 
-        let exited = stopped
-            .resume(None)
-            .expect("resume held-stop child")
+        let exited = running
             .next_state()
             .await
             .expect("wait resumed held-stop child");
@@ -2213,6 +2354,138 @@ mod tests {
         fn subscriptions(_config: &()) -> Subscription {
             Subscription::none()
         }
+    }
+
+    #[derive(Default)]
+    struct RootStopTool;
+
+    #[reverie::tool]
+    impl Tool for RootStopTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::getpid].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            Ok(guest.inject(syscall).await?)
+        }
+    }
+
+    fn root_stop_guest_command(mode: &str) -> Command {
+        if mode == "signal" {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "kill -USR1 $$; while :; do :; done"]);
+            return command;
+        }
+        let mut command = Command::new(std::env::current_exe().expect("locate test binary"));
+        command.args([
+            "--exact",
+            "tracer::tests::liteinst_root_stop_pause_guest",
+            "--nocapture",
+        ]);
+        command.env("REVERIE_LITEINST_ROOT_STOP_GUEST", mode);
+        command
+    }
+
+    #[test]
+    fn liteinst_root_stop_pause_guest() {
+        let Some(mode) = std::env::var_os("REVERIE_LITEINST_ROOT_STOP_GUEST") else {
+            return;
+        };
+        match mode.to_str().expect("root-stop mode is UTF-8") {
+            "syscall" => {
+                unsafe { libc::syscall(libc::SYS_getpid) };
+            }
+            "signal" => {
+                signal::raise(Signal::SIGUSR1).expect("raise root-stop signal");
+            }
+            mode => panic!("unknown root-stop guest mode {mode}"),
+        }
+        loop {
+            unsafe { libc::pause() };
+        }
+    }
+
+    async fn cancel_at_root_stop(pause: RootStopPause, mode: &str) {
+        let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
+        let tracer = TracerBuilder::<RootStopTool>::new(root_stop_guest_command(mode))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .pause_liteinst_root_stop_for_test(pause, stop_tx)
+            .spawn()
+            .await
+            .expect("spawn root-stop cancellation tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let stopped_pid = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => panic!("root-stop tracee completed before cancellation: {result:?}"),
+                pid = stop_rx.recv() => pid.expect("root-stop pause channel closed"),
+            }
+        })
+        .await
+        .expect("tracee did not reach requested root stop");
+        assert_eq!(stopped_pid, root_pid);
+
+        drop(wait);
+        assert_reaped("cancelled root stop", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_at_generic_syscall_handler_reaps_root() {
+        cancel_at_root_stop(RootStopPause::Seccomp, "syscall").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_at_signal_handler_reaps_root() {
+        cancel_at_root_stop(RootStopPause::Signal(Signal::SIGUSR1), "signal").await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_at_each_preinit_step_reaps_root() {
+        for step in 0..=4 {
+            let (step_tx, mut step_rx) = mpsc::unbounded_channel();
+            let builder = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+                .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+                .pause_liteinst_preinit_step_for_test(step, step_tx);
+            let mut spawn = Box::pin(builder.spawn());
+            let root_pid = tokio::time::timeout(Duration::from_secs(3), async {
+                tokio::select! {
+                    _result = &mut spawn => panic!("preinit completed before step {step}"),
+                    pid = step_rx.recv() => pid.expect("preinit pause channel closed"),
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("tracee did not reach preinit step {step}"));
+
+            drop(spawn);
+            assert_reaped("cancelled preinit root", root_pid);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn normal_liteinst_completion_leaves_no_stale_root_stop_lease() {
+        let builder = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4);
+        let held = Arc::clone(
+            &builder
+                .liteinst_runtime
+                .as_ref()
+                .expect("LiteInst runtime configured")
+                .held_root_stop,
+        );
+        let tracer = builder.spawn().await.expect("spawn normal LiteInst tracee");
+        let (status, ()) = tracer.wait().await.expect("wait normal LiteInst tracee");
+        assert_eq!(status, ExitStatus::Exited(0));
+        assert!(
+            held.lock().unwrap().is_none(),
+            "normal path left stale lease"
+        );
     }
 
     #[test]
@@ -2257,6 +2530,36 @@ mod tests {
             Some(libc::ECHILD),
             "failed LiteInst preinit left tracee {pid} waitable"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn direct_drop_retries_first_discovery_failure() {
+        let fail_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .fail_liteinst_discovery_once_for_test(Arc::clone(&fail_once))
+            .spawn()
+            .await
+            .expect("spawn direct-Drop cleanup tracee");
+        let root_pid = tracer.guest_pid();
+
+        drop(tracer);
+        let reaped_by_drop = !std::path::Path::new(&format!("/proc/{root_pid}")).exists();
+        if !reaped_by_drop {
+            // Preserve a clean host after recording the pre-fix failure.
+            unsafe { libc::kill(root_pid.as_raw(), libc::SIGKILL) };
+            for _ in 0..2_000 {
+                if !std::path::Path::new(&format!("/proc/{root_pid}")).exists() {
+                    break;
+                }
+                let _ = ptrace::cont(root_pid.into(), None);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        assert!(!fail_once.load(Ordering::SeqCst));
+        assert!(reaped_by_drop, "direct Drop stopped after its first error");
+        assert_reaped("direct-Drop root", root_pid);
     }
 
     #[test]
