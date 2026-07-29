@@ -66,7 +66,7 @@ impl<T> Drop for SpinGuard<'_, T> {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review blocking trusted-gate
+// TODO-HUMAN-REVIEW(PR-269): Review blocking trusted-gate
 // RPC semantics for the e9patch generic Tool host.
 /// Blocking guest-side RPC handle backed by the shared preload wire protocol.
 pub(crate) struct CoordinatorRpc<G: GlobalTool> {

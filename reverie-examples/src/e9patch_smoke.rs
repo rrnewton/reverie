@@ -13,7 +13,7 @@ use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review the public
+// TODO-HUMAN-REVIEW(PR-269): Review the public
 // concrete-tool fixture shared across the preload/coordinator boundary.
 /// Coordinator-owned count of direct AOT Tool callbacks.
 #[derive(Default)]
@@ -39,13 +39,13 @@ impl GlobalTool for AotCounterGlobal {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review the public
+// TODO-HUMAN-REVIEW(PR-269): Review the public
 // concrete-tool fixture shared across the preload/coordinator boundary.
 /// Tool that RPC-counts and emulates a direct `getpid` syscall.
 #[derive(Default)]
 pub struct AotCounterTool;
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review the direct getpid
+// TODO-HUMAN-REVIEW(PR-269): Review the direct getpid
 // callback, register mutation proof, coordinator RPC, and emulated result.
 #[reverie::tool]
 impl Tool for AotCounterTool {

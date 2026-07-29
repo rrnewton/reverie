@@ -137,7 +137,7 @@ impl InjectedSyscallFrame {
         regs.eflags = self.native_rflags(regs.eflags);
     }
 
-    // TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review exposing the
+    // TODO-HUMAN-REVIEW(PR-269): Review exposing the
     // complete AOT register view to the in-process generic Tool host.
     /// Returns the register view a Tool observes at this rewritten syscall.
     ///
@@ -194,7 +194,7 @@ impl InjectedSyscallFrame {
         // returns to the instruction following the replaced syscall.
     }
 
-    // TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review writable AOT
+    // TODO-HUMAN-REVIEW(PR-269): Review writable AOT
     // register updates from the in-process generic Guest implementation.
     /// Applies a Tool-requested register update when the e9tool frame can
     /// represent it, rejecting control-flow and segment changes.

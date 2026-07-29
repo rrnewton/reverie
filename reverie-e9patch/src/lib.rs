@@ -85,7 +85,7 @@ pub use runtime::builtin_tool_from_env_value;
 pub use tool_host::install_tool;
 
 /// Environment variable naming the generic-Tool coordinator socket.
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review the inherited
+// TODO-HUMAN-REVIEW(PR-269): Review the inherited
 // coordinator-path bootstrap for the first generic e9patch Tool-host slice.
 pub const COORDINATOR_ENV: &str = "REVERIE_E9PATCH_COORDINATOR";
 

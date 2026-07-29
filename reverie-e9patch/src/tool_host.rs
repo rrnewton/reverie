@@ -67,7 +67,7 @@ impl Drop for DispatchScratchScope {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review generic in-guest
+// TODO-HUMAN-REVIEW(PR-269): Review generic in-guest
 // Tool hosting on e9patch's direct AOT callback.
 /// Installs a concrete Reverie tool and connects it to its coordinator.
 ///
@@ -271,7 +271,7 @@ where
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review direct-host exit
+// TODO-HUMAN-REVIEW(PR-269): Review direct-host exit
 // lifecycle ordering before the non-returning exit syscall.
 fn finish_tool_exit<T: Tool>(
     tool_slot: &mut Option<T>,
@@ -298,7 +298,7 @@ fn finish_tool_exit<T: Tool>(
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review exit syscall
+// TODO-HUMAN-REVIEW(PR-269): Review exit syscall
 // classification for the direct Tool host.
 fn is_exit_syscall(number: i64) -> bool {
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -549,7 +549,7 @@ impl<T: Tool> Guest<T> for E9patchGuest<'_, T> {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review injected
+// TODO-HUMAN-REVIEW(PR-269): Review injected
 // process/signal safety policy.
 fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
     let unsupported_process =
@@ -574,7 +574,7 @@ fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review nested Tool syscall
+// TODO-HUMAN-REVIEW(PR-269): Review nested Tool syscall
 // guards and trusted-gate forwarding.
 fn forward_nested_tool_syscall(event: &mut SyscallEvent, coordinator_fd: libc::c_int) {
     let number = event.number();
@@ -607,7 +607,7 @@ fn forward_nested_tool_syscall(event: &mut SyscallEvent, coordinator_fd: libc::c
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review coordinator-channel
+// TODO-HUMAN-REVIEW(PR-269): Review coordinator-channel
 // descriptor virtualization.
 fn protect_coordinator_channel(event: &mut SyscallEvent, coordinator_fd: libc::c_int) -> bool {
     let fd = coordinator_fd as u64;
@@ -625,7 +625,7 @@ fn protect_coordinator_channel(event: &mut SyscallEvent, coordinator_fd: libc::c
     true
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review close_range splitting
+// TODO-HUMAN-REVIEW(PR-269): Review close_range splitting
 // around the reserved coordinator descriptor.
 fn close_range_preserving_fd(args: [u64; 6], fd: u64) -> i64 {
     const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
@@ -660,7 +660,7 @@ fn close_range_preserving_fd(args: [u64; 6], fd: u64) -> i64 {
     0
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review syscalls classified
+// TODO-HUMAN-REVIEW(PR-269): Review syscalls classified
 // as targeting the reserved coordinator descriptor.
 fn syscall_targets_fd(number: i64, args: [u64; 6], fd: u64) -> bool {
     match number {
@@ -724,7 +724,7 @@ impl Drop for SignalInstallGuard {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review atomic signal-state
+// TODO-HUMAN-REVIEW(PR-269): Review atomic signal-state
 // preparation before installing the shared SIGSYS controller.
 fn prepare_guest_signal_state() -> io::Result<SignalInstallGuard> {
     let sigsys = 1_u64 << (libc::SIGSYS - 1);
@@ -794,7 +794,7 @@ fn prepare_guest_signal_state() -> io::Result<SignalInstallGuard> {
     Ok(guard)
 }
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review fault-safe guest
+// TODO-HUMAN-REVIEW(PR-269): Review fault-safe guest
 // signal-action decoding.
 fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
     if number != libc::SYS_rt_sigaction || args[1] == 0 {

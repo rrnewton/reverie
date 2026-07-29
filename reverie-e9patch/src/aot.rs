@@ -18,7 +18,7 @@ include!(concat!(env!("OUT_DIR"), "/aot_dispatch_constants.rs"));
 
 const PAGE_SIZE: usize = 4096;
 
-// TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review thread-local AOT
+// TODO-HUMAN-REVIEW(PR-269): Review thread-local AOT
 // frame ownership and nested-dispatch restoration for generic Guest access.
 thread_local! {
     /// The innermost e9tool frame currently being serviced on this thread.

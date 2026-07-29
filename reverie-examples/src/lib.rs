@@ -106,7 +106,7 @@ unsafe extern "C" fn initialize(
         // SAFETY: this constructor runs before application-created threads.
         unsafe { std::env::remove_var(E9PATCH_EXAMPLE_TOOL_ENV) };
         let result = match selected.as_str() {
-            // TODO-HUMAN-REVIEW(PR-e9patch-generic-tool-host): Review the
+            // TODO-HUMAN-REVIEW(PR-269): Review the
             // concrete e9patch Tool selection used by the direct AOT proof.
             "e9patch-smoke" => unsafe {
                 reverie_e9patch::install_tool::<e9patch_smoke::AotCounterTool>(socket)
