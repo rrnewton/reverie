@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::fs;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::os::fd::AsRawFd;
@@ -19,8 +20,10 @@ use std::os::fd::BorrowedFd;
 use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
 use std::thread::ThreadId;
 use std::time::Duration;
@@ -51,6 +54,7 @@ use reverie::process::Command;
 use reverie::process::Output;
 use reverie::process::seccomp;
 use reverie::syscalls::Sysno;
+use safeptrace::ChildOp;
 use safeptrace::Error as TraceError;
 use safeptrace::Event;
 use safeptrace::Running;
@@ -97,55 +101,181 @@ pub struct Tracer<G> {
 }
 
 struct LiteinstTraceeCleanup {
-    identity: ProcessIdentity,
-    newborn_tracees: Arc<StdMutex<HashSet<Pid>>>,
+    identity: TraceeIdentity,
+    newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
     armed: bool,
     terminal: Option<TerminalCleanup>,
     notifier_owner: Option<ThreadId>,
 }
 
-struct ProcessIdentity {
-    pid: Pid,
-    pidfd: OwnedFd,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TraceeSnapshot {
+    tgid: Pid,
+    ppid: Pid,
+    tracer_pid: Pid,
     start_time: u64,
 }
 
-impl ProcessIdentity {
-    fn open(pid: Pid) -> Result<Self, Errno> {
-        let start_time = process_start_time(pid)
-            .map_err(|error| Errno::new(error.raw_os_error().unwrap_or(libc::EIO)))?;
-        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0) };
-        if fd == -1 {
-            return Err(Errno::last());
+#[derive(Debug)]
+pub(crate) struct TraceeIdentity {
+    tid: Pid,
+    snapshot: TraceeSnapshot,
+    proc_dir: OwnedFd,
+    proc_inode: u64,
+    pidfd: Option<OwnedFd>,
+    parent: Option<(Pid, Pid, Option<ChildOp>)>,
+}
+
+pub(crate) struct NewbornTracee {
+    identity: TraceeIdentity,
+    terminal: TerminalCleanup,
+}
+
+impl NewbornTracee {
+    pub(crate) fn new(identity: TraceeIdentity, task: &Running) -> Self {
+        Self {
+            identity,
+            terminal: task.terminal_cleanup(),
         }
-        let identity = Self {
-            pid,
-            pidfd: unsafe { OwnedFd::from_raw_fd(fd as i32) },
-            start_time,
-        };
-        if !identity.matches_proc() {
-            return Err(Errno::ESRCH);
+    }
+}
+
+impl TraceeIdentity {
+    pub(crate) fn open_root(pid: Pid) -> Result<Self, Errno> {
+        // `Command::spawn` is deliberately unblocked just before the child
+        // calls PTRACE_TRACEME. Bind the same procfs generation repeatedly
+        // until TracerPid becomes visible; resource/read errors remain fatal.
+        for _ in 0..2_000 {
+            match Self::capture(pid, None) {
+                Ok(identity)
+                    if identity.tid == identity.snapshot.tgid && identity.pidfd.is_some() =>
+                {
+                    return Ok(identity);
+                }
+                Ok(_) | Err(Errno::ESRCH | Errno::ENOENT)
+                    if std::path::Path::new(&format!("/proc/{pid}")).exists() =>
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Ok(_) => return Err(Errno::ESRCH),
+                Err(error) => return Err(error),
+            }
         }
-        Ok(identity)
+        Err(Errno::ETIMEDOUT)
     }
 
-    fn send_signal(&self, signal: Signal) -> Result<(), Errno> {
+    pub(crate) fn capture_newborn(tid: Pid, parent_tid: Pid, op: ChildOp) -> Result<Self, Errno> {
+        Self::capture(tid, Some((parent_tid, Some(op))))
+    }
+
+    fn open_discovered(tid: Pid, parent_tid: Pid) -> std::io::Result<Option<Self>> {
+        let identity = match Self::capture(tid, Some((parent_tid, None))) {
+            Ok(identity) => identity,
+            Err(error) if skippable_tracee_open_error(tid, error) => return Ok(None),
+            Err(error) => return Err(std::io::Error::from_raw_os_error(error.into_raw())),
+        };
+
+        // Re-read the kernel children relationship after opening the procfs
+        // identity and pidfd. A list/open race may otherwise bind a replacement
+        // tracee that reused the numeric child PID.
+        if !direct_children(parent_tid)?.contains(&tid) {
+            if !identity.is_our_tracee() || tracee_absent_or_replaced(parent_tid) {
+                return Ok(None);
+            }
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("tracee {tid} no longer belongs to listed parent {parent_tid}"),
+            ));
+        }
+        Ok(Some(identity))
+    }
+
+    fn capture(tid: Pid, parent: Option<(Pid, Option<ChildOp>)>) -> Result<Self, Errno> {
+        let before = tracee_snapshot(tid).map_err(io_errno)?;
+        let parent_snapshot = parent
+            .map(|(parent_tid, _)| tracee_snapshot(parent_tid).map_err(io_errno))
+            .transpose()?;
+        let proc_dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+            .open(format!("/proc/{tid}"))
+            .map_err(io_errno)?;
+        let proc_inode = proc_dir.metadata().map_err(io_errno)?.ino();
+        let pidfd = if tid == before.tgid {
+            let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, tid.as_raw(), 0) };
+            if fd == -1 {
+                return Err(Errno::last());
+            }
+            Some(unsafe { OwnedFd::from_raw_fd(fd as i32) })
+        } else {
+            None
+        };
+        let after = tracee_snapshot(tid).map_err(io_errno)?;
+        let current_inode = fs::metadata(format!("/proc/{tid}"))
+            .map_err(io_errno)?
+            .ino();
+        if before != after || current_inode != proc_inode || !tracer_is_current(after.tracer_pid) {
+            return Err(Errno::ESRCH);
+        }
+
+        let parent = match (parent, parent_snapshot) {
+            (Some((parent_tid, op)), Some(parent_snapshot)) => {
+                let parent_after = tracee_snapshot(parent_tid).map_err(io_errno)?;
+                if parent_after != parent_snapshot
+                    || (after.tgid != parent_snapshot.tgid && after.ppid != parent_snapshot.tgid)
+                {
+                    return Err(Errno::ESRCH);
+                }
+                Some((parent_tid, parent_snapshot.tgid, op))
+            }
+            (None, None) => None,
+            _ => unreachable!("parent snapshot and relation must be paired"),
+        };
+
+        Ok(Self {
+            tid,
+            snapshot: after,
+            proc_dir: proc_dir.into(),
+            proc_inode,
+            pidfd,
+            parent,
+        })
+    }
+
+    pub(crate) fn send_signal(&self, signal: Signal) -> Result<(), Errno> {
         self.send_raw_signal(signal as i32)
     }
 
-    fn is_alive(&self) -> bool {
-        self.send_raw_signal(0).is_ok()
+    fn same_process(&self) -> bool {
+        let path = format!("/proc/{}", self.tid);
+        let Some(current) = tracee_snapshot(self.tid).ok() else {
+            return false;
+        };
+        fd_inode(&self.proc_dir).ok() == Some(self.proc_inode)
+            && fs::metadata(path).ok().map(|metadata| metadata.ino()) == Some(self.proc_inode)
+            && current.tgid == self.snapshot.tgid
+            && current.start_time == self.snapshot.start_time
     }
 
-    fn matches_proc(&self) -> bool {
-        process_start_time(self.pid).ok() == Some(self.start_time)
+    fn is_our_tracee(&self) -> bool {
+        self.same_process()
+            && tracee_snapshot(self.tid).ok().is_some_and(|current| {
+                current.tracer_pid == self.snapshot.tracer_pid
+                    && tracer_is_current(current.tracer_pid)
+            })
+            && self.parent.is_none_or(|(_, parent_tgid, _)| {
+                self.snapshot.tgid == parent_tgid || self.snapshot.ppid == parent_tgid
+            })
     }
 
     fn send_raw_signal(&self, signal: i32) -> Result<(), Errno> {
+        let Some(pidfd) = self.pidfd.as_ref() else {
+            return Err(Errno::EOPNOTSUPP);
+        };
         let result = unsafe {
             libc::syscall(
                 libc::SYS_pidfd_send_signal,
-                self.pidfd.as_raw_fd(),
+                pidfd.as_raw_fd(),
                 signal,
                 std::ptr::null::<libc::siginfo_t>(),
                 0,
@@ -160,14 +290,17 @@ impl ProcessIdentity {
 }
 
 struct RegisteredTraceeCleanup {
-    identity: ProcessIdentity,
+    identity: TraceeIdentity,
     terminal: TerminalCleanup,
 }
 
 impl LiteinstTraceeCleanup {
-    fn new(pid: Pid, newborn_tracees: Arc<StdMutex<HashSet<Pid>>>) -> Result<Self, Errno> {
+    fn new(
+        pid: Pid,
+        newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
+    ) -> Result<Self, Errno> {
         Ok(Self {
-            identity: ProcessIdentity::open(pid)?,
+            identity: TraceeIdentity::open_root(pid)?,
             newborn_tracees,
             armed: true,
             terminal: None,
@@ -176,13 +309,13 @@ impl LiteinstTraceeCleanup {
     }
 
     fn pid(&self) -> Pid {
-        self.identity.pid
+        self.identity.tid
     }
 
-    fn register_notifier(&mut self) {
+    fn register_notifier(&mut self, task: &Running) {
         debug_assert!(self.terminal.is_none());
         self.notifier_owner = Some(std::thread::current().id());
-        self.terminal = Some(Running::new(self.pid()).terminal_cleanup());
+        self.terminal = Some(task.terminal_cleanup());
     }
 
     fn disarm(&mut self) {
@@ -197,9 +330,10 @@ impl LiteinstTraceeCleanup {
             .terminal
             .as_ref()
             .is_some_and(|terminal| terminal.wait(Duration::ZERO));
-        let identity_absent = !self.identity.matches_proc();
+        let identity_absent = !self.identity.same_process();
         let unregistered_absent = self.terminal.is_none() && identity_absent;
-        if (notifier_finished && identity_absent) || unregistered_absent {
+        let newborns_empty = self.newborn_tracees.lock().unwrap().is_empty();
+        if newborns_empty && ((notifier_finished && identity_absent) || unregistered_absent) {
             self.armed = false;
             Ok(())
         } else {
@@ -254,13 +388,18 @@ impl LiteinstTraceeCleanup {
                 let tracee = descendants
                     .remove(&pid)
                     .expect("completed descendant must remain registered");
-                if tracee.identity.matches_proc() {
+                if tracee.identity.same_process() {
                     terminal_descendants.insert(pid, tracee.identity);
                 }
             }
-            terminal_descendants.retain(|_, identity| identity.matches_proc());
-            let root_absent = !self.identity.matches_proc();
-            if root_done && root_absent && descendants.is_empty() && terminal_descendants.is_empty()
+            terminal_descendants.retain(|_, identity| identity.same_process());
+            let root_absent = !self.identity.same_process();
+            let newborns_empty = self.newborn_tracees.lock().unwrap().is_empty();
+            if root_done
+                && root_absent
+                && descendants.is_empty()
+                && terminal_descendants.is_empty()
+                && newborns_empty
             {
                 self.armed = false;
                 return Ok(());
@@ -273,12 +412,12 @@ impl LiteinstTraceeCleanup {
                 // Preserve parentage until every descendant is terminal and
                 // reaped. Otherwise an auto-attached child can be reparented
                 // before its notifier consumes the final wait status.
-                if !root_done && descendants.is_empty() && self.identity.is_alive() {
+                if !root_done && descendants.is_empty() && self.identity.is_our_tracee() {
                     let _ = ptrace::cont(self.pid().into(), None);
                 }
                 for tracee in descendants.values() {
-                    if tracee.identity.is_alive() {
-                        let _ = ptrace::cont(tracee.identity.pid.into(), None);
+                    if tracee.identity.is_our_tracee() {
+                        let _ = ptrace::cont(tracee.identity.tid.into(), None);
                     }
                 }
             }
@@ -299,47 +438,57 @@ impl LiteinstTraceeCleanup {
     fn discover_descendants(
         &self,
         descendants: &mut HashMap<Pid, RegisteredTraceeCleanup>,
-        terminal_descendants: &HashMap<Pid, ProcessIdentity>,
+        terminal_descendants: &HashMap<Pid, TraceeIdentity>,
     ) -> std::io::Result<()> {
         let mut queue = VecDeque::from([self.pid()]);
         queue.extend(descendants.keys().copied());
-        let newborn_tracees = self
-            .newborn_tracees
-            .lock()
-            .unwrap()
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
-        for child in newborn_tracees {
-            queue.push_back(child);
-            if child == self.pid()
-                || descendants.contains_key(&child)
-                || terminal_descendants.contains_key(&child)
+        let newborn_tracees = std::mem::take(&mut *self.newborn_tracees.lock().unwrap());
+        for (tid, newborn) in newborn_tracees {
+            if tid == self.pid()
+                || descendants.contains_key(&tid)
+                || terminal_descendants.contains_key(&tid)
             {
                 continue;
             }
-            let Ok(identity) = ProcessIdentity::open(child) else {
-                continue;
-            };
-            let terminal = Running::new(child).terminal_cleanup();
-            descendants.insert(child, RegisteredTraceeCleanup { identity, terminal });
+            if newborn.identity.snapshot.tgid == tid {
+                queue.push_back(tid);
+            }
+            descendants.insert(
+                tid,
+                RegisteredTraceeCleanup {
+                    identity: newborn.identity,
+                    terminal: newborn.terminal,
+                },
+            );
         }
         let mut visited = HashSet::new();
         while let Some(parent) = queue.pop_front() {
             if !visited.insert(parent) {
                 continue;
             }
-            for child in direct_children(parent)? {
-                queue.push_back(child);
+            for child in direct_children(parent).map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("read direct children of bound tracee {parent}: {error}"),
+                )
+            })? {
                 if child == self.pid()
                     || descendants.contains_key(&child)
                     || terminal_descendants.contains_key(&child)
                 {
                     continue;
                 }
-                let Ok(identity) = ProcessIdentity::open(child) else {
+                let Some(identity) =
+                    TraceeIdentity::open_discovered(child, parent).map_err(|error| {
+                        std::io::Error::new(
+                            error.kind(),
+                            format!("bind listed tracee {child} under parent {parent}: {error}"),
+                        )
+                    })?
+                else {
                     continue;
                 };
+                queue.push_back(child);
                 let terminal = Running::new(child).terminal_cleanup();
                 descendants.insert(child, RegisteredTraceeCleanup { identity, terminal });
             }
@@ -348,7 +497,13 @@ impl LiteinstTraceeCleanup {
     }
 }
 
-fn send_identity_sigkill(identity: &ProcessIdentity) -> std::io::Result<()> {
+fn send_identity_sigkill(identity: &TraceeIdentity) -> std::io::Result<()> {
+    if identity.pidfd.is_none() {
+        // Nonleader TIDs are terminated by their TGID leader's pidfd. They are
+        // never signaled numerically; their bound ptrace statuses are drained
+        // separately on the owning tracer thread.
+        return Ok(());
+    }
     match identity.send_signal(Signal::SIGKILL) {
         Ok(()) | Err(Errno::ESRCH) => Ok(()),
         Err(error) => Err(std::io::Error::from_raw_os_error(error.into_raw())),
@@ -369,8 +524,12 @@ impl Drop for LiteinstTraceeCleanup {
     }
 }
 
-fn process_start_time(pid: Pid) -> std::io::Result<u64> {
-    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+fn io_errno(error: std::io::Error) -> Errno {
+    Errno::new(error.raw_os_error().unwrap_or(libc::EIO))
+}
+
+fn process_start_time(tid: Pid) -> std::io::Result<u64> {
+    let stat = fs::read_to_string(format!("/proc/{tid}/stat"))?;
     let fields = stat
         .rsplit_once(") ")
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed stat"))?
@@ -383,39 +542,119 @@ fn process_start_time(pid: Pid) -> std::io::Result<u64> {
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
+fn status_pid(status: &str, name: &str) -> std::io::Result<Pid> {
+    let value = status
+        .lines()
+        .find_map(|line| line.strip_prefix(name))
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("missing or malformed {name}"),
+            )
+        })?;
+    Ok(Pid::from_raw(value))
+}
+
+fn tracee_snapshot(tid: Pid) -> std::io::Result<TraceeSnapshot> {
+    let start_time = process_start_time(tid)?;
+    let status = fs::read_to_string(format!("/proc/{tid}/status"))?;
+    let snapshot = TraceeSnapshot {
+        tgid: status_pid(&status, "Tgid:")?,
+        ppid: status_pid(&status, "PPid:")?,
+        tracer_pid: status_pid(&status, "TracerPid:")?,
+        start_time,
+    };
+    if process_start_time(tid)? != start_time {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "tracee identity changed while reading procfs",
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn tracer_is_current(tracer_tid: Pid) -> bool {
+    tracer_tid.as_raw() > 0
+        && std::path::Path::new(&format!("/proc/self/task/{tracer_tid}")).exists()
+}
+
+fn fd_inode(fd: &OwnedFd) -> std::io::Result<u64> {
+    fs::metadata(format!("/proc/self/fd/{}", fd.as_raw_fd())).map(|metadata| metadata.ino())
+}
+
+fn tracee_absent_or_replaced(tid: Pid) -> bool {
+    let path = format!("/proc/{tid}");
+    if !std::path::Path::new(&path).exists() {
+        return true;
+    }
+    tracee_snapshot(tid)
+        .ok()
+        .is_some_and(|snapshot| !tracer_is_current(snapshot.tracer_pid))
+}
+
+fn skippable_tracee_open_error(tid: Pid, error: Errno) -> bool {
+    matches!(error, Errno::ENOENT | Errno::ESRCH) && tracee_absent_or_replaced(tid)
+}
+
+static PROC_CHILDREN_SUPPORTED: LazyLock<bool> = LazyLock::new(|| {
+    fs::read_dir("/proc/self/task")
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .any(|task| task.path().join("children").exists())
+});
+
 fn direct_children(pid: Pid) -> std::io::Result<Vec<Pid>> {
-    let task_dir = match fs::read_dir(format!("/proc/{pid}/task")) {
+    let process_path = format!("/proc/{pid}");
+    let task_dir = match fs::read_dir(format!("{process_path}/task")) {
         Ok(task_dir) => task_dir,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && !std::path::Path::new(&process_path).exists() =>
+        {
+            return Ok(Vec::new());
+        }
+        Err(error) => {
+            return Err(std::io::Error::new(
+                error.kind(),
+                format!("read {process_path}/task: {error}"),
+            ));
+        }
     };
     let mut children = Vec::new();
     for task in task_dir {
         let task = task?;
         let contents = match fs::read_to_string(task.path().join("children")) {
             Ok(contents) => contents,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound && !*PROC_CHILDREN_SUPPORTED =>
+            {
+                continue;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !task.path().exists() => {
+                continue;
+            }
+            Err(error) => {
+                return Err(std::io::Error::new(
+                    error.kind(),
+                    format!("read {}: {error}", task.path().join("children").display()),
+                ));
+            }
         };
-        children.extend(
-            contents
-                .split_ascii_whitespace()
-                .filter_map(|pid| pid.parse::<i32>().ok())
-                .map(Pid::from_raw),
-        );
+        for child in contents.split_ascii_whitespace() {
+            children.push(Pid::from_raw(child.parse::<i32>().map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+            })?));
+        }
     }
     Ok(children)
 }
 
-pub(crate) fn terminate_and_reap_new_child(task: Running) -> Result<(), TraceError> {
-    let pid = task.pid();
-    let identity = ProcessIdentity::open(pid)?;
-    terminate_and_reap_new_child_with_identity(task, &identity)
-}
-
 fn terminate_and_reap_new_child_with_identity(
     task: Running,
-    identity: &ProcessIdentity,
+    identity: &TraceeIdentity,
 ) -> Result<(), TraceError> {
     match identity.send_signal(Signal::SIGKILL) {
         Ok(()) | Err(Errno::ESRCH) => {}
@@ -463,6 +702,25 @@ fn drain_unregistered_child(task: Running) -> Result<(), TraceError> {
         }
     }
     Err(Errno::ETIMEDOUT.into())
+}
+
+fn liteinst_pidfd_setup_error(
+    pid: Pid,
+    open_error: Errno,
+    kill_error: Option<Errno>,
+    drain_result: Result<(), TraceError>,
+) -> anyhow::Error {
+    match (kill_error, drain_result) {
+        (Some(kill_error), drain_result) => anyhow::anyhow!(
+            "failed to open pidfd for LiteInst tracee {pid}: {open_error}; numeric setup-failure kill also failed: {kill_error}; drain result: {drain_result:?}"
+        ),
+        (None, Err(drain_error)) => anyhow::anyhow!(
+            "failed to open pidfd for LiteInst tracee {pid}: {open_error}; cleanup drain also failed: {drain_error}"
+        ),
+        (None, Ok(())) => {
+            anyhow::anyhow!("failed to open pidfd for LiteInst tracee {pid}: {open_error}")
+        }
+    }
 }
 
 impl<G: Default> Tracer<G> {
@@ -563,7 +821,15 @@ async fn initialization_error(pid: Pid, err: TraceError) -> Error {
             anyhow::anyhow!("failed to initialize ptrace for tracee {pid}: {errno}").into()
         }
         TraceError::Died(zombie) => {
-            let exit_status = zombie.reap().await;
+            let exit_status = match zombie.reap().await {
+                Ok(exit_status) => exit_status,
+                Err(reap_error) => {
+                    return anyhow::anyhow!(
+                        "tracee {pid} died during ptrace initialization and its terminal status could not be reaped: {reap_error}"
+                    )
+                    .into();
+                }
+            };
             tracing::error!(
                 target: "reverie_ptrace::lifecycle",
                 %pid,
@@ -963,11 +1229,13 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             ready_marker,
             helper_return_marker,
             syscall_marker,
-            newborn_tracees: Arc::new(StdMutex::new(HashSet::new())),
+            newborn_tracees: Arc::new(StdMutex::new(HashMap::new())),
             #[cfg(test)]
             fail_preinit: false,
             #[cfg(test)]
             pause_new_task: None,
+            #[cfg(test)]
+            pause_after_new_task: false,
         });
         self
     }
@@ -986,6 +1254,19 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         self.liteinst_runtime
             .as_mut()
             .expect("LiteInst runtime must be configured before child-event pause")
+            .pause_new_task = Some(sender);
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before child-event pause")
+            .pause_after_new_task = true;
+        self
+    }
+
+    #[cfg(test)]
+    fn observe_liteinst_new_task_for_test(mut self, sender: mpsc::UnboundedSender<Pid>) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before child-event observation")
             .pause_new_task = Some(sender);
         self
     }
@@ -1093,12 +1374,14 @@ impl<T: Tool + 'static> TracerBuilder<T> {
                     // just-spawned, unreaped PID cannot have been reused yet,
                     // so a one-time numeric kill is safe only on this setup
                     // failure path; all active guards signal through pidfd.
-                    unsafe {
-                        libc::kill(guest_pid.as_raw(), libc::SIGKILL);
-                    }
-                    let _ = drain_unregistered_child(Running::new(guest_pid));
-                    return Err(anyhow::anyhow!(
-                        "failed to open pidfd for LiteInst tracee {guest_pid}: {error}"
+                    let kill_result = unsafe { libc::kill(guest_pid.as_raw(), libc::SIGKILL) };
+                    let kill_error = (kill_result == -1).then(Errno::last);
+                    let drain_result = drain_unregistered_child(Running::new(guest_pid));
+                    return Err(liteinst_pidfd_setup_error(
+                        guest_pid,
+                        error,
+                        kill_error,
+                        drain_result,
                     )
                     .into());
                 }
@@ -1133,7 +1416,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         // termination through the guard and await notifier unregistration;
         // they must never call raw waitpid for this PID.
         if let Some(cleanup) = liteinst_cleanup.as_mut() {
-            cleanup.register_notifier();
+            cleanup.register_notifier(&running_child);
         }
 
         let tracer = match postspawn::<T>(
@@ -1323,6 +1606,26 @@ mod tests {
         }
     }
 
+    fn untraced_process_identity(pid: Pid) -> TraceeIdentity {
+        let snapshot = tracee_snapshot(pid).expect("read child identity");
+        let proc_dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+            .open(format!("/proc/{pid}"))
+            .expect("open child proc identity");
+        let proc_inode = proc_dir.metadata().expect("stat child proc identity").ino();
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), 0) };
+        assert_ne!(fd, -1, "open child pidfd: {}", Errno::last());
+        TraceeIdentity {
+            tid: pid,
+            snapshot,
+            proc_dir: proc_dir.into(),
+            proc_inode,
+            pidfd: Some(unsafe { OwnedFd::from_raw_fd(fd as i32) }),
+            parent: None,
+        }
+    }
+
     fn assert_reaped(role: &str, pid: Pid) {
         assert!(
             !std::path::Path::new(&format!("/proc/{pid}")).exists(),
@@ -1396,14 +1699,14 @@ mod tests {
     #[test]
     fn stale_pidfd_identity_never_signals_reused_numeric_pid() {
         let old_pid = fork_paused_child();
-        let mut identity = ProcessIdentity::open(old_pid).expect("open old child pidfd");
+        let mut identity = untraced_process_identity(old_pid);
         identity
             .send_signal(Signal::SIGKILL)
             .expect("kill old child");
         Running::new(old_pid).wait().expect("reap old child");
 
         let unrelated_pid = fork_paused_child();
-        identity.pid = unrelated_pid;
+        identity.tid = unrelated_pid;
         assert_eq!(identity.send_signal(Signal::SIGKILL), Err(Errno::ESRCH));
         assert_eq!(unsafe { libc::kill(unrelated_pid.as_raw(), 0) }, 0);
 
@@ -1411,6 +1714,74 @@ mod tests {
         Running::new(unrelated_pid)
             .wait()
             .expect("reap unrelated child");
+    }
+
+    #[test]
+    fn discovery_skips_only_confirmed_absence_or_replacement() {
+        let absent = Pid::from_raw(i32::MAX - 71);
+        assert!(skippable_tracee_open_error(absent, Errno::ENOENT));
+        assert!(skippable_tracee_open_error(absent, Errno::ESRCH));
+        for error in [Errno::EMFILE, Errno::ENFILE, Errno::EIO] {
+            assert!(
+                !skippable_tracee_open_error(absent, error),
+                "resource/read error {error} was silently skipped"
+            );
+        }
+
+        let replacement = fork_paused_child();
+        assert!(skippable_tracee_open_error(replacement, Errno::ESRCH));
+        assert!(!skippable_tracee_open_error(replacement, Errno::EMFILE));
+        unsafe { libc::kill(replacement.as_raw(), libc::SIGKILL) };
+        Running::new(replacement)
+            .wait()
+            .expect("reap replacement fixture");
+    }
+
+    #[test]
+    fn pidfd_setup_error_retains_cleanup_drain_failure() {
+        let message = liteinst_pidfd_setup_error(
+            Pid::from_raw(42),
+            Errno::EMFILE,
+            None,
+            Err(TraceError::Errno(Errno::EIO)),
+        )
+        .to_string();
+        assert!(
+            message.contains("EMFILE"),
+            "missing pidfd failure: {message}"
+        );
+        assert!(message.contains("EIO"), "missing drain failure: {message}");
+    }
+
+    #[test]
+    fn tracee_generation_survives_zombie_until_real_reap() {
+        let pid = fork_paused_child();
+        let identity = untraced_process_identity(pid);
+        identity
+            .send_signal(Signal::SIGKILL)
+            .expect("kill child through pidfd");
+
+        let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                pid.as_raw() as libc::id_t,
+                info.as_mut_ptr(),
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(result, 0, "observe child zombie without reaping");
+        assert!(identity.same_process(), "zombie lost generation identity");
+        assert!(
+            !identity.is_our_tracee(),
+            "untraced zombie became active tracee"
+        );
+
+        Running::new(pid).wait().expect("reap child");
+        assert!(
+            !identity.same_process(),
+            "reaped child still matched identity"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1466,5 +1837,101 @@ mod tests {
                 Err(TraceError::Errno(Errno::ECHILD))
             );
         }
+    }
+
+    fn clone_thread_guest_command() -> Command {
+        let mut command = Command::new(std::env::current_exe().expect("locate test binary"));
+        command.args([
+            "--exact",
+            "tracer::tests::liteinst_clone_thread_guest",
+            "--nocapture",
+        ]);
+        command.env("REVERIE_LITEINST_CLONE_THREAD_GUEST", "1");
+        command
+    }
+
+    #[test]
+    fn liteinst_clone_thread_guest() {
+        if std::env::var_os("REVERIE_LITEINST_CLONE_THREAD_GUEST").is_none() {
+            return;
+        }
+        let thread = std::thread::spawn(|| {
+            loop {
+                std::thread::park();
+            }
+        });
+        thread.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn liteinst_clone_thread_fails_closed_and_reaps_group() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .observe_liteinst_new_task_for_test(child_tx)
+            .spawn()
+            .await
+            .expect("spawn CLONE_THREAD fail-closed tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let first = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => Either::Left(result),
+                child = child_rx.recv() => Either::Right(child.expect("new-thread observer closed")),
+            }
+        })
+        .await
+        .expect("tracee did not report CLONE_THREAD identity");
+        let (child_tid, completed) = match first {
+            Either::Left(result) => (
+                child_rx
+                    .recv()
+                    .await
+                    .expect("completed tracee omitted bound thread identity"),
+                Some(result),
+            ),
+            Either::Right(child_tid) => (child_tid, None),
+        };
+        assert_ne!(root_pid, child_tid, "thread event reused root TID");
+
+        let result = match completed {
+            Some(result) => result,
+            None => tokio::time::timeout(Duration::from_secs(3), &mut wait)
+                .await
+                .expect("CLONE_THREAD fail-closed cleanup hung"),
+        };
+        let error = result.expect_err("CLONE_THREAD LiteInst tracee unexpectedly succeeded");
+        assert!(
+            error.to_string().contains("ENOTSUPP"),
+            "fail-closed error omitted unsupported-thread cause: {error}"
+        );
+        assert_reaped("root", root_pid);
+        assert_reaped("thread", child_tid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_at_clone_thread_event_reaps_group() {
+        let (child_tx, mut child_rx) = mpsc::unbounded_channel();
+        let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .pause_liteinst_new_task_for_test(child_tx)
+            .spawn()
+            .await
+            .expect("spawn CLONE_THREAD cancellation tracee");
+        let root_pid = tracer.guest_pid();
+        let mut wait = Box::pin(tracer.wait());
+        let child_tid = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::select! {
+                result = &mut wait => panic!("CLONE_THREAD tracee completed before cancellation: {result:?}"),
+                child = child_rx.recv() => child.expect("new-thread hook closed"),
+            }
+        })
+        .await
+        .expect("tracee did not reach CLONE_THREAD cancellation window");
+        assert_ne!(root_pid, child_tid, "thread event reused root TID");
+
+        drop(wait);
+        assert_reaped("root", root_pid);
+        assert_reaped("thread", child_tid);
     }
 }

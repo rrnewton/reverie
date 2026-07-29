@@ -90,6 +90,8 @@ use crate::stack::GuestStack;
 use crate::timer::HandleFailure;
 use crate::timer::Timer;
 use crate::timer::TimerEventRequest;
+use crate::tracer::NewbornTracee;
+use crate::tracer::TraceeIdentity;
 use crate::vdso;
 
 fn validate_liteinst_user_regs_update(
@@ -366,11 +368,13 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) ready_marker: u64,
     pub(crate) helper_return_marker: u64,
     pub(crate) syscall_marker: u64,
-    pub(crate) newborn_tracees: Arc<StdMutex<HashSet<Pid>>>,
+    pub(crate) newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
     #[cfg(test)]
     pub(crate) fail_preinit: bool,
     #[cfg(test)]
     pub(crate) pause_new_task: Option<mpsc::UnboundedSender<Pid>>,
+    #[cfg(test)]
+    pub(crate) pause_after_new_task: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1085,7 +1089,10 @@ async fn handle_internal_error(err: Error) -> Result<ExitStatus, reverie::Error>
         | Error::Tracee {
             source: TraceError::Died(zombie),
             ..
-        } => Ok(zombie.reap().await),
+        } => zombie
+            .reap()
+            .await
+            .map_err(|error| anyhow::anyhow!("failed to reap dead tracee: {error}").into()),
         Error::Internal(TraceError::Errno(errno)) => Err(errno.into()),
         Error::Tracee {
             operation,
@@ -2607,8 +2614,21 @@ impl<L: Tool + 'static> TracedTask<L> {
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Wait, TraceError> {
         if self.global_state.liteinst_runtime.is_some() {
-            if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
-                runtime.newborn_tracees.lock().unwrap().insert(child.pid());
+            let runtime = self
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .expect("LiteInst runtime must exist in fail-closed new-task path");
+            // Bind the kernel-reported child identity before any await.
+            let child_identity = TraceeIdentity::capture_newborn(child.pid(), parent.pid(), op)?;
+            let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
+            if newborn_tracees
+                .lock()
+                .unwrap()
+                .insert(child.pid(), NewbornTracee::new(child_identity, &child))
+                .is_some()
+            {
+                return Err(Errno::EEXIST.into());
             }
             #[cfg(test)]
             if let Some(sender) = self
@@ -2618,23 +2638,21 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .and_then(|runtime| runtime.pause_new_task.as_ref())
             {
                 let _ = sender.send(child.pid());
-                future::pending::<()>().await;
+                if self
+                    .global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .is_some_and(|runtime| runtime.pause_after_new_task)
+                {
+                    future::pending::<()>().await;
+                }
             }
             // This first hybrid slice intentionally has one tracee and one
             // thread: its patch-helper stack and bootstrap phase are
-            // process-global. Both sides of a ptrace child event are stopped,
-            // so reap the unregistered child before returning the fail-closed
-            // error. The typed root run loop then drives its own SIGKILL while
-            // the existing exit waiter owns the final reap.
-            let child_pid = child.pid();
-            if let Err(error) = crate::tracer::terminate_and_reap_new_child(child) {
-                tracing::error!(
-                    child = %child_pid,
-                    %error,
-                    "failed to terminate and reap unsupported LiteInst child"
-                );
-                return Err(error);
-            }
+            // process-global. Root cleanup owns both process children and
+            // CLONE_THREAD TIDs after this fail-closed error.
+            // It signals only group-leader pidfds and drains every bound
+            // notifier generation on the ptracer thread.
             return Err(Errno::ENOTSUPP.into());
         }
         tracing::debug!(
@@ -2683,7 +2701,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             let (child, event) = match child.wait() {
                 Ok(wait) => wait.assume_stopped(),
                 Err(TraceError::Died(zombie)) => {
-                    let exit_status = zombie.reap().await;
+                    let exit_status = match zombie.reap().await {
+                        Ok(exit_status) => exit_status,
+                        Err(error) => {
+                            tracing::error!(
+                                target: "reverie_ptrace::lifecycle",
+                                tid = %id,
+                                %error,
+                                "failed to reap new tracee after its initial-stop race"
+                            );
+                            return ExitStatus::Exited(1);
+                        }
+                    };
                     tracing::error!(
                         target: "reverie_ptrace::lifecycle",
                         tid = %id,
@@ -2757,7 +2786,17 @@ impl<L: Tool + 'static> TracedTask<L> {
 
                     match running.next_state().await {
                         Ok(wait) => wait.assume_exited().1,
-                        Err(TraceError::Died(zombie)) => zombie.reap().await,
+                        Err(TraceError::Died(zombie)) => match zombie.reap().await {
+                            Ok(exit_status) => exit_status,
+                            Err(error) => {
+                                tracing::error!(
+                                    %tid,
+                                    %error,
+                                    "failed to reap detached tracee"
+                                );
+                                ExitStatus::Exited(1)
+                            }
+                        },
                         Err(TraceError::Errno(errno)) => {
                             tracing::error!(
                                 %tid,
@@ -2973,61 +3012,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             Ok(exit_status) => Ok(exit_status),
             Err(err) => {
                 if self.global_state.liteinst_runtime.is_some() {
-                    let original = err.to_string();
-                    self.liteinst_failure = Some(original.clone());
-                    if let Err(cleanup) = self.terminate_failed_liteinst_root().await {
-                        let combined =
-                            format!("{original}; LiteInst root cleanup also failed: {cleanup}");
-                        self.liteinst_failure = Some(combined.clone());
-                        return Err(anyhow::anyhow!(combined).into());
-                    }
-                    debug_assert!(
-                        unsafe { libc::kill(self.tid().as_raw(), 0) } == -1
-                            && Errno::last() == Errno::ESRCH,
-                        "LiteInst cleanup must complete before error propagation"
-                    );
+                    // Return immediately to the outer LiteInst cleanup guard.
+                    // It owns the original root pidfd and every generation-
+                    // bound notifier handle; this task must not reopen or
+                    // numerically signal the root PID.
+                    return Err(anyhow::anyhow!(err.to_string()).into());
                 }
                 // Note: Calling handle_internal_error cannot happen in the
                 // `select!()` of the `run` function because then the exit
                 // events that get generated in here cannot be caught by the
                 // `select!()`.
                 handle_internal_error(err).await
-            }
-        }
-    }
-
-    async fn terminate_failed_liteinst_root(&self) -> Result<(), TraceError> {
-        let pid = self.tid();
-        unsafe {
-            libc::kill(pid.as_raw(), libc::SIGKILL);
-        }
-        let mut running = match Stopped::new_unchecked(pid).resume(Signal::SIGKILL) {
-            Ok(running) => running,
-            Err(TraceError::Died(zombie)) => {
-                zombie.reap().await;
-                return Ok(());
-            }
-            Err(error) => return Err(error),
-        };
-        loop {
-            match running.next_state().await {
-                Ok(Wait::Stopped(stopped, _)) => {
-                    running = match stopped.resume(Signal::SIGKILL) {
-                        Ok(running) => running,
-                        Err(TraceError::Died(zombie)) => {
-                            zombie.reap().await;
-                            return Ok(());
-                        }
-                        Err(error) => return Err(error),
-                    };
-                }
-                Ok(Wait::Exited(_, _)) => return Ok(()),
-                Err(TraceError::Died(zombie)) => {
-                    zombie.reap().await;
-                    return Ok(());
-                }
-                Err(TraceError::Errno(Errno::ECHILD)) => return Ok(()),
-                Err(error) => return Err(error),
             }
         }
     }

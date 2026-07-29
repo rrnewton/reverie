@@ -64,9 +64,12 @@
 //! can end up spawning a lot of guest threads.
 
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::fs;
 use std::future::Future;
+use std::hash::Hash;
+use std::hash::Hasher;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -83,7 +86,6 @@ use std::time::Duration;
 use std::time::Instant;
 
 use nix::sys::wait::WaitPidFlag;
-use nix::sys::wait::WaitStatus;
 use parking_lot::Condvar;
 use parking_lot::Mutex;
 
@@ -92,6 +94,7 @@ use super::Error;
 use super::Pid;
 use super::Running;
 use super::Stopped;
+use super::TraceeToken;
 use super::Wait;
 use super::waitid;
 
@@ -102,6 +105,15 @@ const INVALID_STATUS: i32 = -1;
 
 /// The notifier worker found that the PID is no longer a waitable child.
 const ECHILD_STATUS: i32 = -2;
+
+/// No `PTRACE_EVENT_EXIT` outcome has been published yet.
+const EXIT_PENDING: i32 = 0;
+
+/// The tracee entered `PTRACE_EVENT_EXIT`; this observation remains latched.
+const EXIT_STOPPED: i32 = 1;
+
+/// The tracee became terminal without an observed `PTRACE_EVENT_EXIT`.
+const EXIT_ECHILD: i32 = 2;
 
 /// The number we get when in a PTRACE_EVENT_EXIT stop.
 const PTRACE_EVENT_EXIT_STOP: i32 = (libc::PTRACE_EVENT_EXIT << 16) | (libc::SIGTRAP << 8) | 0x7f;
@@ -158,9 +170,19 @@ struct Event {
     /// Waker for regular status events.
     status_waker: WakerSlot,
 
-    /// The raw status. A status of `-1` indicates that no status has been set
-    /// yet.
-    status: AtomicI32,
+    /// Ordered regular statuses plus a retained terminal publication.
+    status: Mutex<StatusState>,
+
+    /// Independently retained `PTRACE_EVENT_EXIT` publication. Keeping this
+    /// separate prevents a following final wait status from stealing the exit
+    /// event from a held [`ExitFuture`].
+    exit_status: AtomicI32,
+}
+
+#[derive(Debug)]
+struct StatusState {
+    pending: VecDeque<i32>,
+    terminal: i32,
 }
 
 impl Event {
@@ -168,33 +190,83 @@ impl Event {
         Self {
             exit_waker: WakerSlot::default(),
             status_waker: WakerSlot::default(),
-            status: AtomicI32::new(INVALID_STATUS),
+            status: Mutex::new(StatusState {
+                pending: VecDeque::new(),
+                terminal: INVALID_STATUS,
+            }),
+            exit_status: AtomicI32::new(EXIT_PENDING),
         }
     }
 
     /// Replaces the status and notifies the notifier of the change. Returns the
     /// old status if there was one.
     pub fn update(&self, status: i32) -> Option<i32> {
-        let previous = self.status.swap(status, Ordering::SeqCst);
-
         if status == PTRACE_EVENT_EXIT_STOP {
+            let previous = self.exit_status.compare_exchange(
+                EXIT_PENDING,
+                EXIT_STOPPED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            debug_assert!(matches!(previous, Ok(_) | Err(EXIT_STOPPED)));
+            self.exit_waker.wake();
+            return None;
+        }
+
+        let terminal = libc::WIFEXITED(status) || libc::WIFSIGNALED(status);
+        let mut state = self.status.lock();
+        let previous = if terminal {
+            let previous = state.terminal;
+            if previous == INVALID_STATUS || previous == ECHILD_STATUS {
+                state.terminal = status;
+            } else {
+                debug_assert_eq!(previous, status, "terminal publication changed");
+            }
+            previous
+        } else {
+            let previous = state.pending.back().copied().unwrap_or(INVALID_STATUS);
+            state.pending.push_back(status);
+            previous
+        };
+        drop(state);
+        if terminal {
+            let _ = self.exit_status.compare_exchange(
+                EXIT_PENDING,
+                EXIT_ECHILD,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
+            // A terminal publication resolves both waiter classes. ExitFuture
+            // observes either the retained exit stop or typed ECHILD, while
+            // WaitFuture retains the exact final status.
+            self.status_waker.wake();
             self.exit_waker.wake();
         } else {
             self.status_waker.wake();
         }
 
-        if previous == INVALID_STATUS {
-            None
-        } else {
-            Some(previous)
-        }
+        (previous != INVALID_STATUS).then_some(previous)
     }
 
     /// Publishes a terminal `ECHILD` observation to every kind of waiter.
     fn mark_echild(&self) {
-        self.status.store(ECHILD_STATUS, Ordering::SeqCst);
+        let mut state = self.status.lock();
+        if state.terminal == INVALID_STATUS {
+            state.terminal = ECHILD_STATUS;
+        }
+        drop(state);
+        let _ = self.exit_status.compare_exchange(
+            EXIT_PENDING,
+            EXIT_ECHILD,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
         self.status_waker.wake();
         self.exit_waker.wake();
+    }
+
+    fn is_terminal(&self) -> bool {
+        self.status.lock().terminal != INVALID_STATUS
     }
 
     /// Polls the event to check if there is a new status ready to be consumed.
@@ -202,28 +274,17 @@ impl Event {
         // Register the waker *before* checking the status to avoid a race condition.
         self.status_waker.register(waker);
 
-        // Only modify the status if we're *not* in a PTRACE_EVENT_EXIT stop.
-        // TODO: Think really hard and relax the ordering.
-        let status = self
-            .status
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |prev| {
-                if prev == INVALID_STATUS || prev == ECHILD_STATUS || prev == PTRACE_EVENT_EXIT_STOP
-                {
-                    // Don't update if we're exiting or if there is no status to
-                    // be consumed.
-                    None
-                } else {
-                    // Reset the value to indicate it has been consumed.
-                    Some(INVALID_STATUS)
-                }
-            });
-
-        match status {
-            Ok(status) => Poll::Ready(Ok(status)),
-            Err(ECHILD_STATUS) => Poll::Ready(Err(Errno::ECHILD)),
-            Err(_) => {
-                // There is either no status available or the guest is exiting.
-                Poll::Pending
+        let mut state = self.status.lock();
+        if let Some(status) = state.pending.pop_front() {
+            return Poll::Ready(Ok(status));
+        }
+        match state.terminal {
+            INVALID_STATUS => Poll::Pending,
+            ECHILD_STATUS => Poll::Ready(Err(Errno::ECHILD)),
+            status => {
+                // Final status is immutable so old state generations retain
+                // the actual exit code or terminating signal after removal.
+                Poll::Ready(Ok(status))
             }
         }
     }
@@ -233,20 +294,46 @@ impl Event {
         // Register the waker *before* checking the status to avoid a race condition.
         self.exit_waker.register(waker);
 
-        // Only reset the status if we're in a PTRACE_EVENT_EXIT.
-        // TODO: Think really hard and relax the ordering.
-        let status = self.status.compare_exchange(
-            PTRACE_EVENT_EXIT_STOP,
-            INVALID_STATUS,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        );
-
-        match status {
-            Ok(_) => Poll::Ready(Ok(())),
-            Err(ECHILD_STATUS) => Poll::Ready(Err(Errno::ECHILD)),
-            Err(_) => Poll::Pending,
+        match self.exit_status.load(Ordering::SeqCst) {
+            EXIT_STOPPED => Poll::Ready(Ok(())),
+            EXIT_ECHILD => Poll::Ready(Err(Errno::ECHILD)),
+            EXIT_PENDING => Poll::Pending,
+            state => unreachable!("invalid exit publication state {state}"),
         }
+    }
+}
+
+/// One immutable notifier generation carried by typed tracee states.
+#[derive(Clone, Debug)]
+pub(super) struct EventHandle(Arc<Event>);
+
+impl EventHandle {
+    pub(super) fn new() -> Self {
+        Self(Arc::new(Event::new()))
+    }
+
+    pub(super) fn current_or_new(pid: Pid) -> Self {
+        NOTIFIER
+            .pids
+            .lock()
+            .get(&pid)
+            .cloned()
+            .map(Self)
+            .unwrap_or_else(Self::new)
+    }
+}
+
+impl PartialEq for EventHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for EventHandle {}
+
+impl Hash for EventHandle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
     }
 }
 
@@ -293,17 +380,7 @@ fn worker_thread(pid: Pid, event: Arc<Event>) {
             event.mark_echild();
             break;
         };
-        if let Some(old_status) = event.update(status)
-            && status != PTRACE_EVENT_EXIT_STOP
-            && !libc::WIFEXITED(status)
-            && !libc::WIFSIGNALED(status)
-        {
-            panic!(
-                "Got unexpected event: Event {:?} replaced {:?}",
-                WaitStatus::from_raw(pid.into(), status),
-                WaitStatus::from_raw(pid.into(), old_status),
-            );
-        }
+        event.update(status);
 
         // Try to avoid reaching an ECHILD error by terminating the loop on the
         // last event.
@@ -349,18 +426,35 @@ impl Notifier {
         }
     }
 
-    /// Gets the event state for a PID, creating its notifier thread if needed.
-    fn event(&self, pid: Pid) -> Arc<Event> {
-        // Check if there is a worker thread associated with this PID and create
-        // one if there isn't.
+    /// Registers the exact event generation carried by a typed state.
+    fn event(&self, pid: Pid, handle: &EventHandle) -> Arc<Event> {
+        let requested = &handle.0;
+        if requested.is_terminal() {
+            return Arc::clone(requested);
+        }
+
         let mut pids = self.pids.lock();
         match pids.entry(pid) {
-            Entry::Occupied(occupied) => Arc::clone(occupied.get()),
+            Entry::Occupied(occupied) if Arc::ptr_eq(occupied.get(), requested) => {
+                Arc::clone(occupied.get())
+            }
+            Entry::Occupied(_) => {
+                // Another generation owns this numeric PID. Resolve the stale
+                // state against its own event instead of binding it to the
+                // replacement tracee.
+                requested.mark_echild();
+                Arc::clone(requested)
+            }
             Entry::Vacant(vacant) => {
-                let event = Arc::new(Event::new());
-                vacant.insert(event.clone());
-                spawn_worker(pid, Arc::clone(&event));
-                event
+                // Recheck after taking the registry lock: the old worker can
+                // publish terminal status and remove itself between the first
+                // check and this vacant entry.
+                if requested.is_terminal() {
+                    return Arc::clone(requested);
+                }
+                vacant.insert(Arc::clone(requested));
+                spawn_worker(pid, Arc::clone(requested));
+                Arc::clone(requested)
             }
         }
     }
@@ -393,17 +487,19 @@ impl Drop for Notifier {
 
 /// A synchronous acknowledgment that a PID's notifier worker has observed a
 /// terminal state and removed its registry entry.
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-270): Trigger 2: review the public generation-bound
+// terminal-cleanup acknowledgment contract.
 pub struct TerminalCleanup {
     pid: Pid,
-    event: Arc<Event>,
+    event: EventHandle,
 }
 
 impl TerminalCleanup {
-    pub(super) fn new(pid: Pid) -> Self {
-        Self {
-            pid,
-            event: NOTIFIER.event(pid),
-        }
+    pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
+        let event = token.event().clone();
+        NOTIFIER.event(pid, &event);
+        Self { pid, event }
     }
 
     /// Waits up to `timeout` for the notifier worker to unregister this PID.
@@ -418,7 +514,7 @@ impl TerminalCleanup {
         loop {
             let registered = pids
                 .get(&self.pid)
-                .is_some_and(|current| Arc::ptr_eq(current, &self.event));
+                .is_some_and(|current| Arc::ptr_eq(current, &self.event.0));
             if !registered {
                 return true;
             }
@@ -435,15 +531,11 @@ impl TerminalCleanup {
 /// A future representing a process state change.
 pub struct WaitFuture {
     running: Running,
-    event: Option<Arc<Event>>,
 }
 
 impl WaitFuture {
     pub(super) fn new(running: Running) -> Self {
-        Self {
-            running,
-            event: None,
-        }
+        Self { running }
     }
 }
 
@@ -453,19 +545,17 @@ impl Future for WaitFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         let pid = this.running.pid();
-        let event = this.event.get_or_insert_with(|| NOTIFIER.event(pid));
+        let event = NOTIFIER.event(pid, this.running.token().event());
         let status = match futures::ready!(event.poll_status(cx.waker())) {
             Ok(status) => status,
             Err(errno) => return Poll::Ready(Err(errno.into())),
         };
 
-        // This should be the last event. Remove the PID so a future reuse can
-        // create a fresh notifier thread.
-        if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
-            NOTIFIER.remove(pid, event);
-        }
-
-        Poll::Ready(Wait::from_raw(pid, status))
+        Poll::Ready(Wait::from_raw_with_token(
+            pid,
+            status,
+            this.running.token().clone(),
+        ))
     }
 }
 
@@ -474,14 +564,20 @@ impl Future for WaitFuture {
 /// even when in another ptrace stop state.
 ///
 /// The next state after this should be the final exit status.
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-270): Trigger 2: review the public typed-error
+// ExitFuture contract and retained exit-stop generation semantics.
 pub struct ExitFuture {
     pid: Pid,
-    event: Option<Arc<Event>>,
+    event: EventHandle,
 }
 
 impl ExitFuture {
-    pub(super) fn new(pid: Pid) -> Self {
-        Self { pid, event: None }
+    pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
+        Self {
+            pid,
+            event: token.event().clone(),
+        }
     }
 }
 
@@ -490,9 +586,12 @@ impl Future for ExitFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let event = this.event.get_or_insert_with(|| NOTIFIER.event(this.pid));
+        let event = NOTIFIER.event(this.pid, &this.event);
         match futures::ready!(event.poll_exit(cx.waker())) {
-            Ok(()) => Poll::Ready(Ok(Stopped::new_unchecked(this.pid))),
+            Ok(()) => Poll::Ready(Ok(Stopped::from_token(
+                this.pid,
+                TraceeToken::from_event(this.event.clone()),
+            ))),
             Err(errno) => Poll::Ready(Err(errno.into())),
         }
     }
@@ -566,15 +665,61 @@ mod test {
     }
 
     #[test]
+    fn held_exit_waiter_survives_terminal_final_update() {
+        let counter = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&counter));
+        let event = Event::new();
+
+        assert_eq!(event.poll_exit(&waker), Poll::Pending);
+        event.update(PTRACE_EVENT_EXIT_STOP);
+        event.update(42 << 8);
+
+        assert_eq!(event.poll_exit(&waker), Poll::Ready(Ok(())));
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(42 << 8)));
+    }
+
+    #[test]
+    fn terminal_status_remains_available_to_late_waiters() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+
+        for terminal in [42 << 8, Signal::SIGILL as i32] {
+            let event = Event::new();
+            event.update(PTRACE_EVENT_EXIT_STOP);
+            event.update(terminal);
+
+            assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(terminal)));
+            assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(terminal)));
+            assert_eq!(event.poll_exit(&waker), Poll::Ready(Ok(())));
+        }
+    }
+
+    #[test]
+    fn queued_stop_precedes_monotonic_terminal_status() {
+        let waker = Waker::from(Arc::new(WakeCounter::default()));
+        let event = Event::new();
+        let stopped = (Signal::SIGSTOP as i32) << 8 | 0x7f;
+        let terminal = 42 << 8;
+
+        event.update(stopped);
+        event.update(terminal);
+
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(stopped)));
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(terminal)));
+        assert_eq!(event.poll_status(&waker), Poll::Ready(Ok(terminal)));
+    }
+
+    #[test]
     fn terminal_cleanup_removes_stale_pid_registration() {
         let pid = Pid::from_raw(i32::MAX - 17);
-        let cleanup = TerminalCleanup::new(pid.into());
-        let old_event = Arc::clone(&cleanup.event);
+        let running = Running::new(pid.into());
+        let cleanup = running.terminal_cleanup();
+        let old_event = cleanup.event.clone();
 
         assert!(cleanup.wait(Duration::from_secs(1)));
-        let replacement = NOTIFIER.event(pid.into());
+        let replacement_handle = EventHandle::new();
+        let replacement = NOTIFIER.event(pid.into(), &replacement_handle);
         assert!(
-            !Arc::ptr_eq(&old_event, &replacement),
+            !Arc::ptr_eq(&old_event.0, &replacement),
             "terminal cleanup retained a stale PID registry entry"
         );
     }
