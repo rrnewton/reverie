@@ -34,7 +34,7 @@ pub(crate) const HOST_BEGIN_MARKER: u64 = 0x7265_766c_6900_0001;
 pub(crate) const HOST_READY_MARKER: u64 = 0x7265_766c_6900_0002;
 pub(crate) const HOST_HELPER_RETURN_MARKER: u64 = 0x7265_766c_6900_0003;
 pub(crate) const HOST_SYSCALL_MARKER: u64 = 0x7265_766c_6900_0004;
-const HOST_HANDSHAKE_VERSION: u64 = 1;
+const HOST_HANDSHAKE_VERSION: u64 = 2;
 const HOST_HELPER_STACK_BYTES: usize = 256 * 1024;
 
 global_asm!(
@@ -74,16 +74,26 @@ reverie_liteinst_host_helper_return_rip:
     .size reverie_liteinst_host_helper_return, .-reverie_liteinst_host_helper_return
 
     .p2align 4
-    .global reverie_liteinst_host_syscall_trap_asm
-    .hidden reverie_liteinst_host_syscall_trap_asm
-    .type reverie_liteinst_host_syscall_trap_asm,@function
-reverie_liteinst_host_syscall_trap_asm:
+    .global reverie_liteinst_host_syscall_trap
+    .type reverie_liteinst_host_syscall_trap,@function
+reverie_liteinst_host_syscall_trap:
     mov rax, 0x7265766c69000004
     int3
     .global reverie_liteinst_host_syscall_trap_rip
 reverie_liteinst_host_syscall_trap_rip:
     ret
-    .size reverie_liteinst_host_syscall_trap_asm, .-reverie_liteinst_host_syscall_trap_asm
+    .size reverie_liteinst_host_syscall_trap, .-reverie_liteinst_host_syscall_trap
+
+    .p2align 4
+    .global reverie_liteinst_host_syscall_trap_call
+    .hidden reverie_liteinst_host_syscall_trap_call
+    .type reverie_liteinst_host_syscall_trap_call,@function
+reverie_liteinst_host_syscall_trap_call:
+    call reverie_liteinst_host_syscall_trap
+    .global reverie_liteinst_host_syscall_trap_return_rip
+reverie_liteinst_host_syscall_trap_return_rip:
+    ret
+    .size reverie_liteinst_host_syscall_trap_call, .-reverie_liteinst_host_syscall_trap_call
 "#
 );
 
@@ -94,8 +104,18 @@ unsafe extern "C" {
     static reverie_liteinst_host_ready_rip: u8;
     fn reverie_liteinst_host_helper_return();
     static reverie_liteinst_host_helper_return_rip: u8;
-    fn reverie_liteinst_host_syscall_trap_asm(frame: *mut HostSyscallFrame);
+    fn reverie_liteinst_host_syscall_trap_call(frame: *mut HostSyscallFrame);
+    fn reverie_liteinst_host_syscall_trap(frame: *mut HostSyscallFrame);
     static reverie_liteinst_host_syscall_trap_rip: u8;
+    static reverie_liteinst_host_syscall_trap_return_rip: u8;
+}
+
+// TODO-HUMAN-REVIEW(PR-270): Review raw hot-trap test/provenance ABI. This
+// exposes an address for negative testing; caller validation, not secrecy, is
+// the accidental-collision boundary.
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_liteinst_host_syscall_trap_address() -> *const libc::c_void {
+    reverie_liteinst_host_syscall_trap as *const libc::c_void
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -109,6 +129,7 @@ struct HostHandshakeFrame {
     helper_return: u64,
     helper_return_rip: u64,
     syscall_trap_rip: u64,
+    syscall_trap_return_rip: u64,
 }
 
 #[repr(align(16))]
@@ -360,6 +381,8 @@ fn host_handshake_frame() -> HostHandshakeFrame {
             as u64,
         syscall_trap_rip: core::ptr::addr_of!(reverie_liteinst_host_syscall_trap_rip) as usize
             as u64,
+        syscall_trap_return_rip: core::ptr::addr_of!(reverie_liteinst_host_syscall_trap_return_rip)
+            as usize as u64,
     }
 }
 
@@ -912,6 +935,22 @@ unsafe fn install_site_hook(
 // TODO-HUMAN-REVIEW(PR-270): Review stopped-tracee patch helper ABI.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(address: u64) -> i64 {
+    if let Some(site) = find_site(address) {
+        // The controller calls this helper only after observing the original
+        // syscall bytes at the address. If a prior generation is still marked
+        // active, its mapping was replaced and the old hook is no longer
+        // installed. Transition it to STALE so claim_site installs a new hook
+        // rather than returning the prior generation's relocated tail.
+        let instruction = unsafe { core::ptr::read_unaligned(address as usize as *const u16) };
+        if instruction == 0x050f
+            && matches!(
+                site.state.load(Ordering::Acquire),
+                SITE_ACTIVE | SITE_FALLBACK
+            )
+        {
+            site.state.store(SITE_STALE, Ordering::Release);
+        }
+    }
     let Some((site, claimed)) = claim_site(address) else {
         return -i64::from(libc::ENOSPC);
     };
@@ -1150,12 +1189,6 @@ struct HostSyscallFrame {
     rip: u64,
 }
 
-// TODO-HUMAN-REVIEW(PR-270): Review host-trap marker/frame C ABI.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn reverie_liteinst_host_syscall_trap(frame: *mut libc::c_void) {
-    unsafe { reverie_liteinst_host_syscall_trap_asm(frame.cast()) };
-}
-
 impl HostSyscallFrame {
     const FLAGS_OF: u64 = 0x0001;
     const FLAGS_CF: u64 = 0x0100;
@@ -1252,9 +1285,11 @@ unsafe extern "C" fn host_syscall_hook(context: *mut HookContext) {
         site.hook_count.fetch_add(1, Ordering::Relaxed);
     }
     let mut frame = HostSyscallFrame::from_context(context);
-    // SAFETY: the host validates the configured marker, exact trap RIP,
-    // readable frame, and registered patched-site provenance before dispatch.
-    unsafe { reverie_liteinst_host_syscall_trap((&mut frame as *mut HostSyscallFrame).cast()) };
+    // SAFETY: the host validates the configured marker, exact trap/caller RIPs,
+    // readable frame, stack relationship, and current patched-site provenance
+    // before dispatch. These checks resist accidental collisions; same-process
+    // arbitrary code remains outside the threat model.
+    unsafe { reverie_liteinst_host_syscall_trap_call(&mut frame) };
     frame.copy_to_context(context, original_rflags);
 }
 

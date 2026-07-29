@@ -121,6 +121,7 @@ impl InjectedSyscallFrame {
     ) -> Result<(), Errno> {
         let unsupported = current.orig_rax != requested.orig_rax
             || current.rip != requested.rip
+            || current.rsp != requested.rsp
             || current.cs != requested.cs
             || current.ss != requested.ss
             || current.ds != requested.ds
@@ -269,5 +270,21 @@ mod tests {
             InjectedSyscallFrame::validate_user_regs_update(&current, &requested),
             Err(Errno::ENOTSUPP)
         );
+    }
+
+    #[test]
+    fn rejects_stack_pointer_updates_before_mutating_the_frame() {
+        let original = frame();
+        let mut current = unsafe { core::mem::zeroed::<libc::user_regs_struct>() };
+        current.eflags = 0x202;
+        original.copy_to_user_regs(&mut current);
+        let mut requested = current;
+        requested.rsp += 8;
+
+        assert_eq!(
+            InjectedSyscallFrame::validate_user_regs_update(&current, &requested),
+            Err(Errno::ENOTSUPP)
+        );
+        assert_eq!(original, frame(), "validation must not mutate the frame");
     }
 }

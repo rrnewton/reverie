@@ -38,6 +38,9 @@ pub use crate::regs::*;
 use crate::waitid::IdType;
 use crate::waitid::waitid;
 
+#[cfg(target_arch = "x86_64")]
+const NT_X86_XSTATE: i32 = 0x202;
+
 /// An error that occurred during tracing.
 #[derive(Error, Debug, Eq, PartialEq)]
 pub enum Error {
@@ -581,6 +584,58 @@ impl Stopped {
     /// Sets the floating point registers.
     pub fn setfpregs(&self, regs: &FpRegs) -> Result<(), Error> {
         self.setregset(libc::NT_PRFPREG, regs)
+    }
+
+    /// Gets the complete variable-length x86 XSAVE state for the tracee.
+    // TODO-HUMAN-REVIEW(PR-270): Review complete ptrace XSTATE preservation API.
+    #[cfg(target_arch = "x86_64")]
+    pub fn getxstate(&self) -> Result<XState, Error> {
+        // CPUID.(EAX=0xD,ECX=0):ECX reports the maximum XSAVE area for all
+        // processor-supported user components. The kernel returns the exact
+        // active regset length through iov_len.
+        let maximum = core::arch::x86_64::__cpuid_count(0x0d, 0).ecx as usize;
+        let mut bytes = vec![0_u8; maximum.max(4096)];
+        let mut iov = libc::iovec {
+            iov_base: bytes.as_mut_ptr().cast(),
+            iov_len: bytes.len(),
+        };
+        unsafe {
+            syscalls::syscall!(
+                Sysno::ptrace,
+                libc::PTRACE_GETREGSET,
+                self.0.as_raw(),
+                NT_X86_XSTATE,
+                &mut iov as *mut _
+            )
+        }
+        .map_err(|err| self.map_err(err))?;
+        if iov.iov_len > bytes.len() {
+            return Err(Error::Errno(Errno::EOVERFLOW));
+        }
+        bytes.truncate(iov.iov_len);
+        Ok(XState(bytes))
+    }
+
+    /// Restores a complete x86 XSAVE state previously returned by
+    /// [`Stopped::getxstate`].
+    // TODO-HUMAN-REVIEW(PR-270): Review complete ptrace XSTATE preservation API.
+    #[cfg(target_arch = "x86_64")]
+    pub fn setxstate(&self, state: &XState) -> Result<(), Error> {
+        let iov = libc::iovec {
+            iov_base: state.0.as_ptr() as *mut libc::c_void,
+            iov_len: state.0.len(),
+        };
+        unsafe {
+            syscalls::syscall!(
+                Sysno::ptrace,
+                libc::PTRACE_SETREGSET,
+                self.0.as_raw(),
+                NT_X86_XSTATE,
+                &iov as *const _
+            )
+        }
+        .map_err(|err| self.map_err(err))?;
+        Ok(())
     }
 
     /// Resumes the process and transitions it back to a running state.

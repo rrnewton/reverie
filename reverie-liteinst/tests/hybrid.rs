@@ -12,11 +12,12 @@ use reverie::Tid;
 use reverie::Tool;
 use reverie::process::Command;
 use reverie::syscalls::Syscall;
+use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct EventCounter {
     delivered: AtomicU64,
     last_getpid_rip: AtomicU64,
@@ -79,6 +80,77 @@ impl Tool for CountSyscalls {
         } else {
             guest.send_rpc(1).await;
         }
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[derive(Default)]
+struct PassthroughGetpid;
+
+#[reverie::tool]
+impl Tool for PassthroughGetpid {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [Sysno::getpid].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        assert_eq!(syscall.number(), Sysno::getpid);
+        guest.send_rpc(1).await;
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[derive(Default)]
+struct ReplaceGetpid;
+
+#[reverie::tool]
+impl Tool for ReplaceGetpid {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [Sysno::getpid].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        assert_eq!(syscall.number(), Sysno::getpid);
+        guest.send_rpc(1).await;
+        let replacement = Syscall::from_raw(Sysno::getppid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+        Ok(guest.inject(replacement).await?)
+    }
+}
+
+#[derive(Default)]
+struct DoubleInjectGetpid;
+
+#[reverie::tool]
+impl Tool for DoubleInjectGetpid {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [Sysno::getpid].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        assert_eq!(syscall.number(), Sysno::getpid);
+        guest.send_rpc(1).await;
+        let _ = guest.inject(syscall).await?;
         Ok(guest.inject(syscall).await?)
     }
 }
@@ -173,7 +245,7 @@ async fn first_site_is_installed_once_and_hot_calls_use_liteinst() {
     .unwrap();
 
     assert_eq!(
-        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 spoofs=2\n",
+        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=3\n",
         "{output:?}"
     );
     assert_eq!(global.delivered.load(Ordering::SeqCst), 33, "{output:?}");
@@ -196,4 +268,98 @@ async fn first_site_is_installed_once_and_hot_calls_use_liteinst() {
         "the patch helper must add zero mprotect Tool callbacks above the loader baseline"
     );
     assert!(output.status.success(), "{output:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_discovery_event_can_replace_the_syscall() {
+    let (_directory, guest) = compile_fixture("hybrid_hot_site.c");
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<ReplaceGetpid>(
+        Command::new(guest),
+        (),
+        preload_path(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=3\n",
+        "{output:?}"
+    );
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 32, "{output:?}");
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn first_discovery_event_can_inject_more_than_once() {
+    let (_directory, guest) = compile_fixture("hybrid_hot_site.c");
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<DoubleInjectGetpid>(
+        Command::new(guest),
+        (),
+        preload_path(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=3\n",
+        "{output:?}"
+    );
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 32, "{output:?}");
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn hybrid_fails_closed_when_the_guest_forks() {
+    let (_directory, guest) = compile_fixture("hybrid_fork.c");
+    let result = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+        Command::new(guest),
+        (),
+        preload_path(),
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "hybrid unexpectedly followed a child: {result:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reused_mapping_invalidates_and_rediscovers_the_syscall_site() {
+    let (_directory, guest) = compile_fixture("hybrid_mapping_churn.c");
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+        Command::new(guest),
+        (),
+        preload_path(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(output.stdout, b"reuse traps=2 hooks=0\n", "{output:?}");
+    assert_eq!(
+        global.delivered.load(Ordering::SeqCst),
+        4,
+        "both generations must use the correct ptrace fallback: {output:?}"
+    );
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn moving_a_patched_mapping_rejects_stale_hot_provenance() {
+    let (_directory, guest) = compile_fixture("hybrid_mremap_patched.c");
+    let command = Command::new(guest);
+    let error = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+        command,
+        (),
+        preload_path(),
+    )
+    .await
+    .expect_err("mremap unexpectedly moved a live patched site");
+
+    assert!(
+        error
+            .to_string()
+            .contains("mremap overlaps an installed LiteInst site"),
+        "mapping was not rejected by the pre-mutation provenance check: {error}"
+    );
 }

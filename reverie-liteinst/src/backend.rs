@@ -197,6 +197,12 @@ impl LiteinstBackend {
     ///
     /// Ptrace owns the sole Tool and GlobalTool from exec onward; the preload
     /// contributes only dynamic site installation and injected hot-site traps.
+    /// This initial hybrid contract supports one tracee process with one thread;
+    /// fork, vfork, and clone fail closed before either side is resumed.
+    ///
+    /// Trap markers, exact DSO addresses, mapping state, and an inner runtime
+    /// call site provide strong accidental-collision resistance. They are not a
+    /// security boundary against arbitrary code already executing in the guest.
     // TODO-HUMAN-REVIEW(PR-270): Review public host-hybrid launch API.
     pub async fn run_host_with_preload<T>(
         mut command: Command,
@@ -223,6 +229,9 @@ impl LiteinstBackend {
     }
 
     /// Runs a Tool under the ptrace-owned LiteInst hybrid and captures output.
+    ///
+    /// The same single-process/single-thread and non-security-boundary contract
+    /// as [`Self::run_host_with_preload`] applies.
     // TODO-HUMAN-REVIEW(PR-270): Review public host-hybrid output API.
     pub async fn run_host_with_output_and_preload<T>(
         mut command: Command,

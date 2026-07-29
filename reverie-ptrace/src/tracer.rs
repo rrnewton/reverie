@@ -534,9 +534,11 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
     /// Enables the dynamic LiteInst runtime handshake and injected hot-site path.
     ///
-    /// The preload path is used to authenticate handshake instruction pointers.
-    /// Distinct markers identify constructor begin/ready stops, the controlled
-    /// patch-helper return, and installed syscall-hook events.
+    /// The preload path validates handshake instruction pointers against the
+    /// expected executable mapping. Distinct markers, exact return sites, and
+    /// mapping generations reject accidental collisions; they are not a
+    /// security boundary against arbitrary code already running in the tracee.
+    /// Dynamic mode currently fails closed if the tracee forks or adds a thread.
     // TODO-HUMAN-REVIEW(PR-270): Review dynamic LiteInst provenance API.
     pub fn liteinst_runtime(
         mut self,
@@ -565,6 +567,13 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         // tool's state here in a single address space.
         let global_state = <T::GlobalState as GlobalTool>::init_global_state(&config).await;
         let events = T::subscriptions(&config);
+        let mut traced_events = events.clone();
+        if self.liteinst_runtime.is_some() {
+            // Mapping operations are controller-only lifecycle observations:
+            // trace them so successful VMA churn can invalidate patched-site
+            // provenance, without adding them to the Tool's subscription set.
+            traced_events.syscalls([Sysno::mmap, Sysno::munmap, Sysno::mremap, Sysno::mprotect]);
+        }
         let gref = Arc::new(global_state);
 
         // Get the full path to the program and change the command to use it. This
@@ -584,7 +593,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             command.pre_exec(move || init_tracee(intercept_rdtsc));
         }
 
-        command.seccomp(seccomp_filter(&events));
+        command.seccomp(seccomp_filter(&traced_events));
 
         let mut child = command.spawn().context("Failed to spawn tracee")?;
         let guest_pid = child.id();
