@@ -1164,8 +1164,13 @@ pub struct TerminalCleanup {
 
 impl TerminalCleanup {
     pub(super) fn new(pid: Pid, token: &TraceeToken) -> Self {
+        let cleanup = Self::new_unregistered(pid, token);
+        let _ = cleanup.ensure_registered();
+        cleanup
+    }
+
+    fn new_unregistered(pid: Pid, token: &TraceeToken) -> Self {
         let event = token.event().clone();
-        let _ = NOTIFIER.event(pid, &event);
         Self { pid, event }
     }
 
@@ -1369,6 +1374,7 @@ mod test {
     use std::os::fd::AsRawFd;
     use std::os::fd::FromRawFd;
     use std::os::unix::process::CommandExt;
+    use std::os::unix::process::ExitStatusExt;
     use std::process::Command;
     use std::process::Output;
     use std::process::Stdio;
@@ -1759,9 +1765,13 @@ mod test {
             };
         }
 
-        let known_unshare_denial = stderr
-            .lines()
-            .any(|line| line.starts_with("unshare: unshare failed: Operation not permitted"));
+        let known_unshare_denial = stderr.lines().any(|line| {
+            matches!(
+                line,
+                "unshare: unshare failed: Operation not permitted"
+                    | "unshare: write failed /proc/self/uid_map: Operation not permitted"
+            )
+        });
         if known_unshare_denial && !exercised && !unavailable {
             Ok(ExactReuseOutcome::Unavailable)
         } else {
@@ -1869,22 +1879,52 @@ mod test {
             })
         }
 
-        /// Transfers wait-status ownership before the first notifier future is
-        /// polled. Raw waitpid cleanup is forbidden after this transition.
-        fn bind_notifier(&mut self, stopped: &Stopped) -> io::Result<()> {
-            assert!(matches!(
-                self.ownership,
-                TraceeCleanupOwnership::PreRegistration
-            ));
-            let terminal = stopped.terminal_cleanup();
-            terminal
+        /// Transfers wait-status ownership before the first registration
+        /// attempt. Raw waitpid cleanup is forbidden after this transition,
+        /// including when proc-generation capture fails.
+        fn bind_terminal(&mut self, candidate: TerminalCleanup) -> io::Result<()> {
+            match &self.ownership {
+                TraceeCleanupOwnership::PreRegistration => {
+                    self.ownership = TraceeCleanupOwnership::NotifierOwned {
+                        terminal: candidate,
+                        owns_claimed_exit: false,
+                    };
+                }
+                TraceeCleanupOwnership::NotifierOwned { terminal, .. } => {
+                    if terminal.pid != candidate.pid || !terminal.same_generation(&candidate) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "cleanup guard cannot bind a different notifier generation",
+                        ));
+                    }
+                }
+            }
+            self.terminal()
+                .expect("notifier ownership transition stores terminal cleanup")
                 .ensure_registered()
-                .map_err(|error| io::Error::other(format!("register cleanup notifier: {error}")))?;
-            self.ownership = TraceeCleanupOwnership::NotifierOwned {
-                terminal,
-                owns_claimed_exit: false,
-            };
-            Ok(())
+                .map_err(|error| io::Error::other(format!("register cleanup notifier: {error}")))
+        }
+
+        fn bind_notifier(&mut self, stopped: &Stopped) -> io::Result<()> {
+            self.bind_terminal(TerminalCleanup::new_unregistered(stopped.0, &stopped.1))
+        }
+
+        fn bind_running_notifier(&mut self, running: &Running) -> io::Result<()> {
+            self.bind_terminal(TerminalCleanup::new_unregistered(running.0, &running.1))
+        }
+
+        fn terminal(&self) -> Option<&TerminalCleanup> {
+            match &self.ownership {
+                TraceeCleanupOwnership::PreRegistration => None,
+                TraceeCleanupOwnership::NotifierOwned { terminal, .. } => Some(terminal),
+            }
+        }
+
+        /// Constructs ExitFuture only after guard ownership has moved to the
+        /// same immutable notifier generation.
+        fn exit_event(&mut self, stopped: &Stopped) -> io::Result<ExitFuture> {
+            self.bind_notifier(stopped)?;
+            Ok(stopped.exit_event())
         }
 
         /// Records transfer of the exact exit-stop capability immediately
@@ -1919,6 +1959,9 @@ mod test {
             terminal: &TerminalCleanup,
             owns_claimed_exit: bool,
         ) -> io::Result<()> {
+            terminal.ensure_registered().map_err(|error| {
+                io::Error::other(format!("retry cleanup notifier registration: {error}"))
+            })?;
             match pidfd_send_signal(pidfd, libc::SIGKILL) {
                 Ok(()) => {}
                 Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {
@@ -2047,15 +2090,16 @@ mod test {
         stopped
             .setoptions(Options::PTRACE_O_TRACEEXIT)
             .expect("enable notifier-owned cleanup exit stop");
-        cleanup
-            .bind_notifier(&stopped)
-            .expect("bind cleanup guard before ExitFuture poll");
+        let mut exit = Box::pin(
+            cleanup
+                .exit_event(&stopped)
+                .expect("bind cleanup guard before ExitFuture poll"),
+        );
         assert!(matches!(
             cleanup.ownership,
             TraceeCleanupOwnership::NotifierOwned { .. }
         ));
 
-        let mut exit = Box::pin(stopped.exit_event());
         let waker = futures::task::noop_waker();
         let mut context = Context::from_waker(&waker);
         assert_eq!(exit.as_mut().poll(&mut context), Poll::Pending);
@@ -2186,6 +2230,38 @@ mod test {
         )
         .expect_err("nonzero inner test must not become an unavailable fallback");
         assert!(error.contains("status=exit status: 23"), "{error}");
+    }
+
+    #[test]
+    fn exact_reuse_classifier_accepts_only_known_uid_map_denial() {
+        let output = Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"unshare: write failed /proc/self/uid_map: Operation not permitted\n".to_vec(),
+        };
+        assert_eq!(
+            classify_exact_reuse_output(
+                Some(&output),
+                "ACTUAL_PID_REUSE_EXERCISED",
+                "ACTUAL_PID_REUSE_UNAVAILABLE",
+            ),
+            Ok(ExactReuseOutcome::Unavailable)
+        );
+
+        let nearby = Output {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr: b"unshare: write failed /proc/self/uid_map: Input/output error\n".to_vec(),
+        };
+        assert!(
+            classify_exact_reuse_output(
+                Some(&nearby),
+                "ACTUAL_PID_REUSE_EXERCISED",
+                "ACTUAL_PID_REUSE_UNAVAILABLE",
+            )
+            .is_err(),
+            "nearby non-permission uid_map failure became an unavailable fallback"
+        );
     }
 
     #[test]
@@ -2534,7 +2610,18 @@ mod test {
             spawn_stopped_process(None).expect("spawn capture-error child");
         CAPTURE_ERRORS.lock().insert(pid.into(), Errno::EMFILE);
 
-        let cleanup = Running::new(pid.into()).terminal_cleanup();
+        let running = Running::new(pid.into());
+        let error = child_cleanup
+            .bind_running_notifier(&running)
+            .expect_err("first notifier registration must surface EMFILE");
+        assert!(error.to_string().contains("EMFILE"), "{error}");
+        assert!(matches!(
+            child_cleanup.ownership,
+            TraceeCleanupOwnership::NotifierOwned { .. }
+        ));
+        let cleanup = child_cleanup
+            .terminal()
+            .expect("failed registration retains notifier ownership");
         assert_eq!(cleanup.registration_error(), Some(Errno::EMFILE));
         assert!(!cleanup.wait(Duration::ZERO));
         cleanup
@@ -2547,6 +2634,30 @@ mod test {
         assert!(cleanup.wait(Duration::from_secs(1)));
         child_cleanup.disarm();
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[test]
+    fn failed_first_registration_unwind_stays_notifier_owned() {
+        let (pid, mut cleanup) =
+            spawn_stopped_process(None).expect("spawn failed-bind cleanup child");
+        let identity = WorkerIdentity::capture_process(pid.into())
+            .expect("capture failed-bind cleanup generation");
+        CAPTURE_ERRORS.lock().insert(pid.into(), Errno::EMFILE);
+        let running = Running::new(pid.into());
+
+        cleanup
+            .bind_running_notifier(&running)
+            .expect_err("inject first notifier registration failure");
+        assert!(matches!(
+            cleanup.ownership,
+            TraceeCleanupOwnership::NotifierOwned { .. }
+        ));
+        drop(cleanup);
+
+        assert!(
+            !identity.is_same_process_generation(),
+            "failed notifier registration unwind orphaned its child"
+        );
     }
 
     #[test]
@@ -2729,21 +2840,27 @@ mod test {
         old_stopped
             .setoptions(Options::PTRACE_O_TRACEEXIT)
             .expect("enable exit stop for duplicate waiter");
-        old_cleanup
-            .bind_notifier(&old_stopped)
-            .expect("bind duplicate-waiter cleanup to notifier");
-
         // Register then cancel one waiter while the tracee is still stopped.
         // A Pending poll must not consume the Event capability.
-        let mut cancelled = Box::pin(old_stopped.exit_event());
+        let mut cancelled = Box::pin(
+            old_cleanup
+                .exit_event(&old_stopped)
+                .expect("bind duplicate-waiter cleanup to notifier"),
+        );
         let waker = futures::task::noop_waker();
         let mut context = Context::from_waker(&waker);
         assert_eq!(cancelled.as_mut().poll(&mut context), Poll::Pending);
         drop(cancelled);
 
-        let winner = old_stopped.exit_event();
-        let duplicate = old_stopped.exit_event();
-        let late = old_stopped.exit_event();
+        let winner = old_cleanup
+            .exit_event(&old_stopped)
+            .expect("create winner on bound notifier generation");
+        let duplicate = old_cleanup
+            .exit_event(&old_stopped)
+            .expect("create duplicate on bound notifier generation");
+        let late = old_cleanup
+            .exit_event(&old_stopped)
+            .expect("create late waiter on bound notifier generation");
         old_stopped
             .resume(None)
             .expect("resume old duplicate-waiter tracee");
@@ -2820,11 +2937,14 @@ mod test {
         old_stopped
             .setoptions(Options::PTRACE_O_TRACEEXIT)
             .expect("enable exit stop for cleanup expiration");
-        old_cleanup
-            .bind_notifier(&old_stopped)
-            .expect("bind unclaimed cleanup to notifier");
-        let terminal = old_stopped.terminal_cleanup();
-        let mut late = Box::pin(old_stopped.exit_event());
+        let mut late = Box::pin(
+            old_cleanup
+                .exit_event(&old_stopped)
+                .expect("bind unclaimed cleanup to notifier"),
+        );
+        let terminal = old_cleanup
+            .terminal()
+            .expect("bound unclaimed cleanup terminal");
         let waker = futures::task::noop_waker();
         let mut context = Context::from_waker(&waker);
         assert_eq!(late.as_mut().poll(&mut context), Poll::Pending);
