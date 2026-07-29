@@ -15,12 +15,16 @@ use reverie::syscalls::Sysno;
 
 /// The register frame produced by e9tool's `state` call-trampoline argument.
 ///
-/// The frame is private to the ptrace controller. Backends opt into the event
-/// ABI with [`crate::TracerBuilder::injected_syscall_trap`].
+/// The ptrace controller and e9patch's in-process AOT dispatcher share this
+/// exact layout. Backends opt into the fallback trap ABI with
+/// [`crate::TracerBuilder::injected_syscall_trap`].
 // TODO-HUMAN-REVIEW(PR-102): Review the e9tool state-frame syscall ABI.
+// TODO-HUMAN-REVIEW(PR-264): Review exposing the existing e9tool state frame
+// to the in-process AOT dispatcher.
+// AUTONOMOUS-BOT-IMPLEMENTED
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(C)]
-pub(crate) struct InjectedSyscallFrame {
+pub struct InjectedSyscallFrame {
     flags: u64,
     r15: u64,
     r14: u64,
@@ -62,9 +66,19 @@ impl InjectedSyscallFrame {
         | Self::RFLAGS_SF
         | Self::RFLAGS_OF;
 
-    pub(crate) fn syscall(&self) -> Syscall {
+    // TODO-HUMAN-REVIEW(PR-264): Review the compact public e9tool-frame
+    // syscall-number accessor used by bounded instrumentation stacks.
+    /// Returns the syscall number without materializing the full [`Syscall`]
+    /// enum. Instrumentation bridges use this compact accessor on bounded
+    /// trampoline stacks.
+    pub fn syscall_number(&self) -> Sysno {
+        Sysno::from(self.rax as i32)
+    }
+
+    /// Decodes the syscall stored in this e9tool frame.
+    pub fn syscall(&self) -> Syscall {
         Syscall::from_raw(
-            Sysno::from(self.rax as i32),
+            self.syscall_number(),
             SyscallArgs::new(
                 self.rdi as usize,
                 self.rsi as usize,
@@ -76,11 +90,18 @@ impl InjectedSyscallFrame {
         )
     }
 
-    pub(crate) fn instruction_pointer(&self) -> u64 {
+    /// Returns the six raw syscall arguments in Linux x86-64 ABI order.
+    pub fn raw_args(&self) -> [u64; 6] {
+        [self.rdi, self.rsi, self.rdx, self.r10, self.r8, self.r9]
+    }
+
+    /// Returns the address of the syscall instruction replaced by e9tool.
+    pub fn instruction_pointer(&self) -> u64 {
         self.rip
     }
 
-    pub(crate) fn emulate_syscall_entry(&mut self, trap_rflags: u64) {
+    /// Applies the architectural `RCX`/`R11` clobbers of a native syscall.
+    pub fn emulate_syscall_entry(&mut self, trap_rflags: u64) {
         // A native x86-64 syscall places the continuation RIP in RCX and the
         // pre-syscall flags in R11 before seccomp delivers its ptrace stop.
         // The replacement trampoline bypasses that instruction, so reproduce
@@ -89,7 +110,8 @@ impl InjectedSyscallFrame {
         self.r11 = self.native_rflags(trap_rflags);
     }
 
-    pub(crate) fn set_result(&mut self, result: i64) {
+    /// Stores a syscall result for e9tool to restore into guest `RAX`.
+    pub fn set_result(&mut self, result: i64) {
         self.rax = result as u64;
     }
 
@@ -227,6 +249,7 @@ mod tests {
         assert_eq!(core::mem::size_of::<InjectedSyscallFrame>(), 18 * 8);
         assert_eq!(core::mem::offset_of!(InjectedSyscallFrame, rax), 15 * 8);
         assert_eq!(core::mem::offset_of!(InjectedSyscallFrame, rip), 17 * 8);
+        assert_eq!(frame().syscall_number(), Sysno::write);
     }
 
     #[test]

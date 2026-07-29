@@ -33,6 +33,10 @@ use goblin::elf::Elf;
 use goblin::elf::header::EM_X86_64;
 use goblin::elf::header::ET_DYN;
 use goblin::elf::header::ET_EXEC;
+#[cfg(test)]
+use goblin::elf::program_header::PF_R;
+#[cfg(test)]
+use goblin::elf::program_header::PF_W;
 use goblin::elf::program_header::PT_LOAD;
 use reverie::Error;
 use sha2::Digest;
@@ -216,7 +220,7 @@ impl E9patchRewriter {
             .arg("asm=\"syscall\"")
             .arg("-P")
             .arg(format!(
-                "replace reverie_e9patch_syscall(state)@{}",
+                "replace reverie_e9patch_dispatch(state)@{}",
                 syscall_trap_patch.display()
             ))
             .arg(&input_snapshot)
@@ -898,6 +902,74 @@ printf 'num_patched = {patched} / {recovered}\n'
         assert_eq!(parse_metric(diagnostic, "num_patched"), Some((7, 7)));
         assert_eq!(parse_metric(diagnostic, "num_patched_B0"), Some((0, 7)));
         assert_eq!(parse_metric(diagnostic, "num_patched_B1"), None);
+    }
+
+    #[test]
+    fn embedded_payload_preserves_the_ptrace_fallback_and_exports_direct_dispatch() {
+        const PAYLOAD_RUNTIME_BASE: u64 = 0x7000_0000;
+        const TRAP_PATTERN: [u8; 12] = [
+            0x48, 0xb8, 0x70, 0x39, 0x65, 0x39, 0x65, 0x76, 0x65, 0x72, 0xcc, 0xc3,
+        ];
+
+        let elf = Elf::parse(SYSCALL_TRAP_PATCH).unwrap();
+        let trap_offset = SYSCALL_TRAP_PATCH
+            .windows(TRAP_PATTERN.len())
+            .position(|window| window == TRAP_PATTERN)
+            .expect("embedded payload lost the ptrace trap stub");
+        let segment = elf
+            .program_headers
+            .iter()
+            .find(|segment| {
+                let start = segment.p_offset as usize;
+                let end = start + segment.p_filesz as usize;
+                (start..end).contains(&trap_offset)
+            })
+            .expect("trap stub is not covered by a load segment");
+        let trap_entry = segment.p_vaddr + trap_offset as u64 - segment.p_offset;
+        let trap_resume = PAYLOAD_RUNTIME_BASE + trap_entry + 11;
+        assert_eq!(trap_resume, crate::E9PATCH_SYSCALL_TRAP_RIP);
+
+        let symbols = elf
+            .dynsyms
+            .iter()
+            .filter_map(|symbol| {
+                elf.dynstrtab
+                    .get_at(symbol.st_name)
+                    .map(|name| (name, symbol))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let trap = symbols
+            .get("reverie_e9patch_syscall")
+            .expect("payload must export the ptrace fallback symbol");
+        let direct = symbols
+            .get("reverie_e9patch_dispatch")
+            .expect("payload must export the direct-dispatch symbol");
+        let init = symbols
+            .get("init")
+            .expect("payload must export its post-map initialization hook");
+        let dispatch_page = symbols
+            .get("reverie_e9patch_aot_page")
+            .expect("payload must export its direct-dispatch page");
+        assert_eq!(trap.st_value, trap_entry);
+        assert!(direct.st_value > trap.st_value);
+        assert!(init.st_value > direct.st_value);
+        assert_eq!(
+            PAYLOAD_RUNTIME_BASE + dispatch_page.st_value,
+            crate::aot::AOT_DISPATCH_PAGE_ADDRESS
+        );
+        assert_eq!(dispatch_page.st_value % 4096, 0);
+        assert_eq!(dispatch_page.st_size, 4096);
+        let dispatch_segment = elf
+            .program_headers
+            .iter()
+            .find(|segment| {
+                segment.p_type == PT_LOAD
+                    && (segment.p_vaddr..segment.p_vaddr + segment.p_memsz)
+                        .contains(&dispatch_page.st_value)
+            })
+            .expect("dispatch page is not covered by a load segment");
+        assert_ne!(dispatch_segment.p_flags & PF_R, 0);
+        assert_eq!(dispatch_segment.p_flags & PF_W, 0);
     }
 
     #[test]
