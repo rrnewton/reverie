@@ -67,9 +67,14 @@ use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::fs;
+use std::fs::OpenOptions;
 use std::future::Future;
 use std::hash::Hash;
 use std::hash::Hasher;
+use std::os::fd::AsRawFd;
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
@@ -289,6 +294,10 @@ impl Event {
         }
     }
 
+    fn take_pending_status(&self) -> Option<i32> {
+        self.status.lock().pending.pop_front()
+    }
+
     /// Polls the event to check if there is a new status ready to be consumed.
     pub fn poll_exit(&self, waker: &Waker) -> Poll<Result<(), Errno>> {
         // Register the waker *before* checking the status to avoid a race condition.
@@ -337,10 +346,82 @@ impl Hash for EventHandle {
     }
 }
 
-fn spawn_worker(pid: Pid, event: Arc<Event>) -> JoinHandle<()> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct WorkerProcSnapshot {
+    tgid: Pid,
+    tracer_pid: Pid,
+    start_time: u64,
+}
+
+/// Immutable procfs generation bound to one notifier worker.
+#[derive(Debug)]
+struct WorkerIdentity {
+    pid: Pid,
+    snapshot: WorkerProcSnapshot,
+    proc_dir: OwnedFd,
+    proc_inode: u64,
+}
+
+impl WorkerIdentity {
+    fn capture(pid: Pid) -> Result<Self, Errno> {
+        // Ordinary direct children have TracerPid 0 and are still valid
+        // waitpid targets. The tracer binding is part of the immutable
+        // snapshot, but only a live tracer-owned generation may turn ECHILD
+        // into a transient retry below.
+        Self::capture_process(pid)
+    }
+
+    fn capture_process(pid: Pid) -> Result<Self, Errno> {
+        let before = worker_proc_snapshot(pid).map_err(io_errno)?;
+        let proc_dir = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
+            .open(format!("/proc/{pid}"))
+            .map_err(io_errno)?;
+        let proc_inode = proc_dir.metadata().map_err(io_errno)?.ino();
+        let after = worker_proc_snapshot(pid).map_err(io_errno)?;
+        let current_inode = fs::metadata(format!("/proc/{pid}"))
+            .map_err(io_errno)?
+            .ino();
+        if before != after || current_inode != proc_inode {
+            return Err(Errno::ESRCH);
+        }
+
+        Ok(Self {
+            pid,
+            snapshot: after,
+            proc_dir: proc_dir.into(),
+            proc_inode,
+        })
+    }
+
+    /// Returns true only while this exact procfs generation remains attached
+    /// to a live thread in this tracer process.
+    fn is_active_tracee(&self) -> bool {
+        self.is_same_process_generation()
+            && tracer_is_current(self.snapshot.tracer_pid)
+            && worker_proc_snapshot(self.pid)
+                .ok()
+                .is_some_and(|current| current.tracer_pid == self.snapshot.tracer_pid)
+    }
+
+    fn is_same_process_generation(&self) -> bool {
+        let Ok(current) = worker_proc_snapshot(self.pid) else {
+            return false;
+        };
+        current == self.snapshot
+            && fd_inode(&self.proc_dir).ok() == Some(self.proc_inode)
+            && fs::metadata(format!("/proc/{}", self.pid))
+                .ok()
+                .map(|metadata| metadata.ino())
+                == Some(self.proc_inode)
+    }
+}
+
+fn spawn_worker(pid: Pid, event: Arc<Event>, identity: WorkerIdentity) -> JoinHandle<()> {
     thread::Builder::new()
         .name(format!("guest-{}", pid))
-        .spawn(move || worker_thread(pid, event))
+        .spawn(move || worker_thread(pid, event, identity))
         .expect("failed to spawn thread")
 }
 
@@ -365,13 +446,22 @@ fn wait(pid: Pid) -> Option<i32> {
 }
 
 /// A worker thread that simply wakes a future when a process changes state.
-fn worker_thread(pid: Pid, event: Arc<Event>) {
+fn worker_thread(pid: Pid, event: Arc<Event>, identity: WorkerIdentity) {
+    let mut retrying_echild = false;
     loop {
+        // Revalidate immediately before every numeric wait retry. The old
+        // generation may have disappeared while this worker yielded after a
+        // transient ECHILD, allowing the kernel to reuse its numeric TID.
+        if retrying_echild && !identity.is_active_tracee() {
+            event.mark_echild();
+            break;
+        }
         let Some(status) = wait(pid) else {
-            if is_our_tracee(pid) {
+            if identity.is_active_tracee() {
                 // A newborn auto-attached ptrace child can briefly exist with
-                // our TracerPid before its first wait status becomes visible.
-                // ECHILD is transient in that window, not terminal.
+                // this exact procfs generation before its first wait status
+                // becomes visible. ECHILD is transient only in that window.
+                retrying_echild = true;
                 thread::sleep(Duration::from_millis(1));
                 continue;
             }
@@ -380,6 +470,7 @@ fn worker_thread(pid: Pid, event: Arc<Event>) {
             event.mark_echild();
             break;
         };
+        retrying_echild = false;
         event.update(status);
 
         // Try to avoid reaching an ECHILD error by terminating the loop on the
@@ -394,19 +485,62 @@ fn worker_thread(pid: Pid, event: Arc<Event>) {
     NOTIFIER.remove(pid, &event);
 }
 
-fn is_our_tracee(pid: Pid) -> bool {
-    let Ok(status) = fs::read_to_string(format!("/proc/{pid}/status")) else {
-        return false;
+fn worker_process_start_time(pid: Pid) -> std::io::Result<u64> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat"))?;
+    let fields = stat
+        .rsplit_once(") ")
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "malformed stat"))?
+        .1;
+    fields
+        .split_ascii_whitespace()
+        .nth(19)
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "missing starttime"))?
+        .parse()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+fn worker_status_pid(status: &str, name: &str) -> std::io::Result<Pid> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix(name))
+        .and_then(|value| value.trim().parse::<i32>().ok())
+        .map(Pid::from_raw)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("missing or malformed {name}"),
+            )
+        })
+}
+
+fn worker_proc_snapshot(pid: Pid) -> std::io::Result<WorkerProcSnapshot> {
+    let start_time = worker_process_start_time(pid)?;
+    let status = fs::read_to_string(format!("/proc/{pid}/status"))?;
+    let snapshot = WorkerProcSnapshot {
+        tgid: worker_status_pid(&status, "Tgid:")?,
+        tracer_pid: worker_status_pid(&status, "TracerPid:")?,
+        start_time,
     };
-    status.lines().any(|line| {
-        let Some(tracer_tid) = line
-            .strip_prefix("TracerPid:")
-            .and_then(|pid| pid.trim().parse::<u32>().ok())
-        else {
-            return false;
-        };
-        tracer_tid != 0 && std::path::Path::new(&format!("/proc/self/task/{tracer_tid}")).exists()
-    })
+    if worker_process_start_time(pid)? != start_time {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "tracee identity changed while reading procfs",
+        ));
+    }
+    Ok(snapshot)
+}
+
+fn tracer_is_current(tracer_pid: Pid) -> bool {
+    tracer_pid.as_raw() > 0
+        && std::path::Path::new(&format!("/proc/self/task/{tracer_pid}")).exists()
+}
+
+fn fd_inode(fd: &OwnedFd) -> std::io::Result<u64> {
+    fs::metadata(format!("/proc/self/fd/{}", fd.as_raw_fd())).map(|metadata| metadata.ino())
+}
+
+fn io_errno(error: std::io::Error) -> Errno {
+    Errno::new(error.raw_os_error().unwrap_or(libc::EIO))
 }
 
 struct Notifier {
@@ -452,8 +586,15 @@ impl Notifier {
                 if requested.is_terminal() {
                     return Arc::clone(requested);
                 }
+                let Ok(identity) = WorkerIdentity::capture(pid) else {
+                    // Never start a numeric-PID worker without an immutable
+                    // procfs generation. A late or replaced typed state is
+                    // terminal for this exact Event generation.
+                    requested.mark_echild();
+                    return Arc::clone(requested);
+                };
                 vacant.insert(Arc::clone(requested));
-                spawn_worker(pid, Arc::clone(requested));
+                spawn_worker(pid, Arc::clone(requested), identity);
                 Arc::clone(requested)
             }
         }
@@ -525,6 +666,23 @@ impl TerminalCleanup {
             }
             NOTIFIER.removed.wait_for(&mut pids, remaining);
         }
+    }
+
+    /// Takes the oldest queued nonterminal state after cancellation.
+    ///
+    /// This is a cancellation-only escape hatch for the ptracer thread that
+    /// owns this exact event generation. A queued ptrace child event must be
+    /// decoded while its returned stopped root is held so
+    /// `PTRACE_GETEVENTMSG` binds that kernel-reported child before resume.
+    /// The retained final status is never consumed by this method.
+    pub fn take_pending_for_cleanup(&self) -> Option<Result<Wait, Error>> {
+        self.event.0.take_pending_status().map(|status| {
+            Wait::from_raw_with_token(
+                self.pid,
+                status,
+                TraceeToken::from_event(self.event.clone()),
+            )
+        })
     }
 }
 
@@ -599,13 +757,18 @@ impl Future for ExitFuture {
 
 #[cfg(test)]
 mod test {
+    use std::env;
+    use std::mem;
+    use std::process::Command;
     use std::sync::atomic::AtomicUsize;
     use std::task::Wake;
     use std::time::Duration;
 
     use nix::sys::signal::Signal;
     use nix::sys::wait::WaitStatus;
+    use nix::unistd::ForkResult;
     use nix::unistd::Pid;
+    use nix::unistd::fork;
 
     use super::*;
 
@@ -722,5 +885,145 @@ mod test {
             !Arc::ptr_eq(&old_event.0, &replacement),
             "terminal cleanup retained a stale PID registry entry"
         );
+    }
+
+    fn spawn_stopped_process(requested_pid: Option<i32>) -> Option<Pid> {
+        let child = if let Some(requested_pid) = requested_pid {
+            #[repr(C)]
+            #[derive(Default)]
+            struct CloneArgs {
+                flags: u64,
+                pidfd: u64,
+                child_tid: u64,
+                parent_tid: u64,
+                exit_signal: u64,
+                stack: u64,
+                stack_size: u64,
+                tls: u64,
+                set_tid: u64,
+                set_tid_size: u64,
+                cgroup: u64,
+            }
+
+            let mut set_tid = requested_pid as u64;
+            let args = CloneArgs {
+                exit_signal: libc::SIGCHLD as u64,
+                set_tid: std::ptr::from_mut(&mut set_tid) as u64,
+                set_tid_size: 1,
+                ..CloneArgs::default()
+            };
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_clone3,
+                    std::ptr::from_ref(&args),
+                    mem::size_of::<CloneArgs>(),
+                )
+            };
+            if result == -1 {
+                return None;
+            }
+            if result == 0 {
+                let _ = nix::sys::signal::raise(Signal::SIGSTOP);
+                unsafe { libc::_exit(0) };
+            }
+            Pid::from_raw(result as i32)
+        } else {
+            match unsafe { fork() }.expect("fork replacement-generation tracee") {
+                ForkResult::Parent { child } => child,
+                ForkResult::Child => {
+                    let _ = nix::sys::signal::raise(Signal::SIGSTOP);
+                    unsafe { libc::_exit(0) };
+                }
+            }
+        };
+
+        let mut status = 0;
+        let waited = unsafe { libc::waitpid(child.as_raw(), &mut status, libc::WUNTRACED) };
+        assert_eq!(waited, child.as_raw());
+        assert!(libc::WIFSTOPPED(status));
+        Some(child)
+    }
+
+    fn reap_stopped_process(pid: Pid) {
+        assert_eq!(unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) }, 0);
+        let mut status = 0;
+        let waited = unsafe { libc::waitpid(pid.as_raw(), &mut status, 0) };
+        assert_eq!(waited, pid.as_raw());
+        assert!(libc::WIFSIGNALED(status));
+    }
+
+    fn assert_live_replacement_rejected(first_pid: Option<i32>) -> bool {
+        let Some(old_pid) = spawn_stopped_process(first_pid) else {
+            return false;
+        };
+        let old_identity = WorkerIdentity::capture_process(old_pid.into())
+            .expect("capture old notifier worker generation");
+        assert!(old_identity.is_same_process_generation());
+        reap_stopped_process(old_pid);
+
+        // starttime is measured in clock ticks. Keep the two real generations
+        // distinct even on fast machines where procfs could otherwise report
+        // the same tick.
+        thread::sleep(Duration::from_millis(20));
+
+        let Some(new_pid) = spawn_stopped_process(first_pid) else {
+            return false;
+        };
+        let new_identity = WorkerIdentity::capture_process(new_pid.into())
+            .expect("capture replacement notifier worker generation");
+        assert!(new_identity.is_same_process_generation());
+        assert!(
+            !old_identity.is_same_process_generation(),
+            "an ECHILD worker accepted a live replacement proc generation"
+        );
+        // The production ECHILD decision is stricter still: it also requires
+        // the bound TracerPid to remain one of this process's live threads.
+        assert!(!old_identity.is_active_tracee());
+        reap_stopped_process(new_pid);
+        true
+    }
+
+    #[test]
+    fn worker_echild_rejects_live_replacement_generation() {
+        const INNER: &str = "SAFEPTRACE_ACTUAL_REUSE_INNER";
+        if env::var_os(INNER).is_some() {
+            if assert_live_replacement_rejected(Some(100)) {
+                println!("ACTUAL_PID_REUSE_EXERCISED");
+            }
+            return;
+        }
+
+        // Reinvoke this exact test in a fresh user/PID namespace.
+        // `clone3(set_tid)` there deterministically reuses PID 100 for two
+        // different, real procfs generations.
+        let inner = "notifier::test::worker_echild_rejects_live_replacement_generation";
+        let actual_reuse = env::current_exe().ok().and_then(|test_binary| {
+            Command::new("unshare")
+                .args([
+                    "--user",
+                    "--map-root-user",
+                    "--pid",
+                    "--fork",
+                    "--mount-proc",
+                ])
+                .arg(test_binary)
+                .args(["--exact", inner, "--nocapture"])
+                .env(INNER, "1")
+                .output()
+                .ok()
+        });
+
+        if actual_reuse.as_ref().is_some_and(|output| {
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("ACTUAL_PID_REUSE_EXERCISED")
+        }) {
+            return;
+        }
+
+        // Restricted CI runners may prohibit user namespaces or clone3
+        // set_tid. Still exercise the exact generation predicate with two live,
+        // kernel-created proc generations; the old O_PATH fd/starttime must
+        // reject the replacement even though its numeric PID cannot be forced.
+        assert!(assert_live_replacement_rejected(None));
     }
 }

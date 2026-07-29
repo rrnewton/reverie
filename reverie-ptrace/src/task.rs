@@ -375,6 +375,10 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) pause_new_task: Option<mpsc::UnboundedSender<Pid>>,
     #[cfg(test)]
     pub(crate) pause_after_new_task: bool,
+    #[cfg(test)]
+    pub(crate) pause_before_new_task: Option<mpsc::UnboundedSender<Pid>>,
+    #[cfg(test)]
+    pub(crate) fail_discovery_once: Option<Arc<AtomicBool>>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -1548,7 +1552,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .tracee_context(tid, "handle exec stop"),
             Event::Seccomp => self.handle_seccomp(stopped).await,
             Event::NewChild(op, child) => self
-                .handle_new_task(op, stopped, child, None, None)
+                .dispatch_new_task(op, stopped, child, None, None)
                 .await
                 .tracee_context(tid, "handle new tracee stop"),
             Event::VforkDone => self
@@ -2605,6 +2609,44 @@ impl<L: Tool + 'static> TracedTask<L> {
         .await
     }
 
+    fn own_liteinst_new_child_event(&self, parent: &Stopped, op: ChildOp, child: &Running) {
+        let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
+            return;
+        };
+        runtime
+            .newborn_tracees
+            .lock()
+            .unwrap()
+            .entry(child.pid())
+            .or_insert_with(|| NewbornTracee::from_event(parent.pid(), op, child));
+    }
+
+    async fn dispatch_new_task(
+        &mut self,
+        op: ChildOp,
+        parent: Stopped,
+        child: Running,
+        context: Option<libc::user_regs_struct>,
+        child_context: Option<libc::user_regs_struct>,
+    ) -> Result<Wait, TraceError> {
+        // Store the exact kernel event child before the handler future reaches
+        // any cancellation point. This also owns CLONE_PARENT siblings that
+        // proc ancestry cannot rediscover.
+        self.own_liteinst_new_child_event(&parent, op, &child);
+        #[cfg(test)]
+        if let Some(sender) = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.pause_before_new_task.as_ref())
+        {
+            let _ = sender.send(child.pid());
+            future::pending::<()>().await;
+        }
+        self.handle_new_task(op, parent, child, context, child_context)
+            .await
+    }
+
     async fn handle_new_task(
         &mut self,
         op: ChildOp,
@@ -2614,17 +2656,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Wait, TraceError> {
         if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
-            // Bind the kernel-reported child identity before any await.
-            let child_identity = TraceeIdentity::capture_newborn(child.pid(), parent.pid(), op)?;
             let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
-            if newborn_tracees
+            let child_pid = child.pid();
+            let child_identity = TraceeIdentity::capture_event_child(child_pid, parent.pid(), op)?;
+            newborn_tracees
                 .lock()
                 .unwrap()
-                .insert(child.pid(), NewbornTracee::new(child_identity, &child))
-                .is_some()
-            {
-                return Err(Errno::EEXIST.into());
-            }
+                .get_mut(&child_pid)
+                .expect("stored child event ownership must remain registered")
+                .set_identity(child_identity);
             #[cfg(test)]
             if let Some(sender) = self
                 .global_state
@@ -3320,7 +3360,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Event::NewChild(op, child) => {
                     let ret = child.pid().as_raw() as i64;
                     let _ = self
-                        .handle_new_task(op, stopped, child, context, child_context)
+                        .dispatch_new_task(op, stopped, child, context, child_context)
                         .await?;
                     Ok(Ok(ret))
                 }

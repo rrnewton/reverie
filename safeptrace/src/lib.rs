@@ -184,19 +184,28 @@ impl Event {
                 // Get the pid of the child immediately since we almost always
                 // want that.
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
-                Ok(Self::NewChild(ChildOp::Fork, Running::new(child_pid)))
+                Ok(Self::NewChild(
+                    ChildOp::Fork,
+                    Running::from_current_or_new(child_pid),
+                ))
             }
             libc::PTRACE_EVENT_VFORK => {
                 // Get the pid of the child immediately since we almost always
                 // want that.
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
-                Ok(Self::NewChild(ChildOp::Vfork, Running::new(child_pid)))
+                Ok(Self::NewChild(
+                    ChildOp::Vfork,
+                    Running::from_current_or_new(child_pid),
+                ))
             }
             libc::PTRACE_EVENT_CLONE => {
                 // Get the pid of the child immediately since we almost always
                 // want that.
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
-                Ok(Self::NewChild(ChildOp::Clone, Running::new(child_pid)))
+                Ok(Self::NewChild(
+                    ChildOp::Clone,
+                    Running::from_current_or_new(child_pid),
+                ))
             }
             libc::PTRACE_EVENT_EXEC => {
                 // Get the pid of the thread group leader that this call to exec
@@ -536,6 +545,16 @@ impl Stopped {
     #[cfg(feature = "notifier")]
     pub fn exit_event(&self) -> notifier::ExitFuture {
         notifier::ExitFuture::new(self.0, &self.1)
+    }
+
+    /// Returns a generation-bound terminal cleanup acknowledgment.
+    ///
+    /// This is primarily useful with [`Stopped::new_unchecked`] during
+    /// cancellation after the caller has independently validated that the TID
+    /// still names the expected ptrace generation.
+    #[cfg(feature = "notifier")]
+    pub fn terminal_cleanup(&self) -> TerminalCleanup {
+        TerminalCleanup::new(self.0, &self.1)
     }
 
     /// Creates a new stopped state. This is useful when we know the process is
@@ -910,6 +929,10 @@ impl Running {
 
     fn from_token(pid: Pid, token: TraceeToken) -> Self {
         Self(pid, token)
+    }
+
+    fn from_current_or_new(pid: Pid) -> Self {
+        Self::from_token(pid, TraceeToken::current_or_new(pid))
     }
 
     #[cfg(feature = "notifier")]
