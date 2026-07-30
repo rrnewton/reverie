@@ -1899,6 +1899,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             pause_preinit_step: None,
             #[cfg(test)]
             pause_precise_timer_step: None,
+            #[cfg(test)]
+            activate_without_handshake: false,
         });
         self
     }
@@ -2005,6 +2007,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .as_mut()
             .expect("LiteInst runtime must be configured before precise-timer pause")
             .pause_precise_timer_step = Some(sender);
+        self
+    }
+
+    #[cfg(test)]
+    fn activate_liteinst_without_handshake_for_test(mut self) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before test-only activation")
+            .activate_without_handshake = true;
         self
     }
 
@@ -2677,6 +2688,7 @@ mod tests {
         let (step_tx, mut step_rx) = mpsc::unbounded_channel();
         let builder = TracerBuilder::<PreciseTimerTool>::new(root_stop_guest_command("timer"))
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .pause_liteinst_precise_timer_step_for_test(step_tx);
         let held = Arc::clone(
             &builder
@@ -2715,7 +2727,8 @@ mod tests {
             return;
         }
         let builder = TracerBuilder::<PreciseTimerTool>::new(root_stop_guest_command("timer"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4);
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test();
         let held = Arc::clone(
             &builder
                 .liteinst_runtime
@@ -2760,7 +2773,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn normal_liteinst_completion_leaves_no_stale_root_stop_lease() {
         let builder = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
-            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4);
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test();
         let held = Arc::clone(
             &builder
                 .liteinst_runtime

@@ -418,6 +418,8 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) pause_preinit_step: Option<(usize, mpsc::UnboundedSender<Pid>)>,
     #[cfg(test)]
     pub(crate) pause_precise_timer_step: Option<mpsc::UnboundedSender<Pid>>,
+    #[cfg(test)]
+    pub(crate) activate_without_handshake: bool,
 }
 
 #[cfg(test)]
@@ -570,6 +572,7 @@ impl ActiveHookFootprint {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LiteinstRuntimePhase {
+    PreExec,
     Waiting,
     Bootstrap,
     Ready,
@@ -588,7 +591,7 @@ struct LiteinstRuntimeState {
 impl Default for LiteinstRuntimeState {
     fn default() -> Self {
         Self {
-            phase: LiteinstRuntimePhase::Waiting,
+            phase: LiteinstRuntimePhase::PreExec,
             frame: None,
             generation: 0,
             ready_generation: None,
@@ -665,7 +668,8 @@ impl LiteinstRuntimeState {
 }
 
 enum LiteinstTrap {
-    Handshake,
+    HandshakeBegin,
+    HandshakeReady,
     Syscall(usize),
     Invalid,
 }
@@ -1950,7 +1954,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             state.phase = LiteinstRuntimePhase::Bootstrap;
             state.frame = Some(frame);
-            return Some(LiteinstTrap::Handshake);
+            return Some(LiteinstTrap::HandshakeBegin);
         }
         if regs.rax == config.ready_marker {
             let frame =
@@ -1961,7 +1965,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             state.phase = LiteinstRuntimePhase::Ready;
             state.ready_generation = Some(state.generation);
-            return Some(LiteinstTrap::Handshake);
+            return Some(LiteinstTrap::HandshakeReady);
         }
         if regs.rax != config.syscall_marker {
             return None;
@@ -2018,7 +2022,13 @@ impl<L: Tool + 'static> TracedTask<L> {
             .is_some_and(|action| matches!(action, ResumeAction::Step(_)));
         let mut regs = task.getregs()?;
         match self.classify_liteinst_trap(&task, &regs) {
-            Some(LiteinstTrap::Handshake) => {
+            Some(LiteinstTrap::HandshakeBegin) => {
+                return Ok(HandleSignalResult::SignalSuppressed(
+                    self.resume_stopped(task, None)?.next_state().await?,
+                ));
+            }
+            Some(LiteinstTrap::HandshakeReady) => {
+                self.activate_liteinst_tool().await?;
                 return Ok(HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
                 ));
@@ -2135,11 +2145,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     // handle ptrace signal delivery stop
     async fn handle_signal(&mut self, task: Stopped, sig: Signal) -> Result<Wait, TraceError> {
         tracing::debug!("[{}] handle_signal: received signal {}", task.pid(), sig);
-        let result = match sig {
-            Signal::SIGSEGV => self.handle_sigsegv(task).await?,
-            Signal::SIGSTOP => self.handle_sigstop(task).await?,
-            Signal::SIGTRAP => self.handle_sigtrap(task).await?,
-            sig if sig == Timer::signal_type() => {
+        let phase = self.liteinst_runtime.lock().unwrap().phase;
+        let activating_liteinst =
+            self.global_state.liteinst_runtime.is_some() && phase != LiteinstRuntimePhase::Ready;
+        let result = match (activating_liteinst, sig) {
+            (true, Signal::SIGTRAP) => self.handle_sigtrap(task).await?,
+            (true, Signal::SIGSTOP) => self.handle_sigstop(task).await?,
+            (true, sig) => HandleSignalResult::SignalToDeliver(task, sig),
+            (false, Signal::SIGSEGV) => self.handle_sigsegv(task).await?,
+            (false, Signal::SIGSTOP) => self.handle_sigstop(task).await?,
+            (false, Signal::SIGTRAP) => self.handle_sigtrap(task).await?,
+            (false, sig) if sig == Timer::signal_type() => {
                 let (was_timer, task) = self.handle_timer(task).await?;
                 if was_timer {
                     HandleSignalResult::SignalSuppressed(
@@ -2149,11 +2165,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                     HandleSignalResult::SignalToDeliver(task, sig)
                 }
             }
-            sig => HandleSignalResult::SignalToDeliver(task, sig),
+            (false, sig) => HandleSignalResult::SignalToDeliver(task, sig),
         };
 
         match result {
             HandleSignalResult::SignalSuppressed(wait) => Ok(wait),
+            HandleSignalResult::SignalToDeliver(task, sig) if activating_liteinst => {
+                Ok(self.resume_stopped(task, Some(sig))?.next_state().await?)
+            }
             HandleSignalResult::SignalToDeliver(task, sig) => {
                 let sig = self
                     .process_state
@@ -2166,10 +2185,41 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
     }
 
+    async fn activate_liteinst_tool(&mut self) -> Result<(), TraceError> {
+        if let Some(Err(err)) = cancellable(self.cancel_handler.clone(), async {
+            self.process_state.clone().handle_thread_start(self).await
+        })
+        .await
+            && let Err(error) = err.into_errno()
+        {
+            self.liteinst_failure = Some(error.to_string());
+            return Err(Errno::EIO.into());
+        }
+        self.timer.finalize_requests();
+        self.process_state.clone().handle_post_exec(self).await?;
+        self.timer.finalize_requests();
+        Ok(())
+    }
+
     // handle ptrace exec event
     async fn handle_exec_event(&mut self, task: Stopped) -> Result<Wait, TraceError> {
         if self.global_state.liteinst_runtime.is_some() {
             let mut state = self.liteinst_runtime.lock().unwrap();
+            if state.phase != LiteinstRuntimePhase::PreExec {
+                let phase = state.phase;
+                drop(state);
+                self.liteinst_failure = Some(
+                    Error::runtime(
+                        self.tid(),
+                        "reject LiteInst post-start exec",
+                        format!(
+                            "the required preload runtime cannot be preserved across exec (phase {phase:?})"
+                        ),
+                    )
+                    .to_string(),
+                );
+                return Err(Errno::ENOTSUPP.into());
+            }
             state.generation = state.generation.wrapping_add(1);
             state.phase = LiteinstRuntimePhase::Waiting;
             state.frame = None;
@@ -2198,8 +2248,25 @@ impl<L: Tool + 'static> TracedTask<L> {
 
         let task = self.tracee_preinit(task).await?;
 
-        self.process_state.clone().handle_post_exec(self).await?;
-        self.timer.finalize_requests();
+        #[cfg(test)]
+        if self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.activate_without_handshake)
+        {
+            {
+                let mut state = self.liteinst_runtime.lock().unwrap();
+                state.phase = LiteinstRuntimePhase::Ready;
+                state.ready_generation = Some(state.generation);
+            }
+            self.activate_liteinst_tool().await?;
+        }
+
+        if self.global_state.liteinst_runtime.is_none() {
+            self.process_state.clone().handle_post_exec(self).await?;
+            self.timer.finalize_requests();
+        }
 
         if self.attached_by_gdb {
             let request_tx = self.gdb_request_tx.clone();
@@ -3052,14 +3119,20 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn handle_seccomp(&mut self, mut task: Stopped) -> Result<Wait, Error> {
         let tid = self.tid();
         let phase = self.liteinst_runtime.lock().unwrap().phase;
-        if self.global_state.liteinst_runtime.is_some() && phase == LiteinstRuntimePhase::Bootstrap
+        if self.global_state.liteinst_runtime.is_some()
+            && matches!(
+                phase,
+                LiteinstRuntimePhase::PreExec
+                    | LiteinstRuntimePhase::Waiting
+                    | LiteinstRuntimePhase::Bootstrap
+            )
         {
             return self
                 .resume_stopped(task, None)
-                .tracee_context(tid, "resume LiteInst bootstrap syscall")?
+                .tracee_context(tid, "resume LiteInst activation syscall")?
                 .next_state()
                 .await
-                .tracee_context(tid, "wait after LiteInst bootstrap syscall");
+                .tracee_context(tid, "wait after LiteInst activation syscall");
         }
         let syscall = self
             .get_syscall(&task)
@@ -3701,17 +3774,20 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     async fn run_loop_internal(&mut self, task: Stopped) -> Result<ExitStatus, Error> {
-        // This is the beginning of the life of the guest. Allow the tool to
-        // inject syscalls as soon as the thread starts.
-        if let Some(Err(err)) = cancellable(self.cancel_handler.clone(), async {
-            self.process_state.clone().handle_thread_start(self).await
-        })
-        .await
-        {
-            // Propagate user errors. Don't care about the result of syscall injections.
-            err.into_errno()?;
+        // Ordinary backends let the Tool inject as soon as the thread starts.
+        // Required-runtime mode defers every Tool callback until the preload's
+        // validated Ready marker activates it in `handle_sigtrap`.
+        if self.global_state.liteinst_runtime.is_none() {
+            if let Some(Err(err)) = cancellable(self.cancel_handler.clone(), async {
+                self.process_state.clone().handle_thread_start(self).await
+            })
+            .await
+            {
+                // Propagate user errors. Don't care about the result of syscall injections.
+                err.into_errno()?;
+            }
+            self.timer.finalize_requests();
         }
-        self.timer.finalize_requests();
 
         // Resume the guest for the first time. Note that the root task and
         // child tasks start out in a stopped state for different reasons: The
@@ -3813,10 +3889,26 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         };
         let exit_status = match (outcome, self.liteinst_failure.take()) {
-            (Ok(_), Some(original)) => return Err(anyhow::anyhow!(original).into()),
+            (_, Some(original)) => return Err(anyhow::anyhow!(original).into()),
             (Ok(exit_status), None) => exit_status,
             (Err(error), _) => return Err(error),
         };
+        if self.global_state.liteinst_runtime.is_some() {
+            let phase = self.liteinst_runtime.lock().unwrap().phase;
+            if phase != LiteinstRuntimePhase::Ready {
+                return Err(anyhow::anyhow!(
+                    Error::runtime(
+                        self.tid(),
+                        "verify LiteInst runtime activation",
+                        format!(
+                            "tracee terminated before the required preload handshake completed (phase {phase:?})"
+                        ),
+                    )
+                    .to_string()
+                )
+                .into());
+            }
+        }
 
         log_guest_exit(self.tid(), self.pid(), exit_status);
         self.tool_exit(exit_status).await?;
