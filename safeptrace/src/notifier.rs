@@ -87,6 +87,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 #[cfg(test)]
 use std::sync::mpsc;
@@ -233,12 +234,10 @@ pub(super) fn inject_sync_decode_capture_error(pid: Pid, error: Errno) {
 
 #[cfg(test)]
 pub(super) fn pause_sync_new_child_decode(pid: Pid) {
-    if let Some(pause) = SYNC_NEW_CHILD_DECODE_PAUSES.lock().remove(&pid) {
-        pause
-            .captured
-            .send(())
-            .expect("report NewChild materialization");
-        pause.resume.recv().expect("resume NewChild typed return");
+    if let Some(pause) = SYNC_NEW_CHILD_DECODE_PAUSES.lock().remove(&pid)
+        && pause.captured.send(()).is_ok()
+    {
+        let _ = pause.resume.recv();
     }
 }
 
@@ -408,6 +407,7 @@ struct Event {
     /// Serializes kernel wait-status ownership before either synchronous
     /// fallback/capture or notifier registration can inspect mutable state.
     cleanup_cancel_requested: AtomicBool,
+    cleanup_claim_waiters: AtomicUsize,
     wait_owner: AtomicU8,
     wait_owner_lock: Mutex<()>,
     wait_owner_changed: Condvar,
@@ -607,6 +607,7 @@ impl Event {
             worker_done_lock: Mutex::new(()),
             worker_done_changed: Condvar::new(),
             cleanup_cancel_requested: AtomicBool::new(false),
+            cleanup_claim_waiters: AtomicUsize::new(0),
             wait_owner: AtomicU8::new(WAIT_OWNER_NONE),
             wait_owner_lock: Mutex::new(()),
             wait_owner_changed: Condvar::new(),
@@ -895,7 +896,8 @@ impl Event {
         let _guard = self.wait_owner_lock.lock();
         if !libc::WIFEXITED(status)
             && !libc::WIFSIGNALED(status)
-            && self.cleanup_cancel_requested.load(Ordering::Acquire)
+            && (self.cleanup_cancel_requested.load(Ordering::Acquire)
+                || self.cleanup_claim_waiters.load(Ordering::Acquire) != 0)
         {
             return ReturnTransactionStart::Cancelled;
         }
@@ -1014,6 +1016,7 @@ impl Event {
                 CancellableNotifierWaitOwnership::Existing
             }
             WAIT_OWNER_SYNC_RETURNING | WAIT_OWNER_NOTIFIER_RETURNING => {
+                self.cleanup_claim_waiters.fetch_add(1, Ordering::Release);
                 CancellableNotifierWaitOwnership::Returning
             }
             owner => unreachable!("invalid wait owner {owner}"),
@@ -1123,21 +1126,55 @@ impl Event {
     }
 
     #[cfg(test)]
-    fn wait_for_return_transaction_release(&self, timeout: Duration) -> bool {
+    fn wait_for_return_and_claim_cancellable_notifier(
+        &self,
+        timeout: Duration,
+    ) -> Option<CancellableNotifierWaitOwnership<'_>> {
         let deadline = Instant::now()
             .checked_add(timeout)
             .unwrap_or_else(Instant::now);
         let mut guard = self.wait_owner_lock.lock();
         loop {
-            if !matches!(
-                self.wait_owner.load(Ordering::Acquire),
-                WAIT_OWNER_SYNC_RETURNING | WAIT_OWNER_NOTIFIER_RETURNING
-            ) {
-                return true;
+            match self.wait_owner.load(Ordering::Acquire) {
+                WAIT_OWNER_SYNC_RETURNING | WAIT_OWNER_NOTIFIER_RETURNING => {}
+                WAIT_OWNER_NONE => {
+                    self.cleanup_cancel_requested.store(true, Ordering::Release);
+                    let previous = self.cleanup_claim_waiters.fetch_sub(1, Ordering::AcqRel);
+                    debug_assert_ne!(previous, 0);
+                    self.wait_owner
+                        .compare_exchange(
+                            WAIT_OWNER_NONE,
+                            WAIT_OWNER_NOTIFIER,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .expect("wait owner changed while serialized");
+                    return Some(CancellableNotifierWaitOwnership::Claimed(
+                        NotifierWaitOwner {
+                            event: self,
+                            committed: false,
+                        },
+                    ));
+                }
+                WAIT_OWNER_SYNC => {
+                    self.cleanup_cancel_requested.store(true, Ordering::Release);
+                    let previous = self.cleanup_claim_waiters.fetch_sub(1, Ordering::AcqRel);
+                    debug_assert_ne!(previous, 0);
+                    return Some(CancellableNotifierWaitOwnership::Synchronous);
+                }
+                WAIT_OWNER_NOTIFIER => {
+                    self.cleanup_cancel_requested.store(true, Ordering::Release);
+                    let previous = self.cleanup_claim_waiters.fetch_sub(1, Ordering::AcqRel);
+                    debug_assert_ne!(previous, 0);
+                    return Some(CancellableNotifierWaitOwnership::Existing);
+                }
+                owner => unreachable!("invalid wait owner {owner}"),
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return false;
+                let previous = self.cleanup_claim_waiters.fetch_sub(1, Ordering::AcqRel);
+                debug_assert_ne!(previous, 0);
+                return None;
             }
             self.wait_owner_changed.wait_for(&mut guard, remaining);
         }
@@ -1945,7 +1982,7 @@ enum EventRegistration {
 enum CancellableEventRegistration {
     Registered,
     Synchronous(Arc<Event>),
-    Returning(Arc<Event>),
+    ReturningTimedOut,
     Busy,
 }
 
@@ -2169,10 +2206,25 @@ impl Notifier {
         &self,
         pid: Pid,
         handle: &EventHandle,
+        return_timeout: Duration,
     ) -> Result<CancellableEventRegistration, Errno> {
         loop {
             let requested = Arc::clone(handle.event());
-            let owner = match requested.try_claim_cancellable_notifier_wait() {
+            let mut ownership = requested.try_claim_cancellable_notifier_wait();
+            if matches!(ownership, CancellableNotifierWaitOwnership::Returning) {
+                if let Some(pause) = CLEANUP_RETURN_TRANSACTION_PAUSES.lock().remove(&pid)
+                    && pause.captured.send(()).is_ok()
+                {
+                    let _ = pause.resume.recv();
+                }
+                ownership = match requested
+                    .wait_for_return_and_claim_cancellable_notifier(return_timeout)
+                {
+                    Some(ownership) => ownership,
+                    None => return Ok(CancellableEventRegistration::ReturningTimedOut),
+                };
+            }
+            let owner = match ownership {
                 CancellableNotifierWaitOwnership::Synchronous => {
                     return Ok(CancellableEventRegistration::Synchronous(Arc::clone(
                         &requested,
@@ -2190,9 +2242,7 @@ impl Notifier {
                     };
                 }
                 CancellableNotifierWaitOwnership::Returning => {
-                    return Ok(CancellableEventRegistration::Returning(Arc::clone(
-                        &requested,
-                    )));
+                    unreachable!("return wait completed without a stable ownership state")
                 }
                 CancellableNotifierWaitOwnership::Claimed(owner) => owner,
             };
@@ -2515,8 +2565,11 @@ impl TerminalCleanup {
     }
 
     #[cfg(test)]
-    fn try_ensure_registered_for_cleanup(&self) -> Result<CancellableEventRegistration, Errno> {
-        NOTIFIER.try_event_for_cleanup(self.pid, &self.event)
+    fn try_ensure_registered_for_cleanup(
+        &self,
+        return_timeout: Duration,
+    ) -> Result<CancellableEventRegistration, Errno> {
+        NOTIFIER.try_event_for_cleanup(self.pid, &self.event, return_timeout)
     }
 
     /// Returns the last typed notifier registration error, if any.
@@ -2661,15 +2714,13 @@ impl Future for WaitFuture {
             Ok(reservation) => reservation,
             Err(errno) => return Poll::Ready(Err(errno.into())),
         };
-        let decoded = Wait::from_raw_with_token(
-            pid,
-            reservation.status,
-            TraceeToken::from_event(event_handle.clone()),
-        );
-        if decoded.is_ok() {
-            reservation.commit();
+        match event.decode_status_return(reservation, |status| {
+            Wait::from_raw_with_token(pid, status, TraceeToken::from_event(event_handle.clone()))
+        }) {
+            Ok(StatusReturn::Returned(decoded)) => Poll::Ready(Ok(decoded)),
+            Ok(StatusReturn::Cancelled(_)) => Poll::Ready(Err(Errno::ECANCELED.into())),
+            Err(error) => Poll::Ready(Err(error)),
         }
-        Poll::Ready(decoded)
     }
 }
 
@@ -3422,8 +3473,10 @@ mod test {
             }
 
             let deadline = Instant::now() + REGISTRATION_RETRY_TIMEOUT;
+            let return_deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
             let last_error = loop {
-                match terminal.try_ensure_registered_for_cleanup() {
+                let return_remaining = return_deadline.saturating_duration_since(Instant::now());
+                match terminal.try_ensure_registered_for_cleanup(return_remaining) {
                     Ok(CancellableEventRegistration::Registered) => {
                         return match terminal.event.event().worker_state.load(Ordering::Acquire) {
                             WORKER_RUNNING => Ok(CleanupWaitOwner::Notifier),
@@ -3455,25 +3508,11 @@ mod test {
                             ));
                         }
                     }
-                    Ok(CancellableEventRegistration::Returning(event)) => {
-                        if let Some(pause) =
-                            CLEANUP_RETURN_TRANSACTION_PAUSES.lock().remove(&pid.into())
-                        {
-                            pause
-                                .captured
-                                .send(())
-                                .expect("report cleanup blocked by typed return");
-                            pause
-                                .resume
-                                .recv()
-                                .expect("resume cleanup blocked by typed return");
-                        }
-                        if !event.wait_for_return_transaction_release(TRACEE_WAIT_TIMEOUT) {
-                            return Err(io::Error::new(
-                                io::ErrorKind::TimedOut,
-                                "typed status return transaction did not complete before cleanup",
-                            ));
-                        }
+                    Ok(CancellableEventRegistration::ReturningTimedOut) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "typed status return transactions starved cleanup past its deadline",
+                        ));
                     }
                     Ok(CancellableEventRegistration::Busy) if Instant::now() < deadline => {
                         thread::sleep(SUBPROCESS_POLL_INTERVAL);
@@ -3494,16 +3533,16 @@ mod test {
                 .is_some()
             {
                 CAPTURE_PERSISTENT_ERRORS.lock().remove(&pid.into());
-                match terminal.try_ensure_registered_for_cleanup() {
+                match terminal.try_ensure_registered_for_cleanup(TRACEE_WAIT_TIMEOUT) {
                     Ok(CancellableEventRegistration::Registered) => {}
                     Ok(CancellableEventRegistration::Synchronous(_)) => {
                         return Err(io::Error::other(
                             "forced cleanup registration race found a synchronous owner",
                         ));
                     }
-                    Ok(CancellableEventRegistration::Returning(_)) => {
+                    Ok(CancellableEventRegistration::ReturningTimedOut) => {
                         return Err(io::Error::other(
-                            "forced cleanup registration race found a returning owner",
+                            "forced cleanup registration race timed out behind a returning owner",
                         ));
                     }
                     Ok(CancellableEventRegistration::Busy) => {
@@ -4941,10 +4980,10 @@ mod test {
                 first_claim_tx
                     .send(returning)
                     .expect("report in-flight return claim");
-                assert!(cleanup_event.wait_for_return_transaction_release(TRACEE_WAIT_TIMEOUT));
                 let synchronous = matches!(
-                    cleanup_event.try_claim_cancellable_notifier_wait(),
-                    CancellableNotifierWaitOwnership::Synchronous
+                    cleanup_event
+                        .wait_for_return_and_claim_cancellable_notifier(TRACEE_WAIT_TIMEOUT),
+                    Some(CancellableNotifierWaitOwnership::Synchronous)
                 );
                 retry_tx
                     .send(synchronous)
@@ -4983,116 +5022,110 @@ mod test {
     }
 
     #[test]
-    fn new_child_decode_return_precedes_cleanup_for_fork_vfork_and_clone() {
-        for child_op in [
-            crate::ChildOp::Fork,
-            crate::ChildOp::Vfork,
-            crate::ChildOp::Clone,
-        ] {
-            let (pid, stopped, mut cleanup) = spawn_new_child_tracee(child_op);
-            let parent_identity = WorkerIdentity::capture_process(pid.into())
-                .expect("capture new-child parent identity");
-            stopped
-                .setoptions(new_child_trace_option(child_op))
-                .expect("enable new-child ptrace event");
-            let running = stopped.resume(None).expect("resume new-child parent");
-            let parent_event = running.1.event().clone();
-            cleanup
-                .store_terminal(TerminalCleanup::new_unregistered(pid.into(), &running.1))
-                .expect("store new-child cleanup authority");
+    fn pending_cleanup_claim_prevents_repeated_return_starvation() {
+        let event = Arc::new(Event::new());
+        event
+            .wait_owner
+            .store(WAIT_OWNER_NOTIFIER, Ordering::Release);
+        let stopped = (libc::SIGSTOP << 8) | 0x7f;
+        let transaction = match event.begin_status_return(
+            stopped,
+            WAIT_OWNER_NOTIFIER,
+            WAIT_OWNER_NOTIFIER_RETURNING,
+        ) {
+            ReturnTransactionStart::Begun(transaction) => transaction,
+            ReturnTransactionStart::Cancelled => panic!("first return was unexpectedly cancelled"),
+        };
 
-            let (child_materialized_tx, child_materialized_rx) = mpsc::sync_channel(0);
-            let (resume_return_tx, resume_return_rx) = mpsc::channel();
-            SYNC_NEW_CHILD_DECODE_PAUSES.lock().insert(
-                pid.into(),
-                BoundedTestPause {
-                    captured: child_materialized_tx,
-                    resume: resume_return_rx,
-                },
-            );
-            // Ptrace commands must stay on the tracer thread. Coordinate the
-            // cleanup contender from another thread while this thread performs
-            // GETEVENTMSG, child materialization, and the typed return.
-            let coordinator = thread::spawn(move || {
-                child_materialized_rx
-                    .recv_timeout(TRACEE_WAIT_TIMEOUT)
-                    .unwrap_or_else(|error| {
-                        panic!("{child_op:?} decode did not materialize within bound: {error}")
-                    });
-                assert_eq!(
-                    parent_event.event().wait_owner.load(Ordering::Acquire),
-                    WAIT_OWNER_SYNC_RETURNING,
-                    "{child_op:?} decoded outside its return transaction"
-                );
-
-                let (cleanup_saw_return_tx, cleanup_saw_return_rx) = mpsc::sync_channel(0);
-                let (resume_cleanup_tx, resume_cleanup_rx) = mpsc::channel();
-                CLEANUP_RETURN_TRANSACTION_PAUSES.lock().insert(
-                    pid.into(),
-                    BoundedTestPause {
-                        captured: cleanup_saw_return_tx,
-                        resume: resume_cleanup_rx,
-                    },
-                );
-                let cleaning = thread::spawn(move || {
-                    let result = cleanup.cleanup();
-                    (result, cleanup)
-                });
-                cleanup_saw_return_rx
-                    .recv_timeout(TRACEE_WAIT_TIMEOUT)
-                    .unwrap_or_else(|error| {
-                        panic!("{child_op:?} cleanup did not observe RETURNING: {error}")
-                    });
-                assert!(
-                    !parent_event
-                        .event()
-                        .cleanup_cancel_requested
-                        .load(Ordering::Acquire),
-                    "{child_op:?} cleanup cancelled after typed return had begun"
-                );
-                resume_cleanup_tx
-                    .send(())
-                    .expect("resume cleanup RETURNING observation");
-                resume_return_tx
-                    .send(())
-                    .expect("resume NewChild return transaction");
-                cleaning.join().expect("join new-child cleanup")
-            });
-
-            let (parent, event) = running
-                .wait()
-                .expect("new-child decode return")
-                .assume_stopped();
-            let child = match event {
-                crate::Event::NewChild(observed, child) if observed == child_op => child,
-                event => panic!("expected {child_op:?} event, got {event:?}"),
-            };
-            assert_eq!(parent.pid(), pid.into());
-            drop(parent);
-
-            let child_pid = Pid::from_raw(child.pid().as_raw());
-            let child_identity = WorkerIdentity::capture_process(child.pid())
-                .expect("capture materialized child identity");
-            reap_new_child_bounded(child)
-                .unwrap_or_else(|error| panic!("bounded {child_op:?} child reap: {error}"));
-            let (cleanup_result, cleanup) = coordinator.join().expect("join cleanup coordinator");
-            cleanup_result
-                .unwrap_or_else(|error| panic!("bounded {child_op:?} parent cleanup: {error}"));
+        let (observed_tx, observed_rx) = mpsc::channel();
+        let cleanup_event = Arc::clone(&event);
+        let cleanup = thread::spawn(move || {
             assert!(matches!(
-                cleanup.ownership,
-                TraceeCleanupOwnership::NotifierOwned {
-                    cleanup_signal_sent: true,
-                    ..
-                }
+                cleanup_event.try_claim_cancellable_notifier_wait(),
+                CancellableNotifierWaitOwnership::Returning
             ));
-            assert!(
-                !parent_identity.is_same_process_generation(),
-                "{child_op:?} parent remained live after cleanup"
-            );
-            assert!(
-                !child_identity.is_same_process_generation(),
-                "{child_op:?} child {child_pid} remained live after bounded reap"
-            );
+            observed_tx
+                .send(())
+                .expect("report pending cleanup return claim");
+            matches!(
+                cleanup_event.wait_for_return_and_claim_cancellable_notifier(TRACEE_WAIT_TIMEOUT),
+                Some(CancellableNotifierWaitOwnership::Existing)
+            )
+        });
+        observed_rx
+            .recv_timeout(TRACEE_WAIT_TIMEOUT)
+            .expect("cleanup did not register its RETURNING claim");
+        assert_eq!(event.cleanup_claim_waiters.load(Ordering::Acquire), 1);
+
+        transaction.commit(WAIT_OWNER_NOTIFIER);
+        for _ in 0..64 {
+            assert!(matches!(
+                event.begin_status_return(
+                    stopped,
+                    WAIT_OWNER_NOTIFIER,
+                    WAIT_OWNER_NOTIFIER_RETURNING,
+                ),
+                ReturnTransactionStart::Cancelled
+            ));
+            thread::yield_now();
+        }
+        assert!(cleanup.join().expect("join pending cleanup claimant"));
+        assert!(event.cleanup_cancel_requested.load(Ordering::Acquire));
+        assert_eq!(event.cleanup_claim_waiters.load(Ordering::Acquire), 0);
+        assert_eq!(
+            event.wait_owner.load(Ordering::Acquire),
+            WAIT_OWNER_NOTIFIER
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn new_child_decode_return_precedes_cleanup_for_fork_vfork_and_clone() {
+        for repetition in 0..8 {
+            for child_op in [
+                crate::ChildOp::Fork,
+                crate::ChildOp::Vfork,
+                crate::ChildOp::Clone,
+            ] {
+                let mut race = start_new_child_return_race(child_op, WAIT_OWNER_SYNC_RETURNING)
+                    .unwrap_or_else(|error| {
+                        panic!("sync repetition {repetition} start {child_op:?}: {error}")
+                    });
+                let wait = race
+                    .running
+                    .take()
+                    .expect("sync race waiter")
+                    .wait()
+                    .unwrap_or_else(|error| {
+                        panic!("sync repetition {repetition} wait {child_op:?}: {error}")
+                    });
+                finish_new_child_return_race(child_op, race, wait).unwrap_or_else(|error| {
+                    panic!("sync repetition {repetition} finish {child_op:?}: {error}")
+                });
+            }
+        }
+        for repetition in 0..8 {
+            for child_op in [
+                crate::ChildOp::Fork,
+                crate::ChildOp::Vfork,
+                crate::ChildOp::Clone,
+            ] {
+                let mut race = start_new_child_return_race(child_op, WAIT_OWNER_NOTIFIER_RETURNING)
+                    .unwrap_or_else(|error| {
+                        panic!("async repetition {repetition} start {child_op:?}: {error}")
+                    });
+                let wait = race
+                    .running
+                    .take()
+                    .expect("async race waiter")
+                    .next_state()
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("async repetition {repetition} wait {child_op:?}: {error}")
+                    });
+                finish_new_child_return_race(child_op, race, wait).unwrap_or_else(|error| {
+                    panic!("async repetition {repetition} finish {child_op:?}: {error}")
+                });
+            }
         }
     }
 
@@ -6150,6 +6183,262 @@ mod test {
         assert!(retained_nonterminal_rejects_replacement(None));
     }
 
+    struct NewChildReturnRace {
+        pid: Pid,
+        running: Option<Running>,
+        parent_identity: WorkerIdentity,
+        coordinator: JoinHandle<(io::Result<()>, TraceeCleanupGuard)>,
+        process_group: NewChildProcessGroupGuard,
+    }
+
+    struct NewChildProcessGroupGuard {
+        pgid: Pid,
+        armed: bool,
+    }
+
+    impl NewChildProcessGroupGuard {
+        fn new(pgid: Pid) -> Self {
+            Self { pgid, armed: true }
+        }
+
+        fn disarm(&mut self) {
+            self.armed = false;
+        }
+    }
+
+    impl Drop for NewChildProcessGroupGuard {
+        fn drop(&mut self) {
+            if !self.armed {
+                return;
+            }
+            SYNC_NEW_CHILD_DECODE_PAUSES
+                .lock()
+                .remove(&self.pgid.into());
+            CLEANUP_RETURN_TRANSACTION_PAUSES
+                .lock()
+                .remove(&self.pgid.into());
+            let _ = unsafe { libc::kill(-self.pgid.as_raw(), libc::SIGKILL) };
+            let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
+            loop {
+                let mut status = 0;
+                let waited = unsafe {
+                    libc::waitpid(
+                        -self.pgid.as_raw(),
+                        &mut status,
+                        libc::__WALL | libc::WNOHANG,
+                    )
+                };
+                if waited > 0 {
+                    if libc::WIFSTOPPED(status) {
+                        let _ = nix::sys::ptrace::cont(Pid::from_raw(waited), None);
+                    }
+                    continue;
+                }
+                if waited == -1 {
+                    let error = io::Error::last_os_error();
+                    if error.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                thread::sleep(SUBPROCESS_POLL_INTERVAL);
+            }
+        }
+    }
+
+    fn start_new_child_return_race(
+        child_op: crate::ChildOp,
+        expected_return_owner: u8,
+    ) -> io::Result<NewChildReturnRace> {
+        let (pid, stopped, mut cleanup) = spawn_new_child_tracee(child_op)?;
+        let process_group = NewChildProcessGroupGuard::new(pid);
+        let parent_identity = WorkerIdentity::capture_process(pid.into()).map_err(|error| {
+            io::Error::other(format!(
+                "capture {child_op:?} parent {pid} identity: {error}"
+            ))
+        })?;
+        let running = stopped
+            .resume(None)
+            .map_err(|error| io::Error::other(format!("resume {child_op:?} parent: {error}")))?;
+        let parent_event = running.1.event().clone();
+        cleanup.store_terminal(TerminalCleanup::new_unregistered(pid.into(), &running.1))?;
+
+        let (child_materialized_tx, child_materialized_rx) = mpsc::sync_channel(0);
+        let (resume_return_tx, resume_return_rx) = mpsc::channel();
+        SYNC_NEW_CHILD_DECODE_PAUSES.lock().insert(
+            pid.into(),
+            BoundedTestPause {
+                captured: child_materialized_tx,
+                resume: resume_return_rx,
+            },
+        );
+        // The waiter remains on its ptracer thread. Only the cleanup contender
+        // runs here while GETEVENTMSG, child materialization, and typed return
+        // execute in the synchronous call or WaitFuture poll.
+        let coordinator = thread::spawn(move || {
+            if let Err(error) = child_materialized_rx.recv_timeout(TRACEE_WAIT_TIMEOUT) {
+                let cleanup_result = cleanup.cleanup();
+                return (
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "{child_op:?} decode did not materialize within bound: {error}; cleanup: {cleanup_result:?}"
+                        ),
+                    )),
+                    cleanup,
+                );
+            }
+            assert_eq!(
+                parent_event.event().wait_owner.load(Ordering::Acquire),
+                expected_return_owner,
+                "{child_op:?} decoded outside its return transaction"
+            );
+
+            let (cleanup_saw_return_tx, cleanup_saw_return_rx) = mpsc::sync_channel(0);
+            let (resume_cleanup_tx, resume_cleanup_rx) = mpsc::channel();
+            CLEANUP_RETURN_TRANSACTION_PAUSES.lock().insert(
+                pid.into(),
+                BoundedTestPause {
+                    captured: cleanup_saw_return_tx,
+                    resume: resume_cleanup_rx,
+                },
+            );
+            let cleaning = thread::spawn(move || {
+                let result = cleanup.cleanup();
+                (result, cleanup)
+            });
+            if let Err(error) = cleanup_saw_return_rx.recv_timeout(TRACEE_WAIT_TIMEOUT) {
+                CLEANUP_RETURN_TRANSACTION_PAUSES.lock().remove(&pid.into());
+                drop(cleanup_saw_return_rx);
+                let _ = resume_return_tx.send(());
+                let (cleanup_result, cleanup) = cleaning.join().expect("join failed cleanup race");
+                return (
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "{child_op:?} cleanup did not observe RETURNING: {error}; cleanup: {cleanup_result:?}"
+                        ),
+                    )),
+                    cleanup,
+                );
+            }
+            assert!(
+                !parent_event
+                    .event()
+                    .cleanup_cancel_requested
+                    .load(Ordering::Acquire),
+                "{child_op:?} cleanup cancelled after typed return had begun"
+            );
+            resume_cleanup_tx
+                .send(())
+                .expect("resume cleanup RETURNING observation");
+            resume_return_tx
+                .send(())
+                .expect("resume NewChild return transaction");
+            cleaning.join().expect("join new-child cleanup")
+        });
+
+        Ok(NewChildReturnRace {
+            pid,
+            running: Some(running),
+            parent_identity,
+            coordinator,
+            process_group,
+        })
+    }
+
+    fn wait_generation_retired_bounded(identity: &WorkerIdentity, context: &str) -> io::Result<()> {
+        let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
+        loop {
+            if !identity.is_same_process_generation() {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                let status = fs::read_to_string(format!("/proc/{}/status", identity.pid))
+                    .unwrap_or_else(|error| format!("unavailable: {error}"));
+                let status = status
+                    .lines()
+                    .filter(|line| {
+                        line.starts_with("State:")
+                            || line.starts_with("Tgid:")
+                            || line.starts_with("TracerPid:")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let pidfd_live = identity.pidfd_is_live();
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "{context}: generation {} remained live; pidfd={pidfd_live:?}; proc=[{status}]",
+                        identity.pid
+                    ),
+                ));
+            }
+            thread::sleep(SUBPROCESS_POLL_INTERVAL);
+        }
+    }
+
+    fn finish_new_child_return_race(
+        child_op: crate::ChildOp,
+        mut race: NewChildReturnRace,
+        wait: Wait,
+    ) -> io::Result<()> {
+        let (parent, event) = wait.assume_stopped();
+        let child = match event {
+            crate::Event::NewChild(observed, child) if observed == child_op => child,
+            event => {
+                return Err(io::Error::other(format!(
+                    "expected {child_op:?} event, got {event:?}"
+                )));
+            }
+        };
+        if parent.pid() != race.pid.into() {
+            return Err(io::Error::other(format!(
+                "{child_op:?} returned parent {} instead of {}",
+                parent.pid(),
+                race.pid
+            )));
+        }
+        drop(parent);
+
+        let child_pid = Pid::from_raw(child.pid().as_raw());
+        let child_identity = WorkerIdentity::capture_process(child.pid()).map_err(|error| {
+            io::Error::other(format!(
+                "capture materialized {child_op:?} child {child_pid}: {error}"
+            ))
+        })?;
+        reap_new_child_bounded(child)?;
+        let (cleanup_result, cleanup) = race
+            .coordinator
+            .join()
+            .map_err(|_| io::Error::other(format!("{child_op:?} cleanup coordinator panicked")))?;
+        cleanup_result?;
+        if !matches!(
+            cleanup.ownership,
+            TraceeCleanupOwnership::NotifierOwned {
+                cleanup_signal_sent: true,
+                ..
+            }
+        ) {
+            return Err(io::Error::other(format!(
+                "{child_op:?} parent cleanup did not send its exact cancellation signal"
+            )));
+        }
+        wait_generation_retired_bounded(
+            &race.parent_identity,
+            &format!("{child_op:?} parent cleanup"),
+        )?;
+        wait_generation_retired_bounded(
+            &child_identity,
+            &format!("{child_op:?} child {child_pid} reap"),
+        )?;
+        race.process_group.disarm();
+        Ok(())
+    }
+
     fn new_child_trace_option(child_op: crate::ChildOp) -> Options {
         Options::PTRACE_O_EXITKILL
             | match child_op {
@@ -6159,24 +6448,63 @@ mod test {
             }
     }
 
-    fn spawn_new_child_tracee(child_op: crate::ChildOp) -> (Pid, Stopped, TraceeCleanupGuard) {
-        match unsafe { fork() }.expect("fork new-child tracee") {
+    fn spawn_new_child_tracee(
+        child_op: crate::ChildOp,
+    ) -> io::Result<(Pid, Stopped, TraceeCleanupGuard)> {
+        match unsafe { fork() }.map_err(io::Error::other)? {
             ForkResult::Parent { child } => {
-                let mut cleanup = TraceeCleanupGuard::new(child).unwrap_or_else(|error| {
+                let mut cleanup = TraceeCleanupGuard::new(child).inspect_err(|_| {
                     let _ = unsafe { libc::kill(child.as_raw(), libc::SIGKILL) };
                     let _ = reap_tracee_bounded(child);
-                    panic!("open new-child parent pidfd: {error}");
-                });
-                let stopped = stopped_tracee_bounded(child).unwrap_or_else(|error| {
-                    let cleanup_result = cleanup.cleanup();
-                    panic!(
-                        "wait new-child parent initial stop: {error}; cleanup: {cleanup_result:?}"
-                    )
-                });
-                (child, stopped, cleanup)
+                })?;
+                let mut running = match Running::seize(
+                    child.into(),
+                    new_child_trace_option(child_op),
+                ) {
+                    Ok(running) => running,
+                    Err(error) => {
+                        let snapshot = worker_proc_snapshot(child.into());
+                        let cleanup_result = cleanup.cleanup();
+                        return Err(io::Error::other(format!(
+                            "seize {child_op:?} parent {child}: {error}; snapshot: {snapshot:?}; cleanup: {cleanup_result:?}"
+                        )));
+                    }
+                };
+                let stopped = loop {
+                    match running.wait() {
+                        Ok(Wait::Stopped(stopped, crate::Event::Stop))
+                        | Ok(Wait::Stopped(stopped, crate::Event::Signal(Signal::SIGSTOP))) => {
+                            break stopped;
+                        }
+                        Ok(Wait::Stopped(stopped, crate::Event::Signal(signal))) => {
+                            running = stopped.resume(Some(signal)).map_err(io::Error::other)?;
+                        }
+                        Ok(Wait::Stopped(stopped, _)) => {
+                            running = stopped.resume(None).map_err(io::Error::other)?;
+                        }
+                        Ok(Wait::Exited(_, status)) => {
+                            cleanup.disarm();
+                            return Err(io::Error::other(format!(
+                                "{child_op:?} parent {child} exited before initial stop: {status:?}"
+                            )));
+                        }
+                        Err(error) => {
+                            let cleanup_result = cleanup.cleanup();
+                            return Err(io::Error::other(format!(
+                                "wait {child_op:?} parent {child} initial stop: {error}; cleanup: {cleanup_result:?}"
+                            )));
+                        }
+                    }
+                };
+                Ok((child, stopped, cleanup))
             }
             ForkResult::Child => {
-                crate::traceme_and_stop().expect("TRACEME new-child parent");
+                if unsafe { libc::setpgid(0, 0) } == -1 {
+                    unsafe { libc::_exit(124) };
+                }
+                if unsafe { libc::raise(libc::SIGSTOP) } != 0 {
+                    unsafe { libc::_exit(125) };
+                }
                 let flags = match child_op {
                     crate::ChildOp::Fork => libc::SIGCHLD,
                     crate::ChildOp::Vfork => libc::CLONE_VFORK | libc::SIGCHLD,
