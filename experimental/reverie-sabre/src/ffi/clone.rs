@@ -35,6 +35,7 @@ pub unsafe fn clone_syscall(
     child_tidptr: *mut i32,         // rcx
     tls: usize,                     // r8
     ret_addr: *const libc::c_void,  // r9
+    vfork_slot: u64,                // xmm0 (preserved by syscall)
 ) -> usize {
     let mut ret: usize = Sysno::clone as usize;
 
@@ -60,6 +61,7 @@ pub unsafe fn clone_syscall(
         "cmp rax, {vfork_flags}",
         "jne 4f",
         "3:",
+        "movq rsi, xmm0",
         "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
         "4:",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
@@ -90,6 +92,7 @@ pub unsafe fn clone_syscall(
         in("r10") child_tidptr,
         in("r8") tls,
         in("r9") ret_addr,
+        in("xmm0") vfork_slot,
         clone_vm = const libc::CLONE_VM,
         vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
         // syscall instructions clobber rcx and r11
@@ -128,6 +131,7 @@ pub unsafe fn fork_syscall(
     child_tidptr: *mut i32,  // r10
     tls: usize,              // r8
     wrapper_sp: *const syscall_stackframe,
+    vfork_slot: u64, // xmm0 (preserved by syscall)
 ) -> usize {
     let mut ret: usize = Sysno::clone as usize;
 
@@ -147,6 +151,7 @@ pub unsafe fn fork_syscall(
         "cmp rax, {vfork_flags}",
         "jne 4f",
         "3:",
+        "movq rsi, xmm0",
         "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
         "4:",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
@@ -182,6 +187,7 @@ pub unsafe fn fork_syscall(
         in("r10") child_tidptr,
         in("r8") tls,
         in("r12") wrapper_sp,
+        in("xmm0") vfork_slot,
         clone_vm = const libc::CLONE_VM,
         vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
         // syscall instructions clobber rcx and r11
@@ -201,6 +207,7 @@ pub unsafe fn fork_syscall(
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-214): Review eager child-start callback ABI.
 // TODO-HUMAN-REVIEW(PR-226): Review removal of the pre-pthread child callback.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn clone3_syscall(
     arg1: usize,                 // rdi
     arg2: usize,                 // rsi
@@ -209,6 +216,7 @@ pub unsafe fn clone3_syscall(
     arg5: usize,                 // r8
     ret_addr: *mut libc::c_void, // r9
     clone_flags: u64,            // xmm0 (preserved by syscall)
+    vfork_slot: u64,             // xmm1 (preserved by syscall)
 ) -> usize {
     let mut ret: usize = Sysno::clone3 as usize;
 
@@ -234,6 +242,7 @@ pub unsafe fn clone3_syscall(
         "cmp rax, {vfork_flags}",
         "jne 4f",
         "3:",
+        "movq rsi, xmm1",
         "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
         "4:",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
@@ -265,6 +274,7 @@ pub unsafe fn clone3_syscall(
         in("r8") arg5,
         in("r9") ret_addr,
         in("xmm0") clone_flags,
+        in("xmm1") vfork_slot,
         clone_vm = const libc::CLONE_VM,
         vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
         // syscall instructions clobber rcx and r11
@@ -287,6 +297,7 @@ pub unsafe fn clone3_syscall(
 ///
 /// `arg1` must point to the kernel-validated clone arguments and `wrapper_sp`
 /// must point to the live SaBRe syscall frame.
+#[allow(clippy::too_many_arguments)]
 pub unsafe fn clone3_fork_syscall(
     arg1: usize,   // rdi
     arg2: usize,   // rsi
@@ -295,6 +306,7 @@ pub unsafe fn clone3_fork_syscall(
     arg5: usize,   // r8
     wrapper_sp: *const syscall_stackframe,
     clone_flags: u64, // xmm0 (preserved by syscall)
+    vfork_slot: u64,  // xmm1 (preserved by syscall)
 ) -> usize {
     let mut ret: usize = Sysno::clone3 as usize;
 
@@ -314,6 +326,7 @@ pub unsafe fn clone3_fork_syscall(
         "cmp rax, {vfork_flags}",
         "jne 4f",
         "3:",
+        "movq rsi, xmm1",
         "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
         "4:",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
@@ -347,6 +360,7 @@ pub unsafe fn clone3_fork_syscall(
         in("r8") arg5,
         in("r12") wrapper_sp,
         in("xmm0") clone_flags,
+        in("xmm1") vfork_slot,
         clone_vm = const libc::CLONE_VM,
         vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
         lateout("rcx") _,
