@@ -7,6 +7,7 @@
  */
 
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use reverie_syscalls::LocalMemory;
@@ -21,6 +22,7 @@ use super::thread;
 use super::thread::GuestTransitionErr;
 use super::thread::PidTid;
 use super::thread::Thread;
+use super::tool::SyscallExt;
 use super::tool::Tool;
 use super::tool::ToolGlobal;
 use super::utils;
@@ -33,6 +35,104 @@ thread_local! {
     static CURRENT_SYSCALL_FRAME: std::cell::Cell<*mut ffi::syscall_stackframe> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
     static TAIL_INJECTED_EXIT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+}
+
+// Pack the owning process ID into the high half and the number of concurrent
+// vfork callers into the low half. This process-global state remains visible
+// when clone(2)/clone3(2) installs new child TLS with CLONE_SETTLS.
+static VFORK_BOUNDARY_STATE: AtomicU64 = AtomicU64::new(0);
+const VFORK_COUNT_MASK: u64 = u32::MAX as u64;
+
+/// Keeps a vfork child on a native pre-exec gate while its parent is blocked
+/// inside the kernel and owns an in-flight tool/RPC request.
+struct VforkBoundaryGuard {
+    parent_pid: u32,
+    _signal_restore: guard::VforkSignalGuardRestore,
+}
+
+impl VforkBoundaryGuard {
+    fn enter() -> Self {
+        let parent_pid = current_process_id();
+        let mut state = VFORK_BOUNDARY_STATE.load(Ordering::Acquire);
+        loop {
+            let owner = (state >> 32) as u32;
+            let count = state & VFORK_COUNT_MASK;
+            assert!(count < VFORK_COUNT_MASK, "too many concurrent vforks");
+            assert!(
+                owner == 0 || owner == parent_pid,
+                "cross-process vfork boundary"
+            );
+            let next = (u64::from(parent_pid) << 32) | (count + 1);
+            match VFORK_BOUNDARY_STATE.compare_exchange_weak(
+                state,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => state = observed,
+            }
+        }
+        Self {
+            parent_pid,
+            _signal_restore: guard::preserve_signal_guard_count_across_vfork(),
+        }
+    }
+}
+
+impl Drop for VforkBoundaryGuard {
+    fn drop(&mut self) {
+        let mut state = VFORK_BOUNDARY_STATE.load(Ordering::Acquire);
+        loop {
+            let owner = (state >> 32) as u32;
+            let count = state & VFORK_COUNT_MASK;
+            assert_eq!(owner, self.parent_pid, "vfork owner changed");
+            assert!(count > 0, "vfork count went negative");
+            let next = if count == 1 { 0 } else { state - 1 };
+            match VFORK_BOUNDARY_STATE.compare_exchange_weak(
+                state,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(observed) => state = observed,
+            }
+        }
+    }
+}
+
+fn is_vfork_child_process() -> bool {
+    is_vfork_child_pid(current_process_id())
+}
+
+fn is_vfork_child_pid(current_pid: u32) -> bool {
+    let state = VFORK_BOUNDARY_STATE.load(Ordering::Acquire);
+    let parent_pid = (state >> 32) as u32;
+    state & VFORK_COUNT_MASK != 0 && parent_pid != current_pid
+}
+
+fn current_process_id() -> u32 {
+    unsafe { syscalls::syscall0(Sysno::getpid) }.expect("getpid should succeed") as u32
+}
+
+fn is_vfork_native_syscall_allowed(sys_no: Sysno) -> bool {
+    matches!(
+        sys_no,
+        Sysno::rt_sigaction
+            | Sysno::rt_sigprocmask
+            | Sysno::sigaltstack
+            | Sysno::getuid
+            | Sysno::geteuid
+            | Sysno::getgid
+            | Sysno::getegid
+            | Sysno::setresuid
+            | Sysno::setresgid
+            | Sysno::execve
+            | Sysno::execveat
+            | Sysno::exit
+            | Sysno::exit_group
+    )
 }
 
 /// Keeps the loader's live syscall frame available to the synchronous shared-tool callback.
@@ -173,6 +273,21 @@ pub extern "C" fn handle_syscall<T: ToolGlobal>(
     arg6: usize,
     wrapper_sp: *mut ffi::syscall_stackframe,
 ) -> usize {
+    // A vfork child shares the blocked parent's address space, including an
+    // in-flight RPC transport. Calling the tool before exec would deadlock on
+    // that inherited request. Run only the child preparation syscalls through
+    // SaBRe's native syscall policy; a successful exec creates a fresh image
+    // and resumes normal tool interception at its first callback.
+    if is_vfork_child_process() {
+        let sys_no = Sysno::from(syscall as i32);
+        if !is_vfork_native_syscall_allowed(sys_no) {
+            return -Errno::ENOSYS.into_raw() as usize;
+        }
+        let args = SyscallArgs::new(arg1, arg2, arg3, arg4, arg5, arg6);
+        let intercepted = Syscall::from_raw(sys_no, args);
+        return unsafe { intercepted.call() }.unwrap_or_else(|error| -error.into_raw() as usize);
+    }
+
     let mut thread = if let Some(thread) = Thread::<T>::current() {
         thread
     } else {
@@ -235,8 +350,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
     // completes, deadlocking the in-guest allocator under concurrent clones.
     // TODO-HUMAN-REVIEW(PR-226): Review deferred clone-child registration.
     let result = if sys_no == Sysno::clone && arg2 != 0 {
-        let _vfork_guard_restore =
-            utils::is_vfork(sys_no, arg1).then(guard::preserve_signal_guard_count_across_vfork);
+        let _vfork_boundary = utils::is_vfork(sys_no, arg1).then(VforkBoundaryGuard::enter);
         // New thread with its own stack: the kernel sets the child's %rsp to
         // `child_stack`, so clone_syscall's `jmp r9` shortcut is correct.
         thread.maybe_fork_as_guest(|| {
@@ -254,8 +368,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                 .unwrap_or_else(|e| -e.into_raw() as usize)
         })?
     } else if sys_no == Sysno::clone {
-        let _vfork_guard_restore =
-            utils::is_vfork(sys_no, arg1).then(guard::preserve_signal_guard_count_across_vfork);
+        let _vfork_boundary = utils::is_vfork(sys_no, arg1).then(VforkBoundaryGuard::enter);
         // clone(2) without a new stack behaves like fork: the child shares the
         // parent's stack layout and must resume the guest on its ORIGINAL %rsp,
         // which fork_syscall restores from the SaBRe syscall frame.
@@ -287,7 +400,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                 .unwrap_or_else(|e| -e.into_raw() as usize)
         })?
     } else if utils::is_vfork(sys_no, arg1) {
-        let _vfork_guard_restore = guard::preserve_signal_guard_count_across_vfork();
+        let _vfork_boundary = VforkBoundaryGuard::enter();
         thread.maybe_fork_as_guest(|| {
             T::global()
                 .syscall_with_inject(intercepted, &LocalMemory::new(), || unsafe {
@@ -307,7 +420,7 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
     } else if sys_no == Sysno::clone3 {
         let fields = read_clone3_fields(thread.get_process_and_thread_ids().pid, arg1, arg2);
         let is_vfork = fields.as_ref().is_ok_and(|fields| fields.is_vfork());
-        let _vfork_guard_restore = is_vfork.then(guard::preserve_signal_guard_count_across_vfork);
+        let _vfork_boundary = is_vfork.then(VforkBoundaryGuard::enter);
         thread.maybe_fork_as_guest(|| {
             T::global()
                 .syscall_with_inject(intercepted, &LocalMemory::new(), || match fields {
@@ -444,6 +557,9 @@ extern "C" fn handle_vdso_clock_gettime<T: ToolGlobal>(
     clockid: libc::clockid_t,
     tp: *mut libc::timespec,
 ) -> i32 {
+    if is_vfork_child_process() {
+        return -libc::ENOSYS;
+    }
     T::global().vdso_clock_gettime(clockid, tp)
 }
 
@@ -452,6 +568,9 @@ extern "C" fn handle_vdso_getcpu<T: ToolGlobal>(
     node: *mut u32,
     _unused: usize,
 ) -> i32 {
+    if is_vfork_child_process() {
+        return -libc::ENOSYS;
+    }
     T::global().vdso_getcpu(cpu, node, _unused)
 }
 
@@ -459,10 +578,16 @@ extern "C" fn handle_vdso_gettimeofday<T: ToolGlobal>(
     tv: *mut libc::timeval,
     tz: *mut libc::timezone,
 ) -> i32 {
+    if is_vfork_child_process() {
+        return -libc::ENOSYS;
+    }
     T::global().vdso_gettimeofday(tv, tz)
 }
 
 extern "C" fn handle_vdso_time<T: ToolGlobal>(tloc: *mut libc::time_t) -> i32 {
+    if is_vfork_child_process() {
+        return -libc::ENOSYS;
+    }
     T::global().vdso_time(tloc)
 }
 
@@ -506,6 +631,9 @@ pub extern "C" fn handle_vdso<T: ToolGlobal>(
 }
 
 pub extern "C" fn handle_rdtsc<T: ToolGlobal>() -> u64 {
+    if is_vfork_child_process() {
+        terminate(libc::ENOSYS as usize);
+    }
     T::global().rdtsc()
 }
 
@@ -520,8 +648,15 @@ fn terminate_group(exit_code: usize) -> ! {
 
 #[cfg(test)]
 mod exit_group_tests {
-    use syscalls::Errno;
+    use std::sync::atomic::Ordering;
 
+    use syscalls::Errno;
+    use syscalls::Sysno;
+
+    use super::VFORK_BOUNDARY_STATE;
+    use super::is_vfork_child_pid;
+    use super::is_vfork_child_process;
+    use super::is_vfork_native_syscall_allowed;
     use super::read_clone3_fields;
     use super::signal_controlled_exit;
     use super::terminate_group;
@@ -557,6 +692,28 @@ mod exit_group_tests {
 
         assert!(actual.is_vfork());
         assert_eq!(actual.stack, 0x1234);
+    }
+
+    #[test]
+    fn vfork_child_gate_distinguishes_parent_and_child_processes() {
+        let current_pid = super::current_process_id();
+        assert_eq!(VFORK_BOUNDARY_STATE.load(Ordering::Acquire), 0);
+        let boundary = super::VforkBoundaryGuard::enter();
+        assert!(!is_vfork_child_process());
+        assert!(is_vfork_child_pid(current_pid + 1));
+        drop(boundary);
+        assert_eq!(VFORK_BOUNDARY_STATE.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn vfork_child_native_gate_is_fail_closed() {
+        assert!(is_vfork_native_syscall_allowed(Sysno::rt_sigaction));
+        assert!(is_vfork_native_syscall_allowed(Sysno::getuid));
+        assert!(is_vfork_native_syscall_allowed(Sysno::execve));
+        assert!(is_vfork_native_syscall_allowed(Sysno::exit_group));
+        assert!(!is_vfork_native_syscall_allowed(Sysno::getpid));
+        assert!(!is_vfork_native_syscall_allowed(Sysno::clock_gettime));
+        assert!(!is_vfork_native_syscall_allowed(Sysno::openat));
     }
 
     #[test]
