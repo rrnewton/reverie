@@ -29,11 +29,10 @@
 //!     slows everything down to a crawl, and (2) it didn't allow us to receive
 //!     `PTRACE_EVENT_EXIT` events out-of-band which is necessary for canceling
 //!     pending futures in the event a guest process is suddenly killed.
-//!  2. Using `pidfd_open(2)` to receive events over file descriptors would be
-//!     great, but `ptrace` events are not receivable with `pidfd`. This might
-//!     change in the future, but there is currently no motivation among Linux
-//!     devs to implement support for that. (Folks hate the complexity of ptrace
-//!     and are fearful of introducing new security vulnerabilities.)
+//!  2. Polling `pidfd_open(2)` descriptors does not report ptrace stops, so it
+//!     cannot replace the per-tracee blocking waiter. The waiter does use
+//!     `waitid(P_PIDFD)` to bind every status consumption to one exact kernel
+//!     task lifetime rather than a reusable numeric PID.
 //!  3. Using `tokio::task::spawn_blocking` to simply call `waitid()` on the
 //!     process we're interested in works, but is about twice as slow as (1)
 //!     because of the overhead of locking a mutex and shuffling bits of data
@@ -73,6 +72,7 @@ use std::hash::Hash;
 use std::hash::Hasher;
 use std::io;
 use std::os::fd::AsRawFd;
+use std::os::fd::FromRawFd;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::OpenOptionsExt;
@@ -86,7 +86,6 @@ use std::sync::Weak;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::AtomicU8;
-use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::task::Context;
 use std::task::Poll;
@@ -129,6 +128,14 @@ static FORCE_RAW_CLAIM_REGISTRATION_RACE: LazyLock<Mutex<HashMap<Pid, ()>>> =
 
 #[cfg(test)]
 static SPAWN_WORKER_ERRORS: LazyLock<Mutex<HashMap<Pid, i32>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static SPAWN_WORKER_COUNTS: LazyLock<Mutex<HashMap<Pid, usize>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static PIDFD_OPEN_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
@@ -744,6 +751,7 @@ impl Event {
 struct EventGeneration {
     event: Arc<Event>,
     identity: OnceLock<Arc<WorkerIdentity>>,
+    authoritative: OnceLock<EventHandle>,
 }
 
 #[derive(Clone, Debug)]
@@ -754,6 +762,7 @@ impl EventHandle {
         Self(Arc::new(EventGeneration {
             event: Arc::new(Event::new()),
             identity: OnceLock::new(),
+            authoritative: OnceLock::new(),
         }))
     }
 
@@ -783,21 +792,74 @@ impl EventHandle {
     }
 
     fn event(&self) -> &Arc<Event> {
-        &self.0.event
+        &self.resolved().0.event
     }
 
     fn identity(&self) -> Option<&Arc<WorkerIdentity>> {
-        self.0.identity.get()
+        self.resolved().0.identity.get()
     }
 
     fn bind_identity(&self, identity: Arc<WorkerIdentity>) -> Result<(), Arc<WorkerIdentity>> {
-        self.0.identity.set(identity)
+        self.resolved().0.identity.set(identity)
+    }
+
+    fn resolved(&self) -> &Self {
+        let mut current = self;
+        while let Some(authoritative) = current.0.authoritative.get() {
+            current = authoritative;
+        }
+        current
+    }
+
+    fn resolved_handle(&self) -> Self {
+        self.resolved().clone()
+    }
+
+    fn chain_contains(&self, generation: &Arc<EventGeneration>) -> bool {
+        let mut current = self;
+        loop {
+            if Arc::ptr_eq(&current.0, generation) {
+                return true;
+            }
+            let Some(authoritative) = current.0.authoritative.get() else {
+                return false;
+            };
+            current = authoritative;
+        }
+    }
+
+    /// Redirects this requested generation to the registry's authoritative
+    /// generation. The registry mutex serializes production adoption; this
+    /// additional lock makes the primitive independently cycle-free under
+    /// racing test or future call sites.
+    fn adopt_authoritative(&self, authoritative: &Self) -> Result<Self, Errno> {
+        static ADOPTION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+        let _adoption = ADOPTION_LOCK.lock();
+        let authoritative = authoritative.resolved_handle();
+        if authoritative.chain_contains(&self.0) {
+            if Arc::ptr_eq(&authoritative.0, &self.0) {
+                return Ok(authoritative);
+            }
+            return Err(Errno::ELOOP);
+        }
+        match self.0.authoritative.set(authoritative.clone()) {
+            Ok(()) => Ok(authoritative),
+            Err(_) => {
+                let selected = self.resolved_handle();
+                if Arc::ptr_eq(&selected.0, &authoritative.0) {
+                    Ok(selected)
+                } else {
+                    Err(Errno::EALREADY)
+                }
+            }
+        }
     }
 }
 
 impl PartialEq for EventHandle {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(self.event(), other.event())
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -805,7 +867,7 @@ impl Eq for EventHandle {}
 
 impl Hash for EventHandle {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(self.event()).hash(state);
+        Arc::as_ptr(&self.0).hash(state);
     }
 }
 
@@ -821,6 +883,7 @@ struct WorkerProcSnapshot {
 struct WorkerIdentity {
     pid: Pid,
     snapshot: WorkerProcSnapshot,
+    pidfd: OwnedFd,
     proc_dir: OwnedFd,
     proc_inode: u64,
 }
@@ -855,6 +918,7 @@ impl WorkerIdentity {
 
     fn capture_process(pid: Pid) -> Result<Self, Errno> {
         let before = worker_proc_snapshot(pid).map_err(io_errno)?;
+        let pidfd = open_thread_pidfd(pid)?;
         let proc_dir = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_PATH | libc::O_CLOEXEC)
@@ -872,6 +936,7 @@ impl WorkerIdentity {
         Ok(Self {
             pid,
             snapshot: after,
+            pidfd,
             proc_dir: proc_dir.into(),
             proc_inode,
         })
@@ -903,6 +968,37 @@ impl WorkerIdentity {
         self.pid == other.pid
             && self.snapshot == other.snapshot
             && self.proc_inode == other.proc_inode
+            && self.pidfd_is_live()
+            && other.pidfd_is_live()
+    }
+
+    fn pidfd_is_live(&self) -> bool {
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_pidfd_send_signal,
+                self.pidfd.as_raw_fd(),
+                0,
+                std::ptr::null::<libc::siginfo_t>(),
+                0,
+            )
+        };
+        result == 0
+    }
+}
+
+fn open_thread_pidfd(pid: Pid) -> Result<OwnedFd, Errno> {
+    #[cfg(test)]
+    if let Some(error) = PIDFD_OPEN_ERRORS.lock().remove(&pid) {
+        return Err(error);
+    }
+
+    // PIDFD_THREAD has the same value as O_EXCL. It binds a pidfd to the exact
+    // TID rather than silently projecting a non-leader onto its thread group.
+    let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), libc::O_EXCL) } as i32;
+    if fd == -1 {
+        Err(io_errno(io::Error::last_os_error()))
+    } else {
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 }
 
@@ -940,27 +1036,35 @@ fn spawn_worker(
                 worker_thread(pid, event, identity);
             }
         })?;
+    #[cfg(test)]
+    {
+        *SPAWN_WORKER_COUNTS.lock().entry(pid).or_default() += 1;
+    }
     Ok(PendingWorker {
         start,
         _handle: handle,
     })
 }
 
-/// Waits on a process and returns the raw status. Returns `None` if the process
-/// does not exist.
-fn wait(pid: Pid) -> Option<i32> {
+/// Waits on one exact kernel task lifetime and returns its lossless raw status.
+/// Returns `None` once that pidfd is no longer waitable. There is deliberately
+/// no numeric-PID fallback after identity capture.
+fn wait_pidfd_status(identity: &WorkerIdentity) -> Option<i32> {
+    let flags = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
+    );
     loop {
-        let result = waitid::waitpid(pid.into(), WaitPidFlag::WEXITED | WaitPidFlag::WSTOPPED);
+        let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
 
         return match result {
             Ok(status) => Some(status.unwrap()),
             Err(Errno::EINTR) => continue,
             Err(Errno::ECHILD) => None,
             Err(err) => {
-                // No other errors should be possible because we handled EINTR
-                // and ECHILD. EINVAL only happens when using the API
-                // incorrectly.
-                panic!("waitid::waitpid({}) failed unexpectedly: {}", pid, err)
+                panic!(
+                    "waitid(P_PIDFD, {}) failed unexpectedly: {}",
+                    identity.pid, err
+                )
             }
         };
     }
@@ -970,14 +1074,13 @@ fn wait(pid: Pid) -> Option<i32> {
 fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
     let mut retrying_echild = false;
     loop {
-        // Revalidate immediately before every numeric wait retry. The old
-        // generation may have disappeared while this worker yielded after a
-        // transient ECHILD, allowing the kernel to reuse its numeric TID.
+        // Revalidate before retrying a transient ECHILD. The pidfd keeps the
+        // wait bound to this exact task even if its numeric TID is later reused.
         if retrying_echild && !identity.is_active_tracee() {
             event.mark_echild();
             break;
         }
-        let Some(status) = wait(pid) else {
+        let Some(status) = wait_pidfd_status(&identity) else {
             if identity.is_active_tracee() {
                 // A newborn auto-attached ptrace child can briefly exist with
                 // this exact procfs generation before its first wait status
@@ -1005,6 +1108,32 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
     // before the final status is polled, and leaving cleanup to that future
     // would retain a stale event if the kernel later reuses this PID.
     NOTIFIER.remove(pid, &event);
+}
+
+/// Uses a bound pidfd for synchronous waits once a typed state has captured an
+/// identity. `Ok(None)` is the only permitted numeric fallback: the handle has
+/// never been registered or identity-bound.
+pub(super) fn wait_sync_bound(pid: Pid, handle: &EventHandle) -> Result<Option<i32>, Errno> {
+    let Some(identity) = handle.identity() else {
+        return Ok(None);
+    };
+    if identity.pid != pid {
+        return Err(Errno::ESRCH);
+    }
+    if handle.event().worker_state.load(Ordering::Acquire) != WORKER_NOT_STARTED {
+        return Err(Errno::EBUSY);
+    }
+    let flags = WaitPidFlag::from_bits_retain(
+        WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
+    );
+    loop {
+        match waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags) {
+            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(None) => unreachable!("blocking waitid(P_PIDFD) returned no status"),
+            Err(Errno::EINTR) => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn worker_process_start_time(pid: Pid) -> std::io::Result<u64> {
@@ -1081,17 +1210,13 @@ enum RawCleanupClaim {
 struct Notifier {
     /// Mapping of numeric PIDs to their validated current proc generation.
     pids: Mutex<HashMap<Pid, NotifierEntry>>,
-    registry_epoch: AtomicU64,
 }
 
 impl Notifier {
     /// Creates the notifier.
     pub fn new() -> Self {
         let pids = Mutex::new(HashMap::new());
-        Notifier {
-            pids,
-            registry_epoch: AtomicU64::new(0),
-        }
+        Notifier { pids }
     }
 
     fn capture_identity(&self, pid: Pid) -> Result<Arc<WorkerIdentity>, Errno> {
@@ -1100,22 +1225,22 @@ impl Notifier {
 
     fn current_or_new(&self, pid: Pid) -> Result<EventHandle, Errno> {
         loop {
-            // Capture and procfs revalidation stay outside the registry lock.
-            // The epoch makes any raw claim/removal or registration mutation
-            // between capture and commit force a fresh generation capture.
-            let epoch = self.registry_epoch.load(Ordering::Acquire);
             let current = self.capture_identity(pid)?;
+            if !current.is_same_process_generation() {
+                continue;
+            }
             #[cfg(test)]
             if let Some(pause) = CURRENT_OR_NEW_CAPTURE_PAUSES.lock().remove(&pid) {
                 pause.captured.wait();
                 pause.resume.wait();
             }
-            if !current.is_same_process_generation() {
-                continue;
-            }
 
             let mut pids = self.pids.lock();
-            if self.registry_epoch.load(Ordering::Acquire) != epoch {
+            // This exact kernel-lifetime check is the commit linearization
+            // point. It is a pidfd syscall, not a long procfs read under the
+            // global registry lock. A later reap/reuse cannot retarget the
+            // pidfd-bound handle or worker.
+            if !current.pidfd_is_live() {
                 drop(pids);
                 continue;
             }
@@ -1129,7 +1254,6 @@ impl Notifier {
                         handle: handle.clone(),
                         identity: current,
                     });
-                    self.registry_epoch.fetch_add(1, Ordering::Release);
                     return Ok(handle);
                 }
                 Entry::Vacant(_) => {
@@ -1143,14 +1267,15 @@ impl Notifier {
         }
     }
 
-    fn resolve_echild(&self, pid: Pid, handle: &EventHandle) -> Arc<Event> {
+    fn resolve_echild(&self, pid: Pid, handle: &EventHandle) -> EventHandle {
+        let handle = handle.resolved_handle();
         let event = Arc::clone(handle.event());
         // STARTING, raw cleanup claim, and registry insertion/removal all hold
         // this lock. A resolver can therefore never mistake an unpublished or
         // rolled-back worker start for a stable nonterminal Event.
         let mut pids = self.pids.lock();
         if event.worker_is_running() {
-            return event;
+            return handle;
         }
         if event.try_begin_unstarted_completion() {
             // Publish the terminal result before completion becomes visible.
@@ -1161,10 +1286,9 @@ impl Notifier {
                 .is_some_and(|current| Arc::ptr_eq(current.handle.event(), &event))
             {
                 pids.remove(&pid);
-                self.registry_epoch.fetch_add(1, Ordering::Release);
             }
         }
-        event
+        handle
     }
 
     fn record_registration_error(handle: &EventHandle, error: Errno) {
@@ -1172,10 +1296,10 @@ impl Notifier {
     }
 
     /// Registers the exact event generation carried by a typed state.
-    fn event(&self, pid: Pid, handle: &EventHandle) -> Result<Arc<Event>, Errno> {
+    fn event(&self, pid: Pid, handle: &EventHandle) -> Result<EventHandle, Errno> {
         let requested = handle.event();
         if requested.is_terminal() {
-            return Ok(Arc::clone(requested));
+            return Ok(handle.resolved_handle());
         }
 
         // Event-local RUNNING is the ownership proof. Registry replacement is
@@ -1183,11 +1307,10 @@ impl Notifier {
         // that old worker must not consult the replacement generation or
         // recapture /proc before publishing its final status.
         if requested.worker_is_running() {
-            return Ok(Arc::clone(requested));
+            return Ok(handle.resolved_handle());
         }
 
         loop {
-            let epoch = self.registry_epoch.load(Ordering::Acquire);
             let current = match self.capture_identity(pid) {
                 Ok(identity) => identity,
                 Err(Errno::ENOENT | Errno::ESRCH) => {
@@ -1199,32 +1322,38 @@ impl Notifier {
                 }
             };
 
+            if !current.is_same_process_generation() {
+                continue;
+            }
+            match handle.identity() {
+                Some(bound) if !bound.same_generation(&current) => {
+                    return Ok(self.resolve_echild(pid, handle));
+                }
+                Some(_) => {}
+                None => {
+                    if let Err(bound) = handle.bind_identity(Arc::clone(&current))
+                        && !bound.same_generation(&current)
+                    {
+                        return Ok(self.resolve_echild(pid, handle));
+                    }
+                }
+            }
             #[cfg(test)]
             if let Some(pause) = EVENT_CAPTURE_PAUSES.lock().remove(&pid) {
                 pause.captured.wait();
                 pause.resume.wait();
             }
 
-            if handle
-                .identity()
-                .is_some_and(|bound| !bound.same_generation(&current))
-            {
-                return Ok(self.resolve_echild(pid, handle));
-            }
-            if !current.is_same_process_generation() {
-                continue;
-            }
-
             let mut pids = self.pids.lock();
-            if self.registry_epoch.load(Ordering::Acquire) != epoch {
+            if !current.pidfd_is_live() {
                 drop(pids);
-                continue;
+                return Ok(self.resolve_echild(pid, handle));
             }
             match requested.worker_state.load(Ordering::Acquire) {
                 WORKER_FINISHING | WORKER_DONE => {
-                    return Ok(Arc::clone(requested));
+                    return Ok(handle.resolved_handle());
                 }
-                WORKER_RUNNING => return Ok(Arc::clone(requested)),
+                WORKER_RUNNING => return Ok(handle.resolved_handle()),
                 WORKER_STARTING => {
                     unreachable!("worker STARTING publication escaped the registry lock")
                 }
@@ -1232,7 +1361,7 @@ impl Notifier {
                 state => unreachable!("invalid worker state {state}"),
             }
             let mut worker_identity = None;
-            let event = match pids.entry(pid) {
+            let event_handle = match pids.entry(pid) {
                 Entry::Occupied(occupied) if occupied.get().handle == *handle => {
                     if !occupied.get().identity.same_generation(&current) {
                         drop(pids);
@@ -1241,47 +1370,34 @@ impl Notifier {
                     if requested.try_begin_worker_start() {
                         worker_identity = Some(Arc::clone(&occupied.get().identity));
                     }
-                    Arc::clone(requested)
+                    handle.clone()
                 }
                 Entry::Occupied(occupied) if occupied.get().identity.same_generation(&current) => {
-                    drop(pids);
-                    return Ok(self.resolve_echild(pid, handle));
+                    return handle.adopt_authoritative(&occupied.get().handle);
                 }
                 Entry::Occupied(mut occupied) => {
-                    if handle.identity().is_none() {
-                        handle
-                            .bind_identity(Arc::clone(&current))
-                            .map_err(|_| Errno::ESRCH)?;
-                    }
                     occupied.insert(NotifierEntry {
                         handle: handle.clone(),
                         identity: Arc::clone(&current),
                     });
-                    self.registry_epoch.fetch_add(1, Ordering::Release);
                     if requested.try_begin_worker_start() {
                         worker_identity = Some(current);
                     }
-                    Arc::clone(requested)
+                    handle.clone()
                 }
                 Entry::Vacant(vacant) => {
-                    if handle.identity().is_none() {
-                        handle
-                            .bind_identity(Arc::clone(&current))
-                            .map_err(|_| Errno::ESRCH)?;
-                    }
                     vacant.insert(NotifierEntry {
                         handle: handle.clone(),
                         identity: Arc::clone(&current),
                     });
-                    self.registry_epoch.fetch_add(1, Ordering::Release);
                     if requested.try_begin_worker_start() {
                         worker_identity = Some(current);
                     }
-                    Arc::clone(requested)
+                    handle.clone()
                 }
             };
             let pending_worker = if let Some(identity) = worker_identity {
-                match spawn_worker(pid, Arc::clone(&event), Arc::clone(&identity)) {
+                match spawn_worker(pid, Arc::clone(event_handle.event()), Arc::clone(&identity)) {
                     Ok(worker) => {
                         requested.mark_worker_running();
                         Some(worker)
@@ -1292,7 +1408,6 @@ impl Notifier {
                             entry.handle == *handle && entry.identity.same_generation(&identity)
                         }) {
                             pids.remove(&pid);
-                            self.registry_epoch.fetch_add(1, Ordering::Release);
                         }
                         let error = io_errno(error);
                         Self::record_registration_error(handle, error);
@@ -1307,7 +1422,7 @@ impl Notifier {
             if let Some(worker) = pending_worker {
                 worker.start();
             }
-            return Ok(event);
+            return Ok(event_handle);
         }
     }
 
@@ -1319,7 +1434,6 @@ impl Notifier {
             .is_some_and(|current| Arc::ptr_eq(current.handle.event(), event))
         {
             pids.remove(&pid);
-            self.registry_epoch.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -1330,18 +1444,15 @@ impl Notifier {
             if let Some(current) = pids.get(&pid)
                 && current.handle != *handle
             {
-                let epoch = self.registry_epoch.load(Ordering::Acquire);
                 let current_handle = current.handle.clone();
                 let current_identity = Arc::clone(&current.identity);
                 drop(pids);
-                let live = current_identity.is_same_process_generation();
+                let live = current_identity.pidfd_is_live();
                 pids = self.pids.lock();
-                if self.registry_epoch.load(Ordering::Acquire) != epoch
-                    || !pids.get(&pid).is_some_and(|entry| {
-                        entry.handle == current_handle
-                            && entry.identity.same_generation(&current_identity)
-                    })
-                {
+                if !pids.get(&pid).is_some_and(|entry| {
+                    entry.handle == current_handle
+                        && entry.identity.same_generation(&current_identity)
+                }) {
                     drop(pids);
                     continue;
                 }
@@ -1349,7 +1460,6 @@ impl Notifier {
                     return RawCleanupClaim::Existing(current_handle);
                 }
                 pids.remove(&pid);
-                self.registry_epoch.fetch_add(1, Ordering::Release);
             }
 
             if !handle.event().try_begin_unstarted_completion() {
@@ -1361,7 +1471,6 @@ impl Notifier {
             {
                 pids.remove(&pid);
             }
-            self.registry_epoch.fetch_add(1, Ordering::Release);
             return RawCleanupClaim::Won;
         }
     }
@@ -1427,7 +1536,7 @@ impl TerminalCleanup {
 
     /// Returns true when both handles carry the same immutable Event generation.
     pub fn same_generation(&self, other: &Self) -> bool {
-        self.event == other.event
+        Arc::ptr_eq(self.event.event(), other.event.event())
     }
 
     /// Waits up to `timeout` for the notifier worker to unregister this PID.
@@ -1457,7 +1566,7 @@ impl TerminalCleanup {
         Some(PendingStatusReservation {
             pid: self.pid,
             status,
-            event: &self.event,
+            event: self.event.resolved(),
             state,
         })
     }
@@ -1540,16 +1649,20 @@ impl Future for WaitFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         let pid = this.running.pid();
-        let event = match NOTIFIER.event(pid, this.running.token().event()) {
+        let event_handle = match NOTIFIER.event(pid, this.running.token().event()) {
             Ok(event) => event,
             Err(error) => return Poll::Ready(Err(error.into())),
         };
+        let event = event_handle.event();
         let reservation = match futures::ready!(event.poll_status_reservation(cx.waker())) {
             Ok(reservation) => reservation,
             Err(errno) => return Poll::Ready(Err(errno.into())),
         };
-        let decoded =
-            Wait::from_raw_with_token(pid, reservation.status, this.running.token().clone());
+        let decoded = Wait::from_raw_with_token(
+            pid,
+            reservation.status,
+            TraceeToken::from_event(event_handle.clone()),
+        );
         if decoded.is_ok() {
             reservation.commit();
         }
@@ -1591,14 +1704,15 @@ impl Future for ExitFuture {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let event = match NOTIFIER.event(this.pid, &this.event) {
+        let event_handle = match NOTIFIER.event(this.pid, &this.event) {
             Ok(event) => event,
             Err(error) => return Poll::Ready(Err(error.into())),
         };
+        let event = event_handle.event();
         match futures::ready!(event.poll_exit(&this.waiter, cx.waker())) {
             Ok(()) => Poll::Ready(Ok(Stopped::from_token(
                 this.pid,
-                TraceeToken::from_event(this.event.clone()),
+                TraceeToken::from_event(event_handle),
             ))),
             Err(errno) => Poll::Ready(Err(errno.into())),
         }
@@ -1607,6 +1721,7 @@ impl Future for ExitFuture {
 
 #[cfg(test)]
 mod test {
+    use std::collections::hash_map::DefaultHasher;
     use std::env;
     use std::io;
     use std::io::Read;
@@ -1646,6 +1761,12 @@ mod test {
         fn wake_by_ref(self: &Arc<Self>) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
+    }
+
+    fn handle_hash(handle: &EventHandle) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        handle.hash(&mut hasher);
+        hasher.finish()
     }
 
     const SUBPROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -3116,6 +3237,51 @@ mod test {
     }
 
     #[test]
+    fn authoritative_adoption_is_cycle_free_and_preserves_handle_hash() {
+        let first = EventHandle::new();
+        let second = EventHandle::new();
+        let first_hash = handle_hash(&first);
+        let second_hash = handle_hash(&second);
+        let start = Arc::new(Barrier::new(3));
+
+        let first_racer = first.clone();
+        let second_target = second.clone();
+        let first_start = Arc::clone(&start);
+        let forward = thread::spawn(move || {
+            first_start.wait();
+            first_racer.adopt_authoritative(&second_target)
+        });
+        let second_racer = second.clone();
+        let first_target = first.clone();
+        let second_start = Arc::clone(&start);
+        let reverse = thread::spawn(move || {
+            second_start.wait();
+            second_racer.adopt_authoritative(&first_target)
+        });
+        start.wait();
+        forward.join().expect("join forward adoption").unwrap();
+        reverse.join().expect("join reverse adoption").unwrap();
+
+        assert!(Arc::ptr_eq(first.event(), second.event()));
+        assert_ne!(first, second, "stable token identity must not be rewritten");
+        assert_eq!(handle_hash(&first), first_hash);
+        assert_eq!(handle_hash(&second), second_hash);
+
+        let rejected = EventHandle::new();
+        let adopted = if first.0.authoritative.get().is_some() {
+            &first
+        } else {
+            &second
+        };
+        assert_eq!(
+            adopted.adopt_authoritative(&rejected),
+            Err(Errno::EALREADY),
+            "an adopted handle cannot be redirected to a second authority"
+        );
+        assert!(Arc::ptr_eq(first.event(), second.event()));
+    }
+
+    #[test]
     fn terminal_cleanup_removes_stale_pid_registration() {
         let pid = Pid::from_raw(i32::MAX - 17);
         let running = Running::new(pid.into());
@@ -3128,7 +3294,7 @@ mod test {
             .event(pid.into(), &replacement_handle)
             .expect("resolve absent replacement");
         assert!(
-            !Arc::ptr_eq(old_event.event(), &replacement),
+            !Arc::ptr_eq(old_event.event(), replacement.event()),
             "terminal cleanup retained a stale PID registry entry"
         );
     }
@@ -3163,6 +3329,32 @@ mod test {
         assert!(cleanup.wait(Duration::from_secs(1)));
         child_cleanup.disarm();
         assert!(!std::path::Path::new(&format!("/proc/{pid}")).exists());
+    }
+
+    #[test]
+    fn unsupported_pidfd_thread_fails_closed_before_registration() {
+        for error in [Errno::EINVAL, Errno::ENOSYS] {
+            let (pid, cleanup) =
+                spawn_stopped_process(None).expect("spawn unsupported-pidfd child");
+            let running = Running::new(pid.into());
+            let terminal = TerminalCleanup::new_unregistered(pid.into(), &running.1);
+            PIDFD_OPEN_ERRORS.lock().insert(pid.into(), error);
+
+            assert_eq!(terminal.ensure_registered(), Err(error));
+            assert_eq!(terminal.registration_error(), Some(error));
+            assert_eq!(
+                terminal.event.event().worker_state.load(Ordering::Acquire),
+                WORKER_NOT_STARTED
+            );
+            assert!(!NOTIFIER.pids.lock().contains_key(&pid.into()));
+            assert_eq!(
+                wait_sync_bound(pid.into(), &terminal.event),
+                Ok(None),
+                "numeric synchronous fallback is allowed only while unbound"
+            );
+
+            reap_stopped_process(cleanup);
+        }
     }
 
     #[test]
@@ -3564,8 +3756,6 @@ mod test {
                 identity: replacement_identity,
             },
         );
-        NOTIFIER.registry_epoch.fetch_add(1, Ordering::Release);
-
         resume.wait();
         assert!(lookup.join().expect("join delayed current_or_new").is_err());
         assert!(
@@ -3583,10 +3773,165 @@ mod test {
             WORKER_RUNNING
         );
         NOTIFIER.pids.lock().remove(&old_pid.into());
-        NOTIFIER.registry_epoch.fetch_add(1, Ordering::Release);
         replacement_handle.event().mark_echild();
         replacement_handle.event().mark_worker_done();
         reap_stopped_process(replacement_cleanup);
+    }
+
+    fn delayed_current_or_new_revalidates_after_pid_reuse(requested_pid: Option<i32>) -> bool {
+        let Some((old_pid, old_cleanup)) = spawn_stopped_process(requested_pid) else {
+            return false;
+        };
+        let captured = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        CURRENT_OR_NEW_CAPTURE_PAUSES.lock().insert(
+            old_pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&captured),
+                resume: Arc::clone(&resume),
+            },
+        );
+        let lookup = thread::spawn(move || EventHandle::current_or_new(old_pid.into()));
+        captured.wait();
+
+        reap_stopped_process(old_cleanup);
+        thread::sleep(Duration::from_millis(20));
+        let Some((replacement_pid, replacement_cleanup)) = spawn_stopped_process(requested_pid)
+        else {
+            resume.wait();
+            let _ = lookup.join();
+            return false;
+        };
+        resume.wait();
+
+        let selected = lookup.join().expect("join post-validation lookup");
+        if replacement_pid == old_pid {
+            let selected = selected.expect("recapture exact reused PID generation");
+            assert!(
+                selected
+                    .identity()
+                    .is_some_and(|identity| identity.is_same_process_generation()),
+                "post-validation lookup returned the reaped PID generation"
+            );
+        } else {
+            assert_eq!(
+                selected.expect_err("reaped PID lookup must not return a stale handle"),
+                Errno::ENOENT
+            );
+        }
+        assert_eq!(
+            unsafe { libc::kill(replacement_pid.as_raw(), 0) },
+            0,
+            "stale lookup touched the replacement generation"
+        );
+        reap_stopped_process(replacement_cleanup);
+        true
+    }
+
+    #[test]
+    fn current_or_new_linearizes_after_validation_before_pid_reuse() {
+        const INNER: &str = "SAFEPTRACE_LOOKUP_REUSE_INNER";
+        if env::var_os(INNER).is_some() {
+            if delayed_current_or_new_revalidates_after_pid_reuse(Some(100)) {
+                println!("ACTUAL_LOOKUP_PID_REUSE_EXERCISED");
+            } else {
+                println!("ACTUAL_LOOKUP_PID_REUSE_UNAVAILABLE");
+            }
+            return;
+        }
+
+        let inner = "notifier::test::current_or_new_linearizes_after_validation_before_pid_reuse";
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(INNER, "1")]);
+        match classify_exact_reuse_output(
+            actual_reuse.as_ref(),
+            "ACTUAL_LOOKUP_PID_REUSE_EXERCISED",
+            "ACTUAL_LOOKUP_PID_REUSE_UNAVAILABLE",
+        )
+        .unwrap_or_else(|error| panic!("actual lookup PID-reuse regression failed: {error}"))
+        {
+            ExactReuseOutcome::Exercised => return,
+            ExactReuseOutcome::Unavailable => {}
+        }
+
+        assert!(delayed_current_or_new_revalidates_after_pid_reuse(None));
+    }
+
+    fn delayed_event_never_rebinds_after_pid_reuse(requested_pid: Option<i32>) -> bool {
+        let Some((old_pid, old_cleanup)) = spawn_stopped_process(requested_pid) else {
+            return false;
+        };
+        let running = Running::new(old_pid.into());
+        let terminal = TerminalCleanup::new_unregistered(old_pid.into(), &running.1);
+        let captured = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        EVENT_CAPTURE_PAUSES.lock().insert(
+            old_pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&captured),
+                resume: Arc::clone(&resume),
+            },
+        );
+        let registration = thread::spawn(move || {
+            terminal.ensure_registered()?;
+            Ok::<_, Errno>(terminal)
+        });
+        captured.wait();
+
+        reap_stopped_process(old_cleanup);
+        thread::sleep(Duration::from_millis(20));
+        let Some((replacement_pid, replacement_cleanup)) = spawn_stopped_process(requested_pid)
+        else {
+            resume.wait();
+            let _ = registration.join();
+            return false;
+        };
+        resume.wait();
+
+        let terminal = registration
+            .join()
+            .expect("join post-validation registration")
+            .expect("stale registration resolves its bound Event");
+        let completed_without_replacement = terminal.wait(Duration::from_millis(50));
+        let replacement_live = unsafe { libc::kill(replacement_pid.as_raw(), 0) } == 0;
+        reap_stopped_process(replacement_cleanup);
+        assert!(
+            completed_without_replacement,
+            "stale registration rebound its Event to the replacement generation"
+        );
+        assert!(
+            replacement_live,
+            "stale registration touched the replacement"
+        );
+        assert!(!NOTIFIER.pids.lock().contains_key(&old_pid.into()));
+        true
+    }
+
+    #[test]
+    fn event_linearizes_after_validation_before_pid_reuse() {
+        const INNER: &str = "SAFEPTRACE_EVENT_REUSE_INNER";
+        if env::var_os(INNER).is_some() {
+            if delayed_event_never_rebinds_after_pid_reuse(Some(100)) {
+                println!("ACTUAL_EVENT_PID_REUSE_EXERCISED");
+            } else {
+                println!("ACTUAL_EVENT_PID_REUSE_UNAVAILABLE");
+            }
+            return;
+        }
+
+        let inner = "notifier::test::event_linearizes_after_validation_before_pid_reuse";
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(INNER, "1")]);
+        match classify_exact_reuse_output(
+            actual_reuse.as_ref(),
+            "ACTUAL_EVENT_PID_REUSE_EXERCISED",
+            "ACTUAL_EVENT_PID_REUSE_UNAVAILABLE",
+        )
+        .unwrap_or_else(|error| panic!("actual event PID-reuse regression failed: {error}"))
+        {
+            ExactReuseOutcome::Exercised => return,
+            ExactReuseOutcome::Unavailable => {}
+        }
+
+        assert!(delayed_event_never_rebinds_after_pid_reuse(None));
     }
 
     #[test]
@@ -3610,14 +3955,15 @@ mod test {
                 .expect("competing terminal")
                 .same_generation(&authoritative)
         );
-        CAPTURE_PERSISTENT_ERRORS
-            .lock()
-            .insert(pid.into(), Errno::EMFILE);
+        assert_eq!(
+            SPAWN_WORKER_COUNTS.lock().get(&pid.into()).copied(),
+            Some(1),
+            "authoritative registration starts exactly one worker"
+        );
 
         cleanup
             .cleanup()
             .expect("competing guard adopts authoritative worker");
-        CAPTURE_PERSISTENT_ERRORS.lock().remove(&pid.into());
         assert!(
             cleanup
                 .terminal()
@@ -3631,6 +3977,11 @@ mod test {
                 ..
             }
         ));
+        assert_eq!(
+            SPAWN_WORKER_COUNTS.lock().remove(&pid.into()),
+            Some(1),
+            "competing Event must not start a second worker"
+        );
         assert!(
             !identity.is_same_process_generation(),
             "competing Event raw-waited alongside the registry worker"
@@ -3705,7 +4056,7 @@ mod test {
         NOTIFIER.pids.lock().remove(&pid.into());
         reap_stopped_process(child_cleanup);
         assert!(
-            Arc::ptr_eq(&selected, old_handle.event()),
+            Arc::ptr_eq(selected.event(), old_handle.event()),
             "replacement registry entry displaced the old Event worker"
         );
     }

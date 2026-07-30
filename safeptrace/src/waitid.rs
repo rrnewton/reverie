@@ -69,13 +69,15 @@ fn waitid_si(waitid_type: IdType, flags: WaitPidFlag) -> Result<libc::siginfo_t,
     Ok(unsafe { siginfo.assume_init() })
 }
 
-/// `waitpid` implemented with `waitid`. `waitid` has fewer limitations than `waitpid`.
+/// `waitid(P_PIDFD)` with the original wait-status bit layout preserved.
+///
+/// In particular, ptrace event numbers in the high 16 bits of `si_status`
+/// must survive so the notifier can decode `PTRACE_EVENT_*` losslessly.
 #[cfg(feature = "notifier")]
-pub fn waitpid(pid: Pid, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
-    let si = waitid_si(IdType::Pid(pid), flags)?;
+pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+    let si = waitid_si(IdType::Pidfd(raw_fd), flags)?;
 
     if unsafe { si.si_pid() } == 0 {
-        // Still alive.
         return Ok(None);
     }
 

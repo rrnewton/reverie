@@ -1017,6 +1017,10 @@ impl Running {
     pub fn wait(self) -> Result<Wait, Error> {
         let pid = self.0;
         let token = self.1;
+        #[cfg(feature = "notifier")]
+        if let Some(status) = notifier::wait_sync_bound(pid, token.event())? {
+            return Wait::from_raw_with_token(pid, status, token);
+        }
         wait(
             IdType::Pid(pid.into()),
             WaitPidFlag::WEXITED | WaitPidFlag::WSTOPPED,
