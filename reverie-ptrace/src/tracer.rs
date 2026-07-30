@@ -2516,31 +2516,33 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn exit_stop_rejects_mismatched_generation_without_replacement() {
-        let (_first_pid, first) = spawn_held_stop_child("first generation child");
-        let (_second_pid, second) = spawn_held_stop_child("second generation child");
-        let first_generation = first.terminal_cleanup();
-        let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
-            &first,
-            &Event::Signal(Signal::SIGSTOP),
-        ))));
+        for _ in 0..16 {
+            let (_first_pid, first) = spawn_held_stop_child("first generation child");
+            let (_second_pid, second) = spawn_held_stop_child("second generation child");
+            let first_generation = first.terminal_cleanup();
+            let slot = Arc::new(StdMutex::new(Some(HeldRootStop::from_event(
+                &first,
+                &Event::Signal(Signal::SIGSTOP),
+            ))));
 
-        assert_eq!(
-            HeldRootStop::supersede_with_exit(&slot, &second),
-            Err(TraceError::Errno(Errno::EINVAL))
-        );
-        {
-            let held = slot.lock().unwrap();
-            let held = held.as_ref().expect("mismatch removed the original lease");
-            assert!(held.terminal.same_generation(&first_generation));
-            assert!(matches!(
-                held.status,
-                HeldRootStopStatus::Signal(Signal::SIGSTOP)
-            ));
+            assert_eq!(
+                HeldRootStop::supersede_with_exit(&slot, &second),
+                Err(TraceError::Errno(Errno::EINVAL))
+            );
+            {
+                let held = slot.lock().unwrap();
+                let held = held.as_ref().expect("mismatch removed the original lease");
+                assert!(held.terminal.same_generation(&first_generation));
+                assert!(matches!(
+                    held.status,
+                    HeldRootStopStatus::Signal(Signal::SIGSTOP)
+                ));
+            }
+
+            slot.lock().unwrap().take();
+            resume_held_stop_child("first generation child", first).await;
+            resume_held_stop_child("second generation child", second).await;
         }
-
-        slot.lock().unwrap().take();
-        resume_held_stop_child("first generation child", first).await;
-        resume_held_stop_child("second generation child", second).await;
     }
 
     #[derive(Default)]
