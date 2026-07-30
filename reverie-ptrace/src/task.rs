@@ -251,11 +251,28 @@ fn is_expected_private_syscall_trap(
     if forced_external_for_test {
         return Ok(false);
     }
+    if task.getregs()?.ip() != expected_rip {
+        return Ok(false);
+    }
     let siginfo = task.getsiginfo()?;
-    Ok(
-        matches!(siginfo.si_code, libc::TRAP_TRACE | libc::TRAP_BRKPT)
-            && task.getregs()?.ip() == expected_rip,
-    )
+    if !matches!(siginfo.si_code, libc::TRAP_TRACE | libc::TRAP_BRKPT) {
+        return Ok(false);
+    }
+
+    // Some x86 kernels report PTRACE_SINGLESTEP completion after `syscall` as
+    // TRAP_BRKPT rather than TRAP_TRACE. In either case, the private page is
+    // RWX and therefore guest-mutable, so accept the stop only while the exact
+    // controller-installed `syscall; ud2` stub remains intact.
+    #[cfg(target_arch = "x86_64")]
+    let expected_stub = [0x0f, 0x05, 0x0f, 0x0b];
+    #[cfg(target_arch = "aarch64")]
+    let expected_stub = [
+        0x01, 0x00, 0x00, 0xd4, // svc 0
+        0xad, 0xde, 0x00, 0x00, // udf 0xdead
+    ];
+    let mut observed_stub = [0; cp::SYSCALL_INSTR_SIZE * 2];
+    task.read_exact(cp::PRIVATE_PAGE_OFFSET, &mut observed_stub)?;
+    Ok(observed_stub == expected_stub)
 }
 
 enum NestedTrapExpectation {
@@ -485,6 +502,8 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) force_preinit_signal_once: Option<Arc<AtomicBool>>,
     #[cfg(test)]
     pub(crate) force_post_exec_signal_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_private_stub_mutation_once: Option<Arc<AtomicBool>>,
 }
 
 #[cfg(test)]
@@ -2586,63 +2605,76 @@ impl<L: Tool + 'static> TracedTask<L> {
         // PTRACE_EVENT_EXEC. We can't call `tracee_preinit` until after this
         // because when it tries to step the tracee, it'll get this SIGTRAP
         // signal instead.
-        let expected_post_exec_rip = task.getregs()?.ip();
-        let wait = self.step_stopped(task, None)?.next_state().await?;
-        self.arm_liteinst_wait(&wait);
-        let task = match wait {
-            Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)) => {
-                #[cfg(test)]
-                let forced_external_sigtrap = self
-                    .global_state
-                    .liteinst_runtime
-                    .as_ref()
-                    .and_then(|runtime| runtime.force_post_exec_signal_once.as_ref())
-                    .is_some_and(|force_once| force_once.swap(false, Ordering::SeqCst));
-                #[cfg(not(test))]
-                let forced_external_sigtrap = false;
-                self.validate_nested_liteinst_activation_signal(
-                    &task,
-                    Signal::SIGTRAP,
-                    "wait for the LiteInst post-exec trap",
-                    NestedTrapExpectation::Breakpoint(expected_post_exec_rip),
-                    forced_external_sigtrap,
-                )?;
-                task
+        let task = if self.global_state.liteinst_runtime.is_some() {
+            let expected_post_exec_rip = task.getregs()?.ip();
+            let wait = self.step_stopped(task, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            match wait {
+                Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)) => {
+                    #[cfg(test)]
+                    let forced_external_sigtrap = self
+                        .global_state
+                        .liteinst_runtime
+                        .as_ref()
+                        .and_then(|runtime| runtime.force_post_exec_signal_once.as_ref())
+                        .is_some_and(|force_once| force_once.swap(false, Ordering::SeqCst));
+                    #[cfg(not(test))]
+                    let forced_external_sigtrap = false;
+                    self.validate_nested_liteinst_activation_signal(
+                        &task,
+                        Signal::SIGTRAP,
+                        "wait for the LiteInst post-exec trap",
+                        NestedTrapExpectation::Breakpoint(expected_post_exec_rip),
+                        forced_external_sigtrap,
+                    )?;
+                    task
+                }
+                Wait::Stopped(task, Event::Signal(sig)) => {
+                    self.validate_nested_liteinst_activation_signal(
+                        &task,
+                        sig,
+                        "wait for the LiteInst post-exec trap",
+                        NestedTrapExpectation::None,
+                        false,
+                    )?;
+                    unreachable!("activation validation must reject a non-SIGTRAP signal")
+                }
+                Wait::Stopped(_, event) => {
+                    self.liteinst_failure = Some(
+                        Error::runtime(
+                            self.tid(),
+                            "validate LiteInst post-exec trap",
+                            format!(
+                                "received unexpected {event:?} before tracee pre-initialization"
+                            ),
+                        )
+                        .to_string(),
+                    );
+                    return Err(Errno::EPROTO.into());
+                }
+                Wait::Exited(pid, exit_status) => {
+                    self.liteinst_failure = Some(
+                        Error::runtime(
+                            pid,
+                            "validate LiteInst post-exec trap",
+                            format!(
+                                "tracee exited with {exit_status:?} before the required post-exec SIGTRAP"
+                            ),
+                        )
+                        .to_string(),
+                    );
+                    return Err(Errno::EPROTO.into());
+                }
             }
-            Wait::Stopped(task, Event::Signal(sig)) => {
-                self.validate_nested_liteinst_activation_signal(
-                    &task,
-                    sig,
-                    "wait for the LiteInst post-exec trap",
-                    NestedTrapExpectation::None,
-                    false,
-                )?;
-                unreachable!("activation validation must reject a non-SIGTRAP signal")
-            }
-            Wait::Stopped(_, event) => {
-                self.liteinst_failure = Some(
-                    Error::runtime(
-                        self.tid(),
-                        "validate LiteInst post-exec trap",
-                        format!("received unexpected {event:?} before tracee pre-initialization"),
-                    )
-                    .to_string(),
-                );
-                return Err(Errno::EPROTO.into());
-            }
-            Wait::Exited(pid, exit_status) => {
-                self.liteinst_failure = Some(
-                    Error::runtime(
-                        pid,
-                        "validate LiteInst post-exec trap",
-                        format!(
-                            "tracee exited with {exit_status:?} before the required post-exec SIGTRAP"
-                        ),
-                    )
-                    .to_string(),
-                );
-                return Err(Errno::EPROTO.into());
-            }
+        } else {
+            let (task, event) = self
+                .step_stopped(task, None)?
+                .wait_for_signal(Signal::SIGTRAP)
+                .await?
+                .assume_stopped();
+            assert_eq!(event, Event::Signal(Signal::SIGTRAP));
+            self.arm_liteinst_root_stop(&task, &event);
+            task
         };
         let mut task = self.tracee_preinit(task).await?;
         if let Err(error) = self.install_liteinst_entry_guard(&mut task) {
@@ -4525,6 +4557,24 @@ impl<L: Tool + 'static> TracedTask<L> {
         } else {
             wait_status
         };
+        #[cfg(test)]
+        if context.is_some()
+            && self.liteinst_runtime.lock().unwrap().phase == LiteinstRuntimePhase::Waiting
+            && let Wait::Stopped(stopped, _) = &wait_status
+            && self
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.force_private_stub_mutation_once.as_ref())
+                .is_some_and(|force_once| force_once.swap(false, Ordering::SeqCst))
+        {
+            let mut mutated_stub = [0; cp::SYSCALL_INSTR_SIZE * 2];
+            stopped.read_exact(cp::PRIVATE_PAGE_OFFSET, &mut mutated_stub)?;
+            mutated_stub[0] ^= 0xff;
+            let mut stopped_writer = Stopped::new_unchecked(stopped.pid());
+            let address = AddrMut::from_raw(cp::PRIVATE_PAGE_OFFSET).ok_or(Errno::EFAULT)?;
+            stopped_writer.write_value(address, &mutated_stub)?;
+        }
         match wait_status {
             Wait::Stopped(stopped, event) => match event {
                 Event::Signal(sig) if context.is_none() => {

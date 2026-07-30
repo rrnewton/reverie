@@ -1913,6 +1913,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             force_preinit_signal_once: None,
             #[cfg(test)]
             force_post_exec_signal_once: None,
+            #[cfg(test)]
+            force_private_stub_mutation_once: None,
         });
         self
     }
@@ -2088,6 +2090,18 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .as_mut()
             .expect("LiteInst runtime must be configured before post-exec-signal injection")
             .force_post_exec_signal_once = Some(force_once);
+        self
+    }
+
+    #[cfg(test)]
+    fn force_liteinst_private_stub_mutation_once_for_test(
+        mut self,
+        force_once: Arc<AtomicBool>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before private-stub mutation")
+            .force_private_stub_mutation_once = Some(force_once);
         self
     }
 
@@ -2806,6 +2820,31 @@ mod tests {
             "{error}"
         );
         assert_reaped("injected-step activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_mutated_private_stub_cannot_impersonate_injected_syscall_completion() {
+        let mutate_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<ReplaceMmapTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_private_stub_mutation_once_for_test(Arc::clone(&mutate_once))
+            .spawn()
+            .await
+            .expect("spawn private-stub-mutation activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("private-stub-mutation activation tracee hung")
+            .expect_err("mutated private stub impersonated injected-syscall completion");
+
+        assert!(!mutate_once.load(Ordering::SeqCst), "{error}");
+        assert!(
+            error.to_string().contains(
+                "finish injected syscall observed a nested signal without the expected controller provenance"
+            ),
+            "{error}"
+        );
+        assert_reaped("private-stub-mutation activation", root_pid);
     }
 
     #[derive(Default)]
