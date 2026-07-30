@@ -193,6 +193,8 @@ impl Event {
                 // Get the pid of the child immediately since we almost always
                 // want that.
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
+                #[cfg(all(test, feature = "notifier"))]
+                notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid);
                 Ok(Self::NewChild(
                     ChildOp::Fork,
                     Running::from_current_or_new(child_pid)?,
@@ -202,6 +204,8 @@ impl Event {
                 // Get the pid of the child immediately since we almost always
                 // want that.
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
+                #[cfg(all(test, feature = "notifier"))]
+                notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid);
                 Ok(Self::NewChild(
                     ChildOp::Vfork,
                     Running::from_current_or_new(child_pid)?,
@@ -211,6 +215,8 @@ impl Event {
                 // Get the pid of the child immediately since we almost always
                 // want that.
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
+                #[cfg(all(test, feature = "notifier"))]
+                notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid);
                 Ok(Self::NewChild(
                     ChildOp::Clone,
                     Running::from_current_or_new(child_pid)?,
@@ -418,7 +424,7 @@ impl Wait {
                 let event = Event::from_ptrace_event(&task, event)?;
                 #[cfg(all(test, feature = "notifier"))]
                 if matches!(event, Event::NewChild(..)) {
-                    notifier::pause_sync_new_child_decode(pid);
+                    notifier::pause_sync_new_child_decode(task.1.event());
                 }
                 event
             };

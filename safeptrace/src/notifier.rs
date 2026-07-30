@@ -153,9 +153,26 @@ struct EventCapturePause {
 }
 
 #[cfg(test)]
+#[derive(Debug)]
 struct BoundedTestPause {
     captured: mpsc::SyncSender<()>,
     resume: mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct ExactTestMember {
+    pid: Pid,
+    pidfd: OwnedFd,
+}
+
+#[cfg(test)]
+#[derive(Debug)]
+struct NewChildDecodePause {
+    captured: mpsc::SyncSender<()>,
+    resume: mpsc::Receiver<()>,
+    members: Arc<Mutex<Vec<ExactTestMember>>>,
+    registration_error: Arc<Mutex<Option<Errno>>>,
 }
 
 #[cfg(test)]
@@ -191,19 +208,11 @@ static CLEANUP_CANCEL_SIGNAL_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePau
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
-static CLEANUP_RETURN_TRANSACTION_PAUSES: LazyLock<Mutex<HashMap<Pid, BoundedTestPause>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-#[cfg(test)]
 static SYNC_STATUS_PUBLICATION_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
 static SYNC_RETURN_COMMIT_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-#[cfg(test)]
-static SYNC_NEW_CHILD_DECODE_PAUSES: LazyLock<Mutex<HashMap<Pid, BoundedTestPause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
@@ -233,11 +242,26 @@ pub(super) fn inject_sync_decode_capture_error(pid: Pid, error: Errno) {
 }
 
 #[cfg(test)]
-pub(super) fn pause_sync_new_child_decode(pid: Pid) {
-    if let Some(pause) = SYNC_NEW_CHILD_DECODE_PAUSES.lock().remove(&pid)
+pub(super) fn pause_sync_new_child_decode(handle: &EventHandle) {
+    if let Some(pause) = handle.event().new_child_decode_pause.lock().take()
         && pause.captured.send(()).is_ok()
     {
         let _ = pause.resume.recv();
+    }
+}
+
+#[cfg(test)]
+pub(super) fn register_new_child_for_test_cleanup(handle: &EventHandle, child: Pid) {
+    let mut slot = handle.event().new_child_decode_pause.lock();
+    let Some(pause) = slot.as_mut() else {
+        return;
+    };
+    match open_thread_pidfd(child) {
+        Ok(pidfd) => pause
+            .members
+            .lock()
+            .push(ExactTestMember { pid: child, pidfd }),
+        Err(error) => *pause.registration_error.lock() = Some(error),
     }
 }
 
@@ -411,6 +435,11 @@ struct Event {
     wait_owner: AtomicU8,
     wait_owner_lock: Mutex<()>,
     wait_owner_changed: Condvar,
+
+    #[cfg(test)]
+    new_child_decode_pause: Mutex<Option<NewChildDecodePause>>,
+    #[cfg(test)]
+    cleanup_return_pause: Mutex<Option<BoundedTestPause>>,
 }
 
 #[derive(Debug)]
@@ -611,6 +640,10 @@ impl Event {
             wait_owner: AtomicU8::new(WAIT_OWNER_NONE),
             wait_owner_lock: Mutex::new(()),
             wait_owner_changed: Condvar::new(),
+            #[cfg(test)]
+            new_child_decode_pause: Mutex::new(None),
+            #[cfg(test)]
+            cleanup_return_pause: Mutex::new(None),
         }
     }
 
@@ -2206,17 +2239,18 @@ impl Notifier {
         &self,
         pid: Pid,
         handle: &EventHandle,
-        return_timeout: Duration,
+        return_deadline: Instant,
     ) -> Result<CancellableEventRegistration, Errno> {
         loop {
             let requested = Arc::clone(handle.event());
             let mut ownership = requested.try_claim_cancellable_notifier_wait();
             if matches!(ownership, CancellableNotifierWaitOwnership::Returning) {
-                if let Some(pause) = CLEANUP_RETURN_TRANSACTION_PAUSES.lock().remove(&pid)
+                if let Some(pause) = requested.cleanup_return_pause.lock().take()
                     && pause.captured.send(()).is_ok()
                 {
                     let _ = pause.resume.recv();
                 }
+                let return_timeout = return_deadline.saturating_duration_since(Instant::now());
                 ownership = match requested
                     .wait_for_return_and_claim_cancellable_notifier(return_timeout)
                 {
@@ -2567,9 +2601,9 @@ impl TerminalCleanup {
     #[cfg(test)]
     fn try_ensure_registered_for_cleanup(
         &self,
-        return_timeout: Duration,
+        return_deadline: Instant,
     ) -> Result<CancellableEventRegistration, Errno> {
-        NOTIFIER.try_event_for_cleanup(self.pid, &self.event, return_timeout)
+        NOTIFIER.try_event_for_cleanup(self.pid, &self.event, return_deadline)
     }
 
     /// Returns the last typed notifier registration error, if any.
@@ -3475,8 +3509,7 @@ mod test {
             let deadline = Instant::now() + REGISTRATION_RETRY_TIMEOUT;
             let return_deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
             let last_error = loop {
-                let return_remaining = return_deadline.saturating_duration_since(Instant::now());
-                match terminal.try_ensure_registered_for_cleanup(return_remaining) {
+                match terminal.try_ensure_registered_for_cleanup(return_deadline) {
                     Ok(CancellableEventRegistration::Registered) => {
                         return match terminal.event.event().worker_state.load(Ordering::Acquire) {
                             WORKER_RUNNING => Ok(CleanupWaitOwner::Notifier),
@@ -3533,7 +3566,9 @@ mod test {
                 .is_some()
             {
                 CAPTURE_PERSISTENT_ERRORS.lock().remove(&pid.into());
-                match terminal.try_ensure_registered_for_cleanup(TRACEE_WAIT_TIMEOUT) {
+                match terminal
+                    .try_ensure_registered_for_cleanup(Instant::now() + TRACEE_WAIT_TIMEOUT)
+                {
                     Ok(CancellableEventRegistration::Registered) => {}
                     Ok(CancellableEventRegistration::Synchronous(_)) => {
                         return Err(io::Error::other(
@@ -4010,6 +4045,69 @@ mod test {
             .terminate_group()
             .expect("terminate projected-PGID sentinel");
         sentinel.wait().expect("reap projected-PGID sentinel");
+    }
+
+    #[test]
+    fn exact_new_child_cleanup_never_signals_projected_reused_pgid() {
+        const SENTINEL: &str = "SAFEPTRACE_NEW_CHILD_PGID_SENTINEL";
+        if env::var_os(SENTINEL).is_some() {
+            loop {
+                thread::park();
+            }
+        }
+
+        let mut old_command = Command::new("/bin/true");
+        old_command.process_group(0);
+        let mut old = ChildProcessGroup::new(
+            old_command
+                .spawn()
+                .expect("spawn old exact-cleanup group leader"),
+        )
+        .expect("open old exact-cleanup leader pidfd");
+        let old_pid = old.process_group;
+        let stale_pidfd = old
+            .pidfd
+            .try_clone()
+            .expect("clone stale exact-cleanup pidfd");
+        old.wait().expect("reap old exact-cleanup leader");
+
+        let inner = "notifier::test::exact_new_child_cleanup_never_signals_projected_reused_pgid";
+        let mut sentinel_command = Command::new(env::current_exe().expect("current test binary"));
+        sentinel_command
+            .args(["--exact", inner, "--nocapture"])
+            .env(SENTINEL, "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0);
+        let mut sentinel = ChildProcessGroup::new(
+            sentinel_command
+                .spawn()
+                .expect("spawn exact-cleanup projected-PGID sentinel"),
+        )
+        .expect("open exact-cleanup sentinel pidfd");
+
+        let mut stale_guard = ExactNewChildCleanupGuard {
+            projected_pgid: Pid::from_raw(sentinel.process_group),
+            event: EventHandle::new(),
+            members: Arc::new(Mutex::new(vec![ExactTestMember {
+                pid: crate::Pid::from_raw(old_pid),
+                pidfd: stale_pidfd,
+            }])),
+            registration_error: Arc::new(Mutex::new(None)),
+            armed: true,
+        };
+        stale_guard
+            .cleanup()
+            .expect("stale exact cleanup ignores projected numeric PGID");
+        assert!(
+            !pidfd_exited(&sentinel.pidfd).expect("poll exact-cleanup sentinel"),
+            "stale exact cleanup signaled the projected replacement process group"
+        );
+
+        sentinel
+            .terminate_group()
+            .expect("terminate exact-cleanup sentinel");
+        sentinel.wait().expect("reap exact-cleanup sentinel");
     }
 
     #[test]
@@ -5075,6 +5173,73 @@ mod test {
         assert_eq!(
             event.wait_owner.load(Ordering::Acquire),
             WAIT_OWNER_NOTIFIER
+        );
+    }
+
+    #[test]
+    fn chained_returning_adoption_preserves_cleanup_deadline() {
+        let first = EventHandle::new();
+        let second = EventHandle::new();
+        first
+            .event()
+            .wait_owner
+            .store(WAIT_OWNER_SYNC, Ordering::Release);
+        second
+            .event()
+            .wait_owner
+            .store(WAIT_OWNER_SYNC, Ordering::Release);
+        let stopped = (libc::SIGSTOP << 8) | 0x7f;
+        let first_return = match first.event().begin_status_return(
+            stopped,
+            WAIT_OWNER_SYNC,
+            WAIT_OWNER_SYNC_RETURNING,
+        ) {
+            ReturnTransactionStart::Begun(transaction) => transaction,
+            ReturnTransactionStart::Cancelled => panic!("first chained return was cancelled"),
+        };
+        let second_return = match second.event().begin_status_return(
+            stopped,
+            WAIT_OWNER_SYNC,
+            WAIT_OWNER_SYNC_RETURNING,
+        ) {
+            ReturnTransactionStart::Begun(transaction) => transaction,
+            ReturnTransactionStart::Cancelled => panic!("second chained return was cancelled"),
+        };
+
+        let deadline = Instant::now() + Duration::from_millis(150);
+        let started = Instant::now();
+        let cleanup_handle = first.clone();
+        let cleanup = thread::spawn(move || {
+            NOTIFIER.try_event_for_cleanup(Pid::this().into(), &cleanup_handle, deadline)
+        });
+        let claim_deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
+        while first.event().cleanup_claim_waiters.load(Ordering::Acquire) == 0 {
+            assert!(
+                Instant::now() < claim_deadline,
+                "cleanup did not wait on first RETURNING generation"
+            );
+            thread::yield_now();
+        }
+        first
+            .adopt_authoritative(&second)
+            .expect("chain cleanup handle to second RETURNING generation");
+        thread::sleep(Duration::from_millis(100));
+        first_return.commit(WAIT_OWNER_NONE);
+
+        let result = cleanup.join().expect("join chained RETURNING cleanup");
+        assert!(matches!(
+            result,
+            Ok(CancellableEventRegistration::ReturningTimedOut)
+        ));
+        assert!(
+            started.elapsed() < Duration::from_millis(220),
+            "adoption reset the absolute cleanup deadline: {:?}",
+            started.elapsed()
+        );
+        drop(second_return);
+        assert_eq!(
+            second.event().cleanup_claim_waiters.load(Ordering::Acquire),
+            0
         );
     }
 
@@ -6188,63 +6353,86 @@ mod test {
         running: Option<Running>,
         parent_identity: WorkerIdentity,
         coordinator: JoinHandle<(io::Result<()>, TraceeCleanupGuard)>,
-        process_group: NewChildProcessGroupGuard,
+        exact_cleanup: ExactNewChildCleanupGuard,
     }
 
-    struct NewChildProcessGroupGuard {
-        pgid: Pid,
+    struct ExactNewChildCleanupGuard {
+        projected_pgid: Pid,
+        event: EventHandle,
+        members: Arc<Mutex<Vec<ExactTestMember>>>,
+        registration_error: Arc<Mutex<Option<Errno>>>,
         armed: bool,
     }
 
-    impl NewChildProcessGroupGuard {
-        fn new(pgid: Pid) -> Self {
-            Self { pgid, armed: true }
+    impl ExactNewChildCleanupGuard {
+        fn new(projected_pgid: Pid, event: EventHandle) -> io::Result<Self> {
+            let leader: crate::Pid = projected_pgid.into();
+            let pidfd = open_thread_pidfd(leader).map_err(|error| {
+                io::Error::other(format!(
+                    "open exact fixture leader {projected_pgid} pidfd: {error}"
+                ))
+            })?;
+            Ok(Self {
+                projected_pgid,
+                event,
+                members: Arc::new(Mutex::new(vec![ExactTestMember { pid: leader, pidfd }])),
+                registration_error: Arc::new(Mutex::new(None)),
+                armed: true,
+            })
         }
 
         fn disarm(&mut self) {
             self.armed = false;
         }
+
+        fn cleanup(&mut self) -> io::Result<()> {
+            if !self.armed {
+                return Ok(());
+            }
+            self.armed = false;
+            self.event.event().new_child_decode_pause.lock().take();
+            self.event.event().cleanup_return_pause.lock().take();
+
+            let registration_error = self.registration_error.lock().take();
+            let members = mem::take(&mut *self.members.lock());
+            let mut failures = Vec::new();
+            for member in members {
+                match pidfd_send_signal(&member.pidfd, libc::SIGKILL) {
+                    Ok(()) => {}
+                    Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {}
+                    Err(error) => failures.push(format!(
+                        "signal exact member {} through pidfd: {error}",
+                        member.pid
+                    )),
+                }
+                let pid = Pid::from_raw(member.pid.as_raw());
+                if let Err(error) = reap_tracee_pidfd_bounded(pid, &member.pidfd) {
+                    failures.push(format!("reap exact member {}: {error}", member.pid));
+                }
+            }
+            if let Some(error) = registration_error {
+                failures.push(format!("register NewChild exact pidfd: {error}"));
+            }
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!(
+                    "exact fixture cleanup for projected PGID {} failed: {}",
+                    self.projected_pgid,
+                    failures.join("; ")
+                )))
+            }
+        }
     }
 
-    impl Drop for NewChildProcessGroupGuard {
+    impl Drop for ExactNewChildCleanupGuard {
         fn drop(&mut self) {
-            if !self.armed {
-                return;
-            }
-            SYNC_NEW_CHILD_DECODE_PAUSES
-                .lock()
-                .remove(&self.pgid.into());
-            CLEANUP_RETURN_TRANSACTION_PAUSES
-                .lock()
-                .remove(&self.pgid.into());
-            let _ = unsafe { libc::kill(-self.pgid.as_raw(), libc::SIGKILL) };
-            let deadline = Instant::now() + TRACEE_WAIT_TIMEOUT;
-            loop {
-                let mut status = 0;
-                let waited = unsafe {
-                    libc::waitpid(
-                        -self.pgid.as_raw(),
-                        &mut status,
-                        libc::__WALL | libc::WNOHANG,
-                    )
-                };
-                if waited > 0 {
-                    if libc::WIFSTOPPED(status) {
-                        let _ = nix::sys::ptrace::cont(Pid::from_raw(waited), None);
-                    }
-                    continue;
+            if let Err(error) = self.cleanup() {
+                if thread::panicking() {
+                    eprintln!("NewChild fixture cleanup failed during unwind: {error}");
+                } else {
+                    panic!("NewChild fixture cleanup failed: {error}");
                 }
-                if waited == -1 {
-                    let error = io::Error::last_os_error();
-                    if error.raw_os_error() == Some(libc::EINTR) {
-                        continue;
-                    }
-                    break;
-                }
-                if Instant::now() >= deadline {
-                    break;
-                }
-                thread::sleep(SUBPROCESS_POLL_INTERVAL);
             }
         }
     }
@@ -6254,7 +6442,6 @@ mod test {
         expected_return_owner: u8,
     ) -> io::Result<NewChildReturnRace> {
         let (pid, stopped, mut cleanup) = spawn_new_child_tracee(child_op)?;
-        let process_group = NewChildProcessGroupGuard::new(pid);
         let parent_identity = WorkerIdentity::capture_process(pid.into()).map_err(|error| {
             io::Error::other(format!(
                 "capture {child_op:?} parent {pid} identity: {error}"
@@ -6264,17 +6451,17 @@ mod test {
             .resume(None)
             .map_err(|error| io::Error::other(format!("resume {child_op:?} parent: {error}")))?;
         let parent_event = running.1.event().clone();
+        let exact_cleanup = ExactNewChildCleanupGuard::new(pid, parent_event.clone())?;
         cleanup.store_terminal(TerminalCleanup::new_unregistered(pid.into(), &running.1))?;
 
         let (child_materialized_tx, child_materialized_rx) = mpsc::sync_channel(0);
         let (resume_return_tx, resume_return_rx) = mpsc::channel();
-        SYNC_NEW_CHILD_DECODE_PAUSES.lock().insert(
-            pid.into(),
-            BoundedTestPause {
-                captured: child_materialized_tx,
-                resume: resume_return_rx,
-            },
-        );
+        *parent_event.event().new_child_decode_pause.lock() = Some(NewChildDecodePause {
+            captured: child_materialized_tx,
+            resume: resume_return_rx,
+            members: Arc::clone(&exact_cleanup.members),
+            registration_error: Arc::clone(&exact_cleanup.registration_error),
+        });
         // The waiter remains on its ptracer thread. Only the cleanup contender
         // runs here while GETEVENTMSG, child materialization, and typed return
         // execute in the synchronous call or WaitFuture poll.
@@ -6299,19 +6486,16 @@ mod test {
 
             let (cleanup_saw_return_tx, cleanup_saw_return_rx) = mpsc::sync_channel(0);
             let (resume_cleanup_tx, resume_cleanup_rx) = mpsc::channel();
-            CLEANUP_RETURN_TRANSACTION_PAUSES.lock().insert(
-                pid.into(),
-                BoundedTestPause {
-                    captured: cleanup_saw_return_tx,
-                    resume: resume_cleanup_rx,
-                },
-            );
+            *parent_event.event().cleanup_return_pause.lock() = Some(BoundedTestPause {
+                captured: cleanup_saw_return_tx,
+                resume: resume_cleanup_rx,
+            });
             let cleaning = thread::spawn(move || {
                 let result = cleanup.cleanup();
                 (result, cleanup)
             });
             if let Err(error) = cleanup_saw_return_rx.recv_timeout(TRACEE_WAIT_TIMEOUT) {
-                CLEANUP_RETURN_TRANSACTION_PAUSES.lock().remove(&pid.into());
+                parent_event.event().cleanup_return_pause.lock().take();
                 drop(cleanup_saw_return_rx);
                 let _ = resume_return_tx.send(());
                 let (cleanup_result, cleanup) = cleaning.join().expect("join failed cleanup race");
@@ -6346,7 +6530,7 @@ mod test {
             running: Some(running),
             parent_identity,
             coordinator,
-            process_group,
+            exact_cleanup,
         })
     }
 
@@ -6435,7 +6619,7 @@ mod test {
             &child_identity,
             &format!("{child_op:?} child {child_pid} reap"),
         )?;
-        race.process_group.disarm();
+        race.exact_cleanup.disarm();
         Ok(())
     }
 
@@ -6499,9 +6683,6 @@ mod test {
                 Ok((child, stopped, cleanup))
             }
             ForkResult::Child => {
-                if unsafe { libc::setpgid(0, 0) } == -1 {
-                    unsafe { libc::_exit(124) };
-                }
                 if unsafe { libc::raise(libc::SIGSTOP) } != 0 {
                     unsafe { libc::_exit(125) };
                 }
