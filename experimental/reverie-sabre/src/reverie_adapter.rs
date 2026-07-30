@@ -1397,7 +1397,11 @@ fn is_thread_clone(pid: Pid, number: Sysno, args: SyscallArgs) -> bool {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-273): Review process-fork classification for state inheritance.
 fn is_process_fork(pid: Pid, number: Sysno, args: SyscallArgs) -> bool {
-    if number == Sysno::fork {
+    // The SaBRe callback rewrites direct vfork to a private fork so its child
+    // cannot overwrite the blocked parent's callback frames on the shared
+    // guest stack. Preserve the original vfork classification for Detcore,
+    // while handing the forked child an inherited thread-state snapshot.
+    if matches!(number, Sysno::fork | Sysno::vfork) {
         return true;
     }
     let Some(flags) = clone_flags(pid, number, args) else {
@@ -1604,7 +1608,7 @@ mod tests {
         assert!(is_process_fork(current_pid(), Sysno::clone3, clone3_args));
         assert!(!is_process_fork(current_pid(), Sysno::clone, thread_args));
         assert!(!is_process_fork(current_pid(), Sysno::clone, vfork_args));
-        assert!(!is_process_fork(current_pid(), Sysno::vfork, process_args));
+        assert!(is_process_fork(current_pid(), Sysno::vfork, process_args));
     }
 
     #[test]

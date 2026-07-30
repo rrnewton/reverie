@@ -552,30 +552,25 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
                 .unwrap_or_else(|e| -e.into_raw() as usize)
         })?
     } else if utils::is_vfork(sys_no, arg1) {
-        if let Some(vfork_boundary) = VforkBoundaryGuard::enter() {
-            thread.maybe_fork_as_guest(|| {
-                T::global()
-                    .syscall_with_inject(intercepted, &LocalMemory::new(), || unsafe {
-                        let pid = ffi::vfork_syscall();
-                        if pid == 0 {
-                            reverie_sabre_after_clone_child(
-                                (libc::CLONE_VM | libc::CLONE_VFORK) as usize,
-                                vfork_boundary.slot(),
-                            );
-                            // The child is already in Guest state and jumps back to
-                            // SaBRe's trampoline instead of returning through Rust.
-                            ffi::vfork_return_from_child(
-                                wrapper_address as *const ffi::syscall_stackframe,
-                            )
-                        } else {
-                            pid
-                        }
-                    })
-                    .unwrap_or_else(|e| -e.into_raw() as usize)
-            })?
-        } else {
-            -Errno::EAGAIN.into_raw() as usize
-        }
+        // SaBRe executes callbacks on the guest stack. A real vfork child would
+        // therefore overwrite the blocked parent's live Rust callback frames
+        // before it reaches execve. Use a private fork image instead; the shared
+        // tool still classifies the original syscall as vfork and keeps the
+        // parent behind its child-registration/exec barrier.
+        thread.maybe_fork_as_guest(|| {
+            T::global()
+                .syscall_with_inject(intercepted, &LocalMemory::new(), || unsafe {
+                    ffi::fork_syscall(
+                        libc::SIGCHLD as usize,
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        0,
+                        wrapper_address as *const ffi::syscall_stackframe,
+                        NO_VFORK_SLOT as u64,
+                    )
+                })
+                .unwrap_or_else(|e| -e.into_raw() as usize)
+        })?
     } else if sys_no == Sysno::clone3 {
         let fields = read_clone3_fields(thread.get_process_and_thread_ids().pid, arg1, arg2);
         let clone3_intercepted = match &fields {
