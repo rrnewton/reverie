@@ -52,6 +52,16 @@ pub unsafe fn clone_syscall(
         "push r10", // rcx
         "push r8",
         "push r9",
+        "mov rdi, qword ptr [rsp + 0x28]", // clone_flags saved by first push
+        "mov rax, rdi",
+        "test rax, {clone_vm}",
+        "jz 3f",
+        "and rax, {vfork_flags}",
+        "cmp rax, {vfork_flags}",
+        "jne 4f",
+        "3:",
+        "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
+        "4:",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
         "pop r9",
         "pop r8",
@@ -80,6 +90,8 @@ pub unsafe fn clone_syscall(
         in("r10") child_tidptr,
         in("r8") tls,
         in("r9") ret_addr,
+        clone_vm = const libc::CLONE_VM,
+        vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
         // syscall instructions clobber rcx and r11
         lateout("rcx") _,
         lateout("r11") _,
@@ -128,6 +140,15 @@ pub unsafe fn fork_syscall(
 
         // ---- Child: never returns through Rust. ----
         // `wrapper_sp` is preserved across the clone in r12.
+        "mov rax, rdi",
+        "test rax, {clone_vm}",
+        "jz 3f",
+        "and rax, {vfork_flags}",
+        "cmp rax, {vfork_flags}",
+        "jne 4f",
+        "3:",
+        "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
+        "4:",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
         "mov rdi, r12",                     // rdi = wrapper_sp (frame base)
         // Restore the guest's saved registers from the frame, mirroring the
@@ -161,6 +182,8 @@ pub unsafe fn fork_syscall(
         in("r10") child_tidptr,
         in("r8") tls,
         in("r12") wrapper_sp,
+        clone_vm = const libc::CLONE_VM,
+        vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
         // syscall instructions clobber rcx and r11
         lateout("rcx") _,
         lateout("r11") _,
@@ -185,6 +208,7 @@ pub unsafe fn clone3_syscall(
     unused: usize,               // rcx
     arg5: usize,                 // r8
     ret_addr: *mut libc::c_void, // r9
+    clone_flags: u64,            // xmm0 (preserved by syscall)
 ) -> usize {
     let mut ret: usize = Sysno::clone3 as usize;
 
@@ -199,11 +223,23 @@ pub unsafe fn clone3_syscall(
         "push rdi",
         "push rsi",
         "push rdx",
+        "push r10",
         "push r8",
         "push r9",
+        "movq rdi, xmm0", // captured clone_args.flags
+        "mov rax, rdi",
+        "test rax, {clone_vm}",
+        "jz 3f",
+        "and rax, {vfork_flags}",
+        "cmp rax, {vfork_flags}",
+        "jne 4f",
+        "3:",
+        "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
+        "4:",
         "call qword ptr [rip + exit_plugin@GOTPCREL]",
         "pop r9",
         "pop r8",
+        "pop r10",
         "pop rdx",
         "pop rsi",
         "pop rdi",
@@ -228,10 +264,93 @@ pub unsafe fn clone3_syscall(
         in("r10") unused,
         in("r8") arg5,
         in("r9") ret_addr,
+        in("xmm0") clone_flags,
+        clone_vm = const libc::CLONE_VM,
+        vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
         // syscall instructions clobber rcx and r11
         lateout("rcx") _,
         lateout("r11") _,
 
+    }
+
+    ret
+}
+
+/// Executes a stackless `clone3(2)` and resumes the child on the guest stack.
+///
+/// This is the clone3 counterpart of [`fork_syscall`]. A zero `clone_args.stack`
+/// leaves the child on the plugin call stack, so the child must restore the
+/// original SaBRe syscall frame rather than jumping through a trampoline return
+/// address on that stack.
+///
+/// # Safety
+///
+/// `arg1` must point to the kernel-validated clone arguments and `wrapper_sp`
+/// must point to the live SaBRe syscall frame.
+pub unsafe fn clone3_fork_syscall(
+    arg1: usize,   // rdi
+    arg2: usize,   // rsi
+    arg3: usize,   // rdx
+    unused: usize, // rcx
+    arg5: usize,   // r8
+    wrapper_sp: *const syscall_stackframe,
+    clone_flags: u64, // xmm0 (preserved by syscall)
+) -> usize {
+    let mut ret: usize = Sysno::clone3 as usize;
+
+    core::arch::asm! {
+        "syscall",
+
+        // Both child and parent return here.
+        "test rax, rax",
+        "jnz 2f",
+
+        // ---- Child: never returns through Rust. ----
+        "movq rdi, xmm0",
+        "mov rax, rdi",
+        "test rax, {clone_vm}",
+        "jz 3f",
+        "and rax, {vfork_flags}",
+        "cmp rax, {vfork_flags}",
+        "jne 4f",
+        "3:",
+        "call qword ptr [rip + reverie_sabre_after_clone_child@GOTPCREL]",
+        "4:",
+        "call qword ptr [rip + exit_plugin@GOTPCREL]",
+        "mov rdi, r12",                     // rdi = wrapper_sp (frame base)
+        "mov r15, qword ptr [rdi + 0x8]",
+        "mov r14, qword ptr [rdi + 0x10]",
+        "mov r13, qword ptr [rdi + 0x18]",
+        "mov r10, qword ptr [rdi + 0x30]",
+        "mov r9,  qword ptr [rdi + 0x38]",
+        "mov r8,  qword ptr [rdi + 0x40]",
+        "mov rsi, qword ptr [rdi + 0x50]",
+        "mov rdx, qword ptr [rdi + 0x58]",
+        "mov rcx, qword ptr [rdi + 0x60]",
+        "mov rbx, qword ptr [rdi + 0x68]",
+        "mov rbp, qword ptr [rdi + 0x70]",
+        "mov r12, qword ptr [rdi + 0x20]",
+        "mov r11, qword ptr [rdi + 0x80]",
+        "lea rsp, [rdi + 0x88]",
+        "mov rdi, qword ptr [rdi + 0x48]",
+        "xor eax, eax",
+        "jmp r11",
+
+        // ---- Parent ----
+        "2:",
+
+        inlateout("rax") ret,
+        in("rdi") arg1,
+        in("rsi") arg2,
+        in("rdx") arg3,
+        in("r10") unused,
+        in("r8") arg5,
+        in("r12") wrapper_sp,
+        in("xmm0") clone_flags,
+        clone_vm = const libc::CLONE_VM,
+        vfork_flags = const (libc::CLONE_VM | libc::CLONE_VFORK),
+        lateout("rcx") _,
+        lateout("r11") _,
     }
 
     ret
