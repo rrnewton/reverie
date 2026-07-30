@@ -51,6 +51,12 @@ static void write_burst(void) {
 }
 
 int main(void) {
+  if (has_environment_entry("REVERIE_E9PATCH_EXPECT_PRESTART_RESIDUAL_FAIL=1")) {
+    static const char byte = 'x';
+    errno = 0;
+    long result = write(1, &byte, 1);
+    raw_exit_group(result == -1 && errno == EOPNOTSUPP ? 0 : 6);
+  }
   if (has_environment_entry("REVERIE_E9PATCH_EXPECT_BOOTSTRAP_ENV=1")) {
     if (!has_environment_entry(
             "REVERIE_E9PATCH_COORDINATOR=preexisting-coordinator") ||

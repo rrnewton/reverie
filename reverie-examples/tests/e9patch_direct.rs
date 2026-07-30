@@ -211,6 +211,21 @@ async fn subscribed_residual_write_still_fails_closed_after_direct_start() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires a built e9tool/e9patch pair"]
+async fn subscribed_application_residual_fails_closed_before_direct_start() {
+    let (_directory, guest) = compile_guest();
+    let mut command = Command::new(guest);
+    command.env("REVERIE_E9PATCH_EXPECT_PRESTART_RESIDUAL_FAIL", "1");
+    let output = run_e9patch_write_strace_with_preload(command, example_preload())
+        .await
+        .unwrap();
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(!stderr.contains("write("), "{stderr}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a built e9tool/e9patch pair"]
 async fn legacy_environment_bootstrap_remains_compatible() {
     let (_directory, guest) = compile_guest();
     let mut command = Command::new(guest);

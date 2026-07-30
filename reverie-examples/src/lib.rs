@@ -76,9 +76,10 @@ pub async fn run_e9patch_noop_with_preload(
 ///
 /// The sealed selector and coordinator use the same concrete `CounterLocal`,
 /// and the returned total comes from its coordinator-owned `CounterGlobal`.
-/// Counter1 subscribes to every syscall. Loader/setup residuals before the first
-/// direct event run natively and are not counted; after activation, subscribed
-/// residual sites fail closed.
+/// Counter1 subscribes to every syscall. Residuals from the injected e9patch
+/// loader and Reverie payload mappings before the first direct event run
+/// natively and are not counted; application residuals and post-activation
+/// runtime residuals fail closed.
 pub async fn run_e9patch_counter1_with_preload(
     command: reverie::process::Command,
     preload: impl Into<std::path::PathBuf>,
