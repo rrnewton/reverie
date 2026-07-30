@@ -2613,8 +2613,8 @@ mod tests {
             return Command::new("/bin/true");
         }
         if mode == "signal" {
-            let mut command = Command::new("/bin/sleep");
-            command.arg("60");
+            let mut command = Command::new("/usr/bin/tail");
+            command.args(["-f", "/dev/null"]);
             return command;
         }
         let mut command = Command::new(std::env::current_exe().expect("locate test binary"));
