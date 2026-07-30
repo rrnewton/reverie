@@ -75,9 +75,10 @@ pub async fn run_e9patch_noop_with_preload(
 /// Runs the production Strace Tool through e9patch's direct AOT path with a
 /// single `write` syscall filter.
 ///
-/// The fixed filter keeps residual and unrelated guest syscalls native while
-/// proving a rewritten root-image write reaches the existing Strace handler
-/// and is injected through the direct `Guest` implementation.
+/// The fixed filter keeps unsubscribed guest syscalls native while proving a
+/// rewritten root-image write reaches the existing Strace handler and is
+/// injected through the direct `Guest` implementation. A subscribed residual
+/// write remains outside the direct host boundary and fails closed.
 pub async fn run_e9patch_write_strace_with_preload(
     command: reverie::process::Command,
     preload: impl Into<std::path::PathBuf>,
