@@ -415,7 +415,12 @@ impl Wait {
                 // signal, so we ignore it here.
                 debug_assert!(event == libc::PTRACE_EVENT_STOP || sig == Signal::SIGTRAP);
 
-                Event::from_ptrace_event(&task, event)?
+                let event = Event::from_ptrace_event(&task, event)?;
+                #[cfg(all(test, feature = "notifier"))]
+                if matches!(event, Event::NewChild(..)) {
+                    notifier::pause_sync_new_child_decode(pid);
+                }
+                event
             };
 
             Wait::Stopped(task, event)
