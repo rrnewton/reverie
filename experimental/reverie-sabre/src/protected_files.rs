@@ -151,6 +151,17 @@ pub(crate) fn protect_raw_fd(fd: RawFd) {
     protected_files().lock().insert(&fd);
 }
 
+pub(crate) fn protect_raw_pair_with<F, E>(create: F) -> Result<(RawFd, RawFd), E>
+where
+    F: FnOnce() -> Result<(RawFd, RawFd), E>,
+{
+    let mut protected = protected_files().lock();
+    let pair = create()?;
+    protected.insert(&pair.0);
+    protected.insert(&pair.1);
+    Ok(pair)
+}
+
 pub(crate) fn unprotect_raw_fd(fd: RawFd) {
     protected_files().lock().remove(&fd);
 }
@@ -205,8 +216,8 @@ pub(crate) fn sys_close_range(
         unsafe { syscalls::syscall1(Sysno::unshare, libc::CLONE_FILES as usize)? };
         flags &= !CLOSE_RANGE_UNSHARE;
     }
-    let protected = protected_files().lock().files.clone();
-    for (range_first, range_last) in close_ranges_around_protected(first, last, &protected) {
+    let protected = protected_files().lock();
+    for (range_first, range_last) in close_ranges_around_protected(first, last, &protected.files) {
         unsafe {
             syscalls::syscall3(
                 Sysno::close_range,
@@ -328,7 +339,10 @@ pub fn uses_protected_fd(sysno: Sysno, arg0: usize, arg1: usize) -> bool {
 }
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::Barrier;
     use std::sync::mpsc;
+    use std::time::Duration;
 
     use super::*;
 
@@ -384,5 +398,55 @@ mod tests {
         assert!(
             close_ranges_around_protected(i32::MAX as u32, i32::MAX as u32, &[i32::MAX]).is_empty()
         );
+    }
+
+    #[test]
+    fn close_range_waits_for_atomic_protected_pair_creation() {
+        let allow_registration = Arc::new(Barrier::new(2));
+        let (created_tx, created_rx) = mpsc::channel();
+        let (protected_tx, protected_rx) = mpsc::channel();
+        let creator_barrier = allow_registration.clone();
+        let creator = std::thread::spawn(move || {
+            let pair = protect_raw_pair_with(|| {
+                let mut pipe = [-1i32; 2];
+                unsafe { syscalls::syscall2(Sysno::pipe2, pipe.as_mut_ptr() as usize, 0) }.unwrap();
+                created_tx.send((pipe[0], pipe[1])).unwrap();
+                creator_barrier.wait();
+                Ok::<_, std::convert::Infallible>((pipe[0], pipe[1]))
+            })
+            .unwrap();
+            protected_tx.send(pair).unwrap();
+        });
+
+        let pair = created_rx.recv().unwrap();
+        let (closing_tx, closing_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        let closer = std::thread::spawn(move || {
+            let first = pair.0.min(pair.1) as usize;
+            let last = pair.0.max(pair.1) as usize;
+            started_tx.send(()).unwrap();
+            let result = sys_close_range(first, last, 1 << 2);
+            closing_tx.send(result).unwrap();
+        });
+
+        started_rx.recv().unwrap();
+        assert!(matches!(
+            closing_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        allow_registration.wait();
+        let pair = protected_rx.recv().unwrap();
+        assert_eq!(closing_rx.recv().unwrap(), Ok(0));
+        creator.join().unwrap();
+        closer.join().unwrap();
+
+        for fd in [pair.0, pair.1] {
+            let descriptor_flags =
+                unsafe { syscalls::syscall3(Sysno::fcntl, fd as usize, libc::F_GETFD as usize, 0) }
+                    .unwrap();
+            assert_eq!(descriptor_flags & libc::FD_CLOEXEC as usize, 0);
+            unprotect_raw_fd(fd);
+            unsafe { syscalls::syscall1(Sysno::close, fd as usize) }.unwrap();
+        }
     }
 }

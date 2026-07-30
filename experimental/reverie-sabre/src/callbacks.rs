@@ -88,23 +88,25 @@ impl VforkBoundaryGuard {
                 .is_ok()
             {
                 slot.pid_namespace.store(0, Ordering::Release);
-                let mut pipe = [-1i32; 2];
-                if unsafe {
-                    syscalls::syscall2(
-                        Sysno::pipe2,
-                        pipe.as_mut_ptr() as usize,
-                        libc::O_CLOEXEC as usize,
-                    )
-                }
-                .is_err()
-                {
-                    slot.entry.store(0, Ordering::Release);
-                    return None;
-                }
-                slot.sync_read.store(pipe[0], Ordering::Release);
-                slot.sync_write.store(pipe[1], Ordering::Release);
-                protected_files::protect_raw_fd(pipe[0]);
-                protected_files::protect_raw_fd(pipe[1]);
+                let pipe = match protected_files::protect_raw_pair_with(|| {
+                    let mut pipe = [-1i32; 2];
+                    unsafe {
+                        syscalls::syscall2(
+                            Sysno::pipe2,
+                            pipe.as_mut_ptr() as usize,
+                            libc::O_CLOEXEC as usize,
+                        )?;
+                    }
+                    Ok::<_, Errno>((pipe[0], pipe[1]))
+                }) {
+                    Ok(pipe) => pipe,
+                    Err(_) => {
+                        slot.entry.store(0, Ordering::Release);
+                        return None;
+                    }
+                };
+                slot.sync_read.store(pipe.0, Ordering::Release);
+                slot.sync_write.store(pipe.1, Ordering::Release);
                 return Some(Self {
                     slot: slot_index,
                     _signal_restore: guard::preserve_signal_guard_count_across_vfork(),
