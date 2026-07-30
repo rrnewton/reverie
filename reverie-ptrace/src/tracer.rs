@@ -1901,6 +1901,8 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             pause_precise_timer_step: None,
             #[cfg(test)]
             activate_without_handshake: false,
+            #[cfg(test)]
+            queue_pending_signal_once: None,
         });
         self
     }
@@ -2019,6 +2021,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
         self
     }
 
+    #[cfg(test)]
+    fn queue_liteinst_pending_signal_once_for_test(mut self, queue_once: Arc<AtomicBool>) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before pending-signal injection")
+            .queue_pending_signal_once = Some(queue_once);
+        self
+    }
+
     /// Filters a binary-rewriter trap unless its logical instruction address
     /// names an ahead-of-time patched site in the configured executable's
     /// canonical pathname/inode identity.
@@ -2062,6 +2073,12 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
     /// Spawns the tracer.
     pub async fn spawn(self) -> Result<Tracer<T::GlobalState>, Error> {
+        if self.liteinst_runtime.is_some() && self.gdbserver.is_some() {
+            return Err(Error::Tool(anyhow::anyhow!(
+                "LiteInst runtime activation with a GDB server is unsupported ({}): both controllers would own the executable-entry software breakpoint",
+                Errno::ENOTSUPP
+            )));
+        }
         let mut command = self.command;
         let config = self.config.unwrap_or_default();
         let liteinst_fail_closed = self.liteinst_runtime.is_some();
@@ -2569,6 +2586,49 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn liteinst_runtime_rejects_gdbserver_before_spawning_tracee() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock predates Unix epoch")
+            .as_nanos();
+        let side_effect = std::env::temp_dir().join(format!(
+            "reverie-liteinst-gdb-rejected-{}-{nonce}",
+            std::process::id()
+        ));
+        let socket = side_effect.with_extension("sock");
+        assert!(!side_effect.exists());
+        assert!(!socket.exists());
+        let mut command = Command::new("/usr/bin/touch");
+        command.arg(&side_effect);
+
+        let error = match TracerBuilder::<InitFailureTool>::new(command)
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .gdbserver(socket.clone())
+            .spawn()
+            .await
+        {
+            Ok(_) => panic!("LiteInst plus GDB unexpectedly spawned a tracee"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("ENOTSUPP"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("executable-entry software breakpoint"),
+            "{error}"
+        );
+        assert!(
+            !side_effect.exists(),
+            "rejected configuration ran the tracee"
+        );
+        assert!(
+            !socket.exists(),
+            "rejected configuration opened a GDB server"
+        );
+    }
+
     #[derive(Default)]
     struct RootStopTool;
 
@@ -2591,6 +2651,52 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct AllSyscallsTool;
+
+    #[reverie::tool]
+    impl Tool for AllSyscallsTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::all_syscalls()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            Ok(guest.inject(syscall).await?)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_pending_signal_is_rejected_before_seccomp_resume() {
+        let queue_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<AllSyscallsTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .queue_liteinst_pending_signal_once_for_test(Arc::clone(&queue_once))
+            .spawn()
+            .await
+            .expect("spawn pending-signal activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("pending-signal activation tracee hung")
+            .expect_err("queued pre-Ready signal unexpectedly resumed the tracee");
+
+        assert!(!queue_once.load(Ordering::SeqCst));
+        assert!(
+            error
+                .to_string()
+                .contains("resume after seccomp stop attempted to deliver a queued signal"),
+            "{error}"
+        );
+        assert_reaped("pending-signal activation", root_pid);
+    }
+
+    #[derive(Default)]
     struct PreciseTimerTool;
 
     #[reverie::tool]
@@ -2602,8 +2708,10 @@ mod tests {
             Subscription::none()
         }
 
-        async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
-            guest.set_timer_precise(reverie::TimerSchedule::RcbsAndInstructions(100, 8))?;
+        async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Errno> {
+            guest
+                .set_timer_precise(reverie::TimerSchedule::RcbsAndInstructions(100, 8))
+                .expect("configure precise timer after exec");
             Ok(())
         }
     }
@@ -2689,14 +2797,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn cancellation_during_liteinst_precise_timer_step_reaps_root() {
+    async fn pre_ready_liteinst_precise_timer_is_controller_handled_and_reaped() {
         if !crate::perf::is_perf_supported() {
             return;
         }
         let (step_tx, mut step_rx) = mpsc::unbounded_channel();
         let builder = TracerBuilder::<PreciseTimerTool>::new(root_stop_guest_command("timer"))
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
-            .activate_liteinst_without_handshake_for_test()
             .pause_liteinst_precise_timer_step_for_test(step_tx);
         let held = Arc::clone(
             &builder

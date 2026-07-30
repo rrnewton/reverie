@@ -420,6 +420,8 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) pause_precise_timer_step: Option<mpsc::UnboundedSender<Pid>>,
     #[cfg(test)]
     pub(crate) activate_without_handshake: bool,
+    #[cfg(test)]
+    pub(crate) queue_pending_signal_once: Option<Arc<AtomicBool>>,
 }
 
 #[cfg(test)]
@@ -1836,7 +1838,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let task = self.assume_stopped();
             self.write_injected_syscall_result(&task, result)?;
             self.injected_syscall_frame = None;
-            let signal = self.pending_signal.take();
+            let signal = self.take_pending_signal_for_resume("resume injected syscall")?;
             return self.resume_stopped(task, signal)?.next_state().await;
         }
 
@@ -1875,7 +1877,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             self.pending_syscall = None;
             self.pending_syscall_already_skipped = false;
             self.injected_syscall_frame = None;
-            let signal = self.pending_signal.take();
+            let signal =
+                self.take_pending_signal_for_resume("resume intercepted injected syscall")?;
             let wait = self.resume_stopped(task, signal)?.next_state().await?;
             tracing::trace!(
                 target: "reverie_ptrace::syscall",
@@ -2242,21 +2245,23 @@ impl<L: Tool + 'static> TracedTask<L> {
             .and_then(|addr| task.read_value(addr).ok())
             .and_then(SegfaultTrapInfo::decode_segfault);
         Ok(match trap_info {
-            Some(SegfaultTrapInfo::Cpuid) => {
+            Some(SegfaultTrapInfo::Cpuid)
+                if self.global_state.subscriptions.has_cpuid() && self.has_cpuid_interception =>
+            {
                 let regs = self.handle_cpuid(regs).await?;
                 task.setregs(&regs)?;
                 HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
                 )
             }
-            Some(SegfaultTrapInfo::Rdtscs(req)) => {
+            Some(SegfaultTrapInfo::Rdtscs(req)) if self.global_state.subscriptions.has_rdtsc() => {
                 let regs = self.handle_rdtscs(regs, req).await?;
                 task.setregs(&regs)?;
                 HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
                 )
             }
-            None => HandleSignalResult::SignalToDeliver(task, Signal::SIGSEGV),
+            _ => HandleSignalResult::SignalToDeliver(task, Signal::SIGSEGV),
         })
     }
 
@@ -2265,10 +2270,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         Ok(HandleSignalResult::SignalToDeliver(task, Signal::SIGSEGV))
     }
 
-    // handle ptrace signal delivery stop
-    async fn handle_signal(&mut self, task: Stopped, sig: Signal) -> Result<Wait, TraceError> {
-        tracing::debug!("[{}] handle_signal: received signal {}", task.pid(), sig);
-        let phase = self.liteinst_runtime.lock().unwrap().phase;
+    fn liteinst_activation_in_progress(&self) -> bool {
         #[cfg(test)]
         let test_activation_bypass = self
             .global_state
@@ -2277,19 +2279,81 @@ impl<L: Tool + 'static> TracedTask<L> {
             .is_some_and(|runtime| runtime.activate_without_handshake);
         #[cfg(not(test))]
         let test_activation_bypass = false;
-        let activating_liteinst = self.global_state.liteinst_runtime.is_some()
-            && phase != LiteinstRuntimePhase::Ready
-            && !test_activation_bypass;
-        if activating_liteinst && sig != Signal::SIGTRAP {
-            self.liteinst_failure = Some(
-                Error::runtime(
-                    self.tid(),
-                    "reject unexpected LiteInst activation signal",
-                    format!("received {sig} before the required preload handshake completed"),
-                )
-                .to_string(),
-            );
-            return Err(Errno::EPROTO.into());
+
+        self.global_state.liteinst_runtime.is_some()
+            && self.liteinst_runtime.lock().unwrap().phase != LiteinstRuntimePhase::Ready
+            && !test_activation_bypass
+    }
+
+    fn reject_liteinst_activation_signal(
+        &mut self,
+        sig: Signal,
+        detail: impl Into<String>,
+    ) -> TraceError {
+        self.liteinst_failure = Some(
+            Error::runtime(
+                self.tid(),
+                "reject unexpected LiteInst activation signal",
+                format!(
+                    "received {sig} before the required preload handshake completed: {}",
+                    detail.into()
+                ),
+            )
+            .to_string(),
+        );
+        Errno::EPROTO.into()
+    }
+
+    fn take_pending_signal_for_resume(
+        &mut self,
+        operation: &'static str,
+    ) -> Result<Option<Signal>, TraceError> {
+        let signal = self.pending_signal.take();
+        if self.liteinst_activation_in_progress()
+            && let Some(sig) = signal
+        {
+            return Err(self.reject_liteinst_activation_signal(
+                sig,
+                format!("{operation} attempted to deliver a queued signal"),
+            ));
+        }
+        Ok(signal)
+    }
+
+    // handle ptrace signal delivery stop
+    async fn handle_signal(&mut self, task: Stopped, sig: Signal) -> Result<Wait, TraceError> {
+        tracing::debug!("[{}] handle_signal: received signal {}", task.pid(), sig);
+        if self.liteinst_activation_in_progress() {
+            match sig {
+                Signal::SIGTRAP => {}
+                Signal::SIGSEGV => {
+                    return match self.handle_sigsegv(task).await? {
+                        HandleSignalResult::SignalSuppressed(wait) => Ok(wait),
+                        HandleSignalResult::SignalToDeliver(_, _) => {
+                            Err(self.reject_liteinst_activation_signal(
+                                sig,
+                                "the fault was not a subscribed, controller-intercepted CPUID or RDTSC instruction",
+                            ))
+                        }
+                    };
+                }
+                sig if sig == Timer::signal_type() => {
+                    let (was_timer, task) = self.handle_timer(task).await?;
+                    if !was_timer {
+                        return Err(self.reject_liteinst_activation_signal(
+                            sig,
+                            "the signal was not generated by this tracee's controller timer",
+                        ));
+                    }
+                    return self.resume_stopped(task, None)?.next_state().await;
+                }
+                sig => {
+                    return Err(self.reject_liteinst_activation_signal(
+                        sig,
+                        "the signal is outside the activation allowlist",
+                    ));
+                }
+            }
         }
         let result = match sig {
             Signal::SIGSEGV => self.handle_sigsegv(task).await?,
@@ -3331,7 +3395,18 @@ impl<L: Tool + 'static> TracedTask<L> {
                     .tracee_context(tid, "resume after displaced LiteInst window")?;
             }
 
-            let sig = self.pending_signal.take();
+            #[cfg(test)]
+            if self.liteinst_runtime.lock().unwrap().phase == LiteinstRuntimePhase::Waiting
+                && let Some(queue_once) = self
+                    .global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.queue_pending_signal_once.as_ref())
+                && queue_once.swap(false, Ordering::SeqCst)
+            {
+                self.pending_signal = Some(Signal::SIGUSR1);
+            }
+            let sig = self.take_pending_signal_for_resume("resume after seccomp stop")?;
             let running = self
                 .resume_stopped(task, sig)
                 .tracee_context(tid, "resume after seccomp stop")?;

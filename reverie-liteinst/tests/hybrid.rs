@@ -6,9 +6,15 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+#[cfg(target_arch = "x86_64")]
+use reverie::CpuIdResult;
 use reverie::Error;
 use reverie::GlobalTool;
 use reverie::Guest;
+#[cfg(target_arch = "x86_64")]
+use reverie::Rdtsc;
+#[cfg(target_arch = "x86_64")]
+use reverie::RdtscResult;
 use reverie::Subscription;
 use reverie::Tid;
 use reverie::Tool;
@@ -22,6 +28,8 @@ use reverie_liteinst::LiteinstBackend;
 #[derive(Debug, Default)]
 struct EventCounter {
     delivered: AtomicU64,
+    cpuid_events: AtomicU64,
+    rdtsc_events: AtomicU64,
     last_getpid_rip: AtomicU64,
     last_getpid_r12: AtomicU64,
     helper_mprotect_callbacks: AtomicU64,
@@ -44,9 +52,66 @@ impl GlobalTool for EventCounter {
         } else if increment & (1_u64 << 61) != 0 {
             self.helper_mprotect_callbacks
                 .fetch_add(1, Ordering::SeqCst);
+        } else if increment & (1_u64 << 60) != 0 {
+            self.cpuid_events.fetch_add(1, Ordering::SeqCst);
+        } else if increment & (1_u64 << 59) != 0 {
+            self.rdtsc_events.fetch_add(1, Ordering::SeqCst);
         } else {
             self.delivered.fetch_add(increment, Ordering::SeqCst);
         }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[derive(Default)]
+struct ActivationCpuEvents;
+
+#[cfg(target_arch = "x86_64")]
+#[reverie::tool]
+impl Tool for ActivationCpuEvents {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        Subscription::all()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        Ok(guest.inject(syscall).await?)
+    }
+
+    async fn handle_cpuid_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        eax: u32,
+        ecx: u32,
+    ) -> Result<CpuIdResult, reverie::Errno> {
+        guest.send_rpc(1_u64 << 60).await;
+        // Keep the loader's required x86-64 feature floor while proving that
+        // the Tool, rather than the guest, decides the observed result.
+        let native = std::arch::x86_64::__cpuid_count(eax, ecx);
+        Ok(CpuIdResult {
+            eax: native.eax,
+            ebx: native.ebx,
+            ecx: native.ecx,
+            edx: native.edx,
+        })
+    }
+
+    async fn handle_rdtsc_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        request: Rdtsc,
+    ) -> Result<RdtscResult, reverie::Errno> {
+        guest.send_rpc(1_u64 << 59).await;
+        Ok(RdtscResult {
+            tsc: 0x1234_5678,
+            aux: (request == Rdtsc::Tscp).then_some(0x42),
+        })
     }
 }
 
@@ -422,6 +487,31 @@ async fn valid_dynamic_run_observes_restored_executable_entry() {
 
     assert_eq!(output.stdout, b"entry-int3=0\n", "{output:?}");
     assert!(output.status.success(), "{output:?}");
+}
+
+#[cfg(target_arch = "x86_64")]
+#[tokio::test(flavor = "current_thread")]
+async fn loader_cpu_events_are_determinized_before_ready_and_entry_is_restored() {
+    let (_directory, guest) = compile_fixture("hybrid_pre_ready_cpu.c");
+    let (output, global) =
+        LiteinstBackend::run_host_with_output_and_preload::<ActivationCpuEvents>(
+            Command::new(guest),
+            (),
+            preload_path(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(output.stdout, b"entry-int3=0 probe=1\n", "{output:?}");
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        global.cpuid_events.load(Ordering::SeqCst) >= 1,
+        "the pre-constructor IFUNC CPUID did not reach the Tool"
+    );
+    assert!(
+        global.rdtsc_events.load(Ordering::SeqCst) >= 1,
+        "the pre-constructor IFUNC RDTSC did not reach the Tool"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
