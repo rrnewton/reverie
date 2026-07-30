@@ -73,9 +73,11 @@ impl Drop for DispatchScratchScope {
 ///
 /// A tool-specific preload DSO normally calls this from its constructor. The
 /// function publishes the round-8 AOT callback, installs the shared seccomp
-/// controller, and routes direct rewritten sites through `T`. A subscribed
-/// site that reaches the residual `SIGSYS` surface fails closed because a Rust
-/// tool may allocate, lock, or block and therefore cannot run in signal context.
+/// controller, and routes direct rewritten sites through `T`. Loader/setup
+/// residuals before the first direct AOT event run natively outside the Tool
+/// lifecycle. After that boundary, a subscribed site that reaches the residual
+/// `SIGSYS` surface fails closed because a Rust tool may allocate, lock, or
+/// block and therefore cannot run in signal context.
 ///
 /// # Safety
 ///
@@ -136,6 +138,7 @@ where
         rpc,
         root_pid: pid,
         subscriptions,
+        direct_dispatch_started: AtomicBool::new(false),
         states: SpinMutex::new(HashMap::new()),
     };
     // SAFETY: the caller provides the once-before-threads contract. The
@@ -154,7 +157,12 @@ struct ToolHost<T: Tool> {
     rpc: CoordinatorRpc<T::GlobalState>,
     root_pid: Pid,
     subscriptions: HashSet<Sysno>,
+    direct_dispatch_started: AtomicBool,
     states: SpinMutex<HashMap<i32, T::ThreadState>>,
+}
+
+fn residual_must_fail_closed(subscribed: bool, direct_dispatch_started: bool) -> bool {
+    subscribed && direct_dispatch_started
 }
 
 impl<T> SyscallDispatcher for ToolHost<T>
@@ -180,28 +188,32 @@ where
 
         if event.source() == SyscallEventSource::SignalTrap {
             // AUTONOMOUS-BOT-IMPLEMENTED
-            // Generic Rust Tool code is not async-signal-safe. Match LiteInst's
-            // unpatchable-site policy: make the residual observable, then fail
-            // closed instead of running T or silently forwarding it.
+            // Generic Rust Tool code is not async-signal-safe. Make the
+            // residual observable, then either pass pre-activation loader
+            // setup natively or fail a subscribed post-activation site closed.
             record_fallback_dispatch(event.number());
             record_fallback_site(event.instruction_pointer());
             let subscribed = usize::try_from(event.number())
                 .ok()
                 .and_then(Sysno::new)
                 .is_some_and(|number| self.subscriptions.contains(&number));
-            if subscribed {
+            if residual_must_fail_closed(
+                subscribed,
+                self.direct_dispatch_started.load(Ordering::Acquire),
+            ) {
                 event.fail(libc::EOPNOTSUPP);
             } else if let Some(error) = injected_syscall_guard(event.number(), event.args()) {
                 event.fail(error.into_raw());
             } else {
-                // Reverie's contract lets unsubscribed syscalls run natively.
-                // This keeps loader/runtime residuals outside a narrow Tool's
-                // subscription set on the shared guarded pass-through path.
+                // Before the first direct event, this is loader/setup activity
+                // outside the Tool lifecycle. Afterwards, Reverie's contract
+                // lets only unsubscribed residual syscalls run natively.
                 PassthroughDispatcher::new().dispatch(event);
             }
             return;
         }
 
+        self.direct_dispatch_started.store(true, Ordering::Release);
         let _scratch_scope = DispatchScratchScope::enter();
         let tid = raw_pid(libc::SYS_gettid);
         let pid = raw_pid(libc::SYS_getpid);
@@ -975,5 +987,12 @@ mod tests {
         assert_eq!(stack.size(), core::mem::size_of::<u64>());
         drop(stack.commit().unwrap());
         COMMITTED_STACKS.lock().clear();
+    }
+
+    #[test]
+    fn residual_subscription_fails_closed_only_after_direct_dispatch_starts() {
+        assert!(!residual_must_fail_closed(true, false));
+        assert!(!residual_must_fail_closed(false, true));
+        assert!(residual_must_fail_closed(true, true));
     }
 }
