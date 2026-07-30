@@ -1908,7 +1908,11 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             #[cfg(test)]
             force_context_none_signal_once: None,
             #[cfg(test)]
+            force_context_signal_once: None,
+            #[cfg(test)]
             force_preinit_signal_once: None,
+            #[cfg(test)]
+            force_post_exec_signal_once: None,
         });
         self
     }
@@ -2058,11 +2062,32 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     }
 
     #[cfg(test)]
+    fn force_liteinst_context_signal_once_for_test(mut self, force_once: Arc<AtomicBool>) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before injection-signal injection")
+            .force_context_signal_once = Some(force_once);
+        self
+    }
+
+    #[cfg(test)]
     fn force_liteinst_preinit_signal_once_for_test(mut self, force_once: Arc<AtomicBool>) -> Self {
         self.liteinst_runtime
             .as_mut()
             .expect("LiteInst runtime must be configured before preinit-signal injection")
             .force_preinit_signal_once = Some(force_once);
+        self
+    }
+
+    #[cfg(test)]
+    fn force_liteinst_post_exec_signal_once_for_test(
+        mut self,
+        force_once: Arc<AtomicBool>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before post-exec-signal injection")
+            .force_post_exec_signal_once = Some(force_once);
         self
     }
 
@@ -2748,14 +2773,39 @@ mod tests {
             .expect("context-none activation tracee hung")
             .expect_err("nested pre-Ready reinjection signal was silently dropped");
 
-        assert!(!force_once.load(Ordering::SeqCst));
+        assert!(!force_once.load(Ordering::SeqCst), "{error}");
         assert!(
             error
                 .to_string()
-                .contains("finish reinjected syscall observed an unexpected nested signal"),
+                .contains("finish reinjected syscall observed a nested signal without the expected controller provenance"),
             "{error}"
         );
         assert_reaped("context-none activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_external_sigtrap_is_rejected_during_injected_syscall_step() {
+        let force_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<ReplaceMmapTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_context_signal_once_for_test(Arc::clone(&force_once))
+            .spawn()
+            .await
+            .expect("spawn injected-step activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("injected-step activation tracee hung")
+            .expect_err("external pre-Ready SIGTRAP impersonated injected-step completion");
+
+        assert!(!force_once.load(Ordering::SeqCst), "{error}");
+        assert!(
+            error.to_string().contains(
+                "finish injected syscall observed a nested signal without the expected controller provenance"
+            ),
+            "{error}"
+        );
+        assert_reaped("injected-step activation", root_pid);
     }
 
     #[derive(Default)]
@@ -2799,7 +2849,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("skip intercepted syscall observed an unexpected nested signal"),
+                .contains("skip intercepted syscall observed a nested signal without the expected controller provenance"),
             "{error}"
         );
         assert_reaped("skip-seccomp activation", root_pid);
@@ -2828,6 +2878,31 @@ mod tests {
             "{error}"
         );
         assert_reaped("preinit-signal activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_external_sigtrap_is_rejected_after_exec_event() {
+        let force_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_post_exec_signal_once_for_test(Arc::clone(&force_once))
+            .spawn()
+            .await
+            .expect("spawn post-exec-signal activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("post-exec-signal activation tracee hung")
+            .expect_err("external SIGTRAP impersonated the required post-exec trap");
+
+        assert!(!force_once.load(Ordering::SeqCst));
+        assert!(
+            error.to_string().contains(
+                "wait for the LiteInst post-exec trap observed a nested signal without the expected controller provenance"
+            ),
+            "{error}"
+        );
+        assert_reaped("post-exec-signal activation", root_pid);
     }
 
     #[derive(Default)]
