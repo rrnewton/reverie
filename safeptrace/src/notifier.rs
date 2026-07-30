@@ -186,6 +186,14 @@ static SYNC_STATUS_PUBLICATION_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCaptureP
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+static SYNC_RETURN_COMMIT_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static CAPTURE_AFTER_FIRST_SNAPSHOT_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
 static SYNC_DECODE_CAPTURE_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -389,10 +397,44 @@ struct StatusReservation<'a> {
 
 struct SyncWaitOwner<'a> {
     event: &'a Event,
+    released: bool,
+}
+
+impl SyncWaitOwner<'_> {
+    fn try_commit_status_return(&mut self, _pid: Pid, reservation: StatusReservation<'_>) -> bool {
+        let _guard = self.event.wait_owner_lock.lock();
+        if !libc::WIFEXITED(reservation.status)
+            && !libc::WIFSIGNALED(reservation.status)
+            && self.event.cleanup_cancel_requested.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        #[cfg(test)]
+        if let Some(pause) = SYNC_RETURN_COMMIT_PAUSES.lock().remove(&_pid) {
+            pause.captured.wait();
+            pause.resume.wait();
+        }
+        reservation.commit();
+        self.event
+            .wait_owner
+            .compare_exchange(
+                WAIT_OWNER_SYNC,
+                WAIT_OWNER_NONE,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .expect("synchronous wait ownership changed before release");
+        self.released = true;
+        self.event.wait_owner_changed.notify_all();
+        true
+    }
 }
 
 impl Drop for SyncWaitOwner<'_> {
     fn drop(&mut self) {
+        if self.released {
+            return;
+        }
         let _guard = self.event.wait_owner_lock.lock();
         self.event
             .wait_owner
@@ -769,7 +811,10 @@ impl Event {
                             Ordering::Acquire,
                         )
                         .expect("wait owner changed while serialized");
-                    return Ok(SyncWaitOwnership::Claimed(SyncWaitOwner { event: self }));
+                    return Ok(SyncWaitOwnership::Claimed(SyncWaitOwner {
+                        event: self,
+                        released: false,
+                    }));
                 }
                 WAIT_OWNER_NOTIFIER => match self.worker_state.load(Ordering::Acquire) {
                     WORKER_NOT_STARTED | WORKER_STARTING => {
@@ -852,6 +897,18 @@ impl Event {
         self.cleanup_cancel_requested.load(Ordering::Acquire)
     }
 
+    fn try_commit_status_return(&self, reservation: StatusReservation<'_>) -> bool {
+        let _guard = self.wait_owner_lock.lock();
+        if !libc::WIFEXITED(reservation.status)
+            && !libc::WIFSIGNALED(reservation.status)
+            && self.cleanup_cancel_requested.load(Ordering::Acquire)
+        {
+            return false;
+        }
+        reservation.commit();
+        true
+    }
+
     fn wait_status_reservation_sync(&self) -> Result<StatusReservation<'_>, Errno> {
         let mut state = self.status.lock();
         loop {
@@ -882,6 +939,18 @@ impl Event {
                 state: Some(state),
             }));
         }
+        match state.terminal {
+            INVALID_STATUS => None,
+            ECHILD_STATUS => Some(Err(Errno::ECHILD)),
+            status => Some(Ok(StatusReservation {
+                status,
+                state: None,
+            })),
+        }
+    }
+
+    fn try_terminal_reservation_sync(&self) -> Option<Result<StatusReservation<'_>, Errno>> {
+        let state = self.status.lock();
         match state.terminal {
             INVALID_STATUS => None,
             ECHILD_STATUS => Some(Err(Errno::ECHILD)),
@@ -1238,14 +1307,19 @@ impl WorkerIdentity {
             }
         }
         // Ordinary direct children have TracerPid 0 and are still valid
-        // waitpid targets. The tracer binding is part of the immutable
-        // snapshot, but only a live tracer-owned generation may turn ECHILD
-        // into a transient retry below.
+        // waitpid targets. TracerPid is mutable attachment state within the
+        // exact pidfd/procfs generation; only a currently tracer-owned task may
+        // turn ECHILD into a transient retry below.
         Self::capture_process(pid)
     }
 
     fn capture_process(pid: Pid) -> Result<Self, Errno> {
         let before = worker_proc_snapshot(pid).map_err(io_errno)?;
+        #[cfg(test)]
+        if let Some(pause) = CAPTURE_AFTER_FIRST_SNAPSHOT_PAUSES.lock().remove(&pid) {
+            pause.captured.wait();
+            pause.resume.wait();
+        }
         let pidfd = open_thread_pidfd(pid)?;
         let proc_dir = OpenOptions::new()
             .read(true)
@@ -1257,7 +1331,7 @@ impl WorkerIdentity {
         let current_inode = fs::metadata(format!("/proc/{pid}"))
             .map_err(io_errno)?
             .ino();
-        if before != after || current_inode != proc_inode {
+        if !before.same_process_generation(&after) || current_inode != proc_inode {
             return Err(Errno::ESRCH);
         }
 
@@ -1465,10 +1539,10 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
     NOTIFIER.remove(pid, &event);
 }
 
-fn try_replay_sync_status(pid: Pid, handle: &EventHandle) -> Option<Result<Wait, Error>> {
+fn try_replay_sync_terminal(pid: Pid, handle: &EventHandle) -> Option<Result<Wait, Error>> {
     let handle = handle.resolved_handle();
     let event = handle.event();
-    let reservation = event.try_status_reservation_sync()?;
+    let reservation = event.try_terminal_reservation_sync()?;
     Some(match reservation {
         Err(error) => Err(error.into()),
         Ok(reservation) if event.cleanup_cancels_status_return(reservation.status) => {
@@ -1480,8 +1554,8 @@ fn try_replay_sync_status(pid: Pid, handle: &EventHandle) -> Option<Result<Wait,
                 reservation.status,
                 TraceeToken::from_event(handle.clone()),
             );
-            if decoded.is_ok() {
-                reservation.commit();
+            if decoded.is_ok() && !event.try_commit_status_return(reservation) {
+                return Some(Err(Errno::ECANCELED.into()));
             }
             decoded
         }
@@ -1514,13 +1588,13 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
     let requested = token.event().resolved_handle();
     // A retained same-generation result remains authoritative even after the
     // procfs task and registry entry have disappeared.
-    if let Some(replayed) = try_replay_sync_status(pid, &requested) {
+    if let Some(replayed) = try_replay_sync_terminal(pid, &requested) {
         return replayed;
     }
     let handle = match NOTIFIER.sync_handle(pid, &requested) {
         Ok(handle) => handle,
         Err(error) => {
-            if let Some(replayed) = try_replay_sync_status(pid, &requested) {
+            if let Some(replayed) = try_replay_sync_terminal(pid, &requested) {
                 return replayed;
             }
             return Err(error.into());
@@ -1547,12 +1621,12 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                     reservation.status,
                     TraceeToken::from_event(handle),
                 );
-                if decoded.is_ok() {
-                    reservation.commit();
+                if decoded.is_ok() && !event.try_commit_status_return(reservation) {
+                    return Err(Errno::ECANCELED.into());
                 }
                 return decoded;
             }
-            SyncWaitOwnership::Claimed(owner) => {
+            SyncWaitOwnership::Claimed(mut owner) => {
                 if !Arc::ptr_eq(token.event().event(), &event) {
                     drop(owner);
                     continue;
@@ -1571,16 +1645,23 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                         resume_cancelled_sync_status(pid, status)?;
                         cancelling = true;
                     } else {
+                        let status = reservation.status;
                         let decoded = Wait::from_raw_with_token(
                             pid,
-                            reservation.status,
-                            TraceeToken::from_event(handle),
+                            status,
+                            TraceeToken::from_event(handle.clone()),
                         );
-                        if decoded.is_ok() {
-                            reservation.commit();
+                        if decoded.is_err() {
+                            drop(owner);
+                            return decoded;
                         }
-                        drop(owner);
-                        return decoded;
+                        if owner.try_commit_status_return(pid, reservation) {
+                            drop(owner);
+                            return decoded;
+                        }
+                        drop(decoded);
+                        resume_cancelled_sync_status(pid, status)?;
+                        cancelling = true;
                     }
                 }
                 loop {
@@ -1640,16 +1721,23 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                     let reservation = event
                         .try_status_reservation_sync()
                         .expect("published synchronous status is immediately reservable")?;
+                    let reserved_status = reservation.status;
                     let decoded = Wait::from_raw_with_token(
                         pid,
-                        reservation.status,
-                        TraceeToken::from_event(handle),
+                        reserved_status,
+                        TraceeToken::from_event(handle.clone()),
                     );
-                    if decoded.is_ok() {
-                        reservation.commit();
+                    if decoded.is_err() {
+                        drop(owner);
+                        return decoded;
                     }
-                    drop(owner);
-                    return decoded;
+                    if owner.try_commit_status_return(pid, reservation) {
+                        drop(owner);
+                        return decoded;
+                    }
+                    drop(decoded);
+                    resume_cancelled_sync_status(pid, reserved_status)?;
+                    cancelling = true;
                 }
             }
         }
@@ -4529,6 +4617,118 @@ mod test {
     }
 
     #[test]
+    fn regular_stop_return_commit_precedes_late_cleanup_cancellation() {
+        let (pid, mut cleanup) =
+            spawn_stopped_process(None).expect("spawn regular return-race child");
+        let running = Running::new(pid.into());
+        let retained = running.1.event().clone();
+        cleanup
+            .store_terminal(TerminalCleanup::new_unregistered(pid.into(), &running.1))
+            .expect("store regular return-race Event");
+        retained.event().update((libc::SIGSTOP << 8) | 0x7f);
+
+        let return_decided = Arc::new(Barrier::new(2));
+        let resume_return = Arc::new(Barrier::new(2));
+        SYNC_RETURN_COMMIT_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&return_decided),
+                resume: Arc::clone(&resume_return),
+            },
+        );
+        let cleanup_ready = Arc::new(Barrier::new(2));
+        let resume_cleanup = Arc::new(Barrier::new(2));
+        CLEANUP_OWNER_CLAIM_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&cleanup_ready),
+                resume: Arc::clone(&resume_cleanup),
+            },
+        );
+
+        let synchronous = thread::spawn(move || {
+            matches!(
+                running.wait(),
+                Ok(Wait::Stopped(_, crate::Event::Signal(Signal::SIGSTOP)))
+            )
+        });
+        return_decided.wait();
+        let cleaning = thread::spawn(move || {
+            let result = cleanup.cleanup();
+            (result, cleanup)
+        });
+        cleanup_ready.wait();
+        resume_cleanup.wait();
+        thread::yield_now();
+        resume_return.wait();
+
+        assert!(
+            synchronous.join().expect("join regular return decision"),
+            "cleanup cancelled a regular stop after its return decision"
+        );
+        let (result, _cleanup) = cleaning.join().expect("join regular return cleanup");
+        result.expect("cleanup after regular return ownership handoff");
+    }
+
+    #[test]
+    fn exit_stop_return_commit_precedes_late_cleanup_cancellation() {
+        let (pid, stopped, mut cleanup) =
+            spawn_traced_process(None).expect("spawn exit return-race tracee");
+        stopped
+            .setoptions(Options::PTRACE_O_TRACEEXIT)
+            .expect("enable exit return-race stop");
+        let running = stopped
+            .resume(None)
+            .expect("resume exit return-race tracee");
+        cleanup
+            .store_terminal(TerminalCleanup::new_unregistered(pid.into(), &running.1))
+            .expect("store exit return-race Event");
+
+        let return_decided = Arc::new(Barrier::new(2));
+        let resume_return = Arc::new(Barrier::new(2));
+        SYNC_RETURN_COMMIT_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&return_decided),
+                resume: Arc::clone(&resume_return),
+            },
+        );
+        let cleanup_ready = Arc::new(Barrier::new(2));
+        let resume_cleanup = Arc::new(Barrier::new(2));
+        CLEANUP_OWNER_CLAIM_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&cleanup_ready),
+                resume: Arc::clone(&resume_cleanup),
+            },
+        );
+
+        let coordinator = thread::spawn(move || {
+            return_decided.wait();
+            let cleaning = thread::spawn(move || {
+                let result = cleanup.cleanup();
+                (result, cleanup)
+            });
+            cleanup_ready.wait();
+            resume_cleanup.wait();
+            thread::yield_now();
+            resume_return.wait();
+            cleaning.join().expect("join exit return cleanup")
+        });
+
+        let (exit_stopped, event) = running
+            .wait()
+            .expect("exit stop return decision")
+            .assume_stopped();
+        assert_eq!(event, crate::Event::Exit);
+        let _running = exit_stopped
+            .resume(None)
+            .expect("resume returned exit-stop capability");
+        let (result, _cleanup) = coordinator.join().expect("join exit return coordinator");
+        result.expect("cleanup after exit return ownership handoff");
+    }
+
+    #[test]
     fn cleanup_cancellation_retains_pending_regular_stop_until_terminal() {
         let (pid, mut cleanup) =
             spawn_stopped_process(None).expect("spawn pending-stop cancellation child");
@@ -5489,6 +5689,97 @@ mod test {
             .expect("live generation became synthetic ECHILD");
         assert_eq!(exited.assume_exited().1, crate::ExitStatus::Exited(42));
         cleanup.disarm();
+    }
+
+    #[test]
+    fn capture_accepts_tracer_attachment_during_identity_snapshot() {
+        let (pid, mut cleanup) =
+            spawn_stopped_process(None).expect("spawn capture-transition child");
+        let first_snapshot = Arc::new(Barrier::new(2));
+        let resume_capture = Arc::new(Barrier::new(2));
+        CAPTURE_AFTER_FIRST_SNAPSHOT_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&first_snapshot),
+                resume: Arc::clone(&resume_capture),
+            },
+        );
+
+        let capturing = thread::spawn(move || WorkerIdentity::capture_process(pid.into()));
+        first_snapshot.wait();
+        nix::sys::ptrace::seize(pid, Options::empty())
+            .expect("attach tracer between identity snapshots");
+        resume_capture.wait();
+        let identity = capturing
+            .join()
+            .expect("join capture-transition thread")
+            .expect("TracerPid transition changed process generation");
+        assert!(
+            tracer_is_current(identity.snapshot.tracer_pid),
+            "capture did not normalize to the post-attachment TracerPid"
+        );
+        cleanup.cleanup().expect("cleanup capture-transition child");
+    }
+
+    fn retained_nonterminal_rejects_replacement(requested_pid: Option<i32>) -> bool {
+        let Some((old_pid, mut old_cleanup)) = spawn_stopped_process(requested_pid) else {
+            return false;
+        };
+        let old_running = Running::new(old_pid.into());
+        let old_handle = old_running.1.event().clone();
+        old_handle
+            .bind_identity(Arc::new(
+                WorkerIdentity::capture_process(old_pid.into())
+                    .expect("capture retained-stop old generation"),
+            ))
+            .expect("bind retained-stop old identity");
+        old_handle.event().update((libc::SIGSTOP << 8) | 0x7f);
+        old_cleanup
+            .cleanup()
+            .expect("reap retained-stop old generation");
+
+        let Some((replacement_pid, replacement_cleanup)) = spawn_stopped_process(requested_pid)
+        else {
+            return false;
+        };
+        let projected = Running::from_token(replacement_pid.into(), old_running.1);
+        assert!(
+            matches!(
+                projected.wait(),
+                Err(Error::Errno(Errno::ECHILD | Errno::ESRCH))
+            ),
+            "old nonterminal FIFO status replayed as a replacement-PID capability"
+        );
+        reap_stopped_process(replacement_cleanup);
+        true
+    }
+
+    #[test]
+    fn retained_nonterminal_is_not_replayed_for_pid_reuse_projection() {
+        const INNER: &str = "SAFEPTRACE_RETAINED_STOP_REUSE_INNER";
+        if env::var_os(INNER).is_some() {
+            if retained_nonterminal_rejects_replacement(Some(100)) {
+                println!("ACTUAL_RETAINED_STOP_REUSE_EXERCISED");
+            } else {
+                println!("ACTUAL_RETAINED_STOP_REUSE_UNAVAILABLE");
+            }
+            return;
+        }
+
+        let inner = "notifier::test::retained_nonterminal_is_not_replayed_for_pid_reuse_projection";
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(INNER, "1")]);
+        match classify_exact_reuse_output(
+            actual_reuse.as_ref(),
+            "ACTUAL_RETAINED_STOP_REUSE_EXERCISED",
+            "ACTUAL_RETAINED_STOP_REUSE_UNAVAILABLE",
+        )
+        .unwrap_or_else(|error| panic!("actual retained-stop reuse regression failed: {error}"))
+        {
+            ExactReuseOutcome::Exercised => return,
+            ExactReuseOutcome::Unavailable => {}
+        }
+
+        assert!(retained_nonterminal_rejects_replacement(None));
     }
 
     fn spawn_traced_process(

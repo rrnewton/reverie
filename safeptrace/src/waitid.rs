@@ -151,8 +151,11 @@ pub fn waitid(waitid_type: IdType, flags: WaitPidFlag) -> Result<WaitStatus, Err
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "notifier")]
     use std::os::fd::AsRawFd;
+    #[cfg(feature = "notifier")]
     use std::os::fd::FromRawFd;
+    #[cfg(feature = "notifier")]
     use std::os::fd::OwnedFd;
 
     use nix::sys::signal::Signal;
@@ -162,6 +165,7 @@ mod tests {
 
     use super::*;
 
+    #[cfg(feature = "notifier")]
     #[test]
     fn waitpidfd_preserves_direct_child_stop_status() {
         let fork_result = unsafe { unistd::fork() }.expect("fork direct-child stop test");
