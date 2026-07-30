@@ -194,7 +194,7 @@ impl Event {
                 // want that.
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
                 #[cfg(all(test, feature = "notifier"))]
-                notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid);
+                notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid)?;
                 Ok(Self::NewChild(
                     ChildOp::Fork,
                     Running::from_current_or_new(child_pid)?,
@@ -205,7 +205,7 @@ impl Event {
                 // want that.
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
                 #[cfg(all(test, feature = "notifier"))]
-                notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid);
+                notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid)?;
                 Ok(Self::NewChild(
                     ChildOp::Vfork,
                     Running::from_current_or_new(child_pid)?,
@@ -216,7 +216,7 @@ impl Event {
                 // want that.
                 let child_pid = Pid::from_raw(task.getevent()? as i32);
                 #[cfg(all(test, feature = "notifier"))]
-                notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid);
+                notifier::register_new_child_for_test_cleanup(task.1.event(), child_pid)?;
                 Ok(Self::NewChild(
                     ChildOp::Clone,
                     Running::from_current_or_new(child_pid)?,

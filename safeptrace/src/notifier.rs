@@ -164,6 +164,21 @@ struct BoundedTestPause {
 struct ExactTestMember {
     pid: Pid,
     pidfd: OwnedFd,
+    phase: ExactCleanupPhase,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExactCleanupPhase {
+    NeedsSignal,
+    NeedsReap,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+struct PendingExactRegistration {
+    pid: Pid,
+    error: Errno,
 }
 
 #[cfg(test)]
@@ -172,7 +187,8 @@ struct NewChildDecodePause {
     captured: mpsc::SyncSender<()>,
     resume: mpsc::Receiver<()>,
     members: Arc<Mutex<Vec<ExactTestMember>>>,
-    registration_error: Arc<Mutex<Option<Errno>>>,
+    registration_error: Arc<Mutex<Option<PendingExactRegistration>>>,
+    pidfd_open_error: Arc<Mutex<Option<Errno>>>,
 }
 
 #[cfg(test)]
@@ -251,18 +267,28 @@ pub(super) fn pause_sync_new_child_decode(handle: &EventHandle) {
 }
 
 #[cfg(test)]
-pub(super) fn register_new_child_for_test_cleanup(handle: &EventHandle, child: Pid) {
+pub(super) fn register_new_child_for_test_cleanup(
+    handle: &EventHandle,
+    child: Pid,
+) -> Result<(), Errno> {
     let mut slot = handle.event().new_child_decode_pause.lock();
     let Some(pause) = slot.as_mut() else {
-        return;
+        return Ok(());
     };
-    match open_thread_pidfd(child) {
-        Ok(pidfd) => pause
-            .members
-            .lock()
-            .push(ExactTestMember { pid: child, pidfd }),
-        Err(error) => *pause.registration_error.lock() = Some(error),
-    }
+    let injected = pause.pidfd_open_error.lock().take();
+    let pidfd = match injected.map_or_else(|| open_thread_pidfd(child), Err) {
+        Ok(pidfd) => pidfd,
+        Err(error) => {
+            *pause.registration_error.lock() = Some(PendingExactRegistration { pid: child, error });
+            return Err(error);
+        }
+    };
+    pause.members.lock().push(ExactTestMember {
+        pid: child,
+        pidfd,
+        phase: ExactCleanupPhase::NeedsSignal,
+    });
+    Ok(())
 }
 
 /// A place-holder status used to indicate that no status has been set.
@@ -4092,8 +4118,12 @@ mod test {
             members: Arc::new(Mutex::new(vec![ExactTestMember {
                 pid: crate::Pid::from_raw(old_pid),
                 pidfd: stale_pidfd,
+                phase: ExactCleanupPhase::NeedsSignal,
             }])),
             registration_error: Arc::new(Mutex::new(None)),
+            pidfd_open_error: Arc::new(Mutex::new(None)),
+            signal_errors: HashMap::new(),
+            reap_errors: HashMap::new(),
             armed: true,
         };
         stale_guard
@@ -6360,7 +6390,10 @@ mod test {
         projected_pgid: Pid,
         event: EventHandle,
         members: Arc<Mutex<Vec<ExactTestMember>>>,
-        registration_error: Arc<Mutex<Option<Errno>>>,
+        registration_error: Arc<Mutex<Option<PendingExactRegistration>>>,
+        pidfd_open_error: Arc<Mutex<Option<Errno>>>,
+        signal_errors: HashMap<crate::Pid, VecDeque<Errno>>,
+        reap_errors: HashMap<crate::Pid, VecDeque<Errno>>,
         armed: bool,
     }
 
@@ -6375,52 +6408,185 @@ mod test {
             Ok(Self {
                 projected_pgid,
                 event,
-                members: Arc::new(Mutex::new(vec![ExactTestMember { pid: leader, pidfd }])),
+                members: Arc::new(Mutex::new(vec![ExactTestMember {
+                    pid: leader,
+                    pidfd,
+                    phase: ExactCleanupPhase::NeedsSignal,
+                }])),
                 registration_error: Arc::new(Mutex::new(None)),
+                pidfd_open_error: Arc::new(Mutex::new(None)),
+                signal_errors: HashMap::new(),
+                reap_errors: HashMap::new(),
                 armed: true,
             })
         }
 
-        fn disarm(&mut self) {
+        fn disarm_completed(&mut self) -> io::Result<()> {
+            if let Some(pending) = *self.registration_error.lock() {
+                return Err(io::Error::other(format!(
+                    "cannot disarm with pending exact registration for {}: {}",
+                    pending.pid, pending.error
+                )));
+            }
+            let members = self.members.lock();
+            for member in members.iter() {
+                if !pidfd_exited(&member.pidfd)? {
+                    return Err(io::Error::other(format!(
+                        "cannot disarm live exact member {} in phase {:?}",
+                        member.pid, member.phase
+                    )));
+                }
+            }
+            drop(members);
+            self.members.lock().clear();
             self.armed = false;
+            Ok(())
+        }
+
+        fn inject_signal_error(&mut self, pid: crate::Pid, error: Errno) {
+            self.signal_errors.entry(pid).or_default().push_back(error);
+        }
+
+        fn inject_reap_error(&mut self, pid: crate::Pid, error: Errno) {
+            self.reap_errors.entry(pid).or_default().push_back(error);
+        }
+
+        fn inject_pidfd_open_error(&self, error: Errno) {
+            *self.pidfd_open_error.lock() = Some(error);
+        }
+
+        fn install_new_child_decode_pause(
+            &self,
+            captured: mpsc::SyncSender<()>,
+            resume: mpsc::Receiver<()>,
+        ) {
+            *self.event.event().new_child_decode_pause.lock() = Some(NewChildDecodePause {
+                captured,
+                resume,
+                members: Arc::clone(&self.members),
+                registration_error: Arc::clone(&self.registration_error),
+                pidfd_open_error: Arc::clone(&self.pidfd_open_error),
+            });
+        }
+
+        fn take_injected_error(
+            errors: &mut HashMap<crate::Pid, VecDeque<Errno>>,
+            pid: crate::Pid,
+        ) -> Option<Errno> {
+            let error = errors.get_mut(&pid).and_then(VecDeque::pop_front);
+            if errors.get(&pid).is_some_and(VecDeque::is_empty) {
+                errors.remove(&pid);
+            }
+            error
+        }
+
+        fn cleanup_error(&self, failures: &[String]) -> io::Error {
+            let retained = self
+                .members
+                .lock()
+                .iter()
+                .map(|member| format!("{}:{:?}", member.pid, member.phase))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let pending = (*self.registration_error.lock())
+                .map(|pending| format!("{}:{}", pending.pid, pending.error))
+                .unwrap_or_else(|| "none".to_owned());
+            io::Error::other(format!(
+                "exact fixture cleanup for projected PGID {} failed; retained=[{}]; pending_registration={}; {}",
+                self.projected_pgid,
+                retained,
+                pending,
+                failures.join("; ")
+            ))
         }
 
         fn cleanup(&mut self) -> io::Result<()> {
             if !self.armed {
                 return Ok(());
             }
-            self.armed = false;
             self.event.event().new_child_decode_pause.lock().take();
             self.event.event().cleanup_return_pause.lock().take();
 
-            let registration_error = self.registration_error.lock().take();
-            let members = mem::take(&mut *self.members.lock());
             let mut failures = Vec::new();
-            for member in members {
-                match pidfd_send_signal(&member.pidfd, libc::SIGKILL) {
-                    Ok(()) => {}
-                    Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {}
-                    Err(error) => failures.push(format!(
-                        "signal exact member {} through pidfd: {error}",
-                        member.pid
-                    )),
+            let pending_registration = *self.registration_error.lock();
+            if let Some(pending) = pending_registration {
+                match open_thread_pidfd(pending.pid) {
+                    Ok(pidfd) => {
+                        self.members.lock().push(ExactTestMember {
+                            pid: pending.pid,
+                            pidfd,
+                            phase: ExactCleanupPhase::NeedsSignal,
+                        });
+                        self.registration_error.lock().take();
+                    }
+                    Err(error) => {
+                        *self.registration_error.lock() = Some(PendingExactRegistration {
+                            pid: pending.pid,
+                            error,
+                        });
+                        failures.push(format!(
+                            "retry NewChild exact pidfd registration for {} after {}: {}",
+                            pending.pid, pending.error, error
+                        ));
+                    }
                 }
-                let pid = Pid::from_raw(member.pid.as_raw());
-                if let Err(error) = reap_tracee_pidfd_bounded(pid, &member.pidfd) {
+            }
+            let registration_retry_failed = self.registration_error.lock().is_some();
+            if registration_retry_failed {
+                // The stopped parent remains the authority that pins the
+                // numeric child reported by GETEVENTMSG. Do not signal or reap
+                // that parent until the child has its own exact pidfd.
+                return Err(self.cleanup_error(&failures));
+            }
+
+            let members = mem::take(&mut *self.members.lock());
+            let mut retained = Vec::new();
+            for mut member in members {
+                if member.phase == ExactCleanupPhase::NeedsSignal {
+                    let signal = Self::take_injected_error(&mut self.signal_errors, member.pid)
+                        .map_or_else(
+                            || pidfd_send_signal(&member.pidfd, libc::SIGKILL),
+                            |error| Err(io::Error::from_raw_os_error(error.into_raw())),
+                        );
+                    match signal {
+                        Ok(()) => member.phase = ExactCleanupPhase::NeedsReap,
+                        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {
+                            member.phase = ExactCleanupPhase::NeedsReap;
+                        }
+                        Err(error) => {
+                            failures.push(format!(
+                                "signal exact member {} through pidfd: {error}",
+                                member.pid
+                            ));
+                            retained.push(member);
+                            continue;
+                        }
+                    }
+                }
+
+                let reap = Self::take_injected_error(&mut self.reap_errors, member.pid)
+                    .map_or_else(
+                        || {
+                            let pid = Pid::from_raw(member.pid.as_raw());
+                            reap_tracee_pidfd_bounded(pid, &member.pidfd)
+                        },
+                        |error| Err(io::Error::from_raw_os_error(error.into_raw())),
+                    );
+                if let Err(error) = reap {
                     failures.push(format!("reap exact member {}: {error}", member.pid));
+                    retained.push(member);
                 }
             }
-            if let Some(error) = registration_error {
-                failures.push(format!("register NewChild exact pidfd: {error}"));
-            }
-            if failures.is_empty() {
+            self.members.lock().extend(retained);
+
+            if failures.is_empty()
+                && self.registration_error.lock().is_none()
+                && self.members.lock().is_empty()
+            {
+                self.armed = false;
                 Ok(())
             } else {
-                Err(io::Error::other(format!(
-                    "exact fixture cleanup for projected PGID {} failed: {}",
-                    self.projected_pgid,
-                    failures.join("; ")
-                )))
+                Err(self.cleanup_error(&failures))
             }
         }
     }
@@ -6437,6 +6603,167 @@ mod test {
         }
     }
 
+    fn spawn_exact_cleanup_member() -> (Pid, WorkerIdentity, ExactNewChildCleanupGuard) {
+        // Use an exec'd child with closed stdio instead of direct fork. These
+        // tests run beside exact-subprocess pipe tests, and a fork-only child
+        // would inherit their write ends until cleanup, making EOF scheduling
+        // dependent under the default-parallel harness.
+        let mut child = Command::new("/bin/sleep")
+            .arg("60")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn exact-cleanup member");
+        let pid = Pid::from_raw(child.id() as i32);
+        let mut guard =
+            ExactNewChildCleanupGuard::new(pid, EventHandle::new()).unwrap_or_else(|error| {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("open exact-cleanup member guard: {error}");
+            });
+        let identity = WorkerIdentity::capture_process(pid.into()).unwrap_or_else(|error| {
+            guard.cleanup().unwrap_or_else(|cleanup_error| {
+                panic!("capture exact-cleanup member identity: {error}; cleanup: {cleanup_error}")
+            });
+            panic!("capture exact-cleanup member identity: {error}");
+        });
+        drop(child);
+        (pid, identity, guard)
+    }
+
+    #[test]
+    fn exact_new_child_cleanup_signal_failure_retains_authority_for_retry() {
+        let (pid, identity, mut guard) = spawn_exact_cleanup_member();
+        guard.inject_signal_error(pid.into(), Errno::EIO);
+
+        let error = guard
+            .cleanup()
+            .expect_err("injected exact signal failure must fail cleanup");
+        assert!(error.to_string().contains("signal exact member"), "{error}");
+        assert!(guard.armed);
+        {
+            let members = guard.members.lock();
+            assert_eq!(members.len(), 1);
+            assert_eq!(members[0].pid, pid.into());
+            assert_eq!(members[0].phase, ExactCleanupPhase::NeedsSignal);
+            assert!(
+                !pidfd_exited(&members[0].pidfd).expect("poll retained exact member"),
+                "signal failure unexpectedly lost the live member"
+            );
+        }
+
+        guard.cleanup().expect("retry exact signal cleanup");
+        assert!(!guard.armed);
+        assert!(guard.members.lock().is_empty());
+        wait_generation_retired_bounded(&identity, "retried exact signal cleanup")
+            .expect("no orphan after exact signal retry");
+    }
+
+    #[test]
+    fn exact_new_child_cleanup_reap_failure_resumes_without_duplicate_signal() {
+        let (pid, identity, mut guard) = spawn_exact_cleanup_member();
+        guard.inject_reap_error(pid.into(), Errno::EIO);
+
+        let error = guard
+            .cleanup()
+            .expect_err("injected exact reap failure must fail cleanup");
+        assert!(error.to_string().contains("reap exact member"), "{error}");
+        assert!(guard.armed);
+        {
+            let members = guard.members.lock();
+            assert_eq!(members.len(), 1);
+            assert_eq!(members[0].pid, pid.into());
+            assert_eq!(members[0].phase, ExactCleanupPhase::NeedsReap);
+        }
+
+        // If retry regresses to the signal phase, this injected error makes it
+        // fail. A NeedsReap member must only repeat the exact pidfd reap.
+        guard.inject_signal_error(pid.into(), Errno::EIO);
+        guard.cleanup().expect("retry exact reap cleanup");
+        assert!(!guard.armed);
+        assert!(guard.members.lock().is_empty());
+        wait_generation_retired_bounded(&identity, "retried exact reap cleanup")
+            .expect("no orphan after exact reap retry");
+    }
+
+    #[test]
+    fn new_child_pidfd_open_failure_precedes_materialization_and_cleanup_retries() {
+        let child_op = crate::ChildOp::Clone;
+        let (pid, stopped, mut cleanup) =
+            spawn_new_child_tracee(child_op).expect("spawn pidfd-open failure tracee");
+        let parent_identity = WorkerIdentity::capture_process(pid.into())
+            .expect("capture pidfd-open failure parent identity");
+        let parent_event = stopped.1.event().clone();
+        let mut exact_cleanup = ExactNewChildCleanupGuard::new(pid, parent_event)
+            .expect("construct exact guard while parent is stopped");
+        let (captured_tx, captured_rx) = mpsc::sync_channel(1);
+        let (_resume_tx, resume_rx) = mpsc::channel();
+        exact_cleanup.inject_pidfd_open_error(Errno::EMFILE);
+        exact_cleanup.install_new_child_decode_pause(captured_tx, resume_rx);
+
+        let running = stopped
+            .resume(None)
+            .expect("resume pidfd-open failure parent after guard install");
+        cleanup
+            .store_terminal(TerminalCleanup::new_unregistered(pid.into(), &running.1))
+            .expect("bind pidfd-open failure parent cleanup");
+        let error = running
+            .wait()
+            .expect_err("pidfd-open failure must abort NewChild decoding");
+        assert!(matches!(error, Error::Errno(Errno::EMFILE)), "{error:?}");
+        assert!(
+            captured_rx.try_recv().is_err(),
+            "NewChild materialization pause ran after exact registration failed"
+        );
+        let pending = (*exact_cleanup.registration_error.lock())
+            .expect("failed child registration must remain retryable");
+        assert_eq!(pending.error, Errno::EMFILE);
+        assert_ne!(pending.pid.as_raw(), pid.as_raw());
+        let child_pid = pending.pid;
+        let child_identity = WorkerIdentity::capture_process(child_pid)
+            .expect("capture failed-registration child identity before cleanup retry");
+        PIDFD_OPEN_ERRORS.lock().insert(child_pid, Errno::ENFILE);
+        let retry_error = exact_cleanup
+            .cleanup()
+            .expect_err("second pidfd-open failure must retain the stopped parent authority");
+        assert!(
+            retry_error
+                .to_string()
+                .contains("retry NewChild exact pidfd registration"),
+            "{retry_error}"
+        );
+        assert!(exact_cleanup.armed);
+        assert!(parent_identity.is_same_process_generation());
+        assert!(child_identity.is_same_process_generation());
+        assert_eq!(
+            (*exact_cleanup.registration_error.lock())
+                .expect("failed retry remains registered")
+                .error,
+            Errno::ENFILE
+        );
+        {
+            let members = exact_cleanup.members.lock();
+            assert_eq!(members.len(), 1);
+            assert_eq!(members[0].pid, pid.into());
+            assert_eq!(members[0].phase, ExactCleanupPhase::NeedsSignal);
+        }
+        exact_cleanup
+            .cleanup()
+            .expect("exact cleanup retries child pidfd registration");
+        assert!(!exact_cleanup.armed);
+        assert!(exact_cleanup.members.lock().is_empty());
+        assert!(exact_cleanup.registration_error.lock().is_none());
+        cleanup.disarm();
+        wait_generation_retired_bounded(&parent_identity, "pidfd-open failure parent")
+            .expect("no parent orphan after pidfd-open registration retry");
+        wait_generation_retired_bounded(
+            &child_identity,
+            &format!("pidfd-open failure child {child_pid}"),
+        )
+        .expect("no child orphan after pidfd-open registration retry");
+    }
+
     fn start_new_child_return_race(
         child_op: crate::ChildOp,
         expected_return_owner: u8,
@@ -6447,21 +6774,15 @@ mod test {
                 "capture {child_op:?} parent {pid} identity: {error}"
             ))
         })?;
+        let parent_event = stopped.1.event().clone();
+        let exact_cleanup = ExactNewChildCleanupGuard::new(pid, parent_event.clone())?;
+        let (child_materialized_tx, child_materialized_rx) = mpsc::sync_channel(0);
+        let (resume_return_tx, resume_return_rx) = mpsc::channel();
+        exact_cleanup.install_new_child_decode_pause(child_materialized_tx, resume_return_rx);
         let running = stopped
             .resume(None)
             .map_err(|error| io::Error::other(format!("resume {child_op:?} parent: {error}")))?;
-        let parent_event = running.1.event().clone();
-        let exact_cleanup = ExactNewChildCleanupGuard::new(pid, parent_event.clone())?;
         cleanup.store_terminal(TerminalCleanup::new_unregistered(pid.into(), &running.1))?;
-
-        let (child_materialized_tx, child_materialized_rx) = mpsc::sync_channel(0);
-        let (resume_return_tx, resume_return_rx) = mpsc::channel();
-        *parent_event.event().new_child_decode_pause.lock() = Some(NewChildDecodePause {
-            captured: child_materialized_tx,
-            resume: resume_return_rx,
-            members: Arc::clone(&exact_cleanup.members),
-            registration_error: Arc::clone(&exact_cleanup.registration_error),
-        });
         // The waiter remains on its ptracer thread. Only the cleanup contender
         // runs here while GETEVENTMSG, child materialization, and typed return
         // execute in the synchronous call or WaitFuture poll.
@@ -6619,7 +6940,7 @@ mod test {
             &child_identity,
             &format!("{child_op:?} child {child_pid} reap"),
         )?;
-        race.exact_cleanup.disarm();
+        race.exact_cleanup.disarm_completed()?;
         Ok(())
     }
 
