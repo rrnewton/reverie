@@ -147,6 +147,78 @@ pub fn is_protected<Fd: AsRawFd>(fd: &Fd) -> bool {
     protected_files().lock().contains(fd)
 }
 
+pub(crate) fn protect_raw_fd(fd: RawFd) {
+    protected_files().lock().insert(&fd);
+}
+
+pub(crate) fn unprotect_raw_fd(fd: RawFd) {
+    protected_files().lock().remove(&fd);
+}
+
+fn close_ranges_around_protected(first: u32, last: u32, protected: &[RawFd]) -> Vec<(u32, u32)> {
+    if first > last {
+        return vec![(first, last)];
+    }
+    let mut protected: Vec<u32> = protected
+        .iter()
+        .filter_map(|fd| u32::try_from(*fd).ok())
+        .filter(|fd| (first..=last).contains(fd))
+        .collect();
+    protected.sort_unstable();
+    protected.dedup();
+
+    let mut ranges = Vec::new();
+    let mut next = first;
+    for fd in protected {
+        if next < fd {
+            ranges.push((next, fd - 1));
+        }
+        let Some(after) = fd.checked_add(1) else {
+            return ranges;
+        };
+        next = after;
+    }
+    if next <= last {
+        ranges.push((next, last));
+    }
+    ranges
+}
+
+pub(crate) fn sys_close_range(
+    first: usize,
+    last: usize,
+    flags: usize,
+) -> Result<usize, syscalls::Errno> {
+    const CLOSE_RANGE_UNSHARE: usize = 1 << 1;
+    const CLOSE_RANGE_CLOEXEC: usize = 1 << 2;
+    if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
+        return Err(syscalls::Errno::EINVAL);
+    }
+
+    let first = first as u32;
+    let last = last as u32;
+    if first > last {
+        return Err(syscalls::Errno::EINVAL);
+    }
+    let mut flags = flags;
+    if flags & CLOSE_RANGE_UNSHARE != 0 {
+        unsafe { syscalls::syscall1(Sysno::unshare, libc::CLONE_FILES as usize)? };
+        flags &= !CLOSE_RANGE_UNSHARE;
+    }
+    let protected = protected_files().lock().files.clone();
+    for (range_first, range_last) in close_ranges_around_protected(first, last, &protected) {
+        unsafe {
+            syscalls::syscall3(
+                Sysno::close_range,
+                range_first as usize,
+                range_last as usize,
+                flags,
+            )?;
+        }
+    }
+    Ok(0)
+}
+
 /// All of these syscalls take the input file descriptor as the first argument.
 /// Some syscalls, like mmap, don't conform to this pattern and need to be
 /// handled in a special way.
@@ -297,5 +369,20 @@ mod tests {
 
         drop(protected);
         assert!(!is_protected(&fd));
+    }
+
+    #[test]
+    fn close_ranges_skip_every_protected_descriptor() {
+        assert_eq!(
+            close_ranges_around_protected(10, 20, &[12, 15, 20]),
+            vec![(10, 11), (13, 14), (16, 19)]
+        );
+        assert_eq!(
+            close_ranges_around_protected(10, 12, &[9, 13]),
+            vec![(10, 12)]
+        );
+        assert!(
+            close_ranges_around_protected(i32::MAX as u32, i32::MAX as u32, &[i32::MAX]).is_empty()
+        );
     }
 }
