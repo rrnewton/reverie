@@ -29,6 +29,7 @@ use reverie_liteinst::LiteinstBackend;
 struct EventCounter {
     delivered: AtomicU64,
     cpuid_events: AtomicU64,
+    cpuid_interception: AtomicU64,
     rdtsc_events: AtomicU64,
     last_getpid_rip: AtomicU64,
     last_getpid_r12: AtomicU64,
@@ -56,6 +57,8 @@ impl GlobalTool for EventCounter {
             self.cpuid_events.fetch_add(1, Ordering::SeqCst);
         } else if increment & (1_u64 << 59) != 0 {
             self.rdtsc_events.fetch_add(1, Ordering::SeqCst);
+        } else if increment & (1_u64 << 58) != 0 {
+            self.cpuid_interception.store(1, Ordering::SeqCst);
         } else {
             self.delivered.fetch_add(increment, Ordering::SeqCst);
         }
@@ -82,6 +85,13 @@ impl Tool for ActivationCpuEvents {
         syscall: Syscall,
     ) -> Result<i64, Error> {
         Ok(guest.inject(syscall).await?)
+    }
+
+    async fn handle_post_exec<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), reverie::Errno> {
+        if guest.has_cpuid_interception() {
+            guest.send_rpc(1_u64 << 58).await;
+        }
+        Ok(())
     }
 
     async fn handle_cpuid_event<G: Guest<Self>>(
@@ -504,10 +514,18 @@ async fn loader_cpu_events_are_determinized_before_ready_and_entry_is_restored()
 
     assert_eq!(output.stdout, b"entry-int3=0 probe=1\n", "{output:?}");
     assert!(output.status.success(), "{output:?}");
-    assert!(
-        global.cpuid_events.load(Ordering::SeqCst) >= 1,
-        "the pre-constructor IFUNC CPUID did not reach the Tool"
-    );
+    if global.cpuid_interception.load(Ordering::SeqCst) == 1 {
+        assert!(
+            global.cpuid_events.load(Ordering::SeqCst) >= 1,
+            "the pre-constructor IFUNC CPUID did not reach the Tool despite verified kernel interception"
+        );
+    } else {
+        assert_eq!(
+            global.cpuid_events.load(Ordering::SeqCst),
+            0,
+            "CPUID reached the Tool after the kernel reported interception unavailable"
+        );
+    }
     assert!(
         global.rdtsc_events.load(Ordering::SeqCst) >= 1,
         "the pre-constructor IFUNC RDTSC did not reach the Tool"

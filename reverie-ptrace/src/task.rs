@@ -422,6 +422,12 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) activate_without_handshake: bool,
     #[cfg(test)]
     pub(crate) queue_pending_signal_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_skip_signal_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_context_none_signal_once: Option<Arc<AtomicBool>>,
+    #[cfg(test)]
+    pub(crate) force_preinit_signal_once: Option<Arc<AtomicBool>>,
 }
 
 #[cfg(test)]
@@ -1353,12 +1359,24 @@ impl<L: Tool + 'static> TracedTask<L> {
             .liteinst_runtime
             .as_ref()
             .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        let reject_activation_signals = self.global_state.liteinst_runtime.is_some();
+        let unexpected_preinit_signal = Arc::new(StdMutex::new(None));
         #[cfg(test)]
         let pause_preinit_step = self
             .global_state
             .liteinst_runtime
             .as_ref()
             .and_then(|runtime| runtime.pause_preinit_step.clone());
+        #[cfg(test)]
+        let force_preinit_signal_once = (self.liteinst_runtime.lock().unwrap().phase
+            == LiteinstRuntimePhase::Waiting)
+            .then(|| {
+                self.global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.force_preinit_signal_once.clone())
+            })
+            .flatten();
 
         fn arm_preinit_stop(
             held_root_stop: &Option<Arc<StdMutex<Option<HeldRootStop>>>>,
@@ -1408,7 +1426,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             task: Stopped,
             saved_regs: &libc::user_regs_struct,
             held_root_stop: &Option<Arc<StdMutex<Option<HeldRootStop>>>>,
+            reject_activation_signals: bool,
+            unexpected_signal: &Arc<StdMutex<Option<Signal>>>,
             #[cfg(test)] pause_preinit_step: &Option<(usize, mpsc::UnboundedSender<Pid>)>,
+            #[cfg(test)] force_preinit_signal_once: &Option<Arc<AtomicBool>>,
         ) -> Result<Stopped, TraceError> {
             // NOTE: This point in the code assumes that a specific instruction
             // sequence "SYSCALL; INT3", has been patched into the guest, and
@@ -1439,6 +1460,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let (task, event) = running.next_state().await?.assume_stopped();
                 arm_preinit_stop(held_root_stop, &task, &event);
                 #[cfg(test)]
+                let event = if force_preinit_signal_once
+                    .as_ref()
+                    .is_some_and(|force_once| force_once.swap(false, Ordering::SeqCst))
+                {
+                    Event::Signal(Signal::SIGUSR1)
+                } else {
+                    event
+                };
+                #[cfg(test)]
                 if let Some((target, sender)) = pause_preinit_step
                     && *target == step
                 {
@@ -1452,6 +1482,10 @@ impl<L: Tool + 'static> TracedTask<L> {
                 match event {
                     Event::Signal(Signal::SIGTRAP) => break task,
                     Event::Signal(sig) => {
+                        if reject_activation_signals {
+                            *unexpected_signal.lock().unwrap() = Some(sig);
+                            return Err(Errno::EPROTO.into());
+                        }
                         // We can catch spurious signals here, such as SIGWINCH.
                         // All we can do is skip over them.
                         tracing::debug!(
@@ -1543,14 +1577,31 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
 
         let (task, regs, prev_state) = establish_injection_state(task).await?;
-        let mut task = setup_special_mmap_page(
+        let task = setup_special_mmap_page(
             task,
             &regs,
             &held_root_stop,
+            reject_activation_signals,
+            &unexpected_preinit_signal,
             #[cfg(test)]
             &pause_preinit_step,
+            #[cfg(test)]
+            &force_preinit_signal_once,
         )
-        .await?;
+        .await;
+        if let Some(sig) = unexpected_preinit_signal.lock().unwrap().take() {
+            self.liteinst_failure = Some(
+                Error::runtime(
+                    self.tid(),
+                    "reject unexpected LiteInst activation signal",
+                    format!(
+                        "received {sig} before the required preload handshake completed: tracee pre-initialization observed an unexpected nested signal"
+                    ),
+                )
+                .to_string(),
+            );
+        }
+        let mut task = task?;
         #[cfg(test)]
         pause_preinit(&pause_preinit_step, 1, &task).await;
 
@@ -2318,6 +2369,20 @@ impl<L: Tool + 'static> TracedTask<L> {
             ));
         }
         Ok(signal)
+    }
+
+    fn reject_nested_liteinst_activation_signal(
+        &mut self,
+        sig: Signal,
+        operation: &'static str,
+    ) -> Result<(), TraceError> {
+        if self.liteinst_activation_in_progress() && sig != Signal::SIGTRAP {
+            return Err(self.reject_liteinst_activation_signal(
+                sig,
+                format!("{operation} observed an unexpected nested signal"),
+            ));
+        }
+        Ok(())
     }
 
     // handle ptrace signal delivery stop
@@ -4158,6 +4223,23 @@ impl<L: Tool + 'static> TracedTask<L> {
         loop {
             let wait = running.next_state().await?;
             self.arm_liteinst_wait(&wait);
+            #[cfg(test)]
+            let wait = if matches!(&wait, Wait::Stopped(_, _))
+                && self.liteinst_runtime.lock().unwrap().phase == LiteinstRuntimePhase::Waiting
+                && self
+                    .global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.force_skip_signal_once.as_ref())
+                    .is_some_and(|force_once| force_once.swap(false, Ordering::SeqCst))
+            {
+                match wait {
+                    Wait::Stopped(task, _) => Wait::Stopped(task, Event::Signal(Signal::SIGUSR1)),
+                    other => other,
+                }
+            } else {
+                wait
+            };
             match wait {
                 Wait::Stopped(task, Event::Signal(Signal::SIGTRAP)) => {
                     #[cfg(target_arch = "x86_64")]
@@ -4165,6 +4247,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     break Ok(task);
                 }
                 Wait::Stopped(task, Event::Signal(sig)) => {
+                    self.reject_nested_liteinst_activation_signal(sig, "skip intercepted syscall")?;
                     // We can get a spurious signal here, such as SIGWINCH. Skip
                     // past them until the tracee eventually arrives at SIGTRAP.
                     running = self.step_stopped(task, sig)?;
@@ -4261,13 +4344,36 @@ impl<L: Tool + 'static> TracedTask<L> {
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Result<i64, Errno>, TraceError> {
+        #[cfg(test)]
+        let wait_status = if context.is_none()
+            && matches!(&wait_status, Wait::Stopped(_, _))
+            && self.liteinst_runtime.lock().unwrap().phase == LiteinstRuntimePhase::Waiting
+            && self
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.force_context_none_signal_once.as_ref())
+                .is_some_and(|force_once| force_once.swap(false, Ordering::SeqCst))
+        {
+            match wait_status {
+                Wait::Stopped(task, _) => Wait::Stopped(task, Event::Signal(Signal::SIGUSR1)),
+                other => other,
+            }
+        } else {
+            wait_status
+        };
         match wait_status {
             Wait::Stopped(stopped, event) => match event {
-                Event::Signal(_sig) if context.is_none() => {
+                Event::Signal(sig) if context.is_none() => {
+                    self.reject_nested_liteinst_activation_signal(
+                        sig,
+                        "finish reinjected syscall",
+                    )?;
                     let regs = stopped.getregs()?;
                     Ok(Ok(regs.ret() as i64))
                 }
                 Event::Signal(sig) => {
+                    self.reject_nested_liteinst_activation_signal(sig, "finish injected syscall")?;
                     let mut regs = stopped.getregs()?;
                     // NB: it is possible to get interrupted by signal (such as
                     // SIGCHLD) before single step finishes, while RIP still

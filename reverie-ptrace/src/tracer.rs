@@ -1903,6 +1903,12 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             activate_without_handshake: false,
             #[cfg(test)]
             queue_pending_signal_once: None,
+            #[cfg(test)]
+            force_skip_signal_once: None,
+            #[cfg(test)]
+            force_context_none_signal_once: None,
+            #[cfg(test)]
+            force_preinit_signal_once: None,
         });
         self
     }
@@ -2027,6 +2033,36 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .as_mut()
             .expect("LiteInst runtime must be configured before pending-signal injection")
             .queue_pending_signal_once = Some(queue_once);
+        self
+    }
+
+    #[cfg(test)]
+    fn force_liteinst_skip_signal_once_for_test(mut self, force_once: Arc<AtomicBool>) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before skip-signal injection")
+            .force_skip_signal_once = Some(force_once);
+        self
+    }
+
+    #[cfg(test)]
+    fn force_liteinst_context_none_signal_once_for_test(
+        mut self,
+        force_once: Arc<AtomicBool>,
+    ) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before reinjection-signal injection")
+            .force_context_none_signal_once = Some(force_once);
+        self
+    }
+
+    #[cfg(test)]
+    fn force_liteinst_preinit_signal_once_for_test(mut self, force_once: Arc<AtomicBool>) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before preinit-signal injection")
+            .force_preinit_signal_once = Some(force_once);
         self
     }
 
@@ -2392,6 +2428,7 @@ where
 mod tests {
     use reverie::Guest;
     use reverie::syscalls::Syscall;
+    use reverie::syscalls::SyscallInfo;
 
     use super::*;
 
@@ -2694,6 +2731,103 @@ mod tests {
             "{error}"
         );
         assert_reaped("pending-signal activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_nested_signal_is_rejected_during_context_none_reinjection() {
+        let force_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<AllSyscallsTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_context_none_signal_once_for_test(Arc::clone(&force_once))
+            .spawn()
+            .await
+            .expect("spawn context-none activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("context-none activation tracee hung")
+            .expect_err("nested pre-Ready reinjection signal was silently dropped");
+
+        assert!(!force_once.load(Ordering::SeqCst));
+        assert!(
+            error
+                .to_string()
+                .contains("finish reinjected syscall observed an unexpected nested signal"),
+            "{error}"
+        );
+        assert_reaped("context-none activation", root_pid);
+    }
+
+    #[derive(Default)]
+    struct ReplaceMmapTool;
+
+    #[reverie::tool]
+    impl Tool for ReplaceMmapTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::mmap].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert_eq!(syscall.number(), Sysno::mmap);
+            Ok(guest.inject(reverie::syscalls::Getpid::new()).await?)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_nested_signal_is_rejected_while_skipping_seccomp_syscall() {
+        let force_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<ReplaceMmapTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_skip_signal_once_for_test(Arc::clone(&force_once))
+            .spawn()
+            .await
+            .expect("spawn skip-seccomp activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("skip-seccomp activation tracee hung")
+            .expect_err("nested pre-Ready skip signal was delivered by single-step");
+
+        assert!(!force_once.load(Ordering::SeqCst));
+        assert!(
+            error
+                .to_string()
+                .contains("skip intercepted syscall observed an unexpected nested signal"),
+            "{error}"
+        );
+        assert_reaped("skip-seccomp activation", root_pid);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pre_ready_nested_signal_is_rejected_during_tracee_preinit() {
+        let force_once = Arc::new(AtomicBool::new(true));
+        let tracer = TracerBuilder::<InitFailureTool>::new(Command::new("/bin/true"))
+            .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .force_liteinst_preinit_signal_once_for_test(Arc::clone(&force_once))
+            .spawn()
+            .await
+            .expect("spawn preinit-signal activation tracee");
+        let root_pid = tracer.guest_pid();
+        let error = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("preinit-signal activation tracee hung")
+            .expect_err("nested pre-Ready preinit signal unexpectedly resumed the tracee");
+
+        assert!(!force_once.load(Ordering::SeqCst));
+        assert!(
+            error
+                .to_string()
+                .contains("tracee pre-initialization observed an unexpected nested signal"),
+            "{error}"
+        );
+        assert_reaped("preinit-signal activation", root_pid);
     }
 
     #[derive(Default)]
