@@ -1652,6 +1652,10 @@ fn open_thread_pidfd(pid: Pid) -> Result<OwnedFd, Errno> {
         return Err(error);
     }
 
+    open_thread_pidfd_kernel(pid)
+}
+
+fn open_thread_pidfd_kernel(pid: Pid) -> Result<OwnedFd, Errno> {
     // PIDFD_THREAD has the same value as O_EXCL. It binds a pidfd to the exact
     // TID rather than silently projecting a non-leader onto its thread group.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid.as_raw(), libc::O_EXCL) } as i32;
@@ -6398,6 +6402,8 @@ mod test {
     }
 
     impl ExactNewChildCleanupGuard {
+        const DROP_CLEANUP_ATTEMPTS: usize = 3;
+
         fn new(projected_pgid: Pid, event: EventHandle) -> io::Result<Self> {
             let leader: crate::Pid = projected_pgid.into();
             let pidfd = open_thread_pidfd(leader).map_err(|error| {
@@ -6589,17 +6595,118 @@ mod test {
                 Err(self.cleanup_error(&failures))
             }
         }
+
+        fn emergency_cleanup_without_injection(&mut self) -> io::Result<()> {
+            if !self.armed {
+                return Ok(());
+            }
+            self.event.event().new_child_decode_pause.lock().take();
+            self.event.event().cleanup_return_pause.lock().take();
+
+            let mut failures = Vec::new();
+            if let Some(pending) = *self.registration_error.lock() {
+                match open_thread_pidfd_kernel(pending.pid) {
+                    Ok(pidfd) => {
+                        self.members.lock().push(ExactTestMember {
+                            pid: pending.pid,
+                            pidfd,
+                            phase: ExactCleanupPhase::NeedsSignal,
+                        });
+                        self.registration_error.lock().take();
+                    }
+                    Err(error) => {
+                        *self.registration_error.lock() = Some(PendingExactRegistration {
+                            pid: pending.pid,
+                            error,
+                        });
+                        failures.push(format!(
+                            "emergency exact pidfd registration for {} after {}: {}",
+                            pending.pid, pending.error, error
+                        ));
+                    }
+                }
+            }
+            let registration_failed = self.registration_error.lock().is_some();
+            if registration_failed {
+                return Err(self.cleanup_error(&failures));
+            }
+
+            let members = mem::take(&mut *self.members.lock());
+            let mut retained = Vec::new();
+            for member in members {
+                let signal = pidfd_send_signal(&member.pidfd, libc::SIGKILL);
+                let signal_succeeded = match signal {
+                    Ok(()) => true,
+                    Err(error) if error.raw_os_error() == Some(libc::ESRCH) => true,
+                    Err(error) => {
+                        failures.push(format!(
+                            "emergency signal exact member {} through pidfd: {error}",
+                            member.pid
+                        ));
+                        false
+                    }
+                };
+                let pid = Pid::from_raw(member.pid.as_raw());
+                match reap_tracee_pidfd_bounded(pid, &member.pidfd) {
+                    Ok(()) if signal_succeeded => {}
+                    Ok(()) => {
+                        // Exact reap proves the member is gone even if the
+                        // preceding signal syscall reported an error.
+                        failures.retain(|failure| {
+                            !failure.starts_with(&format!(
+                                "emergency signal exact member {} ",
+                                member.pid
+                            ))
+                        });
+                    }
+                    Err(error) => {
+                        failures.push(format!(
+                            "emergency reap exact member {}: {error}",
+                            member.pid
+                        ));
+                        retained.push(member);
+                    }
+                }
+            }
+            self.members.lock().extend(retained);
+            if self.members.lock().is_empty()
+                && self.registration_error.lock().is_none()
+                && failures.is_empty()
+            {
+                self.armed = false;
+                Ok(())
+            } else {
+                Err(self.cleanup_error(&failures))
+            }
+        }
     }
 
     impl Drop for ExactNewChildCleanupGuard {
         fn drop(&mut self) {
-            if let Err(error) = self.cleanup() {
-                if thread::panicking() {
-                    eprintln!("NewChild fixture cleanup failed during unwind: {error}");
-                } else {
-                    panic!("NewChild fixture cleanup failed: {error}");
+            let mut retry_failures = Vec::new();
+            for attempt in 1..=Self::DROP_CLEANUP_ATTEMPTS {
+                match self.cleanup() {
+                    Ok(()) => return,
+                    Err(error) => retry_failures.push(format!("attempt {attempt}: {error}")),
+                }
+                if attempt < Self::DROP_CLEANUP_ATTEMPTS {
+                    thread::sleep(SUBPROCESS_POLL_INTERVAL);
                 }
             }
+            match self.emergency_cleanup_without_injection() {
+                Ok(()) => return,
+                Err(error) => retry_failures.push(format!("emergency: {error}")),
+            }
+            let terminal = self.cleanup_error(&retry_failures);
+            eprintln!(
+                "NewChild fixture exact cleanup remained armed after bounded retries and emergency cleanup: {terminal}"
+            );
+            // This is test-only fixture code. Returning would drop the exact
+            // pidfds and make an orphan invisible to the harness. Traced
+            // members have PTRACE_O_EXITKILL; exec'd untraced members install
+            // PDEATHSIG before execution. Abort only after direct, uninjected
+            // pidfd SIGKILL/reap has also failed.
+            std::process::abort();
         }
     }
 
@@ -6608,13 +6715,22 @@ mod test {
         // tests run beside exact-subprocess pipe tests, and a fork-only child
         // would inherit their write ends until cleanup, making EOF scheduling
         // dependent under the default-parallel harness.
-        let mut child = Command::new("/bin/sleep")
+        let mut command = Command::new("/bin/sleep");
+        command
             .arg("60")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn exact-cleanup member");
+            .stderr(Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        let mut child = command.spawn().expect("spawn exact-cleanup member");
         let pid = Pid::from_raw(child.id() as i32);
         let mut guard =
             ExactNewChildCleanupGuard::new(pid, EventHandle::new()).unwrap_or_else(|error| {
@@ -6685,6 +6801,100 @@ mod test {
         assert!(guard.members.lock().is_empty());
         wait_generation_retired_bounded(&identity, "retried exact reap cleanup")
             .expect("no orphan after exact reap retry");
+    }
+
+    fn assert_unwind_retries_exact_member_cleanup(
+        inject: impl FnOnce(&mut ExactNewChildCleanupGuard, crate::Pid),
+        context: &str,
+    ) {
+        let (pid, identity, mut guard) = spawn_exact_cleanup_member();
+        inject(&mut guard, pid.into());
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _guard = guard;
+            panic!("exercise exact cleanup Drop during unwind");
+        }));
+        assert!(unwind.is_err(), "fixture panic unexpectedly returned");
+        wait_generation_retired_bounded(&identity, context)
+            .unwrap_or_else(|error| panic!("{context} left an exact member alive: {error}"));
+    }
+
+    #[test]
+    fn exact_cleanup_drop_retries_one_shot_signal_failure_during_unwind() {
+        assert_unwind_retries_exact_member_cleanup(
+            |guard, pid| guard.inject_signal_error(pid, Errno::EIO),
+            "unwind retry after exact signal failure",
+        );
+    }
+
+    #[test]
+    fn exact_cleanup_drop_retries_one_shot_reap_failure_during_unwind() {
+        assert_unwind_retries_exact_member_cleanup(
+            |guard, pid| guard.inject_reap_error(pid, Errno::EIO),
+            "unwind retry after exact reap failure",
+        );
+    }
+
+    #[test]
+    fn exact_cleanup_drop_emergency_bypasses_persistent_test_signal_failures() {
+        assert_unwind_retries_exact_member_cleanup(
+            |guard, pid| {
+                for _ in 0..ExactNewChildCleanupGuard::DROP_CLEANUP_ATTEMPTS {
+                    guard.inject_signal_error(pid, Errno::EIO);
+                }
+            },
+            "uninjected emergency cleanup after persistent test signal failures",
+        );
+    }
+
+    #[test]
+    fn exact_cleanup_drop_retries_registration_failure_during_unwind() {
+        let child_op = crate::ChildOp::Clone;
+        let (pid, stopped, mut cleanup) =
+            spawn_new_child_tracee(child_op).expect("spawn unwind registration-failure tracee");
+        let parent_identity = WorkerIdentity::capture_process(pid.into())
+            .expect("capture unwind registration-failure parent");
+        let parent_event = stopped.1.event().clone();
+        let exact_cleanup = ExactNewChildCleanupGuard::new(pid, parent_event)
+            .expect("construct unwind exact guard while parent is stopped");
+        let (captured_tx, captured_rx) = mpsc::sync_channel(1);
+        let (_resume_tx, resume_rx) = mpsc::channel();
+        exact_cleanup.inject_pidfd_open_error(Errno::EMFILE);
+        exact_cleanup.install_new_child_decode_pause(captured_tx, resume_rx);
+
+        let running = stopped
+            .resume(None)
+            .expect("resume unwind registration-failure parent after guard install");
+        cleanup
+            .store_terminal(TerminalCleanup::new_unregistered(pid.into(), &running.1))
+            .expect("bind unwind registration-failure parent cleanup");
+        let error = running
+            .wait()
+            .expect_err("pidfd-open injection must abort NewChild materialization");
+        assert!(matches!(error, Error::Errno(Errno::EMFILE)), "{error:?}");
+        assert!(captured_rx.try_recv().is_err());
+        let pending = (*exact_cleanup.registration_error.lock())
+            .expect("unwind registration failure must remain retryable");
+        let child_pid = pending.pid;
+        let child_identity = WorkerIdentity::capture_process(child_pid)
+            .expect("capture unwind registration-failure child");
+        PIDFD_OPEN_ERRORS.lock().insert(child_pid, Errno::ENFILE);
+
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _exact_cleanup = exact_cleanup;
+            panic!("exercise registration retry during exact cleanup Drop");
+        }));
+        assert!(unwind.is_err(), "fixture panic unexpectedly returned");
+        cleanup.disarm();
+        wait_generation_retired_bounded(
+            &parent_identity,
+            "unwind retry after parent registration failure",
+        )
+        .expect("registration unwind retry left parent alive");
+        wait_generation_retired_bounded(
+            &child_identity,
+            &format!("unwind retry after child {child_pid} registration failure"),
+        )
+        .expect("registration unwind retry left child alive");
     }
 
     #[test]
