@@ -371,7 +371,7 @@ struct PendingThreadClone(Arc<AtomicUsize>);
 impl PendingThreadClone {
     fn new(pending: Arc<AtomicUsize>) -> Self {
         pending
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                 count.checked_add(1)
             })
             .expect("too many concurrent SaBRe thread clones");
