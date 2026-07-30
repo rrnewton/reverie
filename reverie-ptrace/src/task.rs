@@ -2118,7 +2118,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                 ));
             }
             Some(LiteinstTrap::HandshakeReady) => {
-                self.restore_liteinst_entry_guard(&mut task)?;
+                if let Err(error) = self.restore_liteinst_entry_guard(&mut task) {
+                    self.liteinst_failure = Some(
+                        Error::runtime(
+                            self.tid(),
+                            "restore LiteInst executable-entry guard",
+                            error.to_string(),
+                        )
+                        .to_string(),
+                    );
+                    return Err(error);
+                }
                 {
                     let mut state = self.liteinst_runtime.lock().unwrap();
                     if state.phase != LiteinstRuntimePhase::Bootstrap {
@@ -2259,8 +2269,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn handle_signal(&mut self, task: Stopped, sig: Signal) -> Result<Wait, TraceError> {
         tracing::debug!("[{}] handle_signal: received signal {}", task.pid(), sig);
         let phase = self.liteinst_runtime.lock().unwrap().phase;
-        let activating_liteinst =
-            self.global_state.liteinst_runtime.is_some() && phase != LiteinstRuntimePhase::Ready;
+        #[cfg(test)]
+        let test_activation_bypass = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.activate_without_handshake);
+        #[cfg(not(test))]
+        let test_activation_bypass = false;
+        let activating_liteinst = self.global_state.liteinst_runtime.is_some()
+            && phase != LiteinstRuntimePhase::Ready
+            && !test_activation_bypass;
         if activating_liteinst && sig != Signal::SIGTRAP {
             self.liteinst_failure = Some(
                 Error::runtime(
@@ -2349,7 +2368,17 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.arm_liteinst_root_stop(&task, &event);
 
         let mut task = self.tracee_preinit(task).await?;
-        self.install_liteinst_entry_guard(&mut task)?;
+        if let Err(error) = self.install_liteinst_entry_guard(&mut task) {
+            self.liteinst_failure = Some(
+                Error::runtime(
+                    self.tid(),
+                    "install LiteInst executable-entry guard",
+                    error.to_string(),
+                )
+                .to_string(),
+            );
+            return Err(error);
+        }
 
         #[cfg(test)]
         if self
@@ -2358,7 +2387,17 @@ impl<L: Tool + 'static> TracedTask<L> {
             .as_ref()
             .is_some_and(|runtime| runtime.activate_without_handshake)
         {
-            self.restore_liteinst_entry_guard(&mut task)?;
+            if let Err(error) = self.restore_liteinst_entry_guard(&mut task) {
+                self.liteinst_failure = Some(
+                    Error::runtime(
+                        self.tid(),
+                        "restore test LiteInst executable-entry guard",
+                        error.to_string(),
+                    )
+                    .to_string(),
+                );
+                return Err(error);
+            }
             {
                 let mut state = self.liteinst_runtime.lock().unwrap();
                 state.phase = LiteinstRuntimePhase::Ready;

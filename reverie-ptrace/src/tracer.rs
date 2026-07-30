@@ -2613,8 +2613,8 @@ mod tests {
             return Command::new("/bin/true");
         }
         if mode == "signal" {
-            let mut command = Command::new("/bin/sh");
-            command.args(["-c", "kill -USR1 $$; while :; do :; done"]);
+            let mut command = Command::new("/bin/sleep");
+            command.arg("60");
             return command;
         }
         let mut command = Command::new(std::env::current_exe().expect("locate test binary"));
@@ -2647,15 +2647,23 @@ mod tests {
     }
 
     async fn cancel_at_root_stop(pause: RootStopPause, mode: &str) {
+        let injected_signal = match pause {
+            RootStopPause::Signal(signal) => Some(signal),
+            RootStopPause::Seccomp => None,
+        };
         let (stop_tx, mut stop_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<RootStopTool>::new(root_stop_guest_command(mode))
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .pause_liteinst_root_stop_for_test(pause, stop_tx)
             .spawn()
             .await
             .expect("spawn root-stop cancellation tracee");
         let root_pid = tracer.guest_pid();
         let mut wait = Box::pin(tracer.wait());
+        if let Some(signal) = injected_signal {
+            signal::kill(root_pid.into(), signal).expect("send root-stop test signal");
+        }
         let stopped_pid = tokio::time::timeout(Duration::from_secs(3), async {
             tokio::select! {
                 result = &mut wait => panic!("root-stop tracee completed before cancellation: {result:?}"),
@@ -2980,6 +2988,7 @@ mod tests {
         command.args(["-c", "sleep 60 & wait"]);
         let tracer = TracerBuilder::<InitFailureTool>::new(command)
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .pause_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
@@ -3056,6 +3065,7 @@ mod tests {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
@@ -3102,6 +3112,7 @@ mod tests {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .pause_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
@@ -3128,6 +3139,7 @@ mod tests {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .pause_before_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
@@ -3154,6 +3166,7 @@ mod tests {
         let fail_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .fail_liteinst_discovery_once_for_test(Arc::clone(&fail_once))
             .spawn()
@@ -3202,6 +3215,7 @@ mod tests {
         let force_scan_once = Arc::new(AtomicBool::new(true));
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .fail_liteinst_after_task_scan_once_for_test(
                 Arc::clone(&fail_once),
@@ -3249,6 +3263,7 @@ mod tests {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
@@ -3290,6 +3305,7 @@ mod tests {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .pause_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
@@ -3315,6 +3331,7 @@ mod tests {
         let (child_tx, mut child_rx) = mpsc::unbounded_channel();
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
+            .activate_liteinst_without_handshake_for_test()
             .pause_before_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
