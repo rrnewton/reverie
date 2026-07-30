@@ -569,8 +569,9 @@ fn handle_syscall_with_thread<T: ToolGlobal>(
     // bookkeeping at the raw clone return can allocate before pthread startup
     // completes, deadlocking the in-guest allocator under concurrent clones.
     // TODO-HUMAN-REVIEW(PR-226): Review deferred clone-child registration.
+    let is_clone_vfork = sys_no == Sysno::clone && utils::is_vfork(sys_no, arg1);
     let result =
-        if sys_no == Sysno::clone && utils::is_vfork(sys_no, arg1) {
+        if is_clone_vfork {
             if let Some(vfork_boundary) = VforkBoundaryGuard::enter() {
                 thread.maybe_fork_as_guest(|| {
                     T::global()
