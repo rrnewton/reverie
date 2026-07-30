@@ -120,7 +120,8 @@ fn liteinst_helper_entry_rflags(flags: u64) -> u64 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LiteinstCpuidPolicy {
     Unsupported,
-    State(u64),
+    UnchangedEnabled,
+    RestoreDisabled,
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -2298,6 +2299,18 @@ impl<L: Tool + 'static> TracedTask<L> {
             Ok(Err(error)) => failures.push(format!("ARCH_SET_CPUID({state}): {error}")),
             Err(error) => failures.push(format!("inject ARCH_SET_CPUID({state}): {error}")),
         }
+        let (task, verify_failures) = self.verify_liteinst_cpuid_state(task, state).await;
+        failures.extend(verify_failures);
+        (task, failures)
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    async fn verify_liteinst_cpuid_state(
+        &mut self,
+        task: Stopped,
+        state: u64,
+    ) -> (Stopped, Vec<String>) {
+        let mut failures = Vec::new();
         let (task, get_result) = self.liteinst_get_cpuid_state(task).await;
         match get_result {
             Ok(Ok(observed)) if observed == state as i64 => {}
@@ -2317,12 +2330,12 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> (Stopped, Result<LiteinstCpuidPolicy, String>) {
         let (task, result) = self.liteinst_get_cpuid_state(task).await;
         match result {
-            Ok(Ok(1)) => (task, Ok(LiteinstCpuidPolicy::State(1))),
+            Ok(Ok(1)) => (task, Ok(LiteinstCpuidPolicy::UnchangedEnabled)),
             Ok(Ok(0)) => {
                 let (task, enable_failures) =
                     self.set_and_verify_liteinst_cpuid_state(task, 1).await;
                 if enable_failures.is_empty() {
-                    (task, Ok(LiteinstCpuidPolicy::State(0)))
+                    (task, Ok(LiteinstCpuidPolicy::RestoreDisabled))
                 } else {
                     let (task, restore_failures) =
                         self.set_and_verify_liteinst_cpuid_state(task, 0).await;
@@ -2357,8 +2370,18 @@ impl<L: Tool + 'static> TracedTask<L> {
     ) -> (Stopped, Vec<String>) {
         let (mut task, mut failures) = match saved.cpuid_policy {
             LiteinstCpuidPolicy::Unsupported => (task, Vec::new()),
-            LiteinstCpuidPolicy::State(state) => {
-                let (task, failures) = self.set_and_verify_liteinst_cpuid_state(task, state).await;
+            LiteinstCpuidPolicy::RestoreDisabled => {
+                let (task, failures) = self.set_and_verify_liteinst_cpuid_state(task, 0).await;
+                (
+                    task,
+                    failures
+                        .into_iter()
+                        .map(|failure| format!("CPUID policy: {failure}"))
+                        .collect(),
+                )
+            }
+            LiteinstCpuidPolicy::UnchangedEnabled => {
+                let (task, failures) = self.verify_liteinst_cpuid_state(task, 1).await;
                 (
                     task,
                     failures

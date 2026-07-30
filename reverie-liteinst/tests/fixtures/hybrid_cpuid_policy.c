@@ -91,7 +91,17 @@ int main(int argc, char **argv) {
   if (initial == -1 && errno == ENODEV) {
     return 77;
   }
-  if (initial != 1 || set_cpuid(0) != 0 || cpuid_state() != 0) {
+  if (initial != 1) {
+    return 22;
+  }
+  errno = 0;
+  if (set_cpuid(0) != 0) {
+    if (errno == ENODEV) {
+      return 77;
+    }
+    return 22;
+  }
+  if (cpuid_state() != 0) {
     return 22;
   }
 
