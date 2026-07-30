@@ -109,35 +109,6 @@ impl Tool for PassthroughGetpid {
     }
 }
 
-static PRE_ACTIVATION_TOOL_CALLBACKS: AtomicU64 = AtomicU64::new(0);
-
-#[derive(Default)]
-struct ObservePreActivationCallbacks;
-
-#[reverie::tool]
-impl Tool for ObservePreActivationCallbacks {
-    type GlobalState = EventCounter;
-    type ThreadState = ();
-
-    fn subscriptions(_config: &()) -> Subscription {
-        [Sysno::getpid].into_iter().collect()
-    }
-
-    async fn handle_thread_start<G: Guest<Self>>(&self, _guest: &mut G) -> Result<(), Error> {
-        PRE_ACTIVATION_TOOL_CALLBACKS.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn handle_syscall_event<G: Guest<Self>>(
-        &self,
-        guest: &mut G,
-        syscall: Syscall,
-    ) -> Result<i64, Error> {
-        PRE_ACTIVATION_TOOL_CALLBACKS.fetch_add(1, Ordering::SeqCst);
-        Ok(guest.inject(syscall).await?)
-    }
-}
-
 #[derive(Default)]
 struct ObservePkey;
 
@@ -248,7 +219,7 @@ fn compile_static_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
     let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name);
-    let output = directory.path().join(name.trim_end_matches(".c"));
+    let output = directory.path().join("li-static-exit");
     let compiler = std::env::var_os("CC").unwrap_or_else(|| OsString::from("cc"));
     let result = ProcessCommand::new(compiler)
         .args([
@@ -336,16 +307,10 @@ async fn wait_for_pid_file(pid_file: &std::path::Path) -> u32 {
     }
 }
 
-async fn run_fail_closed_and_assert_reaped<T>(command: Command, pid_file: &std::path::Path) -> Error
-where
-    T: Tool + 'static,
-    T::GlobalState: GlobalTool<Config = ()>,
-{
-    let mut run = Box::pin(LiteinstBackend::run_host_with_output_and_preload::<T>(
-        command,
-        (),
-        preload_path(),
-    ));
+async fn run_fail_closed_and_assert_reaped(command: Command, pid_file: &std::path::Path) -> Error {
+    let mut run = Box::pin(LiteinstBackend::run_host_with_output_and_preload::<
+        PassthroughGetpid,
+    >(command, (), preload_path()));
     let mut early_result = None;
     let pid = tokio::time::timeout(Duration::from_secs(3), async {
         tokio::select! {
@@ -391,8 +356,8 @@ async fn initial_dynamic_preload_handshake_activates_host_lifecycle() {
 
     assert_eq!(
         global.delivered.load(Ordering::SeqCst),
-        2,
-        "host lifecycle must begin after the runtime handshake and observe both explicit calls: {output:?}"
+        3,
+        "host lifecycle missed allocator/pre-constructor entropy: {output:?}"
     );
     assert!(output.status.success(), "{output:?}");
 }
@@ -400,29 +365,63 @@ async fn initial_dynamic_preload_handshake_activates_host_lifecycle() {
 #[tokio::test(flavor = "current_thread")]
 async fn initial_static_image_without_the_runtime_fails_closed() {
     let (_directory, guest) = compile_static_fixture("hybrid_static_exit.c");
+    assert!(processes_named("li-static-exit").is_empty());
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("guest.pid");
     let mut command = Command::new(guest);
     command.arg(&pid_file);
 
-    PRE_ACTIVATION_TOOL_CALLBACKS.store(0, Ordering::SeqCst);
-    let error =
-        run_fail_closed_and_assert_reaped::<ObservePreActivationCallbacks>(command, &pid_file)
-            .await;
-    assert_eq!(
-        PRE_ACTIVATION_TOOL_CALLBACKS.load(Ordering::SeqCst),
-        0,
-        "static image reached the Tool before the runtime handshake"
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+            command,
+            (),
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("static image did not reach the entry guard");
+    let error = result.expect_err("static image unexpectedly passed the entry guard");
+    assert!(
+        !pid_file.exists(),
+        "static image executed its first side-effecting syscall before failing closed"
     );
     assert!(
         error
             .to_string()
-            .contains("verify LiteInst runtime activation failed")
+            .contains("verify LiteInst runtime before executable entry failed")
             && error
                 .to_string()
-                .contains("required preload handshake completed (phase Waiting)"),
-        "static image did not report the missing runtime handshake: {error}"
+                .contains("before the required preload handshake completed"),
+        "static image did not report the guarded entry boundary: {error}"
     );
+    let pid = error
+        .to_string()
+        .split("tracee ")
+        .nth(1)
+        .and_then(|suffix| suffix.split(':').next())
+        .and_then(|pid| pid.parse::<u32>().ok())
+        .expect("entry-guard error did not identify the exact tracee");
+    assert_pid_reaped(pid);
+    assert!(
+        processes_named("li-static-exit").is_empty(),
+        "failed static image remains stopped or unreaped"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn valid_dynamic_run_observes_restored_executable_entry() {
+    let (_directory, guest) = compile_fixture("hybrid_entry_guard.c");
+    let (output, _global) = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+        Command::new(guest),
+        (),
+        preload_path(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(output.stdout, b"entry-int3=0\n", "{output:?}");
+    assert!(output.status.success(), "{output:?}");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -433,7 +432,7 @@ async fn post_start_exec_that_drops_the_preload_fails_closed() {
     let mut command = Command::new(guest);
     command.arg(&pid_file);
 
-    let error = run_fail_closed_and_assert_reaped::<PassthroughGetpid>(command, &pid_file).await;
+    let error = run_fail_closed_and_assert_reaped(command, &pid_file).await;
     assert!(
         error
             .to_string()
@@ -469,7 +468,7 @@ async fn first_site_is_installed_once_and_hot_calls_use_liteinst() {
         output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=3\n",
         "{output:?}"
     );
-    assert_eq!(global.delivered.load(Ordering::SeqCst), 32, "{output:?}");
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 33, "{output:?}");
     assert_eq!(
         global.last_getpid_rip.load(Ordering::SeqCst),
         site + 2,

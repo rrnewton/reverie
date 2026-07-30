@@ -588,6 +588,12 @@ struct LiteinstRuntimeState {
     active_hooks: HashMap<u64, ActiveHookFootprint>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LiteinstEntryGuard {
+    address: u64,
+    saved_instruction: u64,
+}
+
 impl Default for LiteinstRuntimeState {
     fn default() -> Self {
         Self {
@@ -752,6 +758,9 @@ pub struct TracedTask<L: Tool> {
 
     /// Per-process dynamic LiteInst handshake and patched-site state.
     liteinst_runtime: Arc<StdMutex<LiteinstRuntimeState>>,
+
+    /// Controller-owned breakpoint preventing the executable entry before Ready.
+    liteinst_entry_guard: Option<LiteinstEntryGuard>,
 
     /// Original fail-closed error retained while the exit waiter reaps root.
     liteinst_failure: Option<String>,
@@ -921,6 +930,7 @@ impl<L: Tool> TracedTask<L> {
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
             liteinst_runtime: Arc::new(StdMutex::new(LiteinstRuntimeState::default())),
+            liteinst_entry_guard: None,
             liteinst_failure: None,
             next_state,
             next_state_rx: Some(next_state_rx),
@@ -980,6 +990,7 @@ impl<L: Tool> TracedTask<L> {
             pending_syscall_already_skipped: false,
             injected_syscall_frame: None,
             liteinst_runtime: self.liteinst_runtime.clone(),
+            liteinst_entry_guard: None,
             liteinst_failure: None,
             next_state,
             next_state_rx: Some(next_state_rx),
@@ -1038,6 +1049,7 @@ impl<L: Tool> TracedTask<L> {
             liteinst_runtime: Arc::new(StdMutex::new(
                 self.liteinst_runtime.lock().unwrap().clone(),
             )),
+            liteinst_entry_guard: None,
             liteinst_failure: None,
             next_state,
             next_state_rx: Some(next_state_rx),
@@ -1939,6 +1951,61 @@ impl<L: Tool + 'static> TracedTask<L> {
         (frame_readable && helper_stack_map.is_some() && install_result_writable).then_some(frame)
     }
 
+    fn install_liteinst_entry_guard(&mut self, task: &mut Stopped) -> Result<(), TraceError> {
+        if self.global_state.liteinst_runtime.is_none() {
+            return Ok(());
+        }
+        if self.liteinst_entry_guard.is_some() {
+            return Err(Errno::EALREADY.into());
+        }
+        let address = guest_auxv_entry(task.pid(), libc::AT_ENTRY).ok_or(Errno::ENOEXEC)?;
+        let range =
+            GuestRange::new(address, core::mem::size_of::<u64>() as u64).ok_or(Errno::ENOEXEC)?;
+        if !guest_maps(task.pid()).is_some_and(|maps| {
+            maps.iter().any(|mapping| {
+                mapping.readable && mapping.executable && mapping.contains_range(range)
+            })
+        }) {
+            return Err(Errno::ENOEXEC.into());
+        }
+        let read_address = Addr::<u64>::from_raw(address as usize).ok_or(Errno::EFAULT)?;
+        let guard_address = AddrMut::<u64>::from_raw(address as usize).ok_or(Errno::EFAULT)?;
+        let saved_instruction: u64 = task.read_value(read_address)?;
+        if saved_instruction as u8 == 0xcc {
+            return Err(Errno::EPROTO.into());
+        }
+        let guarded_instruction = (saved_instruction & !0xff) | 0xcc;
+        task.write_value(guard_address, &guarded_instruction)?;
+        let observed: u64 = task.read_value(read_address)?;
+        if observed != guarded_instruction {
+            let _ = task.write_value(guard_address, &saved_instruction);
+            return Err(Errno::EIO.into());
+        }
+        self.liteinst_entry_guard = Some(LiteinstEntryGuard {
+            address,
+            saved_instruction,
+        });
+        Ok(())
+    }
+
+    fn restore_liteinst_entry_guard(&mut self, task: &mut Stopped) -> Result<(), TraceError> {
+        let guard = self.liteinst_entry_guard.ok_or(Errno::EPROTO)?;
+        let read_address = Addr::<u64>::from_raw(guard.address as usize).ok_or(Errno::EFAULT)?;
+        let address = AddrMut::<u64>::from_raw(guard.address as usize).ok_or(Errno::EFAULT)?;
+        let guarded_instruction = (guard.saved_instruction & !0xff) | 0xcc;
+        let observed: u64 = task.read_value(read_address)?;
+        if observed != guarded_instruction {
+            return Err(Errno::EPROTO.into());
+        }
+        task.write_value(address, &guard.saved_instruction)?;
+        let restored: u64 = task.read_value(read_address)?;
+        if restored != guard.saved_instruction {
+            return Err(Errno::EIO.into());
+        }
+        self.liteinst_entry_guard = None;
+        Ok(())
+    }
+
     fn classify_liteinst_trap(
         &mut self,
         task: &Stopped,
@@ -1959,12 +2026,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         if regs.rax == config.ready_marker {
             let frame =
                 self.validate_liteinst_handshake(task, regs.rdi as usize, regs.ip(), true)?;
-            let mut state = self.liteinst_runtime.lock().unwrap();
+            let state = self.liteinst_runtime.lock().unwrap();
             if state.phase != LiteinstRuntimePhase::Bootstrap || state.frame != Some(frame) {
                 return None;
             }
-            state.phase = LiteinstRuntimePhase::Ready;
-            state.ready_generation = Some(state.generation);
             return Some(LiteinstTrap::HandshakeReady);
         }
         if regs.rax != config.syscall_marker {
@@ -2016,11 +2081,36 @@ impl<L: Tool + 'static> TracedTask<L> {
         Some(LiteinstTrap::Syscall(frame_address))
     }
 
-    async fn handle_sigtrap(&mut self, task: Stopped) -> Result<HandleSignalResult, TraceError> {
+    async fn handle_sigtrap(
+        &mut self,
+        mut task: Stopped,
+    ) -> Result<HandleSignalResult, TraceError> {
         let resumed_by_gdb_step = self
             .resumed_by_gdb
             .is_some_and(|action| matches!(action, ResumeAction::Step(_)));
         let mut regs = task.getregs()?;
+        if let Some(guard) = self.liteinst_entry_guard
+            && regs.ip() == guard.address.saturating_add(1)
+        {
+            let address = Addr::from_raw(guard.address as usize).ok_or(Errno::EFAULT)?;
+            let observed: u64 = task.read_value(address)?;
+            let guarded_instruction = (guard.saved_instruction & !0xff) | 0xcc;
+            if observed != guarded_instruction {
+                return Err(Errno::EPROTO.into());
+            }
+            self.liteinst_failure = Some(
+                Error::runtime(
+                    self.tid(),
+                    "verify LiteInst runtime before executable entry",
+                    format!(
+                        "tracee reached guarded executable entry {:#x} before the required preload handshake completed",
+                        guard.address
+                    ),
+                )
+                .to_string(),
+            );
+            return Err(Errno::EPROTO.into());
+        }
         match self.classify_liteinst_trap(&task, &regs) {
             Some(LiteinstTrap::HandshakeBegin) => {
                 return Ok(HandleSignalResult::SignalSuppressed(
@@ -2028,7 +2118,15 @@ impl<L: Tool + 'static> TracedTask<L> {
                 ));
             }
             Some(LiteinstTrap::HandshakeReady) => {
-                self.activate_liteinst_tool().await?;
+                self.restore_liteinst_entry_guard(&mut task)?;
+                {
+                    let mut state = self.liteinst_runtime.lock().unwrap();
+                    if state.phase != LiteinstRuntimePhase::Bootstrap {
+                        return Err(Errno::EPROTO.into());
+                    }
+                    state.phase = LiteinstRuntimePhase::Ready;
+                    state.ready_generation = Some(state.generation);
+                }
                 return Ok(HandleSignalResult::SignalSuppressed(
                     self.resume_stopped(task, None)?.next_state().await?,
                 ));
@@ -2041,6 +2139,21 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             Some(LiteinstTrap::Invalid) => return Err(Errno::EPROTO.into()),
             None => {}
+        }
+        let phase = self.liteinst_runtime.lock().unwrap().phase;
+        if self.global_state.liteinst_runtime.is_some() && phase != LiteinstRuntimePhase::Ready {
+            self.liteinst_failure = Some(
+                Error::runtime(
+                    self.tid(),
+                    "reject unexpected LiteInst activation trap",
+                    format!(
+                        "received SIGTRAP at RIP {:#x} with RAX {:#x} that matched neither the entry guard nor a validated runtime handshake (phase {phase:?})",
+                        regs.ip(), regs.rax
+                    ),
+                )
+                .to_string(),
+            );
+            return Err(Errno::EPROTO.into());
         }
         // TODO-HUMAN-REVIEW(PR-103): Review rewritten-trap provenance validation.
         if let Some(trap) = self.global_state.injected_syscall_trap.as_ref()
@@ -2148,14 +2261,22 @@ impl<L: Tool + 'static> TracedTask<L> {
         let phase = self.liteinst_runtime.lock().unwrap().phase;
         let activating_liteinst =
             self.global_state.liteinst_runtime.is_some() && phase != LiteinstRuntimePhase::Ready;
-        let result = match (activating_liteinst, sig) {
-            (true, Signal::SIGTRAP) => self.handle_sigtrap(task).await?,
-            (true, Signal::SIGSTOP) => self.handle_sigstop(task).await?,
-            (true, sig) => HandleSignalResult::SignalToDeliver(task, sig),
-            (false, Signal::SIGSEGV) => self.handle_sigsegv(task).await?,
-            (false, Signal::SIGSTOP) => self.handle_sigstop(task).await?,
-            (false, Signal::SIGTRAP) => self.handle_sigtrap(task).await?,
-            (false, sig) if sig == Timer::signal_type() => {
+        if activating_liteinst && sig != Signal::SIGTRAP {
+            self.liteinst_failure = Some(
+                Error::runtime(
+                    self.tid(),
+                    "reject unexpected LiteInst activation signal",
+                    format!("received {sig} before the required preload handshake completed"),
+                )
+                .to_string(),
+            );
+            return Err(Errno::EPROTO.into());
+        }
+        let result = match sig {
+            Signal::SIGSEGV => self.handle_sigsegv(task).await?,
+            Signal::SIGSTOP => self.handle_sigstop(task).await?,
+            Signal::SIGTRAP => self.handle_sigtrap(task).await?,
+            sig if sig == Timer::signal_type() => {
                 let (was_timer, task) = self.handle_timer(task).await?;
                 if was_timer {
                     HandleSignalResult::SignalSuppressed(
@@ -2165,14 +2286,11 @@ impl<L: Tool + 'static> TracedTask<L> {
                     HandleSignalResult::SignalToDeliver(task, sig)
                 }
             }
-            (false, sig) => HandleSignalResult::SignalToDeliver(task, sig),
+            sig => HandleSignalResult::SignalToDeliver(task, sig),
         };
 
         match result {
             HandleSignalResult::SignalSuppressed(wait) => Ok(wait),
-            HandleSignalResult::SignalToDeliver(task, sig) if activating_liteinst => {
-                Ok(self.resume_stopped(task, Some(sig))?.next_state().await?)
-            }
             HandleSignalResult::SignalToDeliver(task, sig) => {
                 let sig = self
                     .process_state
@@ -2183,22 +2301,6 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Ok(self.resume_stopped(task, sig)?.next_state().await?)
             }
         }
-    }
-
-    async fn activate_liteinst_tool(&mut self) -> Result<(), TraceError> {
-        if let Some(Err(err)) = cancellable(self.cancel_handler.clone(), async {
-            self.process_state.clone().handle_thread_start(self).await
-        })
-        .await
-            && let Err(error) = err.into_errno()
-        {
-            self.liteinst_failure = Some(error.to_string());
-            return Err(Errno::EIO.into());
-        }
-        self.timer.finalize_requests();
-        self.process_state.clone().handle_post_exec(self).await?;
-        self.timer.finalize_requests();
-        Ok(())
     }
 
     // handle ptrace exec event
@@ -2246,7 +2348,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         assert_eq!(event, Event::Signal(Signal::SIGTRAP));
         self.arm_liteinst_root_stop(&task, &event);
 
-        let task = self.tracee_preinit(task).await?;
+        let mut task = self.tracee_preinit(task).await?;
+        self.install_liteinst_entry_guard(&mut task)?;
 
         #[cfg(test)]
         if self
@@ -2255,18 +2358,16 @@ impl<L: Tool + 'static> TracedTask<L> {
             .as_ref()
             .is_some_and(|runtime| runtime.activate_without_handshake)
         {
+            self.restore_liteinst_entry_guard(&mut task)?;
             {
                 let mut state = self.liteinst_runtime.lock().unwrap();
                 state.phase = LiteinstRuntimePhase::Ready;
                 state.ready_generation = Some(state.generation);
             }
-            self.activate_liteinst_tool().await?;
         }
 
-        if self.global_state.liteinst_runtime.is_none() {
-            self.process_state.clone().handle_post_exec(self).await?;
-            self.timer.finalize_requests();
-        }
+        self.process_state.clone().handle_post_exec(self).await?;
+        self.timer.finalize_requests();
 
         if self.attached_by_gdb {
             let request_tx = self.gdb_request_tx.clone();
@@ -2313,7 +2414,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await?;
             Ok(running.next_state().await?)
         } else {
-            Ok(self.step_stopped(task, None)?.next_state().await?)
+            let running = if self.global_state.liteinst_runtime.is_some() {
+                self.resume_stopped(task, None)?
+            } else {
+                self.step_stopped(task, None)?
+            };
+            Ok(running.next_state().await?)
         }
     }
 
@@ -3118,22 +3224,6 @@ impl<L: Tool + 'static> TracedTask<L> {
 
     async fn handle_seccomp(&mut self, mut task: Stopped) -> Result<Wait, Error> {
         let tid = self.tid();
-        let phase = self.liteinst_runtime.lock().unwrap().phase;
-        if self.global_state.liteinst_runtime.is_some()
-            && matches!(
-                phase,
-                LiteinstRuntimePhase::PreExec
-                    | LiteinstRuntimePhase::Waiting
-                    | LiteinstRuntimePhase::Bootstrap
-            )
-        {
-            return self
-                .resume_stopped(task, None)
-                .tracee_context(tid, "resume LiteInst activation syscall")?
-                .next_state()
-                .await
-                .tracee_context(tid, "wait after LiteInst activation syscall");
-        }
         let syscall = self
             .get_syscall(&task)
             .tracee_context(tid, "read registers at seccomp stop")?;
@@ -3774,20 +3864,17 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     async fn run_loop_internal(&mut self, task: Stopped) -> Result<ExitStatus, Error> {
-        // Ordinary backends let the Tool inject as soon as the thread starts.
-        // Required-runtime mode defers every Tool callback until the preload's
-        // validated Ready marker activates it in `handle_sigtrap`.
-        if self.global_state.liteinst_runtime.is_none() {
-            if let Some(Err(err)) = cancellable(self.cancel_handler.clone(), async {
-                self.process_state.clone().handle_thread_start(self).await
-            })
-            .await
-            {
-                // Propagate user errors. Don't care about the result of syscall injections.
-                err.into_errno()?;
-            }
-            self.timer.finalize_requests();
+        // This is the beginning of the life of the guest. Allow the tool to
+        // inject syscalls as soon as the thread starts.
+        if let Some(Err(err)) = cancellable(self.cancel_handler.clone(), async {
+            self.process_state.clone().handle_thread_start(self).await
+        })
+        .await
+        {
+            // Propagate user errors. Don't care about the result of syscall injections.
+            err.into_errno()?;
         }
+        self.timer.finalize_requests();
 
         // Resume the guest for the first time. Note that the root task and
         // child tasks start out in a stopped state for different reasons: The
