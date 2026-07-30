@@ -1397,6 +1397,8 @@ fn is_thread_clone(pid: Pid, number: Sysno, args: SyscallArgs) -> bool {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-273): Review process-fork classification for state inheritance.
 fn is_process_fork(pid: Pid, number: Sysno, args: SyscallArgs) -> bool {
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-285): Review vfork state inheritance after private-fork rewriting.
     // The SaBRe callback rewrites direct vfork to a private fork so its child
     // cannot overwrite the blocked parent's callback frames on the shared
     // guest stack. Preserve the original vfork classification for Detcore,

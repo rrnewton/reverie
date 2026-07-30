@@ -43,6 +43,8 @@ const VFORK_CHILD_SIGHAND: u64 = 1 << 32;
 const VFORK_CHILD_RESERVED: u64 = 1 << 63;
 const NO_VFORK_SLOT: usize = usize::MAX;
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-285): Review private vfork memory and exec-order handshake.
 struct VforkChildSlot {
     entry: AtomicU64,
     pid_namespace: AtomicU64,
