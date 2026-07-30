@@ -139,6 +139,10 @@ static PIDFD_OPEN_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+static PIDFD_LIVENESS_ERRORS: LazyLock<Mutex<HashMap<Pid, VecDeque<Errno>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
 struct EventCapturePause {
     captured: Arc<Barrier>,
     resume: Arc<Barrier>,
@@ -154,6 +158,14 @@ static CURRENT_OR_NEW_CAPTURE_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePa
 
 #[cfg(test)]
 static SPAWN_FAILURE_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static PRE_REGISTRATION_REAP_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static SYNC_WAIT_CLAIM_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
@@ -195,6 +207,10 @@ const WORKER_STARTING: i32 = 1;
 const WORKER_RUNNING: i32 = 2;
 const WORKER_FINISHING: i32 = 3;
 const WORKER_DONE: i32 = 4;
+
+const WAIT_OWNER_NONE: u8 = 0;
+const WAIT_OWNER_SYNC: u8 = 1;
+const WAIT_OWNER_NOTIFIER: u8 = 2;
 
 /// The number we get when in a PTRACE_EVENT_EXIT stop.
 const PTRACE_EVENT_EXIT_STOP: i32 = (libc::PTRACE_EVENT_EXIT << 16) | (libc::SIGTRAP << 8) | 0x7f;
@@ -320,6 +336,12 @@ struct Event {
     worker_state: AtomicI32,
     worker_done_lock: Mutex<()>,
     worker_done_changed: Condvar,
+
+    /// Serializes kernel wait-status ownership before either synchronous
+    /// fallback/capture or notifier registration can inspect mutable state.
+    wait_owner: AtomicU8,
+    wait_owner_lock: Mutex<()>,
+    wait_owner_changed: Condvar,
 }
 
 #[derive(Debug)]
@@ -331,6 +353,67 @@ struct StatusState {
 struct StatusReservation<'a> {
     status: i32,
     state: Option<MutexGuard<'a, StatusState>>,
+}
+
+struct SyncWaitOwner<'a> {
+    event: &'a Event,
+}
+
+impl Drop for SyncWaitOwner<'_> {
+    fn drop(&mut self) {
+        let _guard = self.event.wait_owner_lock.lock();
+        self.event
+            .wait_owner
+            .compare_exchange(
+                WAIT_OWNER_SYNC,
+                WAIT_OWNER_NONE,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .expect("synchronous wait ownership changed before release");
+        self.event.wait_owner_changed.notify_all();
+    }
+}
+
+enum SyncWaitOwnership<'a> {
+    Claimed(SyncWaitOwner<'a>),
+    Notifier,
+}
+
+struct NotifierWaitOwner<'a> {
+    event: &'a Event,
+    committed: bool,
+}
+
+impl NotifierWaitOwner<'_> {
+    fn commit(mut self) {
+        self.committed = true;
+        self.event.notify_wait_owner_change();
+    }
+}
+
+impl Drop for NotifierWaitOwner<'_> {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let _guard = self.event.wait_owner_lock.lock();
+        self.event
+            .wait_owner
+            .compare_exchange(
+                WAIT_OWNER_NOTIFIER,
+                WAIT_OWNER_NONE,
+                Ordering::Release,
+                Ordering::Acquire,
+            )
+            .expect("notifier wait ownership changed before rollback");
+        self.event.wait_owner_changed.notify_all();
+    }
+}
+
+enum NotifierWaitOwnership<'a> {
+    Claimed(NotifierWaitOwner<'a>),
+    Existing,
 }
 
 impl StatusReservation<'_> {
@@ -359,6 +442,9 @@ impl Event {
             worker_state: AtomicI32::new(WORKER_NOT_STARTED),
             worker_done_lock: Mutex::new(()),
             worker_done_changed: Condvar::new(),
+            wait_owner: AtomicU8::new(WAIT_OWNER_NONE),
+            wait_owner_lock: Mutex::new(()),
+            wait_owner_changed: Condvar::new(),
         }
     }
 
@@ -609,15 +695,110 @@ impl Event {
         self.status.lock().pending.is_empty()
     }
 
+    fn notify_wait_owner_change(&self) {
+        let _guard = self.wait_owner_lock.lock();
+        self.wait_owner_changed.notify_all();
+    }
+
+    fn claim_sync_wait(&self) -> Result<SyncWaitOwnership<'_>, Errno> {
+        let mut guard = self.wait_owner_lock.lock();
+        loop {
+            match self.wait_owner.load(Ordering::Acquire) {
+                WAIT_OWNER_NONE => {
+                    self.wait_owner
+                        .compare_exchange(
+                            WAIT_OWNER_NONE,
+                            WAIT_OWNER_SYNC,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .expect("wait owner changed while serialized");
+                    return Ok(SyncWaitOwnership::Claimed(SyncWaitOwner { event: self }));
+                }
+                WAIT_OWNER_NOTIFIER => match self.worker_state.load(Ordering::Acquire) {
+                    WORKER_NOT_STARTED | WORKER_STARTING => {
+                        self.wait_owner_changed.wait(&mut guard)
+                    }
+                    WORKER_RUNNING | WORKER_FINISHING | WORKER_DONE => {
+                        return Ok(SyncWaitOwnership::Notifier);
+                    }
+                    state => unreachable!("invalid worker state {state}"),
+                },
+                WAIT_OWNER_SYNC => return Err(Errno::EBUSY),
+                owner => unreachable!("invalid wait owner {owner}"),
+            }
+        }
+    }
+
+    fn claim_notifier_wait(&self) -> NotifierWaitOwnership<'_> {
+        let mut guard = self.wait_owner_lock.lock();
+        loop {
+            match self.wait_owner.load(Ordering::Acquire) {
+                WAIT_OWNER_NONE => {
+                    self.wait_owner
+                        .compare_exchange(
+                            WAIT_OWNER_NONE,
+                            WAIT_OWNER_NOTIFIER,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .expect("wait owner changed while serialized");
+                    return NotifierWaitOwnership::Claimed(NotifierWaitOwner {
+                        event: self,
+                        committed: false,
+                    });
+                }
+                WAIT_OWNER_SYNC => self.wait_owner_changed.wait(&mut guard),
+                WAIT_OWNER_NOTIFIER => match self.worker_state.load(Ordering::Acquire) {
+                    WORKER_NOT_STARTED | WORKER_STARTING => {
+                        self.wait_owner_changed.wait(&mut guard)
+                    }
+                    WORKER_RUNNING | WORKER_FINISHING | WORKER_DONE => {
+                        return NotifierWaitOwnership::Existing;
+                    }
+                    state => unreachable!("invalid worker state {state}"),
+                },
+                owner => unreachable!("invalid wait owner {owner}"),
+            }
+        }
+    }
+
+    fn wait_status_reservation_sync(&self) -> Result<StatusReservation<'_>, Errno> {
+        let mut state = self.status.lock();
+        loop {
+            if let Some(status) = state.pending.front().copied() {
+                return Ok(StatusReservation {
+                    status,
+                    state: Some(state),
+                });
+            }
+            match state.terminal {
+                INVALID_STATUS => self.status_changed.wait(&mut state),
+                ECHILD_STATUS => return Err(Errno::ECHILD),
+                status => {
+                    return Ok(StatusReservation {
+                        status,
+                        state: None,
+                    });
+                }
+            }
+        }
+    }
+
     fn try_begin_worker_start(&self) -> bool {
-        self.worker_state
+        let started = self
+            .worker_state
             .compare_exchange(
                 WORKER_NOT_STARTED,
                 WORKER_STARTING,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
-            .is_ok()
+            .is_ok();
+        if started {
+            self.notify_wait_owner_change();
+        }
+        started
     }
 
     fn mark_worker_running(&self) {
@@ -629,6 +810,7 @@ impl Event {
                 Ordering::Acquire,
             )
             .expect("worker start state changed before publication");
+        self.notify_wait_owner_change();
     }
 
     fn rollback_worker_start(&self) {
@@ -640,6 +822,7 @@ impl Event {
                 Ordering::Acquire,
             )
             .expect("failed worker start state changed before rollback");
+        self.notify_wait_owner_change();
     }
 
     fn worker_is_running(&self) -> bool {
@@ -647,20 +830,26 @@ impl Event {
     }
 
     fn try_begin_unstarted_completion(&self) -> bool {
-        self.worker_state
+        let finishing = self
+            .worker_state
             .compare_exchange(
                 WORKER_NOT_STARTED,
                 WORKER_FINISHING,
                 Ordering::AcqRel,
                 Ordering::Acquire,
             )
-            .is_ok()
+            .is_ok();
+        if finishing {
+            self.notify_wait_owner_change();
+        }
+        finishing
     }
 
     fn mark_worker_done(&self) {
         let previous = self.worker_state.swap(WORKER_DONE, Ordering::AcqRel);
         debug_assert!(matches!(previous, WORKER_RUNNING | WORKER_FINISHING));
         self.worker_done_changed.notify_all();
+        self.notify_wait_owner_change();
     }
 
     fn wait_worker_done(&self, timeout: Duration) -> bool {
@@ -968,11 +1157,26 @@ impl WorkerIdentity {
         self.pid == other.pid
             && self.snapshot == other.snapshot
             && self.proc_inode == other.proc_inode
-            && self.pidfd_is_live()
-            && other.pidfd_is_live()
     }
 
-    fn pidfd_is_live(&self) -> bool {
+    fn same_live_generation(&self, other: &Self) -> Result<bool, Errno> {
+        if !self.same_generation(other) {
+            return Ok(false);
+        }
+        Ok(self.pidfd_is_live()? && other.pidfd_is_live()?)
+    }
+
+    fn pidfd_is_live(&self) -> Result<bool, Errno> {
+        #[cfg(test)]
+        {
+            let mut errors = PIDFD_LIVENESS_ERRORS.lock();
+            if let Some(error) = errors.get_mut(&self.pid).and_then(VecDeque::pop_front) {
+                if errors.get(&self.pid).is_some_and(VecDeque::is_empty) {
+                    errors.remove(&self.pid);
+                }
+                return Err(error);
+            }
+        }
         let result = unsafe {
             libc::syscall(
                 libc::SYS_pidfd_send_signal,
@@ -982,7 +1186,15 @@ impl WorkerIdentity {
                 0,
             )
         };
-        result == 0
+        if result == 0 {
+            return Ok(true);
+        }
+        let error = io_errno(io::Error::last_os_error());
+        if error == Errno::ESRCH {
+            Ok(false)
+        } else {
+            Err(error)
+        }
     }
 }
 
@@ -1110,28 +1322,60 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
     NOTIFIER.remove(pid, &event);
 }
 
-/// Uses a bound pidfd for synchronous waits once a typed state has captured an
-/// identity. `Ok(None)` is the only permitted numeric fallback: the handle has
-/// never been registered or identity-bound.
-pub(super) fn wait_sync_bound(pid: Pid, handle: &EventHandle) -> Result<Option<i32>, Errno> {
-    let Some(identity) = handle.identity() else {
-        return Ok(None);
-    };
-    if identity.pid != pid {
-        return Err(Errno::ESRCH);
-    }
-    if handle.event().worker_state.load(Ordering::Acquire) != WORKER_NOT_STARTED {
-        return Err(Errno::EBUSY);
-    }
+/// Performs a synchronous typed wait under the Event's atomic wait-owner
+/// claim. Numeric fallback is possible only while this claim excludes notifier
+/// registration; a losing synchronous caller consumes the notifier FIFO.
+pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
     let flags = WaitPidFlag::from_bits_retain(
         WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
     );
+
     loop {
-        match waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags) {
-            Ok(Some(status)) => return Ok(Some(status)),
-            Ok(None) => unreachable!("blocking waitid(P_PIDFD) returned no status"),
-            Err(Errno::EINTR) => {}
-            Err(error) => return Err(error),
+        let handle = token.event().resolved_handle();
+        let event = Arc::clone(handle.event());
+        match event.claim_sync_wait()? {
+            SyncWaitOwnership::Notifier => {
+                let reservation = event.wait_status_reservation_sync()?;
+                let decoded = Wait::from_raw_with_token(
+                    pid,
+                    reservation.status,
+                    TraceeToken::from_event(handle),
+                );
+                if decoded.is_ok() {
+                    reservation.commit();
+                }
+                return decoded;
+            }
+            SyncWaitOwnership::Claimed(owner) => {
+                if !Arc::ptr_eq(token.event().event(), &event) {
+                    drop(owner);
+                    continue;
+                }
+                #[cfg(test)]
+                if let Some(pause) = SYNC_WAIT_CLAIM_PAUSES.lock().remove(&pid) {
+                    pause.captured.wait();
+                    pause.resume.wait();
+                }
+                let status = loop {
+                    let result = if let Some(identity) = handle.identity() {
+                        if identity.pid != pid {
+                            return Err(Errno::ESRCH.into());
+                        }
+                        waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags)
+                    } else {
+                        waitid::waitpid(pid.into(), flags)
+                    };
+                    match result {
+                        Ok(Some(status)) => break status,
+                        Ok(None) => unreachable!("blocking synchronous wait returned no status"),
+                        Err(Errno::EINTR) => {}
+                        Err(error) => return Err(error.into()),
+                    }
+                };
+                let decoded = Wait::from_raw_with_token(pid, status, token);
+                drop(owner);
+                return decoded;
+            }
         }
     }
 }
@@ -1240,14 +1484,16 @@ impl Notifier {
             // point. It is a pidfd syscall, not a long procfs read under the
             // global registry lock. A later reap/reuse cannot retarget the
             // pidfd-bound handle or worker.
-            if !current.pidfd_is_live() {
+            if !current.pidfd_is_live()? {
                 drop(pids);
                 continue;
             }
+            if let Some(occupied) = pids.get(&pid)
+                && occupied.identity.same_live_generation(&current)?
+            {
+                return Ok(occupied.handle.clone());
+            }
             match pids.entry(pid) {
-                Entry::Occupied(occupied) if occupied.get().identity.same_generation(&current) => {
-                    return Ok(occupied.get().handle.clone());
-                }
                 Entry::Occupied(mut occupied) => {
                     let handle = EventHandle::with_identity(Arc::clone(&current));
                     occupied.insert(NotifierEntry {
@@ -1297,8 +1543,29 @@ impl Notifier {
 
     /// Registers the exact event generation carried by a typed state.
     fn event(&self, pid: Pid, handle: &EventHandle) -> Result<EventHandle, Errno> {
-        let requested = handle.event();
+        loop {
+            let requested = Arc::clone(handle.event());
+            let owner = match requested.claim_notifier_wait() {
+                NotifierWaitOwnership::Existing => return Ok(handle.resolved_handle()),
+                NotifierWaitOwnership::Claimed(owner) => owner,
+            };
+            if !Arc::ptr_eq(handle.event(), &requested) {
+                drop(owner);
+                continue;
+            }
+            return self.event_with_owner(pid, handle, &requested, owner);
+        }
+    }
+
+    fn event_with_owner(
+        &self,
+        pid: Pid,
+        handle: &EventHandle,
+        requested: &Arc<Event>,
+        owner: NotifierWaitOwner<'_>,
+    ) -> Result<EventHandle, Errno> {
         if requested.is_terminal() {
+            owner.commit();
             return Ok(handle.resolved_handle());
         }
 
@@ -1307,6 +1574,7 @@ impl Notifier {
         // that old worker must not consult the replacement generation or
         // recapture /proc before publishing its final status.
         if requested.worker_is_running() {
+            owner.commit();
             return Ok(handle.resolved_handle());
         }
 
@@ -1314,7 +1582,9 @@ impl Notifier {
             let current = match self.capture_identity(pid) {
                 Ok(identity) => identity,
                 Err(Errno::ENOENT | Errno::ESRCH) => {
-                    return Ok(self.resolve_echild(pid, handle));
+                    let resolved = self.resolve_echild(pid, handle);
+                    owner.commit();
+                    return Ok(resolved);
                 }
                 Err(error) => {
                     Self::record_registration_error(handle, error);
@@ -1326,15 +1596,32 @@ impl Notifier {
                 continue;
             }
             match handle.identity() {
-                Some(bound) if !bound.same_generation(&current) => {
-                    return Ok(self.resolve_echild(pid, handle));
-                }
-                Some(_) => {}
+                Some(bound) => match bound.same_live_generation(&current) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        let resolved = self.resolve_echild(pid, handle);
+                        owner.commit();
+                        return Ok(resolved);
+                    }
+                    Err(error) => {
+                        Self::record_registration_error(handle, error);
+                        return Err(error);
+                    }
+                },
                 None => {
-                    if let Err(bound) = handle.bind_identity(Arc::clone(&current))
-                        && !bound.same_generation(&current)
-                    {
-                        return Ok(self.resolve_echild(pid, handle));
+                    if let Err(bound) = handle.bind_identity(Arc::clone(&current)) {
+                        match bound.same_live_generation(&current) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                let resolved = self.resolve_echild(pid, handle);
+                                owner.commit();
+                                return Ok(resolved);
+                            }
+                            Err(error) => {
+                                Self::record_registration_error(handle, error);
+                                return Err(error);
+                            }
+                        }
                     }
                 }
             }
@@ -1345,15 +1632,28 @@ impl Notifier {
             }
 
             let mut pids = self.pids.lock();
-            if !current.pidfd_is_live() {
-                drop(pids);
-                return Ok(self.resolve_echild(pid, handle));
+            match current.pidfd_is_live() {
+                Ok(true) => {}
+                Ok(false) => {
+                    drop(pids);
+                    let resolved = self.resolve_echild(pid, handle);
+                    owner.commit();
+                    return Ok(resolved);
+                }
+                Err(error) => {
+                    Self::record_registration_error(handle, error);
+                    return Err(error);
+                }
             }
             match requested.worker_state.load(Ordering::Acquire) {
                 WORKER_FINISHING | WORKER_DONE => {
+                    owner.commit();
                     return Ok(handle.resolved_handle());
                 }
-                WORKER_RUNNING => return Ok(handle.resolved_handle()),
+                WORKER_RUNNING => {
+                    owner.commit();
+                    return Ok(handle.resolved_handle());
+                }
                 WORKER_STARTING => {
                     unreachable!("worker STARTING publication escaped the registry lock")
                 }
@@ -1363,19 +1663,33 @@ impl Notifier {
             let mut worker_identity = None;
             let event_handle = match pids.entry(pid) {
                 Entry::Occupied(occupied) if occupied.get().handle == *handle => {
-                    if !occupied.get().identity.same_generation(&current) {
-                        drop(pids);
-                        return Ok(self.resolve_echild(pid, handle));
+                    match occupied.get().identity.same_live_generation(&current) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            drop(pids);
+                            let resolved = self.resolve_echild(pid, handle);
+                            owner.commit();
+                            return Ok(resolved);
+                        }
+                        Err(error) => {
+                            Self::record_registration_error(handle, error);
+                            return Err(error);
+                        }
                     }
                     if requested.try_begin_worker_start() {
                         worker_identity = Some(Arc::clone(&occupied.get().identity));
                     }
                     handle.clone()
                 }
-                Entry::Occupied(occupied) if occupied.get().identity.same_generation(&current) => {
-                    return handle.adopt_authoritative(&occupied.get().handle);
-                }
                 Entry::Occupied(mut occupied) => {
+                    match occupied.get().identity.same_live_generation(&current) {
+                        Ok(true) => return handle.adopt_authoritative(&occupied.get().handle),
+                        Ok(false) => {}
+                        Err(error) => {
+                            Self::record_registration_error(handle, error);
+                            return Err(error);
+                        }
+                    }
                     occupied.insert(NotifierEntry {
                         handle: handle.clone(),
                         identity: Arc::clone(&current),
@@ -1422,6 +1736,7 @@ impl Notifier {
             if let Some(worker) = pending_worker {
                 worker.start();
             }
+            owner.commit();
             return Ok(event_handle);
         }
     }
@@ -1438,7 +1753,11 @@ impl Notifier {
     }
 
     #[cfg(test)]
-    fn try_claim_unstarted_raw_cleanup(&self, pid: Pid, handle: &EventHandle) -> RawCleanupClaim {
+    fn try_claim_unstarted_raw_cleanup(
+        &self,
+        pid: Pid,
+        handle: &EventHandle,
+    ) -> Result<RawCleanupClaim, Errno> {
         loop {
             let mut pids = self.pids.lock();
             if let Some(current) = pids.get(&pid)
@@ -1447,7 +1766,7 @@ impl Notifier {
                 let current_handle = current.handle.clone();
                 let current_identity = Arc::clone(&current.identity);
                 drop(pids);
-                let live = current_identity.pidfd_is_live();
+                let live = current_identity.pidfd_is_live()?;
                 pids = self.pids.lock();
                 if !pids.get(&pid).is_some_and(|entry| {
                     entry.handle == current_handle
@@ -1457,13 +1776,33 @@ impl Notifier {
                     continue;
                 }
                 if live {
-                    return RawCleanupClaim::Existing(current_handle);
+                    return Ok(RawCleanupClaim::Existing(current_handle));
                 }
                 pids.remove(&pid);
             }
 
-            if !handle.event().try_begin_unstarted_completion() {
-                return RawCleanupClaim::Lost;
+            drop(pids);
+            let event = Arc::clone(handle.event());
+            let owner = match event.claim_notifier_wait() {
+                NotifierWaitOwnership::Existing => return Ok(RawCleanupClaim::Lost),
+                NotifierWaitOwnership::Claimed(owner) => owner,
+            };
+            if !Arc::ptr_eq(handle.event(), &event) {
+                drop(owner);
+                continue;
+            }
+            pids = self.pids.lock();
+            if pids
+                .get(&pid)
+                .is_some_and(|current| current.handle != *handle)
+            {
+                drop(pids);
+                drop(owner);
+                continue;
+            }
+            if !event.try_begin_unstarted_completion() {
+                drop(owner);
+                return Ok(RawCleanupClaim::Lost);
             }
             if pids
                 .get(&pid)
@@ -1471,7 +1810,8 @@ impl Notifier {
             {
                 pids.remove(&pid);
             }
-            return RawCleanupClaim::Won;
+            owner.commit();
+            return Ok(RawCleanupClaim::Won);
         }
     }
 }
@@ -1522,7 +1862,7 @@ impl TerminalCleanup {
     }
 
     #[cfg(test)]
-    fn try_claim_unstarted_raw_cleanup(&self) -> RawCleanupClaim {
+    fn try_claim_unstarted_raw_cleanup(&self) -> Result<RawCleanupClaim, Errno> {
         NOTIFIER.try_claim_unstarted_raw_cleanup(self.pid, &self.event)
     }
 
@@ -2374,7 +2714,13 @@ mod test {
 
         fn cleanup_before_registration(pid: Pid, pidfd: &OwnedFd) -> io::Result<()> {
             match pidfd_send_signal(pidfd, libc::SIGKILL) {
-                Ok(()) => reap_tracee_bounded(pid),
+                Ok(()) => {
+                    if let Some(pause) = PRE_REGISTRATION_REAP_PAUSES.lock().remove(&pid.into()) {
+                        pause.captured.wait();
+                        pause.resume.wait();
+                    }
+                    reap_tracee_pidfd_bounded(pid, pidfd)
+                }
                 // A dead/reaped pidfd cannot refer to a recycled numeric PID.
                 // In particular, do not fall through to waitpid(self.pid).
                 Err(error) if error.raw_os_error() == Some(libc::ESRCH) => Ok(()),
@@ -2418,7 +2764,11 @@ mod test {
                 })?;
             }
 
-            match terminal.try_claim_unstarted_raw_cleanup() {
+            match terminal
+                .try_claim_unstarted_raw_cleanup()
+                .map_err(|error| {
+                    io::Error::other(format!("claim exact raw cleanup owner: {error}"))
+                })? {
                 RawCleanupClaim::Won => {
                     return Ok(CleanupWaitOwner::Raw { finish_event: true });
                 }
@@ -3348,13 +3698,131 @@ mod test {
             );
             assert!(!NOTIFIER.pids.lock().contains_key(&pid.into()));
             assert_eq!(
-                wait_sync_bound(pid.into(), &terminal.event),
-                Ok(None),
-                "numeric synchronous fallback is allowed only while unbound"
+                terminal.event.event().wait_owner.load(Ordering::Acquire),
+                WAIT_OWNER_NONE,
+                "failed registration must release wait ownership"
             );
 
             reap_stopped_process(cleanup);
         }
+    }
+
+    #[test]
+    fn pidfd_liveness_errors_are_typed_across_owner_paths() {
+        let (lookup_pid, lookup_cleanup) =
+            spawn_stopped_process(None).expect("spawn liveness lookup child");
+        PIDFD_LIVENESS_ERRORS
+            .lock()
+            .entry(lookup_pid.into())
+            .or_default()
+            .push_back(Errno::EPERM);
+        assert!(matches!(
+            EventHandle::current_or_new(lookup_pid.into()),
+            Err(Errno::EPERM)
+        ));
+        reap_stopped_process(lookup_cleanup);
+
+        let (event_pid, event_cleanup) =
+            spawn_stopped_process(None).expect("spawn liveness event child");
+        let event_running = Running::new(event_pid.into());
+        let event_terminal = TerminalCleanup::new_unregistered(event_pid.into(), &event_running.1);
+        PIDFD_LIVENESS_ERRORS
+            .lock()
+            .entry(event_pid.into())
+            .or_default()
+            .push_back(Errno::EINVAL);
+        assert_eq!(event_terminal.ensure_registered(), Err(Errno::EINVAL));
+        assert_eq!(event_terminal.registration_error(), Some(Errno::EINVAL));
+        reap_stopped_process(event_cleanup);
+
+        let (raw_pid, mut raw_cleanup) =
+            spawn_stopped_process(None).expect("spawn liveness raw-claim child");
+        let authoritative_running = Running::new(raw_pid.into());
+        let authoritative = authoritative_running.terminal_cleanup();
+        let competing_running = Running::new(raw_pid.into());
+        let competing = TerminalCleanup::new_unregistered(raw_pid.into(), &competing_running.1);
+        PIDFD_LIVENESS_ERRORS
+            .lock()
+            .entry(raw_pid.into())
+            .or_default()
+            .push_back(Errno::EBADF);
+        assert!(matches!(
+            competing.try_claim_unstarted_raw_cleanup(),
+            Err(Errno::EBADF)
+        ));
+        raw_cleanup
+            .store_terminal(authoritative)
+            .expect("bind raw-claim cleanup to authoritative worker");
+        raw_cleanup
+            .cleanup()
+            .expect("cleanup liveness raw-claim child");
+    }
+
+    #[test]
+    fn synchronous_wait_claim_blocks_and_wakes_registration() {
+        let (pid, mut cleanup) =
+            spawn_stopped_process(None).expect("spawn sync-first wait-owner child");
+        let running = Running::new(pid.into());
+        let terminal = TerminalCleanup::new_unregistered(pid.into(), &running.1);
+        let claimed = Arc::new(Barrier::new(2));
+        let resume_wait = Arc::new(Barrier::new(2));
+        SYNC_WAIT_CLAIM_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&claimed),
+                resume: Arc::clone(&resume_wait),
+            },
+        );
+        let synchronous = thread::spawn(move || running.wait());
+        claimed.wait();
+
+        let (registered_tx, registered_rx) = mpsc::channel();
+        let registration = thread::spawn(move || {
+            let result = terminal.ensure_registered();
+            registered_tx
+                .send(())
+                .expect("report sync-first registration completion");
+            (result, terminal)
+        });
+        thread::sleep(Duration::from_millis(20));
+        assert!(
+            registered_rx.try_recv().is_err(),
+            "registration bypassed the synchronous wait-owner claim"
+        );
+
+        resume_wait.wait();
+        nix::sys::signal::kill(pid, Signal::SIGCONT).expect("resume sync-first child");
+        assert!(matches!(
+            synchronous.join().expect("join synchronous wait"),
+            Ok(Wait::Exited(waited, crate::ExitStatus::Exited(0))) if waited == pid.into()
+        ));
+        registered_rx
+            .recv_timeout(TRACEE_WAIT_TIMEOUT)
+            .expect("registration was not woken after synchronous wait release");
+        let (result, terminal) = registration.join().expect("join blocked registration");
+        result.expect("registration retries after synchronous wait release");
+        assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+        cleanup.disarm();
+    }
+
+    #[test]
+    fn synchronous_wait_losing_to_notifier_consumes_event_fifo() {
+        let (pid, mut cleanup) =
+            spawn_stopped_process(None).expect("spawn notifier-first wait-owner child");
+        let running = Running::new(pid.into());
+        let terminal = TerminalCleanup::new_unregistered(pid.into(), &running.1);
+        terminal
+            .ensure_registered()
+            .expect("register notifier-first worker");
+
+        let synchronous = thread::spawn(move || running.wait());
+        nix::sys::signal::kill(pid, Signal::SIGCONT).expect("resume notifier-first child");
+        assert!(matches!(
+            synchronous.join().expect("join notifier-owned synchronous wait"),
+            Ok(Wait::Exited(waited, crate::ExitStatus::Exited(0))) if waited == pid.into()
+        ));
+        assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
+        cleanup.disarm();
     }
 
     #[test]
@@ -3478,7 +3946,7 @@ mod test {
                 .terminal()
                 .expect("winner terminal")
                 .try_claim_unstarted_raw_cleanup(),
-            RawCleanupClaim::Won
+            Ok(RawCleanupClaim::Won)
         ));
         let TraceeCleanupOwnership::NotifierOwned {
             raw_cleanup_claimed,
@@ -3531,7 +3999,7 @@ mod test {
                 .terminal()
                 .expect("ESRCH old terminal")
                 .try_claim_unstarted_raw_cleanup(),
-            RawCleanupClaim::Won
+            Ok(RawCleanupClaim::Won)
         ));
         let TraceeCleanupOwnership::NotifierOwned {
             raw_cleanup_claimed,
@@ -3562,8 +4030,70 @@ mod test {
         reap_stopped_process(replacement_cleanup);
     }
 
+    fn pre_registration_cleanup_never_reaps_reused_pid(requested_pid: Option<i32>) -> bool {
+        let Some((old_pid, mut old_cleanup)) = spawn_stopped_process(requested_pid) else {
+            return false;
+        };
+        let captured = Arc::new(Barrier::new(2));
+        let resume = Arc::new(Barrier::new(2));
+        PRE_REGISTRATION_REAP_PAUSES.lock().insert(
+            old_pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&captured),
+                resume: Arc::clone(&resume),
+            },
+        );
+        let cleanup = thread::spawn(move || old_cleanup.cleanup());
+        captured.wait();
+        reap_tracee_bounded(old_pid).expect("competing owner reaps old pre-registration child");
+        thread::sleep(Duration::from_millis(20));
+
+        let Some((replacement_pid, replacement_cleanup)) = spawn_stopped_process(requested_pid)
+        else {
+            resume.wait();
+            let _ = cleanup.join();
+            return false;
+        };
+        resume.wait();
+        let cleanup_result = cleanup.join().expect("join pre-registration cleanup");
+        let replacement_live = unsafe { libc::kill(replacement_pid.as_raw(), 0) } == 0;
+        reap_stopped_process(replacement_cleanup);
+        cleanup_result.expect("exact old pidfd reap must not wait on replacement PID");
+        assert!(replacement_live, "old cleanup touched the replacement PID");
+        true
+    }
+
     #[test]
-    fn raw_cleanup_winning_after_capture_cannot_insert_stale_event() {
+    fn pre_registration_cleanup_uses_exact_pidfd_after_competing_reap() {
+        const INNER: &str = "SAFEPTRACE_PRE_REG_REAP_REUSE_INNER";
+        if env::var_os(INNER).is_some() {
+            if pre_registration_cleanup_never_reaps_reused_pid(Some(100)) {
+                println!("ACTUAL_PRE_REG_REAP_REUSE_EXERCISED");
+            } else {
+                println!("ACTUAL_PRE_REG_REAP_REUSE_UNAVAILABLE");
+            }
+            return;
+        }
+
+        let inner =
+            "notifier::test::pre_registration_cleanup_uses_exact_pidfd_after_competing_reap";
+        let actual_reuse = run_exact_in_pid_namespace_bounded(inner, &[(INNER, "1")]);
+        match classify_exact_reuse_output(
+            actual_reuse.as_ref(),
+            "ACTUAL_PRE_REG_REAP_REUSE_EXERCISED",
+            "ACTUAL_PRE_REG_REAP_REUSE_UNAVAILABLE",
+        )
+        .unwrap_or_else(|error| panic!("actual pre-registration reuse regression failed: {error}"))
+        {
+            ExactReuseOutcome::Exercised => return,
+            ExactReuseOutcome::Unavailable => {}
+        }
+
+        assert!(pre_registration_cleanup_never_reaps_reused_pid(None));
+    }
+
+    #[test]
+    fn registration_claim_after_capture_excludes_raw_cleanup() {
         let (old_pid, mut old_cleanup) =
             spawn_stopped_process(None).expect("spawn delayed-registration old generation");
         let running = Running::new(old_pid.into());
@@ -3574,6 +4104,7 @@ mod test {
             ))
             .expect("store delayed-registration terminal");
         let delayed = TerminalCleanup::new_unregistered(old_pid.into(), &running.1);
+        let raw = TerminalCleanup::new_unregistered(old_pid.into(), &running.1);
         let captured = Arc::new(Barrier::new(2));
         let resume = Arc::new(Barrier::new(2));
         EVENT_CAPTURE_PAUSES.lock().insert(
@@ -3586,56 +4117,30 @@ mod test {
         let registration = thread::spawn(move || delayed.ensure_registered());
         captured.wait();
 
-        assert!(matches!(
-            old_cleanup
-                .terminal()
-                .expect("delayed-registration terminal")
-                .try_claim_unstarted_raw_cleanup(),
-            RawCleanupClaim::Won
-        ));
-        let TraceeCleanupOwnership::NotifierOwned {
-            raw_cleanup_claimed,
-            raw_cleanup_finishes_event,
-            ..
-        } = &mut old_cleanup.ownership
-        else {
-            unreachable!()
-        };
-        *raw_cleanup_claimed = true;
-        *raw_cleanup_finishes_event = true;
-        old_cleanup
-            .cleanup()
-            .expect("raw cleanup wins delayed registration");
-
-        let (replacement_pid, replacement_cleanup) =
-            spawn_stopped_process(None).expect("spawn projected registry replacement");
-        let mut replacement_identity = WorkerIdentity::capture_process(replacement_pid.into())
-            .expect("capture projected registry replacement");
-        replacement_identity.pid = old_pid.into();
-        let replacement_identity = Arc::new(replacement_identity);
-        let replacement_handle = EventHandle::with_identity(Arc::clone(&replacement_identity));
-        NOTIFIER.pids.lock().insert(
-            old_pid.into(),
-            NotifierEntry {
-                handle: replacement_handle.clone(),
-                identity: replacement_identity,
-            },
-        );
+        let (raw_tx, raw_rx) = mpsc::channel();
+        let raw_claim = thread::spawn(move || {
+            let claim = raw.try_claim_unstarted_raw_cleanup();
+            raw_tx.send(()).expect("report raw-claim completion");
+            claim
+        });
+        thread::sleep(Duration::from_millis(20));
+        assert!(matches!(raw_rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
 
         resume.wait();
         registration
             .join()
             .expect("join delayed registration")
             .expect("terminal delayed registration returns exact Event");
-        assert!(
-            NOTIFIER
-                .pids
-                .lock()
-                .get(&old_pid.into())
-                .is_some_and(|entry| entry.handle == replacement_handle)
-        );
-        NOTIFIER.pids.lock().remove(&old_pid.into());
-        reap_stopped_process(replacement_cleanup);
+        raw_rx
+            .recv_timeout(TRACEE_WAIT_TIMEOUT)
+            .expect("raw claim was not woken after registration publication");
+        assert!(matches!(
+            raw_claim.join().expect("join excluded raw claim"),
+            Ok(RawCleanupClaim::Lost)
+        ));
+        old_cleanup
+            .cleanup()
+            .expect("notifier owner cleans delayed-registration child");
     }
 
     #[test]

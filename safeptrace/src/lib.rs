@@ -1018,19 +1018,22 @@ impl Running {
         let pid = self.0;
         let token = self.1;
         #[cfg(feature = "notifier")]
-        if let Some(status) = notifier::wait_sync_bound(pid, token.event())? {
-            return Wait::from_raw_with_token(pid, status, token);
+        {
+            notifier::wait_sync(pid, token)
         }
-        wait(
-            IdType::Pid(pid.into()),
-            WaitPidFlag::WEXITED | WaitPidFlag::WSTOPPED,
-        )
-        .map_err(Error::from)
-        .and_then(|status| {
-            // Unwrap is OK because the process cannot be in a running state without
-            // WNOHANG.
-            Wait::from_wait_status_with_token(status.unwrap(), token)
-        })
+        #[cfg(not(feature = "notifier"))]
+        {
+            wait(
+                IdType::Pid(pid.into()),
+                WaitPidFlag::WEXITED | WaitPidFlag::WSTOPPED,
+            )
+            .map_err(Error::from)
+            .and_then(|status| {
+                // Unwrap is OK because the process cannot be in a running state without
+                // WNOHANG.
+                Wait::from_wait_status_with_token(status.unwrap(), token)
+            })
+        }
     }
 
     /// Like `wait`, but filters out events we don't care about by resuming the

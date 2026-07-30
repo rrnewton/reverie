@@ -84,6 +84,19 @@ pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno
     Ok(Some(siginfo_to_status(si)))
 }
 
+/// Numeric `waitid(P_PID)` used only while a typed Event owns the synchronous
+/// pre-registration claim. Status bits are preserved exactly like `waitpid`.
+#[cfg(feature = "notifier")]
+pub fn waitpid(pid: Pid, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
+    let si = waitid_si(IdType::Pid(pid), flags)?;
+
+    if unsafe { si.si_pid() } == 0 {
+        return Ok(None);
+    }
+
+    Ok(Some(siginfo_to_status(si)))
+}
+
 // Converts a siginfo to a more compact status code.
 #[cfg(feature = "notifier")]
 fn siginfo_to_status(si: libc::siginfo_t) -> i32 {
@@ -94,7 +107,7 @@ fn siginfo_to_status(si: libc::siginfo_t) -> i32 {
         libc::CLD_KILLED => si_status & 0x7f,
         libc::CLD_DUMPED => (si_status | 0x80) & 0xff,
         libc::CLD_TRAPPED => (si_status << 8) | 0x7f,
-        libc::CLD_STOPPED => si_status << 8,
+        libc::CLD_STOPPED => (si_status << 8) | 0x7f,
         libc::CLD_CONTINUED => 0xffff,
         other => panic!("unexpected si_code: {}", other),
     };
@@ -150,12 +163,51 @@ pub fn waitid(waitid_type: IdType, flags: WaitPidFlag) -> Result<WaitStatus, Err
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::AsRawFd;
+    use std::os::fd::FromRawFd;
+    use std::os::fd::OwnedFd;
+
     use nix::sys::signal::Signal;
     use nix::sys::wait::WaitPidFlag;
     use nix::unistd;
     use nix::unistd::ForkResult;
 
     use super::*;
+
+    #[test]
+    fn waitpidfd_preserves_direct_child_stop_status() {
+        let fork_result = unsafe { unistd::fork() }.expect("fork direct-child stop test");
+        match fork_result {
+            ForkResult::Parent { child, .. } => {
+                let raw_fd =
+                    unsafe { libc::syscall(libc::SYS_pidfd_open, child.as_raw(), 0) } as i32;
+                assert!(
+                    raw_fd >= 0,
+                    "pidfd_open failed: {}",
+                    std::io::Error::last_os_error()
+                );
+                let pidfd = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+                let status = waitpidfd(pidfd.as_raw_fd(), WaitPidFlag::WSTOPPED)
+                    .expect("wait direct-child stop through pidfd")
+                    .expect("blocking pidfd wait returned no stop");
+                assert!(
+                    libc::WIFSTOPPED(status),
+                    "raw status {status:#x} is not stopped"
+                );
+                assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
+
+                nix::sys::signal::kill(child, Signal::SIGCONT).expect("resume direct child");
+                assert_eq!(
+                    waitid(IdType::Pidfd(pidfd.as_raw_fd()), WaitPidFlag::WEXITED),
+                    Ok(WaitStatus::Exited(child, 0))
+                );
+            }
+            ForkResult::Child => {
+                nix::sys::signal::raise(Signal::SIGSTOP).expect("raise direct-child SIGSTOP");
+                unsafe { libc::_exit(0) };
+            }
+        }
+    }
 
     #[test]
     fn waitid_w_exited_0() {
