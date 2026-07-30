@@ -25,6 +25,7 @@ use super::Errno;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum IdType {
+    #[allow(unused)]
     Pid(Pid),
     Pgid(Pid),
     #[allow(unused)]
@@ -76,19 +77,6 @@ fn waitid_si(waitid_type: IdType, flags: WaitPidFlag) -> Result<libc::siginfo_t,
 #[cfg(feature = "notifier")]
 pub fn waitpidfd(raw_fd: RawFd, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
     let si = waitid_si(IdType::Pidfd(raw_fd), flags)?;
-
-    if unsafe { si.si_pid() } == 0 {
-        return Ok(None);
-    }
-
-    Ok(Some(siginfo_to_status(si)))
-}
-
-/// Numeric `waitid(P_PID)` used only while a typed Event owns the synchronous
-/// pre-registration claim. Status bits are preserved exactly like `waitpid`.
-#[cfg(feature = "notifier")]
-pub fn waitpid(pid: Pid, flags: WaitPidFlag) -> Result<Option<i32>, Errno> {
-    let si = waitid_si(IdType::Pid(pid), flags)?;
 
     if unsafe { si.si_pid() } == 0 {
         return Ok(None);

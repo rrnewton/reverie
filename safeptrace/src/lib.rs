@@ -1586,6 +1586,58 @@ mod test {
 
     #[cfg(feature = "notifier")]
     #[cfg(not(sanitized))]
+    #[test]
+    fn synchronous_clone_parent_decode_error_preserves_fifo_front()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for injected in [Errno::EMFILE, Errno::EIO] {
+            let (pid, tracee) = trace(
+                || {
+                    let flags = libc::CLONE_PARENT | libc::SIGCHLD;
+                    let result = unsafe {
+                        libc::syscall(libc::SYS_clone, flags, 0usize, 0usize, 0usize, 0usize)
+                    };
+                    if result == 0 {
+                        unsafe { libc::_exit(0) };
+                    }
+                    i32::from(result == -1)
+                },
+                Options::PTRACE_O_EXITKILL | Options::PTRACE_O_TRACEFORK,
+            )?;
+            let token = tracee.1.clone();
+            let running = tracee.resume(None)?;
+            let retry = Running::from_token(pid, token);
+
+            notifier::inject_sync_decode_capture_error(pid, injected);
+            assert_eq!(
+                running.wait(),
+                Err(Error::Errno(injected)),
+                "first synchronous CLONE_PARENT decode did not surface the injected error"
+            );
+
+            let (parent, event) = retry.wait()?.assume_stopped();
+            let child = match event {
+                Event::NewChild(ChildOp::Fork, child) => child,
+                event => panic!("synchronous retry lost the CLONE_PARENT event: {event:?}"),
+            };
+            let (child, event) = child.wait()?.assume_stopped();
+            assert!(matches!(
+                event,
+                Event::Stop | Event::Signal(Signal::SIGSTOP)
+            ));
+            assert_eq!(
+                child.resume(None)?.wait()?.assume_exited().1,
+                ExitStatus::Exited(0)
+            );
+            assert_eq!(
+                parent.resume(None)?.wait()?.assume_exited().1,
+                ExitStatus::Exited(0)
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "notifier")]
+    #[cfg(not(sanitized))]
     #[tokio::test]
     async fn late_waits_after_terminal_reap_return_echild() -> Result<(), Box<dyn std::error::Error>>
     {

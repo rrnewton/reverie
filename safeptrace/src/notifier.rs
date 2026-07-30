@@ -169,6 +169,14 @@ static SYNC_WAIT_CLAIM_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> 
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(test)]
+static SYNC_HANDLE_PAUSES: LazyLock<Mutex<HashMap<Pid, EventCapturePause>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static SYNC_DECODE_CAPTURE_ERRORS: LazyLock<Mutex<HashMap<Pid, Errno>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
 static CAPTURE_THREAD_ERRORS: LazyLock<Mutex<HashMap<ThreadId, VecDeque<Errno>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -179,6 +187,11 @@ pub(super) fn inject_capture_error_for_current_thread(error: Errno) {
         .entry(thread::current().id())
         .or_default()
         .push_back(error);
+}
+
+#[cfg(test)]
+pub(super) fn inject_sync_decode_capture_error(pid: Pid, error: Errno) {
+    SYNC_DECODE_CAPTURE_ERRORS.lock().insert(pid, error);
 }
 
 /// A place-holder status used to indicate that no status has been set.
@@ -211,6 +224,11 @@ const WORKER_DONE: i32 = 4;
 const WAIT_OWNER_NONE: u8 = 0;
 const WAIT_OWNER_SYNC: u8 = 1;
 const WAIT_OWNER_NOTIFIER: u8 = 2;
+
+/// A newly forked TRACEME child can change TracerPid between the two procfs
+/// snapshots used to bind its exact pidfd identity. Retry that finite
+/// transition without ever falling back to a numeric wait.
+const SYNC_IDENTITY_CAPTURE_RETRIES: usize = 8;
 
 /// The number we get when in a PTRACE_EVENT_EXIT stop.
 const PTRACE_EVENT_EXIT_STOP: i32 = (libc::PTRACE_EVENT_EXIT << 16) | (libc::SIGTRAP << 8) | 0x7f;
@@ -615,6 +633,22 @@ impl Event {
         (previous != INVALID_STATUS).then_some(previous)
     }
 
+    fn update_sync_status(&self, status: i32) {
+        if status != PTRACE_EVENT_EXIT_STOP {
+            self.update(status);
+            return;
+        }
+
+        // A synchronous wait directly returns this stopped capability. Keep
+        // the raw stop rollback-safe in the regular FIFO without separately
+        // minting an ExitFuture capability for the same consumed status.
+        let mut state = self.status.lock();
+        state.pending.push_back(status);
+        drop(state);
+        self.status_changed.notify_all();
+        self.status_waker.wake();
+    }
+
     /// Publishes a terminal `ECHILD` observation to every kind of waiter.
     fn mark_echild(&self) {
         self.publish_terminal_exit_state();
@@ -782,6 +816,50 @@ impl Event {
                     });
                 }
             }
+        }
+    }
+
+    fn try_status_reservation_sync(&self) -> Option<Result<StatusReservation<'_>, Errno>> {
+        let state = self.status.lock();
+        if let Some(status) = state.pending.front().copied() {
+            return Some(Ok(StatusReservation {
+                status,
+                state: Some(state),
+            }));
+        }
+        match state.terminal {
+            INVALID_STATUS => None,
+            ECHILD_STATUS => Some(Err(Errno::ECHILD)),
+            status => Some(Ok(StatusReservation {
+                status,
+                state: None,
+            })),
+        }
+    }
+
+    fn finish_sync_terminal(&self) {
+        if self.try_begin_unstarted_completion() {
+            self.mark_worker_done();
+        } else {
+            debug_assert_eq!(self.worker_state.load(Ordering::Acquire), WORKER_DONE);
+        }
+    }
+
+    #[cfg(test)]
+    fn wait_for_sync_owner_release(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        let mut guard = self.wait_owner_lock.lock();
+        loop {
+            if self.wait_owner.load(Ordering::Acquire) != WAIT_OWNER_SYNC {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            self.wait_owner_changed.wait_for(&mut guard, remaining);
         }
     }
 
@@ -1177,24 +1255,7 @@ impl WorkerIdentity {
                 return Err(error);
             }
         }
-        let result = unsafe {
-            libc::syscall(
-                libc::SYS_pidfd_send_signal,
-                self.pidfd.as_raw_fd(),
-                0,
-                std::ptr::null::<libc::siginfo_t>(),
-                0,
-            )
-        };
-        if result == 0 {
-            return Ok(true);
-        }
-        let error = io_errno(io::Error::last_os_error());
-        if error == Errno::ESRCH {
-            Ok(false)
-        } else {
-            Err(error)
-        }
+        pidfd_is_live(&self.pidfd)
     }
 }
 
@@ -1211,6 +1272,27 @@ fn open_thread_pidfd(pid: Pid) -> Result<OwnedFd, Errno> {
         Err(io_errno(io::Error::last_os_error()))
     } else {
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+}
+
+fn pidfd_is_live(pidfd: &OwnedFd) -> Result<bool, Errno> {
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            pidfd.as_raw_fd(),
+            0,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    };
+    if result == 0 {
+        return Ok(true);
+    }
+    let error = io_errno(io::Error::last_os_error());
+    if error == Errno::ESRCH {
+        Ok(false)
+    } else {
+        Err(error)
     }
 }
 
@@ -1322,13 +1404,20 @@ fn worker_thread(pid: Pid, event: Arc<Event>, identity: Arc<WorkerIdentity>) {
     NOTIFIER.remove(pid, &event);
 }
 
-/// Performs a synchronous typed wait under the Event's atomic wait-owner
-/// claim. Numeric fallback is possible only while this claim excludes notifier
-/// registration; a losing synchronous caller consumes the notifier FIFO.
+/// Performs a synchronous typed wait under the PID generation's registry
+/// authority and atomic Event wait-owner claim. A losing synchronous caller
+/// consumes the notifier FIFO instead of issuing a second kernel wait.
 pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
     let flags = WaitPidFlag::from_bits_retain(
         WaitPidFlag::WEXITED.bits() | WaitPidFlag::WSTOPPED.bits() | libc::__WALL,
     );
+    let handle = NOTIFIER.sync_handle(pid, token.event())?;
+    let token = TraceeToken::from_event(handle);
+    #[cfg(test)]
+    if let Some(pause) = SYNC_HANDLE_PAUSES.lock().remove(&pid) {
+        pause.captured.wait();
+        pause.resume.wait();
+    }
 
     loop {
         let handle = token.event().resolved_handle();
@@ -1356,23 +1445,63 @@ pub(super) fn wait_sync(pid: Pid, token: TraceeToken) -> Result<Wait, Error> {
                     pause.captured.wait();
                     pause.resume.wait();
                 }
+                if let Some(reservation) = event.try_status_reservation_sync() {
+                    let reservation = reservation?;
+                    let decoded = Wait::from_raw_with_token(
+                        pid,
+                        reservation.status,
+                        TraceeToken::from_event(handle),
+                    );
+                    if decoded.is_ok() {
+                        reservation.commit();
+                    }
+                    drop(owner);
+                    return decoded;
+                }
                 let status = loop {
-                    let result = if let Some(identity) = handle.identity() {
-                        if identity.pid != pid {
-                            return Err(Errno::ESRCH.into());
-                        }
-                        waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags)
-                    } else {
-                        waitid::waitpid(pid.into(), flags)
+                    let Some(identity) = handle.identity() else {
+                        NOTIFIER.remove(pid, &event);
+                        return Err(Errno::EIO.into());
                     };
+                    if identity.pid != pid {
+                        NOTIFIER.remove(pid, &event);
+                        return Err(Errno::ESRCH.into());
+                    }
+                    let result = waitid::waitpidfd(identity.pidfd.as_raw_fd(), flags);
                     match result {
                         Ok(Some(status)) => break status,
                         Ok(None) => unreachable!("blocking synchronous wait returned no status"),
                         Err(Errno::EINTR) => {}
-                        Err(error) => return Err(error.into()),
+                        Err(error) => {
+                            if error == Errno::ECHILD {
+                                event.mark_echild();
+                                event.finish_sync_terminal();
+                            }
+                            NOTIFIER.remove(pid, &event);
+                            return Err(error.into());
+                        }
                     }
                 };
-                let decoded = Wait::from_raw_with_token(pid, status, token);
+                event.update_sync_status(status);
+                #[cfg(test)]
+                if let Some(error) = SYNC_DECODE_CAPTURE_ERRORS.lock().remove(&pid) {
+                    inject_capture_error_for_current_thread(error);
+                }
+                if libc::WIFEXITED(status) || libc::WIFSIGNALED(status) {
+                    event.finish_sync_terminal();
+                    NOTIFIER.remove(pid, &event);
+                }
+                let reservation = event
+                    .try_status_reservation_sync()
+                    .expect("published synchronous status is immediately reservable")?;
+                let decoded = Wait::from_raw_with_token(
+                    pid,
+                    reservation.status,
+                    TraceeToken::from_event(handle),
+                );
+                if decoded.is_ok() {
+                    reservation.commit();
+                }
                 drop(owner);
                 return decoded;
             }
@@ -1511,6 +1640,110 @@ impl Notifier {
                 }
             }
         }
+    }
+
+    /// Resolves one PID generation to its process-global wait authority before
+    /// a synchronous caller can claim or enter the kernel wait.
+    fn sync_handle(&self, pid: Pid, requested: &EventHandle) -> Result<EventHandle, Errno> {
+        let mut capture_retries = 0;
+        loop {
+            let current = match self.capture_identity(pid) {
+                Err(Errno::ENOENT | Errno::ESRCH)
+                    if capture_retries < SYNC_IDENTITY_CAPTURE_RETRIES =>
+                {
+                    capture_retries += 1;
+                    thread::yield_now();
+                    continue;
+                }
+                result => result?,
+            };
+            if !current.is_same_process_generation() {
+                continue;
+            }
+            match requested.identity() {
+                Some(bound) if !bound.same_live_generation(&current)? => {
+                    return Err(Errno::ECHILD);
+                }
+                Some(_) => {}
+                None => {
+                    if let Err(bound) = requested.bind_identity(Arc::clone(&current))
+                        && !bound.same_live_generation(&current)?
+                    {
+                        return Err(Errno::ECHILD);
+                    }
+                }
+            }
+
+            let mut pids = self.pids.lock();
+            if !current.pidfd_is_live()? {
+                drop(pids);
+                continue;
+            }
+            if let Some(occupied) = pids.get(&pid)
+                && occupied.identity.same_live_generation(&current)?
+            {
+                return requested.adopt_authoritative(&occupied.handle);
+            }
+            pids.insert(
+                pid,
+                NotifierEntry {
+                    handle: requested.clone(),
+                    identity: current,
+                },
+            );
+            return Ok(requested.resolved_handle());
+        }
+    }
+
+    #[cfg(test)]
+    fn current_registered(&self, pid: Pid) -> Result<Option<EventHandle>, Errno> {
+        loop {
+            let current = match self.capture_identity(pid) {
+                Ok(current) => current,
+                Err(Errno::ENOENT | Errno::ESRCH) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            if !current.is_same_process_generation() {
+                continue;
+            }
+            let pids = self.pids.lock();
+            if !current.pidfd_is_live()? {
+                drop(pids);
+                continue;
+            }
+            return match pids.get(&pid) {
+                Some(occupied) if occupied.identity.same_live_generation(&current)? => {
+                    Ok(Some(occupied.handle.clone()))
+                }
+                _ => Ok(None),
+            };
+        }
+    }
+
+    #[cfg(test)]
+    fn registered_sync_handle(
+        &self,
+        pid: Pid,
+        exact_pidfd: &OwnedFd,
+    ) -> Result<Option<EventHandle>, Errno> {
+        if !pidfd_is_live(exact_pidfd)? {
+            return Ok(None);
+        }
+        let pids = self.pids.lock();
+        let Some(occupied) = pids.get(&pid) else {
+            return Ok(None);
+        };
+        if occupied.handle.event().wait_owner.load(Ordering::Acquire) != WAIT_OWNER_SYNC
+            || !pidfd_is_live(&occupied.identity.pidfd)?
+        {
+            return Ok(None);
+        }
+
+        // Two live pidfds for the same numeric pid cannot name different
+        // generations. This exact-pidfd fallback is intentionally limited to
+        // an active synchronous owner, where capture may be unavailable and
+        // cleanup must cancel the waiter before retrying registration.
+        Ok(Some(occupied.handle.clone()))
     }
 
     fn resolve_echild(&self, pid: Pid, handle: &EventHandle) -> EventHandle {
@@ -1683,7 +1916,13 @@ impl Notifier {
                 }
                 Entry::Occupied(mut occupied) => {
                     match occupied.get().identity.same_live_generation(&current) {
-                        Ok(true) => return handle.adopt_authoritative(&occupied.get().handle),
+                        Ok(true) => {
+                            let authoritative = occupied.get().handle.clone();
+                            drop(pids);
+                            handle.adopt_authoritative(&authoritative)?;
+                            drop(owner);
+                            return self.event(pid, handle);
+                        }
                         Ok(false) => {}
                         Err(error) => {
                             Self::record_registration_error(handle, error);
@@ -2730,8 +2969,48 @@ mod test {
 
         fn acquire_cleanup_wait_owner(
             pid: Pid,
+            pidfd: &OwnedFd,
             terminal: &TerminalCleanup,
+            signal_sent: &mut bool,
         ) -> io::Result<CleanupWaitOwner> {
+            let authoritative =
+                match NOTIFIER.current_registered(pid.into()) {
+                    Ok(Some(authoritative)) => Some(authoritative),
+                    Ok(None) | Err(_) => NOTIFIER
+                        .registered_sync_handle(pid.into(), pidfd)
+                        .map_err(|error| {
+                            io::Error::other(format!(
+                                "resolve exact-pidfd synchronous cleanup authority: {error}"
+                            ))
+                        })?,
+                };
+            if let Some(authoritative) = authoritative {
+                terminal
+                    .event
+                    .adopt_authoritative(&authoritative)
+                    .map_err(|error| {
+                        io::Error::other(format!("adopt cleanup wait authority: {error}"))
+                    })?;
+            }
+            let event = terminal.event.event();
+            if event.wait_owner.load(Ordering::Acquire) == WAIT_OWNER_SYNC {
+                if !*signal_sent {
+                    match pidfd_send_signal(pidfd, libc::SIGKILL) {
+                        Ok(()) => *signal_sent = true,
+                        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {
+                            *signal_sent = true;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                if !event.wait_for_sync_owner_release(TRACEE_WAIT_TIMEOUT) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "synchronous wait owner did not release after exact pidfd cancellation",
+                    ));
+                }
+            }
+
             let deadline = Instant::now() + REGISTRATION_RETRY_TIMEOUT;
             let last_error = loop {
                 match terminal.ensure_registered() {
@@ -2938,10 +3217,20 @@ mod test {
                 }
             );
             if needs_owner {
-                let terminal = self
-                    .terminal()
-                    .expect("notifier-owned cleanup has terminal state");
-                match Self::acquire_cleanup_wait_owner(self.pid, terminal)? {
+                let TraceeCleanupOwnership::NotifierOwned {
+                    terminal,
+                    cleanup_signal_sent,
+                    ..
+                } = &mut self.ownership
+                else {
+                    unreachable!()
+                };
+                match Self::acquire_cleanup_wait_owner(
+                    self.pid,
+                    &self.pidfd,
+                    terminal,
+                    cleanup_signal_sent,
+                )? {
                     CleanupWaitOwner::Notifier => {
                         let TraceeCleanupOwnership::NotifierOwned {
                             terminal,
@@ -3762,8 +4051,9 @@ mod test {
     fn synchronous_wait_claim_blocks_and_wakes_registration() {
         let (pid, mut cleanup) =
             spawn_stopped_process(None).expect("spawn sync-first wait-owner child");
-        let running = Running::new(pid.into());
-        let terminal = TerminalCleanup::new_unregistered(pid.into(), &running.1);
+        let synchronous_running = Running::new(pid.into());
+        let notifier_running = Running::new(pid.into());
+        let terminal = TerminalCleanup::new_unregistered(pid.into(), &notifier_running.1);
         let claimed = Arc::new(Barrier::new(2));
         let resume_wait = Arc::new(Barrier::new(2));
         SYNC_WAIT_CLAIM_PAUSES.lock().insert(
@@ -3773,7 +4063,7 @@ mod test {
                 resume: Arc::clone(&resume_wait),
             },
         );
-        let synchronous = thread::spawn(move || running.wait());
+        let synchronous = thread::spawn(move || synchronous_running.wait());
         claimed.wait();
 
         let (registered_tx, registered_rx) = mpsc::channel();
@@ -3809,20 +4099,134 @@ mod test {
     fn synchronous_wait_losing_to_notifier_consumes_event_fifo() {
         let (pid, mut cleanup) =
             spawn_stopped_process(None).expect("spawn notifier-first wait-owner child");
-        let running = Running::new(pid.into());
-        let terminal = TerminalCleanup::new_unregistered(pid.into(), &running.1);
+        let notifier_running = Running::new(pid.into());
+        let terminal = TerminalCleanup::new_unregistered(pid.into(), &notifier_running.1);
         terminal
             .ensure_registered()
             .expect("register notifier-first worker");
 
-        let synchronous = thread::spawn(move || running.wait());
+        let synchronous_running = Running::new(pid.into());
+        let canonicalized = Arc::new(Barrier::new(2));
+        let resume_wait = Arc::new(Barrier::new(2));
+        SYNC_HANDLE_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&canonicalized),
+                resume: Arc::clone(&resume_wait),
+            },
+        );
+        let synchronous = thread::spawn(move || synchronous_running.wait());
+        canonicalized.wait();
         nix::sys::signal::kill(pid, Signal::SIGCONT).expect("resume notifier-first child");
-        assert!(matches!(
-            synchronous.join().expect("join notifier-owned synchronous wait"),
-            Ok(Wait::Exited(waited, crate::ExitStatus::Exited(0))) if waited == pid.into()
-        ));
+        resume_wait.wait();
+        let observed = synchronous
+            .join()
+            .expect("join notifier-owned synchronous wait");
+        assert!(
+            matches!(
+                observed,
+                Ok(Wait::Exited(waited, crate::ExitStatus::Exited(0))) if waited == pid.into()
+            ),
+            "unexpected notifier-owned synchronous wait: {observed:?}"
+        );
         assert!(terminal.wait(TRACEE_WAIT_TIMEOUT));
         cleanup.disarm();
+    }
+
+    #[test]
+    fn distinct_raw_claim_adopts_synchronous_registry_owner() {
+        let (pid, mut cleanup) =
+            spawn_stopped_process(None).expect("spawn sync-versus-raw owner child");
+        let synchronous_running = Running::new(pid.into());
+        let claimed = Arc::new(Barrier::new(2));
+        let resume_wait = Arc::new(Barrier::new(2));
+        SYNC_WAIT_CLAIM_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&claimed),
+                resume: Arc::clone(&resume_wait),
+            },
+        );
+        let synchronous = thread::spawn(move || synchronous_running.wait());
+        claimed.wait();
+
+        let raw_running = Running::new(pid.into());
+        let raw = TerminalCleanup::new_unregistered(pid.into(), &raw_running.1);
+        let authoritative = match raw
+            .try_claim_unstarted_raw_cleanup()
+            .expect("resolve distinct raw claim")
+        {
+            RawCleanupClaim::Existing(authoritative) => authoritative,
+            _ => panic!("distinct raw claim did not adopt synchronous authority"),
+        };
+        assert!(Arc::ptr_eq(
+            authoritative.event(),
+            NOTIFIER
+                .pids
+                .lock()
+                .get(&pid.into())
+                .expect("synchronous registry authority")
+                .handle
+                .event()
+        ));
+
+        resume_wait.wait();
+        nix::sys::signal::kill(pid, Signal::SIGCONT).expect("resume sync-versus-raw child");
+        assert!(
+            synchronous
+                .join()
+                .expect("join sync-versus-raw wait")
+                .is_ok()
+        );
+        cleanup.disarm();
+    }
+
+    #[test]
+    fn cleanup_cancels_distinct_synchronous_owner_before_registration() {
+        let (pid, mut cleanup) =
+            spawn_stopped_process(None).expect("spawn cleanup-versus-sync child");
+        let synchronous_running = Running::new(pid.into());
+        let claimed = Arc::new(Barrier::new(2));
+        let resume_wait = Arc::new(Barrier::new(2));
+        SYNC_WAIT_CLAIM_PAUSES.lock().insert(
+            pid.into(),
+            EventCapturePause {
+                captured: Arc::clone(&claimed),
+                resume: Arc::clone(&resume_wait),
+            },
+        );
+        let synchronous = thread::spawn(move || synchronous_running.wait());
+        claimed.wait();
+
+        let cleanup_running = Running::new(pid.into());
+        cleanup
+            .store_terminal(TerminalCleanup::new_unregistered(
+                pid.into(),
+                &cleanup_running.1,
+            ))
+            .expect("store distinct cleanup Event");
+        let cleaning = thread::spawn(move || {
+            let result = cleanup.cleanup();
+            (result, cleanup)
+        });
+        thread::sleep(Duration::from_millis(20));
+        resume_wait.wait();
+
+        assert!(matches!(
+            synchronous.join().expect("join cancelled synchronous wait"),
+            Ok(Wait::Exited(waited, crate::ExitStatus::Signaled(Signal::SIGKILL, _)))
+                if waited == pid.into()
+        ));
+        let (result, cleanup) = cleaning.join().expect("join distinct cleanup");
+        result.expect("cleanup waits for synchronous owner release");
+        assert!(matches!(
+            cleanup.ownership,
+            TraceeCleanupOwnership::NotifierOwned {
+                raw_cleanup_claimed: false,
+                cleanup_signal_sent: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -3959,9 +4363,12 @@ mod test {
         *raw_cleanup_claimed = true;
         *raw_cleanup_finishes_event = true;
 
+        let mut loser_signal_sent = false;
         let loser_owner = TraceeCleanupGuard::acquire_cleanup_wait_owner(
             pid,
+            &loser.pidfd,
             loser.terminal().expect("loser terminal"),
+            &mut loser_signal_sent,
         )
         .expect("loser observes winner state");
         assert!(matches!(loser_owner, CleanupWaitOwner::TerminalAck));
