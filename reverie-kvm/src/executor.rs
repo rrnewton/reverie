@@ -1630,6 +1630,16 @@ impl SyscallExecutor for ElfExecutor {
         // snapshot so QEMU AIO workers can continue to make progress.
         let file_table = self.file_table.clone();
         let mut shared_files = Some(file_table.lock().expect("KVM file-table lock poisoned"));
+        if std::env::var_os("KVM_FDDBG").is_some() {
+            let g = shared_files.as_ref().unwrap();
+            eprintln!(
+                "[FDDBG] {:?} sc#{} ARC={:p} pre-install shared_fds={:?}",
+                std::thread::current().name(),
+                request.number(),
+                Arc::as_ptr(&file_table),
+                g.files.keys().collect::<Vec<_>>()
+            );
+        }
         if let Err(error) = shared_files
             .as_ref()
             .expect("file-table guard disappeared")
@@ -1684,6 +1694,14 @@ impl SyscallExecutor for ElfExecutor {
         if let Some(mut shared_files) = shared_files {
             *shared_files =
                 FileTableState::try_from_elf(&self.state).expect("clone updated KVM file table");
+            if std::env::var_os("KVM_FDDBG").is_some() {
+                eprintln!(
+                    "[FDDBG] {:?} sc#{} WRITEBACK shared_fds={:?}",
+                    std::thread::current().name(),
+                    request.number(),
+                    shared_files.files.keys().collect::<Vec<_>>()
+                );
+            }
         }
         match action {
             SyscallAction::Continue { result, segment } => {
@@ -1857,6 +1875,25 @@ fn write(
     let length = requested_length.min(MAX_HOST_IO);
     let standard = is_open_standard(state, fd);
     let output_destination = output_alias(state, fd);
+    if std::env::var_os("KVM_FDDBG").is_some() {
+        let raw = state.files.get(&fd).map(std::os::unix::io::AsRawFd::as_raw_fd);
+        let getfl = raw.map(|r| unsafe { libc::fcntl(r, libc::F_GETFL) });
+        let getfl_errno = if getfl == Some(-1) {
+            std::io::Error::last_os_error().raw_os_error()
+        } else {
+            None
+        };
+        eprintln!(
+            "[FDDBG-WRITE] {:?} guest_fd={} standard={} present={} host_raw={:?} F_GETFL={:?} errno={:?}",
+            std::thread::current().name(),
+            fd,
+            standard,
+            state.files.contains_key(&fd),
+            raw,
+            getfl,
+            getfl_errno,
+        );
+    }
     if !standard && !state.files.contains_key(&fd) {
         return negative_errno(libc::EBADF);
     }
