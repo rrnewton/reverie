@@ -1407,6 +1407,9 @@ fn is_process_fork(pid: Pid, number: Sysno, args: SyscallArgs) -> bool {
     let Some(flags) = clone_flags(pid, number, args) else {
         return false;
     };
+    if flags & libc::CLONE_VFORK as u64 != 0 && flags & libc::CLONE_THREAD as u64 == 0 {
+        return true;
+    }
     let shared_or_vfork =
         libc::CLONE_VM as u64 | libc::CLONE_THREAD as u64 | libc::CLONE_VFORK as u64;
     flags & shared_or_vfork == 0
@@ -1607,7 +1610,7 @@ mod tests {
         assert!(is_process_fork(current_pid(), Sysno::clone, process_args));
         assert!(is_process_fork(current_pid(), Sysno::clone3, clone3_args));
         assert!(!is_process_fork(current_pid(), Sysno::clone, thread_args));
-        assert!(!is_process_fork(current_pid(), Sysno::clone, vfork_args));
+        assert!(is_process_fork(current_pid(), Sysno::clone, vfork_args));
         assert!(is_process_fork(current_pid(), Sysno::vfork, process_args));
     }
 
