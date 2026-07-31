@@ -7,3 +7,7 @@
 # Unpin once the cdylib/`cargo test` interaction is fixed upstream or the
 # liteinst fixture is made robust to the artifact layout.
 channel = "nightly-2026-07-29" # @oss-only
+# Date-pinning installs a fresh dated toolchain; rustup only adds clippy/rustfmt
+# for it when they are requested here (the unpinned `nightly` got them from the
+# CI toolchain-setup action). Both shipped in the 2026-07-29 nightly.
+components = ["clippy", "rustfmt"] # @oss-only
