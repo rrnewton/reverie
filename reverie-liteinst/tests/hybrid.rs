@@ -24,6 +24,7 @@ use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
+use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
 
 #[derive(Debug, Default)]
 struct EventCounter {
@@ -595,6 +596,27 @@ async fn first_site_is_installed_once_and_hot_calls_use_liteinst() {
         0,
         "the patch helper must add zero mprotect Tool callbacks above the loader baseline"
     );
+    assert!(output.status.success(), "{output:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cache_line_straddling_sites_default_to_ptrace_fallback() {
+    let (_directory, guest) = compile_fixture("hybrid_straddler_sites.c");
+    let mut command = Command::new(guest);
+    command.env_remove(STRADDLER_STALENESS_TICKS_ENV);
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+        command,
+        (),
+        preload_path(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        output.stdout, b"offsets=57..63 calls=14 traps=7 hooks=0\n",
+        "{output:?}"
+    );
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 14, "{output:?}");
     assert!(output.status.success(), "{output:?}");
 }
 
