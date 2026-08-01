@@ -829,6 +829,10 @@ struct GlobalState<G: GlobalTool> {
 
     /// Optional dynamic LiteInst runtime configuration.
     liteinst_runtime: Option<LiteinstRuntimeConfig>,
+
+    /// Live tracee thread-group leaders. A fatal timer over-skid signals every
+    /// group so no ptrace-stopped sibling can strand task-tree teardown.
+    tracee_processes: Arc<StdMutex<HashSet<Pid>>>,
 }
 
 impl<G: GlobalTool> Clone for GlobalState<G> {
@@ -840,6 +844,7 @@ impl<G: GlobalTool> Clone for GlobalState<G> {
             sequentialized_guest: self.sequentialized_guest.clone(),
             injected_syscall_trap: self.injected_syscall_trap.clone(),
             liteinst_runtime: self.liteinst_runtime.clone(),
+            tracee_processes: self.tracee_processes.clone(),
         }
     }
 }
@@ -1040,6 +1045,7 @@ impl<L: Tool> TracedTask<L> {
             ),
             injected_syscall_trap: options.injected_syscall_trap.clone(),
             liteinst_runtime: options.liteinst_runtime,
+            tracee_processes: Arc::new(StdMutex::new(HashSet::from([tid]))),
         };
         let thread_state = process_state.init_thread_state(tid, None);
         let (next_state, next_state_rx) = mpsc::channel(1);
@@ -1155,6 +1161,11 @@ impl<L: Tool> TracedTask<L> {
 
     /// Create a child TracedTask corresponding to a fork()
     fn forked(&self, child: Pid) -> Self {
+        self.global_state
+            .tracee_processes
+            .lock()
+            .unwrap()
+            .insert(child);
         let process_state = Arc::new(L::new(child, &self.global_state.cfg));
         let thread_state =
             process_state.init_thread_state(child, Some((self.tid, &self.thread_state)));
@@ -1904,6 +1915,28 @@ impl<L: Tool + 'static> TracedTask<L> {
             Err(HandleFailure::Cancelled(task)) => return Ok((true, task)),
             Err(HandleFailure::TraceError(e)) => return Err(e),
             Err(HandleFailure::Event(wait)) => self.abort(Ok(wait)).await,
+            Err(HandleFailure::Overskid {
+                task,
+                observed_rcb,
+                target_rcb,
+            }) => {
+                tracing::error!(
+                    target: "reverie_ptrace::timer",
+                    tid = %self.tid(),
+                    observed_rcb,
+                    target_rcb,
+                    overskid_rcbs = observed_rcb - target_rcb,
+                    "fatal PMU timer over-skid; terminating the tracee process tree"
+                );
+                self.terminate_tracee_process_tree();
+
+                // SIGKILL is observed by `run`'s generation-bound exit future,
+                // which cancels this handler and drives normal reaping. Keeping
+                // the stopped capability alive until then avoids the old panic
+                // path that abandoned a child ptrace stop and wedged its parent.
+                let _task = task;
+                future::pending().await
+            }
             Ok(task) => task,
         };
         #[cfg(test)]
@@ -1919,6 +1952,31 @@ impl<L: Tool + 'static> TracedTask<L> {
         self.process_state.clone().handle_timer_event(self).await;
         self.timer.finalize_requests();
         Ok((true, task))
+    }
+
+    fn terminate_tracee_process_tree(&self) {
+        let processes = self
+            .global_state
+            .tracee_processes
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        for pid in processes {
+            let result = unsafe { libc::kill(pid.as_raw(), libc::SIGKILL) };
+            if result == -1 {
+                let errno = Errno::last();
+                if errno != Errno::ESRCH {
+                    tracing::error!(
+                        target: "reverie_ptrace::lifecycle",
+                        %pid,
+                        %errno,
+                        "failed to terminate tracee after fatal PMU timer over-skid"
+                    );
+                }
+            }
+        }
     }
 
     /// Handle a state change in the guest, and leave it in a stopped state.
@@ -4159,6 +4217,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                 let children = self.child_threads.lock().await.take_inner();
                 future::join_all(children).await;
             }
+
+            self.global_state
+                .tracee_processes
+                .lock()
+                .unwrap()
+                .remove(&self.pid());
 
             // Check if there are any children who's futures are still pending. If
             // this is the case, then they shall be considered "orphans" and are

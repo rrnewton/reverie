@@ -65,7 +65,9 @@ const AMD_RCB_EVENT: u64 = 0x5100d1;
 #[cfg(target_arch = "x86_64")]
 const AMD_DEFAULT_SKID_MARGIN: u64 = 10_000;
 #[cfg(target_arch = "x86_64")]
-const AMD_EPYC_9D85_SKID_MARGIN: u64 = 1_000;
+// The devbig014 calibration observed a 33,138-RCB maximum over 1,000 samples.
+// Keep the historical 2x safety factor used by the QEMU demo configuration.
+const AMD_EPYC_9D85_SKID_MARGIN: u64 = 66_276;
 
 static PMU_CONFIG: OnceLock<PmuConfig> = OnceLock::new();
 
@@ -80,6 +82,7 @@ pub struct PmuConfig {
     rcb_event: u64,
     skid_margin: u64,
     skid_margin_override: Option<u64>,
+    exit_on_overskid: bool,
 }
 
 impl PmuConfig {
@@ -109,6 +112,7 @@ impl PmuConfig {
             rcb_event: BR_RETIRED,
             skid_margin: 1000,
             skid_margin_override: None,
+            exit_on_overskid: true,
         }
     }
 
@@ -138,9 +142,8 @@ impl PmuConfig {
                 0x86 => (0x5101c4, 100),                      // Intel Icelake
                 model => panic!("Unsupported Intel processor model: {:#x}", model),
             },
-            // Turin EPYC family 1Ah model 11h has p99 skid of 384 RCBs. A 1K
-            // performance margin accepts rare larger overshoots because the
-            // existing single-step path completes them without losing correctness.
+            // Turin EPYC family 1Ah model 11h has p99 skid of 384 RCBs, but a
+            // measured long tail reached 33,138 RCBs on devbig014.
             0x1A if model_id == 0x11 => (AMD_RCB_EVENT, AMD_EPYC_9D85_SKID_MARGIN),
             // Other Zen CPUs keep rr's 10K guard because they have exhibited rare large skid.
             0x17 | 0x19 | 0x1A => (AMD_RCB_EVENT, AMD_DEFAULT_SKID_MARGIN),
@@ -154,6 +157,7 @@ impl PmuConfig {
             rcb_event,
             skid_margin,
             skid_margin_override: None,
+            exit_on_overskid: true,
         }
     }
 
@@ -163,15 +167,32 @@ impl PmuConfig {
         self
     }
 
+    /// Selects whether a precise-timer over-skid terminates the tracee tree.
+    ///
+    /// Disabling this policy preserves valid guest execution by delivering the
+    /// timer event at the observed (late) RCB. The resulting schedule is not
+    /// deterministic because execution beyond the requested boundary cannot be
+    /// rolled back.
+    pub fn with_exit_on_overskid(mut self, exit_on_overskid: bool) -> Self {
+        self.exit_on_overskid = exit_on_overskid;
+        self
+    }
+
     /// This is the experimentally determined maximum number of RCBs an overflow
     /// interrupt is delivered after the originating RCB.
     ///
     /// If this is number is too small, timer event delivery will be delayed and
-    /// non-deterministic, which, if observed, will result in a panic. If this
+    /// non-deterministic, which, if observed, will terminate the tracee tree by
+    /// default. If this
     /// number is too big, we degrade performance from excessive single
     /// stepping.
     pub fn skid_margin(&self) -> u64 {
         self.skid_margin_override.unwrap_or(self.skid_margin)
+    }
+
+    /// Returns whether a precise-timer over-skid terminates the tracee tree.
+    pub fn exit_on_overskid(&self) -> bool {
+        self.exit_on_overskid
     }
 
     /// The maximum single step count we expect can occur when a precise timer
@@ -265,6 +286,16 @@ pub enum HandleFailure {
     /// this timer. The task is returned unchanged.
     #[error("Pending signal was not for this timer")]
     ImproperSignal(Stopped),
+
+    /// The PMU interrupt arrived after a precise timer's target. The stopped
+    /// task is retained so the caller can terminate the complete tracee tree
+    /// without abandoning a ptrace stop.
+    #[error("PMU timer over-skid: observed RCB {observed_rcb} exceeds target {target_rcb}")]
+    Overskid {
+        task: Stopped,
+        observed_rcb: u64,
+        target_rcb: u64,
+    },
 }
 
 impl Timer {
@@ -806,13 +837,24 @@ impl TimerImpl {
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
-        assert!(
-            ctr_initial <= target_rcb,
-            "Clock perf counter exceeds target value at start of attempted single-step: \
-                {} > {}. Consider increasing skid margin for this CPU.",
-            ctr_initial,
-            target_rcb
-        );
+        if ctr_initial > target_rcb {
+            if get_pmu_config().exit_on_overskid() {
+                return Err(HandleFailure::Overskid {
+                    task,
+                    observed_rcb: ctr_initial,
+                    target_rcb,
+                });
+            }
+            tracing::error!(
+                target: "reverie_ptrace::timer",
+                tid = %self.guest_tid,
+                observed_rcb = ctr_initial,
+                target_rcb,
+                overskid_rcbs = ctr_initial - target_rcb,
+                "PMU timer over-skid; delivering the timer event late, so this execution may be nondeterministic"
+            );
+            return Ok(task);
+        }
         let mut current = ClockCounter::new(ctr_initial, 0, target_rcb);
         let max_single_step_count = get_pmu_config().max_single_step_count();
         assert!(
@@ -925,10 +967,11 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     #[test]
-    fn amd_epyc_9d85_uses_reduced_skid_margin() {
+    fn amd_epyc_9d85_uses_calibrated_skid_margin() {
         let config = PmuConfig::from_family_model(0x1A, 0x11);
         assert_eq!(config.raw_rcb_event(), 0x5100d1);
-        assert_eq!(config.skid_margin(), 1_000);
+        assert_eq!(config.skid_margin(), 66_276);
+        assert!(config.exit_on_overskid());
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -949,6 +992,15 @@ mod tests {
         assert_eq!(config.raw_rcb_event(), 0x5100d1);
         assert_eq!(config.skid_margin(), 500);
         assert_eq!(config.max_single_step_count(), 505);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn exit_on_overskid_can_be_disabled_explicitly() {
+        let config = PmuConfig::from_family_model(0x1A, 0x11).with_exit_on_overskid(false);
+
+        assert!(!config.exit_on_overskid());
+        assert_eq!(config.skid_margin(), 66_276);
     }
 
     #[test_case(ClockCounter::new(0, 0, 10), 0, 1, Some(true))]
