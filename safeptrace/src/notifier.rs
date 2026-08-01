@@ -1013,6 +1013,24 @@ impl Event {
     }
 
     fn claim_notifier_wait(&self) -> NotifierWaitOwnership<'_> {
+        // Lock-free steady-state fast path. Once the notifier worker owns the
+        // wait and is running, and no synchronous/cleanup claimant is active,
+        // the ownership decision is a pure read that the locked loop below would
+        // resolve to `Existing` anyway. The guard on `cleanup_cancel_requested`
+        // / `cleanup_claim_waiters` excludes every sync/cancellation path (each
+        // of those sets its flag before touching `wait_owner`), so this cannot
+        // change any ownership transition; it only removes a `wait_owner_lock`
+        // acquisition from the hot async poll path.
+        if !self.cleanup_cancel_requested.load(Ordering::Acquire)
+            && self.cleanup_claim_waiters.load(Ordering::Acquire) == 0
+            && self.wait_owner.load(Ordering::Acquire) == WAIT_OWNER_NOTIFIER
+            && matches!(
+                self.worker_state.load(Ordering::Acquire),
+                WORKER_RUNNING | WORKER_FINISHING | WORKER_DONE
+            )
+        {
+            return NotifierWaitOwnership::Existing;
+        }
         let mut guard = self.wait_owner_lock.lock();
         loop {
             match self.wait_owner.load(Ordering::Acquire) {
@@ -2066,6 +2084,31 @@ impl Notifier {
     }
 
     fn current_or_new(&self, pid: Pid) -> Result<EventHandle, Errno> {
+        // Steady-state fast path: adopt a still-live registered generation
+        // without a full procfs identity re-capture. This path is reached once
+        // per `Stopped::new_unchecked` / ptrace-op reconstruction in
+        // reverie-ptrace (`assume_stopped`), i.e. many times per trapped
+        // syscall, so the unconditional `capture_identity` below
+        // (`/proc/<pid>/stat` + `/proc/<pid>/status` read twice, `pidfd_open`,
+        // and an O_PATH open of `/proc/<pid>`) dominated per-stop cost after
+        // a8195cfc. A live exact pidfd proves the same kernel task generation
+        // (two live pidfds for one numeric pid cannot name different
+        // generations — the exec-stable invariant relied on by
+        // `registered_sync_handle`), which is exactly the adoption condition
+        // the slow path checks via `same_live_generation`. When the stored
+        // identity's pidfd is no longer live, or on any liveness error, fall
+        // through to the authoritative capture+registry loop below so stale
+        // generations and precise errors are handled identically to before.
+        let cached = {
+            let pids = self.pids.lock();
+            pids.get(&pid)
+                .map(|occupied| (occupied.handle.clone(), Arc::clone(&occupied.identity)))
+        };
+        if let Some((handle, identity)) = cached
+            && matches!(identity.pidfd_is_live(), Ok(true))
+        {
+            return Ok(handle);
+        }
         loop {
             let current = self.capture_identity(pid)?;
             if !current.is_same_process_generation() {

@@ -9,6 +9,7 @@ use reverie_e9patch::E9patchBackend;
 use reverie_e9patch::TOOL_PRELOAD_ENV;
 use reverie_examples::e9patch_smoke::AotCounterTool;
 use reverie_examples::run_e9patch_counter1_with_preload;
+use reverie_examples::run_e9patch_counter2_with_preload;
 use reverie_examples::run_e9patch_noop_with_preload;
 use reverie_examples::run_e9patch_write_strace_with_preload;
 
@@ -163,6 +164,27 @@ async fn production_noop_preserves_native_rewritten_syscall() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires a built e9tool/e9patch pair"]
+async fn guest_process_creation_fails_closed_under_direct_host() {
+    // Noop subscribes to no syscalls, so every rewritten guest syscall takes the
+    // passthrough path (`tool_host.rs:323`) and process/thread creation and image
+    // replacement are rejected by `injected_syscall_guard`. This proves the
+    // single-process direct AOT boundary is sound: a guest cannot `clone`/`fork`
+    // or `execve` away from the tool. The fixture asserts each rewritten site
+    // returns `-EOPNOTSUPP` and exits 0; a spawned untooled child or a real
+    // exec would change the exit code, stdout, or stderr.
+    let (_directory, guest) = compile_guest();
+    let mut command = Command::new(guest);
+    command.env("REVERIE_E9PATCH_EXPECT_PROCESS_CREATION_FAILS_CLOSED", "1");
+    let (output, ()) = run_e9patch_noop_with_preload(command, example_preload())
+        .await
+        .unwrap();
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a built e9tool/e9patch pair"]
 async fn production_counter1_reports_rewritten_syscall_total() {
     let (_directory, guest) = compile_guest();
     let mut command = Command::new(guest);
@@ -174,6 +196,29 @@ async fn production_counter1_reports_rewritten_syscall_total() {
     assert!(output.stdout.is_empty(), "{output:?}");
     assert!(output.stderr.is_empty(), "{output:?}");
     assert_eq!(total, 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires a built e9tool/e9patch pair"]
+async fn production_counter2_reports_exit_lifecycle_totals() {
+    let (_directory, guest) = compile_guest();
+    let mut command = Command::new(guest);
+    command.env("REVERIE_E9PATCH_EXPECT_RAW_GETPID", "1");
+    let (output, totals) = run_e9patch_counter2_with_preload(command, example_preload())
+        .await
+        .unwrap();
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert!(output.stdout.is_empty(), "{output:?}");
+    // Counter2's per-thread exit hook logs from the in-guest tool, proving the
+    // direct AOT exit lifecycle reached `on_exit_thread` with the accumulated
+    // ThreadState (the two rewritten syscalls: raw getpid + exit_group).
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("counter2-local thread="), "{stderr}");
+    assert!(stderr.contains("syscalls=2"), "{stderr}");
+    // `totals()` is populated only by `on_exit_process`' single IncrMsg, so a
+    // non-zero tuple proves the whole exit lifecycle ran through direct AOT:
+    // (total_syscalls, exited_procs, exited_threads).
+    assert_eq!(totals, (2, 1, 1), "{stderr}");
 }
 
 #[tokio::test(flavor = "current_thread")]

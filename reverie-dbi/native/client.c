@@ -55,6 +55,27 @@ typedef struct {
   int32_t virtual_tid;
   int32_t pending_virtual_child;
   uint64_t pending_clone_flags;
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review branch-count preemption bookkeeping.
+  // Branch count observed at this thread's most recent synthetic sched_yield
+  // preemption. Appended at the end of the struct so the existing field layout
+  // (mirrored by detcore-dbi `NativeThreadScratch` and the prototype
+  // `PrototypeCounters` prefix view) is unchanged; the `memset` in `thread_init`
+  // zero-initializes it for every runtime.
+  uint64_t last_yield_branch;
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review safe-point preemption thread state.
+  // Client-only safe-point preemption state, appended AFTER the fields the Rust
+  // `NativeThreadScratch` mirrors. Rust writes only that shorter prefix, and the
+  // client `dr_thread_alloc`s + `memset`s the full `prototype_counters_t`, so
+  // these are zero-initialized and never touched by the Rust side.
+  // 1 while an injected sched_yield is in flight (between the redirect to the
+  // stub and `preempt_return`); prevents nesting a second preemption.
+  uint64_t preempt_pending;
+  // Saved interrupted machine context (integer + control + FP/SIMD) captured by
+  // `maybe_preempt` and restored by `preempt_return` so the injected syscall is
+  // transparent to the guest. Allocated per thread when preemption is enabled.
+  dr_mcontext_t *preempt_mcontext;
 } prototype_counters_t;
 
 #define VIRTUAL_ROOT_PID INT32_C(3)
@@ -227,6 +248,21 @@ static ptr_uint_t cpuid_marker_note;
 static ptr_uint_t rdtsc_marker_note;
 static ptr_uint_t rdtscp_marker_note;
 static bool report_summary;
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-dbi-preempt): Review branch-count preemption configuration.
+// Deterministic branch-count preemption. When `preemption_enabled` (set from the
+// `-preemption-quantum N` client arg with N > 0), the client injects a synthetic
+// sched_yield scheduler turn every `preemption_quantum` counted app branches so a
+// running guest thread returns control to Detcore's scheduler between syscalls.
+// Both default to the disabled state, so guests run unchanged unless the quantum
+// is supplied.
+static bool preemption_enabled;
+static uint64_t preemption_quantum;
+// When true, preemption is delivered only at PCs in the guest's main executable
+// (see `pc_in_main_executable`). Default true (conservative). Set to false via
+// the `HERMIT_DBI_PREEMPT_ANYPC` environment variable to allow delivery at any
+// PC, which is needed for guests whose starving loop runs inside libc.
+static bool preempt_gate_main_only = true;
 
 // Deterministic virtual timestamp counter. Under DBI only one guest thread runs
 // at a time (guest threads are cooperatively serialized by Detcore at syscall
@@ -660,6 +696,26 @@ static void start_pending_thread(void) {
   atomic_fetch_sub_explicit(&pending_thread_starts, 1, memory_order_release);
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-dbi-preempt): Review the branch-count preemption hook.
+// Defined below, after the runtime-readiness predicates it consults.
+static void maybe_preempt(app_pc pc);
+static void preempt_return(void);
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-dbi-preempt): Review the injected-syscall stub.
+// A tiny generated code region used as the redirect target that delivers a real
+// `sched_yield` to the guest at a safe point. Its bytes are `syscall; ud2`: the
+// `syscall` (with rax preloaded to SYS_sched_yield by the redirect) flows
+// through the ordinary `pre_syscall` handler and Detcore's deterministic
+// sched_yield path; the block starting at the trailing `ud2` carries a
+// `preempt_return` clean call that redirects back to the captured guest context,
+// so the `ud2` never actually executes (it is only a trap if the return path is
+// somehow bypassed). Allocated once when preemption is enabled.
+#define PREEMPT_STUB_SYSCALL_LEN 2 /* bytes of `syscall` (0F 05) */
+#define PREEMPT_STUB_LEN 4         /* syscall (2) + ud2 (2) */
+static byte *preempt_stub;
+
 static bool is_counted_branch(instr_t *instruction) {
   return instr_is_cbr(instruction) || instr_is_ubr(instruction) ||
          instr_is_call(instruction) || instr_is_return(instruction);
@@ -692,6 +748,39 @@ static dr_emit_flags_t instrument_instruction(void *drcontext, void *tag,
         drcontext, bb, instruction, (void *)start_pending_thread,
         DR_CLEANCALL_READS_APP_CONTEXT | DR_CLEANCALL_WRITES_APP_CONTEXT,
         0);
+  }
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review the branch-count preemption hook.
+  // Mirrors the `start_pending_thread` hook above: at the first application
+  // instruction of a block, invoke `maybe_preempt`, which injects a synthetic
+  // sched_yield scheduler turn once the per-thread branch quantum elapses. Gated
+  // at instrumentation time on `preemption_enabled` (a `dr_client_main` constant)
+  // so disabled runs incur zero added instrumentation.
+  if (preemption_enabled && preempt_stub != NULL && instr_is_app(instruction) &&
+      instruction == instrlist_first_app(bb)) {
+    app_pc block_pc = instr_get_app_pc(instruction);
+    // Blocks inside the injected-syscall stub are handled specially and never
+    // carry the ordinary preemption hook. The block starting at the trailing
+    // `ud2` gets the `preempt_return` clean call that resumes the guest; the
+    // stub's `syscall` block needs no preemption instrumentation (it flows
+    // through `pre_syscall` like any syscall).
+    if (block_pc >= preempt_stub && block_pc < preempt_stub + PREEMPT_STUB_LEN) {
+      if (block_pc == preempt_stub + PREEMPT_STUB_SYSCALL_LEN) {
+        dr_insert_clean_call(drcontext, bb, instruction, (void *)preempt_return,
+                             /*save_fpstate=*/false, 0);
+      }
+      return DR_EMIT_DEFAULT;
+    }
+    // Ordinary application block: at its first instruction, invoke
+    // `maybe_preempt`. It must be FULLY transparent, so `save_fpstate = true`
+    // makes DynamoRIO save/restore the floating-point/vector state around the
+    // call; we do not declare WRITES_APP_CONTEXT. We pass the block's
+    // application PC so `maybe_preempt` can deliver the yield only at a SAFE
+    // POINT (a PC in the guest's own main executable, never mid-sequence inside
+    // libc/ld).
+    dr_insert_clean_call(drcontext, bb, instruction, (void *)maybe_preempt,
+                         /*save_fpstate=*/true, 1,
+                         OPND_CREATE_INTPTR(block_pc));
   }
   if (user_data != NULL && instruction == instrlist_first(bb)) {
     dr_insert_clean_call(drcontext, bb, instruction,
@@ -1792,6 +1881,132 @@ static void report_copied_unsupported_syscall(int sysnum) {
     dr_fprintf(unsupported_report_file, "@%d\n", sysnum);
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-dbi-preempt): Review deterministic branch-count preemption.
+// Runs at the first application instruction of every block (see
+// `instrument_instruction`) when preemption is enabled. Once this thread has
+// executed `preemption_quantum` counted app branches since its last preemption,
+// it delivers a real `sched_yield` to the guest so a thread that busy-waits or
+// tight-loops without reaching a syscall of its own still returns control to the
+// deterministic scheduler and lets a co-runnable sibling proceed.
+//
+// SAFE-POINT delivery (this is the crux). The Detcore scheduler turn is an
+// in-process RPC that allocates and can trigger the guest's own lazy PLT
+// resolver, so it must NOT run synchronously from this clean call at an
+// arbitrary instruction boundary: doing so re-enters non-reentrant guest
+// libc/ld (observed as "undefined symbol getcwd" / GLIBC_PRIVATE, or a memchr
+// panic from clobbered state). Instead, the ONLY place the turn runs is the
+// existing `pre_syscall` handler, which is a proven-safe boundary for every real
+// guest syscall (it is why the passing corpus passes). So this clean call does
+// NO scheduler work: it captures the interrupted thread's full machine context
+// and `dr_redirect_execution`s to a tiny generated stub whose sole instruction
+// is a real `sched_yield` syscall. That syscall fires `pre_syscall`, Detcore's
+// ordinary, already-deterministic `sched_yield` handler ends this thread's
+// timeslice and reselects, and a clean call on the block after the stub syscall
+// (`preempt_return`) restores the captured context and resumes the guest exactly
+// where it was preempted. The injected syscall is thus fully transparent: rax,
+// rip and the FP/SIMD state are all restored from the captured mcontext.
+//
+// Determinism: `branch_count` advances only at counted app branches (see
+// `is_counted_branch`) and `preemption_quantum` is fixed, so the preemption
+// points are a deterministic function of the executed instruction stream; both
+// runs of `--verify` execute the same stream, take the same preemptions, and
+// inject the same yields.
+//
+// SAFE-POINT gate refinement: we additionally require the interrupted PC to lie
+// in the guest's MAIN EXECUTABLE (its own code). The busy-wait/tight loop that
+// starves the scheduler spins there, not inside libc; restricting delivery to
+// the guest's own code keeps the redirect/return away from partially-executed
+// libc/ld sequences. We cache the main module's address range once.
+static app_pc main_module_start;
+static app_pc main_module_end;
+static bool main_module_resolved;
+
+static bool pc_in_main_executable(app_pc pc) {
+  if (!main_module_resolved) {
+    module_data_t *main_module = dr_get_main_module();
+    if (main_module == NULL)
+      return false;
+    main_module_start = main_module->start;
+    main_module_end = main_module->end;
+    main_module_resolved = true;
+    dr_free_module_data(main_module);
+  }
+  return pc >= main_module_start && pc < main_module_end;
+}
+
+static void maybe_preempt(app_pc pc) {
+  if (!preemption_enabled || preempt_stub == NULL)
+    return;
+  void *drcontext = dr_get_current_drcontext();
+  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
+      drcontext, thread_state_index);
+  if (counters == NULL || counters->preempt_mcontext == NULL)
+    return;
+  // An injected sched_yield is already in flight for this thread (we are between
+  // the redirect to the stub and `preempt_return`); never nest a preemption.
+  if (counters->preempt_pending != 0)
+    return;
+  // Only preempt a thread that actually drives the Reverie tool this turn.
+  // Mirror the guards used around the syscall dispatch: the runtime image must be
+  // ready, and a copied child only runs the tool when it is an external-global
+  // (RPC-connected) non-vfork process. A copied child under a prototype runtime,
+  // or a vfork stand-in, runs no scheduler turn, so skip it.
+  if (!reverie_dbi_runtime_ready(
+          atomic_load_explicit(&image_generation, memory_order_acquire)))
+    return;
+  if (has_copied_runtime() &&
+      (!runtime_uses_external_global() || is_copied_vfork_process()))
+    return;
+  uint64_t branches = atomic_load_explicit(&branch_count, memory_order_relaxed);
+  if (branches - counters->last_yield_branch < preemption_quantum)
+    return;
+  // Defer until the quantum elapses AND the interrupted PC is in the guest's own
+  // code. Do NOT advance last_yield_branch when deferring, so delivery lands at
+  // the first main-executable block after the quantum -- a deterministic
+  // function of the deterministic instruction stream.
+  if (preempt_gate_main_only && !pc_in_main_executable(pc))
+    return;
+  counters->last_yield_branch = branches;
+  // Capture the full interrupted context (integer + control + FP/SIMD) so
+  // `preempt_return` can resume the guest transparently after the yield. Force
+  // the resume PC to `pc` (the block's application PC); the mcontext `pc` field
+  // is not a reliable output of `dr_get_mcontext` in a clean call.
+  dr_mcontext_t *saved = counters->preempt_mcontext;
+  saved->size = sizeof(*saved);
+  saved->flags = DR_MC_ALL;
+  if (!dr_get_mcontext(drcontext, saved))
+    return;
+  saved->pc = pc;
+  counters->preempt_pending = 1;
+  // Redirect into the stub with rax set to the sched_yield syscall number; the
+  // rest of the machine state is the guest's own captured state.
+  dr_mcontext_t redirect = *saved;
+  redirect.xax = (reg_t)SYS_sched_yield;
+  redirect.pc = preempt_stub;
+  dr_redirect_execution(&redirect);
+  // dr_redirect_execution does not return on success.
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-dbi-preempt): Review the safe-point preemption return path.
+// Clean call inserted on the block immediately after the stub's `sched_yield`
+// (see `instrument_instruction`). The injected syscall has by now flowed through
+// `pre_syscall` and Detcore has performed the deterministic yield/reselect. We
+// resume the guest at the captured preemption point, restoring its rax, rip and
+// FP/SIMD state so the injected syscall is invisible to the guest.
+static void preempt_return(void) {
+  void *drcontext = dr_get_current_drcontext();
+  prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
+      drcontext, thread_state_index);
+  if (counters == NULL || counters->preempt_mcontext == NULL ||
+      counters->preempt_pending == 0)
+    return; // unreachable in normal flow; the stub's ud2 traps if we fall through
+  counters->preempt_pending = 0;
+  dr_redirect_execution(counters->preempt_mcontext);
+  // dr_redirect_execution does not return on success.
+}
+
 static bool pre_syscall(void *drcontext, int sysnum) {
   if (((uint32_t)sysnum & X32_SYSCALL_BIT) != 0) {
     dr_fprintf(diagnostic_file,
@@ -2032,6 +2247,17 @@ static void thread_init(void *drcontext) {
   memset(counters, 0, sizeof(*counters));
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
 
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review safe-point preemption per-thread state.
+  // When preemption is enabled, give this thread a persistent mcontext buffer for
+  // `maybe_preempt` to capture into and `preempt_return` to resume from. Freed in
+  // `thread_exit`.
+  if (preemption_enabled) {
+    counters->preempt_mcontext =
+        (dr_mcontext_t *)dr_thread_alloc(drcontext, sizeof(dr_mcontext_t));
+    DR_ASSERT(counters->preempt_mcontext != NULL);
+  }
+
   int32_t pending_thread_start =
       !has_copied_runtime() && dr_get_thread_id(drcontext) != dr_get_process_id() &&
       reverie_dbi_runtime_ready(
@@ -2085,6 +2311,9 @@ static void thread_exit(void *drcontext) {
     reverie_dbi_runtime_thread_exit(counters, drcontext,
                                     dr_get_thread_id(drcontext),
                                     invoke_syscall);
+    if (counters->preempt_mcontext != NULL)
+      dr_thread_free(drcontext, counters->preempt_mcontext,
+                     sizeof(dr_mcontext_t));
     dr_thread_free(drcontext, counters, sizeof(*counters));
   }
 }
@@ -2199,6 +2428,35 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       runtime_callbacks.panic_on_unsupported_syscalls = 1;
     else if (strcmp(argv[i], "-isolated-process-group") == 0)
       runtime_process_group = (process_id_t)getpgrp();
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review branch-count preemption argument.
+    else if (strcmp(argv[i], "-preemption-quantum") == 0) {
+      unsigned long long quantum = 0;
+      DR_ASSERT(++i < argc);
+      DR_ASSERT(dr_sscanf(argv[i], "%llu", &quantum) == 1);
+      preemption_quantum = (uint64_t)quantum;
+      preemption_enabled = quantum > 0;
+    }
+  }
+
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review the injected-syscall stub allocation.
+  // When preemption is enabled, allocate the tiny redirect stub whose bytes are
+  // `syscall; ud2`. `maybe_preempt` redirects here with rax = SYS_sched_yield to
+  // deliver a real yield at a safe point; the block starting at the `ud2` carries
+  // a `preempt_return` clean call, so the `ud2` only executes (and traps) if the
+  // return path is ever bypassed.
+  if (preemption_enabled && getenv("HERMIT_DBI_PREEMPT_ANYPC") != NULL)
+    preempt_gate_main_only = false;
+
+  if (preemption_enabled) {
+    preempt_stub = (byte *)dr_nonheap_alloc(
+        dr_page_size(), DR_MEMPROT_READ | DR_MEMPROT_WRITE | DR_MEMPROT_EXEC);
+    DR_ASSERT(preempt_stub != NULL);
+    preempt_stub[0] = 0x0f; // syscall
+    preempt_stub[1] = 0x05;
+    preempt_stub[2] = 0x0f; // ud2
+    preempt_stub[3] = 0x0b;
   }
 
   if (unsupported_report_path[0] != 0) {
