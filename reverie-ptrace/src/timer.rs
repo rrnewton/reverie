@@ -295,6 +295,7 @@ pub enum HandleFailure {
         task: Stopped,
         observed_rcb: u64,
         target_rcb: u64,
+        exit_on_overskid: bool,
     },
 }
 
@@ -838,22 +839,12 @@ impl TimerImpl {
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
         if ctr_initial > target_rcb {
-            if get_pmu_config().exit_on_overskid() {
-                return Err(HandleFailure::Overskid {
-                    task,
-                    observed_rcb: ctr_initial,
-                    target_rcb,
-                });
-            }
-            tracing::error!(
-                target: "reverie_ptrace::timer",
-                tid = %self.guest_tid,
-                observed_rcb = ctr_initial,
+            return Err(HandleFailure::Overskid {
+                task,
+                observed_rcb: ctr_initial,
                 target_rcb,
-                overskid_rcbs = ctr_initial - target_rcb,
-                "PMU timer over-skid; delivering the timer event late, so this execution may be nondeterministic"
-            );
-            return Ok(task);
+                exit_on_overskid: get_pmu_config().exit_on_overskid(),
+            });
         }
         let mut current = ClockCounter::new(ctr_initial, 0, target_rcb);
         let max_single_step_count = get_pmu_config().max_single_step_count();

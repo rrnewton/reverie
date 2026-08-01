@@ -1919,23 +1919,36 @@ impl<L: Tool + 'static> TracedTask<L> {
                 task,
                 observed_rcb,
                 target_rcb,
+                exit_on_overskid,
             }) => {
-                tracing::error!(
-                    target: "reverie_ptrace::timer",
-                    tid = %self.tid(),
-                    observed_rcb,
-                    target_rcb,
-                    overskid_rcbs = observed_rcb - target_rcb,
-                    "fatal PMU timer over-skid; terminating the tracee process tree"
-                );
-                self.terminate_tracee_process_tree();
+                if exit_on_overskid {
+                    tracing::error!(
+                        target: "reverie_ptrace::timer",
+                        tid = %self.tid(),
+                        observed_rcb,
+                        target_rcb,
+                        overskid_rcbs = observed_rcb - target_rcb,
+                        "fatal PMU timer over-skid; terminating the tracee process tree"
+                    );
+                    self.terminate_tracee_process_tree();
 
-                // SIGKILL is observed by `run`'s generation-bound exit future,
-                // which cancels this handler and drives normal reaping. Keeping
-                // the stopped capability alive until then avoids the old panic
-                // path that abandoned a child ptrace stop and wedged its parent.
-                let _task = task;
-                future::pending().await
+                    // SIGKILL is observed by `run`'s generation-bound exit future,
+                    // which cancels this handler and drives normal reaping. Keeping
+                    // the stopped capability alive until then avoids the old panic
+                    // path that abandoned a child ptrace stop and wedged its parent.
+                    let _task = task;
+                    future::pending().await
+                } else {
+                    tracing::error!(
+                        target: "reverie_ptrace::timer",
+                        tid = %self.tid(),
+                        observed_rcb,
+                        target_rcb,
+                        overskid_rcbs = observed_rcb - target_rcb,
+                        "PMU timer over-skid; delivering the event late through the normal timer callback so the PMU is rearmed; this execution may be nondeterministic"
+                    );
+                    task
+                }
             }
             Ok(task) => task,
         };
@@ -1949,6 +1962,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             let _ = sender.send(task.pid());
             future::pending::<()>().await;
         }
+        // Do not return early for a tolerated over-skid. Detcore accounts the
+        // observed late RCB in this callback and requests its next timeslice;
+        // finalize_requests then sends/enables that replacement PMU alarm.
         self.process_state.clone().handle_timer_event(self).await;
         self.timer.finalize_requests();
         Ok((true, task))
