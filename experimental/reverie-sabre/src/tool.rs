@@ -124,6 +124,21 @@ pub trait Tool {
         unsafe { core::arch::x86_64::_rdtsc() }
     }
 
+    /// Called whenever the `cpuid` instruction is executed.
+    ///
+    /// By default, this returns the host CPUID result for the requested leaf
+    /// and subleaf.
+    #[inline]
+    fn cpuid(&self, eax: u32, ecx: u32) -> reverie::CpuIdResult {
+        let result = core::arch::x86_64::__cpuid_count(eax, ecx);
+        reverie::CpuIdResult {
+            eax: result.eax,
+            ebx: result.ebx,
+            ecx: result.ecx,
+            edx: result.edx,
+        }
+    }
+
     /// Called whenever the VDSO function `clock_gettime` was called. By
     /// default, the original `clock_gettime` VDSO function is called.
     #[inline]

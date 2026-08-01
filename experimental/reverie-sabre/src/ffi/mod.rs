@@ -113,6 +113,17 @@ pub type handle_vdso_fn =
 
 pub type handle_rdtsc_fn = extern "C" fn() -> u64;
 
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct CpuidResult {
+    pub eax: u32,
+    pub ebx: u32,
+    pub ecx: u32,
+    pub edx: u32,
+}
+
+pub type handle_cpuid_fn = extern "C" fn(eax: u32, ecx: u32) -> CpuidResult;
+
 pub type post_load_fn = extern "C" fn(bool);
 
 /// A struct of arguments for the clone3 syscall.
