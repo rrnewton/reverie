@@ -27,11 +27,13 @@
 #![cfg(target_arch = "x86_64")]
 
 use kvm_ioctls::Kvm;
+use reverie::backend_stats::BackendStatsRequest;
 use reverie_kvm::CounterTool;
 use reverie_kvm::GuestMemory;
 use reverie_kvm::HierarchicalCounterTool;
 use reverie_kvm::HierarchicalTotals;
 use reverie_kvm::KvmBackend;
+use reverie_kvm::KvmExitReason;
 use reverie_kvm::SyscallRequest;
 use reverie_kvm::Sysno;
 
@@ -147,5 +149,37 @@ fn hierarchical_counter_aggregates_per_process() {
             exited_procs: 1,
             exited_threads: 1,
         }
+    );
+}
+
+#[test]
+fn run_with_tool_records_hypercall_exits_when_enabled() {
+    if !kvm_available("run_with_tool_records_hypercall_exits_when_enabled") {
+        return;
+    }
+
+    let requests = sequence();
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend.set_backend_stats_request(BackendStatsRequest::ENABLED);
+    backend
+        .install_syscalls(ENTRY_POINT, FRAME_ADDRESS, &requests)
+        .unwrap();
+
+    let counter =
+        futures::executor::block_on(backend.run_with_tool::<CounterTool, _>((), null_executor))
+            .unwrap();
+    assert_eq!(counter.total() as usize, requests.len());
+
+    // The Tool production loop (reverie-kvm/src/runtime.rs `run_with_tool`)
+    // records each intercepted syscall as one hypercall vCPU exit through the
+    // same `record_exit` path used by the direct personality, so the recorded
+    // hypercall count matches the syscalls the tool counted.
+    let stats = BackendStatsRequest::ENABLED
+        .collect(&backend)
+        .expect("an enabled request must collect a snapshot");
+    assert_eq!(
+        stats.count(KvmExitReason::Hypercall) as usize,
+        requests.len(),
+        "each intercepted syscall must surface as one hypercall exit: {stats}"
     );
 }
