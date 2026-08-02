@@ -552,6 +552,7 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for LiteinstGuest<'_, T> {
     }
 }
 
+// AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-326): Review the plain-fork injection boundary.
 fn is_plain_fork(number: i64, args: [u64; 6]) -> bool {
     if number == libc::SYS_fork {
