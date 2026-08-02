@@ -10,7 +10,6 @@ use std::io;
 use std::ptr;
 use std::sync::OnceLock;
 
-use liteinst2::patcher::StalenessBudget;
 use liteinst2::patcher::prepare_live_patching;
 use liteinst2::scanner::InstructionScanner;
 use liteinst2::trampoline::HookContext;
@@ -648,6 +647,7 @@ fn discover_arena_aliases(
 }
 
 fn prepare_instrumentation() -> io::Result<()> {
+    crate::straddler::initialize_from_environment()?;
     prepare_live_patching().map_err(|error| io::Error::other(error.to_string()))?;
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     let page_size = u64::try_from(page_size)
@@ -991,6 +991,14 @@ unsafe fn set_text_protection(address: u64, protection: i32) -> io::Result<()> {
 
 struct InstallGuard;
 
+#[derive(Clone, Copy)]
+enum PatchPublication {
+    /// The stopped-tracee helper is the only thread able to reach live code.
+    Quiescent,
+    /// Other application threads may fetch the site during publication.
+    Concurrent,
+}
+
 impl Drop for InstallGuard {
     fn drop(&mut self) {
         INSTALL_HELD.store(false, Ordering::Release);
@@ -1008,6 +1016,7 @@ unsafe fn install_site_hook(
     address: u64,
     slot: &'static SiteSlot,
     callback: liteinst2::trampoline::HookCallback,
+    publication: PatchPublication,
 ) -> io::Result<HostInstallResult> {
     let _install_guard = lock_installation()?;
     let _allocation_scope = crate::patch_alloc::enter();
@@ -1069,13 +1078,13 @@ unsafe fn install_site_hook(
         .store(instruction_len as u8, Ordering::Release);
     slot.straddle_prefix
         .store(straddle_prefix as u8, Ordering::Release);
-    if straddle_prefix != 0 {
-        // This runtime has no proved direct-pun or upstream-relocation path.
-        // Retain the hybrid's ptrace slow path instead of GuardedSplit.
-        return Err(io::Error::other(
-            "cache-line straddler requires ptrace fallback",
-        ));
-    }
+    let staleness = match publication {
+        PatchPublication::Quiescent => None,
+        PatchPublication::Concurrent => Some(crate::straddler::budget_for_patch(
+            address as usize,
+            scanner.cache_line_size(),
+        )?),
+    };
     let code = scan.snapshot();
 
     unsafe {
@@ -1084,20 +1093,26 @@ unsafe fn install_site_hook(
             libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC,
         )?;
     }
-    let installed = unsafe {
-        InstalledHook::install_replacing_first_in_arena(
-            HookSite::new(
-                &scanner,
-                &scan,
-                code,
-                address,
-                address,
-                address as usize as *mut u8,
-            ),
-            callback,
-            StalenessBudget::new(3_000).expect("non-zero staleness budget"),
-            &arena.arena,
-        )
+    let site = HookSite::new(
+        &scanner,
+        &scan,
+        code,
+        address,
+        address,
+        address as usize as *mut u8,
+    );
+    let installed = match publication {
+        PatchPublication::Quiescent => unsafe {
+            InstalledHook::install_replacing_first_in_arena_quiescent(site, callback, &arena.arena)
+        },
+        PatchPublication::Concurrent => unsafe {
+            InstalledHook::install_replacing_first_in_arena(
+                site,
+                callback,
+                staleness.expect("concurrent publication has a staleness budget"),
+                &arena.arena,
+            )
+        },
     };
     let installed = match installed {
         Ok(installed) => installed,
@@ -1106,7 +1121,14 @@ unsafe fn install_site_hook(
             return Err(io::Error::other(error.to_string()));
         }
     };
-    if let Err(error) = installed.activate() {
+    let activation = match publication {
+        PatchPublication::Concurrent => installed.activate(),
+        // SAFETY: the ptrace controller serializes this helper while every
+        // other tracee thread is stopped. Hermit likewise schedules only one
+        // guest thread at a time, so no other thread can fetch the site.
+        PatchPublication::Quiescent => unsafe { installed.activate_quiescent() },
+    };
+    if let Err(error) = activation {
         let _ = unsafe { set_text_protection(address, libc::PROT_READ | libc::PROT_EXEC) };
         return Err(io::Error::other(error.to_string()));
     }
@@ -1175,7 +1197,14 @@ pub unsafe extern "C" fn reverie_liteinst_install_site_for_ptrace(address: u64) 
     site.trap_count.fetch_add(1, Ordering::Relaxed);
     let mut install_result = None;
     if claimed {
-        match unsafe { install_site_hook(address, site, host_syscall_hook) } {
+        match unsafe {
+            install_site_hook(
+                address,
+                site,
+                host_syscall_hook,
+                PatchPublication::Quiescent,
+            )
+        } {
             Ok(result) => install_result = Some(result),
             Err(_) => site.state.store(SITE_FALLBACK, Ordering::Release),
         }
@@ -1649,8 +1678,15 @@ impl SyscallDispatcher for LiteinstDispatcher {
         if let Some((site, claimed)) = claim_site(instruction_pointer) {
             site.trap_count.fetch_add(1, Ordering::Relaxed);
             if claimed
-                && unsafe { install_site_hook(instruction_pointer, site, installed_syscall_hook) }
-                    .is_err()
+                && unsafe {
+                    install_site_hook(
+                        instruction_pointer,
+                        site,
+                        installed_syscall_hook,
+                        PatchPublication::Concurrent,
+                    )
+                }
+                .is_err()
             {
                 site.state.store(SITE_FALLBACK, Ordering::Release);
             }

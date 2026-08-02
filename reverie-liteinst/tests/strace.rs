@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
 use std::os::fd::AsRawFd;
@@ -18,15 +19,28 @@ use reverie_liteinst::COMPAT_EVENT_COOKIE_ENV;
 use reverie_liteinst::COMPAT_EVENT_FD_ENV;
 use reverie_liteinst::PreloadTool;
 use reverie_liteinst::SPOOF_PID;
+use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
 use reverie_liteinst::configure_command;
 use reverie_liteinst::configure_command_builtin;
 
 const TEST_EVENT_COOKIE: u64 = 7_915_913_731_959_187_131;
 const TEST_EVENT_FD_ENV: &str = "REVERIE_LITEINST_TEST_EVENT_FD";
+const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
+
+fn enable_concurrent_patch_testing(command: &mut Command) {
+    command.env(
+        STRADDLER_STALENESS_TICKS_ENV,
+        TEST_STRADDLER_STALENESS_TICKS,
+    );
+}
 
 fn run_guest(program: &str, arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_reverie-liteinst-strace"))
         .env("REVERIE_LITEINST_PRELOAD", preload_path())
+        .env(
+            STRADDLER_STALENESS_TICKS_ENV,
+            TEST_STRADDLER_STALENESS_TICKS,
+        )
         .arg(program)
         .args(arguments)
         .output()
@@ -36,8 +50,32 @@ fn run_guest(program: &str, arguments: &[&str]) -> Output {
 fn run_compat_guest(program: &str, arguments: &[&str]) -> Output {
     let mut command = Command::new(program);
     command.args(arguments);
+    enable_concurrent_patch_testing(&mut command);
     configure_command(&mut command, PreloadTool::Compatibility).unwrap();
     command.output().unwrap()
+}
+
+fn compile_fixture(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let directory = tempfile::tempdir().unwrap();
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    let output = directory.path().join(name.trim_end_matches(".c"));
+    let compiler = std::env::var_os("CC").unwrap_or_else(|| OsString::from("cc"));
+    let result = Command::new(compiler)
+        .args(["-std=gnu11", "-O0", "-fno-pie", "-no-pie"])
+        .arg(&source)
+        .arg("-o")
+        .arg(&output)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "failed to compile {}:\n{}",
+        source.display(),
+        String::from_utf8_lossy(&result.stderr)
+    );
+    (directory, output)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -67,6 +105,7 @@ fn run_compat_guest_with_event_pipe(program: &str, arguments: &[&str]) -> (Outpu
         .env(TEST_EVENT_FD_ENV, inherited_write_fd.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    enable_concurrent_patch_testing(&mut command);
     configure_command(&mut command, PreloadTool::Compatibility).unwrap();
     unsafe {
         command.pre_exec(move || {
@@ -249,6 +288,7 @@ fn compatibility_event_fd_backpressure_fails_without_hanging() {
         .env(COMPAT_EVENT_COOKIE_ENV, TEST_EVENT_COOKIE.to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    enable_concurrent_patch_testing(&mut command);
     configure_command(&mut command, PreloadTool::Compatibility).unwrap();
     unsafe {
         command.pre_exec(move || {
@@ -302,6 +342,7 @@ fn compatibility_event_fd_recovers_when_delayed_reader_drains() {
         .env(COMPAT_EVENT_COOKIE_ENV, TEST_EVENT_COOKIE.to_string())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    enable_concurrent_patch_testing(&mut command);
     configure_command(&mut command, PreloadTool::Compatibility).unwrap();
     unsafe {
         command.pre_exec(move || {
@@ -331,13 +372,8 @@ fn compatibility_event_fd_recovers_when_delayed_reader_drains() {
 
 #[test]
 fn compatibility_tool_rejects_process_group_escape() {
-    let output = run_compat_guest(
-        "/usr/bin/python3",
-        &[
-            "-c",
-            "import os\ntry:\n os.setsid()\nexcept PermissionError:\n print('setsid-rejected')\nelse:\n raise SystemExit('setsid unexpectedly succeeded')",
-        ],
-    );
+    let (_directory, guest) = compile_fixture("compat_setsid.c");
+    let output = run_compat_guest(guest.to_str().unwrap(), &[]);
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"setsid-rejected\n");
 }
@@ -357,6 +393,7 @@ fn compatibility_event_fd_rejects_read_only_descriptor() {
     command
         .env(COMPAT_EVENT_FD_ENV, inherited_read_fd.to_string())
         .env(COMPAT_EVENT_COOKIE_ENV, TEST_EVENT_COOKIE.to_string());
+    enable_concurrent_patch_testing(&mut command);
     configure_command(&mut command, PreloadTool::Compatibility).unwrap();
     unsafe {
         command.pre_exec(move || {
