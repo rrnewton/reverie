@@ -113,11 +113,15 @@ where
     let _signal_state = runtime::prepare_guest_signal_state()?;
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
     runtime::reserve_coordinator_fd(rpc.raw_fd())?;
-    if let Some(stats_coordinator) = std::env::var_os(crate::backend::STATS_COORDINATOR_ENV) {
-        crate::stats::initialize_guest_stats(Path::new(&stats_coordinator))?;
-        // SAFETY: tool installation runs before application-created threads.
-        unsafe { std::env::remove_var(crate::backend::STATS_COORDINATOR_ENV) };
-    }
+    let stats =
+        if let Some(stats_coordinator) = std::env::var_os(crate::backend::STATS_COORDINATOR_ENV) {
+            let stats = crate::stats::initialize_guest_stats(Path::new(&stats_coordinator))?;
+            // SAFETY: tool installation runs before application-created threads.
+            unsafe { std::env::remove_var(crate::backend::STATS_COORDINATOR_ENV) };
+            stats
+        } else {
+            crate::stats::GuestStatsHooks::DISABLED
+        };
     COMMITTED_STACKS.lock().clear();
     let pid = Pid::from_raw(unsafe { libc::getpid() });
     let subscriptions = T::subscriptions(rpc.config()).iter_syscalls().collect();
@@ -133,11 +137,12 @@ where
             root_pid: pid,
             subscriptions,
             states: SpinMutex::new(HashMap::new()),
+            stats,
         }))
         .map_err(|_| {
             io::Error::new(io::ErrorKind::AlreadyExists, "Reverie tool installed twice")
         })?;
-    runtime::initialize_reverie_tool()
+    runtime::initialize_reverie_tool(stats)
 }
 
 pub(crate) fn dispatch(event: &mut SyscallEvent) {
@@ -153,6 +158,7 @@ struct ToolHost<T: Tool> {
     root_pid: Pid,
     subscriptions: HashSet<Sysno>,
     states: SpinMutex<HashMap<i32, T::ThreadState>>,
+    stats: crate::stats::GuestStatsHooks,
 }
 
 impl<T> ToolHandler for ToolHost<T>
@@ -228,6 +234,7 @@ where
                         &mut tool_slot,
                         &mut states,
                         &self.rpc,
+                        self.stats,
                         event,
                         ForkChildContext {
                             parent_tid: tid,
@@ -245,10 +252,13 @@ where
                     &mut tool_slot,
                     &mut states,
                     &self.rpc,
-                    tid,
-                    pid,
-                    number,
-                    args,
+                    self.stats,
+                    ToolExitContext {
+                        tid,
+                        pid,
+                        number,
+                        args,
+                    },
                 );
             } else if let Some(error) = injected_syscall_guard(number, args) {
                 event.result = -i64::from(error.into_raw());
@@ -278,10 +288,13 @@ where
                     &mut tool_slot,
                     &mut states,
                     &self.rpc,
-                    tid,
-                    pid,
-                    number,
-                    args,
+                    self.stats,
+                    ToolExitContext {
+                        tid,
+                        pid,
+                        number,
+                        args,
+                    },
                 );
                 event.result = unsafe { raw_syscall6(number, args) };
             }
@@ -295,6 +308,7 @@ where
                     &mut tool_slot,
                     &mut states,
                     &self.rpc,
+                    self.stats,
                     event,
                     ForkChildContext {
                         parent_tid,
@@ -312,6 +326,7 @@ fn finish_fork_child<T: Tool>(
     tool_slot: &mut Option<T>,
     states: &mut HashMap<i32, T::ThreadState>,
     rpc: &CoordinatorRpc<T::GlobalState>,
+    stats: crate::stats::GuestStatsHooks,
     event: &mut SyscallEvent,
     context: ForkChildContext,
 ) {
@@ -330,6 +345,7 @@ fn finish_fork_child<T: Tool>(
     states.insert(child_tid.as_raw(), child_state);
     *tool_slot = Some(child_tool);
     runtime::reset_fallback_observability();
+    stats.reset_after_fork();
     if event.context != 0 {
         runtime::record_fork_child_direct_hook(event.instruction_pointer);
     }
@@ -366,11 +382,15 @@ fn finish_tool_exit<T: Tool>(
     tool_slot: &mut Option<T>,
     states: &mut HashMap<i32, T::ThreadState>,
     rpc: &CoordinatorRpc<T::GlobalState>,
-    tid: Pid,
-    pid: Pid,
-    number: i64,
-    args: [u64; 6],
+    stats: crate::stats::GuestStatsHooks,
+    context: ToolExitContext,
 ) {
+    let ToolExitContext {
+        tid,
+        pid,
+        number,
+        args,
+    } = context;
     let state = states
         .remove(&tid.as_raw())
         .expect("LiteInst thread state disappeared before exit");
@@ -384,10 +404,19 @@ fn finish_tool_exit<T: Tool>(
         if let Err(error) = drive_ready(tool.on_exit_process(pid, rpc, status)) {
             tool_fatal(125, &error);
         }
-        if let Err(error) = runtime::submit_process_stats(tid, pid) {
+        if stats.is_enabled()
+            && let Err(error) = runtime::submit_process_stats(tid, stats)
+        {
             tool_fatal(125, &Error::from(error));
         }
     }
+}
+
+struct ToolExitContext {
+    tid: Pid,
+    pid: Pid,
+    number: i64,
+    args: [u64; 6],
 }
 
 // TODO-HUMAN-REVIEW(PR-143): Review exit syscall lifecycle classification.

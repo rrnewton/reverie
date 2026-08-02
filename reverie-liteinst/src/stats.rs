@@ -264,15 +264,99 @@ pub(crate) const IN_GUEST_NESTED_SIGSYS: usize = 1;
 pub(crate) const IN_GUEST_STRADDLER_FALLBACK: usize = 2;
 pub(crate) const IN_GUEST_OTHER_FALLBACK: usize = 3;
 pub(crate) const IN_GUEST_DIRECT_HOOK: usize = 4;
+const IN_GUEST_ATOMIC_PATH_COUNT: usize = 4;
 
 struct GuestStatsCollector {
     coordinator: PathBuf,
-    paths: [AtomicU64; IN_GUEST_PATH_COUNT],
+    paths: [AtomicU64; IN_GUEST_ATOMIC_PATH_COUNT],
 }
 
 static GUEST_STATS: OnceLock<GuestStatsCollector> = OnceLock::new();
 
-pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<()> {
+#[derive(Clone, Copy)]
+pub(crate) struct GuestStatsHooks {
+    collector: Option<&'static GuestStatsCollector>,
+    record_path: fn(Option<&'static GuestStatsCollector>, usize),
+    reset_after_fork: fn(Option<&'static GuestStatsCollector>),
+}
+
+impl GuestStatsHooks {
+    pub(crate) const DISABLED: Self = Self {
+        collector: None,
+        record_path: disabled_record_path,
+        reset_after_fork: disabled_reset_after_fork,
+    };
+
+    fn enabled(collector: &'static GuestStatsCollector) -> Self {
+        Self {
+            collector: Some(collector),
+            record_path: enabled_record_path,
+            reset_after_fork: enabled_reset_after_fork,
+        }
+    }
+
+    pub(crate) fn is_enabled(self) -> bool {
+        self.collector.is_some()
+    }
+
+    pub(crate) fn record_path(self, path: usize) {
+        (self.record_path)(self.collector, path);
+    }
+
+    pub(crate) fn reset_after_fork(self) {
+        (self.reset_after_fork)(self.collector);
+    }
+
+    pub(crate) fn submit(
+        self,
+        tid: Tid,
+        direct_hooks: u64,
+        sites: Vec<LiteinstProcessSiteStats>,
+    ) -> io::Result<()> {
+        let Some(stats) = self.collector else {
+            return Ok(());
+        };
+        let mut paths = [0_u64; IN_GUEST_PATH_COUNT];
+        for (index, count) in stats.paths.iter().enumerate() {
+            paths[index] = count.load(Ordering::Relaxed);
+        }
+        paths[IN_GUEST_DIRECT_HOOK] = direct_hooks;
+        let client = BlockingRpcClient::<LiteinstStatsGlobal>::connect(&stats.coordinator, tid)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        client
+            .try_send_rpc(LiteinstProcessStats { paths, sites })
+            .map_err(|error| io::Error::other(error.to_string()))
+    }
+}
+
+fn disabled_record_path(_collector: Option<&'static GuestStatsCollector>, _path: usize) {}
+
+fn disabled_reset_after_fork(_collector: Option<&'static GuestStatsCollector>) {}
+
+fn enabled_record_path(collector: Option<&'static GuestStatsCollector>, path: usize) {
+    #[cfg(test)]
+    ENABLED_STATS_PROBES.fetch_add(1, Ordering::Relaxed);
+    collector
+        .expect("enabled stats dispatch requires a collector")
+        .paths[path]
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+fn enabled_reset_after_fork(collector: Option<&'static GuestStatsCollector>) {
+    #[cfg(test)]
+    ENABLED_STATS_PROBES.fetch_add(1, Ordering::Relaxed);
+    for count in &collector
+        .expect("enabled stats dispatch requires a collector")
+        .paths
+    {
+        count.store(0, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+static ENABLED_STATS_PROBES: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<GuestStatsHooks> {
     GUEST_STATS
         .set(GuestStatsCollector {
             coordinator: coordinator.to_path_buf(),
@@ -283,46 +367,12 @@ pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<()> {
                 io::ErrorKind::AlreadyExists,
                 "LiteInst statistics initialized twice",
             )
-        })
-}
-
-pub(crate) fn guest_stats_enabled() -> bool {
-    GUEST_STATS.get().is_some()
-}
-
-pub(crate) fn record_guest_path(path: usize) {
-    if let Some(stats) = GUEST_STATS.get() {
-        stats.paths[path].fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-pub(crate) fn reset_guest_stats_after_fork() {
-    if let Some(stats) = GUEST_STATS.get() {
-        for count in &stats.paths {
-            count.store(0, Ordering::Relaxed);
-        }
-    }
-}
-
-pub(crate) fn submit_guest_stats(
-    tid: Tid,
-    process_identity: u64,
-    sites: Vec<LiteinstProcessSiteStats>,
-) -> io::Result<()> {
-    let Some(stats) = GUEST_STATS.get() else {
-        return Ok(());
-    };
-    let paths = std::array::from_fn(|index| stats.paths[index].load(Ordering::Relaxed));
-    let client = BlockingRpcClient::<LiteinstStatsGlobal>::connect(&stats.coordinator, tid)
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    client
-        .try_send_rpc(LiteinstProcessStats {
-            process_identity,
-            execution_generation: 0,
-            paths,
-            sites,
-        })
-        .map_err(|error| io::Error::other(error.to_string()))
+        })?;
+    Ok(GuestStatsHooks::enabled(
+        GUEST_STATS
+            .get()
+            .expect("collector was initialized immediately above"),
+    ))
 }
 
 /// One process-local patch-site observation sent only after an enabled run.
@@ -337,8 +387,6 @@ pub(crate) struct LiteinstProcessSiteStats {
 /// One process-local, post-Tool-exit statistics message.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct LiteinstProcessStats {
-    pub(crate) process_identity: u64,
-    pub(crate) execution_generation: u64,
     pub(crate) paths: [u64; IN_GUEST_PATH_COUNT],
     pub(crate) sites: Vec<LiteinstProcessSiteStats>,
 }
@@ -346,7 +394,13 @@ pub(crate) struct LiteinstProcessStats {
 /// Coordinator-side typed RPC target for per-process LiteInst snapshots.
 #[derive(Debug, Default)]
 pub(crate) struct LiteinstStatsGlobal {
-    processes: Mutex<Vec<LiteinstProcessStats>>,
+    aggregation: Mutex<LiteinstStatsAggregation>,
+}
+
+#[derive(Debug, Default)]
+struct LiteinstStatsAggregation {
+    next_process_identity: u64,
+    processes: Vec<(u64, LiteinstProcessStats)>,
 }
 
 #[reverie::global_tool]
@@ -355,37 +409,35 @@ impl GlobalTool for LiteinstStatsGlobal {
     type Response = ();
     type Config = ();
 
-    async fn receive_rpc(&self, from: Tid, mut message: Self::Request) {
-        // The supported lifecycle is single-threaded plain fork, so the
-        // connection's stamped TID is also the process identity. Do not trust a
-        // guest-supplied identity when the transport already authenticated one.
-        message.process_identity = from.as_raw() as u64;
-        self.processes.lock().unwrap().push(message);
+    async fn receive_rpc(&self, _from: Tid, message: Self::Request) {
+        // The request-envelope TID and message body are both guest-controlled.
+        // Assign an opaque identity here solely to keep equal virtual RIPs from
+        // different reports distinct; this is not an authenticated OS identity.
+        let mut aggregation = self.aggregation.lock().unwrap();
+        aggregation.next_process_identity += 1;
+        let identity = aggregation.next_process_identity;
+        aggregation.processes.push((identity, message));
     }
 }
 
 impl LiteinstStatsGlobal {
     pub(crate) fn into_source(self) -> LiteinstBackendStatsSource {
-        let processes = self.processes.into_inner().unwrap();
+        let processes = self.aggregation.into_inner().unwrap().processes;
         let mut shapes = PatchShapeCollector::default();
         let mut reported_processes = BTreeSet::new();
         let mut seen_sites = BTreeSet::new();
         let mut decisions = [0_u64; 4];
         let mut paths = [0_u64; 7];
 
-        for process in processes {
-            reported_processes.insert((process.process_identity, process.execution_generation));
+        for (process_identity, process) in processes {
+            reported_processes.insert(process_identity);
             paths[2] += process.paths[IN_GUEST_SIGSYS];
             paths[3] += process.paths[IN_GUEST_NESTED_SIGSYS];
             paths[4] += process.paths[IN_GUEST_STRADDLER_FALLBACK];
             paths[5] += process.paths[IN_GUEST_OTHER_FALLBACK];
             paths[6] += process.paths[IN_GUEST_DIRECT_HOOK];
             for site in process.sites {
-                if !seen_sites.insert((
-                    process.process_identity,
-                    process.execution_generation,
-                    site.rip,
-                )) {
+                if !seen_sites.insert((process_identity, site.rip)) {
                     continue;
                 }
                 let shape = (site.instruction_length != 0).then(|| {
@@ -401,13 +453,7 @@ impl LiteinstStatsGlobal {
                 } else {
                     decisions[3] += 1;
                 }
-                shapes.record_process_site(
-                    process.process_identity,
-                    process.execution_generation,
-                    site.rip,
-                    site.patched,
-                    shape,
-                );
+                shapes.record_process_site(process_identity, 0, site.rip, site.patched, shape);
             }
         }
 
@@ -508,13 +554,11 @@ mod tests {
     #[tokio::test]
     async fn aggregates_equal_rips_from_distinct_fork_processes_and_exact_hits() {
         let global = LiteinstStatsGlobal::default();
-        for (pid, direct_hooks) in [(101, 7), (202, 11)] {
+        for direct_hooks in [7, 11] {
             global
                 .receive_rpc(
-                    Tid::from_raw(pid),
+                    Tid::from_raw(7),
                     LiteinstProcessStats {
-                        process_identity: 999,
-                        execution_generation: 0,
                         paths: [1, 2, 3, 4, direct_hooks],
                         sites: vec![LiteinstProcessSiteStats {
                             rip: 0x4000,
@@ -539,5 +583,17 @@ mod tests {
         assert!(rendered.contains("in_guest_nested_sigsys=4"), "{rendered}");
         assert!(!rendered.contains("pid="), "{rendered}");
         assert!(!rendered.contains("0x4000"), "{rendered}");
+    }
+
+    #[test]
+    fn disabled_hooks_do_not_enter_enabled_stats_code() {
+        let probes = ENABLED_STATS_PROBES.load(Ordering::Relaxed);
+        let hooks = GuestStatsHooks::DISABLED;
+
+        hooks.record_path(IN_GUEST_SIGSYS);
+        hooks.record_path(IN_GUEST_NESTED_SIGSYS);
+        hooks.reset_after_fork();
+
+        assert_eq!(ENABLED_STATS_PROBES.load(Ordering::Relaxed), probes);
     }
 }

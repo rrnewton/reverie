@@ -468,17 +468,27 @@ fn initialize_host_runtime() -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn initialize_reverie_tool() -> io::Result<()> {
+pub(crate) fn initialize_reverie_tool(stats: crate::stats::GuestStatsHooks) -> io::Result<()> {
     TOOL_MODE.store(TOOL_REVERIE, Ordering::Release);
-    install_runtime()
+    install_runtime_with_stats(stats)
 }
 
 fn install_runtime() -> io::Result<()> {
+    install_runtime_with_stats(crate::stats::GuestStatsHooks::DISABLED)
+}
+
+fn install_runtime_with_stats(stats: crate::stats::GuestStatsHooks) -> io::Result<()> {
     prepare_instrumentation()?;
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-254): Review launcher-selected RuntimeConfig at the install seam.
     let config = runtime_config_from_env()?;
-    unsafe { reverie_preload::install(Box::new(LiteinstDispatcher), &InProcessSeccomp, &config) }
+    unsafe {
+        reverie_preload::install(
+            Box::new(LiteinstDispatcher::new(stats)),
+            &InProcessSeccomp,
+            &config,
+        )
+    }
 }
 
 struct CompatibilityEventChannel {
@@ -933,13 +943,13 @@ pub(crate) fn reset_fallback_observability() {
             site.hook_count.store(0, Ordering::Relaxed);
         }
     }
-    crate::stats::reset_guest_stats_after_fork();
 }
 
-pub(crate) fn submit_process_stats(tid: reverie::Tid, pid: reverie::Pid) -> io::Result<()> {
-    if !crate::stats::guest_stats_enabled() {
-        return Ok(());
-    }
+pub(crate) fn submit_process_stats(
+    tid: reverie::Tid,
+    stats: crate::stats::GuestStatsHooks,
+) -> io::Result<()> {
+    let mut direct_hooks = 0_u64;
     let sites = SITES
         .get()
         .into_iter()
@@ -947,6 +957,7 @@ pub(crate) fn submit_process_stats(tid: reverie::Tid, pid: reverie::Pid) -> io::
         .filter_map(|site| {
             let trap_hits = site.trap_count.load(Ordering::Relaxed);
             let hook_hits = site.hook_count.load(Ordering::Relaxed);
+            direct_hooks += hook_hits;
             (trap_hits != 0 || hook_hits != 0).then(|| crate::stats::LiteinstProcessSiteStats {
                 rip: site.address.load(Ordering::Relaxed),
                 patched: site.state.load(Ordering::Relaxed) == SITE_ACTIVE,
@@ -955,14 +966,13 @@ pub(crate) fn submit_process_stats(tid: reverie::Tid, pid: reverie::Pid) -> io::
             })
         })
         .collect();
-    crate::stats::submit_guest_stats(tid, pid.as_raw() as u64, sites)
+    stats.submit(tid, direct_hooks, sites)
 }
 
 pub(crate) fn record_fork_child_direct_hook(instruction_pointer: u64) {
     if let Some(site) = find_site(instruction_pointer) {
         site.hook_count.fetch_add(1, Ordering::Relaxed);
     }
-    crate::stats::record_guest_path(crate::stats::IN_GUEST_DIRECT_HOOK);
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1608,7 +1618,6 @@ unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
     if let Some(site) = find_site(context.instruction_pointer) {
         site.hook_count.fetch_add(1, Ordering::Relaxed);
     }
-    crate::stats::record_guest_path(crate::stats::IN_GUEST_DIRECT_HOOK);
     let mut event = SyscallEvent {
         number: context.rax as i64,
         args: [
@@ -1663,12 +1672,47 @@ unsafe fn locate_syscall_site(resume_address: u64) -> Option<u64> {
     None
 }
 
-struct LiteinstDispatcher;
+type RecordFallbackStats = fn(crate::stats::GuestStatsHooks, u64);
+
+struct LiteinstDispatcher {
+    stats: crate::stats::GuestStatsHooks,
+    record_fallback_stats: RecordFallbackStats,
+}
+
+impl LiteinstDispatcher {
+    fn new(stats: crate::stats::GuestStatsHooks) -> Self {
+        Self {
+            stats,
+            record_fallback_stats: if stats.is_enabled() {
+                record_enabled_fallback_stats
+            } else {
+                record_disabled_fallback_stats
+            },
+        }
+    }
+}
+
+fn record_disabled_fallback_stats(_stats: crate::stats::GuestStatsHooks, _address: u64) {}
+
+#[cfg(test)]
+static ENABLED_FALLBACK_CLASSIFICATIONS: AtomicU64 = AtomicU64::new(0);
+
+fn record_enabled_fallback_stats(stats: crate::stats::GuestStatsHooks, address: u64) {
+    #[cfg(test)]
+    ENABLED_FALLBACK_CLASSIFICATIONS.fetch_add(1, Ordering::Relaxed);
+    let straddler =
+        find_site(address).is_some_and(|site| site.straddle_prefix.load(Ordering::Relaxed) != 0);
+    stats.record_path(if straddler {
+        crate::stats::IN_GUEST_STRADDLER_FALLBACK
+    } else {
+        crate::stats::IN_GUEST_OTHER_FALLBACK
+    });
+}
 
 impl SyscallDispatcher for LiteinstDispatcher {
     fn dispatch(&self, event: &mut PreloadSyscallEvent) {
         if unsafe { !CURRENT_EVENT.is_null() } {
-            crate::stats::record_guest_path(crate::stats::IN_GUEST_NESTED_SIGSYS);
+            self.stats.record_path(crate::stats::IN_GUEST_NESTED_SIGSYS);
             let mut nested = SyscallEvent {
                 number: event.number(),
                 args: event.args(),
@@ -1680,7 +1724,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
             event.set_result(nested.result);
             return;
         }
-        crate::stats::record_guest_path(crate::stats::IN_GUEST_SIGSYS);
+        self.stats.record_path(crate::stats::IN_GUEST_SIGSYS);
         let mode = TOOL_MODE.load(Ordering::Relaxed);
         let args = event.args();
         let compatibility_trap_fallback =
@@ -1745,13 +1789,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
         // forwarding decision (still `EOPNOTSUPP`), so the dispatch path is
         // unchanged; this is the by-number analog of e9patch's round-4 counter.
         record_fallback_dispatch(event.number());
-        let straddler = find_site(instruction_pointer)
-            .is_some_and(|site| site.straddle_prefix.load(Ordering::Relaxed) != 0);
-        crate::stats::record_guest_path(if straddler {
-            crate::stats::IN_GUEST_STRADDLER_FALLBACK
-        } else {
-            crate::stats::IN_GUEST_OTHER_FALLBACK
-        });
+        (self.record_fallback_stats)(self.stats, instruction_pointer);
         event.fail(libc::EOPNOTSUPP);
     }
 }
@@ -2197,7 +2235,9 @@ mod tests {
     use reverie_preload::BuiltinTool;
 
     use super::ALT_STACK_ENV;
+    use super::ENABLED_FALLBACK_CLASSIFICATIONS;
     use super::FORK_HOOK;
+    use super::LiteinstDispatcher;
     use super::MAX_PATCH_SITES;
     use super::SITE_ACTIVE;
     use super::SITE_FALLBACK;
@@ -2218,6 +2258,19 @@ mod tests {
     use super::record_fallback_dispatch;
     use super::reset_fallback_observability;
     use super::site_counts;
+
+    #[test]
+    fn disabled_dispatch_does_not_classify_fallback_sites() {
+        let before = ENABLED_FALLBACK_CLASSIFICATIONS.load(Ordering::Relaxed);
+        let dispatcher = LiteinstDispatcher::new(crate::stats::GuestStatsHooks::DISABLED);
+
+        (dispatcher.record_fallback_stats)(dispatcher.stats, 0xdead_beef);
+
+        assert_eq!(
+            ENABLED_FALLBACK_CLASSIFICATIONS.load(Ordering::Relaxed),
+            before
+        );
+    }
 
     #[test]
     fn builtin_tool_selector_maps_shared_values_only() {
