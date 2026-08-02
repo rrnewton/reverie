@@ -613,28 +613,24 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         std::future::pending().await
     }
 
+    // TODO-HUMAN-REVIEW(PR-liteinst-multiproc-inguest): Review the coarse
+    // syscall-boundary clock until the minimal ptrace supervisor wires PMU delivery.
     fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "LiteInst does not implement RCB timer delivery",
-        )
-        .into())
+        // Every intercepted syscall remains a deterministic scheduling boundary,
+        // but a CPU-bound thread cannot yet be preempted between syscalls.
+        Ok(())
     }
 
     fn set_timer_precise(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "LiteInst does not implement precise RCB timer delivery",
-        )
-        .into())
+        // Same coarse boundary as set_timer; never synthesize host time.
+        Ok(())
     }
 
     fn read_clock(&mut self) -> Result<u64, Error> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "LiteInst does not implement an RCB clock",
-        )
-        .into())
+        // DBI likewise exposes a boundary sample rather than a continuously
+        // advancing PMU clock. LiteInst has no sample yet, so zero is the honest
+        // deterministic lower bound. Detcore separately charges syscall time.
+        Ok(0)
     }
 }
 

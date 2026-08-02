@@ -1,17 +1,17 @@
 //! Coordinator RPC adapter for in-guest Reverie tools.
 
 use core::cell::UnsafeCell;
-use core::marker::PhantomData;
 use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
 use std::io;
+use std::os::fd::AsRawFd;
 use std::path::Path;
 
 use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Pid;
-use reverie_preload::rpc::CoordinatorClient;
 use reverie_preload::trap::raw_syscall6;
+use reverie_rpc_transport::BlockingRpcClient;
 
 pub(crate) struct SpinMutex<T> {
     held: AtomicBool,
@@ -64,13 +64,12 @@ impl<T> Drop for SpinGuard<'_, T> {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-127): Review blocking trusted-gate RPC semantics.
-/// Blocking guest-side RPC handle backed by the shared preload wire protocol.
+// TODO-HUMAN-REVIEW(PR-liteinst-multiproc-inguest): Review the common blocking
+// transport used by LiteInst's synchronous in-guest Tool callback.
+/// Blocking guest-side RPC handle backed by the common Reverie RPC transport.
 pub struct CoordinatorRpc<G: GlobalTool> {
-    client: SpinMutex<CoordinatorClient>,
-    config: G::Config,
+    client: BlockingRpcClient<G>,
     fd: libc::c_int,
-    _global: PhantomData<fn() -> G>,
 }
 
 impl<G: GlobalTool> CoordinatorRpc<G> {
@@ -80,37 +79,34 @@ impl<G: GlobalTool> CoordinatorRpc<G> {
 
     /// Connect before installing seccomp and decode the coordinator config.
     pub fn connect(path: impl AsRef<Path>) -> io::Result<Self> {
-        let client = CoordinatorClient::connect(path)?;
-        let config = client.config::<G::Config>()?;
-        let fd = client.raw_fd();
-        Ok(Self {
-            client: SpinMutex::new(client),
-            config,
-            fd,
-            _global: PhantomData,
-        })
+        let tid = current_tid()?;
+        let client = BlockingRpcClient::connect(path, tid)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let fd = client.as_raw_fd();
+        Ok(Self { client, fd })
     }
 }
 
 #[reverie::tool]
 impl<G: GlobalTool> GlobalRPC<G> for CoordinatorRpc<G> {
     async fn send_rpc(&self, message: G::Request) -> G::Response {
-        let tid = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) };
-        if tid <= 0 {
-            rpc_fatal(122);
-        }
-        match self
-            .client
-            .lock()
-            .send_trusted(Pid::from_raw(tid as i32), message)
-        {
+        match self.client.try_send_rpc(message) {
             Ok(response) => response,
             Err(_) => rpc_fatal(123),
         }
     }
 
     fn config(&self) -> &G::Config {
-        &self.config
+        self.client.config()
+    }
+}
+
+fn current_tid() -> io::Result<Pid> {
+    let tid = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) };
+    if tid <= 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(Pid::from_raw(tid as i32))
     }
 }
 
