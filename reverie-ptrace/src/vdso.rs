@@ -33,50 +33,45 @@ mod vdso_syms {
 
     use crate::vdso::BufferAligned;
 
-    const time_code: BufferAligned<11> = BufferAligned::<11>([
+    const time_code: BufferAligned<8> = BufferAligned::<8>([
         0xb8, 0xc9, 0x00, 0x00, 0x00, // mov %SYS_time, %eax
         0x0f, 0x05, // syscall
-        0x90, 0x90, 0x90, // patchable post-syscall window
         0xc3, // retq
     ]);
 
-    pub const time: &[u8; 11] = &time_code.0;
+    pub const time: &[u8; 8] = &time_code.0;
 
-    const clock_gettime_code: BufferAligned<11> = BufferAligned::<11>([
+    const clock_gettime_code: BufferAligned<8> = BufferAligned::<8>([
         0xb8, 0xe4, 0x00, 0x00, 0x00, // mov SYS_clock_gettime, %eax
         0x0f, 0x05, // syscall
-        0x90, 0x90, 0x90, // patchable post-syscall window
         0xc3, // retq
     ]);
 
-    pub const clock_gettime: &[u8; 11] = &clock_gettime_code.0;
+    pub const clock_gettime: &[u8; 8] = &clock_gettime_code.0;
 
-    const getcpu_code: BufferAligned<11> = BufferAligned::<11>([
+    const getcpu_code: BufferAligned<8> = BufferAligned::<8>([
         0xb8, 0x35, 0x01, 0x00, 0x00, // mov SYS_getcpu, %eax
         0x0f, 0x05, // syscall
-        0x90, 0x90, 0x90, // patchable post-syscall window
         0xc3, // retq
     ]);
 
-    pub const getcpu: &[u8; 11] = &getcpu_code.0;
+    pub const getcpu: &[u8; 8] = &getcpu_code.0;
 
-    const gettimeofday_code: BufferAligned<11> = BufferAligned::<11>([
+    const gettimeofday_code: BufferAligned<8> = BufferAligned::<8>([
         0xb8, 0x60, 0x00, 0x00, 0x00, // mov SYS_gettimeofday, %eax
         0x0f, 0x05, // syscall
-        0x90, 0x90, 0x90, // patchable post-syscall window
         0xc3, // retq
     ]);
 
-    pub const gettimeofday: &[u8; 11] = &gettimeofday_code.0;
+    pub const gettimeofday: &[u8; 8] = &gettimeofday_code.0;
 
-    const clock_getres_code: BufferAligned<11> = BufferAligned::<11>([
+    const clock_getres_code: BufferAligned<8> = BufferAligned::<8>([
         0xb8, 0xe5, 0x00, 0x00, 0x00, // mov SYS_clock_getres, %eax
         0x0f, 0x05, // syscall
-        0x90, 0x90, 0x90, // patchable post-syscall window
         0xc3, // retq
     ]);
 
-    pub const clock_getres: &[u8; 11] = &clock_getres_code.0;
+    pub const clock_getres: &[u8; 8] = &clock_getres_code.0;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -343,14 +338,5 @@ mod tests {
         let info = &VDSO_PATCH_INFO;
         info.iter().for_each(|i| println!("info: {:x?}", i));
         assert!(!info.is_empty());
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    #[test]
-    fn returning_vdso_stubs_leave_a_patchable_syscall_window() {
-        for (name, bytes) in VDSO_SYMBOLS {
-            assert_eq!(&bytes[5..10], [0x0f, 0x05, 0x90, 0x90, 0x90], "{name}");
-            assert_eq!(bytes[10], 0xc3, "{name}");
-        }
     }
 }
