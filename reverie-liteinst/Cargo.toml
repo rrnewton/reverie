@@ -22,6 +22,10 @@ path = "src/bin/strace.rs"
 name = "reverie-liteinst-fork-guest"
 path = "src/bin/fork_guest.rs"
 
+[[bin]]
+name = "reverie-liteinst-lifecycle-guest"
+path = "src/bin/lifecycle_guest.rs"
+
 [dependencies]
 libc = "0.2.186"
 liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "95ee5e6917fa33191eb41c3f1606ea8b03c1b78c" }
@@ -55,3 +59,7 @@ path = "src/bin/spoof_guest.rs"
 [[test]]
 name = "rpc_tool"
 path = "tests/rpc_tool.rs"
+
+[[test]]
+name = "lifecycle"
+path = "tests/lifecycle.rs"

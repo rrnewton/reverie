@@ -583,23 +583,21 @@ where
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
 
-    let mut child_command = command.into_std_lossy();
-    let configured_preload = child_command
-        .get_envs()
-        .find(|(key, _)| *key == OsStr::new("LD_PRELOAD"))
-        .map(|(_, value)| value.map(ToOwned::to_owned));
+    let configured_preload = command.get_env("LD_PRELOAD").map(Into::into);
     let mut ld_preload = preload.into_os_string();
     let inherited_preload = match configured_preload {
-        Some(value) => value,
+        Some(value) => Some(value),
         None => std::env::var_os("LD_PRELOAD"),
     };
     if let Some(existing) = inherited_preload.filter(|value| !value.is_empty()) {
         ld_preload.push(OsStr::new(":"));
         ld_preload.push(existing);
     }
-    child_command.env("LD_PRELOAD", ld_preload);
-    let bootstrap = match tool_data {
+    command.env("LD_PRELOAD", ld_preload);
+
+    let wait = match tool_data {
         Some(tool_data) => {
+            let mut child_command = command.into_std_lossy();
             let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
             let bootstrap_fd = bootstrap.as_raw_fd();
             unsafe {
@@ -610,27 +608,46 @@ where
                     Ok(())
                 });
             }
-            Some(bootstrap)
+            let mut child = child_command.spawn()?;
+            drop(bootstrap);
+            let wait = tokio::task::spawn_blocking(move || {
+                if capture_output {
+                    child.wait_with_output().map(ChildWait::Output)
+                } else {
+                    child.wait().map(ChildWait::Status)
+                }
+            });
+            serve_rpc_until(server, async move {
+                wait.await
+                    .map_err(|error| io::Error::other(error.to_string()))?
+            })
+            .await?
         }
         None => {
-            child_command.env(COORDINATOR_ENV, &socket);
-            None
+            command.env(COORDINATOR_ENV, &socket);
+            let tracer = TracerBuilder::<()>::new(command).spawn().await?;
+            serve_rpc_until(server, async move {
+                if capture_output {
+                    let (output, ()) = tracer
+                        .wait_with_output()
+                        .await
+                        .map_err(|error| io::Error::other(error.to_string()))?;
+                    Ok(ChildWait::Output(Output {
+                        status: output.status.into(),
+                        stdout: output.stdout,
+                        stderr: output.stderr,
+                    }))
+                } else {
+                    let (status, ()) = tracer
+                        .wait()
+                        .await
+                        .map_err(|error| io::Error::other(error.to_string()))?;
+                    Ok(ChildWait::Status(status.into()))
+                }
+            })
+            .await?
         }
     };
-    let mut child = child_command.spawn()?;
-    drop(bootstrap);
-    let wait = tokio::task::spawn_blocking(move || {
-        if capture_output {
-            child.wait_with_output().map(ChildWait::Output)
-        } else {
-            child.wait().map(ChildWait::Status)
-        }
-    });
-    let wait = serve_rpc_until(server, async move {
-        wait.await
-            .map_err(|error| io::Error::other(error.to_string()))?
-    })
-    .await?;
     if !connected.load(Ordering::Acquire) {
         return Err(io::Error::new(
             io::ErrorKind::ConnectionAborted,
