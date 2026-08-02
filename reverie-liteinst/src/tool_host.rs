@@ -41,6 +41,7 @@ const STACK_CAPACITY: usize = 4096;
 const TAIL_NONE: u8 = 0;
 const TAIL_RESULT: u8 = 1;
 const TAIL_EXIT: u8 = 2;
+const TAIL_FORK_CHILD: u8 = 3;
 
 static COMMITTED_STACKS: SpinMutex<Vec<Box<[u8]>>> = SpinMutex::new(Vec::new());
 
@@ -256,6 +257,43 @@ where
                 );
                 event.result = unsafe { raw_syscall6(number, args) };
             }
+            SyscallOutcome::ForkChild {
+                parent_tid,
+                parent_pid,
+                child_tid,
+                child_pid,
+            } => {
+                drop(guest);
+                let parent_state = states
+                    .remove(&parent_tid.as_raw())
+                    .unwrap_or_else(|| fatal(126));
+                let child_tool = T::new(child_pid, self.rpc.config());
+                let child_state =
+                    child_tool.init_thread_state(child_tid, Some((parent_tid, &parent_state)));
+                states.clear();
+                states.insert(child_tid.as_raw(), child_state);
+                *tool_slot = Some(child_tool);
+                runtime::reset_fallback_observability();
+
+                let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
+                let state = states
+                    .get_mut(&child_tid.as_raw())
+                    .unwrap_or_else(|| fatal(126));
+                let child_tail = TailResult::default();
+                let mut child_guest = LiteinstGuest::<T> {
+                    event,
+                    tid: child_tid,
+                    pid: child_pid,
+                    ppid: Some(parent_pid),
+                    state,
+                    rpc: &self.rpc,
+                    tail: &child_tail,
+                };
+                if let Err(error) = drive_ready(tool.handle_thread_start(&mut child_guest)) {
+                    tool_fatal(124, &error);
+                }
+                child_guest.event.result = 0;
+            }
         }
     }
 }
@@ -323,12 +361,30 @@ where
 
 enum SyscallOutcome {
     Return(Result<i64, Error>),
-    Exit { number: i64, args: [u64; 6] },
+    Exit {
+        number: i64,
+        args: [u64; 6],
+    },
+    ForkChild {
+        parent_tid: Pid,
+        parent_pid: Pid,
+        child_tid: Pid,
+        child_pid: Pid,
+    },
 }
 
 enum TailAction {
     Result(i64),
-    Exit { number: i64, args: [u64; 6] },
+    Exit {
+        number: i64,
+        args: [u64; 6],
+    },
+    ForkChild {
+        parent_tid: Pid,
+        parent_pid: Pid,
+        child_tid: Pid,
+        child_pid: Pid,
+    },
 }
 
 fn drive_syscall<F>(future: F, tail: &TailResult) -> SyscallOutcome
@@ -347,6 +403,19 @@ where
                 }
                 Some(TailAction::Exit { number, args }) => {
                     return SyscallOutcome::Exit { number, args };
+                }
+                Some(TailAction::ForkChild {
+                    parent_tid,
+                    parent_pid,
+                    child_tid,
+                    child_pid,
+                }) => {
+                    return SyscallOutcome::ForkChild {
+                        parent_tid,
+                        parent_pid,
+                        child_tid,
+                        child_pid,
+                    };
                 }
                 None => core::hint::spin_loop(),
             },
@@ -376,12 +445,28 @@ impl TailResult {
         self.action.store(TAIL_EXIT, Ordering::Release);
     }
 
+    fn set_fork_child(&self, parent_tid: Pid, parent_pid: Pid, child_tid: Pid, child_pid: Pid) {
+        self.number
+            .store(i64::from(parent_tid.as_raw()), Ordering::Relaxed);
+        self.value
+            .store(i64::from(parent_pid.as_raw()), Ordering::Relaxed);
+        self.args[0].store(child_tid.as_raw() as u64, Ordering::Relaxed);
+        self.args[1].store(child_pid.as_raw() as u64, Ordering::Relaxed);
+        self.action.store(TAIL_FORK_CHILD, Ordering::Release);
+    }
+
     fn take(&self) -> Option<TailAction> {
         match self.action.swap(TAIL_NONE, Ordering::AcqRel) {
             TAIL_RESULT => Some(TailAction::Result(self.value.load(Ordering::Relaxed))),
             TAIL_EXIT => Some(TailAction::Exit {
                 number: self.number.load(Ordering::Relaxed),
                 args: std::array::from_fn(|index| self.args[index].load(Ordering::Relaxed)),
+            }),
+            TAIL_FORK_CHILD => Some(TailAction::ForkChild {
+                parent_tid: Pid::from_raw(self.number.load(Ordering::Relaxed) as i32),
+                parent_pid: Pid::from_raw(self.value.load(Ordering::Relaxed) as i32),
+                child_tid: Pid::from_raw(self.args[0].load(Ordering::Relaxed) as i32),
+                child_pid: Pid::from_raw(self.args[1].load(Ordering::Relaxed) as i32),
             }),
             _ => None,
         }
@@ -412,14 +497,28 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for LiteinstGuest<'_, T> {
     }
 }
 
+// TODO-HUMAN-REVIEW(PR-liteinst-multiproc-inguest): Review the plain-fork injection boundary.
+fn is_plain_fork(number: i64, args: [u64; 6]) -> bool {
+    if number == libc::SYS_fork {
+        return true;
+    }
+    if number != libc::SYS_clone {
+        return false;
+    }
+    const SIGNAL_MASK: u64 = 0xff;
+    let allowed_flags =
+        (libc::CLONE_CHILD_CLEARTID | libc::CLONE_CHILD_SETTID | libc::CLONE_PARENT_SETTID) as u64;
+    args[1] == 0
+        && args[0] & SIGNAL_MASK == libc::SIGCHLD as u64
+        && args[0] & !(SIGNAL_MASK | allowed_flags) == 0
+}
+
 // TODO-HUMAN-REVIEW(PR-127): Review injected process/signal safety policy.
 fn injected_syscall_guard(number: i64, args: [u64; 6]) -> Option<Errno> {
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED
-        matches!(
-            number,
-            libc::SYS_clone | libc::SYS_clone3 | libc::SYS_fork | libc::SYS_vfork
-        )
+        matches!(number, libc::SYS_clone3 | libc::SYS_vfork)
+            || (number == libc::SYS_clone && !is_plain_fork(number, args))
         // AUTONOMOUS-BOT-IMPLEMENTED
         || matches!(number, libc::SYS_execve | libc::SYS_execveat);
     let protected_signal =
@@ -541,12 +640,32 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
     async fn inject<S: SyscallInfo>(&mut self, syscall: S) -> Result<i64, Errno> {
         let (number, args) = syscall.into_parts();
         let number = number.id() as i64;
+        let mut raw_args = [
+            args.arg0 as u64,
+            args.arg1 as u64,
+            args.arg2 as u64,
+            args.arg3 as u64,
+            args.arg4 as u64,
+            args.arg5 as u64,
+        ];
+
+        if is_plain_fork(number, raw_args) {
+            let parent_tid = self.tid;
+            let parent_pid = self.pid;
+            let result = unsafe { raw_syscall6(number, raw_args) };
+            if result == 0 {
+                let child_tid = raw_pid(libc::SYS_gettid);
+                let child_pid = raw_pid(libc::SYS_getpid);
+                self.tail
+                    .set_fork_child(parent_tid, parent_pid, child_tid, child_pid);
+                return std::future::pending().await;
+            }
+            return Errno::from_ret(result as usize).map(|value| value as i64);
+        }
+
         // AUTONOMOUS-BOT-IMPLEMENTED
-        if matches!(
-            number,
-            libc::SYS_clone | libc::SYS_clone3 | libc::SYS_fork | libc::SYS_vfork
-        ) {
-            const MESSAGE: &[u8] = b"reverie-liteinst: clone/fork injection is unsupported\n";
+        if matches!(number, libc::SYS_clone | libc::SYS_clone3 | libc::SYS_vfork) {
+            const MESSAGE: &[u8] = b"reverie-liteinst: clone injection requires ptrace fallback\n";
             unsafe {
                 let _ = raw_syscall6(
                     libc::SYS_write,
@@ -562,15 +681,6 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             }
             return Err(Errno::EOPNOTSUPP);
         }
-
-        let mut raw_args = [
-            args.arg0 as u64,
-            args.arg1 as u64,
-            args.arg2 as u64,
-            args.arg3 as u64,
-            args.arg4 as u64,
-            args.arg5 as u64,
-        ];
         if let Some(error) = injected_syscall_guard(number, raw_args) {
             return Err(error);
         }

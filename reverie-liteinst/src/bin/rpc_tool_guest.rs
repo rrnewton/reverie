@@ -439,6 +439,29 @@ fn injected_exit_guest(path: &Path) -> ! {
     panic!("injected exit returned");
 }
 
+fn fork_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let child = unsafe { libc::fork() };
+    assert!(
+        child >= 0,
+        "fork failed: {}",
+        std::io::Error::last_os_error()
+    );
+    if child == 0 {
+        let observed = unsafe { reverie_liteinst_rpc_getpid() };
+        assert_eq!(observed, i64::from(unsafe { libc::getpid() }));
+        unsafe { libc::_exit(0) };
+    }
+
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 0);
+    let observed = unsafe { reverie_liteinst_rpc_getpid() };
+    assert_eq!(observed, i64::from(unsafe { libc::getpid() }));
+    println!("fork-rpc-total={}", LAST_TOTAL.load(Ordering::Relaxed));
+}
+
 fn main() {
     let mut args = std::env::args_os();
     let _program = args.next();
@@ -453,6 +476,7 @@ fn main() {
         Some("spoof-sigsys") => spoof_sigsys_guest(Path::new(&path)),
         Some("unsubscribed-lifecycle") => unsubscribed_lifecycle_guest(Path::new(&path)),
         Some("injected-exit") => injected_exit_guest(Path::new(&path)),
+        Some("fork-guest") => fork_guest(Path::new(&path)),
         _ => panic!("expected coordinator or guest"),
     }
 }

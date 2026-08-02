@@ -93,6 +93,21 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         b"injected-thread=Exited(52)\ninjected-process=Exited(52)\n"
     );
 
+    let fork_guest = Command::new(binary)
+        .arg("fork-guest")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert!(fork_guest.status.success(), "{fork_guest:?}");
+    let fork_stdout = String::from_utf8(fork_guest.stdout).unwrap();
+    let fork_total: u64 = fork_stdout
+        .trim()
+        .strip_prefix("fork-rpc-total=")
+        .expect("fork guest must print the shared RPC total")
+        .parse()
+        .unwrap();
+    assert!(fork_total >= 5, "{fork_stdout}");
+
     let guest = Command::new(binary)
         .arg("guest")
         .arg(&socket)
