@@ -354,10 +354,12 @@ pub struct KvmBackend {
     pub(crate) root_pid: i32,
     // Whether the caller asked this backend to collect end-of-run statistics.
     // Disabled by default so an unmeasured run never touches `exit_collector`.
-    stats_request: BackendStatsRequest,
+    // `pub(crate)` so the `runtime` module's `impl KvmBackend` run loops can pass
+    // it to `record_exit` alongside the disjoint `exit_collector` borrow.
+    pub(crate) stats_request: BackendStatsRequest,
     // Per-backend KVM vCPU-exit-reason counters. Only advanced while
     // `stats_request` is enabled; see `record_exit`.
-    exit_collector: KvmExitCollector,
+    pub(crate) exit_collector: KvmExitCollector,
 }
 
 struct KvmProcessSnapshot {
@@ -492,7 +494,10 @@ impl KvmBackend {
     /// about to dispatch and never alters control flow or guest state, so it
     /// cannot perturb deterministic execution. Transient `EINTR` retries are not
     /// exits and are not passed here.
-    fn record_exit(
+    ///
+    /// `pub(crate)` so the `runtime` module's `impl KvmBackend` run loops (the
+    /// Detcore production loop) share the exact same accounting path.
+    pub(crate) fn record_exit(
         request: BackendStatsRequest,
         collector: &mut KvmExitCollector,
         exit: &VcpuExit<'_>,
