@@ -433,7 +433,7 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
         }
     }
 
-    install_runtime()
+    install_runtime(PatchPublication::Concurrent)
 }
 
 fn host_handshake_frame() -> HostHandshakeFrame {
@@ -468,17 +468,23 @@ fn initialize_host_runtime() -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn initialize_reverie_tool() -> io::Result<()> {
+pub(crate) fn initialize_reverie_tool(publication: PatchPublication) -> io::Result<()> {
     TOOL_MODE.store(TOOL_REVERIE, Ordering::Release);
-    install_runtime()
+    install_runtime(publication)
 }
 
-fn install_runtime() -> io::Result<()> {
+fn install_runtime(publication: PatchPublication) -> io::Result<()> {
     prepare_instrumentation()?;
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-254): Review launcher-selected RuntimeConfig at the install seam.
     let config = runtime_config_from_env()?;
-    unsafe { reverie_preload::install(Box::new(LiteinstDispatcher), &InProcessSeccomp, &config) }
+    unsafe {
+        reverie_preload::install(
+            Box::new(LiteinstDispatcher { publication }),
+            &InProcessSeccomp,
+            &config,
+        )
+    }
 }
 
 struct CompatibilityEventChannel {
@@ -992,7 +998,7 @@ unsafe fn set_text_protection(address: u64, protection: i32) -> io::Result<()> {
 struct InstallGuard;
 
 #[derive(Clone, Copy)]
-enum PatchPublication {
+pub(crate) enum PatchPublication {
     /// The stopped-tracee helper is the only thread able to reach live code.
     Quiescent,
     /// Other application threads may fetch the site during publication.
@@ -1632,7 +1638,9 @@ unsafe fn locate_syscall_site(resume_address: u64) -> Option<u64> {
     None
 }
 
-struct LiteinstDispatcher;
+struct LiteinstDispatcher {
+    publication: PatchPublication,
+}
 
 impl SyscallDispatcher for LiteinstDispatcher {
     fn dispatch(&self, event: &mut PreloadSyscallEvent) {
@@ -1683,7 +1691,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
                         instruction_pointer,
                         site,
                         installed_syscall_hook,
-                        PatchPublication::Concurrent,
+                        self.publication,
                     )
                 }
                 .is_err()

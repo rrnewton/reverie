@@ -84,7 +84,37 @@ pub unsafe fn install_tool<T>(coordinator: impl AsRef<Path>) -> io::Result<()>
 where
     T: Tool + 'static,
 {
-    unsafe { install_tool_inner::<T>(coordinator.as_ref(), true) }
+    unsafe {
+        install_tool_inner::<T>(
+            coordinator.as_ref(),
+            true,
+            runtime::PatchPublication::Concurrent,
+        )
+    }
+}
+
+/// Install a concrete Reverie tool with quiescent patch publication.
+///
+/// This has the same process-global effects as [`install_tool`], but skips the
+/// concurrent instruction-tearing and straddler protocol when publishing a new
+/// site. The caller must keep every other application thread from fetching
+/// guest text for the full lifetime of the installed tool.
+///
+/// # Safety
+///
+/// In addition to [`install_tool`]'s requirements, the caller asserts that no
+/// other application thread can execute while a syscall site is installed.
+pub unsafe fn install_tool_quiescent<T>(coordinator: impl AsRef<Path>) -> io::Result<()>
+where
+    T: Tool + 'static,
+{
+    unsafe {
+        install_tool_inner::<T>(
+            coordinator.as_ref(),
+            true,
+            runtime::PatchPublication::Quiescent,
+        )
+    }
 }
 
 // TODO-HUMAN-REVIEW(PR-139): Review the environment-preserving bootstrap install API.
@@ -100,12 +130,19 @@ pub unsafe fn install_tool_from_bootstrap<T>(coordinator: impl AsRef<Path>) -> i
 where
     T: Tool + 'static,
 {
-    unsafe { install_tool_inner::<T>(coordinator.as_ref(), false) }
+    unsafe {
+        install_tool_inner::<T>(
+            coordinator.as_ref(),
+            false,
+            runtime::PatchPublication::Concurrent,
+        )
+    }
 }
 
 unsafe fn install_tool_inner<T>(
     coordinator: &Path,
     remove_legacy_environment: bool,
+    publication: runtime::PatchPublication,
 ) -> io::Result<()>
 where
     T: Tool + 'static,
@@ -132,7 +169,7 @@ where
         .map_err(|_| {
             io::Error::new(io::ErrorKind::AlreadyExists, "Reverie tool installed twice")
         })?;
-    runtime::initialize_reverie_tool()
+    runtime::initialize_reverie_tool(publication)
 }
 
 pub(crate) fn dispatch(event: &mut SyscallEvent) {

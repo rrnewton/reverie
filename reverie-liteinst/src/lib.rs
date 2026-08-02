@@ -47,6 +47,7 @@ pub use straddler::STRADDLER_STALENESS_TICKS_ENV;
 pub use straddler::straddler_staleness_from_env_value;
 pub use tool_host::install_tool;
 pub use tool_host::install_tool_from_bootstrap;
+pub use tool_host::install_tool_quiescent;
 
 #[global_allocator]
 static PATCH_ALLOCATOR: patch_alloc::PatchAllocator = patch_alloc::PatchAllocator;
