@@ -65,12 +65,18 @@ pub enum LiteinstDispatchPath {
 /// Stable LiteInst statistics captured after one backend run.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LiteinstBackendStatsSnapshot {
+    process_reports: u64,
     patch_shapes: PatchShapeStats,
     patch_decisions: CounterSnapshot<LiteinstPatchDecision>,
     dispatch_paths: CounterSnapshot<LiteinstDispatchPath>,
 }
 
 impl LiteinstBackendStatsSnapshot {
+    /// Number of process-local reports aggregated by the in-guest runtime.
+    pub const fn process_reports(&self) -> u64 {
+        self.process_reports
+    }
+
     /// Aggregate shape distribution over distinct patch-site identities.
     ///
     /// Collection deduplicates by process, exec generation, and virtual RIP.
@@ -102,7 +108,8 @@ impl fmt::Display for LiteinstBackendStatsSnapshot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "LiteInst instrumentation stats: distinct_rips_patched={} patch_candidates={} decisions[direct_pun={},relocated={},straddler_fallback={},other_fallback={}] paths[first_site_seccomp={},ptrace_installation={},in_guest_sigsys={},in_guest_nested_sigsys={},cacheline_straddler={},unpatchable_or_other={},direct_hook={}] classified_candidates={} cacheline_straddlers={} non_straddling={} instruction_lengths[",
+            "LiteInst instrumentation stats: process_reports={} distinct_rips_patched={} patch_candidates={} decisions[direct_pun={},relocated={},straddler_fallback={},other_fallback={}] paths[first_site_seccomp={},ptrace_installation={},in_guest_sigsys={},in_guest_nested_sigsys={},cacheline_straddler={},unpatchable_or_other={},direct_hook={}] classified_candidates={} cacheline_straddlers={} non_straddling={} instruction_lengths[",
+            self.process_reports,
             self.patch_shapes.patched_rips(),
             self.patch_shapes.candidate_rips(),
             self.decision_count(LiteinstPatchDecision::DirectPun),
@@ -145,6 +152,7 @@ impl LiteinstBackendStatsSource {
         let paths = stats.dispatch_path_counts();
         Self {
             snapshot: LiteinstBackendStatsSnapshot {
+                process_reports: 0,
                 patch_shapes: stats.patch_shape_stats(),
                 patch_decisions: CounterSnapshot::new([
                     (LiteinstPatchDecision::DirectPun, decisions[0]),
@@ -360,11 +368,13 @@ impl LiteinstStatsGlobal {
     pub(crate) fn into_source(self) -> LiteinstBackendStatsSource {
         let processes = self.processes.into_inner().unwrap();
         let mut shapes = PatchShapeCollector::default();
+        let mut reported_processes = BTreeSet::new();
         let mut seen_sites = BTreeSet::new();
         let mut decisions = [0_u64; 4];
         let mut paths = [0_u64; 7];
 
         for process in processes {
+            reported_processes.insert((process.process_identity, process.execution_generation));
             paths[2] += process.paths[IN_GUEST_SIGSYS];
             paths[3] += process.paths[IN_GUEST_NESTED_SIGSYS];
             paths[4] += process.paths[IN_GUEST_STRADDLER_FALLBACK];
@@ -403,6 +413,7 @@ impl LiteinstStatsGlobal {
 
         LiteinstBackendStatsSource {
             snapshot: LiteinstBackendStatsSnapshot {
+                process_reports: reported_processes.len() as u64,
                 patch_shapes: shapes.snapshot(),
                 patch_decisions: CounterSnapshot::new([
                     (LiteinstPatchDecision::DirectPun, decisions[0]),
@@ -473,6 +484,7 @@ mod tests {
         );
         let source = LiteinstBackendStatsSource {
             snapshot: LiteinstBackendStatsSnapshot {
+                process_reports: 0,
                 patch_shapes: shapes.snapshot(),
                 patch_decisions: CounterSnapshot::new([(LiteinstPatchDecision::Relocated, 1)]),
                 dispatch_paths: CounterSnapshot::new([
@@ -517,6 +529,7 @@ mod tests {
 
         let source = global.into_source();
         assert_eq!(source.patch_candidates(), 2);
+        assert_eq!(source.snapshot().process_reports(), 2);
         assert_eq!(source.distinct_rips(), 2);
         assert_eq!(source.decision_counts(), [0, 2, 0, 0]);
         assert_eq!(source.dispatch_path_counts(), [0, 0, 2, 4, 6, 8, 18]);
