@@ -1,4 +1,5 @@
 use core::arch::global_asm;
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::AtomicI64;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
@@ -30,6 +31,7 @@ static LAST_NESTED_UID: AtomicI64 = AtomicI64::new(-1);
 static LAST_MASK_RESULT: AtomicI64 = AtomicI64::new(0);
 static LAST_FIRST_USE_EXEC_RESULT: AtomicI64 = AtomicI64::new(0);
 static LAST_FIRST_USE_SIGNAL_RESULT: AtomicI64 = AtomicI64::new(0);
+static CHILD_RECONSTRUCTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Default)]
 struct CounterGlobal {
@@ -164,6 +166,54 @@ impl Tool for InjectExitTool {
     ) -> Result<(), Error> {
         eprintln!("injected-process={status:?}");
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct UnsubscribedForkTool;
+
+#[reverie::tool]
+impl Tool for UnsubscribedForkTool {
+    type GlobalState = CounterGlobal;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &()) -> Subscription {
+        Subscription::none()
+    }
+
+    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+        if guest.ppid().is_some() {
+            CHILD_RECONSTRUCTED.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct TailForkTool;
+
+#[reverie::tool]
+impl Tool for TailForkTool {
+    type GlobalState = CounterGlobal;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &()) -> Subscription {
+        [Sysno::clone, Sysno::fork].into_iter().collect()
+    }
+
+    async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+        if guest.ppid().is_some() {
+            CHILD_RECONSTRUCTED.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        guest.tail_inject(syscall).await
     }
 }
 
@@ -477,6 +527,35 @@ fn fork_guest(path: &Path) {
     );
 }
 
+fn check_reconstructed_fork(label: &str) {
+    CHILD_RECONSTRUCTED.store(false, Ordering::Release);
+    let child = unsafe { libc::fork() };
+    assert!(
+        child >= 0,
+        "fork failed: {}",
+        std::io::Error::last_os_error()
+    );
+    if child == 0 {
+        assert!(CHILD_RECONSTRUCTED.load(Ordering::Acquire));
+        unsafe { libc::_exit(0) };
+    }
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 0);
+    println!("{label}-fork-reconstructed");
+}
+
+fn unsubscribed_fork_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<UnsubscribedForkTool>(path) }.unwrap();
+    check_reconstructed_fork("unsubscribed");
+}
+
+fn tail_fork_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<TailForkTool>(path) }.unwrap();
+    check_reconstructed_fork("tail");
+}
+
 fn main() {
     let mut args = std::env::args_os();
     let _program = args.next();
@@ -492,6 +571,8 @@ fn main() {
         Some("unsubscribed-lifecycle") => unsubscribed_lifecycle_guest(Path::new(&path)),
         Some("injected-exit") => injected_exit_guest(Path::new(&path)),
         Some("fork-guest") => fork_guest(Path::new(&path)),
+        Some("unsubscribed-fork") => unsubscribed_fork_guest(Path::new(&path)),
+        Some("tail-fork") => tail_fork_guest(Path::new(&path)),
         _ => panic!("expected coordinator or guest"),
     }
 }

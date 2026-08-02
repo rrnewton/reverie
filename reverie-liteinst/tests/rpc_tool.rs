@@ -117,6 +117,22 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     assert!(fork_total >= 5, "{fork_stdout}");
     assert_eq!(sender_delta, 1, "{fork_stdout}");
 
+    for (mode, expected) in [
+        (
+            "unsubscribed-fork",
+            b"unsubscribed-fork-reconstructed\n".as_slice(),
+        ),
+        ("tail-fork", b"tail-fork-reconstructed\n".as_slice()),
+    ] {
+        let output = Command::new(binary)
+            .arg(mode)
+            .arg(&socket)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{mode}: {output:?}");
+        assert_eq!(output.stdout, expected, "{mode}: {output:?}");
+    }
+
     let guest = Command::new(binary)
         .arg("guest")
         .arg(&socket)

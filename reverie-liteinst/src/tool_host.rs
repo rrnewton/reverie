@@ -216,7 +216,26 @@ where
         if !self.subscriptions.contains(&number) {
             let number = guest.event.number;
             let args = guest.event.args;
-            if is_exit_syscall(number) {
+            if is_plain_fork(number, args) {
+                let result = unsafe { raw_syscall6(number, args) };
+                if result == 0 {
+                    finish_fork_child(
+                        &mut tool_slot,
+                        &mut states,
+                        &self.rpc,
+                        event,
+                        ForkChildContext {
+                            parent_tid: tid,
+                            parent_pid: pid,
+                            child_tid: raw_pid(libc::SYS_gettid),
+                            child_pid: raw_pid(libc::SYS_getpid),
+                        },
+                    );
+                } else {
+                    event.result = result;
+                }
+                return;
+            } else if is_exit_syscall(number) {
                 finish_tool_exit(
                     &mut tool_slot,
                     &mut states,
@@ -267,38 +286,71 @@ where
                 child_tid,
                 child_pid,
             } => {
-                let parent_state = states
-                    .remove(&parent_tid.as_raw())
-                    .unwrap_or_else(|| fatal(126));
-                let child_tool = T::new(child_pid, self.rpc.config());
-                let child_state =
-                    child_tool.init_thread_state(child_tid, Some((parent_tid, &parent_state)));
-                states.clear();
-                states.insert(child_tid.as_raw(), child_state);
-                *tool_slot = Some(child_tool);
-                runtime::reset_fallback_observability();
-
-                let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
-                let state = states
-                    .get_mut(&child_tid.as_raw())
-                    .unwrap_or_else(|| fatal(126));
-                let child_tail = TailResult::default();
-                let mut child_guest = LiteinstGuest::<T> {
+                finish_fork_child(
+                    &mut tool_slot,
+                    &mut states,
+                    &self.rpc,
                     event,
-                    tid: child_tid,
-                    pid: child_pid,
-                    ppid: Some(parent_pid),
-                    state,
-                    rpc: &self.rpc,
-                    tail: &child_tail,
-                };
-                if let Err(error) = drive_ready(tool.handle_thread_start(&mut child_guest)) {
-                    tool_fatal(124, &error);
-                }
-                child_guest.event.result = 0;
+                    ForkChildContext {
+                        parent_tid,
+                        parent_pid,
+                        child_tid,
+                        child_pid,
+                    },
+                );
             }
         }
     }
+}
+
+fn finish_fork_child<T: Tool>(
+    tool_slot: &mut Option<T>,
+    states: &mut HashMap<i32, T::ThreadState>,
+    rpc: &CoordinatorRpc<T::GlobalState>,
+    event: &mut SyscallEvent,
+    context: ForkChildContext,
+) {
+    let ForkChildContext {
+        parent_tid,
+        parent_pid,
+        child_tid,
+        child_pid,
+    } = context;
+    let parent_state = states
+        .remove(&parent_tid.as_raw())
+        .unwrap_or_else(|| fatal(126));
+    let child_tool = T::new(child_pid, rpc.config());
+    let child_state = child_tool.init_thread_state(child_tid, Some((parent_tid, &parent_state)));
+    states.clear();
+    states.insert(child_tid.as_raw(), child_state);
+    *tool_slot = Some(child_tool);
+    runtime::reset_fallback_observability();
+
+    let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
+    let state = states
+        .get_mut(&child_tid.as_raw())
+        .unwrap_or_else(|| fatal(126));
+    let child_tail = TailResult::default();
+    let mut child_guest = LiteinstGuest::<T> {
+        event,
+        tid: child_tid,
+        pid: child_pid,
+        ppid: Some(parent_pid),
+        state,
+        rpc,
+        tail: &child_tail,
+    };
+    if let Err(error) = drive_ready(tool.handle_thread_start(&mut child_guest)) {
+        tool_fatal(124, &error);
+    }
+    child_guest.event.result = 0;
+}
+
+struct ForkChildContext {
+    parent_tid: Pid,
+    parent_pid: Pid,
+    child_tid: Pid,
+    child_pid: Pid,
 }
 
 // TODO-HUMAN-REVIEW(PR-143): Review single-process Tool exit lifecycle.
@@ -715,7 +767,21 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
             syscall_args.arg5 as u64,
         ];
         let number = number.id() as i64;
-        if let Some(error) = injected_syscall_guard(number, args) {
+        if is_plain_fork(number, args) {
+            let parent_tid = self.tid;
+            let parent_pid = self.pid;
+            let result = unsafe { raw_syscall6(number, args) };
+            if result == 0 {
+                self.tail.set_fork_child(
+                    parent_tid,
+                    parent_pid,
+                    raw_pid(libc::SYS_gettid),
+                    raw_pid(libc::SYS_getpid),
+                );
+            } else {
+                self.tail.set_result(result);
+            }
+        } else if let Some(error) = injected_syscall_guard(number, args) {
             self.tail.set_result(-i64::from(error.into_raw()));
         } else if is_exit_syscall(number) {
             self.tail.set_exit(number, args);
