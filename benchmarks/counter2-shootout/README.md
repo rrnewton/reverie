@@ -98,6 +98,38 @@ Ordinary run artifacts are intentionally untracked under
 Only explicitly reviewed publication runs, such as the initial result above,
 are copied into `results/`.
 
+## Hermit execution tiers
+
+`run-tiered.py` applies the same workload, matching native binary, randomized
+sampling, and correctness gates to three different policy tiers:
+
+| Tier | Tool and flags | Meaning |
+| --- | --- | --- |
+| `counter2` | Exact shared Reverie counter2 Tool | Backend interception cost without Detcore policy. |
+| `relaxed` | Hermit Detcore with `--no-sequentialize-threads --max-timeslice=disabled` | Syscall determinization without deterministic thread scheduling or PMU preemption. |
+| `strict` | Hermit Detcore with `--strict` | Fail-closed determinization and the default PMU timeslice. |
+
+Run the tiered matrix with an all-feature Hermit binary:
+
+```bash
+benchmarks/counter2-shootout/run-tiered.py \
+  --hermit /path/to/hermit \
+  --target-seconds 1 --warmups 1 --repetitions 3
+```
+
+The shorter default bounds the much more expensive strict cells while retaining
+fixed work and matching native normalization. Hermit's DBI integration requires
+sequentialized threads, so the runner records relaxed DBI as an explicit
+exclusion; strict DBI and exact counter2 DBI remain measurable. Other failed
+probes or samples stay in the result schema with their diagnostics and never
+contribute to a geomean.
+
+Tiered artifacts live under `target/counter2-shootout-tiered/<UTC run id>/` and
+include probes, randomized samples, per-cell medians, tier/backend geomeans,
+metadata with exact flags and binary hashes, and a Markdown report. These are
+performance runs with exit status and exact-stdout gates. They do not invoke
+Hermit's two-run verifier and therefore establish no L1/L2 determinism level.
+
 ## Interpretation
 
 The metric includes backend startup, binary rewriting, VM/client launch, the
