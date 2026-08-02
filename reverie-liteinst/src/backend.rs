@@ -339,11 +339,13 @@ impl LiteinstBackend {
     /// Runs a tool using an explicit tool-specific preload library.
     ///
     /// This path dispatches patchable syscalls in the guest and keeps the
-    /// `GlobalTool` in this coordinator. It supports single-threaded plain-fork
-    /// children, which reconnect to the shared coordinator. It does not attach
-    /// a ptrace lifecycle supervisor: thread clone, clone3, vfork, exec, vDSO,
-    /// and unpatchable-site fallback remain unsupported, and completion follows
-    /// only the root child.
+    /// `GlobalTool` in this coordinator. A no-op ptrace Tool supervises process
+    /// lifecycle and converts vDSO calls to syscalls, but does not handle the
+    /// in-guest Tool's subscribed syscalls. An unpatchable vDSO syscall therefore
+    /// fails closed instead of leaking the native vDSO result. This supports
+    /// single-threaded plain-fork children, which reconnect to the shared
+    /// coordinator. Thread clone, clone3, vfork, exec, and unpatchable-site
+    /// fallback remain unsupported by the in-guest Tool.
     pub async fn run_with_preload<T>(
         command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
@@ -565,10 +567,6 @@ where
     }
 
     let preload = preload.canonicalize()?;
-    let arg0 = command.get_arg0().to_owned();
-    let program = command.find_program()?;
-    command.program(program).arg0(arg0);
-
     let directory = tempfile::Builder::new()
         .prefix("reverie-liteinst-")
         .tempdir()?;
@@ -583,54 +581,75 @@ where
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
 
-    let mut child_command = command.into_std_lossy();
-    let configured_preload = child_command
-        .get_envs()
-        .find(|(key, _)| *key == OsStr::new("LD_PRELOAD"))
-        .map(|(_, value)| value.map(ToOwned::to_owned));
     let mut ld_preload = preload.into_os_string();
-    let inherited_preload = match configured_preload {
-        Some(value) => value,
-        None => std::env::var_os("LD_PRELOAD"),
-    };
-    if let Some(existing) = inherited_preload.filter(|value| !value.is_empty()) {
+    if let Some(existing) = command
+        .get_env("LD_PRELOAD")
+        .filter(|value| !value.is_empty())
+    {
         ld_preload.push(OsStr::new(":"));
         ld_preload.push(existing);
     }
-    child_command.env("LD_PRELOAD", ld_preload);
-    let bootstrap = match tool_data {
-        Some(tool_data) => {
-            let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
-            let bootstrap_fd = bootstrap.as_raw_fd();
-            unsafe {
-                child_command.pre_exec(move || {
-                    if libc::fcntl(bootstrap_fd, libc::F_SETFD, 0) == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
+    command.env("LD_PRELOAD", ld_preload);
+
+    let wait = if let Some(tool_data) = tool_data {
+        // The ptrace tracee initializer closes inherited descriptors above the
+        // standard streams. Preserve the direct launcher for sealed bootstrap
+        // users until that contract has an explicit descriptor handoff.
+        let arg0 = command.get_arg0().to_owned();
+        let program = command.find_program()?;
+        command.program(program).arg0(arg0);
+        let mut child_command = command.into_std_lossy();
+        let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
+        let bootstrap_fd = bootstrap.as_raw_fd();
+        unsafe {
+            child_command.pre_exec(move || {
+                if libc::fcntl(bootstrap_fd, libc::F_SETFD, 0) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = child_command.spawn()?;
+        drop(bootstrap);
+        let wait = tokio::task::spawn_blocking(move || {
+            if capture_output {
+                child.wait_with_output().map(ChildWait::Output)
+            } else {
+                child.wait().map(ChildWait::Status)
             }
-            Some(bootstrap)
-        }
-        None => {
-            child_command.env(COORDINATOR_ENV, &socket);
-            None
-        }
+        });
+        serve_rpc_until(server, async move {
+            wait.await
+                .map_err(|error| io::Error::other(error.to_string()))?
+        })
+        .await?
+    } else {
+        command.env(COORDINATOR_ENV, &socket);
+        // `()` subscribes to no events. Ptrace therefore owns exec-time setup,
+        // vDSO syscallization, task discovery, and terminal waits only; the
+        // preload's concrete T remains the sole syscall-dispatch owner.
+        let tracer = TracerBuilder::<()>::new(command).spawn().await?;
+        serve_rpc_until(server, async move {
+            if capture_output {
+                let (output, ()) = tracer
+                    .wait_with_output()
+                    .await
+                    .map_err(|error| io::Error::other(error.to_string()))?;
+                Ok(ChildWait::Output(Output {
+                    status: output.status.into(),
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                }))
+            } else {
+                let (status, ()) = tracer
+                    .wait()
+                    .await
+                    .map_err(|error| io::Error::other(error.to_string()))?;
+                Ok(ChildWait::Status(status.into()))
+            }
+        })
+        .await?
     };
-    let mut child = child_command.spawn()?;
-    drop(bootstrap);
-    let wait = tokio::task::spawn_blocking(move || {
-        if capture_output {
-            child.wait_with_output().map(ChildWait::Output)
-        } else {
-            child.wait().map(ChildWait::Status)
-        }
-    });
-    let wait = serve_rpc_until(server, async move {
-        wait.await
-            .map_err(|error| io::Error::other(error.to_string()))?
-    })
-    .await?;
     if !connected.load(Ordering::Acquire) {
         return Err(io::Error::new(
             io::ErrorKind::ConnectionAborted,
