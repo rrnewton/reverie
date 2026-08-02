@@ -220,6 +220,21 @@ pub(crate) fn reserve_coordinator_fd(fd: libc::c_int) -> io::Result<()> {
         })
 }
 
+/// Rebinds the protected coordinator descriptor after a fork child reconnects.
+///
+/// `COORDINATOR_FD` is process-local after fork, so this changes only the
+/// child's protection slot; the parent's connection and descriptor are intact.
+pub(crate) fn replace_coordinator_fd(old: libc::c_int, new: libc::c_int) -> io::Result<()> {
+    COORDINATOR_FD
+        .compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ())
+        .map_err(|actual| {
+            io::Error::other(format!(
+                "coordinator FD changed concurrently: expected {old}, observed {actual}"
+            ))
+        })
+}
+
 struct RuntimeArena {
     mapping_start: u64,
     mapping_end: u64,
