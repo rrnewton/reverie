@@ -8,12 +8,27 @@
 
 //! Typed end-of-run statistics owned by the LiteInst backend.
 
+use std::collections::BTreeSet;
 use std::fmt;
+use std::io;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use reverie::BackendStatsSnapshot;
 use reverie::BackendStatsSource;
 use reverie::CounterSnapshot;
+use reverie::GlobalTool;
+use reverie::InstructionPatchShape;
+use reverie::PatchShapeCollector;
 use reverie::PatchShapeStats;
+use reverie::Tid;
+use reverie_rpc_transport::BlockingRpcClient;
+use serde::Deserialize;
+use serde::Serialize;
 
 /// A distinct outcome for one candidate LiteInst patch site.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -22,19 +37,23 @@ pub enum LiteinstPatchDecision {
     DirectPun,
     /// A replace-first relocation patch was installed.
     Relocated,
-    /// Ptrace retained the original syscall because its patch crossed a cache line.
-    PtraceStraddlerFallback,
-    /// Ptrace retained the original syscall for another unpatchable-site reason.
-    PtraceOtherFallback,
+    /// The original syscall site was retained because its patch crossed a cache line.
+    StraddlerFallback,
+    /// The original syscall site was retained for another unpatchable-site reason.
+    OtherFallback,
 }
 
-/// A dispatch or installation path taken by the ptrace-host LiteInst hybrid.
+/// A dispatch or installation path taken by a LiteInst runtime.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LiteinstDispatchPath {
-    /// The first subscribed syscall observed at a previously unseen site.
-    FirstSiteSigsys,
+    /// A ptrace `Event::Seccomp` at a previously unseen site.
+    FirstSiteSeccomp,
     /// A successful stopped-tracee patch installation performed through ptrace.
     PtraceInstallation,
+    /// An actual in-guest `SIGSYS` entered the patch dispatcher.
+    InGuestSigsys,
+    /// An actual in-guest `SIGSYS` was forwarded while a Tool callback was active.
+    InGuestNestedSigsys,
     /// A cache-line-straddling site that retained the ptrace fallback.
     CachelineStraddlerFallback,
     /// An unpatchable or otherwise rejected site that retained the ptrace fallback.
@@ -83,15 +102,17 @@ impl fmt::Display for LiteinstBackendStatsSnapshot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "LiteInst instrumentation stats: distinct_rips_patched={} patch_candidates={} decisions[direct_pun={},relocated={},ptrace_straddler={},ptrace_other={}] paths[first_site_sigsys={},ptrace_installation={},cacheline_straddler={},unpatchable_or_other={},direct_hook={}] classified_candidates={} cacheline_straddlers={} non_straddling={} instruction_lengths[",
+            "LiteInst instrumentation stats: distinct_rips_patched={} patch_candidates={} decisions[direct_pun={},relocated={},straddler_fallback={},other_fallback={}] paths[first_site_seccomp={},ptrace_installation={},in_guest_sigsys={},in_guest_nested_sigsys={},cacheline_straddler={},unpatchable_or_other={},direct_hook={}] classified_candidates={} cacheline_straddlers={} non_straddling={} instruction_lengths[",
             self.patch_shapes.patched_rips(),
             self.patch_shapes.candidate_rips(),
             self.decision_count(LiteinstPatchDecision::DirectPun),
             self.decision_count(LiteinstPatchDecision::Relocated),
-            self.decision_count(LiteinstPatchDecision::PtraceStraddlerFallback),
-            self.decision_count(LiteinstPatchDecision::PtraceOtherFallback),
-            self.path_count(LiteinstDispatchPath::FirstSiteSigsys),
+            self.decision_count(LiteinstPatchDecision::StraddlerFallback),
+            self.decision_count(LiteinstPatchDecision::OtherFallback),
+            self.path_count(LiteinstDispatchPath::FirstSiteSeccomp),
             self.path_count(LiteinstDispatchPath::PtraceInstallation),
+            self.path_count(LiteinstDispatchPath::InGuestSigsys),
+            self.path_count(LiteinstDispatchPath::InGuestNestedSigsys),
             self.path_count(LiteinstDispatchPath::CachelineStraddlerFallback),
             self.path_count(LiteinstDispatchPath::UnpatchableOrOtherFallback),
             self.path_count(LiteinstDispatchPath::DirectHook),
@@ -128,11 +149,11 @@ impl LiteinstBackendStatsSource {
                 patch_decisions: CounterSnapshot::new([
                     (LiteinstPatchDecision::DirectPun, decisions[0]),
                     (LiteinstPatchDecision::Relocated, decisions[1]),
-                    (LiteinstPatchDecision::PtraceStraddlerFallback, decisions[2]),
-                    (LiteinstPatchDecision::PtraceOtherFallback, decisions[3]),
+                    (LiteinstPatchDecision::StraddlerFallback, decisions[2]),
+                    (LiteinstPatchDecision::OtherFallback, decisions[3]),
                 ]),
                 dispatch_paths: CounterSnapshot::new([
-                    (LiteinstDispatchPath::FirstSiteSigsys, paths[0]),
+                    (LiteinstDispatchPath::FirstSiteSeccomp, paths[0]),
                     (LiteinstDispatchPath::PtraceInstallation, paths[1]),
                     (LiteinstDispatchPath::CachelineStraddlerFallback, paths[2]),
                     (LiteinstDispatchPath::UnpatchableOrOtherFallback, paths[3]),
@@ -165,20 +186,23 @@ impl LiteinstBackendStatsSource {
             self.snapshot
                 .decision_count(LiteinstPatchDecision::Relocated) as usize,
             self.snapshot
-                .decision_count(LiteinstPatchDecision::PtraceStraddlerFallback)
-                as usize,
+                .decision_count(LiteinstPatchDecision::StraddlerFallback) as usize,
             self.snapshot
-                .decision_count(LiteinstPatchDecision::PtraceOtherFallback) as usize,
+                .decision_count(LiteinstPatchDecision::OtherFallback) as usize,
         ]
     }
 
-    /// Returns the five dispatch-path counts in [`LiteinstDispatchPath`] order.
-    pub fn dispatch_path_counts(&self) -> [u64; 5] {
+    /// Returns dispatch-path counts in [`LiteinstDispatchPath`] order.
+    pub fn dispatch_path_counts(&self) -> [u64; 7] {
         [
             self.snapshot
-                .path_count(LiteinstDispatchPath::FirstSiteSigsys),
+                .path_count(LiteinstDispatchPath::FirstSiteSeccomp),
             self.snapshot
                 .path_count(LiteinstDispatchPath::PtraceInstallation),
+            self.snapshot
+                .path_count(LiteinstDispatchPath::InGuestSigsys),
+            self.snapshot
+                .path_count(LiteinstDispatchPath::InGuestNestedSigsys),
             self.snapshot
                 .path_count(LiteinstDispatchPath::CachelineStraddlerFallback),
             self.snapshot
@@ -223,6 +247,180 @@ impl LiteinstBackendStatsSource {
             prefixes[2] as usize,
             prefixes[3] as usize,
         ]
+    }
+}
+
+pub(crate) const IN_GUEST_PATH_COUNT: usize = 5;
+pub(crate) const IN_GUEST_SIGSYS: usize = 0;
+pub(crate) const IN_GUEST_NESTED_SIGSYS: usize = 1;
+pub(crate) const IN_GUEST_STRADDLER_FALLBACK: usize = 2;
+pub(crate) const IN_GUEST_OTHER_FALLBACK: usize = 3;
+pub(crate) const IN_GUEST_DIRECT_HOOK: usize = 4;
+
+struct GuestStatsCollector {
+    coordinator: PathBuf,
+    paths: [AtomicU64; IN_GUEST_PATH_COUNT],
+}
+
+static GUEST_STATS: OnceLock<GuestStatsCollector> = OnceLock::new();
+
+pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<()> {
+    GUEST_STATS
+        .set(GuestStatsCollector {
+            coordinator: coordinator.to_path_buf(),
+            paths: std::array::from_fn(|_| AtomicU64::new(0)),
+        })
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "LiteInst statistics initialized twice",
+            )
+        })
+}
+
+pub(crate) fn guest_stats_enabled() -> bool {
+    GUEST_STATS.get().is_some()
+}
+
+pub(crate) fn record_guest_path(path: usize) {
+    if let Some(stats) = GUEST_STATS.get() {
+        stats.paths[path].fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub(crate) fn reset_guest_stats_after_fork() {
+    if let Some(stats) = GUEST_STATS.get() {
+        for count in &stats.paths {
+            count.store(0, Ordering::Relaxed);
+        }
+    }
+}
+
+pub(crate) fn submit_guest_stats(
+    tid: Tid,
+    process_identity: u64,
+    sites: Vec<LiteinstProcessSiteStats>,
+) -> io::Result<()> {
+    let Some(stats) = GUEST_STATS.get() else {
+        return Ok(());
+    };
+    let paths = std::array::from_fn(|index| stats.paths[index].load(Ordering::Relaxed));
+    let client = BlockingRpcClient::<LiteinstStatsGlobal>::connect(&stats.coordinator, tid)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    client
+        .try_send_rpc(LiteinstProcessStats {
+            process_identity,
+            execution_generation: 0,
+            paths,
+            sites,
+        })
+        .map_err(|error| io::Error::other(error.to_string()))
+}
+
+/// One process-local patch-site observation sent only after an enabled run.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct LiteinstProcessSiteStats {
+    pub(crate) rip: u64,
+    pub(crate) patched: bool,
+    pub(crate) instruction_length: u8,
+    pub(crate) straddle_after: u8,
+}
+
+/// One process-local, post-Tool-exit statistics message.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct LiteinstProcessStats {
+    pub(crate) process_identity: u64,
+    pub(crate) execution_generation: u64,
+    pub(crate) paths: [u64; IN_GUEST_PATH_COUNT],
+    pub(crate) sites: Vec<LiteinstProcessSiteStats>,
+}
+
+/// Coordinator-side typed RPC target for per-process LiteInst snapshots.
+#[derive(Debug, Default)]
+pub(crate) struct LiteinstStatsGlobal {
+    processes: Mutex<Vec<LiteinstProcessStats>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for LiteinstStatsGlobal {
+    type Request = LiteinstProcessStats;
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, from: Tid, mut message: Self::Request) {
+        // The supported lifecycle is single-threaded plain fork, so the
+        // connection's stamped TID is also the process identity. Do not trust a
+        // guest-supplied identity when the transport already authenticated one.
+        message.process_identity = from.as_raw() as u64;
+        self.processes.lock().unwrap().push(message);
+    }
+}
+
+impl LiteinstStatsGlobal {
+    pub(crate) fn into_source(self) -> LiteinstBackendStatsSource {
+        let processes = self.processes.into_inner().unwrap();
+        let mut shapes = PatchShapeCollector::default();
+        let mut seen_sites = BTreeSet::new();
+        let mut decisions = [0_u64; 4];
+        let mut paths = [0_u64; 7];
+
+        for process in processes {
+            paths[2] += process.paths[IN_GUEST_SIGSYS];
+            paths[3] += process.paths[IN_GUEST_NESTED_SIGSYS];
+            paths[4] += process.paths[IN_GUEST_STRADDLER_FALLBACK];
+            paths[5] += process.paths[IN_GUEST_OTHER_FALLBACK];
+            paths[6] += process.paths[IN_GUEST_DIRECT_HOOK];
+            for site in process.sites {
+                if !seen_sites.insert((
+                    process.process_identity,
+                    process.execution_generation,
+                    site.rip,
+                )) {
+                    continue;
+                }
+                let shape = (site.instruction_length != 0).then(|| {
+                    InstructionPatchShape::new(
+                        site.instruction_length,
+                        (site.straddle_after != 0).then_some(site.straddle_after),
+                    )
+                });
+                if site.patched {
+                    decisions[1] += 1;
+                } else if site.straddle_after != 0 {
+                    decisions[2] += 1;
+                } else {
+                    decisions[3] += 1;
+                }
+                shapes.record_process_site(
+                    process.process_identity,
+                    process.execution_generation,
+                    site.rip,
+                    site.patched,
+                    shape,
+                );
+            }
+        }
+
+        LiteinstBackendStatsSource {
+            snapshot: LiteinstBackendStatsSnapshot {
+                patch_shapes: shapes.snapshot(),
+                patch_decisions: CounterSnapshot::new([
+                    (LiteinstPatchDecision::DirectPun, decisions[0]),
+                    (LiteinstPatchDecision::Relocated, decisions[1]),
+                    (LiteinstPatchDecision::StraddlerFallback, decisions[2]),
+                    (LiteinstPatchDecision::OtherFallback, decisions[3]),
+                ]),
+                dispatch_paths: CounterSnapshot::new([
+                    (LiteinstDispatchPath::FirstSiteSeccomp, paths[0]),
+                    (LiteinstDispatchPath::PtraceInstallation, paths[1]),
+                    (LiteinstDispatchPath::InGuestSigsys, paths[2]),
+                    (LiteinstDispatchPath::InGuestNestedSigsys, paths[3]),
+                    (LiteinstDispatchPath::CachelineStraddlerFallback, paths[4]),
+                    (LiteinstDispatchPath::UnpatchableOrOtherFallback, paths[5]),
+                    (LiteinstDispatchPath::DirectHook, paths[6]),
+                ]),
+            },
+        }
     }
 }
 
@@ -278,7 +476,7 @@ mod tests {
                 patch_shapes: shapes.snapshot(),
                 patch_decisions: CounterSnapshot::new([(LiteinstPatchDecision::Relocated, 1)]),
                 dispatch_paths: CounterSnapshot::new([
-                    (LiteinstDispatchPath::FirstSiteSigsys, 1),
+                    (LiteinstDispatchPath::FirstSiteSeccomp, 1),
                     (LiteinstDispatchPath::PtraceInstallation, 1),
                     (LiteinstDispatchPath::DirectHook, 9),
                 ]),
@@ -288,10 +486,45 @@ mod tests {
         let rendered = source.snapshot().to_string();
         assert_eq!(rendered, source.snapshot().to_string());
         assert!(rendered.contains("distinct_rips_patched=1"));
-        assert!(rendered.contains("paths[first_site_sigsys=1"));
+        assert!(rendered.contains("paths[first_site_seccomp=1"));
         assert!(rendered.contains("direct_hook=9"));
         assert!(!rendered.contains("0x7fff"));
         assert!(!rendered.contains("pid="));
         assert!(!rendered.contains("time="));
+    }
+
+    #[tokio::test]
+    async fn aggregates_equal_rips_from_distinct_fork_processes_and_exact_hits() {
+        let global = LiteinstStatsGlobal::default();
+        for (pid, direct_hooks) in [(101, 7), (202, 11)] {
+            global
+                .receive_rpc(
+                    Tid::from_raw(pid),
+                    LiteinstProcessStats {
+                        process_identity: 999,
+                        execution_generation: 0,
+                        paths: [1, 2, 3, 4, direct_hooks],
+                        sites: vec![LiteinstProcessSiteStats {
+                            rip: 0x4000,
+                            patched: true,
+                            instruction_length: 2,
+                            straddle_after: 0,
+                        }],
+                    },
+                )
+                .await;
+        }
+
+        let source = global.into_source();
+        assert_eq!(source.patch_candidates(), 2);
+        assert_eq!(source.distinct_rips(), 2);
+        assert_eq!(source.decision_counts(), [0, 2, 0, 0]);
+        assert_eq!(source.dispatch_path_counts(), [0, 0, 2, 4, 6, 8, 18]);
+        let rendered = source.to_string();
+        assert!(rendered.contains("first_site_seccomp=0"), "{rendered}");
+        assert!(rendered.contains("in_guest_sigsys=2"), "{rendered}");
+        assert!(rendered.contains("in_guest_nested_sigsys=4"), "{rendered}");
+        assert!(!rendered.contains("pid="), "{rendered}");
+        assert!(!rendered.contains("0x4000"), "{rendered}");
     }
 }

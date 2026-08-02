@@ -113,6 +113,11 @@ where
     let _signal_state = runtime::prepare_guest_signal_state()?;
     let rpc = CoordinatorRpc::<T::GlobalState>::connect(coordinator)?;
     runtime::reserve_coordinator_fd(rpc.raw_fd())?;
+    if let Some(stats_coordinator) = std::env::var_os(crate::backend::STATS_COORDINATOR_ENV) {
+        crate::stats::initialize_guest_stats(Path::new(&stats_coordinator))?;
+        // SAFETY: tool installation runs before application-created threads.
+        unsafe { std::env::remove_var(crate::backend::STATS_COORDINATOR_ENV) };
+    }
     COMMITTED_STACKS.lock().clear();
     let pid = Pid::from_raw(unsafe { libc::getpid() });
     let subscriptions = T::subscriptions(rpc.config()).iter_syscalls().collect();
@@ -325,6 +330,9 @@ fn finish_fork_child<T: Tool>(
     states.insert(child_tid.as_raw(), child_state);
     *tool_slot = Some(child_tool);
     runtime::reset_fallback_observability();
+    if event.context != 0 {
+        runtime::record_fork_child_direct_hook(event.instruction_pointer);
+    }
 
     let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
     let state = states
@@ -375,6 +383,9 @@ fn finish_tool_exit<T: Tool>(
         let tool = tool_slot.take().unwrap_or_else(|| fatal(126));
         if let Err(error) = drive_ready(tool.on_exit_process(pid, rpc, status)) {
             tool_fatal(125, &error);
+        }
+        if let Err(error) = runtime::submit_process_stats(tid, pid) {
+            tool_fatal(125, &Error::from(error));
         }
     }
 }

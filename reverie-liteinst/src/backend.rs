@@ -38,6 +38,8 @@ pub const TOOL_PRELOAD_ENV: &str = "REVERIE_LITEINST_TOOL_PRELOAD";
 ///
 /// The tool-data launcher uses a sealed inherited bootstrap instead.
 pub const COORDINATOR_ENV: &str = "REVERIE_LITEINST_COORDINATOR";
+/// Environment variable naming the optional, stats-only coordinator socket.
+pub const STATS_COORDINATOR_ENV: &str = "REVERIE_LITEINST_STATS_COORDINATOR";
 
 const PRELOAD_BOOTSTRAP_MAGIC: &[u8; 16] = b"REVERIE-LI-V1\0\0\0";
 const PRELOAD_BOOTSTRAP_HEADER_BYTES: usize = PRELOAD_BOOTSTRAP_MAGIC.len() + 4;
@@ -365,9 +367,50 @@ impl LiteinstBackend {
     where
         T: Tool + 'static,
     {
-        let (wait, global) = launch::<T>(command, config, preload.into(), false, None).await?;
+        let (wait, global, stats) = launch::<T>(
+            command,
+            config,
+            preload.into(),
+            false,
+            None,
+            BackendStatsRequest::DISABLED,
+        )
+        .await?;
+        debug_assert!(stats.is_none());
         match wait {
             ChildWait::Status(status) => Ok((status.into(), global)),
+            ChildWait::Output(_) => unreachable!("status run returned captured output"),
+        }
+    }
+
+    /// Runs an in-guest Tool and aggregates one typed statistics snapshot per process.
+    pub async fn run_with_preload_and_stats<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+    ) -> Result<
+        (
+            ExitStatus,
+            T::GlobalState,
+            crate::LiteinstBackendStatsSource,
+        ),
+        Error,
+    >
+    where
+        T: Tool + 'static,
+    {
+        let (wait, global, stats) = launch::<T>(
+            command,
+            config,
+            preload.into(),
+            false,
+            None,
+            BackendStatsRequest::ENABLED,
+        )
+        .await?;
+        let stats = stats.expect("enabled LiteInst run must return statistics");
+        match wait {
+            ChildWait::Status(status) => Ok((status.into(), global, stats)),
             ChildWait::Output(_) => unreachable!("status run returned captured output"),
         }
     }
@@ -383,9 +426,45 @@ impl LiteinstBackend {
     {
         command.stdout(reverie::process::Stdio::piped());
         command.stderr(reverie::process::Stdio::piped());
-        let (wait, global) = launch::<T>(command, config, preload.into(), true, None).await?;
+        let (wait, global, stats) = launch::<T>(
+            command,
+            config,
+            preload.into(),
+            true,
+            None,
+            BackendStatsRequest::DISABLED,
+        )
+        .await?;
+        debug_assert!(stats.is_none());
         match wait {
             ChildWait::Output(output) => Ok((output, global)),
+            ChildWait::Status(_) => unreachable!("output run returned only a status"),
+        }
+    }
+
+    /// Runs an in-guest Tool with captured output and per-process statistics.
+    pub async fn run_with_output_and_preload_and_stats<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+    ) -> Result<(Output, T::GlobalState, crate::LiteinstBackendStatsSource), Error>
+    where
+        T: Tool + 'static,
+    {
+        command.stdout(reverie::process::Stdio::piped());
+        command.stderr(reverie::process::Stdio::piped());
+        let (wait, global, stats) = launch::<T>(
+            command,
+            config,
+            preload.into(),
+            true,
+            None,
+            BackendStatsRequest::ENABLED,
+        )
+        .await?;
+        let stats = stats.expect("enabled LiteInst run must return statistics");
+        match wait {
+            ChildWait::Output(output) => Ok((output, global, stats)),
             ChildWait::Status(_) => unreachable!("output run returned only a status"),
         }
     }
@@ -403,14 +482,16 @@ impl LiteinstBackend {
     {
         command.stdout(reverie::process::Stdio::piped());
         command.stderr(reverie::process::Stdio::piped());
-        let (wait, global) = launch::<T>(
+        let (wait, global, stats) = launch::<T>(
             command,
             config,
             preload.into(),
             true,
             Some(tool_data.into()),
+            BackendStatsRequest::DISABLED,
         )
         .await?;
+        debug_assert!(stats.is_none());
         match wait {
             ChildWait::Output(output) => Ok((output, global)),
             ChildWait::Status(_) => unreachable!("output run returned only a status"),
@@ -433,14 +514,16 @@ impl LiteinstBackend {
         T: Tool + 'static,
     {
         inherit_stdio(&mut command);
-        let (wait, global) = launch::<T>(
+        let (wait, global, stats) = launch::<T>(
             command,
             config,
             preload.into(),
             true,
             Some(tool_data.into()),
+            BackendStatsRequest::DISABLED,
         )
         .await?;
+        debug_assert!(stats.is_none());
         match wait {
             ChildWait::Output(output) => {
                 debug_assert!(output.stdout.is_empty());
@@ -501,7 +584,11 @@ enum ChildWait {
     Output(Output),
 }
 
-async fn serve_rpc_until<G, F, T>(server: RpcServer<G>, completion: F) -> io::Result<T>
+async fn serve_rpc_until<G, F, T>(
+    server: RpcServer<G>,
+    stats_server: Option<RpcServer<crate::stats::LiteinstStatsGlobal>>,
+    completion: F,
+) -> io::Result<T>
 where
     G: GlobalTool + 'static,
     F: Future<Output = io::Result<T>>,
@@ -511,6 +598,9 @@ where
     // outstanding connection and its GlobalTool Arc.
     let mut serving = tokio::task::JoinSet::new();
     serving.spawn(server.serve());
+    if let Some(stats_server) = stats_server {
+        serving.spawn(stats_server.serve());
+    }
     tokio::pin!(completion);
 
     let result = tokio::select! {
@@ -565,7 +655,15 @@ async fn launch<T>(
     preload: PathBuf,
     capture_output: bool,
     tool_data: Option<Vec<u8>>,
-) -> Result<(ChildWait, T::GlobalState), Error>
+    stats_request: BackendStatsRequest,
+) -> Result<
+    (
+        ChildWait,
+        T::GlobalState,
+        Option<crate::LiteinstBackendStatsSource>,
+    ),
+    Error,
+>
 where
     T: Tool + 'static,
 {
@@ -595,6 +693,15 @@ where
         connected.clone(),
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
+    let (stats_global, stats_server, stats_socket) = if stats_request.is_enabled() {
+        let socket = directory.path().join("stats.sock");
+        let global = Arc::new(crate::stats::LiteinstStatsGlobal::default());
+        let server = RpcServer::bind(&socket, global.clone(), ())
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        (Some(global), Some(server), Some(socket))
+    } else {
+        (None, None, None)
+    };
 
     let mut child_command = command.into_std_lossy();
     let configured_preload = child_command
@@ -611,6 +718,10 @@ where
         ld_preload.push(existing);
     }
     child_command.env("LD_PRELOAD", ld_preload);
+    child_command.env_remove(STATS_COORDINATOR_ENV);
+    if let Some(stats_socket) = &stats_socket {
+        child_command.env(STATS_COORDINATOR_ENV, stats_socket);
+    }
     let bootstrap = match tool_data {
         Some(tool_data) => {
             let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
@@ -639,7 +750,7 @@ where
             child.wait().map(ChildWait::Status)
         }
     });
-    let wait = serve_rpc_until(server, async move {
+    let wait = serve_rpc_until(server, stats_server, async move {
         wait.await
             .map_err(|error| io::Error::other(error.to_string()))?
     })
@@ -652,7 +763,11 @@ where
         .into());
     }
     let global = unwrap_global_after_connections(global).await?;
-    Ok((wait, global))
+    let stats = match stats_global {
+        Some(stats) => Some(unwrap_global_after_connections(stats).await?.into_source()),
+        None => None,
+    };
+    Ok((wait, global, stats))
 }
 
 fn tool_preload_path() -> io::Result<PathBuf> {
@@ -736,10 +851,13 @@ mod tests {
                 .map_err(|error| io::Error::other(error.to_string()))?
         };
 
-        tokio::time::timeout(Duration::from_secs(5), serve_rpc_until(server, completion))
-            .await
-            .expect("the second local RPC connection blocked at its config handshake")
-            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            serve_rpc_until(server, None, completion),
+        )
+        .await
+        .expect("the second local RPC connection blocked at its config handshake")
+        .unwrap();
 
         assert_eq!(global.total.load(Ordering::Relaxed), 5);
         assert_eq!(*global.senders.lock().unwrap(), [101, 202]);

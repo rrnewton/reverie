@@ -29,6 +29,7 @@ reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core" }
 reverie-preload = { version = "0.2.0", path = "../reverie-preload", default-features = false, features = ["coordinator-rpc"] }
 reverie-ptrace = { version = "0.2.0", path = "../reverie-ptrace" }
 reverie-rpc-transport = { version = "0.2.0", path = "../reverie-rpc-transport" }
+serde = { version = "1.0.219", features = ["derive"] }
 tokio = { version = "1.52.4", features = ["macros", "net", "rt", "time"] }
 tempfile = "3.27.0"
 

@@ -933,6 +933,36 @@ pub(crate) fn reset_fallback_observability() {
             site.hook_count.store(0, Ordering::Relaxed);
         }
     }
+    crate::stats::reset_guest_stats_after_fork();
+}
+
+pub(crate) fn submit_process_stats(tid: reverie::Tid, pid: reverie::Pid) -> io::Result<()> {
+    if !crate::stats::guest_stats_enabled() {
+        return Ok(());
+    }
+    let sites = SITES
+        .get()
+        .into_iter()
+        .flatten()
+        .filter_map(|site| {
+            let trap_hits = site.trap_count.load(Ordering::Relaxed);
+            let hook_hits = site.hook_count.load(Ordering::Relaxed);
+            (trap_hits != 0 || hook_hits != 0).then(|| crate::stats::LiteinstProcessSiteStats {
+                rip: site.address.load(Ordering::Relaxed),
+                patched: site.state.load(Ordering::Relaxed) == SITE_ACTIVE,
+                instruction_length: site.instruction_len.load(Ordering::Relaxed),
+                straddle_after: site.straddle_prefix.load(Ordering::Relaxed),
+            })
+        })
+        .collect();
+    crate::stats::submit_guest_stats(tid, pid.as_raw() as u64, sites)
+}
+
+pub(crate) fn record_fork_child_direct_hook(instruction_pointer: u64) {
+    if let Some(site) = find_site(instruction_pointer) {
+        site.hook_count.fetch_add(1, Ordering::Relaxed);
+    }
+    crate::stats::record_guest_path(crate::stats::IN_GUEST_DIRECT_HOOK);
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1578,6 +1608,7 @@ unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
     if let Some(site) = find_site(context.instruction_pointer) {
         site.hook_count.fetch_add(1, Ordering::Relaxed);
     }
+    crate::stats::record_guest_path(crate::stats::IN_GUEST_DIRECT_HOOK);
     let mut event = SyscallEvent {
         number: context.rax as i64,
         args: [
@@ -1637,6 +1668,7 @@ struct LiteinstDispatcher;
 impl SyscallDispatcher for LiteinstDispatcher {
     fn dispatch(&self, event: &mut PreloadSyscallEvent) {
         if unsafe { !CURRENT_EVENT.is_null() } {
+            crate::stats::record_guest_path(crate::stats::IN_GUEST_NESTED_SIGSYS);
             let mut nested = SyscallEvent {
                 number: event.number(),
                 args: event.args(),
@@ -1648,6 +1680,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
             event.set_result(nested.result);
             return;
         }
+        crate::stats::record_guest_path(crate::stats::IN_GUEST_SIGSYS);
         let mode = TOOL_MODE.load(Ordering::Relaxed);
         let args = event.args();
         let compatibility_trap_fallback =
@@ -1712,6 +1745,13 @@ impl SyscallDispatcher for LiteinstDispatcher {
         // forwarding decision (still `EOPNOTSUPP`), so the dispatch path is
         // unchanged; this is the by-number analog of e9patch's round-4 counter.
         record_fallback_dispatch(event.number());
+        let straddler = find_site(instruction_pointer)
+            .is_some_and(|site| site.straddle_prefix.load(Ordering::Relaxed) != 0);
+        crate::stats::record_guest_path(if straddler {
+            crate::stats::IN_GUEST_STRADDLER_FALLBACK
+        } else {
+            crate::stats::IN_GUEST_OTHER_FALLBACK
+        });
         event.fail(libc::EOPNOTSUPP);
     }
 }

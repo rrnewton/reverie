@@ -719,6 +719,7 @@ struct LiteinstRuntimeState {
     generation: u64,
     ready_generation: Option<u64>,
     attempted_sites: HashSet<u64>,
+    fallback_sites: HashMap<u64, LiteinstPatchOutcome>,
     active_hooks: HashMap<u64, ActiveHookFootprint>,
 }
 
@@ -736,6 +737,7 @@ impl Default for LiteinstRuntimeState {
             generation: 0,
             ready_generation: None,
             attempted_sites: HashSet::new(),
+            fallback_sites: HashMap::new(),
             active_hooks: HashMap::new(),
         }
     }
@@ -795,15 +797,19 @@ impl LiteinstRuntimeState {
             Ok(None) => return,
             Err(()) => {
                 self.attempted_sites.clear();
+                self.fallback_sites.clear();
                 return;
             }
         };
         if range.start >= range.end {
             self.attempted_sites.clear();
+            self.fallback_sites.clear();
             return;
         }
         self.attempted_sites
             .retain(|address| !(*address >= range.start && *address < range.end));
+        self.fallback_sites
+            .retain(|address, _| !(*address >= range.start && *address < range.end));
     }
 }
 
@@ -2650,6 +2656,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             state.frame = None;
             state.ready_generation = None;
             state.attempted_sites.clear();
+            state.fallback_sites.clear();
             state.active_hooks.clear();
         }
         // execve/execveat are tail injected, however, after exec, the new
@@ -3241,7 +3248,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             };
             let process_identity =
                 u64::try_from(self.pid.as_raw()).expect("tracee PID must be positive");
-            let execution_generation = self.liteinst_runtime.lock().unwrap().generation;
+            let execution_generation = {
+                let mut runtime = self.liteinst_runtime.lock().unwrap();
+                runtime.fallback_sites.insert(site, outcome);
+                runtime.generation
+            };
             stats.record_process_site(process_identity, execution_generation, site, outcome, shape);
             match outcome {
                 LiteinstPatchOutcome::PtraceStraddlerBail => {
@@ -3254,6 +3265,43 @@ impl<L: Tool + 'static> TracedTask<L> {
                     unreachable!("fallback accounting received a patched outcome")
                 }
             }
+        });
+    }
+
+    fn record_retained_liteinst_fallback_hit(&self, task: &Stopped) {
+        let Some(stats) = self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .and_then(|config| config.instrumentation_stats.as_ref())
+        else {
+            return;
+        };
+        let Some(site) = task
+            .getregs()
+            .ok()
+            .and_then(|regs| regs.ip().checked_sub(2))
+        else {
+            return;
+        };
+        let outcome = self
+            .liteinst_runtime
+            .lock()
+            .unwrap()
+            .fallback_sites
+            .get(&site)
+            .copied();
+        crate::liteinst_stats::with_liteinst_stats(Some(stats), |stats| match outcome {
+            Some(LiteinstPatchOutcome::PtraceStraddlerBail) => {
+                stats.record_cacheline_straddler_fallback();
+            }
+            Some(LiteinstPatchOutcome::PtraceOtherFallback) => {
+                stats.record_unpatchable_or_other_fallback();
+            }
+            Some(
+                LiteinstPatchOutcome::DirectPunPatched | LiteinstPatchOutcome::RelocatedPatched,
+            )
+            | None => {}
         });
     }
 
@@ -3600,7 +3648,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             .as_ref()
             .and_then(|config| config.instrumentation_stats.as_ref())
         {
-            stats.lock().unwrap().record_first_site_sigsys();
+            stats.lock().unwrap().record_first_site_seccomp();
         }
 
         // Convert the active seccomp stop into an ordinary stopped state before
@@ -3652,6 +3700,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         let mut state = self.liteinst_runtime.lock().unwrap();
         let Ok(page_size) = host_page_size() else {
             state.attempted_sites.clear();
+            state.fallback_sites.clear();
             return;
         };
         match nr {
@@ -3733,6 +3782,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         if is_liteinst_mapping_syscall(nr) && !tool_subscribed {
             return self.handle_liteinst_mapping_syscall(task, nr, args).await;
         }
+        self.record_retained_liteinst_fallback_hit(&task);
         let (installed_task, syscall_already_skipped, liteinst_resume_rip) =
             self.maybe_install_liteinst_site(task).await?;
         task = installed_task;

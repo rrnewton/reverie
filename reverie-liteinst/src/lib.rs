@@ -18,6 +18,7 @@ mod straddler;
 pub use backend::COORDINATOR_ENV;
 pub use backend::LiteinstBackend;
 pub use backend::PreloadBootstrap;
+pub use backend::STATS_COORDINATOR_ENV;
 pub use backend::TOOL_PRELOAD_ENV;
 pub use backend::take_preload_bootstrap;
 pub use reverie_ptrace::LiteinstInstrumentationStats;
