@@ -867,6 +867,14 @@ fn set_robust_list(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
     state.robust_list_head = args[0];
     state.robust_list_len = args[1];
+    // Publish this task's registration into the process-tree-wide registry so a
+    // sibling thread or the parent can read it via `get_robust_list(tid)`, exactly
+    // as the kernel exposes each task's robust list to the rest of the tree.
+    state
+        .robust_list_registry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(state.tid, (args[0], args[1]));
     0
 }
 
@@ -874,16 +882,30 @@ fn set_robust_list(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
 // TODO-HUMAN-REVIEW(PR-232): Review task-local robust-list queries.
 fn get_robust_list(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let requested = args[0] as libc::pid_t;
-    if requested != 0 && requested != state.tid && requested != state.pid {
-        return negative_errno(libc::ESRCH);
-    }
+    // pid 0 (or this task's own id) reads the caller's task-local registration;
+    // any other id reads that peer task's entry from the shared registry, matching
+    // the kernel, which resolves `get_robust_list(pid)` against the target task's
+    // robust list. An id with no live registration is reported ESRCH.
+    let (head, len) = if requested == 0 || requested == state.tid || requested == state.pid {
+        (state.robust_list_head, state.robust_list_len)
+    } else {
+        match state
+            .robust_list_registry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&requested)
+        {
+            Some(&(head, len)) => (head, len),
+            None => return negative_errno(libc::ESRCH),
+        }
+    };
     if args[1] == 0 || args[2] == 0 {
         return negative_errno(libc::EFAULT);
     }
-    if write_u64(memory, args[1], state.robust_list_head) != 0 {
+    if write_u64(memory, args[1], head) != 0 {
         return negative_errno(libc::EFAULT);
     }
-    write_u64(memory, args[2], state.robust_list_len)
+    write_u64(memory, args[2], len)
 }
 
 fn guest_host_address(
@@ -9442,6 +9464,7 @@ mod tests {
             signalfd_state: Arc::new(std::sync::Mutex::new(crate::elf::SignalFdState::default())),
             robust_list_head: 0,
             robust_list_len: 0,
+            robust_list_registry: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
             files: BTreeMap::new(),
             random_device_fds: BTreeSet::new(),
             stdout_alias_fds: BTreeSet::new(),
@@ -17769,6 +17792,80 @@ mod tests {
         let child = state.try_clone_for_fork(2).unwrap();
         assert_eq!(child.robust_list_head, 0);
         assert_eq!(child.robust_list_len, 0);
+    }
+
+    #[test]
+    fn get_robust_list_reads_peer_task_registrations() {
+        const HEAD_OUTPUT: u64 = 0x100;
+        const LENGTH_OUTPUT: u64 = 0x108;
+        const PARENT_HEAD: u64 = 0x300;
+        const CHILD_HEAD: u64 = 0x900;
+
+        let root = TestDir::new();
+        let mut parent = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // Parent (tid 1) registers; a fork child (tid 2) shares the registry Arc
+        // and its own head/len reset to 0.
+        assert_eq!(
+            set_robust_list(
+                &mut parent,
+                &[PARENT_HEAD, ROBUST_LIST_HEAD_SIZE, 0, 0, 0, 0]
+            ),
+            0
+        );
+        let mut child = parent.try_clone_for_fork(2).unwrap();
+        assert_eq!(child.robust_list_head, 0);
+
+        // Cross-task read: the child queries the parent's tid and observes the
+        // parent's registration (kernel `get_robust_list(pid)` semantics), while
+        // the child's own list (pid 0) is empty until it re-registers.
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &child,
+                &[1, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), PARENT_HEAD);
+        assert_eq!(
+            read_struct::<u64>(&memory, LENGTH_OUTPUT),
+            ROBUST_LIST_HEAD_SIZE
+        );
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &child,
+                &[0, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), 0);
+
+        // After the child registers, the parent reads the child's list by tid, and
+        // an id that never registered is still reported ESRCH.
+        assert_eq!(
+            set_robust_list(&mut child, &[CHILD_HEAD, ROBUST_LIST_HEAD_SIZE, 0, 0, 0, 0]),
+            0
+        );
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0]
+            ),
+            0
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), CHILD_HEAD);
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent,
+                &[4242, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0]
+            ),
+            negative_errno(libc::ESRCH)
+        );
     }
 
     #[test]
