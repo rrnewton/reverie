@@ -334,6 +334,13 @@ impl LiteinstBackend {
     }
 
     /// Runs a tool using an explicit tool-specific preload library.
+    ///
+    /// This path dispatches patchable syscalls in the guest and keeps the
+    /// `GlobalTool` in this coordinator. It supports single-threaded plain-fork
+    /// children, which reconnect to the shared coordinator. It does not attach
+    /// a ptrace lifecycle supervisor: thread clone, clone3, vfork, exec, vDSO,
+    /// and unpatchable-site fallback remain unsupported, and completion follows
+    /// only the root child.
     pub async fn run_with_preload<T>(
         command: Command,
         config: <T::GlobalState as GlobalTool>::Config,

@@ -2,9 +2,11 @@ use core::arch::global_asm;
 use core::sync::atomic::AtomicI64;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use reverie::Error;
 use reverie::ExitStatus;
@@ -23,6 +25,7 @@ use reverie_rpc_transport::RpcServer;
 
 const CALLS: u64 = 32;
 static LAST_TOTAL: AtomicU64 = AtomicU64::new(0);
+static LAST_SENDERS: AtomicU64 = AtomicU64::new(0);
 static LAST_NESTED_UID: AtomicI64 = AtomicI64::new(-1);
 static LAST_MASK_RESULT: AtomicI64 = AtomicI64::new(0);
 static LAST_FIRST_USE_EXEC_RESULT: AtomicI64 = AtomicI64::new(0);
@@ -31,16 +34,20 @@ static LAST_FIRST_USE_SIGNAL_RESULT: AtomicI64 = AtomicI64::new(0);
 #[derive(Default)]
 struct CounterGlobal {
     calls: AtomicU64,
+    senders: Mutex<BTreeSet<i32>>,
 }
 
 #[reverie::global_tool]
 impl GlobalTool for CounterGlobal {
     type Request = u64;
-    type Response = u64;
+    type Response = (u64, u64);
     type Config = ();
 
-    async fn receive_rpc(&self, _from: reverie::Tid, amount: u64) -> u64 {
-        self.calls.fetch_add(amount, Ordering::Relaxed) + amount
+    async fn receive_rpc(&self, from: reverie::Tid, amount: u64) -> (u64, u64) {
+        let total = self.calls.fetch_add(amount, Ordering::Relaxed) + amount;
+        let mut senders = self.senders.lock().unwrap();
+        senders.insert(from.as_raw());
+        (total, senders.len() as u64)
     }
 }
 
@@ -78,8 +85,9 @@ impl Tool for CounterTool {
             LAST_FIRST_USE_SIGNAL_RESULT.store(signal_result, Ordering::Relaxed);
         }
         *guest.thread_state_mut() += 1;
-        let total = guest.send_rpc(1).await;
+        let (total, senders) = guest.send_rpc(1).await;
         LAST_TOTAL.store(total, Ordering::Relaxed);
+        LAST_SENDERS.store(senders, Ordering::Relaxed);
         Ok(guest.inject(syscall).await?)
     }
 }
@@ -441,6 +449,9 @@ fn injected_exit_guest(path: &Path) -> ! {
 
 fn fork_guest(path: &Path) {
     unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let parent = unsafe { reverie_liteinst_rpc_getpid() };
+    assert_eq!(parent, i64::from(unsafe { libc::getpid() }));
+    let senders_before_fork = LAST_SENDERS.load(Ordering::Relaxed);
     let child = unsafe { libc::fork() };
     assert!(
         child >= 0,
@@ -459,7 +470,11 @@ fn fork_guest(path: &Path) {
     assert_eq!(libc::WEXITSTATUS(status), 0);
     let observed = unsafe { reverie_liteinst_rpc_getpid() };
     assert_eq!(observed, i64::from(unsafe { libc::getpid() }));
-    println!("fork-rpc-total={}", LAST_TOTAL.load(Ordering::Relaxed));
+    let sender_delta = LAST_SENDERS.load(Ordering::Relaxed) - senders_before_fork;
+    println!(
+        "fork-rpc-total={} fork-rpc-sender-delta={sender_delta}",
+        LAST_TOTAL.load(Ordering::Relaxed)
+    );
 }
 
 fn main() {

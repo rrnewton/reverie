@@ -100,13 +100,22 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         .unwrap();
     assert!(fork_guest.status.success(), "{fork_guest:?}");
     let fork_stdout = String::from_utf8(fork_guest.stdout).unwrap();
-    let fork_total: u64 = fork_stdout
-        .trim()
-        .strip_prefix("fork-rpc-total=")
+    let mut fields = fork_stdout.split_whitespace();
+    let fork_total: u64 = fields
+        .next()
+        .and_then(|field| field.strip_prefix("fork-rpc-total="))
         .expect("fork guest must print the shared RPC total")
         .parse()
         .unwrap();
+    let sender_delta: u64 = fields
+        .next()
+        .and_then(|field| field.strip_prefix("fork-rpc-sender-delta="))
+        .expect("fork guest must print the shared RPC sender delta")
+        .parse()
+        .unwrap();
+    assert_eq!(fields.next(), None, "{fork_stdout}");
     assert!(fork_total >= 5, "{fork_stdout}");
+    assert_eq!(sender_delta, 1, "{fork_stdout}");
 
     let guest = Command::new(binary)
         .arg("guest")

@@ -160,6 +160,10 @@ where
         let pid = raw_pid(libc::SYS_getpid);
         let ppid = (pid != self.root_pid).then(|| raw_pid(libc::SYS_getppid));
 
+        // These process-wide locks are valid only while thread creation stays
+        // fail-closed. A scheduler RPC may block until a sibling runs, so MT
+        // support requires per-thread RPC/state ownership before relaxing the
+        // clone guard below.
         let mut tool_slot = self.tool.lock();
         let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
         let mut states = self.states.lock();
@@ -263,7 +267,6 @@ where
                 child_tid,
                 child_pid,
             } => {
-                drop(guest);
                 let parent_state = states
                     .remove(&parent_tid.as_raw())
                     .unwrap_or_else(|| fatal(126));

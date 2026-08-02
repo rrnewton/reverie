@@ -74,6 +74,10 @@ struct RpcConnection<G: GlobalTool> {
 // TODO-HUMAN-REVIEW(PR-liteinst-multiproc-inguest): Review the common blocking
 // transport and fork-child reconnect used by LiteInst's synchronous Tool callback.
 /// Blocking guest-side RPC handle backed by the common Reverie RPC transport.
+///
+/// The connection is process-local and reconnects after `fork`. Thread-style
+/// clone remains rejected: [`BlockingRpcClient`] stamps its connect-time TID,
+/// and Detcore requires one independently blocking connection per guest thread.
 pub struct CoordinatorRpc<G: GlobalTool> {
     connection: SpinMutex<RpcConnection<G>>,
     config: G::Config,
