@@ -781,6 +781,9 @@ fn execute_basic_syscall_with_output(
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-232): Review task-local robust-list registration.
         set_robust_list(state, args)
+    } else if number == libc::SYS_ptrace as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        ptrace()
     } else {
         negative_errno(libc::ENOSYS)
     };
@@ -881,6 +884,22 @@ fn get_robust_list(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u6
         return negative_errno(libc::EFAULT);
     }
     write_u64(memory, args[2], state.robust_list_len)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#341): A guest running under Hermit is already the tracee of
+// the deterministic supervisor, so guest-issued ptrace(2) is deterministically
+// refused. Under the golden ptrace backend the host kernel returns EPERM when a
+// guest task tries to PTRACE_ATTACH / PTRACE_SEIZE a sibling (or PTRACE_TRACEME
+// itself): a task already attached to one tracer cannot acquire another. The KVM
+// backend has no host ptrace supervisor to reproduce that refusal, so it emulates
+// the same EPERM here instead of falling through to ENOSYS, matching the ptrace
+// backend's guest-visible result byte-for-byte. This is an implementation of the
+// already-established "refuse guest ptrace" determinization, not a new strategy,
+// and it is request-independent because no ptrace request can succeed for a guest
+// that is itself under deterministic tracing.
+fn ptrace() -> i64 {
+    negative_errno(libc::EPERM)
 }
 
 fn guest_host_address(
@@ -17615,6 +17634,36 @@ mod tests {
         let child = state.try_clone_for_fork(2).unwrap();
         assert_eq!(child.robust_list_head, 0);
         assert_eq!(child.robust_list_len, 0);
+    }
+
+    #[test]
+    fn guest_ptrace_is_deterministically_refused_with_eperm() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // The golden ptrace backend surfaces EPERM to a guest that tries to
+        // trace a sibling or itself, because the task is already attached to
+        // Hermit's supervisor. The KVM dispatch must emulate that same refusal
+        // rather than returning ENOSYS, independent of the ptrace request.
+        for request in [
+            libc::PTRACE_TRACEME,
+            libc::PTRACE_ATTACH,
+            libc::PTRACE_SEIZE,
+            libc::PTRACE_PEEKDATA,
+            libc::PTRACE_CONT,
+        ] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_ptrace,
+                    [request as u64, 4321, 0, 0, 0, 0],
+                ),
+                negative_errno(libc::EPERM),
+                "ptrace request {request} should be refused with EPERM",
+            );
+        }
     }
 
     #[test]
