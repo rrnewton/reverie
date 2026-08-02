@@ -500,7 +500,7 @@ impl<T: Tool> GlobalRPC<T::GlobalState> for LiteinstGuest<'_, T> {
     }
 }
 
-// TODO-HUMAN-REVIEW(PR-liteinst-multiproc-inguest): Review the plain-fork injection boundary.
+// TODO-HUMAN-REVIEW(PR-326): Review the plain-fork injection boundary.
 fn is_plain_fork(number: i64, args: [u64; 6]) -> bool {
     if number == libc::SYS_fork {
         return true;
@@ -726,7 +726,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         std::future::pending().await
     }
 
-    // TODO-HUMAN-REVIEW(PR-liteinst-multiproc-inguest): Review the coarse
+    // TODO-HUMAN-REVIEW(PR-326): Review the coarse
     // syscall-boundary clock until the minimal ptrace supervisor wires PMU delivery.
     fn set_timer(&mut self, _sched: TimerSchedule) -> Result<(), Error> {
         // Every intercepted syscall remains a deterministic scheduling boundary,

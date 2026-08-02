@@ -71,7 +71,7 @@ struct RpcConnection<G: GlobalTool> {
     client: BlockingRpcClient<G>,
 }
 
-// TODO-HUMAN-REVIEW(PR-liteinst-multiproc-inguest): Review the common blocking
+// TODO-HUMAN-REVIEW(PR-326): Review the common blocking
 // transport and fork-child reconnect used by LiteInst's synchronous Tool callback.
 /// Blocking guest-side RPC handle backed by the common Reverie RPC transport.
 ///
