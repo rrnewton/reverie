@@ -95,13 +95,14 @@ jobs:
         )
       }}
     runs-on: [self-hosted, Linux, X64, reverie]
-    # There is currently a SINGLE self-hosted `reverie` runner (a SPOF). When the
-    # fleet loads that host, the PMU/perf-counter determinism tests degrade and
-    # this job has silently wedged for hours (observed 2h44m vs a ~2min baseline).
-    # Cap execution so a wedge fails loudly and fast instead of squatting the one
-    # runner for the 6h GitHub default. 45m is generous vs the ~2min test
-    # baseline plus a cold DynamoRIO build, yet still catches an 80x wedge.
-    timeout-minutes: 45
+    # PMU/perf-counter determinism tests have a ~2min baseline; a wedged run has
+    # squatted a self-hosted runner for hours (observed 2h44m). Cap the whole job
+    # at a hard 10 minutes so a wedge fails loudly and fast instead of holding a
+    # runner for the 6h GitHub default. The Host-dependent test step is wrapped by
+    # scripts/ci-timeout-watchdog.sh, which emits a live thread/wchan snapshot of
+    # the hung process tree shortly before this cap fires, so a timeout is
+    # diagnosable rather than a bare "job timed out".
+    timeout-minutes: 10
 
     steps:
     # PMU-sensitive tests measure hardware counters whose behaviour changes when
@@ -140,15 +141,42 @@ jobs:
         GIT_CONFIG_VALUE_0: ${{ github.workspace }}
       run: scripts/backend-submodule.sh activate dynamorio
     - name: Dependencies
+      # Self-hosted `reverie` runners span distros (Debian + Fedora). Select the
+      # package manager from /etc/os-release rather than `command -v apt-get`,
+      # which is true on some Fedora hosts and made this step run the apt branch
+      # there ("Unable to locate package cmake"). The non-fatal
+      # "sudo: unable to resolve host" warning is a runner /etc/hosts config
+      # issue, not a workflow failure, and must not fail this step.
       run: |
-        if command -v apt-get >/dev/null; then
-          sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev
-        else
-          sudo dnf install -y libunwind-devel xz-devel cmake zlib-devel
+        set -euo pipefail
+        distro_id=""; distro_like=""
+        if [ -r /etc/os-release ]; then
+          . /etc/os-release
+          distro_id="${ID:-}"; distro_like="${ID_LIKE:-}"
         fi
+        echo "Detected distro: ID='${distro_id}' ID_LIKE='${distro_like}'"
+        case " ${distro_id} ${distro_like} " in
+          *" fedora "*|*" rhel "*|*" centos "*)
+            sudo dnf install -y libunwind-devel xz-devel cmake zlib-devel ;;
+          *" debian "*|*" ubuntu "*)
+            sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev ;;
+          *)
+            # Unknown distro: prefer dnf, fall back to apt.
+            if command -v dnf >/dev/null; then
+              sudo dnf install -y libunwind-devel xz-devel cmake zlib-devel
+            else
+              sudo apt-get install -y libunwind-dev liblzma-dev cmake zlib1g-dev
+            fi ;;
+        esac
     - name: Rust toolchain
       uses: dtolnay/rust-toolchain@nightly
     - name: Host-dependent workspace tests
       env:
         REVERIE_REQUIRE_KVM: "1"
-      run: cargo test --workspace --all-features -- --test-threads=1
+      # Launch the timeout watchdog as a background sidecar so that, if the test
+      # wedges, a live thread/wchan snapshot is emitted shortly before the job's
+      # 10-minute hard cap kills it; kill the watchdog once the test completes.
+      run: |
+        scripts/ci-timeout-watchdog.sh "Host-dependent workspace tests" 510 & watchdog_pid=$!
+        cargo test --workspace --all-features -- --test-threads=1
+        kill "$watchdog_pid" 2>/dev/null || true
