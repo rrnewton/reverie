@@ -43,6 +43,10 @@ impl<T> SpinMutex<T> {
     fn get_mut(&mut self) -> &mut T {
         self.value.get_mut()
     }
+
+    pub(crate) fn into_inner(self) -> T {
+        self.value.into_inner()
+    }
 }
 
 unsafe impl<T: Send> Sync for SpinMutex<T> {}

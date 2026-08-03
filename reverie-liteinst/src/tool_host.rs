@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
@@ -160,7 +161,7 @@ where
     let tool = T::new(pid, rpc.config());
     HANDLER
         .set(Box::new(ToolHost::<T> {
-            tool: SpinMutex::new(Some(tool)),
+            tool: SpinMutex::new(Some(Arc::new(tool))),
             rpc,
             root_pid: pid,
             subscriptions,
@@ -180,12 +181,14 @@ pub(crate) fn dispatch(event: &mut SyscallEvent) {
 }
 
 struct ToolHost<T: Tool> {
-    tool: SpinMutex<Option<T>>,
+    tool: SpinMutex<Option<Arc<T>>>,
     rpc: CoordinatorRpc<T::GlobalState>,
     root_pid: Pid,
     subscriptions: HashSet<Sysno>,
-    states: SpinMutex<HashMap<i32, T::ThreadState>>,
+    states: SpinMutex<HashMap<i32, ThreadStateSlot<T::ThreadState>>>,
 }
+
+type ThreadStateSlot<S> = Arc<SpinMutex<Option<S>>>;
 
 impl<T> ToolHandler for ToolHost<T>
 where
@@ -197,17 +200,24 @@ where
         let pid = raw_pid(libc::SYS_getpid);
         let ppid = (pid != self.root_pid).then(|| raw_pid(libc::SYS_getppid));
 
-        // These process-wide locks are valid only while thread creation stays
-        // fail-closed. A scheduler RPC may block until a sibling runs, so MT
-        // support requires per-thread RPC/state ownership before relaxing the
-        // clone guard below.
-        let mut tool_slot = self.tool.lock();
-        let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
-        let mut states = self.states.lock();
-        let is_new = !states.contains_key(&tid.as_raw());
-        let state = states
-            .entry(tid.as_raw())
-            .or_insert_with(|| tool.init_thread_state(tid, None));
+        let tool = self
+            .tool
+            .lock()
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| fatal(126));
+        let (state_slot, is_new) = {
+            let mut states = self.states.lock();
+            if let Some(state) = states.get(&tid.as_raw()) {
+                (state.clone(), false)
+            } else {
+                let state = Arc::new(SpinMutex::new(Some(tool.init_thread_state(tid, None))));
+                states.insert(tid.as_raw(), state.clone());
+                (state, true)
+            }
+        };
+        let mut state_slot_guard = state_slot.lock();
+        let state = state_slot_guard.as_mut().unwrap_or_else(|| fatal(126));
         let tail = TailResult::default();
         let mut guest = LiteinstGuest::<T> {
             event,
@@ -256,9 +266,12 @@ where
             if is_plain_fork(number, args) {
                 let result = unsafe { raw_syscall6(number, args) };
                 if result == 0 {
+                    drop(guest);
+                    let parent_state = state_slot_guard.take().unwrap_or_else(|| fatal(126));
+                    drop(state_slot_guard);
                     finish_fork_child(
-                        &mut tool_slot,
-                        &mut states,
+                        &self.tool,
+                        &self.states,
                         &self.rpc,
                         event,
                         ForkChildContext {
@@ -267,16 +280,21 @@ where
                             child_tid: raw_pid(libc::SYS_gettid),
                             child_pid: raw_pid(libc::SYS_getpid),
                         },
+                        parent_state,
                     );
                 } else {
                     event.result = result;
                 }
                 return;
             } else if is_exit_syscall(number) {
+                drop(guest);
+                drop(state_slot_guard);
                 finish_tool_exit(
-                    &mut tool_slot,
-                    &mut states,
+                    &self.tool,
+                    &self.states,
                     &self.rpc,
+                    tool,
+                    state_slot,
                     tid,
                     pid,
                     number,
@@ -306,10 +324,14 @@ where
                 };
             }
             SyscallOutcome::Exit { number, args } => {
+                drop(guest);
+                drop(state_slot_guard);
                 finish_tool_exit(
-                    &mut tool_slot,
-                    &mut states,
+                    &self.tool,
+                    &self.states,
                     &self.rpc,
+                    tool,
+                    state_slot,
                     tid,
                     pid,
                     number,
@@ -323,9 +345,12 @@ where
                 child_tid,
                 child_pid,
             } => {
+                drop(guest);
+                let parent_state = state_slot_guard.take().unwrap_or_else(|| fatal(126));
+                drop(state_slot_guard);
                 finish_fork_child(
-                    &mut tool_slot,
-                    &mut states,
+                    &self.tool,
+                    &self.states,
                     &self.rpc,
                     event,
                     ForkChildContext {
@@ -334,6 +359,7 @@ where
                         child_tid,
                         child_pid,
                     },
+                    parent_state,
                 );
             }
         }
@@ -341,11 +367,12 @@ where
 }
 
 fn finish_fork_child<T: Tool>(
-    tool_slot: &mut Option<T>,
-    states: &mut HashMap<i32, T::ThreadState>,
+    tool_slot: &SpinMutex<Option<Arc<T>>>,
+    states: &SpinMutex<HashMap<i32, ThreadStateSlot<T::ThreadState>>>,
     rpc: &CoordinatorRpc<T::GlobalState>,
     event: &mut SyscallEvent,
     context: ForkChildContext,
+    parent_state: T::ThreadState,
 ) {
     let ForkChildContext {
         parent_tid,
@@ -353,20 +380,19 @@ fn finish_fork_child<T: Tool>(
         child_tid,
         child_pid,
     } = context;
-    let parent_state = states
-        .remove(&parent_tid.as_raw())
-        .unwrap_or_else(|| fatal(126));
-    let child_tool = T::new(child_pid, rpc.config());
+    let child_tool = Arc::new(T::new(child_pid, rpc.config()));
     let child_state = child_tool.init_thread_state(child_tid, Some((parent_tid, &parent_state)));
-    states.clear();
-    states.insert(child_tid.as_raw(), child_state);
-    *tool_slot = Some(child_tool);
+    let child_state = Arc::new(SpinMutex::new(Some(child_state)));
+    {
+        let mut states = states.lock();
+        states.clear();
+        states.insert(child_tid.as_raw(), child_state.clone());
+    }
+    *tool_slot.lock() = Some(child_tool.clone());
     runtime::reset_fallback_observability();
 
-    let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
-    let state = states
-        .get_mut(&child_tid.as_raw())
-        .unwrap_or_else(|| fatal(126));
+    let mut child_state_guard = child_state.lock();
+    let state = child_state_guard.as_mut().unwrap_or_else(|| fatal(126));
     let child_tail = TailResult::default();
     let mut child_guest = LiteinstGuest::<T> {
         event,
@@ -377,7 +403,7 @@ fn finish_fork_child<T: Tool>(
         rpc,
         tail: &child_tail,
     };
-    if let Err(error) = drive_ready(tool.handle_thread_start(&mut child_guest)) {
+    if let Err(error) = drive_ready(child_tool.handle_thread_start(&mut child_guest)) {
         tool_fatal(124, &error);
     }
     child_guest.event.result = 0;
@@ -392,24 +418,36 @@ struct ForkChildContext {
 
 // TODO-HUMAN-REVIEW(PR-143): Review single-process Tool exit lifecycle.
 fn finish_tool_exit<T: Tool>(
-    tool_slot: &mut Option<T>,
-    states: &mut HashMap<i32, T::ThreadState>,
+    tool_slot: &SpinMutex<Option<Arc<T>>>,
+    states: &SpinMutex<HashMap<i32, ThreadStateSlot<T::ThreadState>>>,
     rpc: &CoordinatorRpc<T::GlobalState>,
+    tool: Arc<T>,
+    state_slot: ThreadStateSlot<T::ThreadState>,
     tid: Pid,
     pid: Pid,
     number: i64,
     args: [u64; 6],
 ) {
-    let state = states
+    let removed = states
+        .lock()
         .remove(&tid.as_raw())
         .expect("LiteInst thread state disappeared before exit");
+    if !Arc::ptr_eq(&removed, &state_slot) {
+        fatal(126);
+    }
+    drop(removed);
+    let state = Arc::try_unwrap(state_slot)
+        .unwrap_or_else(|_| fatal(126))
+        .into_inner()
+        .unwrap_or_else(|| fatal(126));
     let status = reverie::ExitStatus::Exited((args[0] & 0xff) as i32);
-    let tool = tool_slot.as_ref().unwrap_or_else(|| fatal(126));
     if let Err(error) = drive_ready(tool.on_exit_thread(tid, rpc, state, status)) {
         tool_fatal(125, &error);
     }
     if is_process_exit(number, tid, pid) {
-        let tool = tool_slot.take().unwrap_or_else(|| fatal(126));
+        drop(tool);
+        let tool = tool_slot.lock().take().unwrap_or_else(|| fatal(126));
+        let tool = Arc::try_unwrap(tool).unwrap_or_else(|_| fatal(126));
         if let Err(error) = drive_ready(tool.on_exit_process(pid, rpc, status)) {
             tool_fatal(125, &error);
         }
