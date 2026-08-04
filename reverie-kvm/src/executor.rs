@@ -402,6 +402,12 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_recvfrom as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         recvfrom(memory, state, args)
+    } else if number == libc::SYS_sendmsg as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sendmsg(memory, state, args)
+    } else if number == libc::SYS_recvmsg as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        recvmsg(memory, state, args)
     } else if number == libc::SYS_recvmmsg as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         recvmmsg(memory, state, args)
@@ -5156,6 +5162,282 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
         }
     }
     result as i64
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-352): Review bounded single-message sendmsg translation
+// (scatter-gather payload, ancillary control forward) and MSG_NOSIGNAL suppression.
+//
+// The single-message send sibling of `sendto`/`recvmmsg`. Detcore already
+// classifies `sendmsg` as Determinized and drives it through the backend's
+// nonblockable-fd path (see hermit detcore/src/lib.rs `handle_sendrecv`), so
+// this executor arm only has to translate the guest `msghdr` — gathering the
+// iovec payload, name, and ancillary control bytes out of guest memory — and
+// forward it to the host socket. Determinism of any returned state is Detcore's
+// job upstream/downstream; the executor performs a faithful host send.
+fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
+        return negative_errno(libc::EBADF);
+    };
+    let message: libc::msghdr = match read_guest_struct(memory, args[1]) {
+        Ok(message) => message,
+        Err(error) => return error,
+    };
+
+    let iov_count = message.msg_iovlen;
+    if iov_count > libc::UIO_MAXIOV as usize {
+        return negative_errno(libc::EMSGSIZE);
+    }
+    let guest_iov_address = message.msg_iov as usize as u64;
+    let mut payload: Vec<u8> = Vec::new();
+    for iov_index in 0..iov_count {
+        let Some(iov_address) =
+            guest_iov_address.checked_add((iov_index * std::mem::size_of::<libc::iovec>()) as u64)
+        else {
+            return negative_errno(libc::EFAULT);
+        };
+        let iov: libc::iovec = match read_guest_struct(memory, iov_address) {
+            Ok(iov) => iov,
+            Err(error) => return error,
+        };
+        let Some(next_length) = payload.len().checked_add(iov.iov_len) else {
+            return negative_errno(libc::EINVAL);
+        };
+        if next_length > MAX_HOST_IO {
+            return negative_errno(libc::EINVAL);
+        }
+        if iov.iov_len != 0 {
+            let mut segment = vec![0u8; iov.iov_len];
+            if memory
+                .read(iov.iov_base as usize as u64, &mut segment)
+                .is_err()
+            {
+                return negative_errno(libc::EFAULT);
+            }
+            payload.extend_from_slice(&segment);
+        }
+    }
+
+    let name_capacity = message.msg_namelen as usize;
+    let control_capacity = message.msg_controllen;
+    if name_capacity > MAX_HOST_IO || control_capacity > MAX_HOST_IO {
+        return negative_errno(libc::EINVAL);
+    }
+    let mut name = vec![0u8; name_capacity];
+    let mut control = vec![0u8; control_capacity];
+    if name_capacity != 0
+        && memory
+            .read(message.msg_name as usize as u64, &mut name)
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    if control_capacity != 0
+        && memory
+            .read(message.msg_control as usize as u64, &mut control)
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+
+    let mut host_iov = libc::iovec {
+        iov_base: payload.as_mut_ptr().cast(),
+        iov_len: payload.len(),
+    };
+    let host_header = libc::msghdr {
+        msg_name: if name.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            name.as_mut_ptr().cast()
+        },
+        msg_namelen: name.len() as libc::socklen_t,
+        msg_iov: std::ptr::from_mut(&mut host_iov),
+        msg_iovlen: usize::from(!payload.is_empty()),
+        msg_control: if control.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            control.as_mut_ptr().cast()
+        },
+        msg_controllen: control.len(),
+        msg_flags: 0,
+    };
+    let flags = args[2] as libc::c_int;
+    // SAFETY: payload/name/control are readable host buffers matching the
+    // header's declared lengths, and host_fd belongs to the guest descriptor
+    // table. MSG_NOSIGNAL keeps a guest EPIPE from delivering SIGPIPE to the
+    // supervisor (matching `sendto`).
+    let result = unsafe {
+        libc::sendmsg(
+            host_fd,
+            std::ptr::from_ref(&host_header),
+            flags | libc::MSG_NOSIGNAL,
+        )
+    };
+    if result < 0 {
+        io_error(std::io::Error::last_os_error())
+    } else {
+        result as i64
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-352): Review bounded single-message recvmsg translation
+// (iovec scatter, ancillary control copy-back) and MSG_DONTWAIT cooperativeness.
+//
+// The single-message receive form; `recvmmsg` is its multi-message sibling and
+// this reuses the same translation shape for exactly one `msghdr`. Detcore
+// classifies `recvmsg` as Determinized and canonicalizes any host socket
+// timestamps in the ancillary control buffer after this returns (see hermit
+// detcore/src/syscalls/io.rs `handle_recvmsg` / `canonicalize_socket_timestamps`),
+// so the executor only faithfully performs the host receive and copies the
+// control/name bytes back into guest memory for Detcore to sanitize.
+fn recvmsg(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
+        return negative_errno(libc::EBADF);
+    };
+    let message_address = args[1];
+    let mut message: libc::msghdr = match read_guest_struct(memory, message_address) {
+        Ok(message) => message,
+        Err(error) => return error,
+    };
+
+    let iov_count = message.msg_iovlen;
+    if iov_count > libc::UIO_MAXIOV as usize {
+        return negative_errno(libc::EMSGSIZE);
+    }
+    let guest_iov_address = message.msg_iov as usize as u64;
+    let mut guest_iovecs = Vec::with_capacity(iov_count);
+    let mut payload_length = 0usize;
+    for iov_index in 0..iov_count {
+        let Some(iov_address) =
+            guest_iov_address.checked_add((iov_index * std::mem::size_of::<libc::iovec>()) as u64)
+        else {
+            return negative_errno(libc::EFAULT);
+        };
+        let iov: libc::iovec = match read_guest_struct(memory, iov_address) {
+            Ok(iov) => iov,
+            Err(error) => return error,
+        };
+        let Some(next_length) = payload_length.checked_add(iov.iov_len) else {
+            return negative_errno(libc::EINVAL);
+        };
+        if next_length > MAX_HOST_IO {
+            return negative_errno(libc::EINVAL);
+        }
+        if iov.iov_len != 0 {
+            let mut probe = vec![0; iov.iov_len];
+            if memory
+                .read(iov.iov_base as usize as u64, &mut probe)
+                .is_err()
+            {
+                return negative_errno(libc::EFAULT);
+            }
+        }
+        payload_length = next_length;
+        guest_iovecs.push(iov);
+    }
+
+    let name_capacity = message.msg_namelen as usize;
+    let control_capacity = message.msg_controllen;
+    if name_capacity > MAX_HOST_IO || control_capacity > MAX_HOST_IO {
+        return negative_errno(libc::EINVAL);
+    }
+    let mut payload = vec![0u8; payload_length];
+    let mut name = vec![0u8; name_capacity];
+    let mut control = vec![0u8; control_capacity];
+    if name_capacity != 0
+        && memory
+            .read(message.msg_name as usize as u64, &mut name)
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    if control_capacity != 0
+        && memory
+            .read(message.msg_control as usize as u64, &mut control)
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+
+    let mut host_iov = libc::iovec {
+        iov_base: payload.as_mut_ptr().cast(),
+        iov_len: payload.len(),
+    };
+    let mut host_header = libc::msghdr {
+        msg_name: if name.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            name.as_mut_ptr().cast()
+        },
+        msg_namelen: name.len() as libc::socklen_t,
+        msg_iov: std::ptr::from_mut(&mut host_iov),
+        msg_iovlen: usize::from(!payload.is_empty()),
+        msg_control: if control.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            control.as_mut_ptr().cast()
+        },
+        msg_controllen: control.len(),
+        msg_flags: 0,
+    };
+    let flags = args[2] as libc::c_int;
+    // Keep the VM executor cooperative: Detcore's scheduler owns blocking and
+    // retries EAGAIN, while already-queued datagrams are returned immediately.
+    let received = unsafe {
+        libc::recvmsg(
+            host_fd,
+            std::ptr::from_mut(&mut host_header),
+            flags | libc::MSG_DONTWAIT,
+        )
+    };
+    if received < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+
+    let copied_length = (received as usize).min(payload.len());
+    let mut copied = 0usize;
+    for iov in &guest_iovecs {
+        let length = iov.iov_len.min(copied_length.saturating_sub(copied));
+        if length != 0
+            && memory
+                .write(
+                    iov.iov_base as usize as u64,
+                    &payload[copied..copied + length],
+                )
+                .is_err()
+        {
+            return negative_errno(libc::EFAULT);
+        }
+        copied += length;
+    }
+    if name_capacity != 0
+        && memory
+            .write(
+                message.msg_name as usize as u64,
+                &name[..name_capacity.min(host_header.msg_namelen as usize)],
+            )
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    if control_capacity != 0
+        && memory
+            .write(
+                message.msg_control as usize as u64,
+                &control[..control_capacity.min(host_header.msg_controllen)],
+            )
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    message.msg_namelen = host_header.msg_namelen;
+    message.msg_controllen = host_header.msg_controllen;
+    message.msg_flags = host_header.msg_flags;
+    if write_struct(memory, message_address, &message) != 0 {
+        return negative_errno(libc::EFAULT);
+    }
+    received as i64
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -13383,6 +13665,141 @@ mod tests {
             read_guest_bytes::<6>(&memory, SECOND_BUFFER).unwrap(),
             *b"world!"
         );
+    }
+
+    #[test]
+    fn sendmsg_recvmsg_roundtrip_translates_scatter_gather_and_control() {
+        const PAIR_FDS: u64 = 0x100;
+        const SEND_SEG0: u64 = 0x200;
+        const SEND_SEG1: u64 = 0x220;
+        const SEND_IOV: u64 = 0x300;
+        const SEND_MSG: u64 = 0x360;
+        const RECV_SEG0: u64 = 0x400;
+        const RECV_SEG1: u64 = 0x420;
+        const RECV_IOV: u64 = 0x500;
+        const RECV_CONTROL: u64 = 0x580;
+        const RECV_MSG: u64 = 0x600;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // A two-segment payload: "hello " + "world!" = "hello world!" (12 bytes).
+        memory.write(SEND_SEG0, b"hello ").unwrap();
+        memory.write(SEND_SEG1, b"world!").unwrap();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+
+        // Build the send-side scatter-gather iovecs and msghdr.
+        let send_iovs = [
+            libc::iovec {
+                iov_base: SEND_SEG0 as usize as *mut libc::c_void,
+                iov_len: 6,
+            },
+            libc::iovec {
+                iov_base: SEND_SEG1 as usize as *mut libc::c_void,
+                iov_len: 6,
+            },
+        ];
+        for (index, iov) in send_iovs.iter().enumerate() {
+            assert_eq!(
+                write_struct(
+                    &mut memory,
+                    SEND_IOV + (index * std::mem::size_of::<libc::iovec>()) as u64,
+                    iov,
+                ),
+                0
+            );
+        }
+        let mut send_msg = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        send_msg.msg_iov = SEND_IOV as usize as *mut libc::iovec;
+        send_msg.msg_iovlen = 2;
+        assert_eq!(write_struct(&mut memory, SEND_MSG, &send_msg), 0);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendmsg,
+                [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+            ),
+            12
+        );
+
+        // Build the recv-side iovecs (6 + 6), an ancillary control buffer, and
+        // the msghdr the guest hands to recvmsg.
+        let recv_iovs = [
+            libc::iovec {
+                iov_base: RECV_SEG0 as usize as *mut libc::c_void,
+                iov_len: 6,
+            },
+            libc::iovec {
+                iov_base: RECV_SEG1 as usize as *mut libc::c_void,
+                iov_len: 6,
+            },
+        ];
+        for (index, iov) in recv_iovs.iter().enumerate() {
+            assert_eq!(
+                write_struct(
+                    &mut memory,
+                    RECV_IOV + (index * std::mem::size_of::<libc::iovec>()) as u64,
+                    iov,
+                ),
+                0
+            );
+        }
+        memory.write(RECV_CONTROL, &[0u8; 64]).unwrap();
+        let mut recv_msg = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        recv_msg.msg_iov = RECV_IOV as usize as *mut libc::iovec;
+        recv_msg.msg_iovlen = 2;
+        recv_msg.msg_control = RECV_CONTROL as usize as *mut libc::c_void;
+        recv_msg.msg_controllen = 64;
+        assert_eq!(write_struct(&mut memory, RECV_MSG, &recv_msg), 0);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmsg,
+                [socket_fds[1] as u64, RECV_MSG, 0, 0, 0, 0],
+            ),
+            12
+        );
+
+        // The payload reassembles across the two independent recv segments,
+        // proving the iovec scatter/gather translation is faithful.
+        assert_eq!(
+            read_guest_bytes::<6>(&memory, RECV_SEG0).unwrap(),
+            *b"hello "
+        );
+        assert_eq!(
+            read_guest_bytes::<6>(&memory, RECV_SEG1).unwrap(),
+            *b"world!"
+        );
+
+        // No ancillary data was sent, so the control length is written back as 0
+        // and MSG_CTRUNC stays clear. This is exactly the control-buffer
+        // copy-back path Detcore's handle_recvmsg relies on to canonicalize
+        // SCM_TIMESTAMP ancillary messages (hermit detcore/src/syscalls/io.rs).
+        let received: libc::msghdr = read_struct(&memory, RECV_MSG);
+        assert_eq!(received.msg_controllen, 0);
+        assert_eq!(received.msg_flags & libc::MSG_CTRUNC, 0);
     }
 
     #[test]
