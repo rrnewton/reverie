@@ -202,3 +202,22 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
     assert!(paths[2] >= 1, "expected an in-guest SIGSYS: {stats}");
     assert!(paths[6] >= 8, "expected installed-hook dispatches: {stats}");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn supervisor_does_not_leak_wait4_restart_codes() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("wait-child"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("supervised wait4 hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(output.stdout, b"wait-child-ok\n", "{output:?}");
+}
