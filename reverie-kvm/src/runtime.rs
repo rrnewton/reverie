@@ -65,6 +65,28 @@ enum HandlerSignal {
 type SharedHandlerSignal = Arc<Mutex<Option<HandlerSignal>>>;
 type SharedChildStarts = Arc<Mutex<Vec<std::sync::mpsc::Sender<()>>>>;
 
+/// Effective [`ThreadOwnership`] a tool run defaults to when the caller sets no
+/// explicit override via [`KvmBackend::set_thread_ownership`].
+///
+/// This is deliberately `Host`, reverting the default that commit
+/// `640c5bc6` ("default guest threads to Tool-owned") introduced. Under the
+/// Tool-owned default, a *sequentializing* tool (Detcore, with
+/// `sequentialize_threads`) sends the ROOT leader thread through
+/// `thread_start_request` -> `recv_start_new_thread`, which spins forever
+/// waiting for `next_turns[root]` to be populated. Nothing ever populates it:
+/// the root leader has no parent to run `create_child_thread`, and the KVM
+/// driver never seeds the root into the scheduler run queue the way the ptrace
+/// backend does. The result is a load-independent livelock at guest startup —
+/// `hermit run --backend kvm` on even `/bin/true` pegs a core and never exits,
+/// while ptrace runs the identical handshake in milliseconds.
+///
+/// Until the KVM driver seeds the root thread into the scheduler (the real
+/// fix-forward, which spans the KVM driver and Detcore), the default must stay
+/// `Host`. Callers that genuinely need Tool-owned threads still opt in
+/// explicitly with [`KvmBackend::set_thread_ownership`]; that override wins over
+/// this default at run entry.
+pub(crate) const KVM_DEFAULT_TOOL_THREAD_OWNERSHIP: ThreadOwnership = ThreadOwnership::Host;
+
 // AUTONOMOUS-BOT-IMPLEMENTED: Keep root syscalls that share worker state in one backend.
 // TODO-HUMAN-REVIEW(PR-173): Review KVM root syscall ownership.
 pub(crate) fn is_backend_owned_syscall(number: u64, thread_ownership: ThreadOwnership) -> bool {
@@ -1167,10 +1189,12 @@ impl KvmBackend {
         }
         let pid = Pid::from_raw(self.root_pid);
         // Resolve thread ownership before any CLONE_THREAD worker is created: an
-        // explicit caller override wins, otherwise follow the tool's
-        // `Tool::thread_ownership` (default: Tool-owned "follow children"). This
-        // is why the KVM backend no longer needs the caller to opt threads in.
-        self.resolve_thread_ownership(T::thread_ownership(&config));
+        // explicit caller override wins, otherwise fall back to the KVM default.
+        // That default is `Host` (not the tool's `Tool::thread_ownership`) to
+        // avoid the root-leader startup livelock — see
+        // `KVM_DEFAULT_TOOL_THREAD_OWNERSHIP`. A caller that needs Tool-owned
+        // threads opts in with `set_thread_ownership`, which this respects.
+        self.resolve_thread_ownership(KVM_DEFAULT_TOOL_THREAD_OWNERSHIP);
         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
         let tool = T::new(pid, &config);
         let subscriptions = T::subscriptions(&config);
@@ -1700,6 +1724,27 @@ mod tests {
             libc::SYS_futex as u64,
             ThreadOwnership::Tool
         ));
+    }
+
+    #[test]
+    fn tool_run_defaults_to_host_ownership_to_avoid_root_livelock() {
+        // Regression tripwire for the KVM startup-livelock. Commit 640c5bc6
+        // flipped the tool-run default to Tool-owned; under a sequentializing
+        // tool (Detcore) that makes the ROOT leader thread spin forever in
+        // recv_start_new_thread — nothing seeds next_turns[root] — so
+        // `hermit run --backend kvm` never exits, even on /bin/true. The KVM
+        // driver does not yet seed the root thread into the scheduler, so this
+        // default must stay Host. Flip it back to Tool and the backend
+        // deadlocks at startup; this assert catches that before it ships (KVM
+        // startup is not exercised by CI, which is how the original regression
+        // stayed green while the backend was dead).
+        assert_eq!(
+            KVM_DEFAULT_TOOL_THREAD_OWNERSHIP,
+            ThreadOwnership::Host,
+            "KVM tool-run default must stay Host until the KVM driver seeds the \
+             root thread into the scheduler; a Tool-owned default livelocks the \
+             root leader at guest startup"
+        );
     }
 
     #[test]
