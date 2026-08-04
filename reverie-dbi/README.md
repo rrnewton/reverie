@@ -27,23 +27,33 @@ native DynamoRIO client:
 
 ## Build
 
-DynamoRIO is pinned as an opt-in shallow git submodule. A normal clone leaves
-it empty. Activate only this backend source before building:
+DynamoRIO's build-required source is vendored in this crate at the pinned
+revision recorded in `vendor/dynamorio/REVISION`. Build normally:
 
 ```bash
-scripts/backend-submodule.sh activate dynamorio
 cargo build -p reverie-dbi
 ```
 
-The helper verifies the checkout against the superproject gitlink. Cargo then
-configures, builds, and installs the pinned source automatically; no external
-SDK or `DYNAMORIO_HOME` is used. See
-[`docs/BACKEND_SOURCES.md`](../docs/BACKEND_SOURCES.md) for the shared backend
-source policy.
+Cargo configures, builds, and installs the pinned source inside the package's
+`OUT_DIR`; it never mutates its source checkout and does not fetch a runtime or
+source bundle. No external SDK or `DYNAMORIO_HOME` is used. The vendored tree is
+pruned to DynamoRIO core, deployment tools, build support, and the five
+extensions used by the native client (`drcontainers`, `drmgr`, `drreg`, `drwrap`,
+and `drx`).
 
 The first build compiles DynamoRIO in Cargo's package `OUT_DIR` with its tests,
 samples, and documentation disabled. Cargo reuses that install until the build
 script or pinned submodule revision changes.
+
+Clean CI builds enforce a concurrency-normalized source-build ratchet. Three
+clean builds measured on 2026-08-03 were 13.91s and 14.54s with 16 jobs on
+devbig014 and 71.49s with 4 jobs on a GitHub-hosted runner (`n=3`). Their
+elapsed-seconds times requested-jobs proxies were 222.56, 232.64, and 285.96
+job-seconds. CI rejects a value above 572 job-seconds, twice the slowest
+observation rounded up. This is a build-throughput regression guard, not a CPU
+time measurement or an ETA. Set `REVERIE_DBI_MAX_BUILD_SECONDS` to enforce an
+explicit wall-time limit on a controlled machine; local builds otherwise report
+actual duration without enforcing a machine-independent wall-time guess.
 
 Run the native client smoke tests directly:
 
@@ -80,8 +90,7 @@ DynamoRIO's private loader.
 
 ## Third-party licenses
 
-Building this crate compiles DynamoRIO and the projects it vendors (elfutils,
-libipt, zlib). DynamoRIO is BSD-3-Clause but its extensions/tools include
-LGPL-licensed components (and elfutils is LGPL/GPL). See the [`NOTICE`](../NOTICE)
-file at the repository root for attribution and the distribution obligations
-that apply to binaries produced from this build.
+Building this crate compiles the curated DynamoRIO source and links the host's
+build prerequisites. The vendored copyright, license, and acknowledgement files
+are included under `vendor/dynamorio`; see those files and the repository
+[`NOTICE`](../NOTICE) for attribution and distribution obligations.
