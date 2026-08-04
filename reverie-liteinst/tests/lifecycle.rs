@@ -176,3 +176,22 @@ async fn supervisor_keeps_patchable_syscalls_in_guest() {
     assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
     assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn supervisor_does_not_leak_wait4_restart_codes() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("wait-child"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("supervised wait4 hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(output.stdout, b"wait-child-ok\n", "{output:?}");
+}

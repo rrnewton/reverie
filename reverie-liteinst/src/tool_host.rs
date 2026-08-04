@@ -295,46 +295,57 @@ where
             SyscallArgs::new(args[0], args[1], args[2], args[3], args[4], args[5]),
         );
 
-        match drive_syscall(tool.handle_syscall_event(&mut guest, syscall), &tail) {
-            SyscallOutcome::Return(result) => {
-                guest.event.result = match result {
-                    Ok(value) => value,
-                    Err(error) => match error.into_errno() {
-                        Ok(errno) => -(errno.into_raw() as i64),
-                        Err(error) => tool_fatal(125, &error),
-                    },
-                };
-            }
-            SyscallOutcome::Exit { number, args } => {
-                finish_tool_exit(
-                    &mut tool_slot,
-                    &mut states,
-                    &self.rpc,
-                    tid,
-                    pid,
-                    number,
-                    args,
-                );
-                event.result = unsafe { raw_syscall6(number, args) };
-            }
-            SyscallOutcome::ForkChild {
-                parent_tid,
-                parent_pid,
-                child_tid,
-                child_pid,
-            } => {
-                finish_fork_child(
-                    &mut tool_slot,
-                    &mut states,
-                    &self.rpc,
-                    event,
-                    ForkChildContext {
-                        parent_tid,
-                        parent_pid,
-                        child_tid,
-                        child_pid,
-                    },
-                );
+        loop {
+            match drive_syscall(tool.handle_syscall_event(&mut guest, syscall), &tail) {
+                SyscallOutcome::Return(Ok(value)) => {
+                    guest.event.result = value;
+                    break;
+                }
+                SyscallOutcome::Return(Err(error)) => match error.into_errno() {
+                    // The kernel consumes this private errno while restarting a
+                    // ptrace-backed syscall. A SIGSYS dispatcher has no kernel
+                    // restart frame, so repeat the Tool callback here instead of
+                    // leaking errno 512 into the application ABI.
+                    Ok(Errno::ERESTARTSYS) => continue,
+                    Ok(errno) => {
+                        guest.event.result = -(errno.into_raw() as i64);
+                        break;
+                    }
+                    Err(error) => tool_fatal(125, &error),
+                },
+                SyscallOutcome::Exit { number, args } => {
+                    finish_tool_exit(
+                        &mut tool_slot,
+                        &mut states,
+                        &self.rpc,
+                        tid,
+                        pid,
+                        number,
+                        args,
+                    );
+                    event.result = unsafe { raw_syscall6(number, args) };
+                    break;
+                }
+                SyscallOutcome::ForkChild {
+                    parent_tid,
+                    parent_pid,
+                    child_tid,
+                    child_pid,
+                } => {
+                    finish_fork_child(
+                        &mut tool_slot,
+                        &mut states,
+                        &self.rpc,
+                        event,
+                        ForkChildContext {
+                            parent_tid,
+                            parent_pid,
+                            child_tid,
+                            child_pid,
+                        },
+                    );
+                    break;
+                }
             }
         }
     }
