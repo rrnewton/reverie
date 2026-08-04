@@ -57,6 +57,14 @@ e9tool: LDLIBS += $(E9TOOL_LIBS) $(E9TOOL_LDLIBS)
 e9tool: $(E9TOOL_OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
+# Parallel-safe link ordering (make -jN): the e9tool link consumes the
+# contrib static archives (E9TOOL_LIBS in the dev/release build), but make
+# has no edge from e9tool to them, so under --jobs=N the link can race ahead
+# of `ar` creating libZydis.a/libdw.a (undefined Zydis*/dwarf_* symbols or a
+# missing-archive link error). Declare them as order-only prerequisites so
+# they are built first without forcing a spurious relink.
+e9tool: | contrib/zydis/libZydis.a contrib/libdw/libdw.a
+
 e9patch: $(E9PATCH_OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS) $(LDLIBS)
 
