@@ -163,6 +163,16 @@ pub(crate) struct LoadedStaticElf {
     // TODO-HUMAN-REVIEW(PR-232): Review robust-list fork and exec lifecycle semantics.
     pub robust_list_head: u64,
     pub robust_list_len: u64,
+    // Process-tree-wide registry mapping each guest task id to the robust-list
+    // head/length it last registered via `set_robust_list`. The Linux kernel keeps
+    // the robust list per task and lets `get_robust_list(tid)` read *any* live
+    // task's list (subject to ptrace permissions), so a KVM task querying a
+    // sibling thread or child must consult a shared table rather than its own
+    // task-local `robust_list_head`. The `Arc` is shared across `try_clone_for_fork`
+    // (both fork children and CLONE_THREAD peers), mirroring `file_identity_table`.
+    // TODO-HUMAN-REVIEW(PR-232): Review cross-task robust-list registry lifecycle.
+    pub robust_list_registry:
+        std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<i32, (u64, u64)>>>,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Keep deterministic random descriptors on the Tool path.
     // TODO-HUMAN-REVIEW(PR-235): Review random-device descriptor lifecycle parity.
@@ -266,6 +276,11 @@ impl LoadedStaticElf {
             })),
             robust_list_head: 0,
             robust_list_len: 0,
+            // Share the registry Arc so a forked child or CLONE_THREAD peer and its
+            // parent observe one another's registrations, matching the kernel's
+            // process-tree-visible robust-list table. The child's own head/len reset
+            // to 0 above; it re-registers when glibc thread/process init runs.
+            robust_list_registry: self.robust_list_registry.clone(),
             files,
             random_device_fds: self.random_device_fds.clone(),
             stdout_alias_fds: self.stdout_alias_fds.clone(),
@@ -617,6 +632,9 @@ fn load_executable(
         signalfd_state: std::sync::Arc::new(std::sync::Mutex::new(SignalFdState::default())),
         robust_list_head: 0,
         robust_list_len: 0,
+        robust_list_registry: std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::BTreeMap::new(),
+        )),
         files: std::collections::BTreeMap::new(),
         random_device_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
