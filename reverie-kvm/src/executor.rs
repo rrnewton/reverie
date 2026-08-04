@@ -3887,6 +3887,15 @@ fn ppoll(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
         if args[4] != KERNEL_SIGSET_SIZE as u64 {
             return negative_errno(libc::EINVAL);
         }
+        // The kernel copies the signal mask out of user space before it polls,
+        // so an unreadable mask pointer must fault (EFAULT) rather than return a
+        // readiness result. Observe the mask here to reproduce that fault
+        // semantics; we deliberately do not keep it active across a parked wait
+        // (see the note below), but a bogus pointer can never be serviced.
+        let mut signal_mask = [0u8; KERNEL_SIGSET_SIZE];
+        if memory.read(args[3], &mut signal_mask).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
         // A masked ppoll mirrors detcore's handle_internal_ppoll (hermit
         // detcore/src/syscalls/io.rs:922-939): a zero-timeout probe can honor a
         // temporary signal mask atomically, but keeping the mask active across a
@@ -11646,13 +11655,19 @@ mod tests {
         const POLL_FD: u64 = 0x300;
         const POLL_TIMEOUT: u64 = 0x400;
         const SIGNAL_MASK: u64 = 0x480;
+        // An address well past the single-page guest mapping [0, PAGE_SIZE): a
+        // read of KERNEL_SIGSET_SIZE bytes here fails `checked_offset`, so the
+        // masked path must fault instead of servicing the poll.
+        const BAD_SIGNAL_MASK: u64 = 0x00f0_0000;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
 
         // Block SIGUSR1: a realistic non-empty mask. Its value cannot affect a
-        // non-blocking poll, so it only proves the masked path is taken.
+        // non-blocking poll, but the masked path must still copy it out of guest
+        // memory to reproduce the kernel's fault-on-unreadable-mask semantics
+        // (exercised by the BAD_SIGNAL_MASK negative control below).
         let mask = 1_u64 << (libc::SIGUSR1 as u64 - 1);
         memory.write(SIGNAL_MASK, &mask.to_ne_bytes()).unwrap();
         memory.write(PAYLOAD, b"x").unwrap();
