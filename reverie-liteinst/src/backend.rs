@@ -463,6 +463,23 @@ fn configure_host_command(command: &mut Command, preload: PathBuf) -> io::Result
     Ok(preload)
 }
 
+fn configure_direct_command_preload(command: &mut std::process::Command, preload: PathBuf) {
+    let configured_preload = command
+        .get_envs()
+        .find(|(key, _)| *key == OsStr::new("LD_PRELOAD"))
+        .map(|(_, value)| value.map(ToOwned::to_owned));
+    let mut ld_preload = preload.into_os_string();
+    let inherited_preload = match configured_preload {
+        Some(value) => value,
+        None => std::env::var_os("LD_PRELOAD"),
+    };
+    if let Some(existing) = inherited_preload.filter(|value| !value.is_empty()) {
+        ld_preload.push(OsStr::new(":"));
+        ld_preload.push(existing);
+    }
+    command.env("LD_PRELOAD", ld_preload);
+}
+
 fn inherit_stdio(command: &mut Command) {
     command.stdin(reverie::process::Stdio::inherit());
     command.stdout(reverie::process::Stdio::inherit());
@@ -583,21 +600,11 @@ where
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
 
-    let configured_preload = command.get_env("LD_PRELOAD").map(Into::into);
-    let mut ld_preload = preload.into_os_string();
-    let inherited_preload = match configured_preload {
-        Some(value) => Some(value),
-        None => std::env::var_os("LD_PRELOAD"),
-    };
-    if let Some(existing) = inherited_preload.filter(|value| !value.is_empty()) {
-        ld_preload.push(OsStr::new(":"));
-        ld_preload.push(existing);
-    }
-    command.env("LD_PRELOAD", ld_preload);
-
     let wait = match tool_data {
         Some(tool_data) => {
             let mut child_command = command.into_std_lossy();
+            configure_direct_command_preload(&mut child_command, preload);
+
             let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
             let bootstrap_fd = bootstrap.as_raw_fd();
             unsafe {
@@ -624,6 +631,17 @@ where
             .await?
         }
         None => {
+            let configured_preload = command.get_env("LD_PRELOAD").map(Into::into);
+            let mut ld_preload = preload.into_os_string();
+            let inherited_preload = match configured_preload {
+                Some(value) => Some(value),
+                None => std::env::var_os("LD_PRELOAD"),
+            };
+            if let Some(existing) = inherited_preload.filter(|value| !value.is_empty()) {
+                ld_preload.push(OsStr::new(":"));
+                ld_preload.push(existing);
+            }
+            command.env("LD_PRELOAD", ld_preload);
             command.env(COORDINATOR_ENV, &socket);
             let tracer = TracerBuilder::<()>::new(command).spawn().await?;
             serve_rpc_until(server, async move {
@@ -789,5 +807,23 @@ mod tests {
         assert!(child.stderr.is_none());
         let status = child.wait().unwrap();
         assert!(status.success());
+    }
+
+    #[test]
+    fn direct_preload_preserves_explicit_command_environment() {
+        let mut command = Command::new("/bin/true");
+        command.env("LD_PRELOAD", "/caller/tool.so");
+        let mut child_command = command.into_std_lossy();
+
+        configure_direct_command_preload(&mut child_command, PathBuf::from("/liteinst/runtime.so"));
+
+        let preload = child_command
+            .get_envs()
+            .find(|(key, _)| *key == OsStr::new("LD_PRELOAD"))
+            .and_then(|(_, value)| value);
+        assert_eq!(
+            preload,
+            Some(OsStr::new("/liteinst/runtime.so:/caller/tool.so"))
+        );
     }
 }
