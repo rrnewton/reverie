@@ -559,6 +559,20 @@ impl SyncWaitOwner<'_> {
             pause.captured.wait();
             pause.resume.wait();
         }
+        // On decode error the synchronous path must ROLL BACK, not consume: the
+        // `?` drops `reservation` uncommitted (the latched status stays at the
+        // front of `pending`) and drops `transaction` uncommitted (its Drop
+        // rolls `wait_owner` SYNC_RETURNING -> SYNC and notifies), and because
+        // `self.released` stays false the `SyncWaitOwner` Drop then transitions
+        // SYNC -> NONE and notifies again. That wake hands the tracee off to a
+        // waiting cleanup claimant, which drains the real terminal status via a
+        // synchronous re-wait — forward progress WITHOUT the ESRCH hot spin. The
+        // undecodable status is preserved for that retry rather than silently
+        // popped. This rollback-and-wake-cleanup invariant is load-bearing and
+        // asserted by `decode_error_rolls_back_return_transaction_and_wakes_cleanup`;
+        // do not replace it with a blanket commit. (The ESRCH-spin liveness fix
+        // lives on the async `Event`/notifier path below, which has no cleanup
+        // claimant to hand off to and so must consume-on-error.)
         let decoded = decode(reservation.status)?;
         reservation.commit();
         transaction.commit(WAIT_OWNER_NONE);
@@ -1115,7 +1129,32 @@ impl Event {
                 return Ok(StatusReturn::Cancelled(reservation.status));
             }
         };
-        let decoded = decode(reservation.status)?;
+        let decoded = match decode(reservation.status) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                // Decoding a delivered stop status failed. In practice this is
+                // the "Death under ptrace" race (see `man 2 ptrace`): the tracee
+                // died between the notifier's `waitid` latching this ptrace-event
+                // stop and our reading of its event message
+                // (`PTRACE_GETEVENTMSG`), so the read returns `ESRCH` — surfaced
+                // here as `Error::Died`. The latched status is now undecodable
+                // and moot.
+                //
+                // Consume it anyway — exactly as a successful decode would — so
+                // the caller's subsequent wait advances to the tracee's real
+                // terminal status. Leaving it unconsumed re-presents the
+                // identical dead status on every re-poll, an unbounded `ESRCH`
+                // hot spin that pins a CPU core (observed on the vfork + parent
+                // `kill(child, SIGKILL)` teardown path under load; the guest
+                // parent's `wait4` then blocks forever behind the wedged
+                // supervisor). No decode error here is retryable — a malformed
+                // status fails identically on re-decode — so consuming on any
+                // error is both safe and necessary for liveness.
+                reservation.commit();
+                transaction.commit(WAIT_OWNER_NOTIFIER);
+                return Err(error);
+            }
+        };
         reservation.commit();
         transaction.commit(WAIT_OWNER_NOTIFIER);
         Ok(StatusReturn::Returned(decoded))
