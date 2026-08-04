@@ -9,7 +9,7 @@ initialize or read the submodules.
 | Backend | Path | Pinned revision | License |
 | --- | --- | --- | --- |
 | DynamoRIO | `reverie-dbi/vendor/dynamorio` | `929840ad9190e5086775e8debc0f0b79b4208d59` | BSD-3-Clause, LGPL-2.1-only drwrap, BSD-4-Clause Valgrind headers |
-| SaBRe | `experimental/reverie-sabre/vendor/{sabre,libelf}` | `41113f849f8799932ed8c7883f5a4de616b9e9fa` | GPL-3.0-or-later plus documented GPL-2.0-only/BSD-3-Clause/MIT exceptions; LGPL-3.0-or-later libelf |
+| SaBRe | `experimental/reverie-sabre/vendor/{sabre,libelf}` | `54da01fa26a5691ff9d6082694463e53b2c749b1` | GPL-3.0-or-later plus documented GPL-2.0-only/BSD-3-Clause/MIT exceptions; LGPL-3.0-or-later libelf |
 | e9patch | `reverie-e9patch/vendor/e9patch` | `6c2c03c1da74b14daf1788a9f8dccfa354ce04a6` (`v1.0.1`) | GPL-3.0-only, LGPL-3.0-or-later libdw, MIT Zydis |
 
 The in-tree `reverie-liteinst` prototype is self-contained and does not depend

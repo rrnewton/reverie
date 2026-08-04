@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Instant;
 
-const SABRE_REVISION: &str = "41113f849f8799932ed8c7883f5a4de616b9e9fa";
+const SABRE_REVISION: &str = "54da01fa26a5691ff9d6082694463e53b2c749b1";
 const MAX_PARALLEL_JOBS: usize = 16;
 
 fn main() {
