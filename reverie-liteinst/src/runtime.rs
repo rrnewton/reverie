@@ -186,6 +186,7 @@ pub const TOOL_SPOOF_GETPID: &str = "spoof-getpid";
 const EVENT_CHANNEL_IDENTITY_FAILURE_STATUS: i32 = 120;
 const EVENT_CHANNEL_WRITE_FAILURE_STATUS: i32 = 121;
 const MAX_PATCH_SITES: usize = 4096;
+const MAX_COORDINATOR_FDS: usize = 1024;
 const ARENA_SLOTS: usize = 128;
 const PATCH_SNAPSHOT_BYTES: usize = 64;
 const SITE_INSTALLING: u8 = 1;
@@ -195,7 +196,8 @@ const SITE_STALE: u8 = 4;
 
 static TOOL_MODE: AtomicU8 = AtomicU8::new(0);
 static EVENT_FD: AtomicI32 = AtomicI32::new(libc::STDERR_FILENO);
-static COORDINATOR_FD: AtomicI32 = AtomicI32::new(-1);
+static COORDINATOR_FDS: [AtomicI32; MAX_COORDINATOR_FDS] =
+    [const { AtomicI32::new(-1) }; MAX_COORDINATOR_FDS];
 static EVENT_COOKIE: AtomicU64 = AtomicU64::new(0);
 static EVENT_DEVICE: AtomicU64 = AtomicU64::new(0);
 static EVENT_INODE: AtomicU64 = AtomicU64::new(0);
@@ -209,30 +211,51 @@ static PAGE_SIZE: AtomicU64 = AtomicU64::new(0);
 static INSTALL_HELD: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn reserve_coordinator_fd(fd: libc::c_int) -> io::Result<()> {
-    COORDINATOR_FD
-        .compare_exchange(-1, fd, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "coordinator FD reserved twice",
-            )
-        })
+    if fd < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "coordinator FD must be nonnegative",
+        ));
+    }
+    for slot in &COORDINATOR_FDS {
+        let current = slot.load(Ordering::Acquire);
+        if current == fd {
+            return Ok(());
+        }
+        if current == -1
+            && slot
+                .compare_exchange(-1, fd, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    Err(io::Error::other("coordinator FD registry is full"))
 }
 
-/// Rebinds the protected coordinator descriptor after a fork child reconnects.
+pub(crate) fn release_coordinator_fd(fd: libc::c_int) {
+    for slot in &COORDINATOR_FDS {
+        let _ = slot.compare_exchange(fd, -1, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
+/// Replaces inherited protected descriptors after a fork child reconnects.
 ///
-/// `COORDINATOR_FD` is process-local after fork, so this changes only the
-/// child's protection slot; the parent's connection and descriptor are intact.
-pub(crate) fn replace_coordinator_fd(old: libc::c_int, new: libc::c_int) -> io::Result<()> {
-    COORDINATOR_FD
-        .compare_exchange(old, new, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ())
-        .map_err(|actual| {
-            io::Error::other(format!(
-                "coordinator FD changed concurrently: expected {old}, observed {actual}"
-            ))
-        })
+/// The registry is process-local after fork. The child contains only the
+/// calling thread, so no sibling can race this reset; the parent's registry and
+/// descriptors remain intact in its address space.
+pub(crate) fn reset_coordinator_fds_after_fork(fd: libc::c_int) -> io::Result<()> {
+    if fd < 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "coordinator FD must be nonnegative",
+        ));
+    }
+    for slot in &COORDINATOR_FDS {
+        slot.store(-1, Ordering::Release);
+    }
+    COORDINATOR_FDS[0].store(fd, Ordering::Release);
+    Ok(())
 }
 
 struct RuntimeArena {
@@ -1938,21 +1961,37 @@ fn clone_is_fork_like(flags: u64, child_stack: u64) -> bool {
 }
 
 unsafe fn protect_coordinator_channel(event: &mut SyscallEvent) -> bool {
-    let fd = COORDINATOR_FD.load(Ordering::Acquire);
-    if fd < 0 {
-        return false;
-    }
-    let fd = fd as u64;
-    if event.number == libc::SYS_close && event.args[0] == fd {
+    if event.number == libc::SYS_close && coordinator_fd_is_reserved(event.args[0]) {
         event.result = 0;
-    } else if event.number == libc::SYS_close_range && event.args[0] <= fd && fd <= event.args[1] {
-        event.result = unsafe { close_range_preserving_event_fd(event, fd) };
-    } else if syscall_targets_event_fd(event, fd) {
-        event.result = -i64::from(libc::EBADF);
+    } else if event.number == libc::SYS_close_range
+        && coordinator_fd_in_range(event.args[0], event.args[1])
+    {
+        event.result = unsafe { close_range_preserving_coordinator_fds(event) };
     } else {
+        for slot in &COORDINATOR_FDS {
+            let fd = slot.load(Ordering::Acquire);
+            if fd >= 0 && syscall_targets_event_fd(event, fd as u64) {
+                event.result = -i64::from(libc::EBADF);
+                return true;
+            }
+        }
         return false;
     }
     true
+}
+
+pub(crate) fn coordinator_fd_is_reserved(fd: u64) -> bool {
+    COORDINATOR_FDS.iter().any(|slot| {
+        let reserved = slot.load(Ordering::Acquire);
+        reserved >= 0 && reserved as u64 == fd
+    })
+}
+
+fn coordinator_fd_in_range(first: u64, last: u64) -> bool {
+    COORDINATOR_FDS.iter().any(|slot| {
+        let fd = slot.load(Ordering::Acquire);
+        fd >= 0 && first <= fd as u64 && fd as u64 <= last
+    })
 }
 
 unsafe fn protect_compatibility_event_channel(event: &mut SyscallEvent) -> bool {
@@ -1980,23 +2019,12 @@ unsafe fn protect_compatibility_event_channel(event: &mut SyscallEvent) -> bool 
 }
 
 unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -> i64 {
-    const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
-    const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
-
     let first = event.args[0];
     let last = event.args[1];
-    let mut flags = event.args[2];
-    if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
-        return -i64::from(libc::EINVAL);
-    }
-    if flags & CLOSE_RANGE_UNSHARE != 0 {
-        let result =
-            unsafe { raw_syscall6(libc::SYS_unshare, [libc::CLONE_FILES as u64, 0, 0, 0, 0, 0]) };
-        if result < 0 {
-            return result;
-        }
-        flags &= !CLOSE_RANGE_UNSHARE;
-    }
+    let flags = match unsafe { prepare_close_range_flags(event) } {
+        Ok(flags) => flags,
+        Err(result) => return result,
+    };
 
     if first < event_fd {
         let result =
@@ -2013,6 +2041,69 @@ unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -
         }
     }
     0
+}
+
+unsafe fn close_range_preserving_coordinator_fds(event: &SyscallEvent) -> i64 {
+    let first = event.args[0];
+    let last = event.args[1];
+    let flags = match unsafe { prepare_close_range_flags(event) } {
+        Ok(flags) => flags,
+        Err(result) => return result,
+    };
+
+    let mut protected = [u64::MAX; MAX_COORDINATOR_FDS];
+    let mut protected_len = 0;
+    for slot in &COORDINATOR_FDS {
+        let fd = slot.load(Ordering::Acquire);
+        if fd >= 0 && first <= fd as u64 && fd as u64 <= last {
+            protected[protected_len] = fd as u64;
+            protected_len += 1;
+        }
+    }
+    protected[..protected_len].sort_unstable();
+
+    let mut cursor = first;
+    let mut previous = None;
+    for &fd in &protected[..protected_len] {
+        if previous == Some(fd) {
+            continue;
+        }
+        if cursor < fd {
+            let result =
+                unsafe { raw_syscall6(libc::SYS_close_range, [cursor, fd - 1, flags, 0, 0, 0]) };
+            if result < 0 {
+                return result;
+            }
+        }
+        cursor = fd + 1;
+        previous = Some(fd);
+    }
+    if cursor <= last {
+        let result = unsafe { raw_syscall6(libc::SYS_close_range, [cursor, last, flags, 0, 0, 0]) };
+        if result < 0 {
+            return result;
+        }
+    }
+    0
+}
+
+unsafe fn prepare_close_range_flags(event: &SyscallEvent) -> Result<u64, i64> {
+    const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
+    const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
+
+    let mut flags = event.args[2];
+    if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
+        return Err(-i64::from(libc::EINVAL));
+    }
+    if flags & CLOSE_RANGE_UNSHARE != 0 {
+        let result =
+            unsafe { raw_syscall6(libc::SYS_unshare, [libc::CLONE_FILES as u64, 0, 0, 0, 0, 0]) };
+        if result < 0 {
+            return Err(result);
+        }
+        flags &= !CLOSE_RANGE_UNSHARE;
+    }
+    Ok(flags)
 }
 
 fn syscall_targets_event_fd(event: &SyscallEvent, event_fd: u64) -> bool {
@@ -2253,6 +2344,7 @@ mod tests {
     use super::SITES;
     use super::SiteSlot;
     use super::StackLine;
+    use super::SyscallEvent;
     use super::TOOL_PASSTHROUGH;
     use super::TOOL_SPOOF_GETPID;
     use super::alt_stack_from_env_value;
@@ -2262,7 +2354,10 @@ mod tests {
     use super::fallback_dispatch_count;
     use super::fallback_syscall_count;
     use super::mark_site_range_stale;
+    use super::protect_coordinator_channel;
     use super::record_fallback_dispatch;
+    use super::release_coordinator_fd;
+    use super::reserve_coordinator_fd;
     use super::reset_fallback_observability;
     use super::site_counts;
 
@@ -2341,6 +2436,47 @@ mod tests {
         // build-time typo that aliased them would defeat launcher control.
         assert_eq!(ALT_STACK_ENV, "REVERIE_LITEINST_ALT_STACK");
         assert_ne!(ALT_STACK_ENV, "REVERIE_LITEINST_TOOL");
+    }
+
+    #[test]
+    fn protects_every_registered_coordinator_descriptor() {
+        const FIRST: libc::c_int = 900_000;
+        const SECOND: libc::c_int = 900_002;
+        reserve_coordinator_fd(FIRST).unwrap();
+        reserve_coordinator_fd(SECOND).unwrap();
+
+        let mut close = SyscallEvent {
+            number: libc::SYS_close,
+            args: [FIRST as u64, 0, 0, 0, 0, 0],
+            instruction_pointer: 0,
+            result: i64::MIN,
+            context: 0,
+        };
+        assert!(unsafe { protect_coordinator_channel(&mut close) });
+        assert_eq!(close.result, 0);
+
+        let mut dup = SyscallEvent {
+            number: libc::SYS_dup2,
+            args: [libc::STDOUT_FILENO as u64, SECOND as u64, 0, 0, 0, 0],
+            instruction_pointer: 0,
+            result: i64::MIN,
+            context: 0,
+        };
+        assert!(unsafe { protect_coordinator_channel(&mut dup) });
+        assert_eq!(dup.result, -i64::from(libc::EBADF));
+
+        let mut close_range = SyscallEvent {
+            number: libc::SYS_close_range,
+            args: [FIRST as u64 - 1, SECOND as u64 + 1, 0, 0, 0, 0],
+            instruction_pointer: 0,
+            result: i64::MIN,
+            context: 0,
+        };
+        assert!(unsafe { protect_coordinator_channel(&mut close_range) });
+        assert_eq!(close_range.result, 0);
+
+        release_coordinator_fd(FIRST);
+        release_coordinator_fd(SECOND);
     }
 
     #[test]
