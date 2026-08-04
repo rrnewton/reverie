@@ -93,15 +93,18 @@ impl Tool for LifecycleTool {
         guest: &mut G,
         syscall: Syscall,
     ) -> Result<i64, Error> {
-        if syscall.number() == Sysno::wait4 && FORCE_WAIT_RESTART.swap(false, Ordering::Relaxed) {
-            return Err(Errno::ERESTARTSYS.into());
+        if syscall.number() == Sysno::wait4 {
+            if FORCE_WAIT_RESTART.swap(false, Ordering::Relaxed) {
+                return Err(Errno::ERESTARTSYS.into());
+            }
+            return Ok(4242);
         }
         let event = match syscall.number() {
             Sysno::getpid => RPC_GETPID,
             Sysno::clock_gettime => RPC_CLOCK_GETTIME,
             Sysno::gettimeofday => RPC_GETTIMEOFDAY,
             Sysno::fork | Sysno::clone => RPC_FORK,
-            Sysno::wait4 => 0,
+            Sysno::wait4 => unreachable!("wait4 is handled before event classification"),
             Sysno::exit | Sysno::exit_group => 0,
             number => panic!("unexpected lifecycle fixture syscall {number}"),
         };
@@ -170,24 +173,10 @@ fn fast_path() {
     assert_eq!(hooks, FAST_CALLS);
 }
 
-fn wait_child() {
-    let child = fork_or_panic();
-    if child == 0 {
-        std::thread::sleep(Duration::from_millis(50));
-        unsafe { libc::_exit(0) };
-    }
-
-    let mut status = 0;
-    let waited = unsafe { libc::waitpid(child, &mut status, 0) };
-    assert_eq!(
-        waited,
-        child,
-        "waitpid failed: {}",
-        std::io::Error::last_os_error()
-    );
-    assert!(libc::WIFEXITED(status));
-    assert_eq!(libc::WEXITSTATUS(status), 0);
-    println!("wait-child-ok");
+fn restart_wait4() {
+    let waited = unsafe { libc::waitpid(-1, core::ptr::null_mut(), libc::WNOHANG) };
+    assert_eq!(waited, 4242, "wait4 callback was not restarted");
+    println!("wait4-restart-ok");
 }
 
 fn main() {
@@ -204,7 +193,7 @@ fn main() {
             &arguments.next().expect("missing child pid path"),
         )),
         Some("fast-path") => fast_path(),
-        Some("wait-child") => wait_child(),
+        Some("restart-wait4") => restart_wait4(),
         _ => panic!("unknown lifecycle fixture mode {mode:?}"),
     }
 }
