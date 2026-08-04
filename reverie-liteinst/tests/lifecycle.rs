@@ -178,12 +178,12 @@ async fn supervisor_keeps_patchable_syscalls_in_guest() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn supervisor_does_not_leak_wait4_restart_codes() {
+async fn supervisor_restarts_wait4_without_leaking_private_errno() {
     let (_preload_directory, preload) = compile_noop_preload();
     let (output, _) = tokio::time::timeout(
         Duration::from_secs(10),
         LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
-            guest_command("wait-child"),
+            guest_command("restart-wait4"),
             (),
             preload,
         ),
@@ -193,5 +193,5 @@ async fn supervisor_does_not_leak_wait4_restart_codes() {
     .unwrap();
 
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(output.stdout, b"wait-child-ok\n", "{output:?}");
+    assert_eq!(output.stdout, b"wait4-restart-ok\n", "{output:?}");
 }
