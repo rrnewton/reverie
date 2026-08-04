@@ -2960,8 +2960,15 @@ mod tests {
             .expect_err("mutated private stub impersonated injected-syscall completion");
 
         assert!(!mutate_once.load(Ordering::SeqCst), "{error}");
+        let ptrace_write_rejected = matches!(
+            &error,
+            Error::Tool(error)
+                if matches!(
+                    error.downcast_ref::<crate::error::Error>(),
+                    Some(crate::error::Error::Internal(TraceError::Errno(Errno::EFAULT)))
+                )
+        );
         let error = error.to_string();
-        let ptrace_write_rejected = error == Errno::EFAULT.to_string();
         // Some kernels reject the forced ptrace write before the mutated stub
         // executes. Otherwise, the exact-stub provenance check must reject it.
         assert!(

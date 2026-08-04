@@ -4412,7 +4412,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     // It owns the original root pidfd and every generation-
                     // bound notifier handle; this task must not reopen or
                     // numerically signal the root PID.
-                    return Err(anyhow::anyhow!(err.to_string()).into());
+                    return Err(anyhow::Error::new(err).into());
                 }
                 // Note: Calling handle_internal_error cannot happen in the
                 // `select!()` of the `run` function because then the exit
