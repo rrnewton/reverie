@@ -302,11 +302,12 @@ where
                     break;
                 }
                 SyscallOutcome::Return(Err(error)) => match error.into_errno() {
-                    // The kernel consumes this private errno while restarting a
-                    // ptrace-backed syscall. A SIGSYS dispatcher has no kernel
-                    // restart frame, so repeat the Tool callback here instead of
-                    // leaking errno 512 into the application ABI.
-                    Ok(Errno::ERESTARTSYS) => continue,
+                    // Detcore uses wait4 as a restartable scheduler poll. The
+                    // ptrace backend consumes this private errno through its
+                    // kernel restart frame; a SIGSYS dispatcher must repeat the
+                    // callback itself. Preserve explicit ERESTARTSYS results for
+                    // other Tools/syscalls, including Chaos Tool read injection.
+                    Ok(Errno::ERESTARTSYS) if number == Sysno::wait4 => continue,
                     Ok(errno) => {
                         guest.event.result = -(errno.into_raw() as i64);
                         break;
