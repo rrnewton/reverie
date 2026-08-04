@@ -1003,10 +1003,13 @@ fn static_elf_runs_glibc_clone3_thread_and_restores_parent_state() {
     // `FUTEX_WAIT`/`CLEARTID` round trip completes (exit 0, no hang) in each:
     //   * `Direct`: the non-Tool personality (`run_process_action`).
     //   * `ToolDefault`: run a tool with *no* explicit ownership override, so the
-    //     backend resolves ownership from `Tool::thread_ownership` — whose
-    //     default is Tool-owned "follow children". This locks in the safe
-    //     default (worker on the Tool loop, `futex` routed to the Tool) so a KVM
-    //     caller no longer has to opt threads in.
+    //     backend resolves ownership from `KVM_DEFAULT_TOOL_THREAD_OWNERSHIP`,
+    //     which is `Host` (see that constant: the Tool-owned default livelocks
+    //     the root leader at startup until the KVM driver seeds the root thread).
+    //     This locks in that a KVM caller gets a working default run without
+    //     opting threads in; the worker takes the direct path with host-owned
+    //     `futex`. The explicit `Tool(ThreadOwnership::Tool)` case below covers
+    //     Tool-loop worker dispatch.
     //   * `Tool(ThreadOwnership::Host)`: force the hybrid model, where
     //     `run_process_action_with_tool` falls through to the direct worker path
     //     and `futex` stays host-owned. Both execution and futex ownership are
@@ -1032,7 +1035,7 @@ fn static_elf_runs_glibc_clone3_thread_and_restores_parent_state() {
         let (exit_code, stdout, stderr) = match dispatch {
             WorkerDispatch::Direct => backend.run_static_elf_captured().unwrap(),
             WorkerDispatch::ToolDefault => {
-                // No set_thread_ownership: rely on the resolved default.
+                // No set_thread_ownership: rely on the resolved default (Host).
                 let (_, exit_code, stdout, stderr) = futures::executor::block_on(
                     backend.run_static_elf_with_tool::<StraceTool>((), true),
                 )
