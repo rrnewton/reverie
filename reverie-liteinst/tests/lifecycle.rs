@@ -176,3 +176,29 @@ async fn supervisor_keeps_patchable_syscalls_in_guest() {
     assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
     assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn in_guest_run_reports_typed_instrumentation_stats() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload_and_stats::<CoordinatorOnlyTool>(
+            guest_command("fast-path"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("stats-enabled in-guest run hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_eq!(stats.snapshot().process_reports(), 1, "{stats}");
+    assert!(stats.distinct_rips() >= 1, "{stats}");
+    assert!(stats.patch_candidates() >= 1, "{stats}");
+    let paths = stats.dispatch_path_counts();
+    assert!(paths[2] >= 1, "expected an in-guest SIGSYS: {stats}");
+    assert!(paths[6] >= 8, "expected installed-hook dispatches: {stats}");
+}
