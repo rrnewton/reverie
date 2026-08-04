@@ -59,6 +59,7 @@ pub fn sbr_init<T: ToolGlobal>(
     vdso_callback: *mut Option<ffi::handle_vdso_fn>,
     syscall_handler: *mut Option<ffi::handle_syscall_fn>,
     rdtsc_handler: *mut Option<ffi::handle_rdtsc_fn>,
+    cpuid_handler: *mut Option<ffi::handle_cpuid_fn>,
     post_load: *mut Option<ffi::post_load_fn>,
     sabre_path: *const libc::c_char,
     client_path: *const libc::c_char,
@@ -68,6 +69,7 @@ pub fn sbr_init<T: ToolGlobal>(
         *vdso_callback = Some(callbacks::handle_vdso::<T>);
         *syscall_handler = Some(callbacks::handle_syscall::<T>);
         *rdtsc_handler = Some(callbacks::handle_rdtsc::<T>);
+        *cpuid_handler = Some(callbacks::handle_cpuid::<T>);
         *post_load = Some(callbacks::handle_post_load::<T>);
 
         paths::set_sabre_path(sabre_path);

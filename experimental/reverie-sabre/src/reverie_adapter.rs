@@ -24,6 +24,7 @@ use std::task::Waker;
 
 use parking_lot::Mutex;
 use reverie::Backtrace;
+use reverie::CpuIdResult;
 use reverie::Error;
 use reverie::ExitStatus;
 use reverie::Frame;
@@ -495,6 +496,39 @@ where
             Poll::Pending => {
                 crate::eprintln!(
                     "reverie-sabre: remote Tool::handle_rdtsc_event suspended and was dropped"
+                );
+                Err(Errno::EIO)
+            }
+        }
+    }
+
+    /// Forwards an intercepted CPUID instruction through the shared tool and
+    /// remote GlobalTool.
+    pub fn handle_cpuid(&self, eax: u32, ecx: u32) -> Result<CpuIdResult, Errno> {
+        let tid = current_tid();
+        let pid = current_pid();
+        let state = self.thread_state(tid).map_err(remote_rpc_error)?;
+        let mut state = state.lock();
+        let RemoteThreadState {
+            thread_state,
+            rpc,
+            exit_handled,
+        } = &mut *state;
+        let mut guest = SabreGuest::new(
+            tid,
+            pid,
+            thread_state,
+            rpc.as_ref(),
+            Some((&self.tool, exit_handled, None)),
+            None,
+            None,
+        );
+
+        match poll_once(self.tool.handle_cpuid_event(&mut guest, eax, ecx)) {
+            Poll::Ready(result) => result,
+            Poll::Pending => {
+                crate::eprintln!(
+                    "reverie-sabre: remote Tool::handle_cpuid_event suspended and was dropped"
                 );
                 Err(Errno::EIO)
             }
@@ -1889,6 +1923,20 @@ mod tests {
             let tsc = guest.send_rpc(10).await as u64;
             Ok(reverie::RdtscResult { tsc, aux: None })
         }
+
+        async fn handle_cpuid_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            eax: u32,
+            ecx: u32,
+        ) -> Result<reverie::CpuIdResult, Errno> {
+            Ok(reverie::CpuIdResult {
+                eax: guest.send_rpc(100).await as u32,
+                ebx: eax,
+                ecx,
+                edx: 0,
+            })
+        }
     }
 
     #[test]
@@ -1927,10 +1975,19 @@ mod tests {
         assert_eq!(adapter.handle_syscall(syscall), Ok(1));
         assert_eq!(adapter.handle_syscall(syscall), Ok(2));
         assert_eq!(adapter.handle_rdtsc(), Ok(12));
+        assert_eq!(
+            adapter.handle_cpuid(7, 1),
+            Ok(reverie::CpuIdResult {
+                eax: 112,
+                ebx: 7,
+                ecx: 1,
+                edx: 0,
+            })
+        );
         drop(adapter);
 
         assert!(server_thread.join().unwrap().is_ok());
-        assert_eq!(global.total.load(Ordering::SeqCst), 12);
+        assert_eq!(global.total.load(Ordering::SeqCst), 112);
     }
 
     #[test]

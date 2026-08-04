@@ -986,6 +986,19 @@ pub extern "C" fn handle_rdtsc<T: ToolGlobal>() -> u64 {
     T::global().rdtsc()
 }
 
+pub extern "C" fn handle_cpuid<T: ToolGlobal>(eax: u32, ecx: u32) -> ffi::CpuidResult {
+    if is_vfork_child_process() {
+        terminate(libc::ENOSYS as usize);
+    }
+    let result = T::global().cpuid(eax, ecx);
+    ffi::CpuidResult {
+        eax: result.eax,
+        ebx: result.ebx,
+        ecx: result.ecx,
+        edx: result.edx,
+    }
+}
+
 /// Terminate every thread in the process, including threads that have not yet
 /// crossed a SaBRe interception boundary and therefore are not in our table.
 fn terminate_group(exit_code: usize) -> ! {
