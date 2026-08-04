@@ -34,6 +34,7 @@ extern sbr_icept_vdso_callback_fn vdso_callback;
 extern sbr_sc_handler_fn plugin_sc_handler;
 #ifdef __NX_INTERCEPT_RDTSC
 extern sbr_rdtsc_handler_fn plugin_rdtsc_handler;
+extern sbr_cpuid_handler_fn plugin_cpuid_handler;
 #endif
 extern calling_from_plugin_fn calling_from_plugin;
 extern enter_plugin_fn enter_plugin;

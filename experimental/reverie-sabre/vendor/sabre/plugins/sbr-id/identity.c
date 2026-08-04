@@ -182,6 +182,15 @@ long handle_rdtsc() {
 
   return ret;
 }
+
+sbr_cpuid_result handle_cpuid(uint32_t leaf, uint32_t subleaf) {
+  sbr_cpuid_result result;
+  asm volatile("cpuid"
+               : "=a"(result.eax), "=b"(result.ebx), "=c"(result.ecx),
+                 "=d"(result.edx)
+               : "a"(leaf), "c"(subleaf));
+  return result;
+}
 #endif // __NX_INTERCEPT_RDTSC
 
 void post_clone_hook(void *ctx) {
@@ -194,6 +203,7 @@ void sbr_init(int *argc, char **argv[], sbr_icept_reg_fn fn_icept_reg,
               sbr_sc_handler_fn *syscall_handler,
 #ifdef __NX_INTERCEPT_RDTSC
               sbr_rdtsc_handler_fn *rdtsc_handler,
+              sbr_cpuid_handler_fn *cpuid_handler,
 #endif
               sbr_post_load_fn *post_load, char *sp, char *cp) {
   (void)fn_icept_reg; // unused
@@ -208,6 +218,7 @@ void sbr_init(int *argc, char **argv[], sbr_icept_reg_fn fn_icept_reg,
 
 #ifdef __NX_INTERCEPT_RDTSC
   *rdtsc_handler = handle_rdtsc;
+  *cpuid_handler = handle_cpuid;
 #endif
 
   (*argc)--;

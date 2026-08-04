@@ -62,6 +62,7 @@ sbr_sc_handler_fn plugin_sc_handler = NULL;
 sbr_icept_vdso_callback_fn vdso_callback = ld_vdso_callback;
 #ifdef __NX_INTERCEPT_RDTSC
 sbr_rdtsc_handler_fn plugin_rdtsc_handler;
+sbr_cpuid_handler_fn plugin_cpuid_handler;
 #endif
 calling_from_plugin_fn calling_from_plugin = NULL;
 enter_plugin_fn enter_plugin = NULL;
@@ -167,6 +168,15 @@ static void sigill_handler(int sig __unused, siginfo_t *info, void *ucontext) {
       regs[REG_RCX] = 0;
       instruction_len = 3;
     }
+  } else if (faulting_insn == 0x0A0F) { // CPUID marker
+    greg_t *regs = ctx->uc_mcontext.gregs;
+    sbr_cpuid_result result =
+        plugin_cpuid_handler((uint32_t)regs[REG_RAX],
+                             (uint32_t)regs[REG_RCX]);
+    regs[REG_RAX] = result.eax;
+    regs[REG_RBX] = result.ebx;
+    regs[REG_RCX] = result.ecx;
+    regs[REG_RDX] = result.edx;
 #endif
   } else {
     // not from SaBRe, so use default handler

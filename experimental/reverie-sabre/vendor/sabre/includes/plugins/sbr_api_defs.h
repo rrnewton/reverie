@@ -9,6 +9,7 @@
 #define SBR_API_DEFS_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 // Helper typedef to simplify definition of sbr_icept_callback_fn
 typedef void (*void_void_fn)(void);
@@ -48,6 +49,16 @@ typedef long (*sbr_sc_handler_fn)(long, long, long, long, long, long, long,
 #ifdef __NX_INTERCEPT_RDTSC
 // Signature for the RDTSC handler
 typedef long (*sbr_rdtsc_handler_fn)();
+
+typedef struct {
+  uint32_t eax;
+  uint32_t ebx;
+  uint32_t ecx;
+  uint32_t edx;
+} sbr_cpuid_result;
+
+// Signature for the CPUID handler
+typedef sbr_cpuid_result (*sbr_cpuid_handler_fn)(uint32_t, uint32_t);
 #endif
 
 // Signature for vDSO callback function
@@ -66,7 +77,7 @@ typedef void (*sbr_init_fn)(
     // sbr_segfault_handler_fn *segfault_handler, // - TBD
     sbr_icept_reg_fn, sbr_icept_vdso_callback_fn *, sbr_sc_handler_fn *,
 #ifdef __NX_INTERCEPT_RDTSC
-    sbr_rdtsc_handler_fn *,
+    sbr_rdtsc_handler_fn *, sbr_cpuid_handler_fn *,
 #endif
     sbr_post_load_fn *, char *, char *);
 

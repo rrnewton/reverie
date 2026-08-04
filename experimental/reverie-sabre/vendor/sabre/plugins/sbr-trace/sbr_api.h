@@ -62,7 +62,13 @@ void sbr_init(int *argc, char **argv[],
               // sbr_segfault_handler_fn *segfault_handler, // - TBD
               sbr_icept_reg_fn fn_icept_reg,
               sbr_icept_vdso_callback_fn *vdso_callback,
-              sbr_sc_handler_fn *syscall_handler, sbr_post_load_fn *post_load);
+              sbr_sc_handler_fn *syscall_handler,
+#ifdef __NX_INTERCEPT_RDTSC
+              sbr_rdtsc_handler_fn *rdtsc_handler,
+              sbr_cpuid_handler_fn *cpuid_handler,
+#endif
+              sbr_post_load_fn *post_load, char *sabre_path,
+              char *client_path);
 
 // If the init above is used, nothing else is required from the API - loader
 // knows what it needs to overwrite and what to overwrite it with.
