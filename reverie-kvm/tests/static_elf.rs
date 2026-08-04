@@ -24,6 +24,8 @@ use reverie::Pid;
 use reverie::Subscription;
 use reverie::ThreadOwnership;
 use reverie::Tool;
+use reverie::backend_stats::BackendStatsRequest;
+use reverie::backend_stats::BackendStatsSource;
 use reverie::syscalls::CArrayPtr;
 use reverie::syscalls::CStrPtr;
 use reverie::syscalls::Errno;
@@ -39,6 +41,7 @@ use reverie_kvm::Error;
 use reverie_kvm::HierarchicalCounterTool;
 use reverie_kvm::HierarchicalTotals;
 use reverie_kvm::KvmBackend;
+use reverie_kvm::KvmExitReason;
 use reverie_kvm::StraceTool;
 
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
@@ -1367,6 +1370,64 @@ fn static_elf_getppid_matches_ptrace_parity() {
         backend.run_static_elf().unwrap(),
         0,
         "namespace-init guest pid=1 must report getppid()==0"
+    );
+}
+
+#[test]
+fn static_elf_records_vcpu_exit_stats_only_when_enabled() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM stats test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    // Minimal guest: one getpid, then exit_group(0). Each guest syscall crosses
+    // the KVM syscall transport as a hypercall vCPU exit, so a measured run must
+    // observe at least one hypercall.
+    let code = [
+        0xb8, 0x27, 0x00, 0x00, 0x00, // mov eax, SYS_getpid (39)
+        0x0f, 0x05, // syscall
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group (231)
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ];
+
+    // Collection is disabled by default: the run touches no counters and a
+    // disabled request never even asks the backend for a snapshot.
+    let mut disabled = KvmBackend::new(MEMORY_SIZE).unwrap();
+    disabled
+        .install_static_elf(&static_elf(&code), "/bin/true")
+        .unwrap();
+    assert_eq!(disabled.run_static_elf().unwrap(), 0);
+    assert!(BackendStatsRequest::DISABLED.collect(&disabled).is_none());
+    assert_eq!(
+        disabled.backend_stats().total_exits(),
+        0,
+        "a disabled run must not record any vCPU exits"
+    );
+
+    // Enabled: the syscall transport surfaces as hypercall vCPU exits.
+    let mut enabled = KvmBackend::new(MEMORY_SIZE).unwrap();
+    enabled.set_backend_stats_request(BackendStatsRequest::ENABLED);
+    enabled
+        .install_static_elf(&static_elf(&code), "/bin/true")
+        .unwrap();
+    assert_eq!(enabled.run_static_elf().unwrap(), 0);
+
+    let stats = BackendStatsRequest::ENABLED
+        .collect(&enabled)
+        .expect("an enabled request must collect a snapshot");
+    assert!(
+        stats.count(KvmExitReason::Hypercall) >= 1,
+        "guest syscalls must surface as hypercall vCPU exits: {stats}"
+    );
+    assert!(
+        stats.total_exits() >= stats.count(KvmExitReason::Hypercall),
+        "total exits must include the recorded hypercalls: {stats}"
     );
 }
 
