@@ -315,7 +315,7 @@ fn build_dynamorio(source_dir: &Path, build_dir: &Path, install_dir: &Path) {
     if let Some(generator) = env::var_os("CMAKE_GENERATOR") {
         configure.arg("-G").arg(generator);
     }
-    run(&mut configure, "configure DynamoRIO");
+    run_cmake(&mut configure, "configure DynamoRIO");
 
     let mut build = Command::new(cmake);
     build.arg("--build").arg(build_dir).args([
@@ -328,16 +328,95 @@ fn build_dynamorio(source_dir: &Path, build_dir: &Path, install_dir: &Path) {
     if let Some(jobs) = env::var_os("NUM_JOBS") {
         build.arg(jobs);
     }
-    run(&mut build, "build and install DynamoRIO");
+    run_cmake(&mut build, "build and install DynamoRIO");
 }
 
+/// Run a subprocess that populates or inspects the pinned DynamoRIO source
+/// tree. A failure here is a source/submodule/network problem, not a product
+/// defect, so it reports as such rather than as a bare assertion.
 fn run(command: &mut Command, description: &str) {
     eprintln!("reverie-dbi: {description}: {command:?}");
-    let status = command
-        .status()
-        .unwrap_or_else(|error| panic!("failed to {description}: {error}"));
-    assert!(status.success(), "failed to {description}: {status}");
+    match command.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => fail_dynamorio(description, &format!("exited with {status}"), SOURCE_REMEDY),
+        Err(error) => fail_dynamorio(
+            description,
+            &format!("could not be launched: {error}"),
+            SOURCE_REMEDY,
+        ),
+    }
 }
+
+/// Run a cmake configure/build step for the vendored, third-party DynamoRIO
+/// tree. These steps depend on the host toolchain and memory budget, so their
+/// failure gets a diagnostic that names the missing precondition and the
+/// remedy — the historical failure here was a bare `assert!` panic whose
+/// reported location (this helper) is *not* the fault location.
+fn run_cmake(command: &mut Command, step: &str) {
+    eprintln!("reverie-dbi: {step}: {command:?}");
+    match command.status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => fail_dynamorio(step, &format!("exited with {status}"), CMAKE_REMEDY),
+        Err(error) => fail_dynamorio(
+            step,
+            &format!("could not be launched: {error} (is `cmake` installed and on PATH?)"),
+            CMAKE_REMEDY,
+        ),
+    }
+}
+
+/// Emit a named, actionable diagnostic for a DynamoRIO build/source failure and
+/// stop the build. We deliberately `exit(1)` after printing rather than
+/// `panic!`: a build-script panic prints `panicked at build.rs:<line>`, which
+/// sends the operator to this generic helper instead of the real (third-party)
+/// fault whose output appears just above.
+fn fail_dynamorio(step: &str, failure: &str, remedy: &str) -> ! {
+    let report = dynamorio_failure_report(step, failure, remedy);
+    // Surface a one-line summary through cargo's own warning channel so it is
+    // visible even when the full build-script stderr is folded away.
+    println!(
+        "cargo:warning=reverie-dbi: DynamoRIO build failed at step \"{step}\" ({failure}) — see the reverie-dbi diagnostic below; this is a third-party dependency fault, not a reverie-dbi/Hermit product defect"
+    );
+    eprintln!("\n{report}\n");
+    std::process::exit(1);
+}
+
+/// Build the human-facing diagnostic body. Pure and testable so the message
+/// contract (component, step, remedy) is locked down without a cmake run.
+fn dynamorio_failure_report(step: &str, failure: &str, remedy: &str) -> String {
+    format!(
+        "reverie-dbi could not build its bundled DynamoRIO dependency.\n\
+         \n\
+         \x20 step   : {step}\n\
+         \x20 result : {failure}\n\
+         \x20 source : third-party/dynamorio pinned at {DYNAMORIO_REVISION}\n\
+         \n\
+         This is a failure of the VENDORED, THIRD-PARTY DynamoRIO build, not of\n\
+         reverie-dbi, Hermit, or any pull request under test. DBI is the only Reverie\n\
+         backend that compiles DynamoRIO; it is gated behind the `dbi` /\n\
+         `third-party-backends` cargo feature and is OFF by default, so a plain\n\
+         `cargo build` and the shipped Hermit binary do not depend on it. The exact\n\
+         file and compiler/cmake error appear in the cmake output ABOVE this message.\n\
+         \n\
+         {remedy}"
+    )
+}
+
+const CMAKE_REMEDY: &str = "Likely remedies (this cmake step depends on the host toolchain and memory budget):\n\
+     \x20 * Out of memory: the C++ compiler (cc1plus) can be OOM-killed building\n\
+     \x20   DynamoRIO's drcachesim under a tight cgroup memory cap. Raise the step's\n\
+     \x20   memory budget or lower parallelism (NUM_JOBS / CARGO_BUILD_JOBS).\n\
+     \x20 * Stale build tree: remove the DynamoRIO output under this crate's OUT_DIR\n\
+     \x20   (.../build/reverie-dbi-*/out/dynamorio-{build,install}) and rebuild clean.\n\
+     \x20 * Toolchain mismatch: a host gcc/binutils newer than the pinned DynamoRIO's\n\
+     \x20   vendored elfutils can fail to compile it; use a compatible toolchain.\n\
+     \x20 * If you do not need DBI, build without `dbi`/`third-party-backends`.";
+
+const SOURCE_REMEDY: &str = "Likely remedies:\n\
+     \x20 * Ensure the git submodule can be fetched (network/proxy), or that\n\
+     \x20   third-party/dynamorio is initialized at the pinned revision.\n\
+     \x20 * Remove a partially-populated third-party/dynamorio tree and re-run so it\n\
+     \x20   can be re-fetched cleanly.";
 
 fn required_env(name: &str) -> OsString {
     env::var_os(name).unwrap_or_else(|| panic!("Cargo did not set {name}"))
@@ -406,6 +485,28 @@ mod tests {
         let source = complete_source_repo();
         fs::remove_file(source.path().join("core/extra.c")).unwrap();
         assert!(!source_dir_is_complete(source.path()));
+    }
+
+    #[test]
+    fn dynamorio_failure_report_names_component_step_and_remedy() {
+        let report = dynamorio_failure_report(
+            "build and install DynamoRIO",
+            "exited with exit status: 2",
+            CMAKE_REMEDY,
+        );
+        // Names the failing step and its result, not just a generic assert.
+        assert!(report.contains("build and install DynamoRIO"), "{report}");
+        assert!(report.contains("exit status: 2"), "{report}");
+        // Attributes the fault to the vendored third-party dependency, and the
+        // pinned revision, so the reader is not sent to reverie-dbi/Hermit code.
+        assert!(report.contains("THIRD-PARTY"), "{report}");
+        assert!(report.contains("not of\n         reverie-dbi"), "{report}");
+        assert!(report.contains(DYNAMORIO_REVISION), "{report}");
+        // States the feature gate that lets a default build skip DynamoRIO.
+        assert!(report.contains("third-party-backends"), "{report}");
+        // Carries an actionable remedy for the two dominant failure modes.
+        assert!(report.contains("Out of memory"), "{report}");
+        assert!(report.contains("Stale build tree"), "{report}");
     }
 
     #[test]
