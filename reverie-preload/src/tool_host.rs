@@ -41,17 +41,27 @@
 //! application-visible errno. [`drive_tool_syscall`] owns that loop so both
 //! ld-preload backends inherit identical semantics.
 //!
-//! # Not yet here (deferred to the wiring increments)
+//! # The slow-path counter seam
 //!
-//! This module is the shared *driver*; it is intentionally **not wired** to any
-//! backend yet, and each backend still carries its own copy of this logic. The
-//! backend seam traits (`HostSyscallEvent`, `HostBackend`, and the slow-path
-//! counter) are co-designed with the first backend that adopts the driver,
-//! where a real implementor validates their shape. When that seam lands, the
-//! host-backend's slow-path counter accessor must be **non-`Option`** so a
-//! converging backend cannot silently drop per-path (fastpath vs slowpath)
-//! counts — that invariant is a hard requirement, recorded here so the wiring
-//! increment honors it.
+//! [`SlowpathCounter`] and [`submit_process_slowpath_stats`] are the shared
+//! process-exit accounting seam that both in-guest backends route through. The
+//! accessor is **non-`Option`** on purpose: a backend that converges onto this
+//! host cannot reach the submission point without a counter in hand, so the
+//! fast-path-vs-slow-path distinction cannot be silently dropped as backends
+//! collapse onto one host. LiteInst's retired "14.5x slower" legacy path was
+//! invisible precisely because nothing distinguished a slow *path* from a slow
+//! *backend*; making the counter mandatory at one submission point turns that
+//! silence into a compile impossibility rather than a reviewer's vigilance.
+//!
+//! # Still per-backend
+//!
+//! The concrete syscall-event and [`Guest<T>`](reverie::Guest) types stay
+//! per-backend: register, memory, and stack access live inside each backend's
+//! `Guest<T>` impl, and each backend keeps its own trap-installation engine and
+//! coordinator-RPC wrapper. Only the driver core (above) and this accounting
+//! seam are shared. Folding the whole exit *lifecycle* behind one host-backend
+//! trait would restructure the syscall-interception dispatch model and is out of
+//! scope here.
 
 use core::future::Future;
 use core::sync::atomic::AtomicI64;
