@@ -270,6 +270,23 @@ reverie_liteinst_rpc_sigprocmask_site:
     .size reverie_liteinst_rpc_sigprocmask, .-reverie_liteinst_rpc_sigprocmask
 
     .p2align 4
+    .global reverie_liteinst_rpc_wait4
+    .hidden reverie_liteinst_rpc_wait4
+    .type reverie_liteinst_rpc_wait4,@function
+reverie_liteinst_rpc_wait4:
+    mov r10, rcx
+    mov eax, 61
+    .global reverie_liteinst_rpc_wait4_site
+    .hidden reverie_liteinst_rpc_wait4_site
+reverie_liteinst_rpc_wait4_site:
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .size reverie_liteinst_rpc_wait4, .-reverie_liteinst_rpc_wait4
+
+    .p2align 4
     .global reverie_liteinst_rpc_execve
     .hidden reverie_liteinst_rpc_execve
     .type reverie_liteinst_rpc_execve,@function
@@ -332,9 +349,16 @@ unsafe extern "C" {
         old_set: *mut u64,
         size: usize,
     ) -> i64;
+    fn reverie_liteinst_rpc_wait4(
+        pid: libc::pid_t,
+        status: *mut libc::c_int,
+        options: libc::c_int,
+        rusage: *mut libc::rusage,
+    ) -> i64;
     static reverie_liteinst_rpc_getpid_site: u8;
     static reverie_liteinst_rpc_getuid_site: u8;
     static reverie_liteinst_rpc_sigprocmask_site: u8;
+    static reverie_liteinst_rpc_wait4_site: u8;
 }
 
 fn coordinator(path: &Path) {
@@ -517,6 +541,15 @@ fn injected_exit_guest(path: &Path) -> ! {
     panic!("injected exit returned");
 }
 
+fn wait_for_child(child: libc::pid_t) {
+    let mut status = 0;
+    let waited =
+        unsafe { reverie_liteinst_rpc_wait4(child, &mut status, 0, core::ptr::null_mut()) };
+    assert_eq!(waited, i64::from(child));
+    assert!(libc::WIFEXITED(status));
+    assert_eq!(libc::WEXITSTATUS(status), 0);
+}
+
 fn fork_guest(path: &Path) {
     unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
     let parent = unsafe { reverie_liteinst_rpc_getpid() };
@@ -534,10 +567,16 @@ fn fork_guest(path: &Path) {
         unsafe { libc::_exit(0) };
     }
 
-    let mut status = 0;
-    assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
-    assert!(libc::WIFEXITED(status));
-    assert_eq!(libc::WEXITSTATUS(status), 0);
+    wait_for_child(child);
+    let wait_address = core::ptr::addr_of!(reverie_liteinst_rpc_wait4_site) as usize as u64;
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_trap_count(wait_address),
+        1
+    );
+    assert_eq!(
+        reverie_liteinst::reverie_liteinst_site_hook_count(wait_address),
+        1
+    );
     let observed = unsafe { reverie_liteinst_rpc_getpid() };
     assert_eq!(observed, i64::from(unsafe { libc::getpid() }));
     let sender_delta = LAST_SENDERS.load(Ordering::Relaxed) - senders_before_fork;
@@ -559,10 +598,7 @@ fn check_reconstructed_fork(label: &str) {
         assert!(CHILD_RECONSTRUCTED.load(Ordering::Acquire));
         unsafe { libc::_exit(0) };
     }
-    let mut status = 0;
-    assert_eq!(unsafe { libc::waitpid(child, &mut status, 0) }, child);
-    assert!(libc::WIFEXITED(status));
-    assert_eq!(libc::WEXITSTATUS(status), 0);
+    wait_for_child(child);
     println!("{label}-fork-reconstructed");
 }
 

@@ -433,7 +433,10 @@ pub(crate) fn initialize_from_environment() -> io::Result<()> {
         }
     }
 
-    install_runtime()
+    install_runtime(
+        crate::stats::GuestStatsHooks::DISABLED,
+        PatchPublication::Concurrent,
+    )
 }
 
 fn host_handshake_frame() -> HostHandshakeFrame {
@@ -468,23 +471,25 @@ fn initialize_host_runtime() -> io::Result<()> {
     Ok(())
 }
 
-pub(crate) fn initialize_reverie_tool(stats: crate::stats::GuestStatsHooks) -> io::Result<()> {
+pub(crate) fn initialize_reverie_tool(
+    stats: crate::stats::GuestStatsHooks,
+    publication: PatchPublication,
+) -> io::Result<()> {
     TOOL_MODE.store(TOOL_REVERIE, Ordering::Release);
-    install_runtime_with_stats(stats)
+    install_runtime(stats, publication)
 }
 
-fn install_runtime() -> io::Result<()> {
-    install_runtime_with_stats(crate::stats::GuestStatsHooks::DISABLED)
-}
-
-fn install_runtime_with_stats(stats: crate::stats::GuestStatsHooks) -> io::Result<()> {
+fn install_runtime(
+    stats: crate::stats::GuestStatsHooks,
+    publication: PatchPublication,
+) -> io::Result<()> {
     prepare_instrumentation()?;
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-254): Review launcher-selected RuntimeConfig at the install seam.
     let config = runtime_config_from_env()?;
     unsafe {
         reverie_preload::install(
-            Box::new(LiteinstDispatcher::new(stats)),
+            Box::new(LiteinstDispatcher::new(stats, publication)),
             &InProcessSeccomp,
             &config,
         )
@@ -1032,7 +1037,7 @@ unsafe fn set_text_protection(address: u64, protection: i32) -> io::Result<()> {
 struct InstallGuard;
 
 #[derive(Clone, Copy)]
-enum PatchPublication {
+pub(crate) enum PatchPublication {
     /// The stopped-tracee helper is the only thread able to reach live code.
     Quiescent,
     /// Other application threads may fetch the site during publication.
@@ -1677,10 +1682,11 @@ type RecordFallbackStats = fn(crate::stats::GuestStatsHooks, u64);
 struct LiteinstDispatcher {
     stats: crate::stats::GuestStatsHooks,
     record_fallback_stats: RecordFallbackStats,
+    publication: PatchPublication,
 }
 
 impl LiteinstDispatcher {
-    fn new(stats: crate::stats::GuestStatsHooks) -> Self {
+    fn new(stats: crate::stats::GuestStatsHooks, publication: PatchPublication) -> Self {
         Self {
             stats,
             record_fallback_stats: if stats.is_enabled() {
@@ -1688,6 +1694,7 @@ impl LiteinstDispatcher {
             } else {
                 record_disabled_fallback_stats
             },
+            publication,
         }
     }
 }
@@ -1760,7 +1767,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
                         instruction_pointer,
                         site,
                         installed_syscall_hook,
-                        PatchPublication::Concurrent,
+                        self.publication,
                     )
                 }
                 .is_err()
@@ -2262,7 +2269,10 @@ mod tests {
     #[test]
     fn disabled_dispatch_does_not_classify_fallback_sites() {
         let before = ENABLED_FALLBACK_CLASSIFICATIONS.load(Ordering::Relaxed);
-        let dispatcher = LiteinstDispatcher::new(crate::stats::GuestStatsHooks::DISABLED);
+        let dispatcher = LiteinstDispatcher::new(
+            crate::stats::GuestStatsHooks::DISABLED,
+            super::PatchPublication::Concurrent,
+        );
 
         (dispatcher.record_fallback_stats)(dispatcher.stats, 0xdead_beef);
 
