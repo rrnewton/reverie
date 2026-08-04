@@ -45,10 +45,22 @@ fn main() {
     let drrun = install_dir.join("bin64/drrun");
     let cmake_config = install_dir.join("cmake/DynamoRIOConfig.cmake");
 
+    // Artifact-integrity guard. A compiler or archiver killed mid-write — the
+    // classic case is the OOM-killer firing on the whole step cgroup with
+    // `memory.oom.group=1`, so make never runs its `.DELETE_ON_ERROR` cleanup —
+    // leaves a truncated, zero-length `*.o` in the cmake tree. cmake keys
+    // incremental freshness on timestamp, not content, so it trusts the empty
+    // object forever and links it, producing an `undefined reference` that reads
+    // as a source defect and never self-corrects. Purge any such object BEFORE
+    // deciding whether to build, and force a build pass when we removed one even
+    // if the installed outputs otherwise look current.
+    let purged_objects = remove_zero_byte_objects(&build_dir);
+
     let installed_revision = fs::read_to_string(&revision_stamp).unwrap_or_default();
     if installed_revision.trim() != DYNAMORIO_REVISION
         || !drrun.is_file()
         || !cmake_config.is_file()
+        || purged_objects > 0
     {
         build_dynamorio(&source_dir, &build_dir, &install_dir);
         fs::write(&revision_stamp, format!("{DYNAMORIO_REVISION}\n"))
@@ -294,6 +306,61 @@ fn verify_revision(source_dir: &Path) {
     );
 }
 
+/// Delete every zero-byte object file left behind in the DynamoRIO cmake build
+/// tree, returning how many were removed.
+///
+/// This is a content-aware complement to cmake's timestamp-based freshness
+/// tracking. A killed compiler leaves an empty `*.o` whose mtime is newer than
+/// its source, so cmake treats it as up to date and links it forever; because
+/// an empty object defines no symbols, the link fails with `undefined reference`
+/// and nothing ever rebuilds it. Removing the empty object is what forces the
+/// next build to recompile it.
+///
+/// We touch *only* zero-length objects, so healthy objects keep their
+/// timestamps and an incremental build still skips everything genuinely up to
+/// date — this does not disable incremental builds. Traversal is symlink-safe:
+/// `file_type()` does not follow links, so we neither recurse through a symlink
+/// nor delete one.
+fn remove_zero_byte_objects(build_dir: &Path) -> usize {
+    fn walk(dir: &Path, removed: &mut usize) {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if file_type.is_dir() {
+                walk(&path, removed);
+            } else if file_type.is_file()
+                && path.extension().and_then(|ext| ext.to_str()) == Some("o")
+                && entry
+                    .metadata()
+                    .map(|meta| meta.len() == 0)
+                    .unwrap_or(false)
+                && fs::remove_file(&path).is_ok()
+            {
+                *removed += 1;
+                println!(
+                    "cargo:warning=reverie-dbi: removed zero-byte DynamoRIO object {} \
+                     (a killed/OOM-truncated object cmake would otherwise link forever) — forcing a rebuild",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    if !build_dir.exists() {
+        return 0;
+    }
+    let mut removed = 0;
+    walk(build_dir, &mut removed);
+    removed
+}
+
 fn build_dynamorio(source_dir: &Path, build_dir: &Path, install_dir: &Path) {
     let cmake = env::var_os("CMAKE").unwrap_or_else(|| OsString::from("cmake"));
     let mut configure = Command::new(&cmake);
@@ -521,5 +588,57 @@ mod tests {
         write_file(source.path(), "core/unix/memcache.c", "/* sentinel */\n");
         fs::create_dir(source.path().join(".git")).unwrap();
         assert!(!source_dir_is_complete(source.path()));
+    }
+
+    #[test]
+    fn zero_byte_objects_are_removed_and_healthy_ones_kept() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        // Mirror the real .../CMakeFiles/<target>.dir/<sub>/foo.cpp.o layout so
+        // the recursive walk is exercised.
+        let nested = root.join("clients/drcachesim/CMakeFiles/x.dir/scheduler");
+        fs::create_dir_all(&nested).unwrap();
+
+        let truncated = nested.join("scheduler_impl.cpp.o");
+        fs::write(&truncated, b"").unwrap();
+        let healthy = nested.join("options.cpp.o");
+        fs::write(&healthy, b"\x7fELF-ish nonempty object bytes").unwrap();
+        // A zero-byte NON-object (e.g. a stamp/log file) must be left alone.
+        let non_object = nested.join("progress.marks");
+        fs::write(&non_object, b"").unwrap();
+
+        let removed = remove_zero_byte_objects(root);
+
+        assert_eq!(
+            removed, 1,
+            "exactly the one zero-byte *.o should be removed"
+        );
+        assert!(!truncated.exists(), "zero-byte object should be deleted");
+        assert!(healthy.exists(), "non-empty object must be kept");
+        assert!(non_object.exists(), "zero-byte non-object must be kept");
+    }
+
+    #[test]
+    fn incremental_tree_with_no_truncation_is_untouched() {
+        // The no-corruption case: every object is healthy, so nothing is
+        // removed and the caller does not force a rebuild — incremental builds
+        // still skip unchanged objects.
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("CMakeFiles/x.dir");
+        fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.cpp.o");
+        let b = dir.join("b.cpp.o");
+        fs::write(&a, b"nonempty").unwrap();
+        fs::write(&b, b"nonempty").unwrap();
+
+        assert_eq!(remove_zero_byte_objects(temp.path()), 0);
+        assert!(a.exists() && b.exists());
+    }
+
+    #[test]
+    fn missing_build_dir_is_a_noop() {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("dynamorio-build-does-not-exist");
+        assert_eq!(remove_zero_byte_objects(&missing), 0);
     }
 }
