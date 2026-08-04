@@ -74,6 +74,8 @@ use crate::LiteinstInstrumentationStats;
 use crate::children;
 use crate::cp;
 use crate::error::Error;
+use crate::error::LiteinstActivationError;
+use crate::error::LiteinstActivationFailureKind;
 use crate::error::TraceResultExt;
 use crate::gdbstub::BreakpointType;
 use crate::gdbstub::CoreRegs;
@@ -911,7 +913,9 @@ pub struct TracedTask<L: Tool> {
     liteinst_entry_guard: Option<LiteinstEntryGuard>,
 
     /// Original fail-closed error retained while the exit waiter reaps root.
-    liteinst_failure: Option<String>,
+    /// Carries a typed [`LiteinstActivationFailureKind`] so the reason survives
+    /// as a value rather than only in the rendered message.
+    liteinst_failure: Option<LiteinstActivationError>,
 
     /// pending signal to deliver. This can happen when
     /// syscall got interrupted (by signal)
@@ -1750,7 +1754,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         )
         .await;
         if let Some(sig) = unexpected_preinit_signal.lock().unwrap().take() {
-            self.liteinst_failure = Some(
+            self.liteinst_failure = Some(LiteinstActivationError::new(
+                LiteinstActivationFailureKind::Other,
                 Error::runtime(
                     self.tid(),
                     "reject unexpected LiteInst activation signal",
@@ -1759,7 +1764,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     ),
                 )
                 .to_string(),
-            );
+            ));
         }
         let mut task = task?;
         #[cfg(test)]
@@ -2314,7 +2319,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             if observed != guarded_instruction {
                 return Err(Errno::EPROTO.into());
             }
-            self.liteinst_failure = Some(
+            self.liteinst_failure = Some(LiteinstActivationError::new(
+                LiteinstActivationFailureKind::Other,
                 Error::runtime(
                     self.tid(),
                     "verify LiteInst runtime before executable entry",
@@ -2324,7 +2330,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     ),
                 )
                 .to_string(),
-            );
+            ));
             return Err(Errno::EPROTO.into());
         }
         match self.classify_liteinst_trap(&task, &regs) {
@@ -2335,14 +2341,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
             Some(LiteinstTrap::HandshakeReady) => {
                 if let Err(error) = self.restore_liteinst_entry_guard(&mut task) {
-                    self.liteinst_failure = Some(
+                    self.liteinst_failure = Some(LiteinstActivationError::new(
+                        LiteinstActivationFailureKind::Other,
                         Error::runtime(
                             self.tid(),
                             "restore LiteInst executable-entry guard",
                             error.to_string(),
                         )
                         .to_string(),
-                    );
+                    ));
                     return Err(error);
                 }
                 {
@@ -2376,7 +2383,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         let phase = self.liteinst_runtime.lock().unwrap().phase;
         if self.global_state.liteinst_runtime.is_some() && phase != LiteinstRuntimePhase::Ready {
-            self.liteinst_failure = Some(
+            self.liteinst_failure = Some(LiteinstActivationError::new(
+                LiteinstActivationFailureKind::Other,
                 Error::runtime(
                     self.tid(),
                     "reject unexpected LiteInst activation trap",
@@ -2386,7 +2394,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     ),
                 )
                 .to_string(),
-            );
+            ));
             return Err(Errno::EPROTO.into());
         }
         // TODO-HUMAN-REVIEW(PR-103): Review rewritten-trap provenance validation.
@@ -2509,9 +2517,11 @@ impl<L: Tool + 'static> TracedTask<L> {
     fn reject_liteinst_activation_signal(
         &mut self,
         sig: Signal,
+        kind: LiteinstActivationFailureKind,
         detail: impl Into<String>,
     ) -> TraceError {
-        self.liteinst_failure = Some(
+        self.liteinst_failure = Some(LiteinstActivationError::new(
+            kind,
             Error::runtime(
                 self.tid(),
                 "reject unexpected LiteInst activation signal",
@@ -2521,7 +2531,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 ),
             )
             .to_string(),
-        );
+        ));
         Errno::EPROTO.into()
     }
 
@@ -2535,6 +2545,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         {
             return Err(self.reject_liteinst_activation_signal(
                 sig,
+                LiteinstActivationFailureKind::Other,
                 format!("{operation} attempted to deliver a queued signal"),
             ));
         }
@@ -2570,6 +2581,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         Err(self.reject_liteinst_activation_signal(
             sig,
+            LiteinstActivationFailureKind::NestedSignalProvenance,
             format!(
                 "{operation} observed a nested signal without the expected controller provenance"
             ),
@@ -2588,6 +2600,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         HandleSignalResult::SignalToDeliver(_, _) => {
                             Err(self.reject_liteinst_activation_signal(
                                 sig,
+                                LiteinstActivationFailureKind::Other,
                                 "the fault was not a subscribed, controller-intercepted CPUID or RDTSC instruction",
                             ))
                         }
@@ -2598,6 +2611,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                     if !was_timer {
                         return Err(self.reject_liteinst_activation_signal(
                             sig,
+                            LiteinstActivationFailureKind::Other,
                             "the signal was not generated by this tracee's controller timer",
                         ));
                     }
@@ -2606,6 +2620,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 sig => {
                     return Err(self.reject_liteinst_activation_signal(
                         sig,
+                        LiteinstActivationFailureKind::Other,
                         "the signal is outside the activation allowlist",
                     ));
                 }
@@ -2649,7 +2664,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             if state.phase != LiteinstRuntimePhase::PreExec {
                 let phase = state.phase;
                 drop(state);
-                self.liteinst_failure = Some(
+                self.liteinst_failure = Some(LiteinstActivationError::new(
+                    LiteinstActivationFailureKind::Other,
                     Error::runtime(
                         self.tid(),
                         "reject LiteInst post-start exec",
@@ -2658,7 +2674,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                         ),
                     )
                     .to_string(),
-                );
+                ));
                 return Err(Errno::ENOTSUPP.into());
             }
             state.generation = state.generation.wrapping_add(1);
@@ -2715,7 +2731,8 @@ impl<L: Tool + 'static> TracedTask<L> {
                     unreachable!("activation validation must reject a non-SIGTRAP signal")
                 }
                 Wait::Stopped(_, event) => {
-                    self.liteinst_failure = Some(
+                    self.liteinst_failure = Some(LiteinstActivationError::new(
+                        LiteinstActivationFailureKind::Other,
                         Error::runtime(
                             self.tid(),
                             "validate LiteInst post-exec trap",
@@ -2724,11 +2741,12 @@ impl<L: Tool + 'static> TracedTask<L> {
                             ),
                         )
                         .to_string(),
-                    );
+                    ));
                     return Err(Errno::EPROTO.into());
                 }
                 Wait::Exited(pid, exit_status) => {
-                    self.liteinst_failure = Some(
+                    self.liteinst_failure = Some(LiteinstActivationError::new(
+                        LiteinstActivationFailureKind::Other,
                         Error::runtime(
                             pid,
                             "validate LiteInst post-exec trap",
@@ -2737,7 +2755,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                             ),
                         )
                         .to_string(),
-                    );
+                    ));
                     return Err(Errno::EPROTO.into());
                 }
             }
@@ -2753,14 +2771,15 @@ impl<L: Tool + 'static> TracedTask<L> {
         };
         let mut task = self.tracee_preinit(task).await?;
         if let Err(error) = self.install_liteinst_entry_guard(&mut task) {
-            self.liteinst_failure = Some(
+            self.liteinst_failure = Some(LiteinstActivationError::new(
+                LiteinstActivationFailureKind::Other,
                 Error::runtime(
                     self.tid(),
                     "install LiteInst executable-entry guard",
                     error.to_string(),
                 )
                 .to_string(),
-            );
+            ));
             return Err(error);
         }
 
@@ -2772,14 +2791,15 @@ impl<L: Tool + 'static> TracedTask<L> {
             .is_some_and(|runtime| runtime.activate_without_handshake)
         {
             if let Err(error) = self.restore_liteinst_entry_guard(&mut task) {
-                self.liteinst_failure = Some(
+                self.liteinst_failure = Some(LiteinstActivationError::new(
+                    LiteinstActivationFailureKind::Other,
                     Error::runtime(
                         self.tid(),
                         "restore test LiteInst executable-entry guard",
                         error.to_string(),
                     )
                     .to_string(),
-                );
+                ));
                 return Err(error);
             }
             {
@@ -4575,7 +4595,10 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
         };
         let exit_status = match (outcome, self.liteinst_failure.take()) {
-            (_, Some(original)) => return Err(anyhow::anyhow!(original).into()),
+            // Wrap the typed failure directly (not its rendered string) so the
+            // classification survives as a downcastable value in the returned
+            // `reverie::Error::Tool(..)`.
+            (_, Some(failure)) => return Err(anyhow::Error::new(failure).into()),
             (Ok(exit_status), None) => exit_status,
             (Err(error), _) => return Err(error),
         };

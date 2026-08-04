@@ -2511,6 +2511,26 @@ mod tests {
 
     use super::*;
 
+    /// True iff `error` is a LiteInst activation failure that was rejected
+    /// specifically for lacking the expected controller provenance.
+    ///
+    /// Classification is by the *typed* [`crate::error::LiteinstActivationFailureKind`]
+    /// recovered via `downcast_ref`, never by matching the rendered message. An
+    /// unrelated error whose text happens to contain the provenance phrase — or
+    /// a plain message error carrying that phrase — is therefore refused.
+    fn is_nested_signal_provenance_rejection(error: &Error) -> bool {
+        matches!(
+            error,
+            Error::Tool(inner)
+                if inner
+                    .downcast_ref::<crate::error::LiteinstActivationError>()
+                    .is_some_and(|failure| {
+                        failure.kind()
+                            == crate::error::LiteinstActivationFailureKind::NestedSignalProvenance
+                    })
+        )
+    }
+
     fn fork_paused_child() -> Pid {
         match unsafe { unistd::fork() }.expect("fork test child") {
             ForkResult::Child => loop {
@@ -2911,9 +2931,7 @@ mod tests {
 
         assert!(!force_once.load(Ordering::SeqCst), "{error}");
         assert!(
-            error
-                .to_string()
-                .contains("finish reinjected syscall observed a nested signal without the expected controller provenance"),
+            is_nested_signal_provenance_rejection(&error),
             "{error}"
         );
         assert_reaped("context-none activation", root_pid);
@@ -2936,9 +2954,7 @@ mod tests {
 
         assert!(!force_once.load(Ordering::SeqCst), "{error}");
         assert!(
-            error.to_string().contains(
-                "finish injected syscall observed a nested signal without the expected controller provenance"
-            ),
+            is_nested_signal_provenance_rejection(&error),
             "{error}"
         );
         assert_reaped("injected-step activation", root_pid);
@@ -2962,20 +2978,18 @@ mod tests {
         assert!(!mutate_once.load(Ordering::SeqCst), "{error}");
         let ptrace_write_rejected = matches!(
             &error,
-            Error::Tool(error)
+            Error::Tool(inner)
                 if matches!(
-                    error.downcast_ref::<crate::error::Error>(),
+                    inner.downcast_ref::<crate::error::Error>(),
                     Some(crate::error::Error::Internal(TraceError::Errno(Errno::EFAULT)))
                 )
         );
-        let error = error.to_string();
         // Some kernels reject the forced ptrace write before the mutated stub
-        // executes. Otherwise, the exact-stub provenance check must reject it.
+        // executes (a typed EFAULT). Otherwise, the exact-stub provenance check
+        // must reject it. Both accepted outcomes are recognized by typed
+        // evidence — never by matching the rendered message string.
         assert!(
-            ptrace_write_rejected
-                || error.contains(
-                    "finish injected syscall observed a nested signal without the expected controller provenance"
-                ),
+            ptrace_write_rejected || is_nested_signal_provenance_rejection(&error),
             "{error}"
         );
         assert_reaped("private-stub-mutation activation", root_pid);
