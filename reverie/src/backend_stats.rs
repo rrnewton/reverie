@@ -222,7 +222,7 @@ impl PatchShapeCollector {
 }
 
 /// Deterministically ordered counts keyed by a backend-owned enum or newtype.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CounterSnapshot<K> {
     counts: Vec<(K, u64)>,
 }

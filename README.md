@@ -73,12 +73,13 @@ cd reverie-examples
 cargo run --bin strace -- ls
 ```
 
-## Optional Backend Sources
+## Backend Sources
 
-Large native sources for DynamoRIO, SaBRe, and e9patch are pinned but not
-checked out by default. Activate only the backend you need with
-`scripts/backend-submodule.sh`; see [Optional backend sources](docs/BACKEND_SOURCES.md)
-for revisions, build commands, and license notes.
+Large native sources for DynamoRIO, SaBRe, and e9patch are pinned as shallow
+submodules. `git submodule update --init --recursive` checks out every pinned
+source; `scripts/backend-submodule.sh` remains available for focused activation.
+See [Backend sources](docs/BACKEND_SOURCES.md) for revisions, build commands,
+and license notes.
 
 ## Usage
 
@@ -118,6 +119,11 @@ let (exit_status, global_state) =
 Since `ptrace` adds significant overhead when the guest has a syscall-heavy
 workload, Reverie will add similarly-significant overhead. The slowdown depends
 on how many syscalls are being performed and are intercepted by the tool.
+
+The separate, non-CI [counter2 performance shootout](benchmarks/counter2-shootout/README.md)
+measures native-normalized instrumentation overhead across the available
+backends on calibrated multi-second workloads. It correctness-probes the
+known-green workload intersection before collecting any timing samples.
 
 The primary way you can improve performance with the current implementation is
 to implement the `subscriptions` callback, specifying a minimal set of syscalls

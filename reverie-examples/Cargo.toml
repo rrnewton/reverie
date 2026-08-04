@@ -6,10 +6,12 @@
 # The e9patch generic-Tool round adds the e9patch rlib to this existing
 # tool-specific cdylib so one concrete Tool type can be proven on both sides of
 # the preload/coordinator boundary. Keep the internal target synchronized.
+# The manual counter2 shootout adds an OSS-only e9patch launcher over that same
+# exact Tool path. Keep the internal target synchronized before the next export.
 
 [package]
 name = "reverie-examples"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Meta Platforms"]
 edition = "2024"
 repository = "https://github.com/facebookexperimental/reverie"
@@ -47,6 +49,10 @@ path = "kvm_counter1.rs"
 [[bin]]
 name = "reverie-kvm-counter2"
 path = "kvm_counter2.rs"
+
+[[bin]]
+name = "reverie-e9patch-counter2"
+path = "e9patch_counter2.rs"
 
 [[bin]]
 name = "debug"

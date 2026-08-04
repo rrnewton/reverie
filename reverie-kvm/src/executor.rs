@@ -293,6 +293,9 @@ fn execute_basic_syscall_with_output(
         pread64(memory, state, args)
     } else if number == libc::SYS_pwrite64 as u64 {
         pwrite64(memory, state, args)
+    } else if number == libc::SYS_sendfile as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sendfile(memory, state, args, output)
     } else if number == libc::SYS_lseek as u64 {
         lseek(state, args)
     } else if number == libc::SYS_ftruncate as u64 {
@@ -404,7 +407,7 @@ fn execute_basic_syscall_with_output(
         recvmmsg(memory, state, args)
     } else if number == libc::SYS_ioctl as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        ioctl(state, args)
+        ioctl(memory, state, args)
     } else if number == libc::SYS_dup as u64 {
         duplicate_fd(state, args[0], None, 0, false)
     } else if number == libc::SYS_dup2 as u64 {
@@ -421,6 +424,9 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_creat as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         creat(memory, state, args)
+    } else if number == libc::SYS_memfd_create as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        memfd_create(memory, state, args)
     } else if number == libc::SYS_fstat as u64 {
         fstat(memory, state, args, capture_output)
     } else if number == libc::SYS_stat as u64 {
@@ -760,6 +766,9 @@ fn execute_basic_syscall_with_output(
         return kill_signal(state, number, args);
     } else if number == libc::SYS_close as u64 {
         close(state, args[0])
+    } else if number == libc::SYS_close_range as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        close_range(state, args)
     } else if number == libc::SYS_futex as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         futex(memory, args)
@@ -1030,7 +1039,20 @@ fn mutates_file_table(number: u64) -> bool {
             || number == libc::SYS_open as u64
             || number == libc::SYS_openat as u64
             || number == libc::SYS_creat as u64
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(#322): memfd_create allocates a new guest
+            // descriptor, so its insertion must be written back to the shared
+            // file table; otherwise the follow-up injected fstat (and any later
+            // read/write/close) cannot resolve the fresh fd and fails EBADF.
+            || number == libc::SYS_memfd_create as u64
             || number == libc::SYS_close as u64
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(#340): close_range removes a span of
+            // descriptors, so its effect must be written back to the shared file
+            // table; otherwise a CLONE_FILES sibling would still resolve the
+            // just-closed fds and the guest's own follow-up probe would wrongly
+            // find them open.
+            || number == libc::SYS_close_range as u64
     )
 }
 
@@ -2350,6 +2372,238 @@ fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
     }
     file.write_at(&bytes, args[3])
         .map_or_else(io_error, |count| count as i64)
+}
+
+/// A host file backs a regular (or memfd) object when its mode is `S_IFREG`.
+///
+/// `sendfile(2)` requires a regular/memfd input that supports positioned reads;
+/// sockets (`S_IFSOCK`) and pipes (`S_IFIFO`) are rejected so callers fall back
+/// to the mediated `read()`/`write()` path. This mirrors Detcore's
+/// `FdType::Regular | FdType::Memfd` gate in `handle_sendfile` (memfd objects are
+/// themselves `S_IFREG`).
+fn is_regular_host_file(file: &std::fs::File) -> Result<bool, i64> {
+    Ok(file_mode(file)? & libc::S_IFMT == libc::S_IFREG)
+}
+
+// TODO-HUMAN-REVIEW(#322): Review sendfile forward-to-host semantics, the
+// procfs-input refusal, the regular/memfd endpoint gate, and the guest offset
+// read-back. Mirrors detcore::handle_sendfile: a procfs input or a
+// non-regular/non-memfd endpoint returns ENOSYS so glibc falls back to the
+// deterministic mediated read()/write() path.
+fn sendfile(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    output: Option<&mut CapturedOutput>,
+) -> i64 {
+    let Ok(out_fd) = i32::try_from(args[0]) else {
+        return negative_errno(libc::EBADF);
+    };
+    let Ok(in_fd) = i32::try_from(args[1]) else {
+        return negative_errno(libc::EBADF);
+    };
+    // Resolve the input endpoint. sendfile(2) requires an mmap-able input, so a
+    // valid-but-non-regular descriptor (a standard stream, pipe, or socket) must
+    // fail with ENOSYS to route the caller onto glibc's mediated read()+write()
+    // fallback; only a descriptor the guest does not model at all is EBADF. This
+    // mirrors detcore::handle_sendfile, which returns ENOSYS unless the input
+    // classifies as Regular/Memfd.
+    let Some(in_file) = state.files.get(&in_fd) else {
+        return if is_open_standard(state, in_fd) {
+            negative_errno(libc::ENOSYS)
+        } else {
+            negative_errno(libc::EBADF)
+        };
+    };
+    // Refuse a procfs input: a procfs fd is a regular file, so it would pass the
+    // endpoint gate below and copy live kernel bytes straight to the output,
+    // bypassing the deterministic procfs snapshot the mediated read()/write()
+    // path applies. Fail closed with ENOSYS (NOT the EACCES that
+    // ensure_fd_not_procfs reports) so glibc takes that mediated fallback, exactly
+    // as detcore::handle_sendfile does.
+    if ensure_fd_not_procfs(in_file.as_raw_fd()).is_err() {
+        return negative_errno(libc::ENOSYS);
+    }
+    // Require a regular/memfd input; ENOSYS routes sockets and pipes to the
+    // mediated fallback, which the scheduler can order and block.
+    match is_regular_host_file(in_file) {
+        Ok(true) => {}
+        Ok(false) => return negative_errno(libc::ENOSYS),
+        Err(error) => return error,
+    }
+    if let Err(error) = ensure_readable(in_file) {
+        return error;
+    }
+    let in_host = in_file.as_raw_fd();
+    let Ok(count) = usize::try_from(args[3]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    let count = count.min(MAX_HOST_IO);
+    let offset_ptr = args[2];
+
+    // Fast path: a regular/memfd output that lives in the guest file table can be
+    // copied with the host's zero-copy sendfile directly, preserving kernel
+    // offset semantics.
+    if let Some(out_file) = state.files.get(&out_fd) {
+        match is_regular_host_file(out_file) {
+            Ok(true) => {}
+            // A known-but-non-regular output (pipe/socket the guest opened) takes
+            // the mediated fallback, exactly like detcore.
+            Ok(false) => return negative_errno(libc::ENOSYS),
+            Err(error) => return error,
+        }
+        if let Err(error) = ensure_writable(out_file) {
+            return error;
+        }
+        let out_host = out_file.as_raw_fd();
+        if offset_ptr == 0 {
+            // SAFETY: both are live host descriptors; a null offset advances
+            // in_fd's own file position exactly as the guest requested.
+            let copied = unsafe { libc::sendfile(out_host, in_host, std::ptr::null_mut(), count) };
+            return if copied < 0 {
+                io_error(std::io::Error::last_os_error())
+            } else {
+                copied as i64
+            };
+        }
+        // The guest supplied an explicit input offset; forward through a host
+        // off_t and write the kernel-advanced value back so the guest observes
+        // faithful sendfile semantics. off_t is i64 on x86_64.
+        if !range_is_valid(memory, offset_ptr, 8) {
+            return negative_errno(libc::EFAULT);
+        }
+        let mut raw = [0u8; 8];
+        if memory.read(offset_ptr, &mut raw).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+        let mut host_offset: libc::off_t = i64::from_ne_bytes(raw);
+        // SAFETY: both descriptors are live and host_offset is a valid writable
+        // off_t that the kernel updates in place with the new input offset.
+        let copied = unsafe { libc::sendfile(out_host, in_host, &mut host_offset, count) };
+        if copied < 0 {
+            return io_error(std::io::Error::last_os_error());
+        }
+        if memory
+            .write(offset_ptr, &host_offset.to_ne_bytes())
+            .is_err()
+        {
+            return negative_errno(libc::EFAULT);
+        }
+        return copied as i64;
+    }
+
+    // The output is not in the guest file table. A standard stream (stdout/
+    // stderr) is a legitimate sendfile target, but under KVM it has no host
+    // descriptor to hand the kernel: writes to it must flow through the same
+    // captured-output/host routing as write(2) so replay verification observes
+    // the bytes. Read the input here and re-emit through that mediated path.
+    // Anything that is neither a modeled fd nor a standard stream is EBADF.
+    if !is_open_standard(state, out_fd) {
+        return negative_errno(libc::EBADF);
+    }
+    if count == 0 {
+        return 0;
+    }
+    let mut bytes = vec![0u8; count];
+    let read = if offset_ptr == 0 {
+        // SAFETY: in_host is live and bytes is a writable host buffer of `count`.
+        unsafe { libc::read(in_host, bytes.as_mut_ptr().cast::<libc::c_void>(), count) }
+    } else {
+        if !range_is_valid(memory, offset_ptr, 8) {
+            return negative_errno(libc::EFAULT);
+        }
+        let mut raw = [0u8; 8];
+        if memory.read(offset_ptr, &mut raw).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+        let host_offset: libc::off_t = i64::from_ne_bytes(raw);
+        // SAFETY: in_host is live, bytes is a writable host buffer of `count`,
+        // and pread does not disturb in_fd's own file position.
+        unsafe {
+            libc::pread(
+                in_host,
+                bytes.as_mut_ptr().cast::<libc::c_void>(),
+                count,
+                host_offset,
+            )
+        }
+    };
+    if read < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    let read = read as usize;
+    bytes.truncate(read);
+    if read == 0 {
+        return 0;
+    }
+
+    // Route the copied bytes to the standard stream exactly as write(2) does.
+    let written = match output_alias(state, out_fd) {
+        Some(alias) => {
+            if let Some(output) = output {
+                if !output.append(matches!(alias, OutputAlias::Stderr), &bytes) {
+                    return negative_errno(libc::EFBIG);
+                }
+                bytes.len() as i64
+            } else {
+                host_write(out_fd, &bytes)
+            }
+        }
+        None => host_write(out_fd, &bytes),
+    };
+    if written < 0 {
+        return written;
+    }
+    // sendfile advances the explicit input offset by the number of bytes moved
+    // to the output; write it back so the guest observes faithful semantics.
+    if offset_ptr != 0 {
+        let mut raw = [0u8; 8];
+        if memory.read(offset_ptr, &mut raw).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+        let advanced = i64::from_ne_bytes(raw).saturating_add(written);
+        if memory.write(offset_ptr, &advanced.to_ne_bytes()).is_err() {
+            return negative_errno(libc::EFAULT);
+        }
+    }
+    written
+}
+
+// TODO-HUMAN-REVIEW(#322): Review memfd_create name/flag forwarding and guest
+// descriptor registration. The anonymous file's contents are guest-controlled
+// and its guest fd is allocated deterministically, so the result carries no host
+// pid/address/time; the host kernel validates flags and the name length.
+fn memfd_create(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    // The kernel bounds the name at 249 bytes (excluding NUL) and prepends
+    // "memfd:"; read a little past that so an over-long name reaches the host,
+    // which returns EINVAL just as a native call would.
+    let name = match read_c_string(memory, args[0], 256) {
+        Ok(name) => name,
+        Err(error) => return read_c_string_errno(error),
+    };
+    let Ok(name) = std::ffi::CString::new(name) else {
+        // A NUL byte cannot occur inside a C string read stops at NUL, but guard
+        // defensively; the kernel would reject an embedded NUL with EINVAL.
+        return negative_errno(libc::EINVAL);
+    };
+    let Ok(flags) = u32::try_from(args[1]) else {
+        return negative_errno(libc::EINVAL);
+    };
+    // Forward flags verbatim; the host kernel validates unknown bits (EINVAL).
+    // Force MFD_CLOEXEC on the host descriptor so the supervisor never leaks it,
+    // and track the guest-visible close-on-exec bit separately from the guest's
+    // requested flags.
+    let host_flags = flags | libc::MFD_CLOEXEC;
+    // SAFETY: name is a valid NUL-terminated C string; the kernel validates
+    // flags and returns a new owned descriptor on success.
+    let host_fd = unsafe { libc::memfd_create(name.as_ptr(), host_flags) };
+    if host_fd < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    // SAFETY: memfd_create returned a new owned descriptor.
+    let file = unsafe { std::fs::File::from_raw_fd(host_fd) };
+    let close_on_exec = flags & libc::MFD_CLOEXEC != 0;
+    insert_file_with_flags(state, file, close_on_exec, None)
 }
 
 fn lseek(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
@@ -4964,11 +5218,11 @@ fn recvmmsg(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
 }
 
 // TODO-HUMAN-REVIEW(PR-92): Review this KVM compatibility implementation.
-fn ioctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn ioctl(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let guest_fd = args[0] as libc::c_int;
-    if host_fd(state, guest_fd).is_none() {
+    let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
-    }
+    };
     match args[1] as libc::c_ulong {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-229): Review virtual FIOCLEX/FIONCLEX descriptor flags.
@@ -4985,9 +5239,59 @@ fn ioctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-230): Review the no-guest-NIC ioctl model.
         SIOCETHTOOL => negative_errno(libc::ENODEV),
-        libc::TCGETS | libc::TIOCGWINSZ | libc::TIOCGPGRP => negative_errno(libc::ENOTTY),
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        // TODO-HUMAN-REVIEW(PR-332): Report real terminal state to the guest.
+        // The executor's inherited standard descriptors are the real host fds, so
+        // forward the terminal-query ioctls to them (matching what the ptrace
+        // backend's syscall injection does against the real tty). This makes
+        // `isatty()` (a TCGETS probe) return the true answer: success on a
+        // terminal, ENOTTY on a pipe/file. Detcore then canonicalizes the
+        // returned geometry/attributes to a fixed terminal, so the guest's view
+        // is both faithful to tty-ness and deterministic across hosts/backends.
+        libc::TCGETS => {
+            forward_terminal_ioctl(memory, host_fd, libc::TCGETS, args[2], KERNEL_TERMIOS_SIZE)
+        }
+        libc::TIOCGWINSZ => forward_terminal_ioctl(
+            memory,
+            host_fd,
+            libc::TIOCGWINSZ,
+            args[2],
+            std::mem::size_of::<libc::winsize>(),
+        ),
+        libc::TIOCGPGRP => forward_terminal_ioctl(
+            memory,
+            host_fd,
+            libc::TIOCGPGRP,
+            args[2],
+            std::mem::size_of::<libc::pid_t>(),
+        ),
         _ => negative_errno(libc::ENOTTY),
     }
+}
+
+/// Size of the kernel `struct termios` returned by `TCGETS`: four 4-byte mode
+/// flags, the one-byte line discipline, and `c_cc[NCCS]` with `NCCS == 19`.
+/// This is the kernel ABI layout, which differs from the larger libc `termios`.
+const KERNEL_TERMIOS_SIZE: usize = 4 * 4 + 1 + 19;
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-332): Review forwarding fixed-size terminal-query
+// ioctls to the real host descriptor.
+fn forward_terminal_ioctl(
+    memory: &mut GuestMemory,
+    host_fd: RawFd,
+    request: libc::c_ulong,
+    out_addr: u64,
+    out_len: usize,
+) -> i64 {
+    let mut buf = vec![0u8; out_len];
+    // SAFETY: `buf` is `out_len` bytes long, and each of these fixed-size
+    // terminal-query ioctls writes at most that many bytes into the buffer.
+    let ret = unsafe { libc::ioctl(host_fd, request, buf.as_mut_ptr()) };
+    if ret < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+    write_bytes(memory, out_addr, &buf)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -6979,6 +7283,60 @@ fn close(state: &mut LoadedStaticElf, raw_fd: u64) -> i64 {
         return 0;
     }
     negative_errno(libc::EBADF)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(#340): close_range(2) closes every open guest
+// descriptor in the inclusive interval [first, last]. The KVM guest owns one
+// logical descriptor table per process, so CLOSE_RANGE_UNSHARE (unshare-then-
+// close) is observationally equivalent to closing the range for the caller and
+// is accepted as a precondition; CLOSE_RANGE_CLOEXEC marks the range close-on-
+// exec instead of closing it. The scan is bounded to the descriptors actually
+// open (keys of `state.files` plus any open standard fd), so a `last == U32::MAX`
+// request never walks a four-billion-wide interval.
+fn close_range(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
+    const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
+
+    let first = args[0];
+    let last = args[1];
+    let flags = args[2];
+    if first > last {
+        return negative_errno(libc::EINVAL);
+    }
+    if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
+        return negative_errno(libc::EINVAL);
+    }
+
+    let in_range = |fd: libc::c_int| {
+        let fd = u64::from(fd as u32);
+        first <= fd && fd <= last
+    };
+    let mut targets: Vec<libc::c_int> = state
+        .files
+        .keys()
+        .copied()
+        .filter(|&fd| in_range(fd))
+        .collect();
+    for standard in [libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+        if in_range(standard) && is_open_standard(state, standard) {
+            targets.push(standard);
+        }
+    }
+
+    if flags & CLOSE_RANGE_CLOEXEC != 0 {
+        for fd in targets {
+            state.cloexec_fds.insert(fd);
+        }
+        return 0;
+    }
+
+    for fd in targets {
+        // Reuse the single-fd close path so every descriptor side table stays
+        // consistent. Each fd is known open here, so close never returns EBADF.
+        close(state, u64::from(fd as u32));
+    }
+    0
 }
 
 fn arch_prctl(
@@ -9375,6 +9733,96 @@ mod tests {
     }
 
     #[test]
+    fn close_range_closes_the_inclusive_descriptor_span() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        // Three live guest descriptors: 3, 4, 5.
+        let low = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        let mid = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        let high = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert_eq!([low, mid, high], [3, 4, 5]);
+
+        // close_range over [4, U32::MAX] closes 4 and 5 but leaves 3 open, and
+        // the open-ended upper bound must not iterate a four-billion-wide span.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close_range,
+                [mid as u64, u64::from(u32::MAX), 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(state.files.contains_key(&(low as i32)));
+        assert!(!state.files.contains_key(&(mid as i32)));
+        assert!(!state.files.contains_key(&(high as i32)));
+        // Re-closing a descriptor the range already removed reports EBADF, the
+        // same signal the syscall-quick-wins corpus cell probes via fcntl.
+        assert_eq!(close(&mut state, mid as u64), negative_errno(libc::EBADF));
+
+        // A well-formed single-fd range closes exactly that descriptor.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close_range,
+                [low as u64, low as u64, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(state.files.is_empty());
+    }
+
+    #[test]
+    fn close_range_validates_bounds_and_flags() {
+        const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+
+        // first > last is rejected with EINVAL.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close_range,
+                [5, 4, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+        // An unknown flag bit is rejected with EINVAL.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close_range,
+                [0, 0, 1, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+
+        // CLOSE_RANGE_CLOEXEC marks the span close-on-exec instead of closing it.
+        let fd = open_readonly(&mut memory, &mut state, "/proc/uptime");
+        assert_eq!(fd, 3);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_close_range,
+                [fd as u64, fd as u64, CLOSE_RANGE_CLOEXEC, 0, 0, 0],
+            ),
+            0
+        );
+        assert!(
+            state.files.contains_key(&(fd as i32)),
+            "CLOSE_RANGE_CLOEXEC must not close the descriptor"
+        );
+        assert!(state.cloexec_fds.contains(&(fd as i32)));
+    }
+
+    #[test]
     fn synthetic_proc_files_serve_deterministic_content() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -10064,6 +10512,165 @@ mod tests {
             ),
             negative_errno(libc::EBADF)
         );
+    }
+
+    #[test]
+    fn sendfile_copies_regular_files_with_and_without_offset() {
+        let root = TestDir::new();
+        let src_path = root.0.join("src");
+        std::fs::write(&src_path, b"abcdefghij").unwrap();
+
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // Explicit-offset copy: start at input offset 2, copy 5 bytes ("cdefg").
+        let src = std::fs::OpenOptions::new()
+            .read(true)
+            .open(&src_path)
+            .unwrap();
+        let dst_off_path = root.0.join("dst_off");
+        let dst_off = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&dst_off_path)
+            .unwrap();
+        state.files.insert(3, src);
+        state.files.insert(4, dst_off);
+
+        const OFF: u64 = 0x100;
+        write_struct(&mut memory, OFF, &2i64);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendfile,
+                [4, 3, OFF, 5, 0, 0]
+            ),
+            5
+        );
+        // The kernel advances the guest-supplied offset by the bytes copied.
+        assert_eq!(read_struct::<i64>(&memory, OFF), 7);
+        assert_eq!(std::fs::read(&dst_off_path).unwrap(), b"cdefg");
+
+        // Null-offset copy: uses the input fd's own position (0 -> whole file).
+        let src2 = std::fs::OpenOptions::new()
+            .read(true)
+            .open(&src_path)
+            .unwrap();
+        let dst_pos_path = root.0.join("dst_pos");
+        let dst_pos = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&dst_pos_path)
+            .unwrap();
+        state.files.insert(5, src2);
+        state.files.insert(6, dst_pos);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendfile,
+                [6, 5, 0, 100, 0, 0]
+            ),
+            10
+        );
+        assert_eq!(std::fs::read(&dst_pos_path).unwrap(), b"abcdefghij");
+    }
+
+    #[test]
+    fn sendfile_rejects_socket_input_with_enosys_and_unknown_fd_with_ebadf() {
+        let root = TestDir::new();
+        let dst_path = root.0.join("dst");
+        let dst = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&dst_path)
+            .unwrap();
+        let mut state = test_state(&root.0);
+        state.files.insert(4, dst);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // A stream socket is not a regular/memfd endpoint: sendfile returns
+        // ENOSYS so glibc falls back to the deterministic mediated read()/write().
+        let sock_fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_socket,
+            [libc::AF_UNIX as u64, libc::SOCK_STREAM as u64, 0, 0, 0, 0],
+        );
+        assert!(sock_fd >= 0, "socket() returned {sock_fd}");
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendfile,
+                [4, sock_fd as u64, 0, 16, 0, 0]
+            ),
+            negative_errno(libc::ENOSYS)
+        );
+        // An unknown input descriptor is a hard EBADF.
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendfile,
+                [4, 99, 0, 16, 0, 0]
+            ),
+            negative_errno(libc::EBADF)
+        );
+    }
+
+    #[test]
+    fn memfd_create_registers_writable_anonymous_file() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        const NAME: u64 = 0x100;
+        memory.write(NAME, b"guest-memfd\0").unwrap();
+        let fd = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_memfd_create,
+            [NAME, libc::MFD_CLOEXEC as u64, 0, 0, 0, 0],
+        );
+        assert!(fd >= 0, "memfd_create returned {fd}");
+        let fd = fd as i32;
+        // Registered as a live host file carrying the requested close-on-exec bit.
+        assert!(state.files.contains_key(&fd));
+        assert!(state.cloexec_fds.contains(&fd));
+
+        // The anonymous file is a working read+write regular file.
+        const BUF: u64 = 0x200;
+        memory.write(BUF, b"payload").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pwrite64,
+                [fd as u64, BUF, 7, 0, 0, 0]
+            ),
+            7
+        );
+        const RBUF: u64 = 0x300;
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pread64,
+                [fd as u64, RBUF, 7, 0, 0, 0]
+            ),
+            7
+        );
+        let mut got = [0u8; 7];
+        memory.read(RBUF, &mut got).unwrap();
+        assert_eq!(&got, b"payload");
     }
 
     #[test]
@@ -15926,6 +16533,76 @@ mod tests {
             ),
             negative_errno(libc::ENODEV)
         );
+    }
+
+    #[test]
+    fn ioctl_terminal_queries_report_real_tty_ness() {
+        // A real terminal answers TCGETS/TIOCGWINSZ successfully; a non-terminal
+        // descriptor answers ENOTTY. The executor must forward these ioctls to
+        // the host descriptor and report the real answer, so a guest's isatty()
+        // matches the ptrace backend instead of always seeing a non-tty.
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+
+        // Open a pseudo-terminal; the slave end is a real tty.
+        let mut master: libc::c_int = -1;
+        let mut slave: libc::c_int = -1;
+        let rc = unsafe {
+            libc::openpty(
+                &mut master,
+                &mut slave,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(rc, 0, "openpty failed: {}", std::io::Error::last_os_error());
+
+        // Guest fd 3 -> the tty slave; guest fd 4 -> /dev/null (not a tty).
+        // SAFETY: `slave` is a freshly opened, owned fd handed to the File.
+        state
+            .files
+            .insert(3, unsafe { std::fs::File::from_raw_fd(slave) });
+        state
+            .files
+            .insert(4, std::fs::File::open("/dev/null").unwrap());
+
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut executor = ElfExecutor::new(state, false);
+
+        // TCGETS on the tty succeeds -> isatty() == true.
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_ioctl as u64, [3, libc::TCGETS, 0x100, 0, 0, 0]),
+                &memory,
+            ),
+            0,
+        );
+        // TIOCGWINSZ on the tty succeeds.
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(
+                    libc::SYS_ioctl as u64,
+                    [3, libc::TIOCGWINSZ, 0x100, 0, 0, 0]
+                ),
+                &memory,
+            ),
+            0,
+        );
+        // TCGETS on a non-tty forwards to the host and reports the real ENOTTY,
+        // so isatty() stays false for pipes/files (piped output is unchanged).
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_ioctl as u64, [4, libc::TCGETS, 0x100, 0, 0, 0]),
+                &memory,
+            ),
+            negative_errno(libc::ENOTTY),
+        );
+
+        // SAFETY: `master` is the still-open master end owned by this test.
+        unsafe {
+            libc::close(master);
+        }
     }
 
     #[test]
