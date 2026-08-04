@@ -1,6 +1,10 @@
 target/
 Cargo.lock
 
+# Machine-local validate-run ledger and other ignored runtime artifacts written
+# under a nested dev-hermit slot (never committed).
+ignored/
+
 # Local backup and Python cache files.
 *.orig
 **/__pycache__/

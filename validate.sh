@@ -70,6 +70,40 @@ validation_slot_name() {
     esac
 }
 
+# Honest startup peer scan for the "concurrent_validates" ledger field. Reverie
+# has no validate-lock, so count OTHER live validate.sh processes by reading
+# /proc/<pid>/cmdline. This is strictly READ-ONLY: it never sends a signal to any
+# process (Hard Invariant 15 forbids broad/pattern kills on this shared box).
+# This PID and its own ancestry are excluded so a parent wrapper that re-exec'd
+# into validate.sh is never miscounted as a peer.
+count_concurrent_validates() {
+    local self=$$ cur=$$ pid arg cmdline count=0
+    local -A ancestry=()
+
+    while [[ $cur =~ ^[1-9][0-9]*$ ]] && ((cur > 1)); do
+        ancestry[$cur]=1
+        cur=$(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$cur/status" 2>/dev/null)
+        [[ -n $cur ]] || break
+    done
+
+    for cmdline in /proc/[0-9]*/cmdline; do
+        pid=${cmdline#/proc/}
+        pid=${pid%/cmdline}
+        [[ $pid =~ ^[1-9][0-9]*$ ]] || continue
+        [[ -n ${ancestry[$pid]:-} ]] && continue
+        [[ -r $cmdline ]] || continue
+        # 2>/dev/null precedes the input redirect so a PID that exits between the
+        # glob and the open (TOCTOU) cannot leak a "No such file" line to stderr.
+        while IFS= read -r -d '' arg; do
+            if [[ ${arg##*/} == validate.sh ]]; then
+                count=$((count + 1))
+                break
+            fi
+        done 2>/dev/null <"$cmdline"
+    done
+    printf '%s\n' "$count"
+}
+
 LABEL_PR=1
 [[ ${VALIDATE_LABEL_PR:-1} == 0 ]] && LABEL_PR=0
 PR_NUMBER=${PR_NUMBER:-}
@@ -136,12 +170,32 @@ if [[ -d $ROOT_DIR/target/debug/deps ]]; then
 else
     VALIDATION_CACHE_STATE=cold
 fi
+# Startup peer scan (labeled proof "startup_peer_scan"). Non-null (>=0) whenever
+# /proc is readable; null/null only when /proc is absent and the scan is
+# impossible. This is a start-time sample, not a whole-run overlap monitor.
+if [[ -d /proc ]]; then
+    VALIDATION_CONCURRENT_VALIDATES=$(count_concurrent_validates)
+    [[ $VALIDATION_CONCURRENT_VALIDATES =~ ^[0-9]+$ ]] || VALIDATION_CONCURRENT_VALIDATES=null
+    if [[ $VALIDATION_CONCURRENT_VALIDATES == null ]]; then
+        VALIDATION_CONCURRENCY_PROOF=null
+    else
+        VALIDATION_CONCURRENCY_PROOF=startup_peer_scan
+    fi
+else
+    VALIDATION_CONCURRENT_VALIDATES=null
+    VALIDATION_CONCURRENCY_PROOF=null
+fi
+# Number of gates a full serial reverie validate run executes (the run_check
+# calls below). Lets a truncated run be classified TRUNCATED downstream.
+VALIDATION_GATES_EXPECTED=6
 VALIDATION_CPU_TIMES_FILE=$(mktemp "${TMPDIR:-/tmp}/reverie-validate-cpu.XXXXXX")
 readonly VALIDATION_STARTED_AT VALIDATION_STARTED_EPOCH VALIDATION_HOST
 readonly DEV_HERMIT_PARENT VALIDATION_SLOT VALIDATION_LEDGER_FILE
 readonly VALIDATION_COMMIT VALIDATION_GIT_DEPTH VALIDATION_GIT_AHEAD
 readonly VALIDATION_GIT_BEHIND VALIDATION_TREE_DIRTY VALIDATION_COMMIT_ANCHORED
 readonly VALIDATION_CACHE_STATE VALIDATION_CPU_TIMES_FILE
+readonly VALIDATION_CONCURRENT_VALIDATES VALIDATION_CONCURRENCY_PROOF
+readonly VALIDATION_GATES_EXPECTED
 
 if [[ -z $VALIDATION_LEDGER_FILE ]]; then
     printf 'No validation ledger: standalone Reverie checkout; dev-hermit parent is absent.\n'
@@ -169,6 +223,12 @@ append_validation_ledger() {
     local finished_at result gates_json gate_result line
     local commit_anchored_json tree_dirty_json
     local executed_tests filtered_tests
+    local concurrent_validates_json concurrency_proof_json gates_run
+    local evidence_helper evidence_json evidence_available=0
+    local first_error_line_json=null failed_substep_classes_json='[]'
+    local failed_substeps_json='[]' flaky_failed_substeps_json='[]'
+    local known_flaky_failure_json=null solo_rerun_confirmation_json=false
+    local solo_rerun_of_json=null gate_substeps_json
     local i
 
     [[ -n $VALIDATION_LEDGER_FILE ]] || return 0
@@ -178,6 +238,43 @@ append_validation_ledger() {
         result=pass
     else
         result=fail
+    fi
+
+    # concurrent_validates / concurrency_proof come from the start-time peer scan
+    # captured before any gate ran (see count_concurrent_validates). They are
+    # non-null whenever /proc was readable; the proof label names how they were
+    # obtained rather than asserting proven exclusivity.
+    if [[ $VALIDATION_CONCURRENT_VALIDATES =~ ^[0-9]+$ ]]; then
+        concurrent_validates_json=$VALIDATION_CONCURRENT_VALIDATES
+    else
+        concurrent_validates_json=null
+    fi
+    if [[ -n $VALIDATION_CONCURRENCY_PROOF && $VALIDATION_CONCURRENCY_PROOF != null ]]; then
+        concurrency_proof_json=$(json_quote "$VALIDATION_CONCURRENCY_PROOF")
+    else
+        concurrency_proof_json=null
+    fi
+
+    # One-schema-both-repos: call the SAME parent failure-evidence helper hermit
+    # uses (not a reverie reimplementation). Reverie is serial with no DAG, so
+    # --dag-jobs 1; the helper may honestly return a null first_error_line for a
+    # non-DAG log. Any unavailability/failure keeps the additive defaults above.
+    evidence_helper="$DEV_HERMIT_PARENT/ci-hub/validate/failure_evidence.py"
+    if [[ -n $DEV_HERMIT_PARENT && -r $evidence_helper ]] \
+        && command -v python3 >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        if evidence_json=$(python3 "$evidence_helper" --log "$LOG_FILE" \
+            --commit "$VALIDATION_COMMIT" --dag-jobs 1 \
+            --concurrent-validates "$concurrent_validates_json" \
+            --ledger "$VALIDATION_LEDGER_FILE" 2>>"$LOG_FILE"); then
+            first_error_line_json=$(jq -c '.first_error_line' <<<"$evidence_json")
+            failed_substep_classes_json=$(jq -c '.failed_substep_classes' <<<"$evidence_json")
+            failed_substeps_json=$(jq -c '.failed_substeps' <<<"$evidence_json")
+            flaky_failed_substeps_json=$(jq -c '.flaky_failed_substeps' <<<"$evidence_json")
+            known_flaky_failure_json=$(jq -c '.known_flaky_failure' <<<"$evidence_json")
+            solo_rerun_confirmation_json=$(jq -c '.solo_rerun_confirmation' <<<"$evidence_json")
+            solo_rerun_of_json=$(jq -c '.solo_rerun_of' <<<"$evidence_json")
+            evidence_available=1
+        fi
     fi
 
     # Cargo's own result banners prove how many tests actually ran. A green
@@ -201,9 +298,16 @@ append_validation_ledger() {
         gates_json+="{\"name\":$(json_quote "${ledger_gate_names[i]}"),"
         gates_json+="\"result\":\"$gate_result\","
         gates_json+="\"exit_code\":${ledger_gate_statuses[i]},"
-        gates_json+="\"real_seconds\":${ledger_gate_durations[i]}}"
+        gates_json+="\"real_seconds\":${ledger_gate_durations[i]}"
+        if ((ledger_gate_statuses[i] != 0)); then
+            gate_substeps_json='[]'
+            ((evidence_available == 1)) && gate_substeps_json=$failed_substeps_json
+            gates_json+=",\"failed_substeps\":$gate_substeps_json"
+        fi
+        gates_json+='}'
     done
     gates_json+=']'
+    gates_run=${#ledger_gate_names[@]}
 
     if ((VALIDATION_COMMIT_ANCHORED == 1)); then commit_anchored_json=true; else commit_anchored_json=false; fi
     if ((VALIDATION_TREE_DIRTY == 1)); then tree_dirty_json=true; else tree_dirty_json=false; fi
@@ -220,6 +324,15 @@ append_validation_ledger() {
     line+="\"result\":\"$result\",\"exit_code\":$exit_status,"
     line+="\"executed_tests\":$executed_tests,\"filtered_tests\":$filtered_tests,"
     line+="\"checks\":$checks,\"failures\":$failures,"
+    line+="\"concurrent_validates\":$concurrent_validates_json,"
+    line+="\"concurrency_proof\":$concurrency_proof_json,"
+    line+="\"known_flaky_failure\":$known_flaky_failure_json,"
+    line+="\"first_error_line\":$first_error_line_json,"
+    line+="\"failed_substep_classes\":$failed_substep_classes_json,"
+    line+="\"flaky_failed_substeps\":$flaky_failed_substeps_json,"
+    line+="\"solo_rerun_confirmation\":$solo_rerun_confirmation_json,"
+    line+="\"solo_rerun_of\":$solo_rerun_of_json,"
+    line+="\"gates_run\":$gates_run,\"gates_expected\":$VALIDATION_GATES_EXPECTED,"
     line+="\"real_seconds\":$wall_seconds,\"user_seconds\":$cpu_user,\"sys_seconds\":$cpu_sys,"
     line+="\"log_file\":$(json_quote "$LOG_FILE"),\"gates\":$gates_json}"
 
