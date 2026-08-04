@@ -8,9 +8,11 @@
 
 use std::env;
 use std::ffi::OsString;
+use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::Instant;
 
 use goblin::elf::Elf;
 use goblin::elf::program_header::PF_X;
@@ -18,10 +20,33 @@ use goblin::elf::program_header::PT_LOAD;
 
 fn main() {
     println!("cargo:rerun-if-changed=runtime/syscall_trap.S");
+    println!("cargo:rerun-if-changed=vendor/e9patch");
     println!("cargo:rerun-if-env-changed=CC");
     println!("cargo:rerun-if-env-changed=NM");
 
     let output_dir = PathBuf::from(env::var_os("OUT_DIR").expect("Cargo did not set OUT_DIR"));
+    let manifest_dir =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("Cargo did not set manifest dir"));
+    let source_dir = manifest_dir.join("vendor/e9patch");
+    let revision = fs::read_to_string(source_dir.join("REVISION"))
+        .expect("the vendored e9patch source is missing its REVISION marker");
+    assert_eq!(
+        revision.trim(),
+        "6c2c03c1da74b14daf1788a9f8dccfa354ce04a6",
+        "the vendored e9patch revision marker changed"
+    );
+    for required in [
+        "Makefile",
+        "src/e9tool/e9tool.cpp",
+        "src/e9patch/e9patch.cpp",
+        "contrib/zydis/Makefile",
+        "contrib/libdw/Makefile",
+    ] {
+        assert!(
+            source_dir.join(required).is_file(),
+            "the vendored e9patch source is incomplete: missing {required}"
+        );
+    }
     let output = output_dir.join("reverie-e9patch-syscall-trap");
     let handoff_page = 0x0000_0001_e900_0000_u64;
     // Version 2: the callback returns an explicit dispatch outcome (1=handled,
@@ -35,6 +60,17 @@ fn main() {
         std::fs::write(output, []).expect("failed to create unsupported-target payload");
         return;
     }
+
+    let (e9tool, e9patch) = build_e9patch_tools(&source_dir, &output_dir.join("e9patch-build"));
+    println!("cargo:rustc-env=REVERIE_E9TOOL={}", e9tool.display());
+    println!(
+        "cargo:rustc-env=REVERIE_E9PATCH_BACKEND={}",
+        e9patch.display()
+    );
+    println!(
+        "cargo:rustc-env=REVERIE_E9PATCH_SOURCE={}",
+        source_dir.display()
+    );
 
     let compiler = env::var_os("CC").unwrap_or_else(|| OsString::from("cc"));
     let source = Path::new("runtime/syscall_trap.S");
@@ -93,6 +129,113 @@ fn main() {
         payload_text_start,
         payload_text_end,
     );
+}
+
+fn build_e9patch_tools(source: &Path, build: &Path) -> (PathBuf, PathBuf) {
+    let started = Instant::now();
+    if build.exists() {
+        fs::remove_dir_all(build).expect("failed to reset the e9patch build directory");
+    }
+    copy_tree(source, build);
+    let tool_dir = build_xxd_shim(build);
+    let path = env::var_os("PATH").unwrap_or_default();
+    let path = env::join_paths(std::iter::once(tool_dir).chain(env::split_paths(&path)))
+        .expect("failed to construct e9patch build PATH");
+    let jobs = env::var("NUM_JOBS")
+        .ok()
+        .and_then(|jobs| jobs.parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 16);
+    let mut make = Command::new("make");
+    make.arg("-C")
+        .arg(build)
+        .arg(format!("--jobs={jobs}"))
+        .arg("release")
+        .env("PATH", path);
+    run(&mut make, "build e9patch tools");
+    let e9tool = build.join("e9tool");
+    let e9patch = build.join("e9patch");
+    assert!(e9tool.is_file(), "e9patch build did not produce e9tool");
+    assert!(e9patch.is_file(), "e9patch build did not produce e9patch");
+    println!(
+        "cargo:warning=e9patch source build completed in {:.2}s (jobs={jobs})",
+        started.elapsed().as_secs_f64()
+    );
+    (e9tool, e9patch)
+}
+
+fn build_xxd_shim(build: &Path) -> PathBuf {
+    let tools = build.join(".hermit-build-tools");
+    fs::create_dir_all(&tools).expect("failed to create e9patch build-tool directory");
+    let source = tools.join("xxd.rs");
+    fs::write(
+        &source,
+        r#"use std::env;
+use std::fs;
+use std::path::Path;
+
+fn main() {
+    let args = env::args_os().skip(1).collect::<Vec<_>>();
+    assert!(args.len() == 2 && args[0] == "-i", "expected: xxd -i FILE");
+    let path = Path::new(&args[1]);
+    let bytes = fs::read(path).expect("failed to read xxd input");
+    let name = path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .chars()
+        .map(|character| if character.is_ascii_alphanumeric() { character } else { '_' })
+        .collect::<String>();
+    println!("unsigned char {name}[] = {{");
+    for chunk in bytes.chunks(12) {
+        print!("  ");
+        for byte in chunk {
+            print!("0x{byte:02x}, ");
+        }
+        println!();
+    }
+    println!("}};");
+    println!("unsigned int {name}_len = {};", bytes.len());
+}
+"#,
+    )
+    .expect("failed to write the Cargo-provided xxd shim");
+    let executable = tools.join("xxd");
+    let rustc = env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    run(
+        Command::new(rustc)
+            .arg("--edition=2021")
+            .arg("-O")
+            .arg(&source)
+            .arg("-o")
+            .arg(&executable),
+        "build the Cargo-provided xxd shim",
+    );
+    tools
+}
+
+fn copy_tree(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination)
+        .unwrap_or_else(|error| panic!("failed to create {}: {error}", destination.display()));
+    let mut entries = fs::read_dir(source)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", source.display()))
+        .map(|entry| entry.expect("failed to read vendored source entry").path())
+        .collect::<Vec<_>>();
+    entries.sort();
+    for path in entries {
+        let target = destination.join(path.file_name().expect("source entry has no name"));
+        if path.is_dir() {
+            copy_tree(&path, &target);
+        } else {
+            fs::copy(&path, &target).unwrap_or_else(|error| {
+                panic!(
+                    "failed to copy {} to {}: {error}",
+                    path.display(),
+                    target.display()
+                )
+            });
+        }
+    }
 }
 
 fn payload_executable_range(binary: &Path) -> (u64, u64) {
