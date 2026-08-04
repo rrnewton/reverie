@@ -354,11 +354,11 @@ impl LiteinstBackend {
     /// Runs a tool using an explicit tool-specific preload library.
     ///
     /// This path dispatches patchable syscalls in the guest and keeps the
-    /// `GlobalTool` in this coordinator. It supports single-threaded plain-fork
-    /// children, which reconnect to the shared coordinator. It does not attach
-    /// a ptrace lifecycle supervisor: thread clone, clone3, vfork, exec, vDSO,
-    /// and unpatchable-site fallback remain unsupported, and completion follows
-    /// only the root child.
+    /// `GlobalTool` in this coordinator. A lifecycle-only `TracerBuilder<()>`
+    /// follows and reaps the process tree but has no syscall subscriptions, so
+    /// the concrete `Tool` remains guest-only. Single-threaded plain-fork
+    /// children reconnect to the shared coordinator. Thread clone, clone3,
+    /// vfork, exec rebootstrap, and unpatchable-site fallback remain unsupported.
     pub async fn run_with_preload<T>(
         command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
@@ -559,17 +559,15 @@ fn configure_host_command(command: &mut Command, preload: PathBuf) -> io::Result
     Ok(preload)
 }
 
-fn configure_direct_command_preload(command: &mut std::process::Command, preload: PathBuf) {
-    let configured_preload = command
-        .get_envs()
-        .find(|(key, _)| *key == OsStr::new("LD_PRELOAD"))
-        .map(|(_, value)| value.map(ToOwned::to_owned));
+fn effective_command_env(command: &Command, key: &OsStr) -> Option<OsString> {
+    command.get_captured_envs().remove(key)
+}
+
+fn configure_in_guest_command_preload(command: &mut Command, preload: PathBuf) {
     let mut ld_preload = preload.into_os_string();
-    let inherited_preload = match configured_preload {
-        Some(value) => value,
-        None => std::env::var_os("LD_PRELOAD"),
-    };
-    if let Some(existing) = inherited_preload.filter(|value| !value.is_empty()) {
+    if let Some(existing) =
+        effective_command_env(command, OsStr::new("LD_PRELOAD")).filter(|value| !value.is_empty())
+    {
         ld_preload.push(OsStr::new(":"));
         ld_preload.push(existing);
     }
@@ -720,10 +718,11 @@ where
         (None, None, None)
     };
 
+    configure_in_guest_command_preload(&mut command, preload);
+
     let wait = match tool_data {
         Some(tool_data) => {
             let mut child_command = command.into_std_lossy();
-            configure_direct_command_preload(&mut child_command, preload);
             child_command.env_remove(STATS_COORDINATOR_ENV);
             if let Some(stats_socket) = &stats_socket {
                 child_command.env(STATS_COORDINATOR_ENV, stats_socket);
@@ -755,17 +754,6 @@ where
             .await?
         }
         None => {
-            let configured_preload = command.get_env("LD_PRELOAD").map(Into::into);
-            let mut ld_preload = preload.into_os_string();
-            let inherited_preload = match configured_preload {
-                Some(value) => Some(value),
-                None => std::env::var_os("LD_PRELOAD"),
-            };
-            if let Some(existing) = inherited_preload.filter(|value| !value.is_empty()) {
-                ld_preload.push(OsStr::new(":"));
-                ld_preload.push(existing);
-            }
-            command.env("LD_PRELOAD", ld_preload);
             command.env(COORDINATOR_ENV, &socket);
             command.env_remove(STATS_COORDINATOR_ENV);
             if let Some(stats_socket) = &stats_socket {
@@ -945,20 +933,76 @@ mod tests {
     }
 
     #[test]
-    fn direct_preload_preserves_explicit_command_environment() {
+    fn effective_command_environment_honors_override_remove_and_clear() {
+        let ambient_path = std::env::var_os("PATH").expect("test process must have PATH");
+        assert!(!ambient_path.is_empty());
+
+        let mut command = Command::new("/bin/true");
+        command.env("PATH", "/caller/bin");
+        assert_eq!(
+            effective_command_env(&command, OsStr::new("PATH")),
+            Some(OsString::from("/caller/bin"))
+        );
+
+        command.env_remove("PATH");
+        assert_eq!(effective_command_env(&command, OsStr::new("PATH")), None);
+
+        let mut cleared = Command::new("/bin/true");
+        cleared.env_clear();
+        assert_eq!(effective_command_env(&cleared, OsStr::new("PATH")), None);
+    }
+
+    #[test]
+    fn in_guest_preload_override_remove_and_clear_win_over_ambient() {
+        const CHILD_ENV: &str = "REVERIE_LITEINST_PRELOAD_ENV_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::in_guest_preload_override_remove_and_clear_win_over_ambient",
+                    "--test-threads=1",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("LD_PRELOAD", "libc.so.6")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child test failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        assert_eq!(std::env::var_os("LD_PRELOAD"), Some("libc.so.6".into()));
+
         let mut command = Command::new("/bin/true");
         command.env("LD_PRELOAD", "/caller/tool.so");
-        let mut child_command = command.into_std_lossy();
-
-        configure_direct_command_preload(&mut child_command, PathBuf::from("/liteinst/runtime.so"));
-
-        let preload = child_command
+        configure_in_guest_command_preload(&mut command, PathBuf::from("/liteinst/runtime.so"));
+        let preload = command
             .get_envs()
             .find(|(key, _)| *key == OsStr::new("LD_PRELOAD"))
             .and_then(|(_, value)| value);
         assert_eq!(
             preload,
             Some(OsStr::new("/liteinst/runtime.so:/caller/tool.so"))
+        );
+
+        let mut removed = Command::new("/bin/true");
+        removed.env_remove("LD_PRELOAD");
+        configure_in_guest_command_preload(&mut removed, PathBuf::from("/liteinst/runtime.so"));
+        assert_eq!(
+            effective_command_env(&removed, OsStr::new("LD_PRELOAD")),
+            Some(OsString::from("/liteinst/runtime.so"))
+        );
+
+        let mut cleared = Command::new("/bin/true");
+        cleared.env_clear();
+        configure_in_guest_command_preload(&mut cleared, PathBuf::from("/liteinst/runtime.so"));
+        assert_eq!(
+            effective_command_env(&cleared, OsStr::new("LD_PRELOAD")),
+            Some(OsString::from("/liteinst/runtime.so"))
         );
     }
 }

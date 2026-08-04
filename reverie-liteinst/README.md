@@ -100,9 +100,11 @@ trap path. Quiescent publication is never selected from this route.
 
 - Dynamically linked, non-`AT_SECURE` Linux x86-64 guests only.
 - One thread per process is supported by `LiteinstBackend`. Plain `fork` creates
-  a fresh child-local `Tool` and reconnects to the shared coordinator; thread
-  clone, `clone3`, and `vfork` fail closed. The launcher waits only for the root
-  child, so outliving descendants and signal-death lifecycle are not complete.
+  a fresh child-local `Tool` and reconnects to the shared coordinator. A
+  lifecycle-only ptrace supervisor with `Tool = ()` follows and reaps the
+  process tree, including outliving and signaled descendants, but does not
+  subscribe to syscalls or host a second copy of the concrete Tool. Thread
+  clone, `clone3`, and `vfork` fail closed.
 - Patchable syscalls dispatch the Tool in guest, and intercepted normal exits
   route thread and process callbacks on the supported single-threaded path.
   Signal deaths, CPUID,
@@ -120,7 +122,8 @@ trap path. Quiescent publication is never selected from this route.
   can stall.
 - The five-byte patch window and executable mapping must be supported by
   `liteinst2`. Dynamic executable mappings without a prepared reachable arena
-  fail closed; there is no ptrace slow-path supervisor in the in-guest backend.
+  fail closed. The lifecycle-only ptrace supervisor is not a syscall slow path:
+  it has no syscall subscriptions, and no host Tool handles guest syscalls.
 - `execve` cannot safely cross the inherited filter because the handler and DSO
   mappings disappear. A future exec bootstrap must be controller-owned.
 - This is in-process instrumentation, not a security sandbox.
