@@ -868,25 +868,35 @@ where
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
 
-    let mut child_command = command.into_std_lossy();
-    let configured_preload = child_command
-        .get_envs()
-        .find(|(key, _)| *key == OsStr::new("LD_PRELOAD"))
-        .map(|(_, value)| value.map(ToOwned::to_owned));
+    // Merge the tool preload ahead of any LD_PRELOAD already configured on the
+    // command (or inherited from this process), on the reverie `Command` so the
+    // default (environment-bootstrap) path below can be driven by a
+    // lifecycle-only `TracerBuilder<()>` reaper instead of a bare, single-process
+    // spawn.
     let mut ld_preload = preload.into_os_string();
-    let inherited_preload = match configured_preload {
-        Some(value) => value,
-        None => std::env::var_os("LD_PRELOAD"),
-    };
-    if let Some(existing) = inherited_preload.filter(|value| !value.is_empty()) {
+    let inherited_preload = command
+        .get_captured_envs()
+        .remove(OsStr::new("LD_PRELOAD"))
+        .filter(|value| !value.is_empty())
+        .or_else(|| std::env::var_os("LD_PRELOAD").filter(|value| !value.is_empty()));
+    if let Some(existing) = inherited_preload {
         ld_preload.push(OsStr::new(":"));
         ld_preload.push(existing);
     }
-    child_command.env("LD_PRELOAD", ld_preload);
-    let bootstrap = match tool_data {
+    command.env("LD_PRELOAD", ld_preload);
+
+    let wait = match tool_data {
+        // Sealed-memfd bootstrap path. Mirroring reverie-liteinst's memfd branch,
+        // this stays a single-process std spawn: the bootstrap fd is handed to the
+        // guest via a `pre_exec` `F_SETFD` clear, expressed against
+        // `std::process::Command`. This path is not yet tree-reaped.
         Some(tool_data) => {
+            let mut child_command = command.into_std_lossy();
             let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
             let bootstrap_fd = bootstrap.as_raw_fd();
+            // SAFETY: fcntl(2) is async-signal-safe and the closure captures only
+            // the raw fd, which stays valid until `bootstrap` is dropped after the
+            // child has spawned.
             unsafe {
                 child_command.pre_exec(move || {
                     if libc::fcntl(bootstrap_fd, libc::F_SETFD, 0) == -1 {
@@ -895,34 +905,66 @@ where
                     Ok(())
                 });
             }
-            Some(bootstrap)
+            let child = match child_command.spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    let _ = executable.close();
+                    return Err(error.into());
+                }
+            };
+            drop(bootstrap);
+            let wait = tokio::task::spawn_blocking(move || {
+                if capture_output {
+                    child.wait_with_output().map(ChildWait::Output)
+                } else {
+                    wait_without_output(child).map(ChildWait::Status)
+                }
+            });
+            serve_rpc_until(server, async move {
+                wait.await
+                    .map_err(|error| io::Error::other(error.to_string()))?
+            })
+            .await?
         }
+        // Environment-bootstrap path (the default `run_direct` / output flows).
+        // A-class, lifecycle-only reaper: the unit tool `()` declares no syscall
+        // subscriptions and hosts no `Tool` in the supervisor, so Detcore runs
+        // entirely in-guest over the shared reverie-preload SIGSYS/seccomp seam.
+        // ptrace is used only to follow and reap the guest process tree
+        // (exec/clone/fork), never on the syscall hot path; un-instrumented
+        // syscalls fail closed through the in-guest SIGSYS handler, not a ptrace
+        // trap.
         None => {
-            child_command.env(crate::COORDINATOR_ENV, &socket);
-            None
+            command.env(crate::COORDINATOR_ENV, &socket);
+            let tracer = match TracerBuilder::<()>::new(command).spawn().await {
+                Ok(tracer) => tracer,
+                Err(error) => {
+                    let _ = executable.close();
+                    return Err(error);
+                }
+            };
+            serve_rpc_until(server, async move {
+                if capture_output {
+                    let (output, ()) = tracer
+                        .wait_with_output()
+                        .await
+                        .map_err(|error| io::Error::other(error.to_string()))?;
+                    Ok(ChildWait::Output(std::process::Output {
+                        status: output.status.into(),
+                        stdout: output.stdout,
+                        stderr: output.stderr,
+                    }))
+                } else {
+                    let (status, ()) = tracer
+                        .wait()
+                        .await
+                        .map_err(|error| io::Error::other(error.to_string()))?;
+                    Ok(ChildWait::Status(status.into()))
+                }
+            })
+            .await?
         }
     };
-
-    let child = match child_command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            let _ = executable.close();
-            return Err(error.into());
-        }
-    };
-    drop(bootstrap);
-    let wait = tokio::task::spawn_blocking(move || {
-        if capture_output {
-            child.wait_with_output().map(ChildWait::Output)
-        } else {
-            wait_without_output(child).map(ChildWait::Status)
-        }
-    });
-    let wait = serve_rpc_until(server, async move {
-        wait.await
-            .map_err(|error| io::Error::other(error.to_string()))?
-    })
-    .await?;
     executable.close()?;
     if !connected.load(Ordering::Acquire) {
         return Err(io::Error::new(
