@@ -248,10 +248,12 @@ pub unsafe fn install_runtime() -> io::Result<()> {
 ///
 /// This is e9patch's production controller: the shared fallback ptracer owns
 /// lifecycle while the in-process `SIGSYS` trap serves residual un-rewritten
-/// sites. The shared `HybridPtrace` controller is presently a documented
-/// skeleton (see `reverie-preload`), so this returns [`io::ErrorKind::Unsupported`]
-/// until that lifecycle owner lands — which is correct today, because e9patch's
-/// in-guest fast path is not yet active and ptrace performs all event handling.
+/// sites. The shared [`HybridPtrace`] controller installs the same in-process
+/// `SIGSYS` handler + trusted-gate seccomp filter as [`InProcessSeccomp`]; the
+/// A-class launcher half (`reverie_ptrace::TracerBuilder::<()>`, in the parent)
+/// owns process lifecycle only and never traps a syscall on the hot path. So
+/// this installs successfully and the in-guest fast path is active, with ptrace
+/// reserved for spawn/attach, `exec`/`clone`/`vfork`/vDSO, and follow+reap.
 ///
 /// # Safety
 ///
