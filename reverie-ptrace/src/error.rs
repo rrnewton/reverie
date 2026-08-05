@@ -9,6 +9,85 @@
 use reverie::Pid;
 use thiserror::Error;
 
+/// The controller operation whose LiteInst activation invariants failed.
+///
+/// This is internal to the ptrace-owned LiteInst runtime. Keeping it typed lets
+/// tests and internal consumers distinguish failure paths without parsing diagnostic
+/// text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LiteinstActivationOperation {
+    ResumeInjectedSyscall,
+    ResumeInterceptedInjectedSyscall,
+    ResumeAfterSeccompStop,
+    WaitForPostExecTrap,
+    SkipInterceptedSyscall,
+    FinishReinjectedSyscall,
+    FinishInjectedSyscall,
+}
+
+impl LiteinstActivationOperation {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ResumeInjectedSyscall => "resume injected syscall",
+            Self::ResumeInterceptedInjectedSyscall => "resume intercepted injected syscall",
+            Self::ResumeAfterSeccompStop => "resume after seccomp stop",
+            Self::WaitForPostExecTrap => "wait for the LiteInst post-exec trap",
+            Self::SkipInterceptedSyscall => "skip intercepted syscall",
+            Self::FinishReinjectedSyscall => "finish reinjected syscall",
+            Self::FinishInjectedSyscall => "finish injected syscall",
+        }
+    }
+}
+
+/// Stable classification for a fail-closed LiteInst activation error.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LiteinstActivationFailureReason {
+    UnexpectedPreinitSignal,
+    ExecutableEntryBeforeHandshake,
+    RestoreExecutableEntryGuard,
+    UnexpectedActivationTrap,
+    SignalBeforeHandshake(LiteinstActivationOperation),
+    UnexpectedControllerProvenance(LiteinstActivationOperation),
+    UnexpectedActivationSignal,
+    PostStartExec,
+    UnexpectedPostExecEvent,
+    ExitedBeforePostExecTrap,
+    InstallExecutableEntryGuard,
+    TerminatedBeforeHandshake,
+}
+
+/// A typed LiteInst activation failure retaining its human-readable diagnostic.
+#[derive(Debug, Error)]
+#[error("{error}")]
+pub(crate) struct LiteinstActivationFailure {
+    reason: LiteinstActivationFailureReason,
+    #[source]
+    error: Error,
+}
+
+impl LiteinstActivationFailure {
+    pub(crate) fn new(reason: LiteinstActivationFailureReason, error: Error) -> Self {
+        Self { reason, error }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn reason(&self) -> LiteinstActivationFailureReason {
+        self.reason
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn liteinst_activation_failure_reason(
+    error: &reverie::Error,
+) -> Option<LiteinstActivationFailureReason> {
+    let reverie::Error::Tool(error) = error else {
+        return None;
+    };
+    error
+        .downcast_ref::<LiteinstActivationFailure>()
+        .map(LiteinstActivationFailure::reason)
+}
+
 /// A reverie-ptrace error. This error type isn't meant to be exposed to the
 /// user.
 #[derive(Error, Debug)]
@@ -93,5 +172,39 @@ mod tests {
         assert!(message.contains("resume after seccomp stop"));
         assert!(message.contains("42"));
         assert!(message.contains("Operation not permitted"));
+    }
+
+    fn activation_error(
+        reason: LiteinstActivationFailureReason,
+        message: &'static str,
+    ) -> reverie::Error {
+        anyhow::Error::new(LiteinstActivationFailure::new(
+            reason,
+            Error::runtime(Pid::from_raw(42), "activate LiteInst", message),
+        ))
+        .into()
+    }
+
+    #[test]
+    fn liteinst_activation_reason_accepts_the_qualifying_typed_failure() {
+        let reason = LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+            LiteinstActivationOperation::FinishInjectedSyscall,
+        );
+        let error = activation_error(reason, "diagnostic wording is not authoritative");
+
+        assert_eq!(liteinst_activation_failure_reason(&error), Some(reason));
+    }
+
+    #[test]
+    fn liteinst_activation_reason_rejects_tampered_diagnostic_text() {
+        let expected = LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+            LiteinstActivationOperation::FinishInjectedSyscall,
+        );
+        let error = activation_error(
+            LiteinstActivationFailureReason::UnexpectedActivationSignal,
+            "finish injected syscall observed a nested signal without the expected controller provenance",
+        );
+
+        assert_ne!(liteinst_activation_failure_reason(&error), Some(expected));
     }
 }
