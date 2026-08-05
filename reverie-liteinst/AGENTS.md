@@ -16,8 +16,11 @@ Read the relevant crate-local skill before changing code:
   dispatch, RPC, signal policy, and syscall injection.
 - `.llms/skills/liteinst-testing.md` for the test matrix and evidence claims.
 
-`CLAUDE.md`, `.claude/skills`, and `.agents/skills` are symlinks to this guide
-and the canonical `.llms/skills` directory. Edit the canonical files only.
+`CLAUDE.md` links to this guide, `.claude/skills` links to the canonical
+`.llms/skills` directory for Claude, and stock Codex uses structured
+`.agents/skills/<name>/SKILL.md` entrypoints. Edit instruction bodies only in
+the canonical `.llms/skills` files and run the root
+`scripts/check-skill-discovery.rs` after changes.
 
 ## How LiteInst Works
 
