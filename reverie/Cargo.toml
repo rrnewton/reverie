@@ -31,7 +31,7 @@ perf-fixture = []
 [dependencies]
 addr2line = "0.26.1"
 anyhow = "1.0.103"
-async-trait = "0.1.86"
+async-trait = "0.1.91"
 bitflags = { version = "2.13.1", features = ["serde", "std"], default-features = false }
 byteorder = "1.5"
 goblin = { version = "0.10.7", features = ["elf32", "elf64", "endian_fd"] }
