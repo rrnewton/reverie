@@ -126,17 +126,24 @@ belong to another agent until proven otherwise.
 The coordinator assigns an idle slot from the dev-hermit root before editing:
 
 ```bash
+for product in hermit reverie liteinst2; do
+  with-proxy git -C "$product" fetch origin main
+done
 ./scripts/allocate-worktree.rs \
-  --agent <agent> --slot <slot> --task <task-id> --product reverie \
+  --agent <agent> --slot <slot> --task <task-id> --product all \
   --reverie-branch <descriptive-feature-branch> --start-point origin/main \
   --purpose "<one-line outcome>"
 ```
 
-The allocator verifies and records ownership. In the assigned
-`worktrees/<slot>/reverie`, confirm a clean status, fetch without changing
-checked-out files, and verify that the dedicated feature branch starts at
-current `origin/main` unless the task names another base. Run every mutating
-command with that slot as the explicit working directory.
+The coordinator first verifies that all three primaries are clean, on `main`,
+and current under the parent guide. Fetching each target ref before allocation
+ensures the new Reverie branch cannot start from a stale `origin/main`;
+`--product all` creates the required nested slot shape. The
+allocator verifies and records ownership. In the assigned
+`worktrees/<slot>/reverie`, confirm a clean status and verify that the dedicated
+feature branch starts at current `origin/main` unless the task names another
+base. Run every mutating command with that slot as the explicit working
+directory.
 
 If no slot is available, do not fall back to the primary checkout or create a
 non-canonical path. The coordinator must reclaim a clean parked slot or finish
@@ -216,8 +223,8 @@ explicitly. The ladder is cumulative; each level presupposes the ones below it:
 | --- | --- | --- |
 | L0 | Builds and tests pass | `cargo test --workspace --all-features` exits 0 |
 | L1 | Runs deterministically under strict mode | `hermit run --strict` |
-| L2 | Strict repeat parity | `hermit run --strict --verify --verify-strict` compares exit status/stdout/stderr exactly and INFO messages under the declared canonical policy; KVM's output-only fallback cannot claim L2 |
-| L3 | Memory determinism | `hermit run --strict --verify --detlog-heap --detlog-stack` |
+| L2 | Strict repeat parity | `hermit run --strict --verify --verify-strict --verify-json` compares exit status/stdout/stderr exactly and INFO messages under the declared canonical policy; the JSON result must report `bitwise_parity: true`, `compared_log_messages.left > 0`, and `compared_log_messages.right > 0`; KVM's output-only fallback cannot claim L2 |
+| L3 | Memory determinism | L2's strict command and JSON predicate, adding `--detlog-heap --detlog-stack` |
 | L4 | Stress-hardened | L2/L3 repeated 20x with no divergence |
 
 A Reverie-only change is floored at L0 (the Reverie suite green); it does not
@@ -242,8 +249,11 @@ L2. `--verify-strict` preserves virtual-time values, retired-branch counts,
 syscall arguments/results, sizes, flags, and other numeric INFO payloads. Its
 declared canonical envelope still removes irreproducible wall-clock prefixes
 and maps host addresses by first appearance, so report that envelope rather
-than calling the log files literally byte-identical. A more aggressively
-normalized comparison may localize a divergence, but it is not L2 evidence.
+than calling the log files literally byte-identical. L2 additionally requires
+the `--verify-json` consumer predicate: `bitwise_parity` must be true and both
+`compared_log_messages.left` and `.right` must be greater than zero. A more
+aggressively normalized comparison may localize a divergence, but it is not L2
+evidence.
 
 ### Completion Reports
 
@@ -318,11 +328,12 @@ feature branches -> rrnewton/reverie main -> periodic upstream pull request
   `main`; do not target upstream for routine CI iteration.
 - The PR author owns review fixes, rebases, and exact-head validation through
   landing. Do not hand ordinary queue work to a separate lander.
-- In the dev-hermit harness, require the current repository semantic verifier
-  to accept a clean exact-head local validation receipt. A label, raw exit,
-  copied comment, or receipt for an older SHA is only a cache. Delayed GitHub
-  jobs are supplemental signal and must not be awaited, though a genuine
-  product failure they expose still blocks.
+- Reverie's current authoritative landing gate is `merge-gate-v2` at the exact
+  PR head. It dereferences both `Regular tests (GitHub-hosted)` and
+  `Host-dependent tests (self-hosted)` and requires both to pass. A local
+  validation receipt, `locally-validated` label, raw exit, or copied comment is
+  supplemental evidence only and cannot authorize landing. Await the two
+  authoritative jobs; a missing, skipped, stale, or failed result is not green.
 - Only an authorized coordinator lands changes and updates the parent gitlink
   through the serialized landing path.
 - Never force-push `main`, rewrite shared branches, or merge around a genuine

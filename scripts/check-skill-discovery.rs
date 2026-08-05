@@ -74,17 +74,56 @@ fn frontmatter<'a>(contents: &'a str, path: &Path) -> Result<&'a str, String> {
     Ok(&contents[..4 + closing + 5])
 }
 
+fn narrow_yaml_scalar<'a>(value: &'a str, field: &str, path: &Path) -> Result<&'a str, String> {
+    let inner = value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .ok_or_else(|| {
+            format!(
+                "{} frontmatter {field} must be one nonempty double-quoted scalar",
+                path.display()
+            )
+        })?;
+    if inner.trim().is_empty() || inner.contains(['"', '\\']) {
+        return Err(format!(
+            "{} frontmatter {field} must be one nonempty double-quoted scalar without escapes",
+            path.display()
+        ));
+    }
+    Ok(inner)
+}
+
 fn checked_frontmatter<'a>(
     contents: &'a str,
     path: &Path,
     expected_name: &str,
 ) -> Result<&'a str, String> {
     let metadata = frontmatter(contents, path)?;
-    let name = metadata
-        .lines()
-        .find_map(|line| line.strip_prefix("name:"))
-        .map(str::trim)
-        .ok_or_else(|| format!("{} frontmatter lacks name", path.display()))?;
+    let body = metadata
+        .strip_prefix("---\n")
+        .and_then(|value| value.strip_suffix("---\n"))
+        .ok_or_else(|| format!("{} has malformed YAML delimiters", path.display()))?;
+    let mut lines = body.lines();
+    let name = lines
+        .next()
+        .and_then(|line| line.strip_prefix("name: "))
+        .ok_or_else(|| {
+            format!(
+                "{} frontmatter must begin with exactly `name: <slug>`",
+                path.display()
+            )
+        })?;
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+    {
+        return Err(format!(
+            "{} frontmatter name {:?} is not a lowercase-hyphenated slug",
+            path.display(),
+            name
+        ));
+    }
     if name != expected_name {
         return Err(format!(
             "{} declares name {:?}, expected {:?}",
@@ -93,18 +132,64 @@ fn checked_frontmatter<'a>(
             expected_name
         ));
     }
-    let description = metadata
-        .lines()
-        .find_map(|line| line.strip_prefix("description:"))
-        .map(str::trim)
-        .ok_or_else(|| format!("{} frontmatter lacks description", path.display()))?;
-    if description.is_empty() || description == "\"\"" || description == "''" {
+    let description = lines
+        .next()
+        .and_then(|line| line.strip_prefix("description: "))
+        .ok_or_else(|| {
+            format!(
+                "{} frontmatter must contain exactly one description after name",
+                path.display()
+            )
+        })?;
+    narrow_yaml_scalar(description, "description", path)?;
+    if lines.next().is_some() {
         return Err(format!(
-            "{} frontmatter has an empty description",
+            "{} frontmatter contains unsupported or duplicate fields",
             path.display()
         ));
     }
     Ok(metadata)
+}
+
+fn parser_regression_tests() -> Result<(), String> {
+    let path = Path::new("<skill-frontmatter-fixture>");
+    let valid = "---\nname: fixture-skill\ndescription: \"Useful guidance.\"\n---\n# Body\n";
+    checked_frontmatter(valid, path, "fixture-skill")?;
+
+    let invalid = [
+        (
+            "duplicate name",
+            "---\nname: fixture-skill\nname: other\ndescription: \"Useful.\"\n---\n",
+        ),
+        (
+            "null description",
+            "---\nname: fixture-skill\ndescription: null\n---\n",
+        ),
+        (
+            "empty block description",
+            "---\nname: fixture-skill\ndescription: |\n---\n",
+        ),
+        (
+            "empty quoted description",
+            "---\nname: fixture-skill\ndescription: \"\"\n---\n",
+        ),
+        (
+            "unterminated quote",
+            "---\nname: fixture-skill\ndescription: \"Useful.\n---\n",
+        ),
+        (
+            "unsupported field",
+            "---\nname: fixture-skill\ndescription: \"Useful.\"\ncompatibility: both\n---\n",
+        ),
+    ];
+    for (case, contents) in invalid {
+        if checked_frontmatter(contents, path, "fixture-skill").is_ok() {
+            return Err(format!(
+                "parser regression fixture unexpectedly accepted {case}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn expected_wrapper(
@@ -258,6 +343,10 @@ fn check(root: &Path) -> Result<(), String> {
 }
 
 fn main() {
+    if let Err(error) = parser_regression_tests() {
+        eprintln!("check-skill-discovery: ERROR: {error}");
+        std::process::exit(1);
+    }
     let root = match env::args().nth(1) {
         Some(path) => PathBuf::from(path),
         None => match git_root() {

@@ -13,7 +13,7 @@ see the Assurance Levels table in `AGENTS.md`).
 
 ## The canonical gate: `./validate.sh`
 
-`validate.sh` is the repository gate. It writes an exact-SHA receipt and may
+`validate.sh` is the local repository gate. It writes an exact-SHA receipt and may
 apply a derived `locally-validated` label; the label is only a cache. It sets
 `RUSTFLAGS` (`-D warnings` plus an lzma link arg) and runs, in order:
 
@@ -26,11 +26,13 @@ apply a derived `locally-validated` label; the label is only a cache. It sets
 6. **Clippy** — `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 7. **Rustfmt** — `cargo fmt --all -- --check`
 
-Use focused tests while editing, then run this full gate once at the final
-committed head through the dev-hermit parent's current validation-admission
-path. The repository semantic verifier must accept that exact-head receipt.
-Delayed GitHub workflows are supplemental signal and must not be awaited,
-though a genuine product failure they expose still blocks.
+Use focused tests while editing, then run this full local gate once at the
+final committed head. For landing, Reverie's current authoritative
+`merge-gate-v2` must dereference exact-head passing results for both
+`Regular tests (GitHub-hosted)` and `Host-dependent tests (self-hosted)`. A
+local receipt or `locally-validated` label is supplemental cache evidence, not
+landing authority; missing, skipped, stale, or failed authoritative jobs are
+not green.
 
 ## Package-scoped iteration
 
