@@ -148,6 +148,15 @@ fn checked_frontmatter<'a>(
             path.display()
         ));
     }
+    let instructions = contents
+        .strip_prefix(metadata)
+        .ok_or_else(|| format!("{} frontmatter boundary is inconsistent", path.display()))?;
+    if instructions.trim().is_empty() {
+        return Err(format!(
+            "{} has metadata but no skill instructions",
+            path.display()
+        ));
+    }
     Ok(metadata)
 }
 
@@ -180,6 +189,10 @@ fn parser_regression_tests() -> Result<(), String> {
         (
             "unsupported field",
             "---\nname: fixture-skill\ndescription: \"Useful.\"\ncompatibility: both\n---\n",
+        ),
+        (
+            "metadata-only skill",
+            "---\nname: fixture-skill\ndescription: \"Useful.\"\n---\n",
         ),
     ];
     for (case, contents) in invalid {

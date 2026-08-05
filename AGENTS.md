@@ -126,19 +126,23 @@ belong to another agent until proven otherwise.
 The coordinator assigns an idle slot from the dev-hermit root before editing:
 
 ```bash
-for product in hermit reverie liteinst2; do
-  with-proxy git -C "$product" fetch origin main
-done
+with-proxy git -C reverie fetch origin main
+test "$(git -C reverie rev-parse HEAD)" = \
+  "$(git -C reverie rev-parse origin/main)"
 ./scripts/allocate-worktree.rs \
   --agent <agent> --slot <slot> --task <task-id> --product all \
-  --reverie-branch <descriptive-feature-branch> --start-point origin/main \
+  --reverie-branch <descriptive-feature-branch> \
   --purpose "<one-line outcome>"
+git -C worktrees/<slot>/hermit switch --detach "$(git rev-parse HEAD:hermit)"
+git -C worktrees/<slot>/liteinst2 switch --detach "$(git rev-parse HEAD:liteinst2)"
 ```
 
 The coordinator first verifies that all three primaries are clean, on `main`,
-and current under the parent guide. Fetching each target ref before allocation
-ensures the new Reverie branch cannot start from a stale `origin/main`;
-`--product all` creates the required nested slot shape. The
+and current under the parent guide. Fetching and comparing Reverie's target ref
+before allocation ensures the new Reverie branch cannot start from a stale
+`origin/main`; `--product all` creates the required nested slot shape. Detaching
+the unchanged children at the parent gitlinks preserves the recorded Hermit and
+LiteInst2 inputs instead of applying one global start point to all products. The
 allocator verifies and records ownership. In the assigned
 `worktrees/<slot>/reverie`, confirm a clean status and verify that the dedicated
 feature branch starts at current `origin/main` unless the task names another
@@ -223,8 +227,8 @@ explicitly. The ladder is cumulative; each level presupposes the ones below it:
 | --- | --- | --- |
 | L0 | Builds and tests pass | `cargo test --workspace --all-features` exits 0 |
 | L1 | Runs deterministically under strict mode | `hermit run --strict` |
-| L2 | Strict repeat parity | `hermit run --strict --verify --verify-strict --verify-json` compares exit status/stdout/stderr exactly and INFO messages under the declared canonical policy; the JSON result must report `bitwise_parity: true`, `compared_log_messages.left > 0`, and `compared_log_messages.right > 0`; KVM's output-only fallback cannot claim L2 |
-| L3 | Memory determinism | L2's strict command and JSON predicate, adding `--detlog-heap --detlog-stack` |
+| L2 | Strict repeat parity | `hermit run --strict --verify --verify-strict --verify-json REPORT.json -- PROGRAM` compares exit status/stdout/stderr exactly and INFO messages under the declared canonical policy; the JSON result must report `bitwise_parity: true`, `compared_log_messages.left > 0`, and `compared_log_messages.right > 0`; KVM's output-only fallback cannot claim L2 |
+| L3 | Memory determinism | L2's strict command and JSON predicate, adding `--detlog-heap --detlog-stack` before `-- PROGRAM` |
 | L4 | Stress-hardened | L2/L3 repeated 20x with no divergence |
 
 A Reverie-only change is floored at L0 (the Reverie suite green); it does not
