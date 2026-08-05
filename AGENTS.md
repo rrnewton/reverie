@@ -19,7 +19,7 @@ This is the coordinator-level map; the canonical `.claude/skills/` files
 (`reverie-architecture`, `syscall-interception`, `adding-a-backend`, and
 `testing-tools`) are the task-level detail. Claude reads them through
 `.llms/skills`; stock Codex reads the structured
-`.agents/skills/<name>/SKILL.md` entrypoints. **Read `reverie-architecture`
+`.agents/skills/<name>/SKILL.md` package links. **Read `reverie-architecture`
 before working anywhere in the tree.**
 
 Reverie is a Linux **process-instrumentation framework**: you write a *tool*
@@ -465,7 +465,7 @@ build config, and minimal curated documentation only. Experiments, bulk AI
 research notes, binaries, and vendored clones do **not** belong here — they live
 in the `dev-hermit` parent workspace at `~/work/dev-hermit/experiments/` and
 `~/work/dev-hermit/ai_docs/`. The `repo-cleanliness` skill
-(`.claude/skills/repo-cleanliness.md`, also surfaced to Claude via
+(`.claude/skills/repo-cleanliness/SKILL.md`, also surfaced to Claude via
 `.llms/skills` and to stock Codex via
 `.agents/skills/repo-cleanliness/SKILL.md`) is the full standing rule; this
 section is the mandatory pre-commit gate.

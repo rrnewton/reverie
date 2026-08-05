@@ -1,7 +1,8 @@
 # Codex skill entrypoints
 
-Stock Codex discovers Reverie product skills here. The instruction bodies stay
-canonical under `.claude/skills/`; these small `SKILL.md` files carry matching
-metadata and link back to those bodies. Claude continues to use `.llms/skills`.
+Stock Codex discovers Reverie product skills here. Every entry is a
+whole-package symlink to `.claude/skills/<name>/`; `.llms/skills` links to the
+same canonical root. Claude, Codex, and `.llms` consumers therefore read the
+same `SKILL.md` and package resources.
 
 Run `scripts/check-skill-discovery.rs` after changing product skills.

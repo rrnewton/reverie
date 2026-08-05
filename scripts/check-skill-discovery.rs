@@ -11,9 +11,12 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
 
 const ROOT_SKILLS: &[&str] = &[
     "adding-a-backend",
@@ -61,6 +64,38 @@ fn require_symlink(path: &Path, expected: &Path) -> Result<(), String> {
             expected
         ));
     }
+    Ok(())
+}
+
+fn canonical_within(path: &Path, root: &Path) -> Result<PathBuf, String> {
+    let resolved_root = fs::canonicalize(root)
+        .map_err(|error| format!("cannot resolve repository root {}: {error}", root.display()))?;
+    let resolved = fs::canonicalize(path)
+        .map_err(|error| format!("cannot resolve {}: {error}", path.display()))?;
+    if !resolved.starts_with(&resolved_root) {
+        return Err(format!(
+            "{} resolves outside repository root {}: {}",
+            path.display(),
+            resolved_root.display(),
+            resolved.display()
+        ));
+    }
+    Ok(resolved)
+}
+
+fn require_internal_symlink(path: &Path, expected: &Path, root: &Path) -> Result<(), String> {
+    require_symlink(path, expected)?;
+    canonical_within(path, root)?;
+    Ok(())
+}
+
+fn require_real_directory(path: &Path, root: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(format!("{} must be a real directory", path.display()));
+    }
+    canonical_within(path, root)?;
     Ok(())
 }
 
@@ -205,18 +240,61 @@ fn parser_regression_tests() -> Result<(), String> {
     Ok(())
 }
 
-fn expected_wrapper(
-    name: &str,
-    canonical: &str,
-    canonical_path: &Path,
-    relative_target: &str,
-) -> Result<String, String> {
-    let metadata = checked_frontmatter(canonical, canonical_path, name)?;
-    Ok(format!(
-        "{metadata}\n# Codex discovery entrypoint\n\n\
-         Read and follow [the canonical `{name}` skill]({relative_target}) completely. \
-         Resolve further relative links from the canonical file's directory.\n"
-    ))
+struct FixtureRoot(PathBuf);
+
+impl Drop for FixtureRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn filesystem_regression_tests() -> Result<(), String> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
+        .as_nanos();
+    let fixture = FixtureRoot(env::temp_dir().join(format!(
+        "reverie-skill-discovery-{}-{nonce}",
+        std::process::id()
+    )));
+    let root = fixture.0.join("repo");
+    let outside = fixture.0.join("outside");
+    fs::create_dir_all(outside.join("skills"))
+        .map_err(|error| format!("cannot create filesystem fixture: {error}"))?;
+    fs::create_dir_all(&root)
+        .map_err(|error| format!("cannot create filesystem fixture: {error}"))?;
+    fs::write(root.join("AGENTS.md"), "fixture policy\n")
+        .map_err(|error| format!("cannot write filesystem fixture: {error}"))?;
+    symlink("AGENTS.md", root.join("CLAUDE.md"))
+        .map_err(|error| format!("cannot create positive symlink fixture: {error}"))?;
+    require_internal_symlink(&root.join("CLAUDE.md"), Path::new("AGENTS.md"), &root)?;
+
+    symlink("missing", root.join("dangling"))
+        .map_err(|error| format!("cannot create dangling symlink fixture: {error}"))?;
+    if require_internal_symlink(&root.join("dangling"), Path::new("missing"), &root).is_ok() {
+        return Err("filesystem regression accepted a dangling discovery link".to_owned());
+    }
+
+    fs::write(outside.join("target"), "outside\n")
+        .map_err(|error| format!("cannot write escaping fixture: {error}"))?;
+    symlink("../outside/target", root.join("escaping"))
+        .map_err(|error| format!("cannot create escaping symlink fixture: {error}"))?;
+    if require_internal_symlink(
+        &root.join("escaping"),
+        Path::new("../outside/target"),
+        &root,
+    )
+    .is_ok()
+    {
+        return Err("filesystem regression accepted an escaping discovery link".to_owned());
+    }
+
+    symlink("../outside", root.join(".agents"))
+        .map_err(|error| format!("cannot create ancestor symlink fixture: {error}"))?;
+    if require_real_directory(&root.join(".agents/skills"), &root).is_ok() {
+        return Err("filesystem regression accepted an escaping ancestor link".to_owned());
+    }
+    Ok(())
 }
 
 fn entry_names(path: &Path) -> Result<BTreeSet<String>, String> {
@@ -244,27 +322,17 @@ fn expected_names(skills: &[&str], suffix: &str, readme: bool) -> BTreeSet<Strin
 }
 
 fn check_group(
+    root: &Path,
     canonical_root: &Path,
     codex_root: &Path,
     skills: &[&str],
     target_root: &str,
 ) -> Result<(), String> {
-    let canonical_metadata = fs::symlink_metadata(canonical_root)
-        .map_err(|error| format!("cannot inspect {}: {error}", canonical_root.display()))?;
-    if !canonical_metadata.is_dir() || canonical_metadata.file_type().is_symlink() {
-        return Err(format!(
-            "{} must be a real canonical directory",
-            canonical_root.display()
-        ));
-    }
-    let codex_metadata = fs::symlink_metadata(codex_root)
-        .map_err(|error| format!("cannot inspect {}: {error}", codex_root.display()))?;
-    if !codex_metadata.is_dir() || codex_metadata.file_type().is_symlink() {
-        return Err(format!("{} must be a real directory", codex_root.display()));
-    }
+    require_real_directory(canonical_root, root)?;
+    require_real_directory(codex_root, root)?;
 
     let actual_canonical = entry_names(canonical_root)?;
-    let expected_canonical = expected_names(skills, ".md", false);
+    let expected_canonical = expected_names(skills, "", false);
     if actual_canonical != expected_canonical {
         return Err(format!(
             "canonical entries differ in {}:\n  actual: {actual_canonical:?}\n  expected: {expected_canonical:?}",
@@ -282,47 +350,47 @@ fn check_group(
     }
 
     for name in skills {
-        let canonical_path = canonical_root.join(format!("{name}.md"));
+        let canonical_dir = canonical_root.join(name);
+        require_real_directory(&canonical_dir, root)?;
+        let canonical_path = canonical_dir.join("SKILL.md");
         let canonical_file_metadata = fs::symlink_metadata(&canonical_path)
             .map_err(|error| format!("cannot inspect {}: {error}", canonical_path.display()))?;
         if !canonical_file_metadata.is_file() || canonical_file_metadata.file_type().is_symlink() {
             return Err(format!(
-                "{} must be a regular canonical file",
+                "{} must be a regular file",
                 canonical_path.display()
             ));
         }
+        canonical_within(&canonical_path, root)?;
         let canonical = fs::read_to_string(&canonical_path)
             .map_err(|error| format!("cannot read {}: {error}", canonical_path.display()))?;
-        let wrapper_dir = codex_root.join(name);
-        let wrapper_metadata = fs::symlink_metadata(&wrapper_dir)
-            .map_err(|error| format!("cannot inspect {}: {error}", wrapper_dir.display()))?;
-        if !wrapper_metadata.is_dir() || wrapper_metadata.file_type().is_symlink() {
+        checked_frontmatter(&canonical, &canonical_path, name)?;
+
+        let entry = codex_root.join(name);
+        require_internal_symlink(
+            &entry,
+            &PathBuf::from(format!("{target_root}/{name}")),
+            root,
+        )?;
+        let resolved = fs::canonicalize(&entry)
+            .map_err(|error| format!("cannot resolve {}: {error}", entry.display()))?;
+        let expected = fs::canonicalize(&canonical_dir)
+            .map_err(|error| format!("cannot resolve {}: {error}", canonical_dir.display()))?;
+        if resolved != expected {
             return Err(format!(
-                "{} must be a real directory",
-                wrapper_dir.display()
+                "{} resolves to {}, expected canonical package {}",
+                entry.display(),
+                resolved.display(),
+                expected.display()
             ));
         }
-        if entry_names(&wrapper_dir)? != BTreeSet::from(["SKILL.md".to_owned()]) {
+        let resolved_skill = entry.join("SKILL.md");
+        let resolved_metadata = fs::symlink_metadata(&resolved_skill)
+            .map_err(|error| format!("cannot inspect {}: {error}", resolved_skill.display()))?;
+        if !resolved_metadata.is_file() || resolved_metadata.file_type().is_symlink() {
             return Err(format!(
-                "{} must contain only SKILL.md",
-                wrapper_dir.display()
-            ));
-        }
-        let wrapper_path = wrapper_dir.join("SKILL.md");
-        let wrapper_file_metadata = fs::symlink_metadata(&wrapper_path)
-            .map_err(|error| format!("cannot inspect {}: {error}", wrapper_path.display()))?;
-        if !wrapper_file_metadata.is_file() || wrapper_file_metadata.file_type().is_symlink() {
-            return Err(format!("{} must be a regular file", wrapper_path.display()));
-        }
-        let wrapper = fs::read_to_string(&wrapper_path)
-            .map_err(|error| format!("cannot read {}: {error}", wrapper_path.display()))?;
-        let relative_target = format!("{target_root}/{name}.md");
-        let expected = expected_wrapper(name, &canonical, &canonical_path, &relative_target)?;
-        if wrapper != expected {
-            return Err(format!(
-                "{} is stale; regenerate it from {}",
-                wrapper_path.display(),
-                canonical_path.display()
+                "{} must resolve to a regular file",
+                resolved_skill.display()
             ));
         }
     }
@@ -331,32 +399,44 @@ fn check_group(
 }
 
 fn check(root: &Path) -> Result<(), String> {
-    require_symlink(&root.join("CLAUDE.md"), Path::new("AGENTS.md"))?;
-    require_symlink(&root.join(".llms/skills"), Path::new("../.claude/skills"))?;
+    require_internal_symlink(&root.join("CLAUDE.md"), Path::new("AGENTS.md"), root)?;
+    require_internal_symlink(
+        &root.join(".llms/skills"),
+        Path::new("../.claude/skills"),
+        root,
+    )?;
     check_group(
+        root,
         &root.join(".claude/skills"),
         &root.join(".agents/skills"),
         ROOT_SKILLS,
-        "../../../.claude/skills",
+        "../../.claude/skills",
     )?;
 
     let liteinst = root.join("reverie-liteinst");
-    require_symlink(&liteinst.join("CLAUDE.md"), Path::new("AGENTS.md"))?;
-    require_symlink(
+    require_real_directory(&liteinst, root)?;
+    require_internal_symlink(&liteinst.join("CLAUDE.md"), Path::new("AGENTS.md"), root)?;
+    require_internal_symlink(
         &liteinst.join(".claude/skills"),
         Path::new("../.llms/skills"),
+        root,
     )?;
     check_group(
+        root,
         &liteinst.join(".llms/skills"),
         &liteinst.join(".agents/skills"),
         LITEINST_SKILLS,
-        "../../../.llms/skills",
+        "../../.llms/skills",
     )?;
     Ok(())
 }
 
 fn main() {
     if let Err(error) = parser_regression_tests() {
+        eprintln!("check-skill-discovery: ERROR: {error}");
+        std::process::exit(1);
+    }
+    if let Err(error) = filesystem_regression_tests() {
         eprintln!("check-skill-discovery: ERROR: {error}");
         std::process::exit(1);
     }
@@ -375,7 +455,7 @@ fn main() {
         std::process::exit(1);
     }
     println!(
-        "check-skill-discovery: PASS ({} root adapters, {} LiteInst adapters)",
+        "check-skill-discovery: PASS ({} root packages, {} LiteInst packages)",
         ROOT_SKILLS.len(),
         LITEINST_SKILLS.len()
     );

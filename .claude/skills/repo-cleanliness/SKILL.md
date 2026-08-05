@@ -79,17 +79,18 @@ results. Reference external code by URL + commit SHA — never by vendoring it.
 Skills are written **once** as real files and surfaced through client-specific
 entrypoints, so there is a single source of truth:
 
-- `.claude/skills/` holds the **real** skill files (a flat `<name>.md`, or a
-  `<name>/SKILL.md` directory for larger skills).
+- `.claude/skills/<name>/` holds each **real** skill package, including its
+  canonical `SKILL.md` and any package-local resources.
 - `.llms/skills` is a directory symlink to `../.claude/skills` for the existing
   Claude/LLMS hook.
-- `.agents/skills/<name>/SKILL.md` is stock Codex's discovery shape. Each
-  wrapper contains matching frontmatter and a link to its canonical body.
+- `.agents/skills/<name>` is a whole-package symlink to the matching canonical
+  directory. Stock Codex discovers the shared `SKILL.md` through that link.
 - `CLAUDE.md` is a symlink to `AGENTS.md` for the same reason.
 
 Keep instruction bodies canonical under `.claude/skills/`; never copy the body
-into an adapter. Run `scripts/check-skill-discovery.rs` after changes. The
-LiteInst subtree follows the same pattern with canonical bodies under
+into an adapter or link only the `SKILL.md` file. Run
+`scripts/check-skill-discovery.rs` after changes. The LiteInst subtree follows
+the same package pattern with canonical bodies under
 `reverie-liteinst/.llms/skills/`.
 
 ## Pre-commit protocol
