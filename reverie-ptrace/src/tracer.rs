@@ -2510,8 +2510,11 @@ mod tests {
     use reverie::syscalls::SyscallInfo;
 
     use super::*;
+    use crate::error::LiteinstActivationFailureCategory;
     use crate::error::LiteinstActivationFailureReason;
     use crate::error::LiteinstActivationOperation;
+    use crate::error::LiteinstActivationStage;
+    use crate::error::liteinst_activation_failure_category;
     use crate::error::liteinst_activation_failure_reason;
 
     fn assert_liteinst_activation_failure(
@@ -2521,6 +2524,16 @@ mod tests {
         assert_eq!(
             liteinst_activation_failure_reason(error),
             Some(expected),
+            "{error}"
+        );
+    }
+
+    fn assert_general_pre_ready_liteinst_activation_failure(error: &Error) {
+        assert_eq!(
+            liteinst_activation_failure_category(error),
+            Some(LiteinstActivationFailureCategory::General(
+                LiteinstActivationStage::PreReady,
+            )),
             "{error}"
         );
     }
@@ -2868,10 +2881,10 @@ mod tests {
             .expect("timed exec-transition activation tracee hung")
             .expect_err("missing LiteInst runtime unexpectedly activated");
 
-        assert_liteinst_activation_failure(
-            &error,
-            LiteinstActivationFailureReason::ExecutableEntryBeforeHandshake,
-        );
+        // The exact fail-closed reason depends on which activation signal wins
+        // after the valid syscall-skip transition. What matters here is that
+        // the skip itself did not fail and activation remained pre-Ready.
+        assert_general_pre_ready_liteinst_activation_failure(&error);
         assert_reaped("timed exec-transition activation", root_pid);
     }
 

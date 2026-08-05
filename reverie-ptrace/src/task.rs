@@ -77,6 +77,7 @@ use crate::error::Error;
 use crate::error::LiteinstActivationFailure;
 use crate::error::LiteinstActivationFailureReason;
 use crate::error::LiteinstActivationOperation;
+use crate::error::LiteinstActivationStage;
 use crate::error::TraceResultExt;
 use crate::gdbstub::BreakpointType;
 use crate::gdbstub::CoreRegs;
@@ -2513,7 +2514,13 @@ impl<L: Tool + 'static> TracedTask<L> {
     }
 
     fn record_liteinst_failure(&mut self, reason: LiteinstActivationFailureReason, error: Error) {
-        self.liteinst_failure = Some(LiteinstActivationFailure::new(reason, error));
+        let stage = match self.liteinst_runtime.lock().unwrap().phase {
+            LiteinstRuntimePhase::Ready => LiteinstActivationStage::PostReady,
+            LiteinstRuntimePhase::PreExec
+            | LiteinstRuntimePhase::Waiting
+            | LiteinstRuntimePhase::Bootstrap => LiteinstActivationStage::PreReady,
+        };
+        self.liteinst_failure = Some(LiteinstActivationFailure::new(stage, reason, error));
     }
 
     fn reject_liteinst_activation_signal(
@@ -4605,6 +4612,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             let phase = self.liteinst_runtime.lock().unwrap().phase;
             if phase != LiteinstRuntimePhase::Ready {
                 return Err(anyhow::Error::new(LiteinstActivationFailure::new(
+                    LiteinstActivationStage::PreReady,
                     LiteinstActivationFailureReason::TerminatedBeforeHandshake,
                     Error::runtime(
                         self.tid(),

@@ -25,6 +25,17 @@ pub(crate) enum LiteinstActivationOperation {
     FinishInjectedSyscall,
 }
 
+/// Runtime stage in which a LiteInst activation invariant failed.
+///
+/// The stage is stored with the failure instead of inferred from its diagnostic
+/// or reason. Some reasons, such as a rejected post-start `exec`, are possible
+/// both before and after the preload handshake completes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LiteinstActivationStage {
+    PreReady,
+    PostReady,
+}
+
 impl LiteinstActivationOperation {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
@@ -56,23 +67,70 @@ pub(crate) enum LiteinstActivationFailureReason {
     TerminatedBeforeHandshake,
 }
 
+impl LiteinstActivationFailureReason {
+    #[cfg(test)]
+    const fn operation(self) -> Option<LiteinstActivationOperation> {
+        match self {
+            Self::SignalBeforeHandshake(operation)
+            | Self::UnexpectedControllerProvenance(operation) => Some(operation),
+            _ => None,
+        }
+    }
+}
+
+/// Semantic category of a LiteInst activation failure.
+///
+/// A general activation failure is distinct from a controller-operation
+/// failure. For example, a tracee may fail closed before Ready after a valid
+/// syscall-skip transition, while a failure attributed to that skip operation
+/// means the transition itself was invalid.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LiteinstActivationFailureCategory {
+    General(LiteinstActivationStage),
+    Operation {
+        stage: LiteinstActivationStage,
+        operation: LiteinstActivationOperation,
+    },
+}
+
 /// A typed LiteInst activation failure retaining its human-readable diagnostic.
 #[derive(Debug, Error)]
 #[error("{error}")]
 pub(crate) struct LiteinstActivationFailure {
+    stage: LiteinstActivationStage,
     reason: LiteinstActivationFailureReason,
     #[source]
     error: Error,
 }
 
 impl LiteinstActivationFailure {
-    pub(crate) fn new(reason: LiteinstActivationFailureReason, error: Error) -> Self {
-        Self { reason, error }
+    pub(crate) fn new(
+        stage: LiteinstActivationStage,
+        reason: LiteinstActivationFailureReason,
+        error: Error,
+    ) -> Self {
+        Self {
+            stage,
+            reason,
+            error,
+        }
     }
 
     #[cfg(test)]
     pub(crate) const fn reason(&self) -> LiteinstActivationFailureReason {
         self.reason
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn category(&self) -> LiteinstActivationFailureCategory {
+        match self.reason.operation() {
+            Some(operation) => LiteinstActivationFailureCategory::Operation {
+                stage: self.stage,
+                operation,
+            },
+            None => LiteinstActivationFailureCategory::General(self.stage),
+        }
     }
 }
 
@@ -86,6 +144,18 @@ pub(crate) fn liteinst_activation_failure_reason(
     error
         .downcast_ref::<LiteinstActivationFailure>()
         .map(LiteinstActivationFailure::reason)
+}
+
+#[cfg(test)]
+pub(crate) fn liteinst_activation_failure_category(
+    error: &reverie::Error,
+) -> Option<LiteinstActivationFailureCategory> {
+    let reverie::Error::Tool(error) = error else {
+        return None;
+    };
+    error
+        .downcast_ref::<LiteinstActivationFailure>()
+        .map(LiteinstActivationFailure::category)
 }
 
 /// A reverie-ptrace error. This error type isn't meant to be exposed to the
@@ -175,10 +245,12 @@ mod tests {
     }
 
     fn activation_error(
+        stage: LiteinstActivationStage,
         reason: LiteinstActivationFailureReason,
         message: &'static str,
     ) -> reverie::Error {
         anyhow::Error::new(LiteinstActivationFailure::new(
+            stage,
             reason,
             Error::runtime(Pid::from_raw(42), "activate LiteInst", message),
         ))
@@ -190,21 +262,102 @@ mod tests {
         let reason = LiteinstActivationFailureReason::UnexpectedControllerProvenance(
             LiteinstActivationOperation::FinishInjectedSyscall,
         );
-        let error = activation_error(reason, "diagnostic wording is not authoritative");
+        let error = activation_error(
+            LiteinstActivationStage::PreReady,
+            reason,
+            "diagnostic wording is not authoritative",
+        );
 
         assert_eq!(liteinst_activation_failure_reason(&error), Some(reason));
     }
 
     #[test]
-    fn liteinst_activation_reason_rejects_tampered_diagnostic_text() {
-        let expected = LiteinstActivationFailureReason::UnexpectedControllerProvenance(
-            LiteinstActivationOperation::FinishInjectedSyscall,
-        );
-        let error = activation_error(
+    fn liteinst_activation_category_accepts_general_pre_ready_reasons() {
+        for reason in [
+            LiteinstActivationFailureReason::ExecutableEntryBeforeHandshake,
             LiteinstActivationFailureReason::UnexpectedActivationSignal,
-            "finish injected syscall observed a nested signal without the expected controller provenance",
+        ] {
+            let error = activation_error(
+                LiteinstActivationStage::PreReady,
+                reason,
+                "diagnostic wording is not authoritative",
+            );
+
+            assert_eq!(
+                liteinst_activation_failure_category(&error),
+                Some(LiteinstActivationFailureCategory::General(
+                    LiteinstActivationStage::PreReady,
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn liteinst_activation_category_rejects_operation_failures() {
+        for (reason, operation) in [
+            (
+                LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+                    LiteinstActivationOperation::SkipInterceptedSyscall,
+                ),
+                LiteinstActivationOperation::SkipInterceptedSyscall,
+            ),
+            (
+                LiteinstActivationFailureReason::SignalBeforeHandshake(
+                    LiteinstActivationOperation::FinishInjectedSyscall,
+                ),
+                LiteinstActivationOperation::FinishInjectedSyscall,
+            ),
+        ] {
+            let error = activation_error(
+                LiteinstActivationStage::PreReady,
+                reason,
+                "before the required preload handshake completed",
+            );
+
+            assert_eq!(
+                liteinst_activation_failure_category(&error),
+                Some(LiteinstActivationFailureCategory::Operation {
+                    stage: LiteinstActivationStage::PreReady,
+                    operation,
+                })
+            );
+            assert_ne!(
+                liteinst_activation_failure_category(&error),
+                Some(LiteinstActivationFailureCategory::General(
+                    LiteinstActivationStage::PreReady,
+                ))
+            );
+        }
+    }
+
+    #[test]
+    fn liteinst_activation_category_rejects_post_ready_tampered_diagnostic() {
+        let error = activation_error(
+            LiteinstActivationStage::PostReady,
+            LiteinstActivationFailureReason::UnexpectedActivationSignal,
+            "before the required preload handshake completed",
         );
 
-        assert_ne!(liteinst_activation_failure_reason(&error), Some(expected));
+        assert_eq!(
+            liteinst_activation_failure_category(&error),
+            Some(LiteinstActivationFailureCategory::General(
+                LiteinstActivationStage::PostReady,
+            ))
+        );
+        assert_ne!(
+            liteinst_activation_failure_category(&error),
+            Some(LiteinstActivationFailureCategory::General(
+                LiteinstActivationStage::PreReady,
+            ))
+        );
+    }
+
+    #[test]
+    fn liteinst_activation_category_rejects_untyped_lookalike() {
+        let error: reverie::Error =
+            anyhow::anyhow!("tracee terminated before the required preload handshake completed")
+                .into();
+
+        assert_eq!(liteinst_activation_failure_category(&error), None);
     }
 }
