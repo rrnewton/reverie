@@ -966,8 +966,13 @@ where
                         stderr: output.stderr,
                     }))
                 } else {
+                    // `wait_discarding_output`, not the bare `wait`: this arm is
+                    // reached with the caller's stdio possibly piped, and
+                    // `run_direct_with_preload` documents that such pipes are
+                    // drained concurrently and discarded. A bare `wait` leaves
+                    // them unread and a noisy guest deadlocks on a full pipe.
                     let (status, ()) = tracer
-                        .wait()
+                        .wait_discarding_output()
                         .await
                         .map_err(|error| io::Error::other(error.to_string()))?;
                     Ok(ChildWait::Status(status.into()))
