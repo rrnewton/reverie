@@ -1093,7 +1093,7 @@ fn mutates_file_table(number: u64) -> bool {
             || number == libc::SYS_socket as u64
             || number == libc::SYS_socketpair as u64
             // AUTONOMOUS-BOT-IMPLEMENTED
-            // TODO-HUMAN-REVIEW(PR-352): Review serialized SCM_RIGHTS insertion.
+            // TODO-HUMAN-REVIEW(PR-385): Review serialized SCM_RIGHTS insertion.
             // recvmsg can install descriptors in the guest table. Hold the
             // CLONE_FILES lock from fd selection through table publication so
             // sibling threads cannot choose the same deterministic guest fd.
@@ -5563,7 +5563,7 @@ fn install_received_rights(
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-352): Review bounded sendmsg translation, SCM_RIGHTS
+// TODO-HUMAN-REVIEW(PR-385): Review bounded sendmsg translation, SCM_RIGHTS
 // guest-to-host descriptor mapping, and deterministic ancillary policy.
 //
 // The single-message send sibling of `sendto`/`recvmmsg`. Detcore already
@@ -5694,7 +5694,7 @@ fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i6
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-352): Review bounded recvmsg translation, transactional
+// TODO-HUMAN-REVIEW(PR-385): Review bounded recvmsg translation, transactional
 // SCM_RIGHTS installation, CLOEXEC modeling, and ancillary-data filtering.
 //
 // The single-message receive form; `recvmmsg` is its multi-message sibling and
