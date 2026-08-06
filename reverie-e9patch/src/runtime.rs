@@ -181,12 +181,11 @@ pub(crate) fn runtime_config_from_env() -> io::Result<RuntimeConfig> {
 /// * **LiteInst** runs standalone in-process, so it selects
 ///   [`InProcessFallback`](Self::InProcessFallback)
 ///   ([`InProcessSeccomp`]).
-/// * **e9patch** runs the guest under the shared fallback ptracer, which owns
-///   pre-`main` setup, `exec`/`clone` stops, and vDSO patching, so its
-///   production controller is [`HybridPtrace`](Self::HybridPtrace)
-///   ([`reverie_preload::lifecycle::HybridPtrace`]). This is *the same fallback
-///   ptracer* the two backends share, expressed through the shared seam — not a
-///   third architectural difference.
+/// * **e9patch** may pair the guest runtime with a ptrace lifecycle owner, so its
+///   hybrid controller identity is [`HybridPtrace`](Self::HybridPtrace)
+///   ([`reverie_preload::lifecycle::HybridPtrace`]). The controller value selects
+///   only the guest-half trap; it neither constructs nor proves the launcher's
+///   subscription, loader-window, or vDSO behavior.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeMode {
     /// In-process residual seccomp + `SIGSYS`; AOT sites retain the ptrace trap.
@@ -246,14 +245,13 @@ pub unsafe fn install_runtime() -> io::Result<()> {
 /// Register [`E9patchDispatcher`] and install the ptrace-hosted hybrid
 /// controller ([`HybridPtrace`]).
 ///
-/// This is e9patch's production controller: the shared fallback ptracer owns
-/// lifecycle while the in-process `SIGSYS` trap serves residual un-rewritten
-/// sites. The shared [`HybridPtrace`] controller installs the same in-process
-/// `SIGSYS` handler + trusted-gate seccomp filter as [`InProcessSeccomp`]; the
-/// A-class launcher half (`reverie_ptrace::TracerBuilder::<()>`, in the parent)
-/// owns process lifecycle only and never traps a syscall on the hot path. So
-/// this installs successfully and the in-guest fast path is active, with ptrace
-/// reserved for spawn/attach, `exec`/`clone`/`vfork`/vDSO, and follow+reap.
+/// This installs only the guest half of e9patch's hybrid controller: the same
+/// in-process `SIGSYS` handler + trusted-gate seccomp filter as
+/// [`InProcessSeccomp`]. Launcher ownership is selected separately and is not
+/// encoded or verified by [`HybridPtrace`]. The direct-tool environment path
+/// pairs this guest mechanism (through `install_tool`) with a
+/// `reverie_ptrace::TracerBuilder::<()>` lifecycle reaper; the ptrace-hosted
+/// `E9patchBackend` fallback path instead retains its generic host Tool.
 ///
 /// # Safety
 ///

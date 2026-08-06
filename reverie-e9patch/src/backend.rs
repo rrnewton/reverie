@@ -927,13 +927,14 @@ where
             .await?
         }
         // Environment-bootstrap path (the default `run_direct` / output flows).
-        // A-class, lifecycle-only reaper: the unit tool `()` declares no syscall
-        // subscriptions and hosts no `Tool` in the supervisor, so Detcore runs
-        // entirely in-guest over the shared reverie-preload SIGSYS/seccomp seam.
-        // ptrace is used only to follow and reap the guest process tree
-        // (exec/clone/fork), never on the syscall hot path; un-instrumented
-        // syscalls fail closed through the in-guest SIGSYS handler, not a ptrace
-        // trap.
+        // Lifecycle-only reaper: the unit tool `()` declares no syscall
+        // subscriptions and therefore installs no PTRACE_EVENT_SECCOMP action.
+        // Rewritten syscall sites run entirely in-guest; ptrace follows and reaps
+        // the process tree (exec/clone/fork) and forwards ordinary signal-delivery
+        // stops. In particular, a residual site handled by the guest's SIGSYS
+        // filter is still visible to ptrace as signal delivery, but it is never
+        // emulated by a host Tool. Dynamic-loader syscalls that occur before the
+        // preload constructor installs that guest filter remain outside it.
         None => {
             command.env(crate::COORDINATOR_ENV, &socket);
             let tracer = match TracerBuilder::<()>::new(command).spawn().await {
