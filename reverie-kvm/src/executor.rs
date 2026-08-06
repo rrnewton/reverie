@@ -1531,6 +1531,9 @@ impl ElfExecutor {
         state.pid = self.state.pid;
         state.ppid = self.state.ppid;
         state.dumpable = self.current_dumpable();
+        // A thread of the root process is still inside the root process, so it
+        // inherits tree-rootness; `is_main_thread()` distinguishes the leader.
+        state.tree_root = self.state.tree_root;
         state.signalfd_state = self.state.signalfd_state.clone();
         let task_generation = state
             .task_lifecycle
@@ -1814,6 +1817,14 @@ impl ElfExecutor {
 
     // TODO-HUMAN-REVIEW(PR-235): Review virtual parent identity for KVM Tool callbacks.
     pub(crate) fn parent_pid(&self) -> Option<reverie::Pid> {
+        // `Guest::ppid()` is the parent WITHIN THE TRACED TREE, not the
+        // guest-visible `getppid()` value (which is served from `state.ppid`
+        // and is 1 for the root guest, matching ptrace). The tree root has no
+        // traced parent, exactly as reverie-ptrace reports `None` for the root
+        // tracee.
+        if self.state.tree_root {
+            return None;
+        }
         (self.state.ppid != 0).then(|| reverie::Pid::from_raw(self.state.ppid))
     }
 
@@ -10465,6 +10476,7 @@ mod tests {
             pid: 1,
             tid: 1,
             ppid: 0,
+            tree_root: true,
             logical_clock_ns: 0,
             umask: 0o022,
             random_seed: 0,

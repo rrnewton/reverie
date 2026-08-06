@@ -226,6 +226,17 @@ pub(crate) struct LoadedStaticElf {
     // TODO-HUMAN-REVIEW(PR-132): Review single-vCPU thread identity transitions.
     pub tid: i32,
     pub ppid: i32,
+    /// True when this task is the ROOT of the traced task tree.
+    ///
+    /// This is deliberately NOT derivable from `ppid`. `ppid` is the
+    /// guest-visible `getppid()` value, and the container's root guest
+    /// legitimately reports `getppid() == 1` (the namespace init) for parity
+    /// with the ptrace backend. Reverie's `Guest::ppid()` means something
+    /// different -- the parent *within the traced tree* -- and its default
+    /// `is_root_process()` is `ppid().is_none()`. Conflating the two made a
+    /// truthful guest-visible ppid tell Detcore that the root is not the
+    /// root, so `handle_thread_start` never admitted it to the run queue.
+    pub tree_root: bool,
     // Direct KVM workers do not participate in Detcore's virtual clock. Keep a
     // private logical clock so repeated observations advance deterministically
     // without making host thread scheduling observable.
@@ -328,6 +339,8 @@ impl LoadedStaticElf {
             pid: child_pid,
             tid: child_pid,
             ppid: self.pid,
+            // A forked child is never the tree root.
+            tree_root: false,
             logical_clock_ns: self.logical_clock_ns,
             umask: self.umask,
             random_seed: self.random_seed,
@@ -698,6 +711,7 @@ fn load_executable(
         pid: 1,
         tid: 1,
         ppid: 0,
+        tree_root: true,
         logical_clock_ns: 0,
         umask: 0o022,
         random_seed: 0,
