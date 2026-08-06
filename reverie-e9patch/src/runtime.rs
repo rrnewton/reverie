@@ -53,9 +53,10 @@ pub const RUNTIME_FALLBACK: &str = "fallback";
 
 /// [`RUNTIME_ENV`] value selecting the ptrace-hosted hybrid controller.
 ///
-/// This is e9patch's *production* mode: the shared fallback ptracer owns
-/// process lifecycle while the in-process `SIGSYS` trap covers residual
-/// un-rewritten sites. See [`RuntimeMode::HybridPtrace`].
+/// This selects the hybrid controller identity for the guest half. It installs
+/// the in-process `SIGSYS` trap for residual un-rewritten sites; the caller
+/// separately selects and validates any ptrace lifecycle owner. See
+/// [`RuntimeMode::HybridPtrace`].
 pub const RUNTIME_HYBRID: &str = "hybrid";
 
 /// Environment variable selecting a **shared** built-in tool for the in-guest
@@ -190,7 +191,8 @@ pub(crate) fn runtime_config_from_env() -> io::Result<RuntimeConfig> {
 pub enum RuntimeMode {
     /// In-process residual seccomp + `SIGSYS`; AOT sites retain the ptrace trap.
     InProcessFallback,
-    /// In-process `SIGSYS` hot path with the shared ptracer owning lifecycle.
+    /// In-process `SIGSYS` guest half intended for a separately selected ptrace
+    /// lifecycle owner.
     HybridPtrace,
 }
 

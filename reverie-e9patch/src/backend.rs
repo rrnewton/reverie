@@ -445,17 +445,18 @@ impl E9patchBackend {
         }
     }
 
-    // TODO-HUMAN-REVIEW(PR-269): Review the first
-    // ptrace-free generic Tool launch boundary and inherited preload contract.
+    // TODO-HUMAN-REVIEW(PR-269): Review the first generic Tool launch boundary
+    // with no host Tool syscall decisions and its inherited preload contract.
     /// Runs a generic Tool through e9patch's direct AOT callback and captures
     /// the guest's output.
     ///
     /// `preload` must be a tool-specific DSO that embeds the same concrete `T`
     /// and calls [`crate::install_tool::<T>`] from its constructor. The
     /// coordinator path is inherited through [`crate::COORDINATOR_ENV`]. This
-    /// opt-in harness is intentionally separate from [`Backend::run`], whose
-    /// ptrace lifecycle remains the production default while direct-tool
-    /// lifecycle coverage is still single-process and single-thread.
+    /// opt-in harness is intentionally separate from [`Backend::run`]. Its
+    /// unit-tool tracer follows and reaps lifecycle events without adding a
+    /// syscall-trace action; it does not establish full generic-Tool process-tree
+    /// or exec-rebootstrap semantics.
     pub async fn run_direct_with_output_and_preload<T>(
         mut command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
@@ -799,6 +800,25 @@ fn tool_preload_path() -> io::Result<PathBuf> {
     tool_preload_path_from(std::env::var_os(TOOL_PRELOAD_ENV))
 }
 
+/// Prepend the tool DSO to the command's effective `LD_PRELOAD` value.
+///
+/// `get_captured_envs()` already applies ordinary inheritance, explicit
+/// overrides, `env_remove`, and `env_clear`. Absence from that map is therefore
+/// authoritative: consulting the launcher's environment again would resurrect
+/// a value the caller deliberately removed.
+fn configure_tool_preload(command: &mut Command, preload: PathBuf) {
+    let mut ld_preload = preload.into_os_string();
+    if let Some(existing) = command
+        .get_captured_envs()
+        .remove(OsStr::new("LD_PRELOAD"))
+        .filter(|value| !value.is_empty())
+    {
+        ld_preload.push(OsStr::new(":"));
+        ld_preload.push(existing);
+    }
+    command.env("LD_PRELOAD", ld_preload);
+}
+
 async fn launch_direct<T>(
     mut command: Command,
     config: <T::GlobalState as GlobalTool>::Config,
@@ -873,17 +893,7 @@ where
     // default (environment-bootstrap) path below can be driven by a
     // lifecycle-only `TracerBuilder<()>` reaper instead of a bare, single-process
     // spawn.
-    let mut ld_preload = preload.into_os_string();
-    let inherited_preload = command
-        .get_captured_envs()
-        .remove(OsStr::new("LD_PRELOAD"))
-        .filter(|value| !value.is_empty())
-        .or_else(|| std::env::var_os("LD_PRELOAD").filter(|value| !value.is_empty()));
-    if let Some(existing) = inherited_preload {
-        ld_preload.push(OsStr::new(":"));
-        ld_preload.push(existing);
-    }
-    command.env("LD_PRELOAD", ld_preload);
+    configure_tool_preload(&mut command, preload);
 
     let wait = match tool_data {
         // Sealed-memfd bootstrap path. Mirroring reverie-liteinst's memfd branch,
@@ -1055,6 +1065,71 @@ mod tests {
     use std::os::fd::IntoRawFd;
 
     use super::*;
+
+    fn captured_ld_preload(command: &Command) -> OsString {
+        command
+            .get_captured_envs()
+            .remove(OsStr::new("LD_PRELOAD"))
+            .expect("configured command must contain LD_PRELOAD")
+    }
+
+    #[test]
+    fn direct_preload_respects_captured_environment_boundaries() {
+        const CHILD_ENV: &str = "REVERIE_E9PATCH_PRELOAD_ENV_TEST_CHILD";
+        const PARENT_PRELOAD: &str = "reverie-e9patch-parent-preload.so";
+        const EXPLICIT_PRELOAD: &str = "explicit-preload.so";
+        const TOOL_PRELOAD: &str = "/tool-preload.so";
+
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Run in a child whose real inherited environment contains a
+            // nonempty LD_PRELOAD. The dynamic loader may warn that the sentinel
+            // is not a DSO, but it still starts the test binary; capture that
+            // diagnostic so a failed assertion remains readable.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::direct_preload_respects_captured_environment_boundaries",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("LD_PRELOAD", PARENT_PRELOAD)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child preload-boundary test failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        assert_eq!(std::env::var_os("LD_PRELOAD").unwrap(), PARENT_PRELOAD);
+
+        let mut inherited = Command::new("/bin/true");
+        configure_tool_preload(&mut inherited, PathBuf::from(TOOL_PRELOAD));
+        assert_eq!(
+            captured_ld_preload(&inherited),
+            OsString::from(format!("{TOOL_PRELOAD}:{PARENT_PRELOAD}"))
+        );
+
+        let mut explicit = Command::new("/bin/true");
+        explicit.env("LD_PRELOAD", EXPLICIT_PRELOAD);
+        configure_tool_preload(&mut explicit, PathBuf::from(TOOL_PRELOAD));
+        assert_eq!(
+            captured_ld_preload(&explicit),
+            OsString::from(format!("{TOOL_PRELOAD}:{EXPLICIT_PRELOAD}"))
+        );
+
+        let mut removed = Command::new("/bin/true");
+        removed.env_remove("LD_PRELOAD");
+        configure_tool_preload(&mut removed, PathBuf::from(TOOL_PRELOAD));
+        assert_eq!(captured_ld_preload(&removed), TOOL_PRELOAD);
+
+        let mut cleared = Command::new("/bin/true");
+        cleared.env_clear();
+        configure_tool_preload(&mut cleared, PathBuf::from(TOOL_PRELOAD));
+        assert_eq!(captured_ld_preload(&cleared), TOOL_PRELOAD);
+    }
 
     fn create_sealed_packet(packet: &[u8]) -> libc::c_int {
         let fd = unsafe {

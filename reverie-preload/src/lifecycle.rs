@@ -9,30 +9,30 @@
 //! The lifecycle-controller seam.
 //!
 //! The runtime keeps *policy* (the [`SyscallDispatcher`](crate::dispatch)) apart
-//! from *mechanism* (how a syscall gets trapped and how process lifecycle events
-//! — startup, `exec`, thread creation — are covered). [`LifecycleController`] is
-//! the mechanism seam.
+//! from the guest-half trap mechanism. [`LifecycleController`] installs that
+//! guest-half mechanism only; startup, `exec`, thread creation, and reaping are
+//! launcher responsibilities outside this trait.
 //!
-//! Today the only controller is [`InProcessSeccomp`]: seccomp + SIGSYS entirely
-//! in-process. The `research-ldpreload-derisking` task showed this cannot cover
-//! the ~40 loader/startup syscalls before the constructor, vDSO fast paths, or
-//! `exec`. The intended remedy is a **hybrid** controller that keeps in-process
-//! trapping on the hot path but adds a minimal ptrace/launcher lifecycle owner
-//! (SaBRe-style) for pre-`main` setup, vDSO patching, and exec/clone stops.
+//! [`InProcessSeccomp`] and [`HybridPtrace`] both install seccomp + SIGSYS
+//! entirely in-process. The `research-ldpreload-derisking` task showed that this
+//! guest-half mechanism cannot cover the ~40 loader/startup syscalls before the
+//! constructor, vDSO fast paths, or `exec` rebootstrap. `HybridPtrace` names an
+//! intended pairing with a separately constructed ptrace lifecycle owner; it
+//! does not construct or verify that launcher.
 //!
 //! Because both share this trait and the same [`RuntimeConfig`]/dispatcher, that
 //! switch is *additive*: implement a new controller, select it via config; the
 //! dispatcher, seccomp filter, trap handler, and RPC client are unchanged. Both
 //! controllers install the identical guest-half in-process trap (see
-//! [`install_in_process_trap`]); they differ only in the *launcher* that spawns
-//! the guest. See [`HybridPtrace`] for the hybrid controller.
+//! [`install_in_process_trap`]); launcher selection is a separate caller
+//! responsibility. See [`HybridPtrace`] for the precise boundary.
 
 use std::io;
 
 use crate::seccomp::SeccompFilter;
 use crate::trap;
 
-/// How the runtime is told to trap and cover the guest.
+/// How the runtime installs its guest-half syscall trap.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RuntimeConfig {
     /// Run the SIGSYS handler on an alternate signal stack.
@@ -92,10 +92,11 @@ fn build_trap_filter() -> io::Result<SeccompFilter> {
 /// Install the shared **guest-half** in-process syscall trap: the `SIGSYS`
 /// handler first, then the trusted-gate seccomp filter that whitelists it.
 ///
-/// This is the exact mechanism both [`InProcessSeccomp`] and [`HybridPtrace`]
-/// put on the syscall hot path; they differ only in the launcher that spawns
-/// the guest. Ordinary syscalls trap to the in-process handler with no
-/// per-syscall ptrace stop.
+/// This is the exact guest-half mechanism both [`InProcessSeccomp`] and
+/// [`HybridPtrace`] put on the syscall path; neither type encodes a launcher.
+/// Syscalls trap to the in-process handler. If the caller separately runs the
+/// guest under ptrace, a residual `SIGSYS` is still visible as a signal-delivery
+/// stop before reinjection.
 ///
 /// # Safety
 ///
