@@ -119,6 +119,13 @@ typedef struct {
   uint64_t magic;
   atomic_flag lock;
   _Atomic int32_t next_virtual_id;
+  /* One clock for the whole copied process tree. The state mapping is shared
+   * across fork/clone and its descriptor survives exec, so every client image
+   * advances the same fine-grained timeline instead of restarting a private
+   * COW copy at the fork point. */
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-shared-dbi-clock): Review shared continuous DBI time.
+  _Atomic uint64_t virtual_time_ns;
   /* The launch-time descriptor identity survives exec, unlike numeric fd 0. */
   bool initial_stdin_valid;
   struct stat initial_stdin;
@@ -279,7 +286,6 @@ static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
 static _Atomic uint64_t pending_thread_starts;
 static _Atomic int32_t runtime_background_state;
-static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
 static _Atomic uint64_t image_generation;
 static int thread_state_index;
 static int compat_gateway_index;
@@ -1009,6 +1015,8 @@ static void initialize_virtual_identity_state(bool external_global) {
   virtual_identity_state->magic = VIRTUAL_IDENTITY_MAGIC;
   atomic_flag_clear(&virtual_identity_state->lock);
   atomic_init(&virtual_identity_state->next_virtual_id, VIRTUAL_ROOT_PID + 1);
+  atomic_init(&virtual_identity_state->virtual_time_ns,
+              UINT64_C(1000000000));
   virtual_identity_state->initial_stdin_valid =
       fstat(STDIN_FILENO, &virtual_identity_state->initial_stdin) == 0;
   virtual_identity_state->external_global = external_global;
@@ -2356,8 +2364,8 @@ static bool is_thread_cpu_clock(clockid_t clockid) {
 }
 
 static uint64_t observe_virtual_time(void) {
-  return atomic_fetch_add_explicit(&virtual_time_ns, UINT64_C(1000),
-                                   memory_order_seq_cst);
+  return atomic_fetch_add_explicit(&virtual_identity_state->virtual_time_ns,
+                                   UINT64_C(1000), memory_order_seq_cst);
 }
 
 static struct timespec virtual_timespec(uint64_t nanoseconds) {
@@ -2394,16 +2402,19 @@ static bool timespec_nanoseconds(const struct timespec *value,
 
 static void advance_virtual_time(uint64_t nanoseconds, bool absolute) {
   if (!absolute) {
-    atomic_fetch_add_explicit(&virtual_time_ns, nanoseconds,
+    atomic_fetch_add_explicit(&virtual_identity_state->virtual_time_ns,
+                              nanoseconds,
                               memory_order_seq_cst);
     return;
   }
 
   uint64_t current =
-      atomic_load_explicit(&virtual_time_ns, memory_order_seq_cst);
+      atomic_load_explicit(&virtual_identity_state->virtual_time_ns,
+                           memory_order_seq_cst);
   while (current < nanoseconds &&
          !atomic_compare_exchange_weak_explicit(
-             &virtual_time_ns, &current, nanoseconds, memory_order_seq_cst,
+             &virtual_identity_state->virtual_time_ns, &current, nanoseconds,
+             memory_order_seq_cst,
              memory_order_seq_cst)) {
   }
 }
@@ -2471,7 +2482,8 @@ static bool handle_virtual_clock(uintptr_t context, int sysnum,
     }
 
     uint64_t current =
-        atomic_load_explicit(&virtual_time_ns, memory_order_seq_cst);
+        atomic_load_explicit(&virtual_identity_state->virtual_time_ns,
+                             memory_order_seq_cst);
     uint64_t delay = nanoseconds > current ? nanoseconds - current : 0;
     struct timespec relative = virtual_timespec(delay);
     const uint64_t sleep_args[6] = {
