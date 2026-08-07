@@ -435,6 +435,37 @@ impl Tool for TimestampTool {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
+struct EvolvingTimestampTool;
+
+#[reverie::tool]
+impl Tool for EvolvingTimestampTool {
+    type GlobalState = TimestampLog;
+    type ThreadState = u64;
+
+    fn subscriptions(enabled: &bool) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        if *enabled {
+            subscriptions.rdtsc();
+        }
+        subscriptions
+    }
+
+    async fn handle_rdtsc_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        request: Rdtsc,
+    ) -> Result<RdtscResult, Errno> {
+        let ordinal = *guest.thread_state();
+        *guest.thread_state_mut() += 1;
+        guest.send_rpc(request).await;
+        Ok(RdtscResult {
+            tsc: RDTSC_SENTINEL + ordinal,
+            aux: (request == Rdtsc::Tscp).then_some(RDTSCP_AUX_SENTINEL + ordinal as u32),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
 struct DoubleForkTool;
 
 #[reverie::tool]
@@ -594,6 +625,51 @@ fn timestamp_assertion_program() -> Vec<u8> {
     code
 }
 
+fn evolving_timestamp_assertion_program() -> Vec<u8> {
+    let mut code = Vec::new();
+    let mut failure_patches = Vec::new();
+
+    for expected in [RDTSC_SENTINEL, RDTSC_SENTINEL + 1] {
+        code.extend_from_slice(&[0x0f, 0x31]); // rdtsc
+        code.push(0x3d); // cmp eax, imm32
+        code.extend_from_slice(&(expected as u32).to_le_bytes());
+        append_jne_failure(&mut code, &mut failure_patches);
+        code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, imm32
+        code.extend_from_slice(&((expected >> 32) as u32).to_le_bytes());
+        append_jne_failure(&mut code, &mut failure_patches);
+    }
+
+    let rdtscp_expected = RDTSC_SENTINEL + 2;
+    code.extend_from_slice(&[0x0f, 0x01, 0xf9]); // rdtscp
+    code.push(0x3d); // cmp eax, imm32
+    code.extend_from_slice(&(rdtscp_expected as u32).to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+    code.extend_from_slice(&[0x81, 0xfa]); // cmp edx, imm32
+    code.extend_from_slice(&((rdtscp_expected >> 32) as u32).to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+    code.extend_from_slice(&[0x81, 0xf9]); // cmp ecx, imm32
+    code.extend_from_slice(&(RDTSCP_AUX_SENTINEL + 2).to_le_bytes());
+    append_jne_failure(&mut code, &mut failure_patches);
+
+    code.extend_from_slice(&[
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+    ]);
+    let failure = code.len();
+    code.extend_from_slice(&[
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
+        0x0f, 0x05, // syscall
+    ]);
+
+    for patch in failure_patches {
+        let displacement = i32::try_from(failure).unwrap() - i32::try_from(patch + 4).unwrap();
+        code[patch..patch + 4].copy_from_slice(&displacement.to_le_bytes());
+    }
+    code
+}
+
 fn run_timestamp_probe(image: &[u8], subscribed: bool) -> (TimestampLog, i32) {
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
     backend
@@ -623,6 +699,36 @@ fn static_elf_timestamp_reads_dispatch_exact_tool_results_repeatably() {
             vec![
                 (Pid::from_raw(1), Rdtsc::Tsc),
                 (Pid::from_raw(1), Rdtsc::Tscp)
+            ]
+        );
+    }
+}
+
+#[test]
+fn repeated_timestamp_reads_evolve_once_per_instruction() {
+    if !kvm_available("KVM evolving timestamp test") {
+        return;
+    }
+
+    let image = static_elf(&evolving_timestamp_assertion_program());
+    for _ in 0..2 {
+        let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+        backend
+            .install_static_elf(&image, "/bin/evolving-timestamp-probe")
+            .unwrap();
+        let (log, code, stdout, stderr) = futures::executor::block_on(
+            backend.run_static_elf_with_tool::<EvolvingTimestampTool>(true, true),
+        )
+        .unwrap();
+        assert_eq!(code, 0);
+        assert!(stdout.is_empty());
+        assert!(stderr.is_empty());
+        assert_eq!(
+            log.calls(),
+            vec![
+                (Pid::from_raw(1), Rdtsc::Tsc),
+                (Pid::from_raw(1), Rdtsc::Tsc),
+                (Pid::from_raw(1), Rdtsc::Tscp),
             ]
         );
     }
