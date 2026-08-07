@@ -96,6 +96,51 @@ reverie_liteinst_host_syscall_trap_call:
 reverie_liteinst_host_syscall_trap_return_rip:
     ret
     .size reverie_liteinst_host_syscall_trap_call, .-reverie_liteinst_host_syscall_trap_call
+
+    # These instruction sites are reached only after the nested-hook path has
+    # temporarily enabled native execution. Keeping them private to that path
+    # guarantees they have never been patched when they are first executed.
+    .p2align 4
+    .global reverie_liteinst_native_cpuid
+    .hidden reverie_liteinst_native_cpuid
+    .type reverie_liteinst_native_cpuid,@function
+reverie_liteinst_native_cpuid:
+    push rbx
+    mov r8, rdx
+    mov eax, edi
+    mov ecx, esi
+    cpuid
+    mov dword ptr [r8], eax
+    mov dword ptr [r8 + 4], ebx
+    mov dword ptr [r8 + 8], ecx
+    mov dword ptr [r8 + 12], edx
+    pop rbx
+    ret
+    .size reverie_liteinst_native_cpuid, .-reverie_liteinst_native_cpuid
+
+    .p2align 4
+    .global reverie_liteinst_native_rdtsc
+    .hidden reverie_liteinst_native_rdtsc
+    .type reverie_liteinst_native_rdtsc,@function
+reverie_liteinst_native_rdtsc:
+    rdtsc
+    shl rdx, 32
+    or rax, rdx
+    ret
+    .size reverie_liteinst_native_rdtsc, .-reverie_liteinst_native_rdtsc
+
+    .p2align 4
+    .global reverie_liteinst_native_rdtscp
+    .hidden reverie_liteinst_native_rdtscp
+    .type reverie_liteinst_native_rdtscp,@function
+reverie_liteinst_native_rdtscp:
+    mov r8, rdi
+    rdtscp
+    mov dword ptr [r8], ecx
+    shl rdx, 32
+    or rax, rdx
+    ret
+    .size reverie_liteinst_native_rdtscp, .-reverie_liteinst_native_rdtscp
 "#
 );
 
@@ -110,6 +155,9 @@ unsafe extern "C" {
     fn reverie_liteinst_host_syscall_trap(frame: *mut HostSyscallFrame);
     static reverie_liteinst_host_syscall_trap_rip: u8;
     static reverie_liteinst_host_syscall_trap_return_rip: u8;
+    fn reverie_liteinst_native_cpuid(eax: u32, ecx: u32, result: *mut NativeCpuidResult);
+    fn reverie_liteinst_native_rdtsc() -> u64;
+    fn reverie_liteinst_native_rdtscp(aux: *mut u32) -> u64;
 }
 
 // TODO-HUMAN-REVIEW(PR-270): Review raw hot-trap test/provenance ABI. This
@@ -187,6 +235,9 @@ pub const TOOL_PASSTHROUGH: &str = "passthrough";
 pub const TOOL_SPOOF_GETPID: &str = "spoof-getpid";
 const EVENT_CHANNEL_IDENTITY_FAILURE_STATUS: i32 = 120;
 const EVENT_CHANNEL_WRITE_FAILURE_STATUS: i32 = 121;
+const IN_GUEST_STAGE_WRITE_FAILURE_STATUS: i32 = 123;
+/// Enables fail-closed, allocation-free in-guest lifecycle stage markers on stderr.
+pub const IN_GUEST_STAGE_STREAM_ENV: &str = "REVERIE_LITEINST_IN_GUEST_STAGE_STREAM";
 const MAX_PATCH_SITES: usize = 4096;
 const ARENA_SLOTS: usize = 128;
 const PATCH_SNAPSHOT_BYTES: usize = 64;
@@ -203,6 +254,7 @@ static COORDINATOR_FD: AtomicI32 = AtomicI32::new(-1);
 static EVENT_COOKIE: AtomicU64 = AtomicU64::new(0);
 static EVENT_DEVICE: AtomicU64 = AtomicU64::new(0);
 static EVENT_INODE: AtomicU64 = AtomicU64::new(0);
+static IN_GUEST_STAGE_STREAM: AtomicBool = AtomicBool::new(false);
 
 #[thread_local]
 static mut CURRENT_EVENT: *mut SyscallEvent = ptr::null_mut();
@@ -220,6 +272,15 @@ pub(crate) enum InstructionEventKind {
     Cpuid,
     Rdtsc,
     Rdtscp,
+}
+
+#[derive(Default)]
+#[repr(C)]
+struct NativeCpuidResult {
+    eax: u32,
+    ebx: u32,
+    ecx: u32,
+    edx: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -247,6 +308,11 @@ pub(crate) fn initialize_rcb_clock() -> io::Result<()> {
     if owner <= 0 {
         return Err(io::Error::last_os_error());
     }
+    // A fork child can first discover that its inherited counter has the wrong
+    // owner from inside the still-active fork callback. Preserve that callback
+    // depth while replacing the counter; resetting it would make the outer
+    // leave underflow after child reconstruction completes.
+    let active_depth = unsafe { RCB_HANDLER_DEPTH };
     // Publish an unavailable sentinel before creating the perf event. When a
     // fork child first initializes after seccomp is active, the builder's own
     // syscalls can re-enter an already-patched syscall hook; that nested hook
@@ -258,7 +324,7 @@ pub(crate) fn initialize_rcb_clock() -> io::Result<()> {
         RCB_CLOCK_UNAVAILABLE = true;
         RCB_HANDLER_ENTRY = 0;
         RCB_HANDLER_DEDUCTION = 0;
-        RCB_HANDLER_DEPTH = 0;
+        RCB_HANDLER_DEPTH = active_depth;
     }
     let clock = match unsafe {
         reverie_ptrace::InGuestRcbCounter::current_thread_with_syscall_gate(raw_syscall6)
@@ -277,13 +343,20 @@ pub(crate) fn initialize_rcb_clock() -> io::Result<()> {
         }
         Err(error) => return Err(io::Error::from_raw_os_error(error.into_raw())),
     };
+    let active_entry = if active_depth == 0 {
+        0
+    } else {
+        clock
+            .read()
+            .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?
+    };
     unsafe {
         RCB_CLOCK = Box::into_raw(Box::new(clock));
         RCB_CLOCK_OWNER = owner;
         RCB_CLOCK_UNAVAILABLE = false;
-        RCB_HANDLER_ENTRY = 0;
+        RCB_HANDLER_ENTRY = active_entry;
         RCB_HANDLER_DEDUCTION = 0;
-        RCB_HANDLER_DEPTH = 0;
+        RCB_HANDLER_DEPTH = active_depth;
     }
     Ok(())
 }
@@ -713,6 +786,18 @@ pub(crate) fn initialize_reverie_tool(
     instructions: InstructionSubscriptions,
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
+    let stage_stream = match std::env::var_os(IN_GUEST_STAGE_STREAM_ENV).as_deref() {
+        None => false,
+        Some(value) if value == OsStr::new("0") => false,
+        Some(value) if value == OsStr::new("1") => true,
+        Some(value) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported {IN_GUEST_STAGE_STREAM_ENV} value {value:?}"),
+            ));
+        }
+    };
+    IN_GUEST_STAGE_STREAM.store(stage_stream, Ordering::Release);
     let process_forks_allowed = match std::env::var_os(PROCESS_FORK_ENV).as_deref() {
         None => true,
         Some(value) if value == OsStr::new("1") => true,
@@ -2055,22 +2140,54 @@ unsafe extern "C" fn instruction_sigsegv_handler(
     context: *mut libc::c_void,
 ) {
     if signal != libc::SIGSEGV || context.is_null() {
+        emit_in_guest_stage(b"instruction-sigsegv-invalid-context");
         unsafe { deliver_default_sigsegv() };
     }
     let context = unsafe { &mut *context.cast::<libc::ucontext_t>() };
     let address = context.uc_mcontext.gregs[libc::REG_RIP as usize] as u64;
     let Some((kind, expected)) = instruction_at(address) else {
+        emit_in_guest_stage(if arena_for(address).is_some() {
+            b"instruction-sigsegv-unrecognized-bytes"
+        } else {
+            b"instruction-sigsegv-no-reachable-arena"
+        });
         unsafe { deliver_default_sigsegv() };
     };
     if !instruction_is_subscribed(kind) {
+        emit_in_guest_stage(b"instruction-sigsegv-unsubscribed");
         unsafe { deliver_default_sigsegv() };
     }
 
+    // An unpatched instruction reached from an active Tool callback must not
+    // allocate a trampoline. After fork, the arena cursor is process-private
+    // but its backing pages are shared; child publication would let the parent
+    // reuse and overwrite the same slot. Execute at the private native helper
+    // and advance the faulting context instead.
+    if unsafe { !CURRENT_EVENT.is_null() } {
+        emit_in_guest_stage(match kind {
+            InstructionEventKind::Cpuid => b"nested-instruction-fault-native-cpuid",
+            InstructionEventKind::Rdtsc => b"nested-instruction-fault-native-rdtsc",
+            InstructionEventKind::Rdtscp => b"nested-instruction-fault-native-rdtscp",
+        });
+        if unsafe { set_instruction_native(kind, true) }.is_err() {
+            emit_in_guest_stage(b"instruction-sigsegv-enable-native-failed");
+            unsafe { deliver_default_sigsegv() };
+        }
+        unsafe { execute_native_fault_instruction(kind, context, expected.len()) };
+        if unsafe { set_instruction_native(kind, false) }.is_err() {
+            emit_in_guest_stage(b"instruction-sigsegv-disable-native-failed");
+            unsafe { deliver_default_sigsegv() };
+        }
+        return;
+    }
+
     let Some((site, claimed)) = claim_site(address) else {
+        emit_in_guest_stage(b"instruction-sigsegv-site-table-full");
         unsafe { deliver_default_sigsegv() };
     };
     site.trap_count.fetch_add(1, Ordering::Relaxed);
     if unsafe { set_all_instruction_native(true) }.is_err() {
+        emit_in_guest_stage(b"instruction-sigsegv-enable-native-failed");
         unsafe { deliver_default_sigsegv() };
     }
     if claimed
@@ -2089,20 +2206,61 @@ unsafe extern "C" fn instruction_sigsegv_handler(
         site.state.store(SITE_FALLBACK, Ordering::Release);
     }
     if unsafe { set_all_instruction_native(false) }.is_err() {
+        emit_in_guest_stage(b"instruction-sigsegv-disable-native-failed");
         unsafe { deliver_default_sigsegv() };
     }
     while matches!(site.state.load(Ordering::Acquire), 0 | SITE_INSTALLING) {
         core::hint::spin_loop();
     }
     if site.state.load(Ordering::Acquire) != SITE_ACTIVE {
+        emit_in_guest_stage(b"instruction-sigsegv-site-install-failed");
         unsafe { deliver_default_sigsegv() };
     }
     let hook = site.hook.load(Ordering::Acquire);
     if hook.is_null() {
+        emit_in_guest_stage(b"instruction-sigsegv-hook-missing");
         unsafe { deliver_default_sigsegv() };
     }
     context.uc_mcontext.gregs[libc::REG_RIP as usize] =
         unsafe { (*hook).trampoline().address() } as i64;
+}
+
+unsafe fn execute_native_fault_instruction(
+    kind: InstructionEventKind,
+    context: &mut libc::ucontext_t,
+    instruction_len: usize,
+) {
+    let registers = &mut context.uc_mcontext.gregs;
+    match kind {
+        InstructionEventKind::Cpuid => {
+            let mut result = NativeCpuidResult::default();
+            unsafe {
+                reverie_liteinst_native_cpuid(
+                    registers[libc::REG_RAX as usize] as u32,
+                    registers[libc::REG_RCX as usize] as u32,
+                    &mut result,
+                )
+            };
+            registers[libc::REG_RAX as usize] = i64::from(result.eax);
+            registers[libc::REG_RBX as usize] = i64::from(result.ebx);
+            registers[libc::REG_RCX as usize] = i64::from(result.ecx);
+            registers[libc::REG_RDX as usize] = i64::from(result.edx);
+        }
+        InstructionEventKind::Rdtsc => {
+            let value = unsafe { reverie_liteinst_native_rdtsc() };
+            registers[libc::REG_RAX as usize] = i64::from(value as u32);
+            registers[libc::REG_RDX as usize] = (value >> 32) as i64;
+        }
+        InstructionEventKind::Rdtscp => {
+            let mut aux = 0;
+            let value = unsafe { reverie_liteinst_native_rdtscp(&mut aux) };
+            registers[libc::REG_RAX as usize] = i64::from(value as u32);
+            registers[libc::REG_RDX as usize] = (value >> 32) as i64;
+            registers[libc::REG_RCX as usize] = i64::from(aux);
+        }
+    }
+    registers[libc::REG_RIP as usize] =
+        registers[libc::REG_RIP as usize].saturating_add(instruction_len as i64);
 }
 
 unsafe fn set_instruction_native(kind: InstructionEventKind, enabled: bool) -> io::Result<()> {
@@ -2150,9 +2308,53 @@ unsafe fn installed_instruction_hook(context: *mut HookContext, kind: Instructio
     if unsafe { set_instruction_native(kind, true) }.is_err() {
         unsafe { exit_now(122) };
     }
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-405): Review nested Tool-internal instruction bypass.
+    // A previously patched instruction still jumps here while native faulting
+    // is enabled. Re-entering the Tool would deadlock on its already-held lock,
+    // so execute the instruction at a private, never-patched site instead.
+    if unsafe { !CURRENT_EVENT.is_null() } {
+        emit_in_guest_stage(match kind {
+            InstructionEventKind::Cpuid => b"nested-instruction-native-cpuid",
+            InstructionEventKind::Rdtsc => b"nested-instruction-native-rdtsc",
+            InstructionEventKind::Rdtscp => b"nested-instruction-native-rdtscp",
+        });
+        unsafe { execute_native_instruction(kind, context) };
+        if unsafe { set_instruction_native(kind, false) }.is_err() || leave_rcb_handler().is_err() {
+            unsafe { exit_now(122) };
+        }
+        return;
+    }
     crate::tool_host::dispatch_instruction(kind, context);
     if unsafe { set_instruction_native(kind, false) }.is_err() || leave_rcb_handler().is_err() {
         unsafe { exit_now(122) };
+    }
+}
+
+unsafe fn execute_native_instruction(kind: InstructionEventKind, context: &mut HookContext) {
+    match kind {
+        InstructionEventKind::Cpuid => {
+            let mut result = NativeCpuidResult::default();
+            unsafe {
+                reverie_liteinst_native_cpuid(context.rax as u32, context.rcx as u32, &mut result)
+            };
+            context.rax = u64::from(result.eax);
+            context.rbx = u64::from(result.ebx);
+            context.rcx = u64::from(result.ecx);
+            context.rdx = u64::from(result.edx);
+        }
+        InstructionEventKind::Rdtsc => {
+            let value = unsafe { reverie_liteinst_native_rdtsc() };
+            context.rax = value as u32 as u64;
+            context.rdx = value >> 32;
+        }
+        InstructionEventKind::Rdtscp => {
+            let mut aux = 0;
+            let value = unsafe { reverie_liteinst_native_rdtscp(&mut aux) };
+            context.rax = value as u32 as u64;
+            context.rdx = value >> 32;
+            context.rcx = u64::from(aux);
+        }
     }
 }
 
@@ -2755,6 +2957,41 @@ unsafe fn trace_event(event: &SyscallEvent, result: Option<i64>) {
                 ],
             )
         };
+    }
+}
+
+/// Emit an allocation-free stage marker from the in-guest Tool process.
+///
+/// This is opt-in because production guests own stderr. When enabled, a short
+/// write is fail-closed so an absent marker cannot be mistaken for a negative
+/// observation across the host/in-guest process boundary.
+pub(crate) fn emit_in_guest_stage(stage: &[u8]) {
+    if !IN_GUEST_STAGE_STREAM.load(Ordering::Acquire) {
+        return;
+    }
+    let mut line = StackLine::new();
+    line.push_bytes(b"INFO reverie_liteinst::tool_host: [in-guest pid=");
+    line.push_signed(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) });
+    line.push_bytes(b" tid=");
+    line.push_signed(unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) });
+    line.push_bytes(b"] stage=");
+    line.push_bytes(stage);
+    line.push_bytes(b"\n");
+    let written = unsafe {
+        raw_syscall6(
+            libc::SYS_write,
+            [
+                libc::STDERR_FILENO as u64,
+                line.bytes.as_ptr() as u64,
+                line.len as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if written != line.len as i64 {
+        unsafe { exit_now(IN_GUEST_STAGE_WRITE_FAILURE_STATUS) };
     }
 }
 
