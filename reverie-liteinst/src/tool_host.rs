@@ -287,6 +287,18 @@ where
                 return;
             }
             event.result = unsafe { raw_syscall6(number, args) };
+            if let Some(path) = std::env::var_os("LITEINST_PROBE")
+                && matches!(number, libc::SYS_wait4 | libc::SYS_waitid | libc::SYS_clone | libc::SYS_fork | libc::SYS_vfork | libc::SYS_clone3)
+            {
+                use std::io::Write as _;
+                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                    let _ = writeln!(
+                        f,
+                        "PROBE tool_host raw-unsub number={} a0={} a1={} a2={} a3={} result={}",
+                        number, args[0], args[1], args[2], args[3], event.result
+                    );
+                }
+            }
             return;
         }
         let args = guest.event.args.map(|arg| arg as usize);

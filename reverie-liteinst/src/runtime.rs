@@ -1443,6 +1443,30 @@ fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
         event.result = unsafe { raw_syscall6(event.number, event.args) };
         observe_mapping_generation(event);
     }
+    if let Some(path) = std::env::var_os("LITEINST_PROBE")
+        && matches!(
+            event.number,
+            libc::SYS_wait4
+                | libc::SYS_waitid
+                | libc::SYS_clone
+                | libc::SYS_fork
+                | libc::SYS_vfork
+                | libc::SYS_clone3
+        )
+    {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let _ = writeln!(
+                f,
+                "PROBE nested-forward number={} a0={} a2={} result={}",
+                event.number, event.args[0], event.args[2], event.result
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1572,6 +1596,93 @@ unsafe extern "C" fn host_syscall_hook(context: *mut HookContext) {
     frame.copy_to_context(context, original_rflags);
 }
 
+// DIAGNOSTIC-ONLY probe: writes one line to /tmp/probe.log via the trusted gate
+// (never re-traps, no allocation, safe from the SIGSYS handler). Remove before land.
+fn probe_raw(tag: &[u8], number: i64, result: i64) {
+    if !matches!(
+        number,
+        libc::SYS_wait4
+            | libc::SYS_waitid
+            | libc::SYS_clone
+            | libc::SYS_clone3
+            | libc::SYS_fork
+            | libc::SYS_vfork
+            | libc::SYS_exit
+            | libc::SYS_exit_group
+    ) {
+        return;
+    }
+    let mut buf = [0u8; 128];
+    let mut n = 0usize;
+    for &b in tag {
+        if n < buf.len() {
+            buf[n] = b;
+            n += 1;
+        }
+    }
+    for v in [number, result] {
+        if n < buf.len() {
+            buf[n] = b' ';
+            n += 1;
+        }
+        let neg = v < 0;
+        let mut x = if neg {
+            (v as i128).unsigned_abs()
+        } else {
+            v as u128
+        };
+        let mut tmp = [0u8; 24];
+        let mut ti = 0;
+        if x == 0 {
+            tmp[ti] = b'0';
+            ti += 1;
+        }
+        while x > 0 {
+            tmp[ti] = b'0' + (x % 10) as u8;
+            x /= 10;
+            ti += 1;
+        }
+        if neg && n < buf.len() {
+            buf[n] = b'-';
+            n += 1;
+        }
+        while ti > 0 {
+            ti -= 1;
+            if n < buf.len() {
+                buf[n] = tmp[ti];
+                n += 1;
+            }
+        }
+    }
+    if n < buf.len() {
+        buf[n] = b'\n';
+        n += 1;
+    }
+    let path = b"/tmp/probe.log\0";
+    let fd = unsafe {
+        raw_syscall6(
+            libc::SYS_openat,
+            [
+                (-100i64) as u64,
+                path.as_ptr() as u64,
+                (libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND) as u64,
+                0o644,
+                0,
+                0,
+            ],
+        )
+    };
+    if fd >= 0 {
+        unsafe {
+            raw_syscall6(
+                libc::SYS_write,
+                [fd as u64, buf.as_ptr() as u64, n as u64, 0, 0, 0],
+            );
+            raw_syscall6(libc::SYS_close, [fd as u64, 0, 0, 0, 0, 0]);
+        }
+    }
+}
+
 unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
     if context.is_null() {
         unsafe {
@@ -1598,6 +1709,7 @@ unsafe extern "C" fn installed_syscall_hook(context: *mut HookContext) {
         result: UNSET_RESULT,
         context: context_pointer,
     };
+    probe_raw(b"hook-entry", event.number, event.args[0] as i64);
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-133): Review guarded installed-hook bypass for Tool-internal syscalls.
     if unsafe { !CURRENT_EVENT.is_null() } {
