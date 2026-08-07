@@ -260,7 +260,9 @@ pub(crate) fn initialize_rcb_clock() -> io::Result<()> {
         RCB_HANDLER_DEDUCTION = 0;
         RCB_HANDLER_DEPTH = 0;
     }
-    let clock = match reverie_ptrace::InGuestRcbCounter::current_thread() {
+    let clock = match unsafe {
+        reverie_ptrace::InGuestRcbCounter::current_thread_with_syscall_gate(raw_syscall6)
+    } {
         Ok(clock) => clock,
         Err(error)
             if matches!(
