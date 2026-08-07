@@ -246,6 +246,63 @@ fn is_expected_syscall_skip_breakpoint(
         && post_opcode != 0xcc
 }
 
+/// The one-byte `int3` (`#BP`) opcode.
+const INT3_OPCODE: u8 = 0xcc;
+
+/// `si_code` the kernel reports for a `#BP` that no ptrace mechanism produced.
+/// `libc` does not export `SI_KERNEL`, so it is spelled out here.
+///
+/// `arch/x86/kernel/traps.c:do_int3_user` calls `do_trap(X86_TRAP_BP, SIGTRAP,
+/// "int3", regs, 0, /*sicode=*/0, NULL)`, and a zero `sicode` makes `do_trap`
+/// take the `force_sig(signr)` path, which stamps `SI_KERNEL`.
+const SI_KERNEL: libc::c_int = 0x80;
+
+/// True when a `SIGTRAP` stop is the guest retiring **its own** `int3`.
+///
+/// Two independent observations must agree, so that neither an `si_code` nor a
+/// stray byte carries the decision alone:
+///
+///   * `si_code == SI_KERNEL` — the kernel's own statement, recorded where the
+///     signal was generated, that this `#BP` did not come from ptrace
+///     machinery. Every trap the tracer drives carries a different code:
+///     `TRAP_TRACE` for a single-step completion, `TRAP_BRKPT` for a
+///     ptrace-reported breakpoint (including the seccomp syscall-skip
+///     transition that [`is_expected_syscall_skip_breakpoint`] handles),
+///     `TRAP_BRANCH`, and `TRAP_HWBKPT`. A *process*-raised SIGTRAP (`kill`,
+///     `tgkill`/`raise`, `sigqueue`) carries `SI_USER`/`SI_TKILL`/`SI_QUEUE`
+///     and is a different question from this one.
+///   * the byte the guest just retired, read back out of guest memory at
+///     `rip - 1`, is `0xcc`. This observes the instruction rather than
+///     inferring it from register state, so a `SI_KERNEL` SIGTRAP that did not
+///     come from a one-byte `int3` is refused.
+///
+/// This predicate deliberately does **not** know which `0xcc` bytes the tracer
+/// planted; excluding those is the caller's obligation (see
+/// [`TracedTask::is_tracer_planted_trap_site`]).
+///
+/// The decision itself is [`is_guest_int3_evidence`], kept pure so both sides
+/// of it can be unit-tested without a live tracee.
+fn is_guest_int3_evidence(si_code: libc::c_int, retired_opcode: u8) -> bool {
+    si_code == SI_KERNEL && retired_opcode == INT3_OPCODE
+}
+
+/// Read the two observations [`is_guest_int3_evidence`] needs off a stopped
+/// tracee.
+fn is_guest_int3_trap(task: &Stopped, rip: u64) -> Result<bool, TraceError> {
+    let si_code = task.getsiginfo()?.si_code;
+    let Some(site) = rip.checked_sub(1) else {
+        return Ok(false);
+    };
+    let mut opcode = [0u8; 1];
+    // An unreadable byte is not evidence of anything. Refuse rather than
+    // propagate the error, so a trap whose RIP cannot be read stays on the
+    // existing suppression path instead of becoming a delivery.
+    if task.read_exact(site as usize, &mut opcode).is_err() {
+        return Ok(false);
+    }
+    Ok(is_guest_int3_evidence(si_code, opcode[0]))
+}
+
 fn is_expected_syscall_skip_trap(
     task: &Stopped,
     pre_rip: u64,
@@ -2436,10 +2493,57 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await_gdb_resume(task, ExpectedGdbResume::Resume)
                 .await?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
+        } else if !self.is_tracer_planted_trap_site(rip_minus_one)
+            && is_guest_int3_trap(&task, regs.ip())?
+        {
+            // The guest executed its own `int3`, and nothing above claimed the
+            // trap. Suppressing it here let a guest run *past* a breakpoint it
+            // planted itself: no SIGTRAP, no handler, no diagnostic, and a
+            // parent that saw a normal exit where native Linux reports
+            // WIFSIGNALED/SIGTRAP. Hand it to the tool's signal path -- the
+            // same path SIGSEGV already takes -- and let the guest's own
+            // disposition decide.
+            HandleSignalResult::SignalToDeliver(task, Signal::SIGTRAP)
         } else {
+            // Still suppressed, but no longer silently: a SIGTRAP that matched
+            // no tracer mechanism and no guest `int3` is unexplained, and the
+            // whole cost of the bug above was that it left no trace.
+            tracing::debug!(
+                "[pid = {}] suppressing unclaimed SIGTRAP at rip {:#x}",
+                self.tid(),
+                regs.ip()
+            );
             let running = self.resume_stopped(task, None)?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
         })
+    }
+
+    /// True when a `#BP` retired at `site` may be **this tracer's own**, and so
+    /// must never be delivered to the guest.
+    ///
+    /// The bias is deliberate and asymmetric: over-suppressing reproduces
+    /// today's behaviour for that address, whereas under-suppressing kills a
+    /// guest for a trap it never raised. Every uncertain case therefore answers
+    /// `true`.
+    fn is_tracer_planted_trap_site(&self, site: u64) -> bool {
+        // While the LiteInst runtime is active, `0xcc` bytes exist in guest
+        // memory that this path cannot enumerate. `active_hooks` and
+        // `attempted_sites` cover the patched *call sites*, but the runtime
+        // also carries trap entries inside its own injected image: the
+        // `reverie-liteinst` hybrid suite traps at such an address (`rip - 1`
+        // in the runtime's mapping, present in neither set) that reaches this
+        // fallback whenever `classify_liteinst_trap` declines it. Until that
+        // set is enumerable, no `int3` is attributable to the guest under
+        // LiteInst, so refuse the whole configuration rather than guess per
+        // address. This costs nothing for the backends issue #1715 is about:
+        // `ptrace` and `e9patch` never install a LiteInst runtime.
+        if self.global_state.liteinst_runtime.is_some() {
+            return true;
+        }
+        // Redundant with the enclosing `breakpoints` arm in `handle_sigtrap`,
+        // and kept so this predicate is correct on its own terms rather than
+        // by virtue of its one caller's control flow.
+        self.breakpoints.contains_key(&site)
     }
 
     async fn handle_sigstop(&mut self, task: Stopped) -> Result<HandleSignalResult, TraceError> {
@@ -5920,5 +6024,52 @@ mod tests {
             liteinst_helper_entry_rflags(transient | preserved),
             preserved
         );
+    }
+
+    /// POSITIVE side of the bracket: the one combination that identifies a
+    /// guest `int3` must classify as one, so the delivery path is not inert.
+    #[test]
+    fn guest_int3_evidence_accepts_si_kernel_on_a_retired_int3() {
+        assert!(
+            is_guest_int3_evidence(SI_KERNEL, INT3_OPCODE),
+            "SI_KERNEL over a retired 0xcc is the guest's own breakpoint"
+        );
+    }
+
+    /// NEGATIVE side, arm 1: every `si_code` the tracer's own machinery
+    /// produces must be refused even when a `0xcc` sits at `rip - 1`. If this
+    /// flips, a guest is killed for a single-step or a planted breakpoint it
+    /// never asked for.
+    #[test]
+    fn guest_int3_evidence_refuses_tracer_generated_si_codes() {
+        const SI_QUEUE: libc::c_int = -1;
+        for si_code in [
+            libc::TRAP_BRKPT,
+            libc::TRAP_TRACE,
+            libc::TRAP_BRANCH,
+            libc::TRAP_HWBKPT,
+            libc::SI_USER,
+            libc::SI_TKILL,
+            SI_QUEUE,
+        ] {
+            assert!(
+                !is_guest_int3_evidence(si_code, INT3_OPCODE),
+                "si_code {si_code} is not a guest #BP and must not be delivered as one"
+            );
+        }
+    }
+
+    /// NEGATIVE side, arm 2: `si_code` alone must not carry the decision. A
+    /// `SI_KERNEL` SIGTRAP whose retired byte is not `0xcc` did not come from a
+    /// one-byte `int3`, so it stays suppressed.
+    #[test]
+    fn guest_int3_evidence_refuses_si_kernel_without_a_retired_int3() {
+        // 0x0f: first byte of `ud2`/`syscall`; 0x90: nop; 0x00: unmapped read.
+        for opcode in [0x0fu8, 0x90, 0x00, 0xcd] {
+            assert!(
+                !is_guest_int3_evidence(SI_KERNEL, opcode),
+                "opcode {opcode:#04x} at rip-1 is not a one-byte int3"
+            );
+        }
     }
 }
