@@ -10,8 +10,8 @@ use std::io;
 use std::ptr;
 use std::sync::OnceLock;
 
-use liteinst2::patcher::prepare_live_patching;
 use liteinst2::patcher::PatchError;
+use liteinst2::patcher::prepare_live_patching;
 use liteinst2::scanner::InstructionScanner;
 use liteinst2::trampoline::HookContext;
 use liteinst2::trampoline::HookSite;
@@ -212,6 +212,7 @@ static SITES: OnceLock<Box<[SiteSlot]>> = OnceLock::new();
 static PAGE_SIZE: AtomicU64 = AtomicU64::new(0);
 static INSTALL_HELD: AtomicBool = AtomicBool::new(false);
 static INSTRUCTION_SUBSCRIPTIONS: AtomicU8 = AtomicU8::new(0);
+static PROCESS_FORKS_ALLOWED: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InstructionEventKind {
@@ -508,6 +509,9 @@ pub(crate) unsafe fn install_builtin_runtime(tool: BuiltinTool) -> io::Result<()
 /// ([`install_runtime`], used by the `strace`/`compat`/Detcore modes); a shared
 /// [`BuiltinTool`] runs through `install_builtin`, which uses the shared default.
 pub const ALT_STACK_ENV: &str = "REVERIE_LITEINST_ALT_STACK";
+/// Allows a caller to keep fork-family syscalls fail-closed while integrating
+/// a Tool whose process lifecycle is not ready for the direct backend.
+pub const PROCESS_FORK_ENV: &str = "REVERIE_LITEINST_PROCESS_FORK";
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-254): Review alt-stack env parse/reject contract.
@@ -706,6 +710,18 @@ pub(crate) fn initialize_reverie_tool(
     instructions: InstructionSubscriptions,
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
+    let process_forks_allowed = match std::env::var_os(PROCESS_FORK_ENV).as_deref() {
+        None => true,
+        Some(value) if value == OsStr::new("1") => true,
+        Some(value) if value == OsStr::new("0") => false,
+        Some(value) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unsupported {PROCESS_FORK_ENV} value {value:?}"),
+            ));
+        }
+    };
+    PROCESS_FORKS_ALLOWED.store(process_forks_allowed, Ordering::Release);
     TOOL_MODE.store(TOOL_REVERIE, Ordering::Release);
     install_runtime(stats, publication, instructions, vdso_sites)
 }
@@ -1423,9 +1439,7 @@ unsafe fn install_site_hook(
         };
         match candidate {
             Ok(installed) => break Ok(installed),
-            Err(TrampolineError::Patch(PatchError::GuardByteConflict { .. }))
-                if attempts < 16 =>
-            {
+            Err(TrampolineError::Patch(PatchError::GuardByteConflict { .. })) if attempts < 16 => {
                 continue;
             }
             Err(error) => break Err(error),
@@ -2382,6 +2396,8 @@ unsafe extern "C" fn tool_trampoline() {
 
 // TODO-HUMAN-REVIEW(PR-127): Review process-global preload safety guards.
 fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
+    let unsupported_process =
+        is_fork_like(event.number) && !PROCESS_FORKS_ALLOWED.load(Ordering::Acquire);
     let protected_signal =
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-133): Review fail-closed guest signal-handler policy.
@@ -2391,7 +2407,9 @@ fn protect_runtime_control(event: &mut SyscallEvent) -> bool {
         // AUTONOMOUS-BOT-IMPLEMENTED
         || (event.number == libc::SYS_rt_sigprocmask && event.args[1] != 0);
 
-    if protected_signal {
+    if unsupported_process {
+        event.result = -i64::from(libc::ENOTSUP);
+    } else if protected_signal {
         event.result = -i64::from(libc::EPERM);
     } else {
         return false;
