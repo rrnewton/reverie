@@ -55,6 +55,7 @@ pub mod backend_stats;
 mod backtrace;
 mod error;
 mod guest;
+mod liteinst_stats;
 #[cfg(target_arch = "x86_64")]
 mod rdtsc;
 mod regs;
@@ -69,6 +70,10 @@ pub use backend_stats::*;
 pub use backtrace::*;
 pub use error::*;
 pub use guest::*;
+pub use liteinst_stats::LiteinstInstrumentationStats;
+pub use liteinst_stats::LiteinstInstrumentationStatsHandle;
+pub use liteinst_stats::LiteinstPatchOutcome;
+pub use liteinst_stats::with_liteinst_stats;
 pub use process::ExitStatus;
 pub use process::Pid;
 #[cfg(target_arch = "x86_64")]
