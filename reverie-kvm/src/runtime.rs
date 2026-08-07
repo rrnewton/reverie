@@ -1166,11 +1166,12 @@ impl KvmBackend {
             loaded.stdin = Some(std::fs::File::open("/dev/null")?);
         }
         let pid = Pid::from_raw(self.root_pid);
-        // Resolve thread ownership before any CLONE_THREAD worker is created: an
-        // explicit caller override wins, otherwise follow the tool's
-        // `Tool::thread_ownership` (default: Tool-owned "follow children"). This
-        // is why the KVM backend no longer needs the caller to opt threads in.
-        self.resolve_thread_ownership(T::thread_ownership(&config));
+        // MEASUREMENT REVERT (kvm-compat-ratchet, NOT for PR): revert 640c5bc's
+        // default-flip so the root leader stays Host-owned by default (field
+        // inits to ThreadOwnership::Host in vm.rs), the confirmed fix for the
+        // KVM startup livelock. An explicit caller override still wins via
+        // set_thread_ownership; only the default is restored to pre-Jul-30.
+        // self.resolve_thread_ownership(T::thread_ownership(&config));
         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
         let tool = T::new(pid, &config);
         let subscriptions = T::subscriptions(&config);
