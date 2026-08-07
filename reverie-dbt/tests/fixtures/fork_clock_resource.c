@@ -15,52 +15,85 @@
  * path. Before this fixture's fix, that path applied only identity
  * virtualization, so a forked child read real host time and real host rlimits
  * while the root process saw the deterministic native virtual clock and virtual
- * limits. This fixture forks a child, has it issue raw clock_gettime and
- * prlimit64 syscalls (raw so no libc/vDSO fast path can hide them), and prints
- * both the child's and the root's observations so the harness can assert the
- * child now matches the root's virtualized view:
+ * limits. This fixture reads clock_gettime through libc's vDSO path repeatedly
+ * before and after two ordered children. The first child continues from fork;
+ * the second execs this fixture so a new DynamoRIO client image remaps the
+ * shared state and patches its newly loaded vDSO. The harness checks all
+ * sixteen observations as one strictly increasing, fine-grained sequence. A
+ * private COW counter, an exec-time reset, a frozen clock, or a first-read-only
+ * match therefore cannot pass.
  *
- *   - Virtual CLOCK_MONOTONIC starts at a 1-second base and advances a
- *     microsecond per read, so tv_sec stays a small single digit; the real host
- *     monotonic clock (uptime) is orders of magnitude larger.
+ *   - Virtual CLOCK_MONOTONIC advances one microsecond per read across the
+ *     complete process tree; no process restarts or owns a private clock.
  *   - Virtual RLIMIT_NOFILE is 1048576, distinct from a typical host soft limit.
  */
 
 #define _GNU_SOURCE
 #include <stdio.h>
+#include <string.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
-// TODO-HUMAN-REVIEW(PR-ratchet12): Review the copied-child clock/resource probe.
-static void probe(const char *who) {
-  struct timespec ts = {0, 0};
+enum { CLOCK_READS = 4 };
+
+// TODO-HUMAN-REVIEW(PR-shared-dbi-clock): Review the shared-clock lifecycle probe.
+static int probe(const char *who) {
   struct rlimit rl = {0, 0};
-  // Raw syscalls: prlimit64(pid=0 -> current, RLIMIT_NOFILE, new=NULL, old=&rl).
-  (void)syscall(SYS_clock_gettime, CLOCK_MONOTONIC, &ts);
-  (void)syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, (void *)0, &rl);
-  printf("%s_mono_sec=%lld\n", who, (long long)ts.tv_sec);
+  for (int read = 0; read < CLOCK_READS; ++read) {
+    struct timespec ts = {0, 0};
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+      return 1;
+    unsigned long long nanoseconds =
+        (unsigned long long)ts.tv_sec * 1000000000ULL +
+        (unsigned long long)ts.tv_nsec;
+    printf("%s_mono_ns[%d]=%llu\n", who, read, nanoseconds);
+  }
+  // Raw syscall: prlimit64(pid=0 -> current, new=NULL, old=&rl).
+  if (syscall(SYS_prlimit64, 0, RLIMIT_NOFILE, (void *)0, &rl) != 0)
+    return 1;
   printf("%s_nofile=%llu\n", who, (unsigned long long)rl.rlim_cur);
   fflush(stdout);
+  return 0;
 }
 
-int main(void) {
-  pid_t child = fork();
-  if (child < 0)
-    return 1;
-  if (child == 0) {
-    probe("child");
-    // _exit so the inherited stdio buffer is not flushed twice.
-    syscall(SYS_exit, 0);
-  }
-
+static int wait_for_child(pid_t child) {
   int status = 0;
   if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
       WEXITSTATUS(status) != 0)
-    return 2;
-
-  probe("parent");
+    return 1;
   return 0;
+}
+
+int main(int argc, char **argv) {
+  if (argc == 2 && strcmp(argv[1], "--exec-child") == 0)
+    return probe("exec-child");
+
+  if (probe("parent-before") != 0)
+    return 1;
+
+  pid_t child = fork();
+  if (child < 0)
+    return 2;
+  if (child == 0) {
+    int result = probe("fork-child");
+    // _exit so the inherited stdio buffer is not flushed twice.
+    syscall(SYS_exit, result);
+  }
+  if (wait_for_child(child) != 0)
+    return 3;
+
+  child = fork();
+  if (child < 0)
+    return 4;
+  if (child == 0) {
+    execl("/proc/self/exe", argv[0], "--exec-child", (char *)0);
+    syscall(SYS_exit, 5);
+  }
+  if (wait_for_child(child) != 0)
+    return 6;
+
+  return probe("parent-after");
 }
