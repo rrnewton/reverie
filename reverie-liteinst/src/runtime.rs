@@ -2308,8 +2308,6 @@ unsafe fn installed_instruction_hook(context: *mut HookContext, kind: Instructio
     if unsafe { set_instruction_native(kind, true) }.is_err() {
         unsafe { exit_now(122) };
     }
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-405): Review nested Tool-internal instruction bypass.
     // A previously patched instruction still jumps here while native faulting
     // is enabled. Re-entering the Tool would deadlock on its already-held lock,
     // so execute the instruction at a private, never-patched site instead.
