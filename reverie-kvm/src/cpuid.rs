@@ -324,6 +324,9 @@ mod tests {
         assert_eq!(leaf(0x8000_0000).ebx, u32::from_le_bytes(*b"Genu"));
         assert_eq!(leaf(0x8000_0000).ecx, u32::from_le_bytes(*b"ntel"));
         assert_eq!(leaf(0x8000_0000).edx, u32::from_le_bytes(*b"ineI"));
+        // RDTSC interception is subscription-dependent. Do not advertise
+        // RDTSCP unconditionally to direct or unsubscribed guests.
+        assert_eq!(leaf(0x8000_0001).edx & bit(27), 0);
     }
 
     #[test]
