@@ -30,6 +30,8 @@ use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
 use reverie::GlobalTool;
 use reverie::Pid;
+use reverie::Rdtsc;
+use reverie::RdtscResult;
 use reverie::ThreadOwnership;
 use reverie::Tool;
 
@@ -54,6 +56,7 @@ use crate::bootstrap::exception_from_halt;
 use crate::bootstrap::exception_pushes_error_code;
 use crate::bootstrap::set_syscall_return_park;
 use crate::bootstrap::set_user_segment_base;
+use crate::bootstrap::set_userspace_rdtsc_interception;
 use crate::elf::LoadedStaticElf;
 use crate::elf::load_static_elf;
 use crate::executor::ElfExecutor;
@@ -76,13 +79,29 @@ const VMMCALL: [u8; 3] = [0x0f, 0x01, 0xd9];
 const HLT: u8 = 0xf4;
 const VMWARE_BACKDOOR_MAGIC: u64 = 0x564d_5868;
 const VMWARE_BACKDOOR_PORT: u64 = 0x5658;
+const RDTSC: [u8; 2] = [0x0f, 0x31];
+const RDTSCP_PREFIX: [u8; 2] = [0x0f, 0x01];
+const RDTSCP_SUFFIX: u8 = 0xf9;
+
+fn decode_timestamp_counter_instruction(
+    prefix: [u8; 2],
+    read_rdtscp_suffix: impl FnOnce() -> Option<u8>,
+) -> Option<Rdtsc> {
+    if prefix == RDTSC {
+        Some(Rdtsc::Tsc)
+    } else if prefix == RDTSCP_PREFIX && read_rdtscp_suffix() == Some(RDTSCP_SUFFIX) {
+        Some(Rdtsc::Tscp)
+    } else {
+        None
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct StaticElfException {
-    vector: u8,
-    instruction_pointer: u64,
-    stack_pointer: u64,
-    rflags: u64,
+pub(crate) struct StaticElfException {
+    pub(crate) vector: u8,
+    pub(crate) instruction_pointer: u64,
+    pub(crate) stack_pointer: u64,
+    pub(crate) rflags: u64,
 }
 
 extern "C" fn interrupt_guest_worker(_signal: libc::c_int) {}
@@ -349,6 +368,9 @@ pub struct KvmBackend {
     // regardless of the tool (set via `set_thread_ownership` /
     // `unmonitored_threads`), and survives run-entry resolution.
     thread_ownership_override: Option<ThreadOwnership>,
+    // Whether CPL3 RDTSC/RDTSCP instructions are routed through the Tool hook.
+    // This follows the active Tool subscription and is inherited by child vCPUs.
+    intercept_rdtsc: bool,
     pub(crate) static_elf: Option<LoadedStaticElf>,
     stdin: Option<File>,
     pub(crate) root_pid: i32,
@@ -363,6 +385,7 @@ struct KvmProcessSnapshot {
     xsave: kvm_xsave,
     stdin: Option<File>,
     cpuid_policy: CpuidPolicy,
+    intercept_rdtsc: bool,
 }
 
 struct ForkedProcess {
@@ -459,6 +482,7 @@ impl KvmBackend {
             thread_ownership: ThreadOwnership::Host,
             // No explicit caller override: follow the tool at run entry.
             thread_ownership_override: None,
+            intercept_rdtsc: false,
             static_elf: None,
             stdin,
             root_pid: 1,
@@ -536,6 +560,12 @@ impl KvmBackend {
     /// children"). Called once at run entry, before any thread is created.
     pub(crate) fn resolve_thread_ownership(&mut self, ownership: ThreadOwnership) {
         self.thread_ownership = self.thread_ownership_override.unwrap_or(ownership);
+    }
+
+    pub(crate) fn set_rdtsc_interception(&mut self, enabled: bool) -> Result<()> {
+        set_userspace_rdtsc_interception(&self.vcpu, enabled)?;
+        self.intercept_rdtsc = enabled;
+        Ok(())
     }
 
     /// Panic-not-hang tripwire enforced at thread creation: the thread's
@@ -677,6 +707,7 @@ impl KvmBackend {
             xsave: self.vcpu.get_xsave()?,
             stdin: self.stdin.as_ref().map(File::try_clone).transpose()?,
             cpuid_policy: self.cpuid_policy,
+            intercept_rdtsc: self.intercept_rdtsc,
         })
     }
 
@@ -696,10 +727,12 @@ impl KvmBackend {
         child.vcpu.set_regs(&snapshot.registers)?;
         // SAFETY: this guest setup does not enable dynamically sized XSTATE features.
         unsafe { child.vcpu.set_xsave(&snapshot.xsave)? };
+        child.set_rdtsc_interception(snapshot.intercept_rdtsc)?;
         Ok(child)
     }
 
     // TODO-HUMAN-REVIEW(PR-172): Review independent vCPU creation from clone3 state.
+    #[allow(clippy::too_many_arguments)]
     fn from_thread_state(
         memory: GuestMemory,
         registers: kvm_regs,
@@ -708,6 +741,7 @@ impl KvmBackend {
         cpuid_policy: CpuidPolicy,
         child_tid: i32,
         thread_group: Arc<GuestThreadGroup>,
+        intercept_rdtsc: bool,
     ) -> Result<Self> {
         let mut child = Self::new_with_memory_and_cpuid_policy(memory, cpuid_policy, stdin)?;
         child.thread_group = thread_group;
@@ -732,6 +766,7 @@ impl KvmBackend {
         child.vcpu.set_regs(&registers)?;
         // SAFETY: this guest setup does not enable dynamically sized XSTATE features.
         unsafe { child.vcpu.set_xsave(&xsave)? };
+        child.set_rdtsc_interception(intercept_rdtsc)?;
         Ok(child)
     }
 
@@ -942,6 +977,7 @@ impl KvmBackend {
                     self.cpuid_policy,
                     child_tid,
                     self.thread_group.clone(),
+                    self.intercept_rdtsc,
                 )?;
                 // Thread children inherit the parent's thread ownership so
                 // execution and futex classification stay consistent.
@@ -1205,6 +1241,7 @@ impl KvmBackend {
                     self.cpuid_policy,
                     child_tid,
                     self.thread_group.clone(),
+                    self.intercept_rdtsc,
                 )?;
                 // Thread children inherit the parent's thread ownership so
                 // execution and futex classification stay consistent.
@@ -1311,6 +1348,62 @@ impl KvmBackend {
             rflags: read_frame_word(2)?,
             stack_pointer: read_frame_word(3)?,
         }))
+    }
+
+    // AUTONOMOUS-BOT-IMPLEMENTED: Bind KVM timestamp reads to the Tool event contract.
+    // TODO-HUMAN-REVIEW(PR-TBD): Review subscribed RDTSC/RDTSCP interception and resumption.
+    pub(crate) fn timestamp_counter_exception(
+        &self,
+    ) -> Result<Option<(StaticElfException, Rdtsc)>> {
+        let Some(exception) = self.static_elf_exception()? else {
+            return Ok(None);
+        };
+        if !matches!(exception.vector, 6 | 13) {
+            return Ok(None);
+        }
+
+        let mut prefix = [0; 2];
+        if self
+            .memory
+            .read_raw(exception.instruction_pointer, &mut prefix)
+            .is_err()
+        {
+            return Ok(None);
+        }
+        let Some(request) = decode_timestamp_counter_instruction(prefix, || {
+            let mut suffix = [0];
+            self.memory
+                .read_raw(exception.instruction_pointer + 2, &mut suffix)
+                .ok()
+                .map(|()| suffix[0])
+        }) else {
+            return Ok(None);
+        };
+        Ok(Some((exception, request)))
+    }
+
+    pub(crate) fn resume_timestamp_counter(
+        &mut self,
+        exception: StaticElfException,
+        request: Rdtsc,
+        result: RdtscResult,
+    ) -> Result<()> {
+        let mut registers = self.vcpu.get_regs()?;
+        registers.rax = result.tsc & u64::from(u32::MAX);
+        registers.rdx = result.tsc >> 32;
+        if request == Rdtsc::Tscp {
+            registers.rcx = u64::from(result.aux.unwrap_or(0));
+        }
+        registers.rip = exception.instruction_pointer
+            + match request {
+                Rdtsc::Tsc => RDTSC.len() as u64,
+                Rdtsc::Tscp => 3,
+            };
+        registers.rsp = exception.stack_pointer;
+        registers.rflags = exception.rflags;
+        configure_user_segments(&self.vcpu)?;
+        self.vcpu.set_regs(&registers)?;
+        Ok(())
     }
 
     // TODO-HUMAN-REVIEW(PR-202): Review the narrowly matched VMware backdoor probe emulation.
@@ -1687,6 +1780,24 @@ mod tests {
         assert_eq!(root_parent_pid(42), 1);
         // A guest that is itself the namespace init has no parent (getppid == 0).
         assert_eq!(root_parent_pid(CONTAINER_INIT_PID), 0);
+    }
+
+    #[test]
+    fn two_byte_rdtsc_decode_does_not_read_a_third_byte() {
+        assert_eq!(
+            decode_timestamp_counter_instruction(RDTSC, || {
+                panic!("RDTSC decoding read beyond its two-byte instruction")
+            }),
+            Some(Rdtsc::Tsc),
+        );
+        assert_eq!(
+            decode_timestamp_counter_instruction(RDTSCP_PREFIX, || Some(RDTSCP_SUFFIX)),
+            Some(Rdtsc::Tscp),
+        );
+        assert_eq!(
+            decode_timestamp_counter_instruction(RDTSCP_PREFIX, || None),
+            None,
+        );
     }
 
     #[test]
