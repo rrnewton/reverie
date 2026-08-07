@@ -22,8 +22,6 @@ mod waitid;
 use core::mem::MaybeUninit;
 use std::fmt;
 
-#[cfg(feature = "notifier")]
-use futures::FutureExt;
 use nix::sys::ptrace;
 // Re-exports so that nothing else needs to depend on `nix`.
 pub use nix::sys::ptrace::Options;
@@ -1131,38 +1129,13 @@ impl Zombie {
         self.0.pid()
     }
 
-    #[cfg(feature = "notifier")]
-    async fn next_state_or_exit(running: Running) -> Result<Wait, Error> {
-        let exit_event = running.exit_event().fuse();
-        let next_state = running.next_state().fuse();
-        futures::pin_mut!(exit_event, next_state);
-
-        futures::select_biased! {
-            exit = exit_event => match exit {
-                Ok(stopped) => Ok(Wait::Stopped(stopped, Event::Exit)),
-                // Another waiter may have claimed the retained exit stop, or
-                // terminal publication may have expired it. In either case,
-                // that owner drives the tracee while this waiter observes the
-                // retained terminal status.
-                Err(Error::Errno(Errno::EALREADY | Errno::ECHILD)) => next_state.await,
-                Err(error) => Err(error),
-            },
-            state = next_state => state,
-        }
-    }
-
     /// Reaps the zombie by waiting for it to fully exit.
     #[cfg(feature = "notifier")]
     pub async fn reap(self) -> Result<ExitStatus, Error> {
         // The tracee may not be fully dead yet. It is still possible for it to
         // still enter an `Event::Exit` state by waiting on it. For more info,
         // see the "BUGS" section in `man 2 ptrace`.
-        // A Died classification can precede the tracee's PTRACE_EVENT_EXIT
-        // stop. Keep an exit-stop waiter armed alongside the ordinary status
-        // wait so that a later stop is converted into a Stopped capability and
-        // resumed below instead of leaving a passive terminal re-wait blocked
-        // on a stop that only PTRACE_CONT can satisfy.
-        let mut next_state = Self::next_state_or_exit(self.0).await;
+        let mut next_state = self.0.next_state().await;
 
         loop {
             match next_state {
@@ -1179,9 +1152,7 @@ impl Zombie {
                     }
                     Wait::Exited(_pid, exit_status) => break Ok(exit_status),
                 },
-                Err(Error::Died(zombie)) => {
-                    next_state = Self::next_state_or_exit(zombie.0).await;
-                }
+                Err(Error::Died(zombie)) => next_state = zombie.0.next_state().await,
                 Err(error) => break Err(error),
             }
         }
