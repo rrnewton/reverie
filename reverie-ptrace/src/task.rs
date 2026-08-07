@@ -245,6 +245,30 @@ fn is_expected_syscall_skip_breakpoint(
         && post_opcode != 0xcc
 }
 
+/// True when a `SIGTRAP` stop was raised BY A PROCESS -- `raise`, `kill`,
+/// `tgkill`, `sigqueue` -- rather than produced by the trap machinery the
+/// tracer itself drives.
+///
+/// The distinction is load-bearing and is read from `si_code`, which the kernel
+/// sets at the point the signal is generated, rather than inferred from
+/// register state:
+///
+///   * tracer-mechanism traps carry a kernel `si_code` -- `TRAP_BRKPT`,
+///     `TRAP_TRACE`, `TRAP_BRANCH`, `TRAP_HWBKPT`, or `SI_KERNEL`. Those are
+///     ours (software breakpoints, single-step, the precise timer, injected
+///     syscalls, the LiteInst handshake) and must stay suppressed: delivering
+///     one would kill a guest for a trap it never raised.
+///   * a guest calling `raise(SIGTRAP)` produces `SI_TKILL` (glibc `raise` is
+///     `tgkill`); `kill` produces `SI_USER` and `sigqueue` produces `SI_QUEUE`.
+///     Those belong to the guest, and Linux's default disposition for SIGTRAP
+///     is terminate-with-core.
+///
+/// `SI_QUEUE` is spelled out because the libc crate does not export it.
+fn is_process_raised_sigtrap(siginfo: &libc::siginfo_t) -> bool {
+    const SI_QUEUE: libc::c_int = -1;
+    matches!(siginfo.si_code, libc::SI_USER | libc::SI_TKILL | SI_QUEUE)
+}
+
 fn is_expected_syscall_skip_trap(
     task: &Stopped,
     pre_rip: u64,
@@ -2429,6 +2453,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await_gdb_resume(task, ExpectedGdbResume::Resume)
                 .await?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
+        } else if is_process_raised_sigtrap(&task.getsiginfo()?) {
+            // The guest raised this itself. Swallowing it here let a guest
+            // survive a signal whose default disposition is to kill it: after
+            // `raise(SIGTRAP)` returned, the guest kept running and exited
+            // normally, so its parent saw a normal exit instead of
+            // WIFSIGNALED/SIGTRAP. Deliver it and let the guest's own
+            // disposition decide.
+            HandleSignalResult::SignalToDeliver(task, Signal::SIGTRAP)
         } else {
             let running = self.resume_stopped(task, None)?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
@@ -5907,5 +5939,46 @@ mod tests {
             liteinst_helper_entry_rflags(transient | preserved),
             preserved
         );
+    }
+    fn siginfo_with_code(code: libc::c_int) -> libc::siginfo_t {
+        // SAFETY: siginfo_t is a plain POD union; only si_signo/si_code are read.
+        let mut siginfo: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        siginfo.si_signo = libc::SIGTRAP;
+        siginfo.si_code = code;
+        siginfo
+    }
+
+    /// POSITIVE side of the bracket: a SIGTRAP the guest raised must be
+    /// classified as deliverable. `raise()` is `tgkill` in glibc, so `SI_TKILL`
+    /// is the case the regression actually hit.
+    #[test]
+    fn process_raised_sigtrap_is_delivered() {
+        const SI_QUEUE: libc::c_int = -1;
+        for code in [libc::SI_TKILL, libc::SI_USER, SI_QUEUE] {
+            assert!(
+                is_process_raised_sigtrap(&siginfo_with_code(code)),
+                "si_code {code} is process-raised and must be delivered to the guest"
+            );
+        }
+    }
+
+    /// NEGATIVE side of the bracket: every trap the tracer's own machinery
+    /// produces must stay suppressed. If this ever flips, guests get killed for
+    /// breakpoints and single-steps they never asked for.
+    #[test]
+    fn tracer_mechanism_sigtrap_stays_suppressed() {
+        const SI_KERNEL: libc::c_int = 0x80;
+        for code in [
+            libc::TRAP_BRKPT,
+            libc::TRAP_TRACE,
+            libc::TRAP_BRANCH,
+            libc::TRAP_HWBKPT,
+            SI_KERNEL,
+        ] {
+            assert!(
+                !is_process_raised_sigtrap(&siginfo_with_code(code)),
+                "si_code {code} is tracer-generated and must NOT be delivered"
+            );
+        }
     }
 }
