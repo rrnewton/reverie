@@ -1355,6 +1355,9 @@ impl KvmBackend {
     pub(crate) fn timestamp_counter_exception(
         &self,
     ) -> Result<Option<(StaticElfException, Rdtsc)>> {
+        if !self.intercept_rdtsc {
+            return Ok(None);
+        }
         let Some(exception) = self.static_elf_exception()? else {
             return Ok(None);
         };

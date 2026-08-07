@@ -840,6 +840,28 @@ fn static_elf_unsubscribed_rdtsc_runs_without_tool_dispatch() {
 }
 
 #[test]
+fn static_elf_unsubscribed_rdtscp_remains_guest_exception() {
+    if !kvm_available("KVM unsubscribed RDTSCP test") {
+        return;
+    }
+
+    let image = static_elf(&[
+        0x0f, 0x01, 0xf9, // rdtscp
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+    ]);
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(&image, "/bin/unsubscribed-rdtscp")
+        .unwrap();
+    let error =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<TimestampTool>(false, true))
+            .unwrap_err();
+    assert_invalid_opcode(error);
+}
+
+#[test]
 fn subscribed_timestamp_dispatch_refuses_unrelated_exceptions() {
     if !kvm_available("KVM timestamp exception refusal test") {
         return;
