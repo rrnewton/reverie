@@ -713,11 +713,7 @@ fn load_executable(
     // mmap must never start below the heap arena or the two regions overlap.
     // For a dynamic image the arena is bounded by the interpreter instead, so
     // the floor is unchanged there.
-    let mmap_next = if at_base == 0 {
-        brk_limit
-    } else {
-        mmap_floor
-    };
+    let mmap_next = if at_base == 0 { brk_limit } else { mmap_floor };
     if mmap_next >= mmap_limit {
         return Err(Error::LongModeMemoryTooSmall);
     }
