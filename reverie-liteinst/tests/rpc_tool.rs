@@ -62,6 +62,38 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         "{spoofed_sigsys:?}"
     );
 
+    let instruction_guest = Command::new(binary)
+        .arg("instruction-guest")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert!(instruction_guest.status.success(), "{instruction_guest:?}");
+    assert_eq!(
+        instruction_guest.stdout,
+        b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked\n"
+    );
+
+    let clock_and_vdso_guest = Command::new(binary)
+        .arg("clock-and-vdso-guest")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert!(
+        clock_and_vdso_guest.status.success(),
+        "{clock_and_vdso_guest:?}"
+    );
+    let clock_and_vdso_stdout = String::from_utf8(clock_and_vdso_guest.stdout).unwrap();
+    eprintln!("clock/vDSO evidence: {}", clock_and_vdso_stdout.trim_end());
+    assert!(
+        clock_and_vdso_stdout == "rcb=unmeasured vdso-calls=1\n"
+            || clock_and_vdso_stdout.starts_with("rcb=measured "),
+        "{clock_and_vdso_stdout}"
+    );
+    assert!(
+        clock_and_vdso_stdout.ends_with("vdso-calls=1\n"),
+        "{clock_and_vdso_stdout}"
+    );
+
     let unsubscribed_lifecycle = Command::new(binary)
         .arg("unsubscribed-lifecycle")
         .arg(&socket)
@@ -148,6 +180,29 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         raw_sender_delta, 1,
         "a raw SYS_fork child must reconnect under its own identity: {raw_fork_stdout}"
     );
+
+    for (mode, expected) in [
+        (
+            "clone3-guest",
+            b"clone3=child-reconstructed sender-delta=1\n".as_slice(),
+        ),
+        (
+            "vfork-guest",
+            b"vfork=translated-cow-child sender-delta=1\n".as_slice(),
+        ),
+    ] {
+        let output = Command::new(binary)
+            .arg(mode)
+            .arg(&socket)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{mode}: {output:?}");
+        eprintln!(
+            "process evidence: {}",
+            String::from_utf8_lossy(&output.stdout).trim_end()
+        );
+        assert_eq!(output.stdout, expected, "{mode}: {output:?}");
+    }
 
     for (mode, expected) in [
         (
