@@ -22,6 +22,8 @@ mod waitid;
 use core::mem::MaybeUninit;
 use std::fmt;
 
+#[cfg(feature = "notifier")]
+use futures::FutureExt;
 use nix::sys::ptrace;
 // Re-exports so that nothing else needs to depend on `nix`.
 pub use nix::sys::ptrace::Options;
@@ -1129,13 +1131,63 @@ impl Zombie {
         self.0.pid()
     }
 
+    /// Best-effort drive-to-exit for a tracee classified `Died` via the ptrace
+    /// `ESRCH` race.
+    ///
+    /// A `Died` classification does not prove the tracee has actually exited.
+    /// The `ESRCH` that produced it (see [`Stopped::map_err`] and the "Death
+    /// under ptrace" race in `man 2 ptrace`) can be observed while the tracee
+    /// is still in a ptrace-stop with a fatal signal pending but not yet
+    /// delivered. Such a tracee only leaves its stop when someone issues
+    /// `PTRACE_CONT`; a purely passive re-wait blocks forever on a stop that
+    /// was already reported and will never repeat.
+    ///
+    /// Resume it, delivering only already-pending signals (`None` injects no
+    /// new signal). Every error is ignored: `ESRCH` here means the tracee is
+    /// already gone, which is exactly the state we were trying to reach.
+    ///
+    /// Determinism: this runs zero guest instructions. `reap` is only ever
+    /// called on a `Zombie` — a tracee already destined to exit — so the
+    /// resume either finishes an in-progress exit or delivers an
+    /// already-pending fatal signal. Virtual time and the deterministic
+    /// schedule are unaffected.
+    #[cfg(feature = "notifier")]
+    fn drive_to_exit(&self) {
+        let _ = ptrace::cont(self.pid().into(), None::<Signal>);
+    }
+
+    /// Waits for either the ordinary next state or the retained exit stop.
+    ///
+    /// Reaping must keep both paths armed: an earlier `Died` classification
+    /// can consume the stop that produced it, while the resumed tracee can
+    /// subsequently enter `PTRACE_EVENT_EXIT` before reaching terminal state.
+    #[cfg(feature = "notifier")]
+    async fn next_state_or_exit(running: Running) -> Result<Wait, Error> {
+        let exit_event = running.exit_event().fuse();
+        let next_state = running.next_state().fuse();
+        futures::pin_mut!(exit_event, next_state);
+
+        futures::select_biased! {
+            exit = exit_event => match exit {
+                Ok(stopped) => Ok(Wait::Stopped(stopped, Event::Exit)),
+                Err(Error::Errno(Errno::EALREADY | Errno::ECHILD)) => next_state.await,
+                Err(error) => Err(error),
+            },
+            state = next_state => state,
+        }
+    }
+
     /// Reaps the zombie by waiting for it to fully exit.
     #[cfg(feature = "notifier")]
     pub async fn reap(self) -> Result<ExitStatus, Error> {
         // The tracee may not be fully dead yet. It is still possible for it to
         // still enter an `Event::Exit` state by waiting on it. For more info,
         // see the "BUGS" section in `man 2 ptrace`.
-        let mut next_state = self.0.next_state().await;
+        // `self` exists because a stopped tracee was already classified
+        // `Died`. Resume that already-reported stop before re-waiting; waiting
+        // first cannot make progress because the consumed stop will not recur.
+        self.drive_to_exit();
+        let mut next_state = Self::next_state_or_exit(self.0).await;
 
         loop {
             match next_state {
@@ -1152,7 +1204,10 @@ impl Zombie {
                     }
                     Wait::Exited(_pid, exit_status) => break Ok(exit_status),
                 },
-                Err(Error::Died(zombie)) => next_state = zombie.0.next_state().await,
+                Err(Error::Died(zombie)) => {
+                    zombie.drive_to_exit();
+                    next_state = Self::next_state_or_exit(zombie.0).await;
+                }
                 Err(error) => break Err(error),
             }
         }
