@@ -27,6 +27,7 @@ use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Never;
 use reverie::Pid;
+use reverie::RdtscResult;
 use reverie::Stack;
 use reverie::Subscription;
 use reverie::ThreadOwnership;
@@ -1176,6 +1177,7 @@ impl KvmBackend {
         let global_state = Arc::new(T::GlobalState::init_global_state(&config).await);
         let tool = T::new(pid, &config);
         let subscriptions = T::subscriptions(&config);
+        self.set_rdtsc_interception(subscriptions.has_rdtsc())?;
         let thread_state = tool.init_thread_state(pid, None);
         let mut executor = ElfExecutor::new(loaded, capture_output);
         let result = self
@@ -1416,6 +1418,69 @@ impl KvmBackend {
                     (exit.args[0], std::ptr::from_mut(exit.ret) as usize)
                 }
                 VcpuExit::Hlt => {
+                    if let Some((exception, request)) = self.timestamp_counter_exception()? {
+                        let mut user_registers = self.vcpu.get_regs()?;
+                        user_registers.rip = exception.instruction_pointer;
+                        user_registers.rsp = exception.stack_pointer;
+                        user_registers.rflags = exception.rflags;
+                        let handler_signal = Arc::new(Mutex::new(None));
+                        let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                        let mut handler_process_completed = false;
+                        expose_tool_scratch(&memory)?;
+                        let outcome = {
+                            let mut guest_executor = StaticElfSyscallExecutor {
+                                backend: self,
+                                executor,
+                                memory: memory.clone(),
+                                process_context: ProcessExecutionContext::Lifecycle,
+                                last_result: None,
+                                process_completed: &mut handler_process_completed,
+                            };
+                            let mut guest = KvmGuest::<T>::new(
+                                pid,
+                                tid,
+                                memory.clone(),
+                                &auxv,
+                                kvm_registers(user_registers, 0),
+                                &mut thread_state,
+                                &mut guest_executor,
+                                global_state.as_ref(),
+                                Some(global_state.clone()),
+                                config,
+                                subscriptions,
+                                handler_signal.clone(),
+                                pending_child_starts.clone(),
+                                stack_checked_out.clone(),
+                            );
+                            drive_handler(
+                                tool.handle_rdtsc_event(&mut guest, request),
+                                handler_signal,
+                                pending_child_starts,
+                            )
+                            .await
+                        };
+                        let hide_result = hide_tool_scratch(&memory);
+                        let result: RdtscResult = match outcome {
+                            HandlerOutcome::Returned(result) => {
+                                result.map_err(|error| Error::Reverie(error.into()))?
+                            }
+                            HandlerOutcome::TailInjected { .. } => {
+                                return Err(Error::UnexpectedVcpuExit(
+                                    "KVM RDTSC handler tail-injected without returning a timestamp"
+                                        .to_owned(),
+                                ));
+                            }
+                            HandlerOutcome::RuntimeError(error) => return Err(error),
+                        };
+                        hide_result?;
+                        if handler_process_completed {
+                            return Err(Error::UnexpectedVcpuExit(
+                                "KVM RDTSC handler completed a process action".to_owned(),
+                            ));
+                        }
+                        self.resume_timestamp_counter(exception, request, result)?;
+                        continue;
+                    }
                     if self.try_resume_vmware_backdoor_probe()? {
                         continue;
                     }
