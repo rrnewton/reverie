@@ -44,6 +44,7 @@ pub use reverie_preload::SPOOF_PID;
 /// `REVERIE_LITEINST_ALT_STACK` selector and parser for the shared
 /// `reverie-preload` `RuntimeConfig` alt-stack knob.
 pub use runtime::ALT_STACK_ENV;
+pub use runtime::IN_GUEST_STAGE_STREAM_ENV;
 pub use runtime::PROCESS_FORK_ENV;
 /// `REVERIE_LITEINST_TOOL` values and parser for shared built-in selection.
 pub use runtime::TOOL_PASSTHROUGH;

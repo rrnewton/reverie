@@ -465,6 +465,7 @@ fn finish_fork_child<T: Tool>(
         child_tid,
         child_pid,
     } = context;
+    runtime::emit_in_guest_stage(b"fork-child-thread-start-begin");
     // This child inherited the parent's coordinator connection. Flag it before
     // any child-side callback can issue an RPC (`handle_thread_start` below is
     // the first such opportunity) so the next `send_rpc` reconnects under the
@@ -506,6 +507,7 @@ fn finish_fork_child<T: Tool>(
     if let Err(error) = drive_ready(tool.handle_thread_start(&mut child_guest)) {
         tool_fatal(124, &error);
     }
+    runtime::emit_in_guest_stage(b"fork-child-thread-start-complete");
     child_guest.event.result = 0;
 }
 

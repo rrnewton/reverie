@@ -73,6 +73,56 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked\n"
     );
 
+    let nested_instruction_fork = Command::new(binary)
+        .arg("nested-instruction-fork")
+        .arg(&socket)
+        .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1")
+        .output()
+        .unwrap();
+    assert!(
+        nested_instruction_fork.status.success(),
+        "{nested_instruction_fork:?}"
+    );
+    assert_eq!(
+        nested_instruction_fork.stdout,
+        b"nested-cpuid=native nested-rdtsc=native nested-rdtscp=native guest-cpuid=tool guest-rdtsc=tool guest-rdtscp=tool child-getpid=complete child-exit=0\n"
+    );
+    let nested_stderr = String::from_utf8(nested_instruction_fork.stderr).unwrap();
+    let stage_count = |stage: &str| {
+        nested_stderr
+            .lines()
+            .filter(|line| line.ends_with(stage))
+            .count()
+    };
+    for stage in [
+        "stage=fork-child-thread-start-begin",
+        "stage=fork-child-thread-start-complete",
+    ] {
+        assert_eq!(
+            stage_count(stage),
+            1,
+            "stage marker {stage:?} must appear exactly once: {nested_stderr}"
+        );
+    }
+    assert!(
+        stage_count("stage=nested-instruction-native-cpuid") >= 1,
+        "at least the planted nested CPUID must take the native path: {nested_stderr}"
+    );
+    assert!(
+        stage_count("stage=nested-instruction-fault-native-cpuid") >= 1,
+        "unpatched Tool-internal CPUID must bypass publication: {nested_stderr}"
+    );
+    for stage in [
+        "stage=nested-instruction-native-rdtsc",
+        "stage=nested-instruction-native-rdtscp",
+    ] {
+        assert_eq!(
+            stage_count(stage),
+            1,
+            "the planted nested instruction must take the native path once: {nested_stderr}"
+        );
+    }
+
     let clock_and_vdso_guest = Command::new(binary)
         .arg("clock-and-vdso-guest")
         .arg(&socket)
