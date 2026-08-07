@@ -7,7 +7,7 @@
  */
 
 //! Provides APIs to disable VDSOs at runtime.
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use goblin::elf::Elf;
@@ -18,6 +18,7 @@ use reverie::Error;
 use reverie::Guest;
 use reverie::Subscription;
 use reverie::Tool;
+use reverie::syscalls::Addr;
 use reverie::syscalls::AddrMut;
 use reverie::syscalls::MemoryAccess;
 use reverie::syscalls::Mprotect;
@@ -74,6 +75,14 @@ mod vdso_syms {
     ]);
 
     pub const clock_getres: &[u8; 8] = &clock_getres_code.0;
+
+    const getrandom_code: BufferAligned<8> = BufferAligned::<8>([
+        0xb8, 0x3e, 0x01, 0x00, 0x00, // mov SYS_getrandom, %eax
+        0x0f, 0x05, // syscall
+        0xc3, // retq
+    ]);
+
+    pub const getrandom: &[u8; 8] = &getrandom_code.0;
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -147,23 +156,62 @@ mod vdso_syms {
     ]);
 
     pub const rt_sigreturn: &[u8; 8] = &rt_sigreturn_code.0;
+
+    const getrandom_code: BufferAligned<16> = BufferAligned::<16>([
+        0x5f, 0x24, 0x03, 0xd5, // bti c
+        0xc8, 0x22, 0x80, 0xd2, // mov x8, 278 (#__NR_getrandom)
+        0x01, 0x00, 0x00, 0xd4, // svc 0
+        0xc0, 0x03, 0x5f, 0xd6, // ret
+    ]);
+
+    pub const getrandom: &[u8; 16] = &getrandom_code.0;
 }
 
 #[cfg(target_arch = "x86_64")]
-const VDSO_SYMBOLS: &[(&str, &[u8])] = &[
-    ("__vdso_time", vdso_syms::time),
-    ("__vdso_clock_gettime", vdso_syms::clock_gettime),
-    ("__vdso_getcpu", vdso_syms::getcpu),
-    ("__vdso_gettimeofday", vdso_syms::gettimeofday),
-    ("__vdso_clock_getres", vdso_syms::clock_getres),
+const VDSO_SYMBOLS: &[(&str, Sysno, &[u8])] = &[
+    ("__vdso_time", Sysno::time, vdso_syms::time),
+    (
+        "__vdso_clock_gettime",
+        Sysno::clock_gettime,
+        vdso_syms::clock_gettime,
+    ),
+    ("__vdso_getcpu", Sysno::getcpu, vdso_syms::getcpu),
+    (
+        "__vdso_gettimeofday",
+        Sysno::gettimeofday,
+        vdso_syms::gettimeofday,
+    ),
+    (
+        "__vdso_clock_getres",
+        Sysno::clock_getres,
+        vdso_syms::clock_getres,
+    ),
+    ("__vdso_getrandom", Sysno::getrandom, vdso_syms::getrandom),
 ];
 
 #[cfg(target_arch = "aarch64")]
-const VDSO_SYMBOLS: &[(&str, &[u8])] = &[
-    ("__kernel_clock_getres", vdso_syms::clock_getres),
-    ("__kernel_clock_gettime", vdso_syms::clock_gettime),
-    ("__kernel_gettimeofday", vdso_syms::gettimeofday),
-    ("__kernel_rt_sigreturn", vdso_syms::rt_sigreturn),
+const VDSO_SYMBOLS: &[(&str, Sysno, &[u8])] = &[
+    (
+        "__kernel_clock_getres",
+        Sysno::clock_getres,
+        vdso_syms::clock_getres,
+    ),
+    (
+        "__kernel_clock_gettime",
+        Sysno::clock_gettime,
+        vdso_syms::clock_gettime,
+    ),
+    (
+        "__kernel_gettimeofday",
+        Sysno::gettimeofday,
+        vdso_syms::gettimeofday,
+    ),
+    (
+        "__kernel_rt_sigreturn",
+        Sysno::rt_sigreturn,
+        vdso_syms::rt_sigreturn,
+    ),
+    ("__kernel_getrandom", Sysno::getrandom, vdso_syms::getrandom),
 ];
 
 /// Rounds up `value` so that it is a multiple of `alignment`.
@@ -172,45 +220,151 @@ fn align_up(value: usize, alignment: usize) -> usize {
 }
 
 /// Per-symbol VDSO patch info: `symbol name -> (base offset, size, replacement bytes)`.
-type VdsoPatchInfo = BTreeMap<&'static str, (u64, usize, &'static [u8])>;
+#[derive(Debug, Clone, Copy)]
+struct VdsoPatch {
+    name: &'static str,
+    offset: u64,
+    size: usize,
+    bytes: &'static [u8],
+}
 
-static VDSO_PATCH_INFO: LazyLock<VdsoPatchInfo> = LazyLock::new(|| {
-    let info = vdso_get_symbols_info();
-    let mut res = BTreeMap::new();
+type VdsoPatchInfo = Vec<VdsoPatch>;
+type VdsoSymbolInfo = HashMap<&'static str, (u64, usize)>;
 
-    for (k, v) in VDSO_SYMBOLS {
-        if let Some(&(base, size)) = info.get(*k) {
-            // NOTE: There is padding at the end of every VDSO entry to
-            // bring it up to a 16-byte size alignment. The dynamic symbol
-            // table doesn't report the aligned size, so we must do the same
-            // alignment here. For example, some VDSO entries might only be
-            // 5 bytes, but they have padding to align them up to 16 bytes.
-            let aligned_size = align_up(size, 16);
-            assert!(
-                v.len() <= aligned_size,
-                "vdso symbol {}'s real size is {} bytes, but trying to replace it with {} bytes",
-                k,
-                size,
-                v.len()
-            );
-            res.insert(*k, (base, aligned_size, *v));
+/// Evidence that every required vDSO symbol was patched and read back exactly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VdsoPatchReceipt {
+    required_symbols: usize,
+    patched_symbols: Vec<&'static str>,
+    verified_bytes: usize,
+}
+
+/// A failure to establish or verify the complete vDSO patch.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum VdsoPatchError {
+    #[error("could not inspect {target}: {detail}")]
+    Inspect { target: String, detail: String },
+
+    #[error("no vDSO mapping found for {target}")]
+    MissingVdsoMapping { target: String },
+
+    #[error("required vDSO symbol {name} is missing")]
+    MissingRequiredSymbol { name: &'static str },
+
+    #[error("required vDSO symbol {name} is not a function")]
+    InvalidSymbolType { name: &'static str },
+
+    #[error(
+        "vDSO symbol {name} has {available} aligned bytes, fewer than the {required} replacement bytes"
+    )]
+    ReplacementTooLarge {
+        name: &'static str,
+        available: usize,
+        required: usize,
+    },
+
+    #[error("vDSO patch address for {name} is null (computed address {address:#x})")]
+    InvalidPatchAddress { name: &'static str, address: u64 },
+
+    #[error("could not make tracee {pid}'s vDSO writable: {source}")]
+    Unprotect { pid: i32, source: Errno },
+
+    #[error("could not write tracee {pid}'s vDSO symbol {name}: {source}")]
+    Write {
+        pid: i32,
+        name: &'static str,
+        source: Errno,
+    },
+
+    #[error("could not restore tracee {pid}'s vDSO protections: {source}")]
+    Reprotect { pid: i32, source: Errno },
+
+    #[error("could not read back tracee {pid}'s vDSO symbol {name}: {source}")]
+    ReadBack {
+        pid: i32,
+        name: &'static str,
+        source: Errno,
+    },
+
+    #[error(
+        "vDSO patch verification failed for {name}: expected {expected:?}, observed {observed:?}"
+    )]
+    VerificationMismatch {
+        name: &'static str,
+        expected: Vec<u8>,
+        observed: Vec<u8>,
+    },
+}
+
+fn build_vdso_patch_info(
+    info: &VdsoSymbolInfo,
+    subscriptions: &Subscription,
+) -> Result<VdsoPatchInfo, VdsoPatchError> {
+    let mut patches = Vec::with_capacity(VDSO_SYMBOLS.len());
+
+    for (name, syscall, bytes) in VDSO_SYMBOLS {
+        if !subscriptions
+            .iter_syscalls()
+            .any(|subscribed| subscribed == *syscall)
+        {
+            continue;
         }
+        let &(offset, size) = info
+            .get(name)
+            .ok_or(VdsoPatchError::MissingRequiredSymbol { name })?;
+
+        // There is padding at the end of every vDSO entry to bring it up to a
+        // 16-byte size alignment. The dynamic symbol table reports the
+        // unaligned size, so include the padding in the verified patch image.
+        let aligned_size = align_up(size, 16);
+        if bytes.len() > aligned_size {
+            return Err(VdsoPatchError::ReplacementTooLarge {
+                name,
+                available: aligned_size,
+                required: bytes.len(),
+            });
+        }
+        patches.push(VdsoPatch {
+            name,
+            offset,
+            size: aligned_size,
+            bytes,
+        });
     }
 
-    res
-});
+    Ok(patches)
+}
 
-pub fn is_patch_required(subscriptions: &Subscription) -> bool {
-    subscriptions.iter_syscalls().any(|syscall| {
-        matches!(
-            syscall,
-            Sysno::time
-                | Sysno::clock_gettime
-                | Sysno::clock_getres
-                | Sysno::getcpu
-                | Sysno::gettimeofday
-                | Sysno::rt_sigreturn
-        )
+fn replacement_image(size: usize, bytes: &[u8]) -> Vec<u8> {
+    let mut image = vec![0x90; size];
+    image[..bytes.len()].copy_from_slice(bytes);
+    image
+}
+
+fn verify_patch_bytes(
+    name: &'static str,
+    expected: &[u8],
+    observed: &[u8],
+) -> Result<(), VdsoPatchError> {
+    if expected == observed {
+        Ok(())
+    } else {
+        Err(VdsoPatchError::VerificationMismatch {
+            name,
+            expected: expected.to_vec(),
+            observed: observed.to_vec(),
+        })
+    }
+}
+
+static VDSO_SYMBOL_INFO: LazyLock<Result<VdsoSymbolInfo, VdsoPatchError>> =
+    LazyLock::new(vdso_get_symbols_info);
+
+pub(crate) fn is_patch_required(subscriptions: &Subscription) -> bool {
+    subscriptions.iter_syscalls().any(|subscribed| {
+        VDSO_SYMBOLS
+            .iter()
+            .any(|(_, syscall, _)| *syscall == subscribed)
     })
 }
 
@@ -260,9 +414,26 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
         )
     })?;
 
+    // Symbol discovery is now fail-closed: `VDSO_SYMBOL_INFO` is a `Result`,
+    // where the pre-#410 `vdso_get_symbols_info` returned an empty map on
+    // failure and left this loop silently patching nothing. Propagate instead.
+    let symbol_info = VDSO_SYMBOL_INFO.as_ref().map_err(|_| Errno::ENOENT)?;
+
     let mut syscall_sites = Vec::new();
-    for (name, (offset, size, _bytes)) in VDSO_PATCH_INFO.iter() {
-        let symbol = start + *offset as usize;
+    // Iterating the static `VDSO_SYMBOLS` table, not the subscription-filtered
+    // `build_vdso_patch_info`, deliberately preserves this function's pre-#410
+    // behaviour: the in-guest LiteInst path rewrites every entry point present
+    // in the vDSO and filters by the `match` below, and the `continue` on an
+    // absent symbol is that path's existing contract. Extending #410's
+    // fail-closed required-symbol policy here would be a behaviour change its
+    // author never reviewed, so it is left as a follow-up.
+    for (name, _syscall, _bytes) in VDSO_SYMBOLS {
+        let Some(&(offset, unaligned_size)) = symbol_info.get(name) else {
+            continue;
+        };
+        // Same 16-byte entry alignment the pre-#410 `VDSO_PATCH_INFO` applied.
+        let size = align_up(unaligned_size, 16);
+        let symbol = start + offset as usize;
         let number = match *name {
             "__vdso_time" => libc::SYS_time,
             "__vdso_clock_gettime" => libc::SYS_clock_gettime,
@@ -271,7 +442,7 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
             "__vdso_clock_getres" => libc::SYS_clock_getres,
             _ => continue,
         };
-        assert!(*size >= 3);
+        assert!(size >= 3);
         unsafe {
             core::ptr::write(symbol as *mut u8, 0x0f);
             core::ptr::write((symbol + 1) as *mut u8, 0x05);
@@ -299,107 +470,191 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
 // get vdso symbols offset/size from current process
 // assuming vdso binary is the same for all processes
 // so that we don't have to decode vdso for each process
-fn vdso_get_symbols_info() -> BTreeMap<&'static str, (u64, usize)> {
-    let mut res = BTreeMap::new();
-    procfs::process::Process::new(unistd::getpid().as_raw())
-        .map_or_else(
-            |_| Vec::new(),
-            |p| match p.maps() {
-                Ok(maps) => maps.0,
-                Err(_) => Vec::new(),
-            },
-        )
+fn vdso_get_symbols_info() -> Result<VdsoSymbolInfo, VdsoPatchError> {
+    let pid = unistd::getpid().as_raw();
+    let target = format!("patch metadata source process {pid}");
+    let process = procfs::process::Process::new(pid).map_err(|error| VdsoPatchError::Inspect {
+        target: target.clone(),
+        detail: error.to_string(),
+    })?;
+    let maps = process.maps().map_err(|error| VdsoPatchError::Inspect {
+        target: target.clone(),
+        detail: error.to_string(),
+    })?;
+    let vdso = maps
         .iter()
-        .find(|e| e.pathname == procfs::process::MMapPath::Vdso)
-        .and_then(|vdso| {
-            let slice = unsafe {
-                std::slice::from_raw_parts(
-                    vdso.address.0 as *mut u8,
-                    (vdso.address.1 - vdso.address.0) as usize,
-                )
-            };
-            Elf::parse(slice)
-                .map(|elf| {
-                    let strtab = elf.dynstrtab;
-                    elf.dynsyms.iter().for_each(|sym| {
-                        let sym_name = &strtab[sym.st_name];
-                        if let Some((name, _)) =
-                            VDSO_SYMBOLS.iter().find(|&(name, _)| name == &sym_name)
-                        {
-                            // __kernel_rt_sigreturn on ARM64 unfortunately is
-                            // not marked as a function in VDSO, but as
-                            // STT_NONE.
-                            debug_assert!(sym.is_function() || name == &"__kernel_rt_sigreturn");
-                            res.insert(*name, (sym.st_value, sym.st_size as usize));
-                        }
-                    });
-                })
-                .ok()
-        });
-    res
+        .find(|entry| entry.pathname == procfs::process::MMapPath::Vdso)
+        .ok_or_else(|| VdsoPatchError::MissingVdsoMapping {
+            target: target.clone(),
+        })?;
+    let slice = unsafe {
+        std::slice::from_raw_parts(
+            vdso.address.0 as *mut u8,
+            (vdso.address.1 - vdso.address.0) as usize,
+        )
+    };
+    let elf = Elf::parse(slice).map_err(|error| VdsoPatchError::Inspect {
+        target,
+        detail: error.to_string(),
+    })?;
+
+    let mut res = HashMap::new();
+    for sym in elf.dynsyms.iter() {
+        let Some(sym_name) = elf.dynstrtab.get_at(sym.st_name) else {
+            continue;
+        };
+        if let Some((name, _, _)) = VDSO_SYMBOLS.iter().find(|(name, _, _)| name == &sym_name) {
+            // __kernel_rt_sigreturn on ARM64 unfortunately is not marked as a
+            // function in the vDSO, but as STT_NONE.
+            if !(sym.is_function() || name == &"__kernel_rt_sigreturn") {
+                return Err(VdsoPatchError::InvalidSymbolType { name });
+            }
+            res.insert(*name, (sym.st_value, sym.st_size as usize));
+        }
+    }
+    Ok(res)
+}
+
+fn vdso_mapping(pid: i32) -> Result<(u64, u64), VdsoPatchError> {
+    let target = format!("tracee {pid}");
+    let process = procfs::process::Process::new(pid).map_err(|error| VdsoPatchError::Inspect {
+        target: target.clone(),
+        detail: error.to_string(),
+    })?;
+    let maps = process.maps().map_err(|error| VdsoPatchError::Inspect {
+        target: target.clone(),
+        detail: error.to_string(),
+    })?;
+    maps.iter()
+        .find(|entry| entry.pathname == procfs::process::MMapPath::Vdso)
+        .map(|entry| entry.address)
+        .ok_or(VdsoPatchError::MissingVdsoMapping { target })
 }
 
 /// patch VDSOs when enabled
 ///
 /// `guest` must be in one of ptrace's stopped states.
-pub async fn vdso_patch<G, T>(guest: &mut G) -> Result<(), Error>
+pub async fn vdso_patch<G, T>(
+    guest: &mut G,
+    subscriptions: &Subscription,
+) -> Result<VdsoPatchReceipt, VdsoPatchError>
 where
     G: Guest<T>,
     T: Tool,
 {
-    if let Some(vdso) = procfs::process::Process::new(guest.pid().as_raw())
-        .map_or_else(
-            |_| Vec::new(),
-            |p| match p.maps() {
-                Ok(maps) => maps.0,
-                Err(_) => Vec::new(),
-            },
+    let pid = guest.pid().as_raw();
+    let symbol_info = VDSO_SYMBOL_INFO.as_ref().map_err(Clone::clone)?;
+    let patch_info = build_vdso_patch_info(symbol_info, subscriptions)?;
+    let (vdso_start, vdso_end) = vdso_mapping(pid)?;
+    let vdso_len = (vdso_end - vdso_start) as usize;
+    let vdso_addr =
+        AddrMut::from_raw(vdso_start as usize).ok_or(VdsoPatchError::InvalidPatchAddress {
+            name: "[vdso]",
+            address: vdso_start,
+        })?;
+    let mut memory = guest.memory();
+
+    // Allow write access to the vDSO memory page.
+    guest
+        .inject_with_retry(
+            Mprotect::new()
+                .with_addr(Some(vdso_addr))
+                .with_len(vdso_len)
+                .with_protection(
+                    ProtFlags::PROT_READ | ProtFlags::PROT_WRITE | ProtFlags::PROT_EXEC,
+                ),
         )
-        .iter()
-        .find(|e| e.pathname == procfs::process::MMapPath::Vdso)
-    {
-        let mut memory = guest.memory();
+        .await
+        .map_err(|source| VdsoPatchError::Unprotect { pid, source })?;
 
-        // Allow write access to the vdso memory page.
-        guest
-            .inject_with_retry(
-                Mprotect::new()
-                    .with_addr(AddrMut::from_raw(vdso.address.0 as usize))
-                    .with_len((vdso.address.1 - vdso.address.0) as usize)
-                    .with_protection(
-                        ProtFlags::PROT_READ | ProtFlags::PROT_WRITE | ProtFlags::PROT_EXEC,
-                    ),
-            )
-            .await?;
-
-        for (name, (offset, size, bytes)) in VDSO_PATCH_INFO.iter() {
-            let start = vdso.address.0 + offset;
-            assert!(bytes.len() <= *size);
-            let rptr = AddrMut::from_raw(start as usize).ok_or(Errno::EFAULT)?;
-            memory.write_exact(rptr, bytes)?;
-            assert!(*size >= bytes.len());
-            if *size > bytes.len() {
-                let fill: Vec<u8> = std::iter::repeat_n(0x90u8, size - bytes.len()).collect();
-                memory.write_exact(unsafe { rptr.add(bytes.len()) }, &fill)?;
-            }
-            debug!("{} patched {}@{:x}", guest.pid(), name, start);
+    // Do not let any write failure leave the vDSO writable. Capture the write
+    // result, restore RX protection unconditionally, and only then propagate.
+    let write_result = (|| {
+        let mut applied = Vec::with_capacity(patch_info.len());
+        for patch in &patch_info {
+            let start = vdso_start + patch.offset;
+            let rptr =
+                AddrMut::from_raw(start as usize).ok_or(VdsoPatchError::InvalidPatchAddress {
+                    name: patch.name,
+                    address: start,
+                })?;
+            let expected = replacement_image(patch.size, patch.bytes);
+            memory
+                .write_exact(rptr, &expected)
+                .map_err(|source| VdsoPatchError::Write {
+                    pid,
+                    name: patch.name,
+                    source,
+                })?;
+            applied.push((patch.name, start, expected));
         }
+        Ok::<_, VdsoPatchError>(applied)
+    })();
 
-        guest
-            .inject_with_retry(
-                Mprotect::new()
-                    .with_addr(AddrMut::from_raw(vdso.address.0 as usize))
-                    .with_len((vdso.address.1 - vdso.address.0) as usize)
-                    .with_protection(ProtFlags::PROT_READ | ProtFlags::PROT_EXEC),
-            )
-            .await?;
+    let vdso_addr =
+        AddrMut::from_raw(vdso_start as usize).ok_or(VdsoPatchError::InvalidPatchAddress {
+            name: "[vdso]",
+            address: vdso_start,
+        })?;
+    guest
+        .inject_with_retry(
+            Mprotect::new()
+                .with_addr(Some(vdso_addr))
+                .with_len(vdso_len)
+                .with_protection(ProtFlags::PROT_READ | ProtFlags::PROT_EXEC),
+        )
+        .await
+        .map_err(|source| VdsoPatchError::Reprotect { pid, source })?;
+
+    let applied = write_result?;
+    let mut receipt = VdsoPatchReceipt {
+        required_symbols: patch_info.len(),
+        patched_symbols: Vec::with_capacity(patch_info.len()),
+        verified_bytes: 0,
+    };
+    for (name, start, expected) in applied {
+        let rptr = Addr::from_raw(start as usize).ok_or(VdsoPatchError::InvalidPatchAddress {
+            name,
+            address: start,
+        })?;
+        let mut observed = vec![0; expected.len()];
+        memory
+            .read_exact(rptr, &mut observed)
+            .map_err(|source| VdsoPatchError::ReadBack { pid, name, source })?;
+        verify_patch_bytes(name, &expected, &observed)?;
+        receipt.patched_symbols.push(name);
+        receipt.verified_bytes += observed.len();
+        debug!("{} patched and verified {}@{:x}", guest.pid(), name, start);
     }
-    Ok(())
+
+    debug!(pid, ?receipt, "vDSO patch integrity verified");
+    Ok(receipt)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, Default, Clone)]
+    struct GetrandomTool;
+
+    #[reverie::tool]
+    impl Tool for GetrandomTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::getrandom].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: reverie::syscalls::Syscall,
+        ) -> Result<i64, reverie::Error> {
+            guest.tail_inject(syscall).await
+        }
+    }
 
     #[test]
     fn test_align_up() {
@@ -428,14 +683,68 @@ mod tests {
 
     #[test]
     fn vdso_can_find_symbols_info() {
-        assert!(!vdso_get_symbols_info().is_empty());
+        let info = vdso_get_symbols_info().expect("vDSO discovery must succeed");
+        assert_eq!(info.len(), VDSO_SYMBOLS.len());
     }
 
     #[test]
     fn vdso_patch_info_is_valid() {
-        let info = &VDSO_PATCH_INFO;
+        let symbol_info = VDSO_SYMBOL_INFO
+            .as_ref()
+            .expect("vDSO symbol discovery must succeed");
+        let info = build_vdso_patch_info(symbol_info, &Subscription::all())
+            .expect("vDSO patch plan must be complete");
         info.iter().for_each(|i| println!("info: {:x?}", i));
-        assert!(!info.is_empty());
+        assert_eq!(info.len(), VDSO_SYMBOLS.len());
+    }
+
+    fn complete_symbol_info_fixture() -> VdsoSymbolInfo {
+        VDSO_SYMBOLS
+            .iter()
+            .enumerate()
+            .map(|(index, (name, _, bytes))| (*name, (((index + 1) * 0x100) as u64, bytes.len())))
+            .collect()
+    }
+
+    #[test]
+    fn partial_patch_plan_is_refused() {
+        let mut info = complete_symbol_info_fixture();
+        let missing = VDSO_SYMBOLS[0].0;
+        info.remove(missing);
+
+        let error = build_vdso_patch_info(&info, &Subscription::all()).unwrap_err();
+        assert!(matches!(
+            error,
+            VdsoPatchError::MissingRequiredSymbol { name } if name == missing
+        ));
+    }
+
+    #[test]
+    fn exact_patch_bytes_succeed_and_corruption_is_refused() {
+        let patch = build_vdso_patch_info(&complete_symbol_info_fixture(), &Subscription::all())
+            .expect("complete patch plan must succeed")[0];
+        let expected = replacement_image(patch.size, patch.bytes);
+
+        verify_patch_bytes(patch.name, &expected, &expected)
+            .expect("legitimate patch bytes must verify");
+
+        let mut corrupted = expected.clone();
+        corrupted[0] ^= 0xff;
+        assert!(matches!(
+            verify_patch_bytes(patch.name, &expected, &corrupted),
+            Err(VdsoPatchError::VerificationMismatch { name, .. }) if name == patch.name
+        ));
+    }
+
+    #[test]
+    fn legitimate_vdso_patch_succeeds_in_tracee() {
+        crate::testing::check_fn::<GetrandomTool, _>(|| {
+            let mut bytes = [0u8; 8];
+            let result = unsafe {
+                libc::getrandom(bytes.as_mut_ptr().cast(), bytes.len(), libc::GRND_NONBLOCK)
+            };
+            assert_eq!(result, bytes.len() as isize);
+        });
     }
 
     #[test]
@@ -446,5 +755,6 @@ mod tests {
             &[Sysno::clock_gettime].into_iter().collect()
         ));
         assert!(is_patch_required(&[Sysno::time].into_iter().collect()));
+        assert!(is_patch_required(&[Sysno::getrandom].into_iter().collect()));
     }
 }

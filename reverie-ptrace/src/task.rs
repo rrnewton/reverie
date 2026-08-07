@@ -1874,7 +1874,10 @@ impl<L: Tool + 'static> TracedTask<L> {
         remove_injection_state(&mut task, regs, prev_state)?;
 
         if vdso::is_patch_required(&self.global_state.subscriptions) {
-            vdso::vdso_patch(self).await.expect("unable to patch vdso");
+            let subscriptions = self.global_state.subscriptions.clone();
+            vdso::vdso_patch(self, &subscriptions)
+                .await
+                .expect("unable to patch vdso");
         }
         #[cfg(test)]
         pause_preinit(&pause_preinit_step, 2, &task).await;
