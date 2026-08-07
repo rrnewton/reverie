@@ -212,6 +212,7 @@ static SITES: OnceLock<Box<[SiteSlot]>> = OnceLock::new();
 static PAGE_SIZE: AtomicU64 = AtomicU64::new(0);
 static INSTALL_HELD: AtomicBool = AtomicBool::new(false);
 static INSTRUCTION_SUBSCRIPTIONS: AtomicU8 = AtomicU8::new(0);
+static PATCH_PUBLICATION: AtomicU8 = AtomicU8::new(PatchPublication::Concurrent as u8);
 static PROCESS_FORKS_ALLOWED: AtomicBool = AtomicBool::new(true);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -732,6 +733,7 @@ fn install_runtime(
     instructions: InstructionSubscriptions,
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
+    PATCH_PUBLICATION.store(publication as u8, Ordering::Release);
     prepare_instrumentation()?;
     install_vdso_sites(vdso_sites)?;
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1298,11 +1300,20 @@ unsafe fn set_mapping_protection(start: u64, len: u64, protection: i32) -> io::R
 struct InstallGuard;
 
 #[derive(Clone, Copy)]
+#[repr(u8)]
 pub(crate) enum PatchPublication {
     /// The stopped-tracee helper is the only thread able to reach live code.
     Quiescent,
     /// Other application threads may fetch the site during publication.
     Concurrent,
+}
+
+fn patch_publication() -> PatchPublication {
+    if PATCH_PUBLICATION.load(Ordering::Acquire) == PatchPublication::Quiescent as u8 {
+        PatchPublication::Quiescent
+    } else {
+        PatchPublication::Concurrent
+    }
 }
 
 impl Drop for InstallGuard {
@@ -2066,7 +2077,7 @@ unsafe extern "C" fn instruction_sigsegv_handler(
                 address,
                 site,
                 instruction_callback(kind),
-                PatchPublication::Concurrent,
+                patch_publication(),
                 expected,
                 true,
             )

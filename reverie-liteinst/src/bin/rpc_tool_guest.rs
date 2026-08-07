@@ -441,6 +441,33 @@ reverie_liteinst_rpc_raw_fork_site:
     nop
     ret
     .size reverie_liteinst_rpc_raw_fork, .-reverie_liteinst_rpc_raw_fork
+
+    # Force the instruction to begin at byte 61 of a cache line. The eight-byte
+    # LiteInst publication word therefore straddles the boundary and exercises
+    # the quiescent instruction-publication contract without calibration.
+    .p2align 6
+    .global reverie_liteinst_straddling_cpuid
+    .hidden reverie_liteinst_straddling_cpuid
+    .type reverie_liteinst_straddling_cpuid,@function
+reverie_liteinst_straddling_cpuid:
+    push rbx
+    .fill 60, 1, 0x90
+    cpuid
+    pop rbx
+    ret
+    .size reverie_liteinst_straddling_cpuid, .-reverie_liteinst_straddling_cpuid
+
+    .p2align 6
+    .global reverie_liteinst_straddling_rdtsc
+    .hidden reverie_liteinst_straddling_rdtsc
+    .type reverie_liteinst_straddling_rdtsc,@function
+reverie_liteinst_straddling_rdtsc:
+    .fill 61, 1, 0x90
+    rdtsc
+    shl rdx, 32
+    or rax, rdx
+    ret
+    .size reverie_liteinst_straddling_rdtsc, .-reverie_liteinst_straddling_rdtsc
 "#
 );
 
@@ -455,6 +482,8 @@ unsafe extern "C" {
     fn reverie_liteinst_rpc_sigaltstack() -> i64;
     fn reverie_liteinst_rpc_raise_sigsys() -> i64;
     fn reverie_liteinst_rpc_raw_fork() -> i64;
+    fn reverie_liteinst_straddling_cpuid() -> u64;
+    fn reverie_liteinst_straddling_rdtsc() -> u64;
     fn reverie_liteinst_rpc_sigprocmask(
         how: u64,
         set: *const u64,
@@ -634,7 +663,18 @@ fn spoof_sigsys_guest(path: &Path) -> ! {
 }
 
 fn instruction_guest(path: &Path) {
-    unsafe { reverie_liteinst::install_tool::<InstructionTool>(path) }.unwrap();
+    // This fixture creates no application threads, matching the direct Hermit
+    // lifecycle contract. Exercise quiescent publication so every cache-line
+    // placement is valid without a machine-specific WordPatch++ calibration.
+    unsafe { reverie_liteinst::install_tool_quiescent::<InstructionTool>(path) }.unwrap();
+    assert_eq!(
+        unsafe { reverie_liteinst_straddling_cpuid() } as u32,
+        0x1111_1111
+    );
+    assert_eq!(
+        unsafe { reverie_liteinst_straddling_rdtsc() },
+        0x1234_5678_9abc_def0
+    );
     let cpuid = core::arch::x86_64::__cpuid_count(0, 0);
     let feature_leaf = core::arch::x86_64::__cpuid_count(1, 0);
     let extended_feature_leaf = core::arch::x86_64::__cpuid_count(7, 0);

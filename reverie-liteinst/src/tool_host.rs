@@ -241,6 +241,7 @@ where
             rpc: &self.rpc,
             tail: &tail,
             cpuid_interception: self.instruction_subscriptions.cpuid,
+            fork_parent_state: None,
         };
 
         if is_new && let Err(error) = drive_ready(tool.handle_thread_start(&mut guest)) {
@@ -278,14 +279,18 @@ where
             let number = guest.event.number;
             let args = guest.event.args;
             if is_plain_fork(number, args) {
+                guest.prepare_fork_parent_state();
                 let result = forward_plain_fork(number, args);
                 if result == 0 {
+                    let parent_state = guest.take_fork_parent_state();
+                    drop(guest);
                     finish_fork_child(
                         &mut tool_slot,
                         &mut states,
                         &self.rpc,
                         self.stats,
                         event,
+                        parent_state,
                         ForkChildContext {
                             parent_tid: tid,
                             parent_pid: pid,
@@ -352,12 +357,15 @@ where
                 child_tid,
                 child_pid,
             } => {
+                let parent_state = guest.take_fork_parent_state();
+                drop(guest);
                 finish_fork_child(
                     &mut tool_slot,
                     &mut states,
                     &self.rpc,
                     self.stats,
                     event,
+                    parent_state,
                     ForkChildContext {
                         parent_tid,
                         parent_pid,
@@ -399,6 +407,7 @@ where
             rpc: &self.rpc,
             tail: &tail,
             cpuid_interception: self.instruction_subscriptions.cpuid,
+            fork_parent_state: None,
         };
         if is_new && let Err(error) = drive_ready(tool.handle_thread_start(&mut guest)) {
             tool_fatal(124, &error);
@@ -447,6 +456,7 @@ fn finish_fork_child<T: Tool>(
     rpc: &CoordinatorRpc<T::GlobalState>,
     stats: crate::stats::GuestStatsHooks,
     event: &mut SyscallEvent,
+    parent_snapshot: T::ThreadState,
     context: ForkChildContext,
 ) {
     let ForkChildContext {
@@ -462,11 +472,12 @@ fn finish_fork_child<T: Tool>(
     // hook also covers forks that never enter libc, such as a raw `SYS_fork` or
     // a raw plain `SYS_clone`.
     crate::rpc::note_fork_in_child();
-    let parent_state = states
+    let inherited_parent_state = states
         .remove(&parent_tid.as_raw())
         .unwrap_or_else(|| fatal(126));
+    drop(inherited_parent_state);
     let child_tool = T::new(child_pid, rpc.config());
-    let child_state = child_tool.init_thread_state(child_tid, Some((parent_tid, &parent_state)));
+    let child_state = child_tool.init_thread_state(child_tid, Some((parent_tid, &parent_snapshot)));
     states.clear();
     states.insert(child_tid.as_raw(), child_state);
     *tool_slot = Some(child_tool);
@@ -490,6 +501,7 @@ fn finish_fork_child<T: Tool>(
         rpc,
         tail: &child_tail,
         cpuid_interception: runtime::cpuid_interception_enabled(),
+        fork_parent_state: None,
     };
     if let Err(error) = drive_ready(tool.handle_thread_start(&mut child_guest)) {
         tool_fatal(124, &error);
@@ -575,6 +587,32 @@ struct LiteinstGuest<'a, T: Tool> {
     rpc: &'a CoordinatorRpc<T::GlobalState>,
     tail: &'a TailResult,
     cpuid_interception: bool,
+    fork_parent_state: Option<T::ThreadState>,
+}
+
+impl<T: Tool> LiteinstGuest<'_, T> {
+    /// Materialize the parent view while every synchronization owner still
+    /// exists. A raw process fork can otherwise copy a locked Tool-state mutex
+    /// into the child after its owning thread disappeared. Round-tripping via
+    /// the existing ThreadState migration contract gives the child private,
+    /// unlocked synchronization primitives without a backend-specific Tool API.
+    fn prepare_fork_parent_state(&mut self) {
+        let encoded = bincode::serde::encode_to_vec(&*self.state, bincode::config::standard())
+            .unwrap_or_else(|_| fatal(126));
+        let (snapshot, consumed) = bincode::serde::decode_from_slice::<T::ThreadState, _>(
+            &encoded,
+            bincode::config::standard(),
+        )
+        .unwrap_or_else(|_| fatal(126));
+        if consumed != encoded.len() {
+            fatal(126);
+        }
+        self.fork_parent_state = Some(snapshot);
+    }
+
+    fn take_fork_parent_state(&mut self) -> T::ThreadState {
+        self.fork_parent_state.take().unwrap_or_else(|| fatal(126))
+    }
 }
 
 #[reverie::tool]
@@ -837,6 +875,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         if is_plain_fork(number, raw_args) {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
+            self.prepare_fork_parent_state();
             let result = forward_plain_fork(number, raw_args);
             if result == 0 {
                 let child_tid = raw_pid(libc::SYS_gettid);
@@ -904,6 +943,7 @@ impl<T: Tool> Guest<T> for LiteinstGuest<'_, T> {
         if is_plain_fork(number, args) {
             let parent_tid = self.tid;
             let parent_pid = self.pid;
+            self.prepare_fork_parent_state();
             let result = forward_plain_fork(number, args);
             if result == 0 {
                 self.tail.set_fork_child(
