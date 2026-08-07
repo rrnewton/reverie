@@ -1351,7 +1351,7 @@ impl KvmBackend {
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED: Bind KVM timestamp reads to the Tool event contract.
-    // TODO-HUMAN-REVIEW(PR-TBD): Review subscribed RDTSC/RDTSCP interception and resumption.
+    // TODO-HUMAN-REVIEW(PR-403): Review subscribed RDTSC/RDTSCP interception and resumption.
     pub(crate) fn timestamp_counter_exception(
         &self,
     ) -> Result<Option<(StaticElfException, Rdtsc)>> {
