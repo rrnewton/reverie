@@ -643,19 +643,34 @@ pub(crate) fn preflight_instruction_faulting(
 ) -> io::Result<()> {
     if subscriptions.cpuid {
         const ARCH_GET_CPUID: u64 = 0x1011;
-        let result = unsafe { raw_syscall6(libc::SYS_arch_prctl, [ARCH_GET_CPUID, 0, 0, 0, 0, 0]) };
-        if result < 0 {
+        const ARCH_SET_CPUID: u64 = 0x1012;
+        let previous =
+            unsafe { raw_syscall6(libc::SYS_arch_prctl, [ARCH_GET_CPUID, 0, 0, 0, 0, 0]) };
+        if previous < 0 {
+            return Err(instruction_control_unavailable("CPUID faulting", previous));
+        }
+        let result = unsafe { raw_syscall6(libc::SYS_arch_prctl, [ARCH_SET_CPUID, 0, 0, 0, 0, 0]) };
+        if result != 0 {
             return Err(instruction_control_unavailable("CPUID faulting", result));
+        }
+        let restored = unsafe {
+            raw_syscall6(
+                libc::SYS_arch_prctl,
+                [ARCH_SET_CPUID, previous as u64, 0, 0, 0, 0],
+            )
+        };
+        if restored != 0 {
+            unsafe { exit_now(126) };
         }
     }
     if subscriptions.rdtsc {
-        let mut control = 0;
+        let mut previous = 0;
         let result = unsafe {
             raw_syscall6(
                 libc::SYS_prctl,
                 [
                     libc::PR_GET_TSC as u64,
-                    (&raw mut control) as u64,
+                    (&raw mut previous) as u64,
                     0,
                     0,
                     0,
@@ -665,6 +680,31 @@ pub(crate) fn preflight_instruction_faulting(
         };
         if result != 0 {
             return Err(instruction_control_unavailable("TSC faulting", result));
+        }
+        let result = unsafe {
+            raw_syscall6(
+                libc::SYS_prctl,
+                [
+                    libc::PR_SET_TSC as u64,
+                    libc::PR_TSC_SIGSEGV as u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if result != 0 {
+            return Err(instruction_control_unavailable("TSC faulting", result));
+        }
+        let restored = unsafe {
+            raw_syscall6(
+                libc::SYS_prctl,
+                [libc::PR_SET_TSC as u64, previous as u64, 0, 0, 0, 0],
+            )
+        };
+        if restored != 0 {
+            unsafe { exit_now(126) };
         }
     }
     Ok(())
