@@ -9,12 +9,15 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use reverie::CpuIdResult;
 use reverie::Error;
 use reverie::ExitStatus;
 use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
 use reverie::Pid;
+use reverie::Rdtsc;
+use reverie::RdtscResult;
 use reverie::Subscription;
 use reverie::Tid;
 use reverie::Tool;
@@ -32,6 +35,10 @@ static LAST_MASK_RESULT: AtomicI64 = AtomicI64::new(0);
 static LAST_FIRST_USE_EXEC_RESULT: AtomicI64 = AtomicI64::new(0);
 static LAST_FIRST_USE_SIGNAL_RESULT: AtomicI64 = AtomicI64::new(0);
 static CHILD_RECONSTRUCTED: AtomicBool = AtomicBool::new(false);
+static RCB_BEFORE: AtomicU64 = AtomicU64::new(0);
+static RCB_AFTER: AtomicU64 = AtomicU64::new(0);
+static RCB_AVAILABLE: AtomicBool = AtomicBool::new(false);
+static VDSO_CLOCK_CALLS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 struct CounterGlobal {
@@ -90,6 +97,90 @@ impl Tool for CounterTool {
         let (total, senders) = guest.send_rpc(1).await;
         LAST_TOTAL.store(total, Ordering::Relaxed);
         LAST_SENDERS.store(senders, Ordering::Relaxed);
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[derive(Default)]
+struct InstructionTool;
+
+#[reverie::tool]
+impl Tool for InstructionTool {
+    type GlobalState = CounterGlobal;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &()) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.cpuid().rdtsc();
+        subscriptions
+    }
+
+    async fn handle_cpuid_event<G: Guest<Self>>(
+        &self,
+        _guest: &mut G,
+        _eax: u32,
+        _ecx: u32,
+    ) -> Result<CpuIdResult, reverie::Errno> {
+        Ok(CpuIdResult {
+            eax: 0x1111_1111,
+            ebx: 0x2222_2222,
+            ecx: 0,
+            edx: 0x4444_4444,
+        })
+    }
+
+    async fn handle_rdtsc_event<G: Guest<Self>>(
+        &self,
+        _guest: &mut G,
+        request: Rdtsc,
+    ) -> Result<RdtscResult, reverie::Errno> {
+        Ok(RdtscResult {
+            tsc: match request {
+                Rdtsc::Tsc => 0x1234_5678_9abc_def0,
+                Rdtsc::Tscp => 0x0fed_cba9_8765_4321,
+            },
+            aux: (request == Rdtsc::Tscp).then_some(0x2468_ace0),
+        })
+    }
+}
+
+#[derive(Default)]
+struct ClockAndVdsoTool;
+
+#[reverie::tool]
+impl Tool for ClockAndVdsoTool {
+    type GlobalState = CounterGlobal;
+    type ThreadState = ();
+
+    fn subscriptions(_cfg: &()) -> Subscription {
+        [Sysno::getpid, Sysno::clock_gettime].into_iter().collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if syscall.number() == Sysno::getpid {
+            match guest.read_clock() {
+                Ok(before) => {
+                    let mut branches = 0_u64;
+                    for index in 0..1024_u64 {
+                        if std::hint::black_box(index & 1) == 0 {
+                            branches = branches.wrapping_add(index);
+                        }
+                    }
+                    std::hint::black_box(branches);
+                    let after = guest.read_clock()?;
+                    RCB_BEFORE.store(before, Ordering::Relaxed);
+                    RCB_AFTER.store(after, Ordering::Relaxed);
+                    RCB_AVAILABLE.store(true, Ordering::Release);
+                }
+                Err(_) => RCB_AVAILABLE.store(false, Ordering::Release),
+            }
+        } else if syscall.number() == Sysno::clock_gettime {
+            VDSO_CLOCK_CALLS.fetch_add(1, Ordering::Relaxed);
+        }
         Ok(guest.inject(syscall).await?)
     }
 }
@@ -350,6 +441,33 @@ reverie_liteinst_rpc_raw_fork_site:
     nop
     ret
     .size reverie_liteinst_rpc_raw_fork, .-reverie_liteinst_rpc_raw_fork
+
+    # Force the instruction to begin at byte 61 of a cache line. The eight-byte
+    # LiteInst publication word therefore straddles the boundary and exercises
+    # the quiescent instruction-publication contract without calibration.
+    .p2align 6
+    .global reverie_liteinst_straddling_cpuid
+    .hidden reverie_liteinst_straddling_cpuid
+    .type reverie_liteinst_straddling_cpuid,@function
+reverie_liteinst_straddling_cpuid:
+    push rbx
+    .fill 60, 1, 0x90
+    cpuid
+    pop rbx
+    ret
+    .size reverie_liteinst_straddling_cpuid, .-reverie_liteinst_straddling_cpuid
+
+    .p2align 6
+    .global reverie_liteinst_straddling_rdtsc
+    .hidden reverie_liteinst_straddling_rdtsc
+    .type reverie_liteinst_straddling_rdtsc,@function
+reverie_liteinst_straddling_rdtsc:
+    .fill 61, 1, 0x90
+    rdtsc
+    shl rdx, 32
+    or rax, rdx
+    ret
+    .size reverie_liteinst_straddling_rdtsc, .-reverie_liteinst_straddling_rdtsc
 "#
 );
 
@@ -364,6 +482,8 @@ unsafe extern "C" {
     fn reverie_liteinst_rpc_sigaltstack() -> i64;
     fn reverie_liteinst_rpc_raise_sigsys() -> i64;
     fn reverie_liteinst_rpc_raw_fork() -> i64;
+    fn reverie_liteinst_straddling_cpuid() -> u64;
+    fn reverie_liteinst_straddling_rdtsc() -> u64;
     fn reverie_liteinst_rpc_sigprocmask(
         how: u64,
         set: *const u64,
@@ -542,6 +662,66 @@ fn spoof_sigsys_guest(path: &Path) -> ! {
     panic!("guest-generated SIGSYS returned");
 }
 
+fn instruction_guest(path: &Path) {
+    // This fixture creates no application threads, matching the direct Hermit
+    // lifecycle contract. Exercise quiescent publication so every cache-line
+    // placement is valid without a machine-specific WordPatch++ calibration.
+    unsafe { reverie_liteinst::install_tool_quiescent::<InstructionTool>(path) }.unwrap();
+    assert_eq!(
+        unsafe { reverie_liteinst_straddling_cpuid() } as u32,
+        0x1111_1111
+    );
+    assert_eq!(
+        unsafe { reverie_liteinst_straddling_rdtsc() },
+        0x1234_5678_9abc_def0
+    );
+    let cpuid = core::arch::x86_64::__cpuid_count(0, 0);
+    let feature_leaf = core::arch::x86_64::__cpuid_count(1, 0);
+    let extended_feature_leaf = core::arch::x86_64::__cpuid_count(7, 0);
+    let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+    let mut aux = 0;
+    let tscp = unsafe { core::arch::x86_64::__rdtscp(&mut aux) };
+    assert_eq!(cpuid.eax, 0x1111_1111);
+    assert_eq!(cpuid.ebx, 0x2222_2222);
+    assert_eq!(cpuid.ecx, 0);
+    assert_eq!(cpuid.edx, 0x4444_4444);
+    assert_eq!(feature_leaf.ecx & (1 << 30), 0, "RDRAND must be masked");
+    assert_eq!(
+        extended_feature_leaf.ebx & (1 << 18),
+        0,
+        "RDSEED must be masked"
+    );
+    assert_eq!(tsc, 0x1234_5678_9abc_def0);
+    assert_eq!(tscp, 0x0fed_cba9_8765_4321);
+    assert_eq!(aux, 0x2468_ace0);
+    println!("cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked");
+}
+
+fn clock_and_vdso_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<ClockAndVdsoTool>(path) }.unwrap();
+    let pid = unsafe { libc::getpid() };
+    assert!(pid > 0);
+
+    let mut time = core::mem::MaybeUninit::<libc::timespec>::uninit();
+    assert_eq!(
+        unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, time.as_mut_ptr()) },
+        0
+    );
+    assert_eq!(VDSO_CLOCK_CALLS.load(Ordering::Relaxed), 1);
+
+    if RCB_AVAILABLE.load(Ordering::Acquire) {
+        let before = RCB_BEFORE.load(Ordering::Relaxed);
+        let after = RCB_AFTER.load(Ordering::Relaxed);
+        assert_eq!(
+            after, before,
+            "branches retired inside the Tool handler must be deducted"
+        );
+        println!("rcb=measured before={before} after={after} vdso-calls=1");
+    } else {
+        println!("rcb=unmeasured vdso-calls=1");
+    }
+}
+
 fn unsubscribed_lifecycle_guest(path: &Path) -> ! {
     unsafe { reverie_liteinst::install_tool::<UnsubscribedLifecycleTool>(path) }.unwrap();
     let flags = libc::CLONE_VM | libc::CLONE_VFORK | libc::SIGCHLD;
@@ -642,6 +822,80 @@ fn raw_fork_guest(path: &Path) {
     );
 }
 
+#[repr(C)]
+#[derive(Default)]
+struct CloneArgs {
+    flags: u64,
+    pidfd: u64,
+    child_tid: u64,
+    parent_tid: u64,
+    exit_signal: u64,
+    stack: u64,
+    stack_size: u64,
+    tls: u64,
+    set_tid: u64,
+    set_tid_size: u64,
+    cgroup: u64,
+}
+
+fn clone3_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let parent = unsafe { reverie_liteinst_rpc_getpid() };
+    let senders_before_fork = LAST_SENDERS.load(Ordering::Relaxed);
+    let args = CloneArgs {
+        exit_signal: libc::SIGCHLD as u64,
+        ..CloneArgs::default()
+    };
+    let child = unsafe {
+        libc::syscall(
+            libc::SYS_clone3,
+            &args as *const CloneArgs,
+            core::mem::size_of::<CloneArgs>(),
+        )
+    };
+    assert!(
+        child >= 0,
+        "clone3 failed: {}",
+        std::io::Error::last_os_error()
+    );
+    if child == 0 {
+        let observed = unsafe { reverie_liteinst_rpc_getpid() };
+        assert_eq!(observed, i64::from(unsafe { libc::getpid() }));
+        assert_ne!(observed, parent);
+        unsafe { libc::_exit(0) };
+    }
+    wait_for_child(child as libc::pid_t);
+    let observed = unsafe { reverie_liteinst_rpc_getpid() };
+    assert_eq!(observed, parent);
+    let sender_delta = LAST_SENDERS.load(Ordering::Relaxed) - senders_before_fork;
+    assert_eq!(sender_delta, 1);
+    println!("clone3=child-reconstructed sender-delta=1");
+}
+
+fn vfork_guest(path: &Path) {
+    unsafe { reverie_liteinst::install_tool::<CounterTool>(path) }.unwrap();
+    let parent = unsafe { reverie_liteinst_rpc_getpid() };
+    let senders_before_fork = LAST_SENDERS.load(Ordering::Relaxed);
+    let child = unsafe { libc::syscall(libc::SYS_vfork) };
+    assert!(
+        child >= 0,
+        "vfork failed: {}",
+        std::io::Error::last_os_error()
+    );
+    if child == 0 {
+        let observed = unsafe { reverie_liteinst_rpc_getpid() };
+        assert_eq!(observed, i64::from(unsafe { libc::getpid() }));
+        assert_ne!(observed, parent);
+        unsafe { libc::_exit(0) };
+    }
+    wait_for_child(child as libc::pid_t);
+    let observed = unsafe { reverie_liteinst_rpc_getpid() };
+    assert_eq!(observed, parent);
+    let sender_delta = LAST_SENDERS.load(Ordering::Relaxed) - senders_before_fork;
+    assert_eq!(sender_delta, 1);
+    println!("vfork=translated-cow-child sender-delta=1");
+}
+
 fn check_reconstructed_fork(label: &str) {
     CHILD_RECONSTRUCTED.store(false, Ordering::Release);
     let child = unsafe { libc::fork() };
@@ -680,10 +934,14 @@ fn main() {
         Some("pending-sigsys") => pending_sigsys_guest(Path::new(&path)),
         Some("preblocked-sigsys") => preblocked_sigsys_guest(Path::new(&path)),
         Some("spoof-sigsys") => spoof_sigsys_guest(Path::new(&path)),
+        Some("instruction-guest") => instruction_guest(Path::new(&path)),
+        Some("clock-and-vdso-guest") => clock_and_vdso_guest(Path::new(&path)),
         Some("unsubscribed-lifecycle") => unsubscribed_lifecycle_guest(Path::new(&path)),
         Some("injected-exit") => injected_exit_guest(Path::new(&path)),
         Some("fork-guest") => fork_guest(Path::new(&path)),
         Some("raw-fork-guest") => raw_fork_guest(Path::new(&path)),
+        Some("clone3-guest") => clone3_guest(Path::new(&path)),
+        Some("vfork-guest") => vfork_guest(Path::new(&path)),
         Some("unsubscribed-fork") => unsubscribed_fork_guest(Path::new(&path)),
         Some("tail-fork") => tail_fork_guest(Path::new(&path)),
         _ => panic!("expected coordinator or guest"),
