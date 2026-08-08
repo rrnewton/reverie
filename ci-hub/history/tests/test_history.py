@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -63,13 +64,98 @@ class TempParentTest(unittest.TestCase):
         self.parent = Path(self.tmp.name)
         (self.parent / "ignored" / "ci-hub").mkdir(parents=True)
         self._prev_env = os.environ.get("DEV_HERMIT_PARENT")
+        self._prev_producer_registry = os.environ.get(
+            "PRODUCER_DEFINITION_REGISTRY"
+        )
+        self._prev_producer_repo = os.environ.get("PRODUCER_DEFINITION_REPO")
         os.environ["DEV_HERMIT_PARENT"] = str(self.parent)
+        self.producer_repo = self.parent / "producer-repo"
+        (self.producer_repo / ".github" / "workflows").mkdir(parents=True)
+        (self.producer_repo / "validate.sh").write_text("validate fixture\n")
+        (self.producer_repo / ".github" / "workflows" / "ci-portable.yml").write_text(
+            "portable fixture\n"
+        )
+        subprocess.run(
+            ["git", "init", "-q", str(self.producer_repo)], check=True
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.producer_repo),
+                "-c",
+                "user.name=history-test",
+                "-c",
+                "user.email=history-test@example.invalid",
+                "add",
+                "validate.sh",
+                ".github/workflows/ci-portable.yml",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.producer_repo),
+                "-c",
+                "user.name=history-test",
+                "-c",
+                "user.email=history-test@example.invalid",
+                "commit",
+                "-qm",
+                "producer fixture",
+            ],
+            check=True,
+        )
+        self.producer_sha = subprocess.run(
+            ["git", "-C", str(self.producer_repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        definition = {
+            path: subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(self.producer_repo),
+                    "rev-parse",
+                    f"HEAD:{path}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            for path in ("validate.sh", ".github/workflows/ci-portable.yml")
+        }
+        self.producer_registry = self.parent / "producer-definition.json"
+        self.producer_registry.write_text(
+            json.dumps(
+                {
+                    "registered_at": self.producer_sha,
+                    "registered_coverage_status": "legacy-selected-paths",
+                    "registered_valid_commits": [self.producer_sha],
+                    "registered": definition,
+                }
+            )
+        )
+        os.environ["PRODUCER_DEFINITION_REGISTRY"] = str(self.producer_registry)
+        os.environ["PRODUCER_DEFINITION_REPO"] = str(self.producer_repo)
 
     def tearDown(self):
         if self._prev_env is None:
             os.environ.pop("DEV_HERMIT_PARENT", None)
         else:
             os.environ["DEV_HERMIT_PARENT"] = self._prev_env
+        if self._prev_producer_registry is None:
+            os.environ.pop("PRODUCER_DEFINITION_REGISTRY", None)
+        else:
+            os.environ["PRODUCER_DEFINITION_REGISTRY"] = self._prev_producer_registry
+        if self._prev_producer_repo is None:
+            os.environ.pop("PRODUCER_DEFINITION_REPO", None)
+        else:
+            os.environ["PRODUCER_DEFINITION_REPO"] = self._prev_producer_repo
         self.tmp.cleanup()
 
     def _write_gha(self, rows):
@@ -377,6 +463,7 @@ class TempParentTest(unittest.TestCase):
                "admission": "ci-hub-validate-lock",
                "concurrent_validates": 0,
                "concurrency_proof": "validate_lock_owner_ancestry",
+               "cwd": str(self.producer_repo),
                "coverage": {"planned_test_nodes": 1,
                             "executed_test_nodes": 1,
                             "zero_executed_nodes": [],
@@ -388,7 +475,7 @@ class TempParentTest(unittest.TestCase):
         # A green-by-conclusion commit with NO ledger receipt: all green time is
         # conclusion-only, ledger-corroborated is 0 (the reverie case).
         self._write_gha([
-            self._gha_wf("a" * 40, "success", "2026-08-03T00:00:00Z",
+            self._gha_wf(self.producer_sha, "success", "2026-08-03T00:00:00Z",
                          "2026-08-03T00:00:00Z"),
             self._gha_wf("b" * 40, "success", "2026-08-03T01:00:00Z",
                          "2026-08-03T01:00:00Z"),
@@ -404,12 +491,12 @@ class TempParentTest(unittest.TestCase):
         # POSITIVE: a full-pass ledger row at the exact green commit SHA moves
         # that slice into green_ledger. Bracket the mechanism firing.
         self._write_gha([
-            self._gha_wf("a" * 40, "success", "2026-08-03T00:00:00Z",
+            self._gha_wf(self.producer_sha, "success", "2026-08-03T00:00:00Z",
                          "2026-08-03T00:00:00Z"),
             self._gha_wf("b" * 40, "success", "2026-08-03T01:00:00Z",
                          "2026-08-03T01:00:00Z"),
         ])
-        self._write_ledger([self._full_pass_row("a" * 40)])
+        self._write_ledger([self._full_pass_row(self.producer_sha)])
         res = query.green_time(str(self.parent), "r/x", None, ["W"])
         self.assertGreater(res["green_ledger_hours"], 0.0)
         # combined green is never silently summed away: sub-buckets add to green.
@@ -422,13 +509,13 @@ class TempParentTest(unittest.TestCase):
         # tests outside its planned DAG nodes, while complete per-node coverage
         # proves that every planned test-bearing node actually ran.
         self._write_gha([
-            self._gha_wf("a" * 40, "success", "2026-08-03T00:00:00Z",
+            self._gha_wf(self.producer_sha, "success", "2026-08-03T00:00:00Z",
                          "2026-08-03T00:00:00Z"),
             self._gha_wf("b" * 40, "success", "2026-08-03T01:00:00Z",
                          "2026-08-03T01:00:00Z"),
         ])
         self._write_ledger([self._full_pass_row(
-            "a" * 40,
+            self.producer_sha,
             schema_version=5,
             filtered_tests=3,
             coverage={"planned_test_nodes": 2, "zero_executed_nodes": [],
@@ -442,13 +529,13 @@ class TempParentTest(unittest.TestCase):
         # when aggregate counts are positive. Coverage, not filtered count, is
         # the binding evidence for completeness.
         self._write_gha([
-            self._gha_wf("a" * 40, "success", "2026-08-03T00:00:00Z",
+            self._gha_wf(self.producer_sha, "success", "2026-08-03T00:00:00Z",
                          "2026-08-03T00:00:00Z"),
             self._gha_wf("b" * 40, "success", "2026-08-03T01:00:00Z",
                          "2026-08-03T01:00:00Z"),
         ])
         self._write_ledger([self._full_pass_row(
-            "a" * 40,
+            self.producer_sha,
             schema_version=5,
             filtered_tests=3,
             coverage={"planned_test_nodes": 2, "zero_executed_nodes": [],

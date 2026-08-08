@@ -93,24 +93,39 @@ def preserve_log(ledger: Path, sha: str, row: dict[str, Any]) -> Path:
     return destination
 
 
-def producer_registry_path() -> Path:
-    override = os.environ.get("PRODUCER_DEFINITION_REGISTRY")
-    if override:
-        return Path(override)
-    return Path(__file__).resolve().parents[1] / "validate" / "producer-definition.json"
+def producer_verifier_path() -> Path:
+    return qualifying_receipt.producer_definition_verifier_path()
+
+
+def run_producer_verifier(
+    *arguments: str, input_body: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Invoke the one semantic producer-definition authority."""
+    return subprocess.run(
+        [str(producer_verifier_path()), *arguments],
+        input=input_body,
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+    )
 
 
 def registered_producer() -> dict[str, str]:
-    """The registered current producer definition (file -> git blob)."""
-    path = producer_registry_path()
+    """Read the primary map through the one semantic verifier."""
     try:
-        value = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as error:
-        fail(f"cannot read producer-definition registry {path}: {error}")
-    registered = value.get("registered")
-    if not isinstance(registered, dict) or not registered:
-        fail(f"malformed producer-definition registry (no non-empty .registered): {path}")
-    return registered
+        return qualifying_receipt.registered_producer_definition()
+    except RuntimeError as error:
+        fail(str(error))
+
+
+def producer_definition_allowed(
+    definition: dict[str, str], *, sha: str | None = None
+) -> bool:
+    """Ask whether this exact whole map is allowed at an optional commit."""
+    try:
+        return qualifying_receipt.producer_definition_allowed(definition, sha=sha)
+    except RuntimeError as error:
+        fail(str(error))
 
 
 def resolution_repositories(row: dict[str, Any]) -> list[Path]:
@@ -141,25 +156,7 @@ def resolution_repositories(row: dict[str, Any]) -> list[Path]:
     and preserves existing behaviour when the directory survives -- and a durable
     repository is the fallback rather than the replacement.
     """
-    candidates: list[Path] = []
-    recorded = row.get("cwd")
-    if recorded and Path(recorded).is_dir():
-        candidates.append(Path(recorded))
-    override = os.environ.get("PRODUCER_DEFINITION_REPO")
-    if override:
-        candidates.append(Path(override))
-    # The durable primary. Both registered producers (`validate.sh`,
-    # `.github/workflows/ci-portable.yml`) are Hermit paths.
-    candidates.append(Path(__file__).resolve().parents[2] / "hermit")
-    seen: set[str] = set()
-    ordered: list[Path] = []
-    for candidate in candidates:
-        key = str(candidate)
-        if key in seen or not candidate.is_dir():
-            continue
-        seen.add(key)
-        ordered.append(candidate)
-    return ordered
+    return qualifying_receipt.producer_definition_repositories(row)
 
 
 def producer_definition(row: dict[str, Any], sha: str) -> dict[str, Any]:
@@ -172,36 +169,12 @@ def producer_definition(row: dict[str, Any], sha: str) -> dict[str, Any]:
     a receipt that cannot name its producer must not be minted at all, because a
     producer-less receipt is exactly what the consumer now refuses.
     """
-    attempted: list[str] = []
-    failures: list[str] = []
-    for checkout in resolution_repositories(row):
-        attempted.append(str(checkout))
-        definition: dict[str, str] = {}
-        problem: str | None = None
-        for relative in sorted(registered_producer()):
-            result = subprocess.run(
-                ["git", "-C", str(checkout), "rev-parse", f"{sha}:{relative}"],
-                text=True,
-                capture_output=True,
-            )
-            blob = result.stdout.strip()
-            if result.returncode != 0 or len(blob) != 40:
-                problem = (
-                    f"{checkout}: cannot resolve {relative} at {sha} "
-                    f"({result.stderr.strip() or 'no output'})"
-                )
-                break
-            definition[relative] = blob
-        if problem is None:
-            return {"resolved_from": str(checkout), "definition": definition}
-        failures.append(problem)
-    # REFUSED, never silently skipped. A label step that quietly applies nothing
-    # is the fail-open shape wearing a green tick.
-    detail = "; ".join(failures) if failures else "no candidate repository existed"
-    fail(
-        f"cannot resolve the producing check definition for {sha} in any repository "
-        f"that durably holds it. Tried: {', '.join(attempted) or '(none)'}. {detail}"
-    )
+    try:
+        return qualifying_receipt.resolve_producer_definition(row, sha)
+    except (qualifying_receipt.ProducerDefinitionError, RuntimeError) as error:
+        # REFUSED, never silently skipped. A label step that quietly applies
+        # nothing is the fail-open shape wearing a green tick.
+        fail(str(error))
 
 
 def build_receipt(

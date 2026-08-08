@@ -330,7 +330,13 @@ def select_anchor(
     qualifying: dict[str, dict] = {}
     refusals: dict[str, int] = {}
     for row in rows:
-        ok, reason = row_qualifies(row, predicate)
+        sha = row.get("commit")
+        ok, reason = qualifying_receipt.authoritative_row_qualification(
+            row,
+            sha if isinstance(sha, str) else "",
+            predicate,
+            repositories=[checkout],
+        )
         if not ok:
             refusals[reason.split("=")[0]] = refusals.get(reason.split("=")[0], 0) + 1
             continue

@@ -976,7 +976,7 @@ def _row_full_pass(row: dict) -> bool:
     rows at executed=427 but 15 absent nodes) -- the DRIFT-4 gap the shared
     predicate closes. The exact commit binding is handled by the index lookup, so
     the predicate is asked about the row's own recorded commit."""
-    return qualifying_receipt.row_qualifies(
+    return qualifying_receipt.authoritative_row_qualifies(
         row, row.get("commit") or "", qualifying_receipt.active()
     )
 

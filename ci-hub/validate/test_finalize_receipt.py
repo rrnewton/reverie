@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import finalize_receipt as fr
+import pytest
 
 HERE = Path(__file__).resolve().parent
 MODULE = HERE / "finalize_receipt.py"
@@ -23,6 +24,30 @@ BASE_FIELDS = {
     "reverie_base_sha": "3" * 40,
     "reverie_base_tree": "4" * 40,
 }
+
+
+@pytest.fixture(autouse=True)
+def _producer_definition_fixture(monkeypatch):
+    """Keep coverage/finalizer unit fixtures focused on their own condition.
+
+    The real git-derived producer authority is bracketed end to end by
+    validation/test_local_producer_authority.py.  Individual finalizer tests
+    use synthetic SHAs and non-git paths, so provide explicit derived evidence
+    rather than weakening the production resolver.
+    """
+    monkeypatch.setattr(
+        fr.qualifying_receipt,
+        "resolve_producer_definition",
+        lambda _row, _sha, **_kwargs: {
+            "definition": {
+                ".github/workflows/ci-portable.yml": "1" * 40,
+                "validate.sh": "2" * 40,
+            },
+            "coverage_status": "legacy-selected-paths",
+            "paths": [".github/workflows/ci-portable.yml", "validate.sh"],
+            "resolved_from": "/fixture/hermit",
+        },
+    )
 
 
 def _satisfied(cov: dict) -> bool:
@@ -427,6 +452,28 @@ def test_counted_schema5_source_without_admission_remains_refused(
 
     assert result["reason"] == "insufficient-source-row"
     assert result["satisfied"] is False and result["appended"] == 0
+    assert ledger.read_text() == before
+
+
+def test_unregistered_producer_definition_never_appends(tmp_path, monkeypatch):
+    sha = "f" * 40
+    log = tmp_path / "run.log"
+    log.write_text(_passing_node("test.only", 6))
+    ledger = tmp_path / "ledger.jsonl"
+    source = _countless_green_row(sha, str(log))
+    before = json.dumps(source) + "\n"
+    ledger.write_text(before)
+    digest = fr.canonical_row_sha256(source, sha)
+    monkeypatch.setattr(fr, "planned_test_nodes", lambda c, s: {"test.only"})
+    monkeypatch.setattr(fr, "build_base_evidence", lambda *a: dict(BASE_FIELDS))
+
+    def refuse(*_args, **_kwargs):
+        raise fr.qualifying_receipt.ProducerDefinitionError("crossed whole map")
+
+    monkeypatch.setattr(fr.qualifying_receipt, "resolve_producer_definition", refuse)
+    result = fr.scan_and_finalize(str(ledger), str(tmp_path), sha, digest)
+    assert result["reason"] == "unregistered-producer-definition"
+    assert result["exit_code"] == 1 and result["appended"] == 0
     assert ledger.read_text() == before
 
 

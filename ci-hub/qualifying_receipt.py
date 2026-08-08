@@ -52,6 +52,196 @@ PREDICATE_REL = "validate/qualifying-receipt.json"
 _ACTIVE: dict[str, Any] | None = None
 
 
+class ProducerDefinitionError(RuntimeError):
+    """The validated commit cannot be bound to one registered whole map."""
+
+
+def producer_definition_verifier_path() -> Path:
+    """The one semantic producer-map verifier.
+
+    Registry shape, transition provenance, expiry, and exact whole-map
+    membership live in ``validation/verify_receipt.sh``.  Ledger consumers call
+    it through this adapter instead of reimplementing those rules.
+    """
+    override = os.environ.get("PRODUCER_DEFINITION_VERIFIER")
+    if override:
+        return Path(override)
+    return Path(__file__).resolve().parent / "validation" / "verify_receipt.sh"
+
+
+def _run_producer_definition_verifier(
+    *arguments: str, input_body: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(producer_definition_verifier_path()), *arguments],
+        input=input_body,
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+    )
+
+
+def registered_producer_definition() -> dict[str, str]:
+    """Return the validated primary map from the one semantic verifier."""
+    result = _run_producer_definition_verifier("--producer-definition-primary")
+    if result.returncode != 0:
+        raise RuntimeError(
+            "producer-definition verifier could not return the primary map: "
+            f"rc={result.returncode}: {result.stderr.strip()}"
+        )
+    try:
+        primary = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"producer-definition verifier returned invalid JSON: {error}"
+        ) from error
+    # Defensive parsing before using trusted-verifier output in `git rev-parse`.
+    # This is path safety, not a second definition-membership decision.
+    if not isinstance(primary, dict) or not primary:
+        raise RuntimeError("producer-definition verifier returned no primary map")
+    for relative, blob in primary.items():
+        if (
+            not isinstance(relative, str)
+            or relative.startswith("/")
+            or any(part in ("", ".", "..") for part in relative.split("/"))
+            or not isinstance(blob, str)
+            or _SHA40.fullmatch(blob) is None
+        ):
+            raise RuntimeError(
+                "producer-definition verifier returned an unsafe primary map"
+            )
+    return primary
+
+
+def producer_definition_allowed(
+    definition: dict[str, str], *, sha: str | None = None
+) -> bool:
+    """Ask whether ``definition`` is allowed, including any exact commit bound."""
+    arguments = ["--producer-definition-check", "-"]
+    if sha is not None:
+        arguments.extend(("--sha", sha))
+    result = _run_producer_definition_verifier(
+        *arguments, input_body=json.dumps(definition)
+    )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    raise RuntimeError(
+        "producer-definition verifier could not evaluate the resolved map: "
+        f"rc={result.returncode}: {result.stderr.strip()}"
+    )
+
+
+def producer_definition_repositories(
+    row: dict[str, Any], repositories: list[str | Path] | None = None
+) -> list[Path]:
+    """Object stores that may durably resolve the validated commit.
+
+    The recorded cwd is the most specific source but is routinely reclaimed.
+    Explicit caller repositories and the canonical Hermit primary are durable
+    fallbacks.  A repository is evidence only if git can resolve the exact
+    commit and every registered path within it.
+    """
+    candidates: list[Path] = []
+    recorded = row.get("cwd")
+    if isinstance(recorded, str) and recorded:
+        candidates.append(Path(recorded))
+    if repositories:
+        candidates.extend(Path(item) for item in repositories)
+    override = os.environ.get("PRODUCER_DEFINITION_REPO")
+    if override:
+        candidates.append(Path(override))
+    candidates.append(Path(__file__).resolve().parents[1] / "hermit")
+    seen: set[str] = set()
+    ordered: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen or not candidate.is_dir():
+            continue
+        seen.add(key)
+        ordered.append(candidate)
+    return ordered
+
+
+def resolve_producer_definition(
+    row: dict[str, Any],
+    sha: str,
+    *,
+    repositories: list[str | Path] | None = None,
+) -> dict[str, Any]:
+    """Derive and authorize the producer map at the exact validated commit.
+
+    Nothing in the ledger row may self-report the map.  Each blob id is derived
+    by git from ``sha:path`` and the complete map is then submitted to the one
+    semantic verifier.  Crossed primary/candidate maps therefore fail exactly
+    like any other unregistered map.
+    """
+    if _SHA40.fullmatch(sha) is None:
+        raise ProducerDefinitionError("validated commit is not 40 lowercase hex")
+    attempted: list[str] = []
+    failures: list[str] = []
+    for checkout in producer_definition_repositories(row, repositories):
+        attempted.append(str(checkout))
+        result = _run_producer_definition_verifier(
+            "--producer-definition-resolve",
+            "--sha",
+            sha,
+            "--repo-checkout",
+            str(checkout),
+        )
+        if result.returncode == 0:
+            try:
+                producer = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                raise RuntimeError(
+                    f"producer-definition verifier returned invalid JSON: {error}"
+                ) from error
+            if (
+                not isinstance(producer, dict)
+                or not isinstance(producer.get("definition"), dict)
+                or not producer["definition"]
+                or producer.get("coverage_status")
+                not in ("legacy-selected-paths", "complete")
+                or producer.get("paths") != sorted(producer["definition"])
+                or producer.get("resolved_from") != str(checkout)
+            ):
+                raise RuntimeError(
+                    "producer-definition verifier returned malformed resolved evidence"
+                )
+            valid_commits = producer.get("valid_commits")
+            if valid_commits is not None and (
+                not isinstance(valid_commits, list)
+                or not valid_commits
+                or any(
+                    not isinstance(commit, str)
+                    or _SHA40.fullmatch(commit) is None
+                    for commit in valid_commits
+                )
+                or len(set(valid_commits)) != len(valid_commits)
+                or sha not in valid_commits
+            ):
+                raise RuntimeError(
+                    "producer-definition verifier returned an invalid commit bound"
+                )
+            return producer
+        if result.returncode == 1:
+            failures.append(
+                f"{checkout}: exact producer definition at {sha} is unresolvable "
+                "or not one currently allowed whole map"
+            )
+            continue
+        raise RuntimeError(
+            "producer-definition verifier could not resolve the commit map: "
+            f"rc={result.returncode}: {result.stderr.strip()}"
+        )
+    detail = "; ".join(failures) if failures else "no candidate repository existed"
+    raise ProducerDefinitionError(
+        f"cannot resolve the producing check definition for {sha} in any repository "
+        f"that durably holds it. Tried: {', '.join(attempted) or '(none)'}. {detail}"
+    )
+
+
 # The green CLASS (hard vs inherited/soft) is derived from the row's provenance by
 # ci-hub/validate/green_class.py. It is imported rather than restated: a second copy
 # of the derivation is exactly the drift this shared predicate exists to remove.
@@ -661,6 +851,45 @@ def row_qualifies(row: dict[str, Any], sha: str, pred: dict[str, Any]) -> bool:
     return row_qualification(row, sha, pred)[0]
 
 
+def authoritative_row_qualification(
+    row: dict[str, Any],
+    sha: str,
+    pred: dict[str, Any],
+    *,
+    repositories: list[str | Path] | None = None,
+) -> tuple[bool, str]:
+    """Qualify one green row and bind it to an allowed producer whole map.
+
+    ``row_qualification`` remains the one semantic clause authority and is
+    intentionally useful to focused predicate tests.  Any consumer that turns
+    its answer into green authority must use this stricter boundary: semantic
+    green without an exact registered producer definition is not corroboration.
+    Registry/verifier deploy defects propagate instead of becoming an ordinary
+    negative; an unregistered or unresolvable map is a clean refusal.
+    """
+    accepted, reason = row_qualification(row, sha, pred)
+    if not accepted:
+        return False, reason
+    try:
+        resolve_producer_definition(row, sha, repositories=repositories)
+    except ProducerDefinitionError as error:
+        return False, f"producer_definition unregistered-or-unresolvable: {error}"
+    return True, "qualifies"
+
+
+def authoritative_row_qualifies(
+    row: dict[str, Any],
+    sha: str,
+    pred: dict[str, Any],
+    *,
+    repositories: list[str | Path] | None = None,
+) -> bool:
+    """Boolean wrapper for authority-bearing ledger consumers."""
+    return authoritative_row_qualification(
+        row, sha, pred, repositories=repositories
+    )[0]
+
+
 def main(argv: list[str] | None = None) -> int:
     """Semantic row-verifier CLI used by non-Python authority consumers."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -678,11 +907,53 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="verify recorded base evidence against freshly resolved merge-boundary tips",
     )
+    parser.add_argument(
+        "--producer-definition-row",
+        action="store_true",
+        help="derive and verify the exact producer map for one ledger row",
+    )
     parser.add_argument("--current-base")
     parser.add_argument("--current-reverie-base")
     parser.add_argument("--repo-checkout")
     parser.add_argument("--reverie-checkout")
     args = parser.parse_args(argv)
+    if args.producer_definition_row:
+        if args.sha is None or _SHA40.fullmatch(args.sha) is None:
+            parser.error("--producer-definition-row requires --sha as 40 lowercase hex")
+        try:
+            row = json.load(sys.stdin)
+            if not isinstance(row, dict):
+                raise ValueError("ledger row is not an object")
+            repositories = [args.repo_checkout] if args.repo_checkout else None
+            producer = resolve_producer_definition(
+                row, args.sha, repositories=repositories
+            )
+        except ProducerDefinitionError as error:
+            print(
+                json.dumps(
+                    {
+                        "accepted": False,
+                        "producer_definition_status": "unregistered-or-unresolvable",
+                        "detail": str(error),
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 1
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+            print(f"qualifying-receipt: {error}", file=sys.stderr)
+            return 2
+        print(
+            json.dumps(
+                {
+                    "accepted": True,
+                    "producer_definition_status": "satisfied",
+                    "producer": producer,
+                },
+                sort_keys=True,
+            )
+        )
+        return 0
     if args.evidence_only:
         try:
             request = json.load(sys.stdin)

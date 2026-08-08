@@ -52,6 +52,7 @@ CI_HUB = Path(__file__).resolve().parents[2]
 REPO_ROOT = CI_HUB.parent
 LIVE_PREDICATE = CI_HUB / "validate" / "qualifying-receipt.json"
 PRODUCER_REGISTRY = CI_HUB / "validate" / "producer-definition.json"
+PRODUCER_REPO = REPO_ROOT / "hermit"
 CI_HUB_RS = CI_HUB / "ci-hub.rs"
 QUERY_PY = CI_HUB / "history" / "query.py"
 PUBLISH_PY = CI_HUB / "validation" / "publish_receipt.py"
@@ -62,7 +63,7 @@ VERIFY_SH = CI_HUB / "validation" / "verify_receipt.sh"
 sys.path.insert(0, str(CI_HUB))
 import qualifying_receipt  # noqa: E402
 
-SHA = "a" * 40
+SHA = json.loads(PRODUCER_REGISTRY.read_text())["registered_at"]
 RECEIPT_COMMIT = "b" * 40  # the parent commit a receipt was committed at
 REPO = "rrnewton/hermit"
 _MISSING = object()
@@ -90,6 +91,7 @@ def _green_row(sha: str) -> dict:
         "host": "test-host",
         "slot": "fixture-slot",
         "log_file": "/tmp/qrp-fixture.log",
+        "cwd": str(PRODUCER_REPO),
         "checks": 2,
         "gates_run": 2,
         "gates_expected": 2,
@@ -245,6 +247,8 @@ def _soft_enabled_predicate(dst: Path) -> Path:
 
 def _env(predicate: Path | None) -> dict:
     env = dict(os.environ)
+    env["PRODUCER_DEFINITION_REGISTRY"] = str(PRODUCER_REGISTRY)
+    env["PRODUCER_DEFINITION_REPO"] = str(PRODUCER_REPO)
     if predicate is not None:
         env["QUALIFYING_RECEIPT_PREDICATE"] = str(predicate)
     else:
@@ -273,12 +277,13 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
     # -- individual consumer drivers: each returns True iff the consumer ACCEPTS.
 
     def _rust_accepts(self, row: dict, predicate: Path | None) -> bool:
+        target_sha = row["commit"]
         with tempfile.TemporaryDirectory() as tmp:
             ledger = Path(tmp) / "ledger.jsonl"
             ledger.write_text(json.dumps(row) + "\n")
             proc = subprocess.run(
                 ["rust-script", "--force", str(CI_HUB_RS),
-                 "validate-status", "--ledger", str(ledger), "--sha", SHA, "--json"],
+                 "validate-status", "--ledger", str(ledger), "--sha", target_sha, "--json"],
                 cwd=REPO_ROOT, env=_env(predicate),
                 capture_output=True, text=True, timeout=600,
             )
@@ -298,6 +303,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         return self._python_accepts(driver, row, predicate)
 
     def _publish_accepts(self, row: dict, predicate: Path | None) -> bool:
+        target_sha = row["commit"]
         driver = (
             "import hashlib,json,sys;"
             f"sys.path[:0]=[{str(CI_HUB)!r},{str(CI_HUB / 'validation')!r}];"
@@ -306,7 +312,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             "row=json.loads(raw);"
             "digest=hashlib.sha256(raw).hexdigest();"
             "\ntry:\n"
-            f"    publish_receipt.selected_record(raw, sha={SHA!r}, expected_digest=digest, canonicalization=publish_receipt.RECEIPT_CANONICALIZATION); print('ACCEPT')\n"
+            f"    selected=publish_receipt.selected_record(raw, sha={target_sha!r}, expected_digest=digest, canonicalization=publish_receipt.RECEIPT_CANONICALIZATION); publish_receipt.producer_definition(selected, {target_sha!r}); print('ACCEPT')\n"
             "except SystemExit:\n"
             "    print('REJECT')\n"
         )
@@ -320,37 +326,20 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             root = Path(tmp)
             checkout = root / "checkout"
             ledger = root / "ledger.jsonl"
+            source = Path(row.get("cwd") or PRODUCER_REPO)
             subprocess.run(
-                ["git", "init", "-q", str(checkout)],
+                ["git", "clone", "-q", "--shared", str(source), str(checkout)],
                 check=True,
                 capture_output=True,
                 text=True,
             )
+            anchor_sha = row["commit"]
             subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    str(checkout),
-                    "-c",
-                    "user.name=receipt-fixture",
-                    "-c",
-                    "user.email=receipt-fixture@example.invalid",
-                    "commit",
-                    "--allow-empty",
-                    "-q",
-                    "-m",
-                    "fixture anchor",
-                ],
+                ["git", "-C", str(checkout), "checkout", "-q", "--detach", anchor_sha],
                 check=True,
                 capture_output=True,
                 text=True,
             )
-            anchor_sha = subprocess.run(
-                ["git", "-C", str(checkout), "rev-parse", "HEAD"],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
             anchor_row = json.loads(json.dumps(row))
             anchor_row["commit"] = anchor_sha
             ledger.write_text(json.dumps(anchor_row) + "\n")
@@ -404,13 +393,23 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         return out[-1] == "ACCEPT"
 
     def _verify_sh_accepts(self, row: dict, predicate: Path | None) -> bool:
+        target_sha = row["commit"]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+            registry = json.loads(PRODUCER_REGISTRY.read_text())
+            producer = {
+                "resolved_from": "/fixture/worktree",
+                "definition": registry["registered"],
+                "coverage_status": registry["registered_coverage_status"],
+                "paths": sorted(registry["registered"]),
+            }
+            if "registered_valid_commits" in registry:
+                producer["valid_commits"] = registry["registered_valid_commits"]
             receipt = {
                 "schema_version": 1,
                 "repository": REPO,
-                "commit": SHA,
-                "run_id": SHA + "@" + row["started_at"] + "@" + row["host"],
+                "commit": target_sha,
+                "run_id": target_sha + "@" + row["started_at"] + "@" + row["host"],
                 "log_sha256": "c" * 64,
                 "source_log_file": row["log_file"],
                 "durable_log_file": "/durable" + row["log_file"],
@@ -420,15 +419,12 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                 # the predicate leg would prove nothing. Read from the live
                 # registration so this fixture follows a producer advance
                 # instead of silently rotting into a false REJECT.
-                "producer": {
-                    "resolved_from": "/fixture/worktree",
-                    "definition": json.loads(PRODUCER_REGISTRY.read_text())["registered"],
-                },
+                "producer": producer,
                 "ledger_record": row,
             }
             blob = json.dumps(receipt, sort_keys=True).encode()
             digest = hashlib.sha256(blob).hexdigest()
-            rel_path = f"validation-receipts/{REPO}/{SHA}/{digest}.json"
+            rel_path = f"validation-receipts/{REPO}/{target_sha}/{digest}.json"
             receipt_file = root / RECEIPT_COMMIT / rel_path
             receipt_file.parent.mkdir(parents=True, exist_ok=True)
             receipt_file.write_bytes(blob)
@@ -441,7 +437,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             comments_file = root / "comments.json"
             comments_file.write_text(json.dumps(comments))
             proc = subprocess.run(
-                ["bash", str(VERIFY_SH), "--sha", SHA, "--comments", str(comments_file),
+                ["bash", str(VERIFY_SH), "--sha", target_sha, "--comments", str(comments_file),
                  "--repo", REPO, "--fixture-receipts", str(root)],
                 env=_env(predicate), capture_output=True, text=True, timeout=60,
             )
@@ -510,6 +506,62 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             refused,
             len(panel),
             f"schema-4 plus non-null coverage must be refused everywhere: {panel}",
+        )
+
+    def test_live_refuses_semantic_green_from_unregistered_producer_per_leg(self) -> None:
+        """A real commit with a different producer map is not green authority."""
+        with tempfile.TemporaryDirectory() as tmp:
+            checkout = Path(tmp) / "unregistered-producer"
+            subprocess.run(
+                ["git", "clone", "-q", "--shared", str(PRODUCER_REPO), str(checkout)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(checkout), "checkout", "-q", "--detach", SHA],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            (checkout / "validate.sh").write_text(
+                "#!/usr/bin/env bash\necho unregistered producer\n"
+            )
+            git_env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": "producer-mutation-test",
+                "GIT_AUTHOR_EMAIL": "test@example.invalid",
+                "GIT_COMMITTER_NAME": "producer-mutation-test",
+                "GIT_COMMITTER_EMAIL": "test@example.invalid",
+            }
+            subprocess.run(
+                ["git", "-C", str(checkout), "add", "validate.sh"],
+                check=True,
+                env=git_env,
+            )
+            subprocess.run(
+                ["git", "-C", str(checkout), "commit", "-qm", "unregistered producer"],
+                check=True,
+                env=git_env,
+            )
+            unregistered = subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", "HEAD"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            row = _green_row(unregistered)
+            row["cwd"] = str(checkout)
+            row["tree"] = subprocess.run(
+                ["git", "-C", str(checkout), "rev-parse", "HEAD^{tree}"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            panel = self._panel(row, predicate=None)
+        self.assertFalse(
+            any(panel.values()),
+            f"unregistered producer map must be refused by every boundary: {panel}",
         )
 
     def test_each_admission_condition_is_load_bearing_per_leg(self) -> None:

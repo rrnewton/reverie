@@ -7,7 +7,6 @@ hub=$root/ci-hub/ci-hub
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 
-sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 other_sha=dddddddddddddddddddddddddddddddddddddddd
 receipt_commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 wrong_receipt_commit=cccccccccccccccccccccccccccccccccccccccc
@@ -16,6 +15,9 @@ deleted_cwd=$tmp/deleted-validation-cwd
 log_file=$tmp/validate.log
 printf 'running 12 tests\ntest result: ok. 12 passed; 0 failed\n' >"$log_file"
 log_sha256=$(sha256sum "$log_file" | awk '{print $1}')
+producer_registry=$tmp/producer-definition.json
+cp "$root/ci-hub/validate/producer-definition.json" "$producer_registry"
+sha=$(jq -r '.registered_at' "$producer_registry")
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -71,9 +73,9 @@ build_artifact() { # build_artifact ROW TARGET_SHA PRODUCER_MODE
     ARTIFACT_SELECTED=$(sha256sum "$canonical" | awk '{print $1}')
     if [[ $producer_mode == wrong ]]; then
         jq '.registered["validate.sh"] = ("0" * 40)' \
-            "$root/ci-hub/validate/producer-definition.json" >"$producer"
+            "$producer_registry" >"$producer"
     else
-        cp "$root/ci-hub/validate/producer-definition.json" "$producer"
+        cp "$producer_registry" "$producer"
     fi
     jq -cn --slurpfile row "$canonical" --slurpfile registry "$producer" \
         --arg sha "$target_sha" --arg selected "$ARTIFACT_SELECTED" \
@@ -87,7 +89,10 @@ build_artifact() { # build_artifact ROW TARGET_SHA PRODUCER_MODE
           log_sha256: $log_sha,
           producer: {
             resolved_from: $cwd,
-            definition: $registry[0].registered
+            definition: $registry[0].registered,
+            coverage_status: $registry[0].registered_coverage_status,
+            paths: ($registry[0].registered | keys | sort),
+            valid_commits: $registry[0].registered_valid_commits
           },
           selected_receipt_identity: {
             digest_algorithm: "sha256",
@@ -215,6 +220,7 @@ invoke_apply() {
     FAKE_REJECT_COMMIT="${REJECT_COMMIT:-}" \
     FAKE_GH_LOG="$tmp/gh.log" \
     FAKE_MUTATION_LOG="$tmp/mutations.log" \
+    PRODUCER_DEFINITION_REGISTRY="$producer_registry" \
     "$hub" apply-local-label --pr "$pr" --repo rrnewton/hermit \
         --ledger "$tmp/ledger.jsonl" --json
 }
@@ -242,9 +248,14 @@ other_path=$ARTIFACT_PATH
 other_digest=$ARTIFACT_SHA256
 [[ $exact_path != "$other_path" ]] || fail "positive receipt variants did not differ"
 write_two_comments "$exact_path" "$exact_digest" "$other_path" "$other_digest"
+# Immutable reuse must not depend on either ephemeral producer input: the
+# recorded checkout and source log may both have disappeared by binding time.
+# A rejected immutable artifact must then fail locally at the missing log,
+# before the fallback publisher can perform any remote mutation.
+rm -f -- "$log_file"
 REJECT_COMMIT=
 invoke_apply >"$tmp/positive.out" 2>"$tmp/positive.err" || \
-    fail "deleted-cwd exact immutable artifact was not reused: $(cat "$tmp/positive.err")"
+    fail "deleted-cwd/missing-log exact immutable artifact was not reused: $(cat "$tmp/positive.err")"
 grep -Fq '"receipt_source": "reused-immutable"' "$tmp/positive.out" || \
     fail "positive result did not report immutable reuse"
 grep -Fq "contents/$other_path?ref=$receipt_commit" "$tmp/gh.log" || \
@@ -264,8 +275,8 @@ run_negative() { # run_negative NAME
     prepare_run_logs
     invoke_apply >"$tmp/$name.out" 2>"$tmp/$name.err" || status=$?
     [[ $status -ne 0 ]] || fail "$name unexpectedly succeeded"
-    grep -Fq "no usable \`cwd\`" "$tmp/$name.err" || \
-        fail "$name did not retain the deleted-cwd publisher fallback"
+    grep -Fq "ledger log is not a readable absolute file" "$tmp/$name.err" || \
+        fail "$name did not fail locally at the missing source log: $(cat "$tmp/$name.err")"
     [[ ! -s $tmp/mutations.log ]] || \
         fail "$name performed a label/comment/publish mutation: $(cat "$tmp/mutations.log")"
     if grep -Fq 'git/ref/heads/validation-receipts' "$tmp/gh.log"; then
@@ -321,4 +332,4 @@ REJECT_COMMIT=
 run_negative missing-marker
 
 printf '%s\n' \
-    'PASS: deleted-cwd exact immutable artifact reused after skipping a newer nonselected receipt; wrong head, row digest, producer blob, artifact hash, receipt commit, and missing marker all refused without label/comment/remote publish'
+    'PASS: current-primary deleted-cwd/missing-log immutable artifact reused (including skip-over of a newer nonselected receipt); wrong head, row digest, producer blob, artifact hash, receipt commit, and missing marker all refused before label/comment/remote publish'

@@ -3454,6 +3454,17 @@ struct QualifyingReceipt {
     count_derivation: &'static str,
     coverage_basis: &'static str,
     canonical_sha256: String,
+    producer_definition: Option<ProducerDefinitionEvidence>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ProducerDefinitionEvidence {
+    definition: BTreeMap<String, String>,
+    coverage_status: String,
+    paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    valid_commits: Option<Vec<String>>,
+    resolved_from: String,
 }
 
 #[derive(Debug)]
@@ -3675,10 +3686,100 @@ fn qualify_canonical_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRe
             "selected_tests=executed_tests;discovered_tests=executed_tests+filtered_tests",
         coverage_basis,
         canonical_sha256,
+        producer_definition: None,
     })
 }
 
+#[cfg(not(test))]
+fn resolve_producer_definition_evidence(
+    root: &Path,
+    row: &HistoryRow,
+    sha: &str,
+) -> Result<Option<ProducerDefinitionEvidence>, String> {
+    let verifier = root.join("ci-hub/qualifying_receipt.py");
+    let checkout = root.join("hermit");
+    let mut child = Command::new("python3")
+        .arg(verifier)
+        .args(["--producer-definition-row", "--sha", sha, "--repo-checkout"])
+        .arg(checkout)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("cannot launch producer-definition resolver: {error}"))?;
+    serde_json::to_writer(
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| "producer-definition resolver stdin unavailable".to_string())?,
+        row,
+    )
+    .map_err(|error| format!("cannot send row to producer-definition resolver: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("cannot wait for producer-definition resolver: {error}"))?;
+    match output.status.code() {
+        Some(0) => {
+            let report: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .map_err(|error| format!("producer-definition resolver returned invalid JSON: {error}"))?;
+            if report.get("accepted").and_then(|value| value.as_bool()) != Some(true)
+                || report
+                    .get("producer_definition_status")
+                    .and_then(|value| value.as_str())
+                    != Some("satisfied")
+            {
+                return Err("producer-definition resolver returned inconsistent success".into());
+            }
+            let evidence = serde_json::from_value::<ProducerDefinitionEvidence>(
+                report
+                    .get("producer")
+                    .cloned()
+                    .ok_or_else(|| "producer-definition resolver omitted evidence".to_string())?,
+            )
+            .map_err(|error| format!("producer-definition evidence is malformed: {error}"))?;
+            let keys = evidence.definition.keys().cloned().collect::<Vec<_>>();
+            if evidence.paths != keys
+                || !matches!(
+                    evidence.coverage_status.as_str(),
+                    "legacy-selected-paths" | "complete"
+                )
+                || evidence.valid_commits.as_ref().is_some_and(|commits| {
+                    commits.is_empty()
+                        || !commits.iter().all(|commit| is_oid(commit))
+                        || !commits.iter().any(|commit| commit == sha)
+                })
+            {
+                return Err("producer-definition evidence carries inconsistent coverage".into());
+            }
+            Ok(Some(evidence))
+        }
+        Some(1) => Ok(None),
+        _ => Err(format!(
+            "producer-definition resolver failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
+#[cfg(test)]
+fn resolve_producer_definition_evidence(
+    _root: &Path,
+    _row: &HistoryRow,
+    _sha: &str,
+) -> Result<Option<ProducerDefinitionEvidence>, String> {
+    // Pure receipt-shape unit tests use synthetic commits. Production call-path
+    // brackets execute the non-test binary against real git fixture commits.
+    Ok(Some(ProducerDefinitionEvidence {
+        definition: BTreeMap::new(),
+        coverage_status: "legacy-selected-paths".into(),
+        paths: Vec::new(),
+        valid_commits: None,
+        resolved_from: "synthetic-unit-fixture".into(),
+    }))
+}
+
 fn assess_canonical_receipts(
+    root: &Path,
     rows: &[HistoryRow],
     sha: &str,
     repo: &str,
@@ -3698,8 +3799,14 @@ fn assess_canonical_receipts(
         if row.commit.as_deref() != Some(sha) {
             continue;
         }
-        if let Some(receipt) = qualify_canonical_receipt(row, sha) {
-            qualifying.push(receipt);
+        if let Some(mut receipt) = qualify_canonical_receipt(row, sha) {
+            match resolve_producer_definition_evidence(root, row, sha)? {
+                Some(evidence) => {
+                    receipt.producer_definition = Some(evidence);
+                    qualifying.push(receipt);
+                }
+                None => disqualified.push(row.clone()),
+            }
         } else {
             match validate_status::failure_disposition(row, sha) {
                 validate_status::FailureDisposition::Failed => saw_failed = true,
@@ -3807,6 +3914,7 @@ fn describe_receipt(receipt: &QualifyingReceipt) -> serde_json::Value {
                 "log_file": row.log_file,
             },
         },
+        "producer_definition": receipt.producer_definition,
     })
 }
 
@@ -4044,6 +4152,66 @@ fn ledger_stamp(path: &Path) -> Result<(u64, u128), CiHubError> {
     Ok((metadata.len(), modified_ns))
 }
 
+fn producer_definition_authority_key(root: &Path) -> Result<String, CiHubError> {
+    let verifier = root.join("ci-hub/validation/verify_receipt.sh");
+    let output = Command::new(verifier)
+        .arg("--producer-definition-allowed")
+        .output()
+        .map_err(|source| CiHubError::Launch {
+            tool: "producer-definition authority".into(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(CiHubError::HistoryQuery(format!(
+            "producer-definition authority unavailable: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(format!("{:x}", Sha256::digest(&output.stdout)))
+}
+
+/// Remove only would-be green rows whose exact target commit does not resolve
+/// to one currently registered producer map. Non-green rows remain available
+/// for failure attribution. Accepted rows carry the exact map and coverage
+/// status into newest-green's evidence record.
+fn producer_authoritative_history_rows(
+    root: &Path,
+    rows: Vec<HistoryRow>,
+) -> Result<Vec<HistoryRow>, CiHubError> {
+    let mut retained = Vec::with_capacity(rows.len());
+    for mut row in rows {
+        let Some(sha) = row.commit.clone() else {
+            retained.push(row);
+            continue;
+        };
+        if !crate::qualifying_receipt::row_qualifies(
+            &row,
+            &sha,
+            crate::qualifying_receipt::active(),
+        ) {
+            retained.push(row);
+            continue;
+        }
+        match resolve_producer_definition_evidence(root, &row, &sha)
+            .map_err(CiHubError::HistoryQuery)?
+        {
+            Some(evidence) => {
+                row.extra.insert(
+                    "producer_definition".into(),
+                    serde_json::to_value(evidence).map_err(|error| {
+                        CiHubError::HistoryQuery(format!(
+                            "cannot serialize producer-definition evidence: {error}"
+                        ))
+                    })?,
+                );
+                retained.push(row);
+            }
+            None => {}
+        }
+    }
+    Ok(retained)
+}
+
 fn read_newest_green_cache(path: &Path) -> Option<NewestGreenCache> {
     let raw = std::fs::read(path).ok()?;
     match serde_json::from_slice(&raw) {
@@ -4192,6 +4360,24 @@ fn print_newest_green(report: &history_queries::NewestGreenReport, cache_hit: bo
         "GATE-SCHEMA {} floor={} eligibility=at-or-after",
         report.gate_schema, report.gate_schema_floor,
     );
+    if let Some(producer) = report.green.producer_definition.as_ref() {
+        let status = producer
+            .get("coverage_status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unavailable");
+        let paths = producer
+            .get("paths")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        println!("PRODUCER-DEFINITION status={status} paths={paths}");
+    }
     println!(
         "BRANCH {} tip={} commits-after-green={} recorded={} no-record={} cache={}",
         report.branch,
@@ -4255,6 +4441,7 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
     let branch_tip = commits.first().expect("nonempty history");
     let ledger = ledger_path(root, &args.query.ledger);
     let (ledger_len, ledger_modified_ns) = ledger_stamp(&ledger)?;
+    let producer_definition_authority = producer_definition_authority_key(root)?;
     let cache_path = history_queries::cache_path(root, &args.cache);
     if !args.no_cache {
         if let Some(cache) = read_newest_green_cache(&cache_path) {
@@ -4267,6 +4454,7 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
                 &ledger,
                 ledger_len,
                 ledger_modified_ns,
+                &producer_definition_authority,
             ) {
                 print_newest_green(&cache.report, true, args.query.json);
                 return Ok(0);
@@ -4274,7 +4462,7 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
         }
     }
 
-    let mut rows = load_ledger_rows(&ledger)?;
+    let mut rows = producer_authoritative_history_rows(root, load_ledger_rows(&ledger)?)?;
     retain_cell_evidence(root, &mut rows)?;
     match HistoryQueryEngine::new(commits, rows).newest_green(
         &args.query.branch,
@@ -4284,7 +4472,7 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
     ) {
         NewestGreenOutcome::Found(report) => {
             let cache = NewestGreenCache {
-                schema_version: 5,
+                schema_version: 6,
                 branch: report.branch.clone(),
                 branch_ref: report.branch_ref.clone(),
                 branch_tip: report.branch_tip.clone(),
@@ -4292,6 +4480,7 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
                 ledger_path: ledger.display().to_string(),
                 ledger_len,
                 ledger_modified_ns,
+                producer_definition_authority,
                 report: (*report).clone(),
             };
             write_newest_green_cache(&cache_path, &cache)?;
@@ -4534,8 +4723,8 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
             ))
         }
     };
-    let assessment =
-        assess_canonical_receipts(&rows, &sha, &args.repo).map_err(CiHubError::ValidateStatus)?;
+    let assessment = assess_canonical_receipts(root, &rows, &sha, &args.repo)
+        .map_err(CiHubError::ValidateStatus)?;
     let newest = newest_canonical_receipt(&assessment.qualifying);
 
     if args.json {
@@ -4574,6 +4763,13 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
                     row.row.real_seconds.map(|s| s.round() as i64).unwrap_or(-1),
                     row.row.host.as_deref().unwrap_or("?"),
                 );
+                if let Some(producer) = row.producer_definition.as_ref() {
+                    println!(
+                        "# producer-definition status={} paths={}",
+                        producer.coverage_status,
+                        producer.paths.join(",")
+                    );
+                }
                 // The ledger does not latch: this PASS supersedes any earlier
                 // clean full FAIL on the same commit. Surface those loudly --
                 // a green that silently buries a same-commit failure claims
@@ -4648,6 +4844,9 @@ struct VerifiedPublishedReceipt {
     run_id: String,
     executed_tests: i64,
     log_sha256: String,
+    producer_coverage_status: String,
+    producer_paths: Vec<String>,
+    producer_valid_commits: Option<Vec<String>>,
 }
 
 fn is_sha256(value: &str) -> bool {
@@ -4782,6 +4981,104 @@ fn verify_publisher_report(
     if !is_sha256(log_sha256) {
         return Err("publisher artifact log digest is malformed".into());
     }
+    let producer = receipt
+        .get("producer")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "publisher artifact omitted producer evidence".to_string())?;
+    let producer_coverage_status = producer
+        .get("coverage_status")
+        .and_then(|value| value.as_str())
+        .or_else(|| {
+            report
+                .get("verified_producer_coverage_status")
+                .and_then(|value| value.as_str())
+                .filter(|status| *status == "legacy-selected-paths")
+        })
+        .ok_or_else(|| "publisher artifact omitted producer coverage status".to_string())?;
+    if !matches!(
+        producer_coverage_status,
+        "legacy-selected-paths" | "complete"
+    ) {
+        return Err("publisher artifact producer coverage status is invalid".into());
+    }
+    let definition = producer
+        .get("definition")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| "publisher artifact omitted producer definition".to_string())?;
+    let producer_paths_value = producer
+        .get("paths")
+        .and_then(|value| value.as_array())
+        .or_else(|| {
+            (producer.get("coverage_status").is_none()
+                && producer_coverage_status == "legacy-selected-paths")
+                .then(|| {
+                    report
+                        .get("verified_producer_paths")
+                        .and_then(|value| value.as_array())
+                })
+                .flatten()
+        })
+        .ok_or_else(|| "publisher artifact omitted producer paths".to_string())?;
+    let producer_paths = producer_paths_value
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "publisher artifact producer path is not a string".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let definition_paths = definition.keys().cloned().collect::<Vec<_>>();
+    if producer_paths != definition_paths {
+        return Err("publisher artifact producer paths differ from its definition".into());
+    }
+    let producer_valid_commits_value = match producer.get("valid_commits") {
+        Some(serde_json::Value::Array(values)) => Some(values),
+        Some(_) => return Err("publisher artifact producer valid_commits is not an array".into()),
+        None => report
+            .get("verified_producer_valid_commits")
+            .and_then(|value| value.as_array()),
+    };
+    let producer_valid_commits = producer_valid_commits_value
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| {
+                    value.as_str().filter(|commit| is_oid(commit)).map(str::to_string)
+                        .ok_or_else(|| {
+                            "publisher artifact producer commit bound is malformed".to_string()
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?;
+    if producer_valid_commits.as_ref().is_some_and(|commits| {
+        commits.is_empty()
+            || !commits.iter().any(|commit| commit == sha)
+            || commits.windows(2).any(|pair| pair[0] >= pair[1])
+    }) {
+        return Err("publisher artifact producer commit bound is invalid for target".into());
+    }
+    if let Some(expected) = selected.producer_definition.as_ref() {
+        let artifact_definition = definition
+            .iter()
+            .map(|(path, value)| {
+                value
+                    .as_str()
+                    .map(|blob| (path.clone(), blob.to_string()))
+                    .ok_or_else(|| "publisher artifact producer blob is not a string".to_string())
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
+        if artifact_definition != expected.definition
+            || producer_coverage_status != expected.coverage_status
+            || producer_paths != expected.paths
+            || producer_valid_commits != expected.valid_commits
+        {
+            return Err(
+                "publisher artifact producer condition differs from exact target commit".into(),
+            );
+        }
+    }
     let receipt_commit = match report.get("receipt_commit") {
         Some(serde_json::Value::String(value))
             if !dry_run
@@ -4801,6 +5098,9 @@ fn verify_publisher_report(
         run_id: expected_run_id,
         executed_tests,
         log_sha256: log_sha256.to_string(),
+        producer_coverage_status: producer_coverage_status.to_string(),
+        producer_paths,
+        producer_valid_commits,
     })
 }
 
@@ -4878,6 +5178,9 @@ struct ImmutableReceiptReference {
     receipt_commit: String,
     path: String,
     artifact_sha256: String,
+    producer_coverage_status: String,
+    producer_paths: Vec<String>,
+    producer_valid_commits: Option<Vec<String>>,
 }
 
 fn parse_immutable_receipt_reference(
@@ -4888,8 +5191,8 @@ fn parse_immutable_receipt_reference(
     let output = std::str::from_utf8(output)
         .map_err(|error| format!("immutable receipt verifier output is not UTF-8: {error}"))?;
     let tokens = output.split_whitespace().collect::<Vec<_>>();
-    if tokens.len() != 3 {
-        return Err("immutable receipt verifier did not return exactly three fields".into());
+    if tokens.len() != 6 {
+        return Err("immutable receipt verifier did not return exactly six fields".into());
     }
     let fields = tokens
         .into_iter()
@@ -4899,7 +5202,7 @@ fn parse_immutable_receipt_reference(
                 .ok_or_else(|| format!("malformed immutable receipt verifier field: {field}"))
         })
         .collect::<Result<BTreeMap<_, _>, _>>()?;
-    if fields.len() != 3 {
+    if fields.len() != 6 {
         return Err("immutable receipt verifier returned duplicate fields".into());
     }
     let receipt_commit = fields
@@ -4921,10 +5224,47 @@ fn parse_immutable_receipt_reference(
     if *path != expected_path {
         return Err("immutable receipt verifier returned a noncanonical artifact path".into());
     }
+    let producer_coverage_status = fields
+        .get("producer_coverage_status")
+        .filter(|value| matches!(**value, "legacy-selected-paths" | "complete"))
+        .ok_or_else(|| "immutable receipt verifier omitted producer coverage status".to_string())?;
+    let producer_paths = fields
+        .get("producer_paths")
+        .ok_or_else(|| "immutable receipt verifier omitted producer paths".to_string())?
+        .split(',')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if producer_paths.is_empty() {
+        return Err("immutable receipt verifier returned no producer paths".into());
+    }
+    let producer_valid_commits = match fields
+        .get("producer_valid_commits")
+        .ok_or_else(|| "immutable receipt verifier omitted producer commit bound".to_string())?
+    {
+        &"unbounded" => None,
+        commits => {
+            let values = commits
+                .split(',')
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if values.is_empty()
+                || values.iter().any(|commit| !is_oid(commit))
+                || !values.iter().any(|commit| commit == sha)
+                || values.windows(2).any(|pair| pair[0] >= pair[1])
+            {
+                return Err("immutable receipt verifier returned invalid producer commit bound".into());
+            }
+            Some(values)
+        }
+    };
     Ok(ImmutableReceiptReference {
         receipt_commit: (*receipt_commit).to_string(),
         path: (*path).to_string(),
         artifact_sha256: (*artifact_sha256).to_string(),
+        producer_coverage_status: (*producer_coverage_status).to_string(),
+        producer_paths,
+        producer_valid_commits,
     })
 }
 
@@ -4952,9 +5292,12 @@ fn run_immutable_receipt_verifier(
     comments: &[u8],
 ) -> Result<Option<ImmutableReceiptReference>, String> {
     let verifier = root.join("ci-hub/validation/verify_receipt.sh");
+    let producer_checkout = root.join("hermit");
     let mut command = Command::new(&verifier);
     command
         .args(["--repo", repo, "--sha", sha, "--comments", "/dev/stdin"])
+        .arg("--producer-repo-checkout")
+        .arg(producer_checkout)
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -5023,6 +5366,9 @@ fn fetch_and_verify_immutable_receipt(
     selected: &QualifyingReceipt,
     reference: ImmutableReceiptReference,
 ) -> Result<VerifiedPublishedReceipt, String> {
+    let expected_producer_status = reference.producer_coverage_status.clone();
+    let expected_producer_paths = reference.producer_paths.clone();
+    let expected_producer_valid_commits = reference.producer_valid_commits.clone();
     let endpoint = format!(
         "repos/{VALIDATION_RECEIPT_REPO}/contents/{}?ref={}",
         reference.path, reference.receipt_commit
@@ -5060,15 +5406,27 @@ fn fetch_and_verify_immutable_receipt(
         "receipt_identity_sha256": selected.canonical_sha256,
         "artifact_sha256": reference.artifact_sha256,
         "artifact_body": artifact_body,
+        "verified_producer_coverage_status": expected_producer_status.clone(),
+        "verified_producer_paths": expected_producer_paths.clone(),
+        "verified_producer_valid_commits": expected_producer_valid_commits.clone(),
     });
-    verify_publisher_report(
+    let verified = verify_publisher_report(
         &serde_json::to_vec(&report)
             .map_err(|error| format!("cannot encode immutable receipt report: {error}"))?,
         repo,
         sha,
         selected,
         false,
-    )
+    )?;
+    if verified.producer_coverage_status != expected_producer_status
+        || verified.producer_paths != expected_producer_paths
+        || verified.producer_valid_commits != expected_producer_valid_commits
+    {
+        return Err(
+            "immutable verifier producer condition differs from artifact evidence".into(),
+        );
+    }
+    Ok(verified)
 }
 
 /// Reuse a receipt only after the immutable landing verifier accepts its
@@ -5154,9 +5512,16 @@ fn bind_verified_receipt_to_pr(
     if !comment_pages_contain_marker(&comments_json, &marker) {
         let pr_arg = pr.to_string();
         let body = format!(
-            "[coordinator, gpt-5.6-sol]\n\nLocal validation receipt published before applying `{LOCALLY_VALIDATED_LABEL}`.\n\n- SHA: `{sha}`\n- Run ID: `{}`\n- Executed tests: `{}`\n- Receipt identity SHA-256: `{}`\n- Immutable artifact: `{VALIDATION_RECEIPT_REPO}@{receipt_commit}:{}`\n- Artifact SHA-256: `{}`\n- Log SHA-256: `{}`\n\n{marker}",
+            "[coordinator, gpt-5.6-sol]\n\nLocal validation receipt published before applying `{LOCALLY_VALIDATED_LABEL}`.\n\n- SHA: `{sha}`\n- Run ID: `{}`\n- Executed tests: `{}`\n- Producer coverage: `{}`\n- Producer paths: `{}`\n- Producer valid commits: `{}`\n- Receipt identity SHA-256: `{}`\n- Immutable artifact: `{VALIDATION_RECEIPT_REPO}@{receipt_commit}:{}`\n- Artifact SHA-256: `{}`\n- Log SHA-256: `{}`\n\n{marker}",
             artifact.run_id,
             artifact.executed_tests,
+            artifact.producer_coverage_status,
+            artifact.producer_paths.join(","),
+            artifact
+                .producer_valid_commits
+                .as_ref()
+                .map(|commits| commits.join(","))
+                .unwrap_or_else(|| "unbounded".into()),
             artifact.selected_digest,
             artifact.path,
             artifact.artifact_sha256,
@@ -5238,7 +5603,7 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
                 continue;
             }
         };
-        let assessment = assess_canonical_receipts(&rows, &head, &args.repo)
+        let assessment = assess_canonical_receipts(root, &rows, &head, &args.repo)
             .map_err(CiHubError::ValidateStatus)?;
         if assessment.verdict != validate_status::Verdict::Validated {
             println!(
@@ -5254,7 +5619,8 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
         // Prefer an already-published immutable artifact only when the existing
         // landing verifier accepts its exact marker/commit/content and Rust
         // confirms it embeds this exact selected row. Otherwise preserve the
-        // existing publisher path, including its fail-closed deleted-cwd rule.
+        // existing fail-closed publisher path. Producer resolution may use a
+        // durable checkout, but missing source evidence still refuses locally.
         let publisher = root.join("ci-hub/validation/publish_receipt.py");
         let reuse = reuse_existing_immutable_receipt(root, &args.repo, pr, &head, selected);
         let (artifact, receipt_source) = match reuse {
@@ -5305,6 +5671,9 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
             "artifact_sha256": artifact.artifact_sha256,
             "path": artifact.path,
             "receipt_source": receipt_source,
+            "producer_coverage_status": artifact.producer_coverage_status,
+            "producer_paths": artifact.producer_paths,
+            "producer_valid_commits": artifact.producer_valid_commits,
         }));
         applied += 1;
     }
@@ -5580,8 +5949,13 @@ mod tests {
     #[test]
     fn canonical_receipt_accepts_genuine_schema4_and_carries_its_conditions() {
         let row = history_row(schema4_receipt_value());
-        let assessment =
-            assess_canonical_receipts(&[row], RECEIPT_SHA, CANONICAL_VALIDATE_REPO).unwrap();
+        let assessment = assess_canonical_receipts(
+            Path::new("."),
+            &[row],
+            RECEIPT_SHA,
+            CANONICAL_VALIDATE_REPO,
+        )
+        .unwrap();
         assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
         let receipt = newest_canonical_receipt(&assessment.qualifying).unwrap();
         assert_eq!(receipt.selected_tests, 786);
@@ -5634,6 +6008,7 @@ mod tests {
         planted["gates"] = serde_json::json!([]);
 
         let assessment = assess_canonical_receipts(
+            Path::new("."),
             &[history_row(planted)],
             RECEIPT_SHA,
             CANONICAL_VALIDATE_REPO,
@@ -5708,6 +6083,7 @@ mod tests {
         );
 
         let error = assess_canonical_receipts(
+            Path::new("."),
             &[history_row(schema4_receipt_value())],
             RECEIPT_SHA,
             "rrnewton/reverie",
@@ -5728,6 +6104,10 @@ mod tests {
     }
 
     fn publisher_report_value(selected: &QualifyingReceipt, dry_run: bool) -> serde_json::Value {
+        let producer_definition = serde_json::json!({
+            ".github/workflows/ci-portable.yml": "1".repeat(40),
+            "validate.sh": "2".repeat(40),
+        });
         let receipt = serde_json::json!({
             "schema_version": 1,
             "repository": CANONICAL_VALIDATE_REPO,
@@ -5740,6 +6120,12 @@ mod tests {
             "source_log_file": selected.row.log_file,
             "durable_log_file": "/tmp/durable-validate.log",
             "log_sha256": "e".repeat(64),
+            "producer": {
+                "definition": producer_definition,
+                "coverage_status": "legacy-selected-paths",
+                "paths": [".github/workflows/ci-portable.yml", "validate.sh"],
+                "resolved_from": "/fixture/producer-checkout",
+            },
             "selected_receipt_identity": {
                 "digest_algorithm": "sha256",
                 "canonicalization": RECEIPT_CANONICALIZATION,
@@ -5783,7 +6169,9 @@ mod tests {
     /// <sha>:<path>` rather than a stub. Mirrors `make_producer_checkout` in
     /// ci-hub/validation/test_publish_receipt.py; deliberately no test-only
     /// override of the resolver itself, which would be a forgery path.
-    fn make_producer_checkout(root: &std::path::Path) -> (std::path::PathBuf, String) {
+    fn make_producer_checkout(
+        root: &std::path::Path,
+    ) -> (std::path::PathBuf, String, std::path::PathBuf) {
         let repo = root.join("producer-checkout");
         std::fs::create_dir_all(repo.join(".github/workflows")).unwrap();
         std::fs::write(
@@ -5814,7 +6202,26 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-qm", "producer fixture"]);
         let sha = git(&["rev-parse", "HEAD"]);
-        (repo, sha)
+        let definition = serde_json::json!({
+            "validate.sh": git(&["rev-parse", &format!("{sha}:validate.sh")]),
+            ".github/workflows/ci-portable.yml": git(&[
+                "rev-parse",
+                &format!("{sha}:.github/workflows/ci-portable.yml")
+            ]),
+        });
+        let registry = root.join("producer-definition-fixture.json");
+        std::fs::write(
+            &registry,
+            serde_json::to_vec(&serde_json::json!({
+                "registered_at": sha,
+                "registered_coverage_status": "legacy-selected-paths",
+                "registered_valid_commits": [sha],
+                "registered": definition,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        (repo, sha, registry)
     }
 
     #[test]
@@ -5837,7 +6244,7 @@ mod tests {
         // receipt to the producer definition it was minted by, resolved from the
         // VALIDATED COMMIT. So the row must name a real checkout at a real sha;
         // the previous hard-coded RECEIPT_SHA had no repository behind it.
-        let (producer_repo, receipt_sha) = make_producer_checkout(&temp);
+        let (producer_repo, receipt_sha, producer_registry) = make_producer_checkout(&temp);
         let mut value = schema4_receipt_value();
         value["log_file"] = serde_json::json!(log.display().to_string());
         value["commit"] = serde_json::json!(receipt_sha);
@@ -5864,6 +6271,7 @@ mod tests {
                 "--dry-run",
             ])
             .current_dir(&root)
+            .env("PRODUCER_DEFINITION_REGISTRY", producer_registry)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -5944,6 +6352,7 @@ mod tests {
         weak_value["gates"] = serde_json::json!([]);
         let weak = history_row(weak_value);
         let assessment = assess_canonical_receipts(
+            Path::new("."),
             &[strong.clone(), weak.clone()],
             RECEIPT_SHA,
             CANONICAL_VALIDATE_REPO,

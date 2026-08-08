@@ -106,8 +106,11 @@ echo "extracted $copies copy/copies of '$step_name'"
 
 neg_refused=0; neg_total=0; pos_accepted=0; pos_total=0; fail=0
 
-# Serve fixture content for whatever repo path the step asks for. The stub
-# returns base64 like the real `gh api ... --jq .content` does.
+# Serve fixture content for whatever repo path the step asks for. Provisioning
+# fetches return base64 like `--jq .content`; exact-target producer resolution
+# returns the registered blob identity like `--jq .sha`. This keeps the
+# positive leg on an actual registered commit instead of passing merely because
+# an unrelated fake SHA is correctly refused.
 make_stub() { # make_stub <bin-dir>
   mkdir -p "$1"
   cat >"$1/gh" <<'STUB'
@@ -116,6 +119,21 @@ make_stub() { # make_stub <bin-dir>
 url=""
 for a in "$@"; do case "$a" in repos/*) url=$a ;; esac; done
 rel=${url#*/contents/}; rel=${rel%%\?*}
+case " $* " in
+  *" --jq .sha "*)
+    registry="$FIXTURE_ROOT/ci-hub/validate/producer-definition.json"
+    blob=$(jq -r --arg path "$rel" '.registered[$path] // empty' "$registry")
+    case "$blob" in
+      [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+        [ "${#blob}" -eq 40 ] || exit 1
+        printf '%s\n' "$blob"
+        exit 0
+        ;;
+    esac
+    echo "stub gh: no registered producer blob for $rel" >&2
+    exit 1
+    ;;
+esac
 src="$FIXTURE_ROOT/$rel"
 [ -f "$src" ] || { echo "stub gh: no fixture for $rel" >&2; exit 1; }
 base64 -w0 <"$src"; echo
@@ -179,17 +197,19 @@ PY
 
   # Now run the provisioned verifier exactly as the gate does: with only the
   # env the step exported, from the temp dir, with NO checkout beside it.
-  local verifier predicate producer
+  local verifier predicate producer target_sha
   verifier=$(sed -n 's/^RECEIPT_VERIFIER=//p' "$env_file" | tail -1)
   predicate=$(sed -n 's/^QUALIFYING_RECEIPT_PREDICATE=//p' "$env_file" | tail -1)
   producer=$(sed -n 's/^PRODUCER_DEFINITION_REGISTRY=//p' "$env_file" | tail -1)
+  target_sha=$(jq -r '.registered_at' \
+    "$box/fixture/ci-hub/validate/producer-definition.json")
   printf '[[]]\n' >"$box/comments.json"
   local vrc=0
   env -i PATH="$PATH" HOME="$box" \
       ${predicate:+QUALIFYING_RECEIPT_PREDICATE="$predicate"} \
       ${producer:+PRODUCER_DEFINITION_REGISTRY="$producer"} \
       bash "$verifier" --repo rrnewton/hermit \
-        --sha aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        --sha "$target_sha" \
         --comments "$box/comments.json" >/dev/null 2>&1 || vrc=$?
 
   # exit 2 == the verifier could not resolve a registry == deploy defect.

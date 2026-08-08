@@ -47,6 +47,8 @@ pub struct ValidationEvidence {
     pub coverage_status: String,
     pub result: String,
     pub log_file: Option<String>,
+    /// Exact map-derived producer condition carried with a green verdict.
+    pub producer_definition: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -96,6 +98,10 @@ pub struct NewestGreenCache {
     pub ledger_path: String,
     pub ledger_len: u64,
     pub ledger_modified_ns: u128,
+    /// Hash of the canonical verifier's currently allowed producer records.
+    /// This changes on registry edits and at transition expiry.
+    #[serde(default)]
+    pub producer_definition_authority: String,
     pub report: NewestGreenReport,
 }
 
@@ -428,6 +434,7 @@ fn evidence(sha: &str, row: &HistoryRow) -> ValidationEvidence {
         coverage_status: coverage_status.into(),
         result: row.result.clone().unwrap_or_else(|| "unknown".into()),
         log_file: row.log_file.clone(),
+        producer_definition: row.extra.get("producer_definition").cloned(),
     }
 }
 
@@ -729,8 +736,9 @@ pub fn cache_matches(
     ledger_path: &Path,
     ledger_len: u64,
     ledger_modified_ns: u128,
+    producer_definition_authority: &str,
 ) -> bool {
-    cache.schema_version == 5
+    cache.schema_version == 6
         && cache.branch == branch
         && cache.branch_ref == branch_ref
         && cache.branch_tip == branch_tip
@@ -738,6 +746,7 @@ pub fn cache_matches(
         && cache.ledger_path == ledger_path.display().to_string()
         && cache.ledger_len == ledger_len
         && cache.ledger_modified_ns == ledger_modified_ns
+        && cache.producer_definition_authority == producer_definition_authority
 }
 
 pub fn cache_path(root: &Path, override_path: &Option<PathBuf>) -> PathBuf {
@@ -1114,7 +1123,7 @@ mod tests {
             commits_with_records: 0,
         };
         let cache = NewestGreenCache {
-            schema_version: 5,
+            schema_version: 6,
             branch: "main".into(),
             branch_ref: "origin/main".into(),
             branch_tip: "tip-a".into(),
@@ -1122,6 +1131,7 @@ mod tests {
             ledger_path: "/tmp/ledger".into(),
             ledger_len: 100,
             ledger_modified_ns: 200,
+            producer_definition_authority: "producer-a".into(),
             report,
         };
         let path = Path::new("/tmp/ledger");
@@ -1133,7 +1143,8 @@ mod tests {
             "floor",
             path,
             100,
-            200
+            200,
+            "producer-a"
         ));
         assert!(!cache_matches(
             &cache,
@@ -1143,7 +1154,8 @@ mod tests {
             "floor",
             path,
             100,
-            200
+            200,
+            "producer-a"
         ));
         assert!(!cache_matches(
             &cache,
@@ -1153,7 +1165,8 @@ mod tests {
             "floor",
             path,
             101,
-            201
+            201,
+            "producer-a"
         ));
         assert!(!cache_matches(
             &cache,
@@ -1163,7 +1176,19 @@ mod tests {
             "new-floor",
             path,
             100,
-            200
+            200,
+            "producer-a"
+        ));
+        assert!(!cache_matches(
+            &cache,
+            "main",
+            "origin/main",
+            "tip-a",
+            "floor",
+            path,
+            100,
+            200,
+            "producer-b"
         ));
     }
 
