@@ -31,10 +31,15 @@ tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 ledger=$tmp/ledger.jsonl
 
-# Distinct, obviously-synthetic commits. HEAD is the commit under evaluation;
-# OTHER stands for the commit a stale receipt was actually produced for (e.g.
-# the pre-rebase head, whose receipt a SHA-changing rebase invalidates).
-HEAD_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+# HEAD is the live registered producer commit: the authoritative consumer now
+# resolves the whole producer map from Git, so a nonexistent synthetic SHA can
+# never be a positive fixture.  The ledger and labels remain inert temp-dir
+# plants; only the map identity comes from the pinned Hermit object store.
+producer_registry=$root/ci-hub/validate/producer-definition.json
+producer_repo=$root/hermit
+HEAD_SHA=$(jq -er .registered_at "$producer_registry")
+HEAD_TREE=$(git -C "$producer_repo" rev-parse "$HEAD_SHA^{tree}")
+# OTHER and THIRD stand for stale foreign receipts and remain obviously fake.
 OTHER_SHA=cccccccccccccccccccccccccccccccccccccccc
 THIRD_SHA=dddddddddddddddddddddddddddddddddddddddd
 
@@ -51,9 +56,9 @@ LAST_STATUS=
 
 # A fully qualifying schema-5 clean full-coverage PASS row for $1.
 pass_row() {
-  jq -cn --arg c "$1" '{
+  jq -cn --arg c "$1" --arg cwd "$producer_repo" --arg tree "$HEAD_TREE" '{
     schema_version: 5, repo: "hermit", commit: $c,
-    tree: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    tree: $tree, cwd: $cwd,
     commit_anchored: true, tree_dirty: false,
     profile: "full", selection_mode: "full", result: "pass", raw_result: "pass",
     exit_code: 0, checks: 1, failures: 0, gates_run: 1, gates_expected: 1,

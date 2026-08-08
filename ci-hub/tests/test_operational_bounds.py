@@ -18,6 +18,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CI_HUB = ROOT / "ci-hub/ci-hub"
 WALL_SECONDS = 15
+# This is an end-to-end semantic bracket spanning the full producer-definition
+# lifecycle, not one bounded ci-hub operation.  It currently takes about 31s on
+# the development host, so applying WALL_SECONDS hides its verdict behind a
+# harness timeout.  Keep the ordinary command bound strict and give only this
+# complete bracket enough time to report its real pass/fail result.
+RECEIPT_BRACKET_WALL_SECONDS = 90
 CPU_SECONDS = 5
 
 
@@ -831,7 +837,7 @@ class OperationalBoundsTest(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=WALL_SECONDS,
+            timeout=RECEIPT_BRACKET_WALL_SECONDS,
         )
         self.assertIn("2/2 legitimate exact-head landing receipts accepted", result.stdout)
         self.assertIn("forged", result.stdout)

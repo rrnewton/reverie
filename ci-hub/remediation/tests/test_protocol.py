@@ -16,6 +16,8 @@ from unittest import mock
 
 REMEDIATION = Path(__file__).resolve().parents[1]
 HISTORY = REMEDIATION.parents[0] / "history"
+HERMIT = REMEDIATION.parents[1] / "hermit"
+PRODUCER_REGISTRY = REMEDIATION.parents[0] / "validate" / "producer-definition.json"
 sys.path.insert(0, str(REMEDIATION))
 sys.path.insert(0, str(HISTORY))
 
@@ -3346,6 +3348,17 @@ class ProtocolTest(unittest.TestCase):
     def test_real_canonical_cli_brackets_planted_receipts(self) -> None:
         ledger = self.root / "isolated-ledger.jsonl"
         observed_commands: list[tuple[str, ...]] = []
+        producer_sha = json.loads(PRODUCER_REGISTRY.read_text())["registered_at"]
+        subprocess.run(
+            ["git", "-C", str(HERMIT), "cat-file", "-e", f"{producer_sha}^{{commit}}"],
+            check=True,
+            capture_output=True,
+        )
+
+        def planted_row() -> dict:
+            row = ledger_receipt(producer_sha)
+            row["cwd"] = str(HERMIT)
+            return row
 
         def run_actual_cli(command, **kwargs):
             canonical_command = tuple(command)
@@ -3361,10 +3374,10 @@ class ProtocolTest(unittest.TestCase):
         def verify(row: dict) -> tuple[bool, dict]:
             ledger.write_text(json.dumps(row) + "\n", encoding="utf-8")
             with mock.patch.object(protocol, "_run", side_effect=run_actual_cli):
-                return protocol.verify_local_receipt("rrnewton/hermit", SHA)
+                return protocol.verify_local_receipt("rrnewton/hermit", producer_sha)
 
-        accepted, evidence = verify(ledger_receipt())
-        self.assertTrue(accepted)
+        accepted, evidence = verify(planted_row())
+        self.assertTrue(accepted, evidence)
         self.assertEqual(evidence["state"], "verified")
         self.assertEqual(
             evidence["command"][:2],
@@ -3379,7 +3392,7 @@ class ProtocolTest(unittest.TestCase):
         )
         self.assertNotIn("--ledger", evidence["command"])
 
-        exploit = ledger_receipt()
+        exploit = planted_row()
         exploit.update(
             schema_version=5,
             repo="hermit",
@@ -3397,14 +3410,14 @@ class ProtocolTest(unittest.TestCase):
                 "absent_nodes": [],
             },
         )
-        bad_gate_count = ledger_receipt()
+        bad_gate_count = planted_row()
         bad_gate_count["checks"] = 1
-        wrong_repo = ledger_receipt()
+        wrong_repo = planted_row()
         wrong_repo["repo"] = "reverie"
-        schema5_without_coverage = ledger_receipt()
+        schema5_without_coverage = planted_row()
         schema5_without_coverage["schema_version"] = 5
         schema5_without_coverage["repo"] = "hermit"
-        schema5_without_repo = ledger_receipt()
+        schema5_without_repo = planted_row()
         schema5_without_repo["schema_version"] = 5
         schema5_without_repo["coverage"] = {
             "planned_test_nodes": 1,

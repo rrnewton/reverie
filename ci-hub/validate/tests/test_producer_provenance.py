@@ -35,6 +35,8 @@ import unittest
 from pathlib import Path
 
 CI_HUB = Path(__file__).resolve().parents[2]
+HERMIT = CI_HUB.parent / "hermit"
+PRODUCER_REGISTRY = CI_HUB / "validate" / "producer-definition.json"
 sys.path.insert(0, str(CI_HUB))
 
 import qualifying_receipt as qr  # noqa: E402
@@ -386,6 +388,12 @@ class RustEngineParityTest(unittest.TestCase):
 
         cls._green_row = staticmethod(_green_row)
         cls._subprocess = subprocess
+        cls.producer_sha = json.loads(PRODUCER_REGISTRY.read_text())["registered_at"]
+        subprocess.run(
+            ["git", "-C", str(HERMIT), "cat-file", "-e", f"{cls.producer_sha}^{{commit}}"],
+            check=True,
+            capture_output=True,
+        )
 
     def _ask(self, row: dict, pred: dict) -> str:
         import os
@@ -400,7 +408,7 @@ class RustEngineParityTest(unittest.TestCase):
             [
                 "rust-script", "--force", str(CI_HUB / "ci-hub.rs"),
                 "validate-status", "--ledger", str(d / "l.jsonl"),
-                "--sha", SHA, "--json",
+                "--sha", self.producer_sha, "--json",
             ],
             capture_output=True, text=True, env=env, timeout=900,
         )
@@ -408,7 +416,8 @@ class RustEngineParityTest(unittest.TestCase):
         return json.loads(proc.stdout)["verdict"]
 
     def _row(self, producer=None, finished: str = AFTER_EPOCH, schema: int = 5) -> dict:
-        row = self._green_row(SHA)
+        row = self._green_row(self.producer_sha)
+        row["cwd"] = str(HERMIT)
         row["finished_at"] = finished
         row["schema_version"] = schema
         if schema < 5:
@@ -430,12 +439,18 @@ class RustEngineParityTest(unittest.TestCase):
         for producer in (None, "hermit-valrs"):
             row = self._row(producer=producer)
             self.assertEqual(self._ask(row, pred), "NOT-VALIDATED")
-            self.assertFalse(qr.row_qualifies(row, SHA, pred), "engines must agree")
+            self.assertFalse(
+                qr.row_qualifies(row, self.producer_sha, pred),
+                "engines must agree",
+            )
             refused += 1
         for slug in live_predicate()["producer"]["known"]:
             row = self._row(producer=slug)
             self.assertEqual(self._ask(row, pred), "VALIDATED")
-            self.assertTrue(qr.row_qualifies(row, SHA, pred), "engines must agree")
+            self.assertTrue(
+                qr.row_qualifies(row, self.producer_sha, pred),
+                "engines must agree",
+            )
             accepted += 1
         grandfathered = self._row(finished=BEFORE_EPOCH, schema=4)
         self.assertEqual(self._ask(grandfathered, pred), "VALIDATED")
