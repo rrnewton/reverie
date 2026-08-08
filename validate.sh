@@ -208,7 +208,15 @@ append_validation_ledger() {
     if ((VALIDATION_COMMIT_ANCHORED == 1)); then commit_anchored_json=true; else commit_anchored_json=false; fi
     if ((VALIDATION_TREE_DIRTY == 1)); then tree_dirty_json=true; else tree_dirty_json=false; fi
 
-    line="{\"schema_version\":3,\"repo\":\"reverie\","
+    # `producer` names the CODE PATH that appended this row, so provenance is a
+    # lookup rather than an investigation -- establishing it for one row
+    # previously took JSON-whitespace forensics plus a git log -S across three
+    # repos. The slug is REPO-QUALIFIED because hermit ships a `validate.sh`
+    # too, and must be registered in `producer.known` of the parent's
+    # ci-hub/validate/qualifying-receipt.json; an unregistered slug is refused
+    # exactly like an absent one once that predicate's epoch is flipped on.
+    # Additive and inert until then.
+    line="{\"schema_version\":3,\"producer\":\"reverie-validate-sh\",\"repo\":\"reverie\","
     line+="\"started_at\":$(json_quote "$VALIDATION_STARTED_AT"),"
     line+="\"finished_at\":$(json_quote "$finished_at"),\"host\":$(json_quote "$VALIDATION_HOST"),"
     line+="\"slot\":$(json_quote "$VALIDATION_SLOT"),\"cwd\":$(json_quote "$ROOT_DIR"),"
