@@ -283,6 +283,27 @@ def _qualifying_schema5_row(sha: str) -> dict:
     return row
 
 
+def _counted_schema5_source(sha: str, log_path: str = "/already-evicted") -> dict:
+    """A real producer-complete measurement that lacks only base evidence."""
+    row = _countless_green_row(sha, log_path)
+    row.update(
+        schema_version=5,
+        executed_tests=862,
+        filtered_tests=693,
+        coverage={
+            "planned_test_nodes": 19,
+            "executed_test_nodes": 19,
+            "zero_executed_nodes": [],
+            "absent_nodes": [],
+        },
+        producer="hermit-validate-sh",
+        admission="ci-hub-validate-lock",
+        concurrent_validates=0,
+        concurrency_proof="validate_lock_owner_ancestry",
+    )
+    return row
+
+
 def test_schema5_idempotency_guard_uses_canonical_coverage_authority():
     """Positive and absent-list controls bracket the finalizer consumer."""
     row = _qualifying_schema5_row("9" * 40)
@@ -347,6 +368,66 @@ def test_exact_row_only_mints_one_and_preserves_every_other_byte(tmp_path, monke
         "producer": "hermit-validate-sh",
     }
     assert minted["commit_anchored"] is True and minted["profile"] == "full"
+
+
+def test_counted_schema5_source_preserves_measurement_and_adds_only_base(
+    tmp_path, monkeypatch
+):
+    """A complete producer row needs no surviving log to gain base evidence."""
+    sha = "4" * 40
+    source = _counted_schema5_source(sha)
+    ledger = tmp_path / "counted.jsonl"
+    ledger.write_text(json.dumps(source) + "\n")
+    monkeypatch.setattr(fr, "build_base_evidence", lambda *a: dict(BASE_FIELDS))
+    monkeypatch.setattr(
+        fr,
+        "build_coverage",
+        lambda *a: (_ for _ in ()).throw(AssertionError("coverage was recomputed")),
+    )
+    digest = fr.canonical_row_sha256(source, sha)
+
+    assert fr.select_candidate_sha256(str(ledger), sha) == digest
+    result = fr.scan_and_finalize(str(ledger), str(tmp_path), sha, digest)
+
+    assert result == {
+        "sha": sha,
+        "satisfied": True,
+        "reason": "minted",
+        "executed_tests": 862,
+        "planned_test_nodes": 19,
+        "exit_code": 0,
+        "appended": 1,
+    }
+    minted = json.loads(ledger.read_text().splitlines()[-1])
+    assert minted["executed_tests"] == source["executed_tests"]
+    assert minted["filtered_tests"] == source["filtered_tests"]
+    assert minted["coverage"] == source["coverage"]
+    assert {key: minted[key] for key in BASE_FIELDS} == BASE_FIELDS
+    assert minted["producer"] == "ci-hub-finalize-receipt"
+
+
+def test_counted_schema5_source_without_admission_remains_refused(
+    tmp_path, monkeypatch
+):
+    """Base binding cannot launder the pre-admission producer shape."""
+    sha = "5" * 40
+    source = _counted_schema5_source(sha)
+    source.pop("admission")
+    source.pop("producer")
+    source["concurrent_validates"] = 16
+    source["concurrency_proof"] = "process_group_overlap_monitor"
+    ledger = tmp_path / "unadmitted.jsonl"
+    before = json.dumps(source) + "\n"
+    ledger.write_text(before)
+    monkeypatch.setattr(fr, "build_base_evidence", lambda *a: dict(BASE_FIELDS))
+    digest = fr.canonical_row_sha256(source, sha)
+
+    assert fr.select_candidate_sha256(str(ledger), sha) == digest
+    result = fr.scan_and_finalize(str(ledger), str(tmp_path), sha, digest)
+
+    assert result["reason"] == "insufficient-source-row"
+    assert result["satisfied"] is False and result["appended"] == 0
+    assert ledger.read_text() == before
 
 
 def test_exact_row_finalization_is_idempotent(tmp_path, monkeypatch):

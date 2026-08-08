@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """MAIN-REACHABLE validation-receipt COUNTS + per-node COVERAGE finalizer.
 
-Produces the schema-5 `coverage{}` obligation (plus the aggregate
-`executed_tests` / `filtered_tests` diagnostics) for a validate run, reading only
-two things that already exist on `main`:
+Produces or preserves the schema-5 `coverage{}` obligation (plus the aggregate
+`executed_tests` / `filtered_tests` diagnostics) and binds it to merge-boundary
+base evidence. Historical count-less rows are reconstructed from two things that
+already exist on `main`:
 
   1. the full safe-ci-dag-runner log (`[<node.tag>] `-prefixed child stdout +
      `[<node.tag>] ✓ PASS/✗ FAIL` terminal lines), and
@@ -351,16 +352,38 @@ def _clone_upgraded(
     return row
 
 
-def _is_countless_clean_full_pass(rec: dict) -> bool:
-    """A row that TODAY rides the grandfather: clean/full/full/pass carrying no
-    executed count. These are exactly the rows a scan can mint from their log."""
+def _has_complete_schema5_measurement(rec: dict) -> bool:
+    """A producer-carried measurement that needs no replay from its log."""
+    executed = rec.get("executed_tests")
+    return (
+        isinstance(rec.get("schema_version"), int)
+        and not isinstance(rec.get("schema_version"), bool)
+        and rec["schema_version"] >= SCHEMA_VERSION
+        and isinstance(executed, int)
+        and not isinstance(executed, bool)
+        and executed > 0
+        and qualifying_receipt.coverage_satisfied(rec.get("coverage"))
+    )
+
+
+def _is_finalizable_clean_full_pass(rec: dict) -> bool:
+    """A clean/full/full/pass source whose missing evidence can be derived.
+
+    Historical count-less rows need coverage replayed from their durable log.
+    Current producers already carry a complete schema-5 measurement; those rows
+    need only merge-boundary base evidence and must retain their measured counts
+    and coverage byte-for-value rather than recomputing them.
+    """
     return (
         rec.get("commit_anchored") is True
         and rec.get("tree_dirty") is False
         and rec.get("selection_mode") == "full"
         and rec.get("profile") == "full"
         and rec.get("result") == "pass"
-        and rec.get("executed_tests") is None
+        and (
+            rec.get("executed_tests") is None
+            or _has_complete_schema5_measurement(rec)
+        )
     )
 
 
@@ -412,7 +435,7 @@ def _existing_finalization(
 
 
 def select_candidate_sha256(ledger_path: str, sha: str) -> str:
-    """Select the newest exact-SHA count-less source and return its canonical ID.
+    """Select the newest exact-SHA finalizable source and return its canonical ID.
 
     This is a read-only convenience for trusted callers. Mutation still requires
     passing the returned digest back explicitly, and the mutating path re-resolves
@@ -425,11 +448,11 @@ def select_candidate_sha256(ledger_path: str, sha: str) -> str:
     candidates = [
         row
         for row in rows
-        if row.get("commit") == sha and _is_countless_clean_full_pass(row)
+        if row.get("commit") == sha and _is_finalizable_clean_full_pass(row)
     ]
     if not candidates:
         raise SelectedRowError(
-            "selected-row-missing", f"no count-less clean/full/pass row for {sha}"
+            "selected-row-missing", f"no finalizable clean/full/pass row for {sha}"
         )
     canonical_candidates: list[tuple[dict, str]] = []
     for row in candidates:
@@ -490,12 +513,12 @@ def scan_and_finalize(
         rows = _load_rows(handle)
         selected = dict(_resolve_selected_row(rows, sha, selected_row_sha256))
 
-    if not _is_countless_clean_full_pass(selected):
+    if not _is_finalizable_clean_full_pass(selected):
         return {
             "sha": sha,
             "satisfied": False,
             "reason": "insufficient-source-row",
-            "detail": "selected row is not a count-less clean/full/pass source",
+            "detail": "selected row is not a finalizable clean/full/pass source",
             "exit_code": 1,
             "appended": 0,
         }
@@ -509,28 +532,29 @@ def scan_and_finalize(
             "appended": 0,
         }
 
-    log = selected.get("log_file")
-    if not isinstance(log, str) or not os.path.isfile(log):
-        return {
-            "sha": sha,
-            "satisfied": False,
-            "reason": "no-log",
-            "exit_code": 1,
-            "appended": 0,
-        }
-    with open(log, errors="replace") as log_handle:
-        log_text = log_handle.read()
-    planned = planned_test_nodes(hermit_checkout, sha)
-    if not planned:
-        return {
-            "sha": sha,
-            "satisfied": False,
-            "reason": "no-manifest",
-            "exit_code": 1,
-            "appended": 0,
-        }
-
-    fields = build_coverage(log_text, planned)
+    fields: dict = {}
+    if not _has_complete_schema5_measurement(selected):
+        log = selected.get("log_file")
+        if not isinstance(log, str) or not os.path.isfile(log):
+            return {
+                "sha": sha,
+                "satisfied": False,
+                "reason": "no-log",
+                "exit_code": 1,
+                "appended": 0,
+            }
+        with open(log, errors="replace") as log_handle:
+            log_text = log_handle.read()
+        planned = planned_test_nodes(hermit_checkout, sha)
+        if not planned:
+            return {
+                "sha": sha,
+                "satisfied": False,
+                "reason": "no-manifest",
+                "exit_code": 1,
+                "appended": 0,
+            }
+        fields.update(build_coverage(log_text, planned))
     # This finalizer is Hermit-specific (Hermit manifests, Hermit commit, Hermit
     # Cargo.lock). Older Hermit rows predate the repo column, so carry that
     # already-bound scope into the schema-5 clone rather than manufacturing it
@@ -547,13 +571,14 @@ def scan_and_finalize(
             "exit_code": 1,
             "appended": 0,
         }
-    coverage = fields["coverage"]
+    coverage = fields.get("coverage", selected.get("coverage"))
+    executed_tests = fields.get("executed_tests", selected.get("executed_tests"))
     if not qualifying_receipt.coverage_satisfied(coverage):
         return {
             "sha": sha,
             "satisfied": False,
             "reason": "unsatisfied-coverage",
-            "executed_tests": fields["executed_tests"],
+            "executed_tests": executed_tests,
             "planned_test_nodes": coverage["planned_test_nodes"],
             "exit_code": 1,
             "appended": 0,
@@ -573,7 +598,7 @@ def scan_and_finalize(
             "satisfied": False,
             "reason": "insufficient-source-row",
             "detail": str(error),
-            "executed_tests": fields["executed_tests"],
+            "executed_tests": executed_tests,
             "planned_test_nodes": coverage["planned_test_nodes"],
             "exit_code": 1,
             "appended": 0,
@@ -601,7 +626,7 @@ def scan_and_finalize(
                 "sha": sha,
                 "satisfied": True,
                 "reason": "would-mint",
-                "executed_tests": fields["executed_tests"],
+                "executed_tests": executed_tests,
                 "planned_test_nodes": coverage["planned_test_nodes"],
                 "exit_code": 0,
                 "appended": 0,
@@ -614,7 +639,7 @@ def scan_and_finalize(
         "sha": sha,
         "satisfied": True,
         "reason": "minted",
-        "executed_tests": fields["executed_tests"],
+        "executed_tests": executed_tests,
         "planned_test_nodes": coverage["planned_test_nodes"],
         "exit_code": 0,
         "appended": 1,
@@ -642,7 +667,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--select-candidate-sha256",
         action="store_true",
-        help="read-only: print the newest exact-SHA count-less source-row digest",
+        help="read-only: print the newest exact-SHA finalizable source-row digest",
     )
     ap.add_argument("--emit-only", action="store_true",
                     help="print the schema-5 fields to stdout; do NOT touch a ledger")
