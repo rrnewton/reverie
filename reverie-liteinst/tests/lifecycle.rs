@@ -199,8 +199,44 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
     assert!(stats.distinct_rips() >= 1, "{stats}");
     assert!(stats.patch_candidates() >= 1, "{stats}");
     let paths = stats.dispatch_path_counts();
+
+    // Positive half: the in-guest paths actually carried the work.
     assert!(paths[2] >= 1, "expected an in-guest SIGSYS: {stats}");
     assert!(paths[6] >= 8, "expected installed-hook dispatches: {stats}");
+
+    // Negative half. Without this, the assertions above are satisfiable while
+    // the host ALSO services every syscall, which is precisely the silent
+    // per-syscall fallback that a premature `--backend liteinst` default would
+    // introduce: the counters above would stay green and nothing would say the
+    // ptracer was still doing the work. A one-sided "in-guest count > 0" check
+    // cannot distinguish "ran in-guest" from "ran in-guest AND fell back".
+    //
+    // These are exact zeros, not bounds, because that is what this fixture
+    // measures today: paths = [0, 0, 5, 24, 0, 0, 12] on
+    // reverie main dd3c178ea9553004d7bf4c494e1b7fd80e7b6ae6. Asserting the
+    // measured value rather than a slack bound is the point -- a bound of
+    // "<= a few" would absorb the first regression silently.
+    //
+    // Scope: this is the `fast-path` guest on the dynamic-preload path. It is
+    // evidence for THIS fixture, not a whole-backend zero-ptracer claim. The
+    // RCB clock, CPUID/RDTSC, and clone3/vfork/exec gaps are still open and are
+    // still serviced by (or fail closed before reaching) the ptrace side.
+    assert_eq!(
+        paths[1], 0,
+        "ptrace installed a site: the dispatch path is not in-guest: {stats}"
+    );
+    assert_eq!(
+        paths[0], 0,
+        "a first-site seccomp trap was taken, so the host serviced a syscall: {stats}"
+    );
+    assert_eq!(
+        paths[4], 0,
+        "cacheline-straddler fallback taken, so the host serviced a syscall: {stats}"
+    );
+    assert_eq!(
+        paths[5], 0,
+        "unpatchable/other fallback taken, so the host serviced a syscall: {stats}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
