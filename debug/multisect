@@ -255,6 +255,25 @@ def parse_box_class(stdout: Path) -> str:
     return matches[-1] if matches else "BOX_ERROR"
 
 
+def read_probe_outcome(rep_dir: Path) -> tuple[str, str] | None:
+    """A probe's self-declared typed outcome, if it wrote one.
+
+    Format: one line, `OUTCOME<TAB>reason`. Only "INFRA" is honoured (see the
+    call site); anything else is recorded by the probe for humans and ignored
+    here, so a malformed or hostile file can never manufacture a green.
+    """
+
+    path = rep_dir / "probe-outcome"
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    outcome, _, reason = raw.partition("\t")
+    return outcome.strip().upper(), reason.strip()
+
+
 def green_from_box(box_class: str, return_code: int) -> bool | None:
     """Map a self-consistent native box verdict to green/bad; fail closed otherwise."""
     if box_class == "PASS":
@@ -344,6 +363,19 @@ def run_repetition(
     wall_seconds = time.monotonic() - started
     box_class = parse_box_class(stdout)
     green = green_from_box(box_class, return_code)
+    # A probe may DOWNGRADE its own repetition to INFRA, never upgrade it.
+    #
+    # The box verdict stays the pass/fail authority -- a probe that could
+    # declare itself GREEN would be forgeable, and forging green is the one
+    # thing this engine must not permit. But the box can only say PASS or FAIL,
+    # and a DAG-node probe has a third real answer: the node did not run, the
+    # artifact was missing, the runner was OOM-killed. Those are NOT evidence
+    # about the commit, and counting them as BAD walks a bisect straight past
+    # the guilty commit. So the probe may write `probe-outcome` to refuse to be
+    # counted, and only in that direction.
+    probe_outcome = read_probe_outcome(rep_dir)
+    if probe_outcome and probe_outcome[0] == "INFRA":
+        green = None
     result = RepResult(
         round_number=round_number,
         index=index,

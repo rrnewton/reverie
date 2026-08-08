@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+# multisect probe for a CI DAG NODE, as opposed to a compiled test binary.
+#
+# WHY A SIBLING AND NOT A FLAG ON multisect-probe. That probe's contract is
+# build-a-test-binary -> glob it -> run it (PROBE_BUILD_ARGV, PROBE_TEST_BIN_GLOB,
+# PROBE_TEST_ARGV). A DAG node is a shell step inside a dependency graph; it has
+# no binary to glob and no argv to filter. The owner's motivating case,
+# `e2e.metadata` timing out, is exactly that shape, so the existing probe cannot
+# be aimed at it by any parameter. The shape is the gap.
+#
+# WHAT IT RUNS
+#   safe-ci-dag-runner run --dag <PROBE_DAG> --only <PROBE_NODE>
+# `--only` runs EXACTLY that node and not its dependencies, which is what makes
+# the probe narrow. Inputs the node consumes are assumed already present; when
+# they are not, that is an INFRA answer, not a verdict about the commit.
+#
+# THE MAPPING IS THE POINT. The runner emits a precedence-ordered typed reason
+# (model.py `OOM > CPU-timeout > timeout > pids-guard > detail-capture > signal
+# > exit code`), printed as `[<tag>] ✗ FAIL <desc> (<dur>s, <reason>)`. This
+# probe translates that into the engine's THREE outcomes:
+#
+#   clean pass ............................. exit 0    -> GREEN
+#   TIMEOUT / CPU-TIMEOUT .................. exit 1    -> BAD   (the bug class)
+#   OOM-KILLED ............................. INFRA
+#   PIDS GUARD ............................. INFRA
+#   DETAIL CAPTURE FAILED .................. INFRA
+#   node never ran / runner never started .. INFRA
+#
+# OOM AND "DID NOT RUN" ARE NEVER BAD. They say the measurement failed, not that
+# the commit is guilty. A bisect that scores them BAD blames whichever commit
+# happened to hit a flaky box, and the blamed diff will look innocent because it
+# is. INFRA is signalled by writing `probe-outcome` into MULTISECT_OUTPUT_DIR;
+# the engine honours that file in the INFRA direction ONLY, so this probe can
+# refuse to be counted but can never declare itself green.
+#
+# BIMODAL NODES: this probe deliberately reports ONE repetition. Distinguishing
+# "this commit is slower" from "this draw was slow" is the ENGINE's job, via
+# reps (`-n`, default 6) and its ambiguous/refusal status. A single-shot verdict
+# on a bimodal node is precisely the confident-wrong-commit failure this exists
+# to avoid, so nothing here tries to decide from one sample.
+#
+# Profile inputs (multisect/probes/<name>.env):
+#   PROBE_REPO       git checkout owning the objects to search
+#   PROBE_POOL_DIR   per-commit worktree pool (orchestrator-owned, gitignored)
+#   PROBE_DAG        dag json, repo-relative (e.g. ci/dag/portable.json)
+#   PROBE_NODE       node tag to run (e.g. e2e.metadata)
+#   PROBE_NODE_TIMEOUT  outer bound, seconds; a wedge must not hang the search
+#   PROBE_RUNNER     safe-ci-dag-runner entrypoint (default: resolve from repo)
+set -uo pipefail
+
+if [[ -z "${PROBE_REPO:-}" && -n "${PROBE_CONFIG:-}" && -f "${PROBE_CONFIG}" ]]; then
+  # shellcheck disable=SC1090
+  set -a; source "${PROBE_CONFIG}"; set +a
+fi
+: "${PROBE_REPO:?configured probe must set PROBE_REPO}"
+: "${PROBE_POOL_DIR:?configured probe must set PROBE_POOL_DIR}"
+: "${PROBE_DAG:?configured probe must set PROBE_DAG}"
+: "${PROBE_NODE:?configured probe must set PROBE_NODE}"
+: "${PROBE_NODE_TIMEOUT:=900}"
+
+short="${MULTISECT_SHORT_COMMIT:-${MULTISECT_COMMIT:0:12}}"
+out="${MULTISECT_OUTPUT_DIR:-$PROBE_POOL_DIR/out-$short-r${MULTISECT_REP:-0}}"
+mkdir -p "$out" "$PROBE_POOL_DIR"
+
+# Declare the typed outcome for the engine. INFRA is the only value it acts on.
+declare_outcome() { printf '%s\t%s\n' "$1" "$2" > "$out/probe-outcome"; }
+
+infra() { declare_outcome INFRA "$1"; echo "PROBE INFRA: $1" >&2; exit 125; }
+
+wt="$PROBE_POOL_DIR/wt-$short"
+if [[ ! -d $wt ]]; then
+  addlock="$PROBE_POOL_DIR/.worktree-add.lock"
+  ( flock 9
+    [[ -d $wt ]] || git -C "$PROBE_REPO" worktree add --detach "$wt" "$MULTISECT_COMMIT" >/dev/null 2>&1
+  ) 9>"$addlock"
+fi
+[[ -d $wt ]] || infra "could not materialise a worktree for $short"
+
+runner="${PROBE_RUNNER:-}"
+if [[ -z $runner ]]; then
+  for cand in "$PROBE_REPO/../agent-utils/py/bin/safe-ci-dag-runner" \
+              "$(command -v safe-ci-dag-runner 2>/dev/null || true)"; do
+    [[ -n $cand && -x $cand ]] && { runner="$cand"; break; }
+  done
+fi
+[[ -n $runner && -x $runner ]] || infra "safe-ci-dag-runner not found (set PROBE_RUNNER)"
+[[ -f "$wt/$PROBE_DAG" ]] || infra "$PROBE_DAG absent at $short (node not in this commit's DAG)"
+
+log="$out/dag.log"
+timeout --signal=TERM --kill-after=30 "$PROBE_NODE_TIMEOUT" \
+  "$runner" run --dag "$PROBE_DAG" --only "$PROBE_NODE" >"$log" 2>&1
+rc=$?
+
+# The runner prints one line per node it actually ran. No line for our tag means
+# the node never executed -- unrunnable, filtered out, or absent from this
+# commit's graph. That is the "did not run" case and it must not score.
+if ! grep -qF "[$PROBE_NODE]" "$log"; then
+  infra "node $PROBE_NODE produced no line in the runner output (never ran); runner rc=$rc"
+fi
+
+reason=$(grep -F "[$PROBE_NODE]" "$log" | grep -F '✗' | tail -1)
+
+case "$reason" in
+  *OOM-KILLED*)            infra "OOM-KILLED: $reason" ;;
+  *"PIDS GUARD"*)          infra "PIDS GUARD: $reason" ;;
+  *"DETAIL CAPTURE FAILED"*) infra "DETAIL CAPTURE FAILED: $reason" ;;
+esac
+
+if [[ -n $reason ]]; then
+  case "$reason" in
+    *CPU-TIMEOUT*|*TIMEOUT*)
+      declare_outcome BAD "$reason"; echo "PROBE BAD: $reason" >&2; exit 1 ;;
+    *)
+      # A non-timeout failure of the node. Still BAD -- it is a real verdict
+      # about this commit -- but labelled so a reader is not told "timeout".
+      declare_outcome BAD "non-timeout node failure: $reason"
+      echo "PROBE BAD (non-timeout): $reason" >&2; exit 1 ;;
+  esac
+fi
+
+# No failure line for the tag. Only treat that as GREEN if the runner itself
+# also succeeded; a zero-failure log from a runner that died is not a pass.
+if (( rc != 0 )); then
+  infra "runner exited $rc with no failure line for $PROBE_NODE"
+fi
+declare_outcome GREEN "node $PROBE_NODE passed"
+exit 0

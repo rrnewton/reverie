@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -166,6 +167,76 @@ exit "$rc"
             self.assertIsNone(multisect.green_from_box("FAIL", 0))
             self.assertIsNone(multisect.green_from_box("PASS", 1))
             self.assertIsNone(multisect.green_from_box("BOX-UNAVAILABLE", 3))
+
+    def test_probe_may_declare_INFRA_and_only_infra(self) -> None:
+        """A probe can refuse to be counted; it can never declare itself green.
+
+        The box verdict is the pass/fail authority precisely because a probe
+        that could forge GREEN would defeat the whole engine. But the box only
+        says PASS or FAIL, and a DAG-node probe has a third real answer -- the
+        node did not run, the artifact was missing, the runner was OOM-killed.
+        Those are not evidence about the commit, and scoring them BAD walks a
+        bisect past the guilty one. So the probe may DOWNGRADE to INFRA, and
+        only in that direction.
+        """
+
+        with tempfile.TemporaryDirectory() as temporary:
+            rep = Path(temporary)
+
+            def declare(text: str):
+                (rep / "probe-outcome").write_text(text)
+                return multisect.read_probe_outcome(rep)
+
+            self.assertEqual(
+                ("INFRA", "OOM-KILLED: hit inner MemoryMax"),
+                declare("INFRA\tOOM-KILLED: hit inner MemoryMax"),
+            )
+            self.assertEqual(("GREEN", "node passed"), declare("GREEN\tnode passed"))
+            self.assertEqual(("GARBAGE", ""), declare("garbage"))
+            self.assertIsNone(declare(""))
+            (rep / "probe-outcome").unlink()
+            self.assertIsNone(multisect.read_probe_outcome(rep))
+
+    def test_a_declared_green_cannot_override_a_failing_box(self) -> None:
+        """The forgery case, stated as a test so it cannot regress.
+
+        Only the string "INFRA" is acted on at the call site. Everything else a
+        probe might write -- GREEN, PASS, or nonsense -- leaves the box verdict
+        untouched.
+        """
+
+        def resolve(box: str, code: int, declared):
+            green = multisect.green_from_box(box, code)
+            if declared and declared[0] == "INFRA":
+                green = None
+            return green
+
+        # Downgrade is honoured, from either starting verdict.
+        self.assertIsNone(resolve("PASS", 0, ("INFRA", "node never ran")))
+        self.assertIsNone(resolve("FAIL", 1, ("INFRA", "OOM-KILLED")))
+        # Upgrade is refused, however the probe words it.
+        self.assertFalse(resolve("FAIL", 1, ("GREEN", "trust me")))
+        self.assertFalse(resolve("FAIL", 1, ("PASS", "trust me")))
+        self.assertFalse(resolve("FAIL", 1, ("BAD", "")))
+        # Absent file changes nothing.
+        self.assertTrue(resolve("PASS", 0, None))
+
+    def test_a_bimodal_commit_is_not_blamed_on_one_slow_draw(self) -> None:
+        """The confident-wrong-commit failure, pinned numerically.
+
+        e2e.metadata runs 16.5s OR 57s against a 60s budget. Measured on the
+        real node: it drew slow 2 times in 9. A single-shot probe therefore
+        reports BAD on an INNOCENT commit 2 times in 9, and the blamed diff
+        looks definitive because nothing records that it was one draw.
+        """
+
+        config = types.SimpleNamespace(good_floor=0.67, bad_ceiling=0.33, min_step=0.5)
+        # Nine reps of the real observed pattern: 7 pass, 2 slow.
+        self.assertEqual("GREENISH", multisect.classify_rate(7 / 9, config))
+        # The same commit, sampled once and unlucky, is scored as broken.
+        self.assertEqual("WEDGED", multisect.classify_rate(0.0, config))
+        # And a genuine coin-flip lands in the refusal band rather than a verdict.
+        self.assertEqual("JITTER", multisect.classify_rate(0.5, config))
 
     def test_end_to_end_converges_on_rate_step(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
