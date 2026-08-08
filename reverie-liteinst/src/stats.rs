@@ -145,9 +145,7 @@ pub struct LiteinstBackendStatsSource {
 }
 
 impl LiteinstBackendStatsSource {
-    pub(crate) fn from_ptrace_host_hybrid(
-        stats: reverie_ptrace::LiteinstInstrumentationStats,
-    ) -> Self {
+    pub(crate) fn from_ptrace_host_hybrid(stats: reverie::LiteinstInstrumentationStats) -> Self {
         let decisions = stats.decision_counts();
         let paths = stats.dispatch_path_counts();
         Self {

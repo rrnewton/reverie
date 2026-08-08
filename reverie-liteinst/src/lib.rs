@@ -21,7 +21,7 @@ pub use backend::PreloadBootstrap;
 pub use backend::STATS_COORDINATOR_ENV;
 pub use backend::TOOL_PRELOAD_ENV;
 pub use backend::take_preload_bootstrap;
-pub use reverie_ptrace::LiteinstInstrumentationStats;
+pub use reverie::LiteinstInstrumentationStats;
 pub use stats::LiteinstBackendStatsSnapshot;
 pub use stats::LiteinstBackendStatsSource;
 pub use stats::LiteinstDispatchPath;
