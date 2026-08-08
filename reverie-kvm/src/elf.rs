@@ -35,6 +35,12 @@ const PAGE_SIZE: u64 = 4096;
 pub(crate) const STACK_LIMIT: u64 = 8 * 1024 * 1024;
 const STACK_STRING_HEADROOM: u64 = 4096;
 const MMAP_GAP: u64 = 1024 * 1024;
+/// Address space reserved above `MMAP_GAP` for a static image's program break
+/// before `mmap` starts. Linux bounds `brk` by the next real mapping, not by a
+/// fixed constant, so this only has to be large enough that a guest's heap
+/// growth is not what forces glibc onto the mmap fallback. Clamped at load time
+/// to half the space left below `mmap_limit`.
+const HEAP_ARENA: u64 = 64 * 1024 * 1024;
 const MAX_PROGRAM_HEADERS_SIZE: usize = PAGE_SIZE as usize;
 const MAX_INTERPRETER_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SCRIPT_INTERPRETERS: usize = 4;
@@ -667,7 +673,7 @@ fn load_executable(
     )?;
     memory.map_user_range(memory.guest_end() - STACK_LIMIT, STACK_LIMIT, false)?;
     let program_break = align_up(main_end, PAGE_SIZE)?;
-    let mmap_next = align_up(
+    let mmap_floor = align_up(
         image_end
             .checked_add(MMAP_GAP)
             .ok_or_else(|| Error::UnsupportedElf("initial mmap base overflow".to_string()))?,
@@ -677,11 +683,26 @@ fn load_executable(
         .guest_end()
         .checked_sub(STACK_LIMIT)
         .ok_or(Error::LongModeMemoryTooSmall)?;
-    if mmap_next >= mmap_limit {
+    if mmap_floor >= mmap_limit {
         return Err(Error::LongModeMemoryTooSmall);
     }
+    // A STATIC image has no interpreter above it, so nothing but our own choice
+    // of `mmap_base` bounds the program break. Setting `brk_limit = mmap_base`
+    // capped the heap at exactly `MMAP_GAP` and started mmap at the first byte
+    // brk was refused, which is a behavioural divergence from the ptrace
+    // reference rather than a layout detail: glibc grows the heap with `brk`,
+    // and once refused it falls back to `mmap`, so every guest whose heap
+    // exceeds 1 MiB runs a DIFFERENT ALLOCATOR PATH under KVM. Measured on a
+    // malloc/fragment/reuse guest: ptrace granted `brk(0x5d3000)` while KVM
+    // refused at `brk_limit` 0x5bd000 and returned the old break, missing by
+    // 88 KiB -- so the cap was not merely conservative, it was arbitrary.
+    //
+    // Linux instead lets `brk` grow until it meets a real mapping and places
+    // `mmap_base` far from the image. Reserve a heap arena and start mmap above
+    // it. The reserve is clamped to half the remaining space so a small guest
+    // memory still loads instead of failing to reserve.
     let brk_limit = if at_base == 0 {
-        mmap_next
+        static_brk_limit(mmap_floor, mmap_limit)?
     } else {
         // The interpreter is loaded at `at_base`; the program break grows in the
         // gap between the main image and the interpreter, so cap it there. For a
@@ -689,6 +710,13 @@ fn load_executable(
         // than the fixed `INTERPRETER_LOAD_BIAS`.
         at_base
     };
+    // mmap must never start below the heap arena or the two regions overlap.
+    // For a dynamic image the arena is bounded by the interpreter instead, so
+    // the floor is unchanged there.
+    let mmap_next = if at_base == 0 { brk_limit } else { mmap_floor };
+    if mmap_next >= mmap_limit {
+        return Err(Error::LongModeMemoryTooSmall);
+    }
 
     let cwd_fd = OpenOptions::new()
         .read(true)
@@ -1106,6 +1134,21 @@ fn push_c_string(memory: &mut GuestMemory, cursor: u64, bytes: &[u8]) -> Result<
     Ok(start)
 }
 
+/// Upper bound for a static image's program break: the mmap floor plus a heap
+/// arena, with the reserve clamped to half the space left below `mmap_limit` so
+/// a small guest memory still loads. `mmap_base` is then placed at this limit,
+/// so the returned value is simultaneously the end of the heap and the start of
+/// mmap -- they must never overlap.
+fn static_brk_limit(mmap_floor: u64, mmap_limit: u64) -> Result<u64> {
+    let reserve = HEAP_ARENA.min(mmap_limit.saturating_sub(mmap_floor) / 2);
+    align_up(
+        mmap_floor
+            .checked_add(reserve)
+            .ok_or_else(|| Error::UnsupportedElf("heap arena overflow".to_string()))?,
+        PAGE_SIZE,
+    )
+}
+
 fn align_up(value: u64, alignment: u64) -> Result<u64> {
     value
         .checked_add(alignment - 1)
@@ -1185,6 +1228,47 @@ mod tests {
             base,
             align_up(main_end + INTERPRETER_MIN_BRK_HEADROOM, PAGE_SIZE).unwrap()
         );
+    }
+
+    // The program break for a static image used to stop at `mmap_base`, i.e.
+    // exactly `MMAP_GAP` above the image. That is a behavioural divergence from
+    // the ptrace reference, not a layout preference: glibc grows the heap with
+    // `brk` and falls back to `mmap` once refused, so a guest whose heap passes
+    // 1 MiB runs a different allocator path under KVM. Measured on a
+    // malloc/fragment/reuse guest, ptrace granted `brk(0x5d3000)` while KVM
+    // refused at 0x5bd000 and returned the old break -- short by 88 KiB.
+    #[test]
+    fn static_heap_arena_clears_the_one_mib_gap_that_diverged_from_ptrace() {
+        // Real geometry from that guest: image ends at 0x4bd000, so the old
+        // `brk_limit == mmap_base` was 0x5bd000 and the guest needed 0x5d3000.
+        let mmap_floor = 0x5bd000;
+        let mmap_limit = 1024 * 1024 * 1024; // the 1 GiB guest, less stack
+        let limit = static_brk_limit(mmap_floor, mmap_limit).unwrap();
+        assert!(
+            limit > 0x5d3000,
+            "heap arena {limit:#x} still refuses the brk the ptrace reference granted (0x5d3000)"
+        );
+        // With room to spare the arena is the full reserve, not a clamped one.
+        assert_eq!(limit - mmap_floor, HEAP_ARENA);
+    }
+
+    #[test]
+    fn static_heap_arena_never_crosses_mmap_limit() {
+        // A guest too small to hold HEAP_ARENA must still load: the reserve is
+        // clamped rather than pushing mmap_base past the end of usable memory.
+        for span in [0u64, PAGE_SIZE, 64 * 1024, 8 * 1024 * 1024, HEAP_ARENA * 4] {
+            let mmap_floor = 0x100000;
+            let mmap_limit = mmap_floor + span;
+            let limit = static_brk_limit(mmap_floor, mmap_limit).unwrap();
+            assert!(
+                limit >= mmap_floor,
+                "arena {limit:#x} below its own floor {mmap_floor:#x} (span {span:#x})"
+            );
+            assert!(
+                limit <= mmap_limit,
+                "arena {limit:#x} crossed mmap_limit {mmap_limit:#x} (span {span:#x})"
+            );
+        }
     }
 
     #[test]
