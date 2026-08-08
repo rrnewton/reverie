@@ -16,14 +16,65 @@ case "$TOOL" in
 esac
 shift
 
+# REPORTERS DEGRADE, ACTORS REFUSE.
+#
+# The pin exists so a tool runs reviewed code. A dirty agent-utils breaks that
+# PROVENANCE claim -- but the cost of refusing is not the same for every tool,
+# and treating them alike is what caused the outage this guard now prevents.
+#
+# Direct-to-main is the DOCUMENTED workflow for agent-utils, so agents are
+# EXPECTED to edit that checkout. A transient dirty tree there is a normal
+# operating condition, not an anomaly. Under the old rule, doing the sanctioned
+# thing took down the fleet's only monitoring, with no warning anywhere: the
+# tick-hub RUNNER is itself an agent-utils tool, so one dirty file stopped every
+# gate -- PR health, main authority, pin state -- from being evaluated at all.
+# We caught both of 2026-08-08's red waves BECAUSE the tick was reporting.
+#
+# So the line is drawn on CONSEQUENCE, not on tidiness:
+#   REPORTERS read and print. Running them unpinned risks a wrong REPORT, which
+#     is visible and correctable. Their silence is worse than their imprecision,
+#     because silence is indistinguishable from health.
+#   ACTORS execute work. Running them unpinned risks unreviewed code doing
+#     something, which is not correctable after the fact.
+# This is the same asymmetry the refire futility probe uses: it fails OPEN
+# because it withholds an ACTION, while the pin gate fails CLOSED because it
+# authorizes one.
+case "$TOOL" in
+    tick-hub|pr-landing-planner) AGENT_TOOL_ROLE=reporter ;;
+    *)                           AGENT_TOOL_ROLE=actor ;;
+esac
+
+
+# Say WHICH checks the dirt invalidates, at the point of dirt, and either refuse
+# (actor) or proceed with provenance marked UNDETERMINED (reporter). Never
+# proceed silently: a report that looks complete is the worse error.
+agent_utils_dirt() {
+    local where=$1 paths
+    paths=$(git -C "$AGENT_UTILS" status --porcelain | wc -l | tr -d ' ')
+    {
+        echo "agent-tool: agent-utils is dirty $where ($paths path(s) modified)."
+        echo "agent-tool: INVALIDATED -- provenance of the '$TOOL' tool itself:"
+        echo "agent-tool:   it will NOT be the reviewed, pinned agent-utils commit."
+        echo "agent-tool: NOT invalidated -- every check whose logic lives in this"
+        echo "agent-tool:   parent repo (PR health, main authority, pin state, gates)."
+        git -C "$AGENT_UTILS" status --porcelain | sed 's/^/agent-tool:   dirty: /'
+    } >&2
+    if [[ $AGENT_TOOL_ROLE == actor ]]; then
+        echo "agent-tool: '$TOOL' EXECUTES work, so it REFUSES to run unpinned. Commit or stash agent-utils." >&2
+        exit 1
+    fi
+    echo "agent-tool: '$TOOL' only reports, so it PROCEEDS with provenance UNDETERMINED." >&2
+    echo "agent-tool: its output is usable; treat the tool's own version as unverified." >&2
+    export AGENT_TOOL_PROVENANCE="undetermined: agent-utils dirty $where ($paths path(s))"
+}
+
 ACTUAL=""
 if [[ -e "$AGENT_UTILS/.git" ]]; then
     ACTUAL=$(git -C "$AGENT_UTILS" rev-parse HEAD 2>/dev/null || true)
 fi
 if [[ "$ACTUAL" != "$EXPECTED" ]]; then
     if [[ -n "$ACTUAL" ]] && [[ -n $(git -C "$AGENT_UTILS" status --porcelain) ]]; then
-        echo "agent-tool: agent-utils is dirty at $ACTUAL; expected $EXPECTED" >&2
-        exit 1
+        agent_utils_dirt "at $ACTUAL; expected pinned $EXPECTED"
     fi
     update=(
         git -C "$ROOT"
@@ -43,8 +94,7 @@ if [[ "$ACTUAL" != "$EXPECTED" ]]; then
     exit 1
 fi
 if [[ -n $(git -C "$AGENT_UTILS" status --porcelain) ]]; then
-    echo "agent-tool: agent-utils is dirty at pinned commit $EXPECTED" >&2
-    exit 1
+    agent_utils_dirt "at pinned commit $EXPECTED"
 fi
 
 PYTHON=${CI_HUB_PYTHON:-python3}

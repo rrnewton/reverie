@@ -16,6 +16,26 @@ if [[ -n ${HERMIT_AGENT_SNAPSHOT_JSON:-} ]]; then
     python3 "$ROOT/ci-hub/health/operational_health.py" cache-agents >/dev/null
 fi
 cd "$ROOT"
+
+# Carry the provenance verdict INTO the report rather than leaving it on stderr.
+#
+# "agent-utils is dirty" and "health could not be determined" are different
+# states: the first is a note about one input, the second is a claim about
+# everything. Before this, the first was fatal to the second -- one dirty file
+# in a checkout agents are INSTRUCTED to edit directly stopped every gate from
+# running, and the fleet went dark with no warning to whoever dirtied it.
+#
+# Now the gates run and this line names exactly what is unverified. A reader who
+# sees it knows the tick's own version is unpinned; a reader who does not see it
+# knows provenance was clean. It is emitted ONLY when dirty, so it cannot become
+# the permanent "undetermined" that would be as useless as the outage.
+if [[ -n $(git -C "$ROOT/agent-utils" status --porcelain 2>/dev/null) ]]; then
+    dirt_paths=$(git -C "$ROOT/agent-utils" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+    echo "component=agent-utils-provenance state=undetermined" \
+         "reason=agent-utils dirty at pinned commit ($dirt_paths path(s)); the tick harness is" \
+         "not the reviewed pinned commit. Gate RESULTS below are parent-repo logic and stand."
+fi
+
 exec "$ROOT/ci-hub/bin/agent-tool" tick-hub tick \
     --config "$ROOT/ci-hub/health/tick-hub.yaml" \
     --state "$ROOT/ci-hub/health/tick-hub-state.yaml" \
