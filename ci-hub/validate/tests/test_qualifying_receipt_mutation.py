@@ -265,6 +265,11 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             raise unittest.SkipTest("rust-script unavailable; Rust consumer leg cannot run")
         if shutil.which("jq") is None:
             raise unittest.SkipTest("jq unavailable; verify_receipt.sh leg cannot run")
+        subprocess.run(
+            ["git", "-C", str(PRODUCER_REPO), "cat-file", "-e", f"{SHA}^{{commit}}"],
+            check=True,
+            capture_output=True,
+        )
         # Warm the rust-script cache once so per-scenario Rust calls are fast and
         # a compile failure surfaces here rather than as a spurious 'reject'.
         proc = subprocess.run(
@@ -438,7 +443,10 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             comments_file.write_text(json.dumps(comments))
             proc = subprocess.run(
                 ["bash", str(VERIFY_SH), "--sha", target_sha, "--comments", str(comments_file),
-                 "--repo", REPO, "--fixture-receipts", str(root)],
+                 "--repo", REPO, "--fixture-receipts", str(root),
+                 # Keep this leg on the same pinned local authority source as
+                 # the other five; ambient gh auth must not decide the panel.
+                 "--producer-repo-checkout", str(PRODUCER_REPO)],
                 env=_env(predicate), capture_output=True, text=True, timeout=60,
             )
         # exit 0 = a qualifying receipt was found; exit 1 = none; exit 2 = usage /
