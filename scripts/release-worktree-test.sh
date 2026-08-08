@@ -782,6 +782,18 @@ assert_bad_owners_refused owner-duplicate \
   'dup (+ro: dup)'
 assert_bad_owners_refused owner-no-mutator \
   '[{"name":"reader","read_only":true}]' '- (+ro: reader)'
+# TWO MUTATING OWNERS -- the state allocate-worktree.rs used to create by
+# appending a claimant beside a RELEASED predecessor instead of replacing it
+# (fixed 2026-08-08; bracketed in allocate-worktree-released-rebind-test.sh).
+#
+# This case guards the OTHER half of that fix. The refusal below is the check
+# that caught the append bug in the first place, and repairing the producer must
+# not be mistaken for a licence to relax the consumer: two mutating owners is
+# still an invalid slot, whatever produced it, and release must still refuse to
+# act on one. Note ACTIVE.md cannot show this state -- it renders only the FIRST
+# mutating owner -- so this refusal is the only thing that surfaces it.
+assert_bad_owners_refused owner-two-mutators \
+  '[{"name":"first","read_only":false},{"name":"second","read_only":false}]' 'first'
 assert_bad_owners_refused owner-invalid-name \
   '[{"name":"","read_only":false}]' ''
 

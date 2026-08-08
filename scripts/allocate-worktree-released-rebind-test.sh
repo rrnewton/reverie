@@ -42,6 +42,13 @@ mkdir -p "$root/scripts" "$root/hermit" "$root/reverie" "$root/liteinst2" \
 touch "$root/.gitmodules"
 cp "$alloc_src" "$root/scripts/allocate-worktree.rs"
 cp "$script_dir/check-worktree-registry.rs" "$root/scripts/"
+# `git show HEAD:scripts/allocate-worktree.rs > /tmp/old.rs` -- the documented way
+# to produce an ALLOC_SRC build for an A/B -- writes a file with NO executable
+# bit. The fixture invokes the script as `./scripts/allocate-worktree.rs`, so
+# without this every case dies "Permission denied" and reports REFUSE. That
+# reads as a total regression in the old build and is purely an artifact of the
+# harness. Cost one A/B cycle on 2026-08-08; do not remove.
+chmod +x "$root/scripts/allocate-worktree.rs" "$root/scripts/check-worktree-registry.rs"
 
 git -C "$root" init -q -b main
 git -C "$root" config user.email t@example.invalid
@@ -106,6 +113,41 @@ check() { # <label> <expected> <actual> <slot> <agent>
   fi
 }
 
+# Report the slot's ownership OUTCOME as "<mutating-count>:<mutating names>".
+#
+# ADMIT/REFUSE alone is not the whole contract, and that gap is what let the
+# append bug through: the released rebind was made to ADMIT, and nobody asserted
+# how many owners the admit LEFT BEHIND. `agents.push()` appended the claimant
+# beside the released incumbent, producing two mutating owners -- a state
+# release-worktree.rs correctly refuses to touch ("must have exactly one
+# mutating owner, found 2"), so the slot wedges for BOTH agents. Neither can
+# clear it: dropping the other's row is what Hard Invariant 5 forbids.
+#
+# It is invisible in ACTIVE.md, which is rendered FROM this state and shows only
+# the FIRST mutating owner -- so the human-readable registry reports a healthy
+# single-owner slot while the state file holds the wedge.
+owners() { # <slot>
+  python3 - "$root/worktree-state.json" "$1" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1]))
+slot = state.get("slots", {}).get(sys.argv[2])
+if slot is None:
+    print("MISSING"); raise SystemExit
+mut = [a["name"] for a in slot.get("agents", [])
+       if not a.get("read_only", False)]
+print(f"{len(mut)}:{','.join(sorted(mut))}")
+PY
+}
+
+check_owners() { # <label> <expected "n:names"> <slot>
+  local got; got=$(owners "$3")
+  if [[ "$got" == "$2" ]]; then
+    ok "$1: mutating owners $got (as required)"
+  else
+    bad "$1: expected mutating owners $2, got $got"
+  fi
+}
+
 echo "POSITIVE -- a released slot must be rebindable to a different agent"
 plant relslot released inc-rel
 got=$(try_alloc relslot new-rel)
@@ -115,6 +157,9 @@ if grep -qF "was released by 'inc-rel'" "$root/out.relslot.new-rel" 2>/dev/null;
 else
   bad "released rebind admitted silently; it must say why"
 fi
+# THE APPEND BUG. Admitting is only half the contract: the rebind must REPLACE
+# the released incumbent, not join it. Pre-fix this reported "2:inc-rel,new-rel".
+check_owners "released rebind REPLACES the incumbent" "1:new-rel" relslot
 echo
 
 echo "NEGATIVE -- every state that is NOT a clean release must STILL refuse"
@@ -126,24 +171,46 @@ if grep -qF "Refusing collision" "$root/out.actslot.new-act" 2>/dev/null; then
 else
   bad "active refusal lost its collision message"
 fi
+# THE COUNTERWEIGHT TO THE FIX ABOVE, and the reason it is scoped to `released`.
+# A replace that fired unconditionally would EVICT A LIVE OWNER -- strictly worse
+# than the wedge it repairs, because the wedge is loud and an eviction is silent.
+# A LIVE incumbent must survive the refusal completely intact: not replaced, and
+# not appended to either.
+check_owners "active incumbent survives the refusal untouched" "1:inc-act" actslot
 
 plant revslot owner-lease-revoked inc-rev
 got=$(try_alloc revslot new-rev)
 check "owner-lease-revoked -> different agent" REFUSE "$got" revslot new-rev
+check_owners "revoked incumbent left intact" "1:inc-rev" revslot
 
 plant ingslot releasing inc-ing
 got=$(try_alloc ingslot new-ing)
 check "releasing -> different agent" REFUSE "$got" ingslot new-ing
+check_owners "releasing incumbent left intact" "1:inc-ing" ingslot
 echo
 
 echo "CONTROLS -- unchanged behaviour"
 plant sameslot released inc-same
 got=$(try_alloc sameslot inc-same)
 check "released -> SAME agent (re-adoption)" ADMIT "$got" sameslot inc-same
+# Re-adoption is the documented repair for a lease-less slot. It must stay a
+# no-op on ownership -- one owner before, the same one owner after.
+check_owners "re-adoption keeps the single owner" "1:inc-same" sameslot
 
 plant shareslot active inc-share
 got=$(try_alloc shareslot reader-share --i-promise-this-agent-is-read-mostly)
 check "active -> read-mostly sharer" ADMIT "$got" shareslot reader-share
+# Read-only sharing must not evict the mutating owner it is joining.
+check_owners "read-mostly sharer joins without evicting" "1:inc-share" shareslot
+
+# Read-mostly onto a RELEASED slot: the claimant is not taking mutating
+# ownership, so there is nothing to replace. The released incumbent must be left
+# exactly as found -- the replace fires on the mutating rebind, not on any
+# arrival at a released slot.
+plant relshare released inc-relshare
+got=$(try_alloc relshare reader-relshare --i-promise-this-agent-is-read-mostly)
+check "released -> read-mostly sharer" ADMIT "$got" relshare reader-relshare
+check_owners "read-mostly on released does NOT replace" "1:inc-relshare" relshare
 echo
 
 echo "======================================================================"

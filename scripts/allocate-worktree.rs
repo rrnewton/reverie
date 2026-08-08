@@ -1680,6 +1680,10 @@ fn main() {
     // `releasing`, and anything else keep refusing: a revoked or half-finished
     // release is NOT a clean handover, and guessing otherwise is exactly the
     // failure this collision check exists to prevent.
+    // Set when a NEW mutating agent takes over a RELEASED slot. The takeover
+    // must REPLACE the released predecessor, not join it -- see the mutation
+    // site below, where this is applied.
+    let mut replace_released_predecessor = false;
     if let Some(existing) = state["slots"].get(&slot) {
         let released = existing["status"].as_str() == Some("released");
         let owner = existing["agents"]
@@ -1703,6 +1707,10 @@ fn main() {
                     "slot {slot} was released by '{owner}'; re-allocating to '{agent}' \
                      (status=released means the slot was given up, not that it is in use)."
                 );
+                // Only a MUTATING arrival replaces. A read-mostly sharer is not
+                // taking ownership, so it has nothing to replace and must leave
+                // the historical record exactly as found.
+                replace_released_predecessor = !read_mostly;
             }
         }
     }
@@ -1861,6 +1869,35 @@ fn main() {
                 entry["liteinst2_branch"] = json!(if include_liteinst2 { "detached" } else { "-" });
             }
             let agents = entry["agents"].as_array_mut().unwrap();
+            // A mutating takeover of a RELEASED slot REPLACES its predecessor.
+            //
+            // The collision check above deliberately treats `released` as
+            // unowned, so it lets this allocation through. Appending anyway
+            // produced TWO mutating owners -- and release-worktree.rs then
+            // refuses to touch the slot at all ("must have exactly one mutating
+            // owner, found 2"), so it wedges for BOTH agents: the arrival cannot
+            // drop the predecessor's row without violating Hard Invariant 5, and
+            // the predecessor is gone and cannot drop its own. Only a coordinator
+            // could unstick it, via a non-obvious demote-then-drop. Observed on
+            // slot rev1864, 2026-08-08.
+            //
+            // Scoped narrowly on purpose. This fires ONLY for a mutating arrival
+            // at a slot whose owner already gave it up; an ACTIVE owner still
+            // refuses at the collision check and is never touched here. A replace
+            // that fired unconditionally would let one agent silently evict a
+            // live one, which is strictly worse than the wedge it repairs. Both
+            // directions are bracketed in allocate-worktree-released-rebind-test.sh.
+            //
+            // Read-only entries are retained: they do not violate the
+            // one-mutating-owner invariant and are not what wedges release.
+            // ARCHIVED.md, not this array, is the durable record of who held a
+            // slot -- release-worktree.rs writes it before the status flips.
+            if replace_released_predecessor {
+                agents.retain(|a| {
+                    a["read_only"].as_bool().unwrap_or(false)
+                        || a["name"].as_str() == Some(&agent)
+                });
+            }
             if let Some(a) = agents
                 .iter_mut()
                 .find(|a| a["name"].as_str() == Some(&agent))
