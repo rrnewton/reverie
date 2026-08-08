@@ -113,8 +113,13 @@ def test_count_capable_receipt_without_executed_tests_is_refused() -> None:
 def test_pre_count_receipt_without_executed_tests_is_refused() -> None:
     """schema < counts_schema: an old receipt cannot PROVE nonzero execution, so
     it is refused rather than trusted."""
+    # coverage=None because _row defaults to a schema-5 shape that CARRIES
+    # coverage, and since d58edca a pre-count schema paired with a non-null
+    # coverage object is refused earlier, by the coverage-schema clause. Leaving
+    # it set would still refuse the row but for the WRONG reason, so this clause
+    # would go untested while looking green.
     ok, reason = A.row_qualifies(
-        _row(schema_version=1, executed_tests=None), PREDICATE
+        _row(schema_version=1, executed_tests=None, coverage=None), PREDICATE
     )
     assert ok is False
     assert reason == "pre-count receipt cannot prove nonzero execution"

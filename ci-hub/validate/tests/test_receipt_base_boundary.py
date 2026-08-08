@@ -209,6 +209,9 @@ def test_merge_boundary_brackets_both_ways_and_preserves_schema4(tmp_path: Path)
     # Honest grandfathering: pre-obligation rows remain unknown, never false.
     grandfathered = dict(positive)
     grandfathered["schema_version"] = 4
+    # A grandfathered schema-4 row carries NO coverage object; since d58edca
+    # schema-4 + non-null coverage is the refused invalid shape, not history.
+    grandfathered.pop("coverage", None)
     for field in (
         "base_sha",
         "base_tree",

@@ -282,6 +282,9 @@ class GrandfatherTest(unittest.TestCase):
     def test_a_pre_epoch_row_without_producer_still_qualifies(self) -> None:
         row = green_row(finished_at=BEFORE_EPOCH, omit_producer=True)
         row["schema_version"] = 4
+        # A grandfathered schema-4 row carries NO coverage object; since d58edca
+        # schema-4 + non-null coverage is the refused invalid shape, not history.
+        row.pop("coverage", None)
         ok, reason = qr.row_qualification(
             row,
             SHA,
@@ -294,6 +297,9 @@ class GrandfatherTest(unittest.TestCase):
         discipline as coverage_satisfied on a grandfathered schema-4 receipt."""
         row = green_row(finished_at=BEFORE_EPOCH, omit_producer=True)
         row["schema_version"] = 4
+        # A grandfathered schema-4 row carries NO coverage object; since d58edca
+        # schema-4 + non-null coverage is the refused invalid shape, not history.
+        row.pop("coverage", None)
         verdict = qr.producer_verdict(row, enforcing_predicate())
         self.assertIs(verdict, qr.ProducerVerdict.GRANDFATHERED)
 
@@ -338,6 +344,9 @@ class CountedMutationSummary(unittest.TestCase):
         ]
         grandfathered = green_row(finished_at=BEFORE_EPOCH, omit_producer=True)
         grandfathered["schema_version"] = 4
+        # A grandfathered schema-4 row carries NO coverage object; since d58edca
+        # schema-4 + non-null coverage is the refused invalid shape, not history.
+        grandfathered.pop("coverage", None)
         accepted_cases = [
             green_row(finished_at=AFTER_EPOCH, producer=slug)
             for slug in live_predicate()["producer"]["known"]
@@ -402,6 +411,13 @@ class RustEngineParityTest(unittest.TestCase):
         row = self._green_row(SHA)
         row["finished_at"] = finished
         row["schema_version"] = schema
+        if schema < 5:
+            # A grandfathered pre-coverage row carries NO coverage object. Since
+            # d58edca, schema-4 + non-null coverage is the deliberately-refused
+            # invalid shape, so leaving the green row's coverage in place would
+            # make this fixture test that refusal instead of producer
+            # grandfathering. Measured: 217 of 218 live schema-4 rows carry none.
+            row.pop("coverage", None)
         if producer is None:
             row.pop("producer", None)
         else:
