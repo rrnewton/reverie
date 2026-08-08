@@ -1639,10 +1639,26 @@ fn main() {
     }
 
     // 1-1 mapping: refuse if this mutating agent already owns a different slot.
+    //
+    // A RELEASED slot does not count, for exactly the reason spelled out at the
+    // collision check below: release-worktree.rs retains `agents` as the
+    // historical record and records the disposition in `status`, so reading
+    // `agents` alone reports ownership of a slot that was given up. Here that
+    // mismatch made the refusal UNSATISFIABLE: it told you to
+    // "Release it first (scripts/release-worktree.rs --slot X)" when you already
+    // had -- and releasing again can never help, because release deliberately
+    // keeps the row. An agent that released its slot could then never allocate
+    // another one. Hit live 2026-08-08 after releasing rev1864.
+    //
+    // Only `released` is discounted; `owner-lease-revoked` and `releasing` still
+    // count as owning, matching the collision check exactly.
     if !read_mostly {
         if let Some(slots) = state["slots"].as_object() {
             for (other, s) in slots {
                 if other == &slot {
+                    continue;
+                }
+                if s["status"].as_str() == Some("released") {
                     continue;
                 }
                 let owns = s["agents"]

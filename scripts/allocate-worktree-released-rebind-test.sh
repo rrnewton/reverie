@@ -213,9 +213,38 @@ check "released -> read-mostly sharer" ADMIT "$got" relshare reader-relshare
 check_owners "read-mostly on released does NOT replace" "1:inc-relshare" relshare
 echo
 
+echo "ONE-SLOT-PER-AGENT -- the same 'released means unowned' rule, second check"
+# The 1-1 mapping check read agents[] without consulting status, so an agent that
+# had RELEASED its slot still counted as owning it and could never allocate
+# another. Its refusal was UNSATISFIABLE: it said "Release it first" to someone
+# who already had, and releasing again cannot help because release deliberately
+# retains the row as the historical record.
+plant heldslot released mover
+got=$(try_alloc newslot mover)
+check "agent whose OTHER slot is released may allocate" ADMIT "$got" newslot mover
+check_owners "the new slot is owned by the mover" "1:mover" newslot
+
+# The rule itself must survive: a live slot elsewhere still blocks, and so does
+# any disposition that is not a clean release.
+plant busyslot active stayer
+got=$(try_alloc otherslot stayer)
+check "agent whose OTHER slot is ACTIVE still refused" REFUSE "$got" otherslot stayer
+if grep -qF "1 slot per agent" "$root/out.otherslot.stayer" 2>/dev/null; then
+  ok "one-slot-per-agent refusal still names the rule"
+else
+  bad "one-slot-per-agent refusal lost its message"
+fi
+
+plant revheld owner-lease-revoked revmover
+got=$(try_alloc revnew revmover)
+check "agent whose OTHER slot is revoked still refused" REFUSE "$got" revnew revmover
+echo
+
 echo "======================================================================"
-echo "admits expected and observed: 3 (released/different, released/same, read-mostly)"
-echo "refusals expected and observed: 3 (active, owner-lease-revoked, releasing)"
+echo "admits expected and observed: 5 (released/different, released/same,"
+echo "  read-mostly on active, read-mostly on released, released-elsewhere/new-slot)"
+echo "refusals expected and observed: 5 (active, owner-lease-revoked, releasing,"
+echo "  active-elsewhere, revoked-elsewhere)"
 echo "assertions: $pass passed, $fail failed"
 if (( fail )); then echo "RESULT: FAIL"; exit 1; fi
 echo "RESULT: PASS"
