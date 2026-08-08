@@ -2136,7 +2136,7 @@ unsafe fn deliver_default_sigsegv() -> ! {
 
 unsafe extern "C" fn instruction_sigsegv_handler(
     signal: libc::c_int,
-    _info: *mut libc::siginfo_t,
+    info: *mut libc::siginfo_t,
     context: *mut libc::c_void,
 ) {
     if signal != libc::SIGSEGV || context.is_null() {
@@ -2146,11 +2146,27 @@ unsafe extern "C" fn instruction_sigsegv_handler(
     let context = unsafe { &mut *context.cast::<libc::ucontext_t>() };
     let address = context.uc_mcontext.gregs[libc::REG_RIP as usize] as u64;
     let Some((kind, expected)) = instruction_at(address) else {
-        emit_in_guest_stage(if arena_for(address).is_some() {
-            b"instruction-sigsegv-unrecognized-bytes"
+        if let Some(arena) = arena_for(address) {
+            let available = usize::try_from(arena.mapping_end.saturating_sub(address))
+                .unwrap_or(0)
+                .min(8);
+            let bytes =
+                unsafe { core::slice::from_raw_parts(address as usize as *const u8, available) };
+            let fault_address = if info.is_null() {
+                0
+            } else {
+                unsafe { (*info).si_addr() as usize as u64 }
+            };
+            emit_instruction_refusal_stage(
+                b"instruction-sigsegv-unrecognized-bytes",
+                address.saturating_sub(arena.mapping_start),
+                fault_address,
+                context.uc_mcontext.gregs[libc::REG_RSP as usize] as u64,
+                bytes,
+            );
         } else {
-            b"instruction-sigsegv-no-reachable-arena"
-        });
+            emit_in_guest_stage(b"instruction-sigsegv-no-reachable-arena");
+        }
         unsafe { deliver_default_sigsegv() };
     };
     if !instruction_is_subscribed(kind) {
@@ -2993,6 +3009,55 @@ pub(crate) fn emit_in_guest_stage(stage: &[u8]) {
     }
 }
 
+fn emit_instruction_refusal_stage(
+    stage: &[u8],
+    rip_offset: u64,
+    fault_address: u64,
+    stack_pointer: u64,
+    bytes: &[u8],
+) {
+    if !IN_GUEST_STAGE_STREAM.load(Ordering::Acquire) {
+        return;
+    }
+    let mut line = StackLine::new();
+    line.push_bytes(b"INFO reverie_liteinst::tool_host: [in-guest pid=");
+    line.push_signed(unsafe { raw_syscall6(libc::SYS_getpid, [0; 6]) });
+    line.push_bytes(b" tid=");
+    line.push_signed(unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) });
+    line.push_bytes(b"] stage=");
+    line.push_bytes(stage);
+    line.push_bytes(b" rip-offset=0x");
+    line.push_hex(rip_offset);
+    line.push_bytes(b" fault=0x");
+    line.push_hex(fault_address);
+    line.push_bytes(b" rsp=0x");
+    line.push_hex(stack_pointer);
+    line.push_bytes(b" bytes=");
+    for (index, byte) in bytes.iter().enumerate() {
+        if index != 0 {
+            line.push_bytes(b"-");
+        }
+        line.push_hex_byte(*byte);
+    }
+    line.push_bytes(b"\n");
+    let written = unsafe {
+        raw_syscall6(
+            libc::SYS_write,
+            [
+                libc::STDERR_FILENO as u64,
+                line.bytes.as_ptr() as u64,
+                line.len as u64,
+                0,
+                0,
+                0,
+            ],
+        )
+    };
+    if written != line.len as i64 {
+        unsafe { exit_now(IN_GUEST_STAGE_WRITE_FAILURE_STATUS) };
+    }
+}
+
 unsafe fn exit_now(code: i32) -> ! {
     let _ = unsafe { raw_syscall6(libc::SYS_exit_group, [code as u64, 0, 0, 0, 0, 0]) };
     loop {
@@ -3058,6 +3123,14 @@ impl StackLine {
             }
         }
         self.push_bytes(&digits[cursor..]);
+    }
+
+    fn push_hex_byte(&mut self, value: u8) {
+        const DIGITS: &[u8; 16] = b"0123456789abcdef";
+        self.push_bytes(&[
+            DIGITS[usize::from(value >> 4)],
+            DIGITS[usize::from(value & 0xf)],
+        ]);
     }
 }
 
