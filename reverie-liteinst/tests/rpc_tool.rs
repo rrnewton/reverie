@@ -65,12 +65,17 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     let instruction_guest = Command::new(binary)
         .arg("instruction-guest")
         .arg(&socket)
+        .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1")
         .output()
         .unwrap();
     assert!(instruction_guest.status.success(), "{instruction_guest:?}");
     assert_eq!(
         instruction_guest.stdout,
         b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked\n"
+    );
+    assert!(
+        instruction_guest.stderr.is_empty(),
+        "the successful instruction path emitted a refusal diagnostic: {instruction_guest:?}"
     );
 
     let nested_instruction_fork = Command::new(binary)
