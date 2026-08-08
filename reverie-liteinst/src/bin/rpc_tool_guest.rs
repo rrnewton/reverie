@@ -847,6 +847,7 @@ fn instruction_guest(path: &Path) {
     assert_eq!(tscp, 0x0fed_cba9_8765_4321);
     assert_eq!(aux, 0x2468_ace0);
     println!("cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked");
+    std::io::stdout().flush().unwrap();
 }
 
 fn clock_and_vdso_guest(path: &Path) {

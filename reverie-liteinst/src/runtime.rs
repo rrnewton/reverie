@@ -477,6 +477,7 @@ pub(crate) fn replace_coordinator_fd(old: libc::c_int, new: libc::c_int) -> io::
 struct RuntimeArena {
     mapping_start: u64,
     mapping_end: u64,
+    mapping_name: Box<str>,
     writable_start: u64,
     writable_end: u64,
     executable_start: u64,
@@ -1030,6 +1031,14 @@ fn prepare_instrumentation() -> io::Result<()> {
         let Some(permissions) = fields.next() else {
             continue;
         };
+        let mapping_name = fields
+            .nth(3)
+            .unwrap_or("[anonymous]")
+            .rsplit('/')
+            .next()
+            .unwrap_or("[anonymous]")
+            .to_owned()
+            .into_boxed_str();
         if !permissions
             .as_bytes()
             .get(2)
@@ -1058,6 +1067,7 @@ fn prepare_instrumentation() -> io::Result<()> {
         arenas.push(RuntimeArena {
             mapping_start,
             mapping_end,
+            mapping_name,
             writable_start: writable.start,
             writable_end: writable.end,
             executable_start: executable.start,
@@ -2162,6 +2172,8 @@ unsafe extern "C" fn instruction_sigsegv_handler(
                 address.saturating_sub(arena.mapping_start),
                 fault_address,
                 context.uc_mcontext.gregs[libc::REG_RSP as usize] as u64,
+                arena.mapping_name.as_bytes(),
+                arena.mapping_end.saturating_sub(arena.mapping_start),
                 bytes,
             );
         } else {
@@ -3014,6 +3026,8 @@ fn emit_instruction_refusal_stage(
     rip_offset: u64,
     fault_address: u64,
     stack_pointer: u64,
+    mapping_name: &[u8],
+    mapping_len: u64,
     bytes: &[u8],
 ) {
     if !IN_GUEST_STAGE_STREAM.load(Ordering::Acquire) {
@@ -3032,6 +3046,10 @@ fn emit_instruction_refusal_stage(
     line.push_hex(fault_address);
     line.push_bytes(b" rsp=0x");
     line.push_hex(stack_pointer);
+    line.push_bytes(b" map=");
+    line.push_bytes(mapping_name);
+    line.push_bytes(b" map-len=0x");
+    line.push_hex(mapping_len);
     line.push_bytes(b" bytes=");
     for (index, byte) in bytes.iter().enumerate() {
         if index != 0 {
