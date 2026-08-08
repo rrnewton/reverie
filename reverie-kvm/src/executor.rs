@@ -10426,6 +10426,7 @@ const fn negative_errno(errno: libc::c_int) -> i64 {
 mod tests {
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
+    use std::io::Read;
     use std::os::unix::fs::FileTypeExt;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
@@ -10441,6 +10442,16 @@ mod tests {
     use super::*;
 
     static NEXT_TEST_DIR: AtomicU64 = AtomicU64::new(0);
+
+    fn assert_socket_endpoint_is_live(peer: &mut UnixStream) {
+        peer.set_nonblocking(true).unwrap();
+        let error = peer.read(&mut [0]).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+    }
+
+    fn assert_socket_endpoint_is_closed(peer: &mut UnixStream) {
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+    }
 
     struct TestDir(PathBuf);
 
@@ -14721,8 +14732,9 @@ mod tests {
             Err(negative_errno(libc::EMFILE))
         );
 
-        let file = std::fs::File::open("/dev/null").unwrap();
-        let raw_fd = file.as_raw_fd();
+        let (received_right, mut received_right_peer) = UnixStream::pair().unwrap();
+        assert_socket_endpoint_is_live(&mut received_right_peer);
+        let file = std::fs::File::from(std::os::fd::OwnedFd::from(received_right));
         let before = state.files.keys().copied().collect::<Vec<_>>();
         let error = install_received_rights(
             &mut state,
@@ -14736,28 +14748,19 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, negative_errno(libc::EINVAL));
         assert_eq!(state.files.keys().copied().collect::<Vec<_>>(), before);
-        // SAFETY: F_GETFD only probes whether rollback closed the descriptor.
-        assert_eq!(unsafe { libc::fcntl(raw_fd, libc::F_GETFD) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EBADF)
-        );
+        assert_socket_endpoint_is_closed(&mut received_right_peer);
 
         // Unsupported fd-bearing ancillary data is also owned immediately and
         // closed rather than copied as an unusable host number.
-        let pidfd_file = std::fs::File::open("/dev/null").unwrap();
+        let (pidfd_file, mut pidfd_peer) = UnixStream::pair().unwrap();
+        assert_socket_endpoint_is_live(&mut pidfd_peer);
         let pidfd = std::os::fd::IntoRawFd::into_raw_fd(pidfd_file);
         let pidfd_control = control_message(libc::SOL_SOCKET, SCM_PIDFD, &pidfd.to_ne_bytes());
         let sanitized = sanitize_received_control(&pidfd_control).unwrap();
         assert!(sanitized.stripped_unsupported);
         assert!(sanitized.bytes.is_empty());
         assert!(sanitized.rights.is_empty());
-        // SAFETY: F_GETFD verifies that sanitize_received_control closed it.
-        assert_eq!(unsafe { libc::fcntl(pidfd, libc::F_GETFD) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EBADF)
-        );
+        assert_socket_endpoint_is_closed(&mut pidfd_peer);
     }
 
     #[test]
