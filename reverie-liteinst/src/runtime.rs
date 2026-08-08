@@ -668,13 +668,29 @@ fn install_instruction_signal_handler(
 
 fn enable_instruction_faulting(subscriptions: InstructionSubscriptions) -> io::Result<()> {
     if subscriptions.cpuid {
+        emit_in_guest_stage(b"install-cpuid-faulting-begin");
         const ARCH_SET_CPUID: u64 = 0x1012;
         let result = unsafe { raw_syscall6(libc::SYS_arch_prctl, [ARCH_SET_CPUID, 0, 0, 0, 0, 0]) };
         if result != 0 {
+            emit_in_guest_stage(match -result {
+                value if value == i64::from(libc::EINVAL) => {
+                    b"install-cpuid-faulting-failed-einval"
+                }
+                value if value == i64::from(libc::ENODEV) => {
+                    b"install-cpuid-faulting-failed-enodev"
+                }
+                value if value == i64::from(libc::ENOSYS) => {
+                    b"install-cpuid-faulting-failed-enosys"
+                }
+                value if value == i64::from(libc::EPERM) => b"install-cpuid-faulting-failed-eperm",
+                _ => b"install-cpuid-faulting-failed-other",
+            });
             return Err(io::Error::from_raw_os_error((-result) as i32));
         }
+        emit_in_guest_stage(b"install-cpuid-faulting-complete");
     }
     if subscriptions.rdtsc {
+        emit_in_guest_stage(b"install-rdtsc-faulting-begin");
         let result = unsafe {
             raw_syscall6(
                 libc::SYS_prctl,
@@ -689,8 +705,22 @@ fn enable_instruction_faulting(subscriptions: InstructionSubscriptions) -> io::R
             )
         };
         if result != 0 {
+            emit_in_guest_stage(match -result {
+                value if value == i64::from(libc::EINVAL) => {
+                    b"install-rdtsc-faulting-failed-einval"
+                }
+                value if value == i64::from(libc::ENODEV) => {
+                    b"install-rdtsc-faulting-failed-enodev"
+                }
+                value if value == i64::from(libc::ENOSYS) => {
+                    b"install-rdtsc-faulting-failed-enosys"
+                }
+                value if value == i64::from(libc::EPERM) => b"install-rdtsc-faulting-failed-eperm",
+                _ => b"install-rdtsc-faulting-failed-other",
+            });
             return Err(io::Error::from_raw_os_error((-result) as i32));
         }
+        emit_in_guest_stage(b"install-rdtsc-faulting-complete");
     }
     Ok(())
 }
