@@ -32,6 +32,7 @@ const TOOL_CPUID_EAX: u32 = 0x1111_1111;
 const TOOL_CPUID_EBX: u32 = 0x2222_2222;
 const TOOL_CPUID_ECX: u32 = 0;
 const TOOL_CPUID_EDX: u32 = 0x4444_4444;
+const INSTRUCTION_CONTROL_UNAVAILABLE_STATUS: i32 = 77;
 static LAST_TOTAL: AtomicU64 = AtomicU64::new(0);
 static LAST_SENDERS: AtomicU64 = AtomicU64::new(0);
 static LAST_NESTED_UID: AtomicI64 = AtomicI64::new(-1);
@@ -818,7 +819,10 @@ fn instruction_guest(path: &Path) {
     // This fixture creates no application threads, matching the direct Hermit
     // lifecycle contract. Exercise quiescent publication so every cache-line
     // placement is valid without a machine-specific WordPatch++ calibration.
-    unsafe { reverie_liteinst::install_tool_quiescent::<InstructionTool>(path) }.unwrap();
+    if let Err(error) = unsafe { reverie_liteinst::install_tool_quiescent::<InstructionTool>(path) }
+    {
+        fail_instruction_install(error);
+    }
     assert_eq!(
         unsafe { reverie_liteinst_straddling_cpuid() } as u32,
         0x1111_1111
@@ -941,7 +945,11 @@ fn fork_guest(path: &Path) {
 }
 
 fn nested_instruction_fork_guest(path: &Path) {
-    unsafe { reverie_liteinst::install_tool_quiescent::<NestedInstructionForkTool>(path) }.unwrap();
+    if let Err(error) =
+        unsafe { reverie_liteinst::install_tool_quiescent::<NestedInstructionForkTool>(path) }
+    {
+        fail_instruction_install(error);
+    }
     assert_eq!(nested_cpuid(0, 0), tool_cpuid_words());
     assert_eq!(
         unsafe { reverie_liteinst_rpc_nested_rdtsc() },
@@ -992,6 +1000,14 @@ fn nested_instruction_fork_guest(path: &Path) {
     println!(
         "nested-cpuid=native nested-rdtsc=native nested-rdtscp=native guest-cpuid=tool guest-rdtsc=tool guest-rdtscp=tool child-getpid=complete child-exit=0"
     );
+}
+
+fn fail_instruction_install(error: std::io::Error) -> ! {
+    if error.kind() == std::io::ErrorKind::Unsupported {
+        eprintln!("instruction-control-unavailable");
+        std::process::exit(INSTRUCTION_CONTROL_UNAVAILABLE_STATUS);
+    }
+    panic!("failed to install instruction Tool: {error}");
 }
 
 /// Same shape as [`fork_guest`], but the fork is a bare `SYS_fork` instruction

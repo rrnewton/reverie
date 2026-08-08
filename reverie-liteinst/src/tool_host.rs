@@ -161,6 +161,7 @@ where
         cpuid: subscriptions.has_cpuid(),
         rdtsc: subscriptions.has_rdtsc(),
     };
+    runtime::preflight_instruction_faulting(instruction_subscriptions)?;
     let vdso_sites = reverie_ptrace::patch_current_vdso(&subscriptions)
         .map_err(|error| io::Error::other(error.to_string()))?;
     let _signal_state = runtime::prepare_guest_signal_state(instruction_subscriptions)?;

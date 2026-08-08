@@ -638,6 +638,46 @@ pub(crate) fn rdtsc_interception_enabled() -> bool {
     INSTRUCTION_SUBSCRIPTIONS.load(Ordering::Acquire) & INSTRUCTION_RDTSC != 0
 }
 
+pub(crate) fn preflight_instruction_faulting(
+    subscriptions: InstructionSubscriptions,
+) -> io::Result<()> {
+    if subscriptions.cpuid {
+        const ARCH_GET_CPUID: u64 = 0x1011;
+        let result = unsafe { raw_syscall6(libc::SYS_arch_prctl, [ARCH_GET_CPUID, 0, 0, 0, 0, 0]) };
+        if result < 0 {
+            return Err(instruction_control_unavailable("CPUID faulting", result));
+        }
+    }
+    if subscriptions.rdtsc {
+        let mut control = 0;
+        let result = unsafe {
+            raw_syscall6(
+                libc::SYS_prctl,
+                [
+                    libc::PR_GET_TSC as u64,
+                    (&raw mut control) as u64,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+            )
+        };
+        if result != 0 {
+            return Err(instruction_control_unavailable("TSC faulting", result));
+        }
+    }
+    Ok(())
+}
+
+fn instruction_control_unavailable(control: &str, result: i64) -> io::Error {
+    let error = io::Error::from_raw_os_error((-result) as i32);
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("{control} is unavailable: {error}"),
+    )
+}
+
 fn install_instruction_signal_handler(
     subscriptions: InstructionSubscriptions,
     on_alt_stack: bool,
@@ -668,29 +708,13 @@ fn install_instruction_signal_handler(
 
 fn enable_instruction_faulting(subscriptions: InstructionSubscriptions) -> io::Result<()> {
     if subscriptions.cpuid {
-        emit_in_guest_stage(b"install-cpuid-faulting-begin");
         const ARCH_SET_CPUID: u64 = 0x1012;
         let result = unsafe { raw_syscall6(libc::SYS_arch_prctl, [ARCH_SET_CPUID, 0, 0, 0, 0, 0]) };
         if result != 0 {
-            emit_in_guest_stage(match -result {
-                value if value == i64::from(libc::EINVAL) => {
-                    b"install-cpuid-faulting-failed-einval"
-                }
-                value if value == i64::from(libc::ENODEV) => {
-                    b"install-cpuid-faulting-failed-enodev"
-                }
-                value if value == i64::from(libc::ENOSYS) => {
-                    b"install-cpuid-faulting-failed-enosys"
-                }
-                value if value == i64::from(libc::EPERM) => b"install-cpuid-faulting-failed-eperm",
-                _ => b"install-cpuid-faulting-failed-other",
-            });
             return Err(io::Error::from_raw_os_error((-result) as i32));
         }
-        emit_in_guest_stage(b"install-cpuid-faulting-complete");
     }
     if subscriptions.rdtsc {
-        emit_in_guest_stage(b"install-rdtsc-faulting-begin");
         let result = unsafe {
             raw_syscall6(
                 libc::SYS_prctl,
@@ -705,22 +729,8 @@ fn enable_instruction_faulting(subscriptions: InstructionSubscriptions) -> io::R
             )
         };
         if result != 0 {
-            emit_in_guest_stage(match -result {
-                value if value == i64::from(libc::EINVAL) => {
-                    b"install-rdtsc-faulting-failed-einval"
-                }
-                value if value == i64::from(libc::ENODEV) => {
-                    b"install-rdtsc-faulting-failed-enodev"
-                }
-                value if value == i64::from(libc::ENOSYS) => {
-                    b"install-rdtsc-faulting-failed-enosys"
-                }
-                value if value == i64::from(libc::EPERM) => b"install-rdtsc-faulting-failed-eperm",
-                _ => b"install-rdtsc-faulting-failed-other",
-            });
             return Err(io::Error::from_raw_os_error((-result) as i32));
         }
-        emit_in_guest_stage(b"install-rdtsc-faulting-complete");
     }
     Ok(())
 }
@@ -852,17 +862,12 @@ fn install_runtime(
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
     PATCH_PUBLICATION.store(publication as u8, Ordering::Release);
-    emit_in_guest_stage(b"install-prepare-instrumentation-begin");
     prepare_instrumentation()?;
-    emit_in_guest_stage(b"install-prepare-instrumentation-complete");
     install_vdso_sites(vdso_sites)?;
-    emit_in_guest_stage(b"install-vdso-sites-complete");
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-254): Review launcher-selected RuntimeConfig at the install seam.
     let config = runtime_config_from_env()?;
-    emit_in_guest_stage(b"install-runtime-config-complete");
     install_instruction_signal_handler(instructions, config.use_alt_stack)?;
-    emit_in_guest_stage(b"install-instruction-handler-complete");
     unsafe {
         reverie_preload::install(
             Box::new(LiteinstDispatcher::new(stats, publication)),
@@ -870,10 +875,7 @@ fn install_runtime(
             &config,
         )
     }?;
-    emit_in_guest_stage(b"install-seccomp-complete");
-    enable_instruction_faulting(instructions)?;
-    emit_in_guest_stage(b"install-instruction-faulting-complete");
-    Ok(())
+    enable_instruction_faulting(instructions)
 }
 
 struct CompatibilityEventChannel {

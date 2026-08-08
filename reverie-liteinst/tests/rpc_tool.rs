@@ -4,6 +4,8 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+const INSTRUCTION_CONTROL_UNAVAILABLE_STATUS: i32 = 77;
+
 #[test]
 fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
@@ -68,67 +70,80 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1")
         .output()
         .unwrap();
-    assert!(instruction_guest.status.success(), "{instruction_guest:?}");
-    assert_eq!(
-        instruction_guest.stdout,
-        b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked\n"
-    );
-    let instruction_stderr = String::from_utf8(instruction_guest.stderr).unwrap();
-    assert!(
-        instruction_stderr
-            .lines()
-            .all(|line| line.contains("stage=install-")),
-        "the successful instruction path emitted a refusal diagnostic: {instruction_stderr}"
-    );
-
-    let nested_instruction_fork = Command::new(binary)
-        .arg("nested-instruction-fork")
-        .arg(&socket)
-        .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1")
-        .output()
-        .unwrap();
-    assert!(
-        nested_instruction_fork.status.success(),
-        "{nested_instruction_fork:?}"
-    );
-    assert_eq!(
-        nested_instruction_fork.stdout,
-        b"nested-cpuid=native nested-rdtsc=native nested-rdtscp=native guest-cpuid=tool guest-rdtsc=tool guest-rdtscp=tool child-getpid=complete child-exit=0\n"
-    );
-    let nested_stderr = String::from_utf8(nested_instruction_fork.stderr).unwrap();
-    let stage_count = |stage: &str| {
-        nested_stderr
-            .lines()
-            .filter(|line| line.ends_with(stage))
-            .count()
+    let instruction_control_available = if instruction_guest.status.code()
+        == Some(INSTRUCTION_CONTROL_UNAVAILABLE_STATUS)
+    {
+        assert!(instruction_guest.stdout.is_empty(), "{instruction_guest:?}");
+        assert_eq!(
+            instruction_guest.stderr, b"instruction-control-unavailable\n",
+            "the refusal path must emit exactly one diagnostic"
+        );
+        eprintln!("instruction capability evidence: positive=0 refusal=1");
+        false
+    } else {
+        assert!(instruction_guest.status.success(), "{instruction_guest:?}");
+        assert_eq!(
+            instruction_guest.stdout,
+            b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked\n"
+        );
+        assert!(
+            instruction_guest.stderr.is_empty(),
+            "the successful instruction path emitted a refusal diagnostic: {instruction_guest:?}"
+        );
+        eprintln!("instruction capability evidence: positive=1 refusal=0");
+        true
     };
-    for stage in [
-        "stage=fork-child-thread-start-begin",
-        "stage=fork-child-thread-start-complete",
-    ] {
-        assert_eq!(
-            stage_count(stage),
-            1,
-            "stage marker {stage:?} must appear exactly once: {nested_stderr}"
+
+    if instruction_control_available {
+        let nested_instruction_fork = Command::new(binary)
+            .arg("nested-instruction-fork")
+            .arg(&socket)
+            .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1")
+            .output()
+            .unwrap();
+        assert!(
+            nested_instruction_fork.status.success(),
+            "{nested_instruction_fork:?}"
         );
-    }
-    assert!(
-        stage_count("stage=nested-instruction-native-cpuid") >= 1,
-        "at least the planted nested CPUID must take the native path: {nested_stderr}"
-    );
-    assert!(
-        stage_count("stage=nested-instruction-fault-native-cpuid") >= 1,
-        "unpatched Tool-internal CPUID must bypass publication: {nested_stderr}"
-    );
-    for stage in [
-        "stage=nested-instruction-native-rdtsc",
-        "stage=nested-instruction-native-rdtscp",
-    ] {
         assert_eq!(
-            stage_count(stage),
-            1,
-            "the planted nested instruction must take the native path once: {nested_stderr}"
+            nested_instruction_fork.stdout,
+            b"nested-cpuid=native nested-rdtsc=native nested-rdtscp=native guest-cpuid=tool guest-rdtsc=tool guest-rdtscp=tool child-getpid=complete child-exit=0\n"
         );
+        let nested_stderr = String::from_utf8(nested_instruction_fork.stderr).unwrap();
+        let stage_count = |stage: &str| {
+            nested_stderr
+                .lines()
+                .filter(|line| line.ends_with(stage))
+                .count()
+        };
+        for stage in [
+            "stage=fork-child-thread-start-begin",
+            "stage=fork-child-thread-start-complete",
+        ] {
+            assert_eq!(
+                stage_count(stage),
+                1,
+                "stage marker {stage:?} must appear exactly once: {nested_stderr}"
+            );
+        }
+        assert!(
+            stage_count("stage=nested-instruction-native-cpuid") >= 1,
+            "at least the planted nested CPUID must take the native path: {nested_stderr}"
+        );
+        assert!(
+            stage_count("stage=nested-instruction-fault-native-cpuid") >= 1,
+            "unpatched Tool-internal CPUID must bypass publication: {nested_stderr}"
+        );
+        for stage in [
+            "stage=nested-instruction-native-rdtsc",
+            "stage=nested-instruction-native-rdtscp",
+        ] {
+            assert_eq!(
+                stage_count(stage),
+                1,
+                "the planted nested instruction must take the native path once: {nested_stderr}"
+            );
+        }
     }
 
     let clock_and_vdso_guest = Command::new(binary)
