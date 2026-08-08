@@ -641,6 +641,36 @@ pub(crate) fn rdtsc_interception_enabled() -> bool {
 pub(crate) fn preflight_instruction_faulting(
     subscriptions: InstructionSubscriptions,
 ) -> io::Result<()> {
+    if !subscriptions.cpuid && !subscriptions.rdtsc {
+        return Ok(());
+    }
+
+    // The exact setter probes temporarily change this thread's instruction
+    // controls. Keep inherited asynchronous handlers from running application
+    // CPUID/RDTSC during that bounded window, and restore the caller's exact
+    // signal mask on every return path.
+    let all_signals = u64::MAX;
+    let mut previous_mask = 0;
+    let masked = unsafe {
+        raw_syscall6(
+            libc::SYS_rt_sigprocmask,
+            [
+                libc::SIG_SETMASK as u64,
+                (&raw const all_signals) as u64,
+                (&raw mut previous_mask) as u64,
+                core::mem::size_of::<u64>() as u64,
+                0,
+                0,
+            ],
+        )
+    };
+    if masked != 0 {
+        return Err(io::Error::from_raw_os_error((-masked) as i32));
+    }
+    let _signal_mask = SignalInstallGuard {
+        restore_mask: previous_mask,
+    };
+
     if subscriptions.cpuid {
         const ARCH_GET_CPUID: u64 = 0x1011;
         const ARCH_SET_CPUID: u64 = 0x1012;
