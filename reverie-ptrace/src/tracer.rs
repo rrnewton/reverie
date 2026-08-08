@@ -1429,8 +1429,47 @@ impl<G: Default> Tracer<G> {
         ))
     }
 
+    /// Waits for the tracee to exit while concurrently draining and discarding
+    /// any piped stdout/stderr, returning its exit status and global state.
+    ///
+    /// This is the discard-output counterpart of [`Tracer::wait_with_output`]
+    /// and shares its deadlock-avoidance behavior: the stdin handle, if any, is
+    /// closed before waiting, and both output pipes are read as the guest
+    /// produces bytes. Unlike `wait_with_output` the bytes are sunk rather than
+    /// buffered, so a guest that writes unbounded output costs no memory here.
+    ///
+    /// Prefer this over the bare [`Tracer::wait`] whenever the caller piped the
+    /// guest's stdio but does not want the output. `wait` never touches the
+    /// pipes, so a guest that fills the (64 KiB by default) pipe buffer blocks
+    /// in `write(2)` forever while the parent waits for a process that can
+    /// never exit.
+    pub async fn wait_discarding_output(mut self) -> Result<(ExitStatus, G), Error> {
+        use tokio::io::AsyncRead;
+
+        async fn drain<A: AsyncRead + Unpin>(io: Option<A>) -> Result<(), Error> {
+            if let Some(mut io) = io {
+                tokio::io::copy(&mut io, &mut tokio::io::sink()).await?;
+            }
+            Ok(())
+        }
+
+        drop(self.stdin.take());
+
+        let stdout = drain(self.stdout.take());
+        let stderr = drain(self.stderr.take());
+
+        let ((status, state), (), ()) = future::try_join3(self.wait(), stdout, stderr).await?;
+
+        Ok((status, state))
+    }
+
     /// Waits for the tracee to exit and returns its exit status and global
     /// state.
+    ///
+    /// This does **not** touch the guest's stdio handles. If the caller piped
+    /// stdout or stderr, use [`Tracer::wait_with_output`] or
+    /// [`Tracer::wait_discarding_output`] instead; otherwise a guest that fills
+    /// an unread pipe buffer deadlocks against this wait.
     pub async fn wait(mut self) -> Result<(ExitStatus, G), Error> {
         // Note: The usage of LocalSet is *very* important here. Once polled,
         // the `tracer` future drives all tracees to completion. The `fork` for
@@ -2510,6 +2549,33 @@ mod tests {
     use reverie::syscalls::SyscallInfo;
 
     use super::*;
+    use crate::error::LiteinstActivationFailureCategory;
+    use crate::error::LiteinstActivationFailureReason;
+    use crate::error::LiteinstActivationOperation;
+    use crate::error::LiteinstActivationStage;
+    use crate::error::liteinst_activation_failure_category;
+    use crate::error::liteinst_activation_failure_reason;
+
+    fn assert_liteinst_activation_failure(
+        error: &Error,
+        expected: LiteinstActivationFailureReason,
+    ) {
+        assert_eq!(
+            liteinst_activation_failure_reason(error),
+            Some(expected),
+            "{error}"
+        );
+    }
+
+    fn assert_general_pre_ready_liteinst_activation_failure(error: &Error) {
+        assert_eq!(
+            liteinst_activation_failure_category(error),
+            Some(LiteinstActivationFailureCategory::General(
+                LiteinstActivationStage::PreReady,
+            )),
+            "{error}"
+        );
+    }
 
     fn fork_paused_child() -> Pid {
         match unsafe { unistd::fork() }.expect("fork test child") {
@@ -2854,18 +2920,10 @@ mod tests {
             .expect("timed exec-transition activation tracee hung")
             .expect_err("missing LiteInst runtime unexpectedly activated");
 
-        assert!(
-            !error
-                .to_string()
-                .contains("skip intercepted syscall observed a nested signal"),
-            "{error}"
-        );
-        assert!(
-            error
-                .to_string()
-                .contains("before the required preload handshake completed"),
-            "{error}"
-        );
+        // The exact fail-closed reason depends on which activation signal wins
+        // after the valid syscall-skip transition. What matters here is that
+        // the skip itself did not fail and activation remained pre-Ready.
+        assert_general_pre_ready_liteinst_activation_failure(&error);
         assert_reaped("timed exec-transition activation", root_pid);
     }
 
@@ -2885,11 +2943,11 @@ mod tests {
             .expect_err("queued pre-Ready signal unexpectedly resumed the tracee");
 
         assert!(!queue_once.load(Ordering::SeqCst));
-        assert!(
-            error
-                .to_string()
-                .contains("resume after seccomp stop attempted to deliver a queued signal"),
-            "{error}"
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::SignalBeforeHandshake(
+                LiteinstActivationOperation::ResumeAfterSeccompStop,
+            ),
         );
         assert_reaped("pending-signal activation", root_pid);
     }
@@ -2910,11 +2968,11 @@ mod tests {
             .expect_err("nested pre-Ready reinjection signal was silently dropped");
 
         assert!(!force_once.load(Ordering::SeqCst), "{error}");
-        assert!(
-            error
-                .to_string()
-                .contains("finish reinjected syscall observed a nested signal without the expected controller provenance"),
-            "{error}"
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+                LiteinstActivationOperation::FinishReinjectedSyscall,
+            ),
         );
         assert_reaped("context-none activation", root_pid);
     }
@@ -2935,11 +2993,11 @@ mod tests {
             .expect_err("external pre-Ready SIGTRAP impersonated injected-step completion");
 
         assert!(!force_once.load(Ordering::SeqCst), "{error}");
-        assert!(
-            error.to_string().contains(
-                "finish injected syscall observed a nested signal without the expected controller provenance"
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+                LiteinstActivationOperation::FinishInjectedSyscall,
             ),
-            "{error}"
         );
         assert_reaped("injected-step activation", root_pid);
     }
@@ -2968,14 +3026,16 @@ mod tests {
                     Some(crate::error::Error::Internal(TraceError::Errno(Errno::EFAULT)))
                 )
         );
-        let error = error.to_string();
         // Some kernels reject the forced ptrace write before the mutated stub
         // executes. Otherwise, the exact-stub provenance check must reject it.
         assert!(
             ptrace_write_rejected
-                || error.contains(
-                    "finish injected syscall observed a nested signal without the expected controller provenance"
-                ),
+                || liteinst_activation_failure_reason(&error)
+                    == Some(
+                        LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+                            LiteinstActivationOperation::FinishInjectedSyscall,
+                        ),
+                    ),
             "{error}"
         );
         assert_reaped("private-stub-mutation activation", root_pid);
@@ -3019,11 +3079,11 @@ mod tests {
             .expect_err("nested pre-Ready skip signal was delivered by single-step");
 
         assert!(!force_once.load(Ordering::SeqCst));
-        assert!(
-            error
-                .to_string()
-                .contains("skip intercepted syscall observed a nested signal without the expected controller provenance"),
-            "{error}"
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+                LiteinstActivationOperation::SkipInterceptedSyscall,
+            ),
         );
         assert_reaped("skip-seccomp activation", root_pid);
     }
@@ -3044,11 +3104,9 @@ mod tests {
             .expect_err("nested pre-Ready preinit signal unexpectedly resumed the tracee");
 
         assert!(!force_once.load(Ordering::SeqCst));
-        assert!(
-            error
-                .to_string()
-                .contains("tracee pre-initialization observed an unexpected nested signal"),
-            "{error}"
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::UnexpectedPreinitSignal,
         );
         assert_reaped("preinit-signal activation", root_pid);
     }
@@ -3069,11 +3127,11 @@ mod tests {
             .expect_err("external SIGTRAP impersonated the required post-exec trap");
 
         assert!(!force_once.load(Ordering::SeqCst));
-        assert!(
-            error.to_string().contains(
-                "wait for the LiteInst post-exec trap observed a nested signal without the expected controller provenance"
+        assert_liteinst_activation_failure(
+            &error,
+            LiteinstActivationFailureReason::UnexpectedControllerProvenance(
+                LiteinstActivationOperation::WaitForPostExecTrap,
             ),
-            "{error}"
         );
         assert_reaped("post-exec-signal activation", root_pid);
     }

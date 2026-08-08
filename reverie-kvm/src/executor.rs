@@ -49,6 +49,7 @@ const MEMBARRIER_SUPPORTED: libc::c_int = 0x1;
 // answer is host-independent.
 const PR_CAPBSET_READ: u64 = 23;
 const PR_CAPBSET_DROP: u64 = 24;
+const CAP_SYS_PTRACE: u64 = 19;
 const GUEST_CAP_LAST_CAP: u64 = 40;
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
 const PROCESS_CLONE_TID_FLAGS: u64 = libc::CLONE_PARENT_SETTID as u64
@@ -87,6 +88,14 @@ const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
 const SIOCETHTOOL: libc::c_ulong = 0x8946;
 // TODO-HUMAN-REVIEW(PR-136): Review the Linux UAPI value missing from pinned libc.
 const FALLOC_FL_WRITE_ZEROES: libc::c_int = 0x80;
+// Linux UAPI values not exposed by every supported libc release.
+const SCM_PIDFD: libc::c_int = 0x04;
+const SCM_TIMESTAMP_OLD: libc::c_int = 29;
+const SCM_TIMESTAMPNS_OLD: libc::c_int = 35;
+const SCM_TIMESTAMPING_OLD: libc::c_int = 37;
+const SCM_TIMESTAMP_NEW: libc::c_int = 63;
+const SCM_TIMESTAMPNS_NEW: libc::c_int = 64;
+const SCM_TIMESTAMPING_NEW: libc::c_int = 65;
 
 const FALLOCATE_VALID_MODES: &[libc::c_int] = &[
     0,
@@ -402,6 +411,12 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_recvfrom as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         recvfrom(memory, state, args)
+    } else if number == libc::SYS_sendmsg as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        sendmsg(memory, state, args)
+    } else if number == libc::SYS_recvmsg as u64 {
+        // AUTONOMOUS-BOT-IMPLEMENTED
+        recvmsg(memory, state, args)
     } else if number == libc::SYS_recvmmsg as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         recvmmsg(memory, state, args)
@@ -881,25 +896,56 @@ fn set_robust_list(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     if args[1] != ROBUST_LIST_HEAD_SIZE {
         return negative_errno(libc::EINVAL);
     }
-    state.robust_list_head = args[0];
-    state.robust_list_len = args[1];
+    let updated = state
+        .task_lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .set_robust_list(state.tid, args[0]);
+    debug_assert!(
+        updated,
+        "current KVM task is absent from its lifecycle table"
+    );
+    if !updated {
+        return negative_errno(libc::ESRCH);
+    }
     0
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
-// TODO-HUMAN-REVIEW(PR-232): Review task-local robust-list queries.
+// TODO-HUMAN-REVIEW(PR-232): Review process-tree robust-list queries.
 fn get_robust_list(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
-    let requested = args[0] as libc::pid_t;
-    if requested != 0 && requested != state.tid && requested != state.pid {
+    let requested = match args[0] as libc::pid_t {
+        0 => state.tid,
+        tid => tid,
+    };
+    let Some(target) = state
+        .task_lifecycle
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(requested)
+    else {
         return negative_errno(libc::ESRCH);
+    };
+
+    // Every task has the fixed virtual-root credentials. Match the remaining
+    // ptrace access predicates: same-thread-group reads are always allowed;
+    // cross-process reads require either a dumpable target or CAP_SYS_PTRACE.
+    if target.tgid != state.pid
+        && !target.dumpable
+        && state.capability_effective & (1_u64 << CAP_SYS_PTRACE) == 0
+    {
+        return negative_errno(libc::EPERM);
     }
-    if args[1] == 0 || args[2] == 0 {
+
+    // Linux resolves and authorizes the target first, then writes the fixed
+    // header size before the head pointer. Preserve that partial-copy ordering.
+    if args[2] == 0 || write_u64(memory, args[2], ROBUST_LIST_HEAD_SIZE) != 0 {
         return negative_errno(libc::EFAULT);
     }
-    if write_u64(memory, args[1], state.robust_list_head) != 0 {
+    if args[1] == 0 || write_u64(memory, args[1], target.robust_list_head) != 0 {
         return negative_errno(libc::EFAULT);
     }
-    write_u64(memory, args[2], state.robust_list_len)
+    0
 }
 
 fn guest_host_address(
@@ -925,6 +971,7 @@ fn guest_host_address(
 /// [`crate::KvmBackend::run_static_elf`] uses directly.
 pub(crate) struct ElfExecutor {
     state: LoadedStaticElf,
+    task_generation: u64,
     address_space: Arc<std::sync::Mutex<AddressSpaceState>>,
     file_table: Arc<std::sync::Mutex<FileTableState>>,
     output: Option<CapturedOutput>,
@@ -1045,6 +1092,13 @@ fn mutates_file_table(number: u64) -> bool {
             || number == libc::SYS_pidfd_open as u64
             || number == libc::SYS_socket as u64
             || number == libc::SYS_socketpair as u64
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-385): Review serialized SCM_RIGHTS insertion.
+            // recvmsg can install descriptors in the guest table. Hold the
+            // CLONE_FILES lock from fd selection through table publication so
+            // sibling threads cannot choose the same deterministic guest fd.
+            || number == libc::SYS_recvmsg as u64
+            || number == libc::SYS_recvmmsg as u64
             || number == libc::SYS_dup as u64
             || number == libc::SYS_dup2 as u64
             || number == libc::SYS_dup3 as u64
@@ -1105,6 +1159,11 @@ impl ElfExecutor {
     }
 
     pub(crate) fn new(state: LoadedStaticElf, capture_output: bool) -> Self {
+        let task_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .ensure_registered(state.tid, state.pid, state.dumpable);
         let next_pid = state.pid.saturating_add(1);
         let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
         let file_table = Arc::new(std::sync::Mutex::new(
@@ -1112,6 +1171,7 @@ impl ElfExecutor {
         ));
         Self {
             state,
+            task_generation,
             address_space,
             file_table,
             output: capture_output.then(CapturedOutput::default),
@@ -1429,6 +1489,7 @@ impl ElfExecutor {
 
     pub(crate) fn fork_child(&self, child_pid: i32, clear_sighand: bool) -> crate::Result<Self> {
         let mut state = self.state.try_clone_for_fork(child_pid)?;
+        state.dumpable = self.current_dumpable();
         if clear_sighand {
             state.signal_actions.retain(|_, action| {
                 let handler = usize::from_ne_bytes(
@@ -1439,10 +1500,18 @@ impl ElfExecutor {
                 handler == libc::SIG_IGN
             });
         }
-        Ok(Self {
-            address_space: Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state))),
-            file_table: Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?)),
+        let address_space = Arc::new(std::sync::Mutex::new(AddressSpaceState::from_elf(&state)));
+        let file_table = Arc::new(std::sync::Mutex::new(FileTableState::try_from_elf(&state)?));
+        let task_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .register(state.tid, state.pid, state.dumpable);
+        let child = Self {
             state,
+            task_generation,
+            address_space,
+            file_table,
             output: self.output.clone(),
             owns_output: false,
             next_pid: self.next_pid.clone(),
@@ -1452,7 +1521,8 @@ impl ElfExecutor {
             exit_code: None,
             exit_group: false,
             clear_child_tid: None,
-        })
+        };
+        Ok(child)
     }
 
     // TODO-HUMAN-REVIEW(PR-172): Review shared address-space and output ownership.
@@ -1460,9 +1530,19 @@ impl ElfExecutor {
         let mut state = self.state.try_clone_for_fork(child_tid)?;
         state.pid = self.state.pid;
         state.ppid = self.state.ppid;
+        // A CLONE_THREAD worker stays inside the same process, so it inherits the
+        // thread group leader's position in the traced process tree.
+        state.is_traced_tree_root = self.state.is_traced_tree_root;
+        state.dumpable = self.current_dumpable();
         state.signalfd_state = self.state.signalfd_state.clone();
-        Ok(Self {
+        let task_generation = state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .register(state.tid, state.pid, state.dumpable);
+        let child = Self {
             state,
+            task_generation,
             address_space: self.address_space.clone(),
             file_table: self.file_table.clone(),
             output: self.output.clone(),
@@ -1474,7 +1554,17 @@ impl ElfExecutor {
             exit_code: None,
             exit_group: false,
             clear_child_tid: None,
-        })
+        };
+        Ok(child)
+    }
+
+    fn current_dumpable(&self) -> bool {
+        self.state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(self.state.tid)
+            .map_or(self.state.dumpable, |task| task.dumpable)
     }
 
     pub(crate) fn set_clear_child_tid(&mut self, address: Option<u64>) {
@@ -1633,6 +1723,14 @@ impl ElfExecutor {
     pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {
         let previous = std::mem::replace(&mut self.state, state);
         self.state.inherit_process_state(previous);
+        self.task_generation = self
+            .state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(self.state.tid)
+            .expect("execing KVM task is absent from its lifecycle table")
+            .generation;
         *self
             .address_space
             .lock()
@@ -1718,7 +1816,19 @@ impl ElfExecutor {
     }
 
     // TODO-HUMAN-REVIEW(PR-235): Review virtual parent identity for KVM Tool callbacks.
+    /// The parent inside the *traced* process tree, backing `Guest::ppid`.
+    ///
+    /// This is deliberately not `state.ppid`, which is the guest-visible
+    /// `getppid(2)` value. The root guest synthesizes a container-init parent
+    /// (PID 1) so `getppid()` matches the ptrace backend's PID namespace, but it
+    /// has no traced parent. Reverie derives `Guest::is_root_process` from this
+    /// returning `None`, and Detcore only registers the root thread with its
+    /// scheduler when `Guest::is_root_thread()` is true, so reporting the
+    /// synthetic parent here makes the root guest permanently unschedulable.
     pub(crate) fn parent_pid(&self) -> Option<reverie::Pid> {
+        if self.state.is_traced_tree_root {
+            return None;
+        }
         (self.state.ppid != 0).then(|| reverie::Pid::from_raw(self.state.ppid))
     }
 
@@ -1736,10 +1846,14 @@ impl ElfExecutor {
 
     /// Returns and clears a pending thread-local or group-wide exit.
     pub(crate) fn take_exit(&mut self) -> Option<ProcessExit> {
-        self.exit_code.take().map(|code| {
-            let group = std::mem::take(&mut self.exit_group);
-            ProcessExit { code, group }
-        })
+        let code = self.exit_code.take()?;
+        self.state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(self.state.tid, self.task_generation);
+        let group = std::mem::take(&mut self.exit_group);
+        Some(ProcessExit { code, group })
     }
 
     pub(crate) fn take_output(&mut self) -> (Vec<u8>, Vec<u8>) {
@@ -1751,6 +1865,16 @@ impl ElfExecutor {
         } else {
             (Vec::new(), Vec::new())
         }
+    }
+}
+
+impl Drop for ElfExecutor {
+    fn drop(&mut self) {
+        self.state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(self.state.tid, self.task_generation);
     }
 }
 
@@ -5148,9 +5272,649 @@ fn recvfrom(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
     result as i64
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ControlMessage {
+    offset: usize,
+    data_offset: usize,
+    end: usize,
+    record_end: usize,
+    level: libc::c_int,
+    kind: libc::c_int,
+}
+
+fn cmsg_align(length: usize) -> Option<usize> {
+    let alignment = std::mem::size_of::<usize>();
+    length
+        .checked_add(alignment - 1)
+        .map(|length| length & !(alignment - 1))
+}
+
+fn control_messages(control: &[u8]) -> Result<Vec<ControlMessage>, i64> {
+    let header_size = std::mem::size_of::<libc::cmsghdr>();
+    let header_space = cmsg_align(header_size).ok_or_else(|| negative_errno(libc::EINVAL))?;
+    let mut messages = Vec::new();
+    let mut offset = 0usize;
+
+    while offset < control.len() {
+        // A final alignment tail is not another message. Linux's CMSG_NXTHDR
+        // makes the same distinction by requiring room for a complete header.
+        if control.len() - offset < header_size {
+            break;
+        }
+        // SAFETY: the length check above provides a complete header and
+        // read_unaligned accepts byte-buffer alignment.
+        let header = unsafe {
+            control
+                .as_ptr()
+                .add(offset)
+                .cast::<libc::cmsghdr>()
+                .read_unaligned()
+        };
+        if header.cmsg_len < header_space {
+            return Err(negative_errno(libc::EINVAL));
+        }
+        let end = offset
+            .checked_add(header.cmsg_len)
+            .filter(|end| *end <= control.len())
+            .ok_or_else(|| negative_errno(libc::EINVAL))?;
+        let aligned_length =
+            cmsg_align(header.cmsg_len).ok_or_else(|| negative_errno(libc::EINVAL))?;
+        let aligned_end = offset
+            .checked_add(aligned_length)
+            .ok_or_else(|| negative_errno(libc::EINVAL))?;
+        let record_end = aligned_end.min(control.len());
+        messages.push(ControlMessage {
+            offset,
+            data_offset: offset + header_space,
+            end,
+            record_end,
+            level: header.cmsg_level,
+            kind: header.cmsg_type,
+        });
+        if aligned_end >= control.len() {
+            break;
+        }
+        offset = aligned_end;
+    }
+    Ok(messages)
+}
+
+fn read_control_fd(control: &[u8], offset: usize) -> Result<libc::c_int, i64> {
+    let bytes = control
+        .get(offset..offset + std::mem::size_of::<libc::c_int>())
+        .ok_or_else(|| negative_errno(libc::EINVAL))?;
+    Ok(libc::c_int::from_ne_bytes(
+        bytes.try_into().expect("fd slice has exact size"),
+    ))
+}
+
+fn write_control_fd(control: &mut [u8], offset: usize, fd: libc::c_int) -> Result<(), i64> {
+    let destination = control
+        .get_mut(offset..offset + std::mem::size_of::<libc::c_int>())
+        .ok_or_else(|| negative_errno(libc::EINVAL))?;
+    destination.copy_from_slice(&fd.to_ne_bytes());
+    Ok(())
+}
+
+fn is_socket_timestamp_cmsg(message: ControlMessage) -> bool {
+    message.level == libc::SOL_SOCKET
+        && matches!(
+            message.kind,
+            SCM_TIMESTAMP_OLD
+                | SCM_TIMESTAMPNS_OLD
+                | SCM_TIMESTAMPING_OLD
+                | SCM_TIMESTAMP_NEW
+                | SCM_TIMESTAMPNS_NEW
+                | SCM_TIMESTAMPING_NEW
+        )
+}
+
+fn translate_outgoing_control(control: &mut [u8], state: &LoadedStaticElf) -> Result<(), i64> {
+    for message in control_messages(control)? {
+        // SCM_RIGHTS is the only ancillary input whose payload is meaningful in
+        // the guest descriptor namespace. Other control inputs (credentials,
+        // pidfds, interface selectors, and queue metadata) need their own
+        // virtualization rules; fail before sendmsg rather than forwarding
+        // guest/host identity bytes under an accidental pass-through policy.
+        if message.level != libc::SOL_SOCKET || message.kind != libc::SCM_RIGHTS {
+            return Err(negative_errno(libc::EOPNOTSUPP));
+        }
+        let data_length = message.end - message.data_offset;
+        if data_length == 0 || data_length % std::mem::size_of::<libc::c_int>() != 0 {
+            return Err(negative_errno(libc::EINVAL));
+        }
+        for offset in (message.data_offset..message.end).step_by(std::mem::size_of::<libc::c_int>())
+        {
+            let guest_fd = read_control_fd(control, offset)?;
+            let host_fd = host_fd(state, guest_fd).ok_or_else(|| negative_errno(libc::EBADF))?;
+            write_control_fd(control, offset, host_fd)?;
+        }
+    }
+    Ok(())
+}
+
+struct PendingReceivedRight {
+    control_offset: usize,
+    file: std::fs::File,
+}
+
+struct SanitizedReceivedControl {
+    bytes: Vec<u8>,
+    rights: Vec<PendingReceivedRight>,
+    stripped_unsupported: bool,
+}
+
+#[derive(Clone, Copy)]
+enum ReceivedRawFdKind {
+    Right { control_offset: usize },
+    Unsupported,
+}
+
+fn close_received_raw_fds(raw_fds: &[(libc::c_int, ReceivedRawFdKind)]) {
+    let mut closed = std::collections::BTreeSet::new();
+    for &(fd, _) in raw_fds {
+        if fd >= 0 && closed.insert(fd) {
+            // SAFETY: descriptors returned in recvmsg control data belong to
+            // this process. This error path has not wrapped them in File yet.
+            unsafe { libc::close(fd) };
+        }
+    }
+}
+
+fn sanitize_received_control(control: &[u8]) -> Result<SanitizedReceivedControl, i64> {
+    let messages = match control_messages(control) {
+        Ok(messages) => messages,
+        Err(error) => {
+            // The host kernel constructs recvmsg control records, so malformed
+            // output is not expected. No descriptor can be identified safely
+            // without a valid header; fail closed instead of copying bytes.
+            return Err(error);
+        }
+    };
+    let mut bytes = Vec::with_capacity(control.len());
+    let mut raw_fds = Vec::new();
+    let mut stripped_unsupported = false;
+
+    for message in messages {
+        if message.level == libc::SOL_SOCKET && message.kind == libc::SCM_RIGHTS {
+            let data_length = message.end - message.data_offset;
+            if data_length == 0 || data_length % std::mem::size_of::<libc::c_int>() != 0 {
+                close_received_raw_fds(&raw_fds);
+                return Err(negative_errno(libc::EBADMSG));
+            }
+            let output_start = bytes.len();
+            bytes.resize(output_start + (message.record_end - message.offset), 0);
+            bytes[output_start..output_start + (message.end - message.offset)]
+                .copy_from_slice(&control[message.offset..message.end]);
+            for offset in
+                (message.data_offset..message.end).step_by(std::mem::size_of::<libc::c_int>())
+            {
+                let raw_fd = read_control_fd(control, offset)?;
+                if raw_fd < 0 {
+                    close_received_raw_fds(&raw_fds);
+                    return Err(negative_errno(libc::EBADMSG));
+                }
+                raw_fds.push((
+                    raw_fd,
+                    ReceivedRawFdKind::Right {
+                        control_offset: output_start + (offset - message.offset),
+                    },
+                ));
+            }
+        } else if is_socket_timestamp_cmsg(message) {
+            // Detcore canonicalizes these six timestamp ABIs to logical time
+            // immediately after the executor returns. Preserve the record but
+            // zero alignment padding so stale host bytes never become visible.
+            let output_start = bytes.len();
+            bytes.resize(output_start + (message.record_end - message.offset), 0);
+            bytes[output_start..output_start + (message.end - message.offset)]
+                .copy_from_slice(&control[message.offset..message.end]);
+        } else {
+            stripped_unsupported = true;
+            // SCM_PIDFD installs one host descriptor just like SCM_RIGHTS. KVM
+            // has no virtual process-fd donation model yet, so close it and
+            // report ancillary truncation rather than leaking its host number.
+            if message.level == libc::SOL_SOCKET && message.kind == SCM_PIDFD {
+                if message.end - message.data_offset != std::mem::size_of::<libc::c_int>() {
+                    close_received_raw_fds(&raw_fds);
+                    return Err(negative_errno(libc::EBADMSG));
+                }
+                let raw_fd = read_control_fd(control, message.data_offset)?;
+                if raw_fd < 0 {
+                    close_received_raw_fds(&raw_fds);
+                    return Err(negative_errno(libc::EBADMSG));
+                }
+                raw_fds.push((raw_fd, ReceivedRawFdKind::Unsupported));
+            }
+            // Credentials, pidfds, security labels, packet/interface data and
+            // queue/error metadata are host identity/state. Until each has a
+            // deterministic virtual form, omit it and set MSG_CTRUNC below.
+        }
+    }
+
+    let mut unique = std::collections::BTreeSet::new();
+    if raw_fds.iter().any(|(fd, _)| !unique.insert(*fd)) {
+        close_received_raw_fds(&raw_fds);
+        return Err(negative_errno(libc::EBADMSG));
+    }
+
+    let mut rights = Vec::new();
+    for (raw_fd, kind) in raw_fds {
+        // SAFETY: recvmsg returned each nonnegative descriptor exactly once and
+        // the duplicate check above guarantees unique ownership.
+        let file = unsafe { std::fs::File::from_raw_fd(raw_fd) };
+        if let ReceivedRawFdKind::Right { control_offset } = kind {
+            rights.push(PendingReceivedRight {
+                control_offset,
+                file,
+            });
+        }
+        // Unsupported fd-bearing records are closed when `file` drops here.
+    }
+
+    Ok(SanitizedReceivedControl {
+        bytes,
+        rights,
+        stripped_unsupported,
+    })
+}
+
+fn available_guest_fds_with_limit(
+    state: &LoadedStaticElf,
+    count: usize,
+    limit: libc::c_int,
+) -> Result<Vec<libc::c_int>, i64> {
+    let fds = (0..limit)
+        .filter(|fd| !is_open_standard(state, *fd) && !state.files.contains_key(fd))
+        .take(count)
+        .collect::<Vec<_>>();
+    if fds.len() == count {
+        Ok(fds)
+    } else {
+        Err(negative_errno(libc::EMFILE))
+    }
+}
+
+fn rollback_received_rights(state: &mut LoadedStaticElf, guest_fds: &[libc::c_int]) {
+    for &fd in guest_fds.iter().rev() {
+        let result = close(state, fd as u64);
+        debug_assert_eq!(result, 0);
+    }
+}
+
+fn install_received_rights(
+    state: &mut LoadedStaticElf,
+    control: &mut [u8],
+    rights: Vec<PendingReceivedRight>,
+    close_on_exec: bool,
+) -> Result<Vec<libc::c_int>, i64> {
+    let guest_fds = available_guest_fds_with_limit(state, rights.len(), GUEST_NOFILE_LIMIT)?;
+    let mut installed = Vec::with_capacity(rights.len());
+
+    for (right, guest_fd) in rights.into_iter().zip(guest_fds) {
+        let object_inode = match allocate_fd_object_inode(state, &right.file) {
+            Ok(object_inode) => object_inode,
+            Err(error) => {
+                rollback_received_rights(state, &installed);
+                return Err(error);
+            }
+        };
+        state.files.insert(guest_fd, right.file);
+        state.fd_object_inodes.insert(guest_fd, object_inode);
+        if close_on_exec {
+            state.cloexec_fds.insert(guest_fd);
+        } else {
+            state.cloexec_fds.remove(&guest_fd);
+        }
+        set_output_alias(state, guest_fd, None);
+        if let Err(error) = write_control_fd(control, right.control_offset, guest_fd) {
+            installed.push(guest_fd);
+            rollback_received_rights(state, &installed);
+            return Err(error);
+        }
+        installed.push(guest_fd);
+    }
+    Ok(installed)
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-385): Review bounded sendmsg translation, SCM_RIGHTS
+// guest-to-host descriptor mapping, and deterministic ancillary policy.
+//
+// The single-message send sibling of `sendto`/`recvmmsg`. Detcore already
+// classifies `sendmsg` as Determinized and drives it through the backend's
+// nonblockable-fd path (see hermit detcore/src/lib.rs `handle_sendrecv`), so
+// this executor arm only has to translate the guest `msghdr` — gathering the
+// iovec payload and name and mapping SCM_RIGHTS descriptors — before forwarding
+// it to the host socket.
+fn sendmsg(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
+        return negative_errno(libc::EBADF);
+    };
+    if args[1] == 0 {
+        return negative_errno(libc::EFAULT);
+    }
+    let message: libc::msghdr = match read_guest_struct(memory, args[1]) {
+        Ok(message) => message,
+        Err(error) => return error,
+    };
+
+    let iov_count = message.msg_iovlen;
+    if iov_count > libc::UIO_MAXIOV as usize {
+        return negative_errno(libc::EMSGSIZE);
+    }
+    if iov_count != 0 && message.msg_iov.is_null() {
+        return negative_errno(libc::EFAULT);
+    }
+    let guest_iov_address = message.msg_iov as usize as u64;
+    let mut payload: Vec<u8> = Vec::new();
+    for iov_index in 0..iov_count {
+        let Some(iov_address) =
+            guest_iov_address.checked_add((iov_index * std::mem::size_of::<libc::iovec>()) as u64)
+        else {
+            return negative_errno(libc::EFAULT);
+        };
+        let iov: libc::iovec = match read_guest_struct(memory, iov_address) {
+            Ok(iov) => iov,
+            Err(error) => return error,
+        };
+        let Some(next_length) = payload.len().checked_add(iov.iov_len) else {
+            return negative_errno(libc::EINVAL);
+        };
+        if next_length > MAX_HOST_IO {
+            return negative_errno(libc::EINVAL);
+        }
+        if iov.iov_len != 0 {
+            let mut segment = vec![0u8; iov.iov_len];
+            if memory
+                .read(iov.iov_base as usize as u64, &mut segment)
+                .is_err()
+            {
+                return negative_errno(libc::EFAULT);
+            }
+            payload.extend_from_slice(&segment);
+        }
+    }
+
+    let name_capacity = message.msg_namelen as usize;
+    let control_capacity = message.msg_controllen;
+    if name_capacity > MAX_HOST_IO || control_capacity > MAX_HOST_IO {
+        return negative_errno(libc::EINVAL);
+    }
+    if name_capacity != 0 && message.msg_name.is_null() {
+        return negative_errno(libc::EFAULT);
+    }
+    if control_capacity != 0 && message.msg_control.is_null() {
+        return negative_errno(libc::EFAULT);
+    }
+    let mut name = vec![0u8; name_capacity];
+    let mut control = vec![0u8; control_capacity];
+    if name_capacity != 0
+        && memory
+            .read(message.msg_name as usize as u64, &mut name)
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    if control_capacity != 0
+        && memory
+            .read(message.msg_control as usize as u64, &mut control)
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+    if let Err(error) = translate_outgoing_control(&mut control, state) {
+        return error;
+    }
+
+    let mut host_iov = libc::iovec {
+        iov_base: payload.as_mut_ptr().cast(),
+        iov_len: payload.len(),
+    };
+    let host_header = libc::msghdr {
+        msg_name: if name.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            name.as_mut_ptr().cast()
+        },
+        msg_namelen: name.len() as libc::socklen_t,
+        msg_iov: std::ptr::from_mut(&mut host_iov),
+        msg_iovlen: usize::from(!payload.is_empty()),
+        msg_control: if control.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            control.as_mut_ptr().cast()
+        },
+        msg_controllen: control.len(),
+        msg_flags: 0,
+    };
+    let flags = args[2] as libc::c_int;
+    // SAFETY: payload/name/control are readable host buffers matching the
+    // header's declared lengths, and host_fd belongs to the guest descriptor
+    // table. The supervisor cannot safely accept a guest SIGPIPE, so KVM's
+    // explicit policy is to suppress the host signal and return EPIPE. Guest
+    // SIGPIPE synthesis remains a separate signal-delivery capability.
+    let result = unsafe {
+        libc::sendmsg(
+            host_fd,
+            std::ptr::from_ref(&host_header),
+            flags | libc::MSG_NOSIGNAL,
+        )
+    };
+    if result < 0 {
+        io_error(std::io::Error::last_os_error())
+    } else {
+        result as i64
+    }
+}
+
+// AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-385): Review bounded recvmsg translation, transactional
+// SCM_RIGHTS installation, CLOEXEC modeling, and ancillary-data filtering.
+//
+// The single-message receive form; `recvmmsg` is its multi-message sibling and
+// this reuses the same translation shape for exactly one `msghdr`. Detcore
+// classifies `recvmsg` as Determinized and canonicalizes any host socket
+// timestamps in the ancillary control buffer after this returns (see hermit
+// detcore/src/syscalls/io.rs `handle_recvmsg` / `canonicalize_socket_timestamps`),
+// so the executor only faithfully performs the host receive and copies the
+// control/name bytes back into guest memory for Detcore to sanitize.
+fn recvmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+    let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
+        return negative_errno(libc::EBADF);
+    };
+    let message_address = args[1];
+    if message_address == 0 {
+        return negative_errno(libc::EFAULT);
+    }
+    let mut message: libc::msghdr = match read_guest_struct(memory, message_address) {
+        Ok(message) => message,
+        Err(error) => return error,
+    };
+    // Validate the final header copyout before consuming a datagram.
+    if write_struct(memory, message_address, &message) != 0 {
+        return negative_errno(libc::EFAULT);
+    }
+
+    let iov_count = message.msg_iovlen;
+    if iov_count > libc::UIO_MAXIOV as usize {
+        return negative_errno(libc::EMSGSIZE);
+    }
+    if iov_count != 0 && message.msg_iov.is_null() {
+        return negative_errno(libc::EFAULT);
+    }
+    let guest_iov_address = message.msg_iov as usize as u64;
+    let mut guest_iovecs = Vec::with_capacity(iov_count);
+    let mut payload_length = 0usize;
+    for iov_index in 0..iov_count {
+        let Some(iov_address) =
+            guest_iov_address.checked_add((iov_index * std::mem::size_of::<libc::iovec>()) as u64)
+        else {
+            return negative_errno(libc::EFAULT);
+        };
+        let iov: libc::iovec = match read_guest_struct(memory, iov_address) {
+            Ok(iov) => iov,
+            Err(error) => return error,
+        };
+        let Some(next_length) = payload_length.checked_add(iov.iov_len) else {
+            return negative_errno(libc::EINVAL);
+        };
+        if next_length > MAX_HOST_IO {
+            return negative_errno(libc::EINVAL);
+        }
+        if iov.iov_len != 0 {
+            let mut probe = vec![0; iov.iov_len];
+            if memory
+                .read(iov.iov_base as usize as u64, &mut probe)
+                .is_err()
+            {
+                return negative_errno(libc::EFAULT);
+            }
+        }
+        payload_length = next_length;
+        guest_iovecs.push(iov);
+    }
+
+    let name_capacity = message.msg_namelen as usize;
+    let control_capacity = message.msg_controllen;
+    if name_capacity > MAX_HOST_IO || control_capacity > MAX_HOST_IO {
+        return negative_errno(libc::EINVAL);
+    }
+    if name_capacity != 0 && message.msg_name.is_null() {
+        return negative_errno(libc::EFAULT);
+    }
+    if control_capacity != 0 && message.msg_control.is_null() {
+        return negative_errno(libc::EFAULT);
+    }
+    let mut payload = vec![0u8; payload_length];
+    let mut name = vec![0u8; name_capacity];
+    let mut control = vec![0u8; control_capacity];
+    for (address, length) in [
+        (message.msg_name as usize as u64, name_capacity),
+        (message.msg_control as usize as u64, control_capacity),
+    ] {
+        if length != 0 {
+            let mut probe = vec![0; length];
+            if memory.read(address, &mut probe).is_err() {
+                return negative_errno(libc::EFAULT);
+            }
+        }
+    }
+
+    let mut host_iov = libc::iovec {
+        iov_base: payload.as_mut_ptr().cast(),
+        iov_len: payload.len(),
+    };
+    let mut host_header = libc::msghdr {
+        msg_name: if name.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            name.as_mut_ptr().cast()
+        },
+        msg_namelen: name.len() as libc::socklen_t,
+        msg_iov: std::ptr::from_mut(&mut host_iov),
+        msg_iovlen: usize::from(!payload.is_empty()),
+        msg_control: if control.is_empty() {
+            std::ptr::null_mut()
+        } else {
+            control.as_mut_ptr().cast()
+        },
+        msg_controllen: control.len(),
+        msg_flags: 0,
+    };
+    let flags = args[2] as libc::c_int;
+    // Keep the VM executor cooperative: Detcore's scheduler owns blocking and
+    // retries EAGAIN, while already-queued datagrams are returned immediately.
+    // Always ask the host for CLOEXEC descriptors so a supervisor exec cannot
+    // leak them; guest CLOEXEC state is modeled from the caller's original flag.
+    let received = unsafe {
+        libc::recvmsg(
+            host_fd,
+            std::ptr::from_mut(&mut host_header),
+            flags | libc::MSG_DONTWAIT | libc::MSG_CMSG_CLOEXEC,
+        )
+    };
+    if received < 0 {
+        return io_error(std::io::Error::last_os_error());
+    }
+
+    let used_control = host_header.msg_controllen.min(control.len());
+    let SanitizedReceivedControl {
+        bytes: mut control_bytes,
+        rights,
+        stripped_unsupported,
+    } = match sanitize_received_control(&control[..used_control]) {
+        Ok(control) => control,
+        Err(error) => return error,
+    };
+
+    let copied_length = (received as usize).min(payload.len());
+    let mut copied = 0usize;
+    for iov in &guest_iovecs {
+        let length = iov.iov_len.min(copied_length.saturating_sub(copied));
+        if length != 0
+            && memory
+                .write(
+                    iov.iov_base as usize as u64,
+                    &payload[copied..copied + length],
+                )
+                .is_err()
+        {
+            return negative_errno(libc::EFAULT);
+        }
+        copied += length;
+    }
+    if name_capacity != 0
+        && memory
+            .write(
+                message.msg_name as usize as u64,
+                &name[..name_capacity.min(host_header.msg_namelen as usize)],
+            )
+            .is_err()
+    {
+        return negative_errno(libc::EFAULT);
+    }
+
+    let installed = match install_received_rights(
+        state,
+        &mut control_bytes,
+        rights,
+        flags & libc::MSG_CMSG_CLOEXEC != 0,
+    ) {
+        Ok(installed) => installed,
+        Err(error) => return error,
+    };
+    if control_capacity != 0 {
+        // Detcore snapshots the caller's original capacity before injection and
+        // rereads that entire region to canonicalize timestamps. Zero the tail
+        // so stripped host metadata or stale guest bytes cannot be reparsed as
+        // a second control record.
+        let mut guest_control = vec![0; control_capacity];
+        guest_control[..control_bytes.len()].copy_from_slice(&control_bytes);
+        if memory
+            .write(message.msg_control as usize as u64, &guest_control)
+            .is_err()
+        {
+            rollback_received_rights(state, &installed);
+            return negative_errno(libc::EFAULT);
+        }
+    }
+    message.msg_namelen = host_header.msg_namelen;
+    message.msg_controllen = control_bytes.len();
+    message.msg_flags = host_header.msg_flags;
+    if stripped_unsupported {
+        message.msg_flags |= libc::MSG_CTRUNC;
+    }
+    if write_struct(memory, message_address, &message) != 0 {
+        rollback_received_rights(state, &installed);
+        return negative_errno(libc::EFAULT);
+    }
+    received as i64
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-210): Review guest mmsghdr translation and nonblocking receive semantics.
-fn recvmmsg(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn recvmmsg(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
     let Some(host_fd) = host_fd(state, args[0] as libc::c_int) else {
         return negative_errno(libc::EBADF);
     };
@@ -5314,7 +6078,7 @@ fn recvmmsg(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
             libc::recvmsg(
                 host_fd,
                 std::ptr::from_mut(&mut host_header),
-                flags | libc::MSG_DONTWAIT,
+                flags | libc::MSG_DONTWAIT | libc::MSG_CMSG_CLOEXEC,
             )
         };
         if received < 0 {
@@ -5325,6 +6089,22 @@ fn recvmmsg(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
                 delivered as i64
             };
         }
+
+        let used_control = host_header.msg_controllen.min(control.len());
+        let SanitizedReceivedControl {
+            bytes: mut control_bytes,
+            rights,
+            stripped_unsupported,
+        } = match sanitize_received_control(&control[..used_control]) {
+            Ok(control) => control,
+            Err(error) => {
+                return if delivered == 0 {
+                    error
+                } else {
+                    delivered as i64
+                };
+            }
+        };
 
         let copied_length = (received as usize).min(payload.len());
         let mut copied = 0usize;
@@ -5360,25 +6140,45 @@ fn recvmmsg(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) 
                 delivered as i64
             };
         }
-        if control_capacity != 0
-            && memory
-                .write(
-                    message.msg_hdr.msg_control as usize as u64,
-                    &control[..control_capacity.min(host_header.msg_controllen)],
-                )
+        let installed = match install_received_rights(
+            state,
+            &mut control_bytes,
+            rights,
+            flags & libc::MSG_CMSG_CLOEXEC != 0,
+        ) {
+            Ok(installed) => installed,
+            Err(error) => {
+                return if delivered == 0 {
+                    error
+                } else {
+                    delivered as i64
+                };
+            }
+        };
+        if control_capacity != 0 {
+            let mut guest_control = vec![0; control_capacity];
+            guest_control[..control_bytes.len()].copy_from_slice(&control_bytes);
+            if memory
+                .write(message.msg_hdr.msg_control as usize as u64, &guest_control)
                 .is_err()
-        {
-            return if delivered == 0 {
-                negative_errno(libc::EFAULT)
-            } else {
-                delivered as i64
-            };
+            {
+                rollback_received_rights(state, &installed);
+                return if delivered == 0 {
+                    negative_errno(libc::EFAULT)
+                } else {
+                    delivered as i64
+                };
+            }
         }
         message.msg_hdr.msg_namelen = host_header.msg_namelen;
-        message.msg_hdr.msg_controllen = host_header.msg_controllen;
+        message.msg_hdr.msg_controllen = control_bytes.len();
         message.msg_hdr.msg_flags = host_header.msg_flags;
+        if stripped_unsupported {
+            message.msg_hdr.msg_flags |= libc::MSG_CTRUNC;
+        }
         message.msg_len = received as libc::c_uint;
         if write_struct(memory, message_address, &message) != 0 {
+            rollback_received_rights(state, &installed);
             return if delivered == 0 {
                 negative_errno(libc::EFAULT)
             } else {
@@ -7636,20 +8436,31 @@ fn prctl(state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
         option if option == libc::PR_GET_KEEPCAPS as u64 => i64::from(state.keep_capabilities),
         // AUTONOMOUS-BOT-IMPLEMENTED
         option if option == libc::PR_SET_DUMPABLE as u64 => match args[1] {
-            0 => {
+            value @ (0 | 1) => {
+                let dumpable = value == 1;
                 // TODO-HUMAN-REVIEW(PR-235): Review virtual dumpability mutation.
-                state.dumpable = false;
-                0
-            }
-            1 => {
-                state.dumpable = true;
+                state.dumpable = dumpable;
+                let updated = state
+                    .task_lifecycle
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .set_dumpable(state.pid, dumpable);
+                debug_assert!(updated, "current KVM process has no live task entry");
                 0
             }
             _ => negative_errno(libc::EINVAL),
         },
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-235): Review virtual dumpability queries.
-        option if option == libc::PR_GET_DUMPABLE as u64 => i64::from(state.dumpable),
+        option if option == libc::PR_GET_DUMPABLE as u64 => state
+            .task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(state.tid)
+            .map_or_else(
+                || i64::from(state.dumpable),
+                |task| i64::from(task.dumpable),
+            ),
         option if option == libc::PR_CAP_AMBIENT as u64 => {
             prctl_cap_ambient(state, args[1], args[2])
         }
@@ -9669,6 +10480,7 @@ mod tests {
             pid: 1,
             tid: 1,
             ppid: 0,
+            is_traced_tree_root: true,
             logical_clock_ns: 0,
             umask: 0o022,
             random_seed: 0,
@@ -9688,8 +10500,9 @@ mod tests {
             signal_mask: [0; KERNEL_SIGSET_SIZE],
             signal_alt_stack: None,
             signalfd_state: Arc::new(std::sync::Mutex::new(crate::elf::SignalFdState::default())),
-            robust_list_head: 0,
-            robust_list_len: 0,
+            task_lifecycle: Arc::new(std::sync::Mutex::new(
+                crate::elf::TaskLifecycleTable::with_root(1, 1, true),
+            )),
             files: BTreeMap::new(),
             random_device_fds: BTreeSet::new(),
             stdout_alias_fds: BTreeSet::new(),
@@ -9740,6 +10553,43 @@ mod tests {
         memory.read(address, bytes).unwrap();
         // SAFETY: zeroed storage was fully initialized by memory.read.
         unsafe { value.assume_init() }
+    }
+
+    fn control_message(level: libc::c_int, kind: libc::c_int, data: &[u8]) -> Vec<u8> {
+        let header_space = cmsg_align(std::mem::size_of::<libc::cmsghdr>()).unwrap();
+        let message_length = header_space + data.len();
+        let mut control = vec![0; cmsg_align(message_length).unwrap()];
+        let header = libc::cmsghdr {
+            cmsg_len: message_length,
+            cmsg_level: level,
+            cmsg_type: kind,
+        };
+        let header_bytes = struct_bytes(&header);
+        control[..header_bytes.len()].copy_from_slice(&header_bytes);
+        control[header_space..message_length].copy_from_slice(data);
+        control
+    }
+
+    fn rights_control(fds: &[libc::c_int]) -> Vec<u8> {
+        let bytes = fds
+            .iter()
+            .flat_map(|fd| fd.to_ne_bytes())
+            .collect::<Vec<_>>();
+        control_message(libc::SOL_SOCKET, libc::SCM_RIGHTS, &bytes)
+    }
+
+    fn control_rights(control: &[u8]) -> Vec<libc::c_int> {
+        control_messages(control)
+            .unwrap()
+            .into_iter()
+            .filter(|message| message.level == libc::SOL_SOCKET && message.kind == libc::SCM_RIGHTS)
+            .flat_map(|message| {
+                (message.data_offset..message.end)
+                    .step_by(std::mem::size_of::<libc::c_int>())
+                    .map(|offset| read_control_fd(control, offset).unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     fn write_c_string(memory: &mut GuestMemory, address: u64, value: &str) {
@@ -13353,18 +14203,18 @@ mod tests {
     #[test]
     fn recvmmsg_translates_guest_headers_and_receives_multiple_datagrams() {
         const PAIR_FDS: u64 = 0x100;
-        const FIRST_PAYLOAD: u64 = 0x200;
         const SECOND_PAYLOAD: u64 = 0x220;
         const MESSAGES: u64 = 0x300;
         const FIRST_IOV: u64 = 0x400;
         const SECOND_IOV: u64 = 0x420;
         const FIRST_BUFFER: u64 = 0x500;
         const SECOND_BUFFER: u64 = 0x540;
+        const FIRST_CONTROL: u64 = 0x580;
+        const PIPE_RESULT: u64 = 0x600;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
-        memory.write(FIRST_PAYLOAD, b"hello").unwrap();
         memory.write(SECOND_PAYLOAD, b"world!").unwrap();
 
         assert_eq!(
@@ -13384,17 +14234,55 @@ mod tests {
             0
         );
         let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
-        for (address, length) in [(FIRST_PAYLOAD, 5), (SECOND_PAYLOAD, 6)] {
-            assert_eq!(
-                syscall_result(
-                    &mut memory,
-                    &mut state,
-                    libc::SYS_write,
-                    [socket_fds[0] as u64, address, length, 0, 0, 0],
-                ),
-                length as i64
-            );
-        }
+        // Queue the first datagram from the host with one real descriptor, then
+        // queue the second through the guest path. recvmmsg must translate the
+        // first control record without affecting ordinary later messages.
+        let mut pipe_fds = [-1; 2];
+        // SAFETY: pipe_fds has room for both CLOEXEC descriptors.
+        assert_eq!(
+            unsafe { libc::pipe2(pipe_fds.as_mut_ptr(), libc::O_CLOEXEC) },
+            0
+        );
+        // SAFETY: pipe2 returned two independently owned descriptors.
+        let read_end = unsafe { std::fs::File::from_raw_fd(pipe_fds[0]) };
+        // SAFETY: pipe2 returned two independently owned descriptors.
+        let mut write_end = unsafe { std::fs::File::from_raw_fd(pipe_fds[1]) };
+        let mut host_payload = b"hello".to_vec();
+        let mut host_iov = libc::iovec {
+            iov_base: host_payload.as_mut_ptr().cast(),
+            iov_len: host_payload.len(),
+        };
+        let mut host_control = rights_control(&[read_end.as_raw_fd()]);
+        let host_message = libc::msghdr {
+            msg_name: std::ptr::null_mut(),
+            msg_namelen: 0,
+            msg_iov: std::ptr::from_mut(&mut host_iov),
+            msg_iovlen: 1,
+            msg_control: host_control.as_mut_ptr().cast(),
+            msg_controllen: host_control.len(),
+            msg_flags: 0,
+        };
+        // SAFETY: every msghdr buffer is live and the socket belongs to state.
+        assert_eq!(
+            unsafe {
+                libc::sendmsg(
+                    host_fd(&state, socket_fds[0]).unwrap(),
+                    std::ptr::from_ref(&host_message),
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            5
+        );
+        drop(read_end);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [socket_fds[0] as u64, SECOND_PAYLOAD, 6, 0, 0, 0],
+            ),
+            6
+        );
 
         for (index, (iov_address, buffer_address)) in
             [(FIRST_IOV, FIRST_BUFFER), (SECOND_IOV, SECOND_BUFFER)]
@@ -13409,6 +14297,10 @@ mod tests {
             let mut message = unsafe { std::mem::zeroed::<libc::mmsghdr>() };
             message.msg_hdr.msg_iov = iov_address as usize as *mut libc::iovec;
             message.msg_hdr.msg_iovlen = 1;
+            if index == 0 {
+                message.msg_hdr.msg_control = FIRST_CONTROL as usize as *mut libc::c_void;
+                message.msg_hdr.msg_controllen = 64;
+            }
             assert_eq!(
                 write_struct(
                     &mut memory,
@@ -13450,6 +14342,626 @@ mod tests {
             read_guest_bytes::<6>(&memory, SECOND_BUFFER).unwrap(),
             *b"world!"
         );
+        let mut control = vec![0; first.msg_hdr.msg_controllen];
+        memory.read(FIRST_CONTROL, &mut control).unwrap();
+        let received_fds = control_rights(&control);
+        assert_eq!(received_fds, [5]);
+        assert!(mutates_file_table(libc::SYS_recvmmsg as u64));
+        write_end.write_all(b"x").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [received_fds[0] as u64, PIPE_RESULT, 1, 0, 0, 0],
+            ),
+            1
+        );
+        assert_eq!(read_guest_bytes::<1>(&memory, PIPE_RESULT).unwrap(), *b"x");
+    }
+
+    #[test]
+    fn sendmsg_recvmsg_translates_multiple_rights_and_cloexec_lifecycle() {
+        const PAIR_FDS: u64 = 0x100;
+        const PIPE_FDS: u64 = 0x180;
+        const SEND_SEG0: u64 = 0x200;
+        const SEND_SEG1: u64 = 0x220;
+        const SEND_IOV: u64 = 0x300;
+        const SEND_MSG: u64 = 0x360;
+        const SEND_CONTROL: u64 = 0x3c0;
+        const RECV_SEG0: u64 = 0x400;
+        const RECV_SEG1: u64 = 0x420;
+        const RECV_IOV: u64 = 0x500;
+        const RECV_CONTROL: u64 = 0x580;
+        const RECV_MSG: u64 = 0x600;
+        const PIPE_PAYLOAD: u64 = 0x700;
+        const PIPE_RESULT: u64 = 0x710;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        // A two-segment payload: "hello " + "world!" = "hello world!" (12 bytes).
+        memory.write(SEND_SEG0, b"hello ").unwrap();
+        memory.write(SEND_SEG1, b"world!").unwrap();
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        assert_eq!(pipe_fds, [5, 6]);
+
+        // Build the send-side scatter-gather iovecs and msghdr.
+        let send_iovs = [
+            libc::iovec {
+                iov_base: SEND_SEG0 as usize as *mut libc::c_void,
+                iov_len: 6,
+            },
+            libc::iovec {
+                iov_base: SEND_SEG1 as usize as *mut libc::c_void,
+                iov_len: 6,
+            },
+        ];
+        for (index, iov) in send_iovs.iter().enumerate() {
+            assert_eq!(
+                write_struct(
+                    &mut memory,
+                    SEND_IOV + (index * std::mem::size_of::<libc::iovec>()) as u64,
+                    iov,
+                ),
+                0
+            );
+        }
+        let mut send_msg = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        send_msg.msg_iov = SEND_IOV as usize as *mut libc::iovec;
+        send_msg.msg_iovlen = 2;
+        let send_control = rights_control(&pipe_fds);
+        memory.write(SEND_CONTROL, &send_control).unwrap();
+        send_msg.msg_control = SEND_CONTROL as usize as *mut libc::c_void;
+        send_msg.msg_controllen = send_control.len();
+        assert_eq!(write_struct(&mut memory, SEND_MSG, &send_msg), 0);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendmsg,
+                [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+            ),
+            12
+        );
+
+        // Build the recv-side iovecs (6 + 6), an ancillary control buffer, and
+        // the msghdr the guest hands to recvmsg.
+        let recv_iovs = [
+            libc::iovec {
+                iov_base: RECV_SEG0 as usize as *mut libc::c_void,
+                iov_len: 6,
+            },
+            libc::iovec {
+                iov_base: RECV_SEG1 as usize as *mut libc::c_void,
+                iov_len: 6,
+            },
+        ];
+        for (index, iov) in recv_iovs.iter().enumerate() {
+            assert_eq!(
+                write_struct(
+                    &mut memory,
+                    RECV_IOV + (index * std::mem::size_of::<libc::iovec>()) as u64,
+                    iov,
+                ),
+                0
+            );
+        }
+        memory.write(RECV_CONTROL, &[0u8; 64]).unwrap();
+        let mut recv_msg = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        recv_msg.msg_iov = RECV_IOV as usize as *mut libc::iovec;
+        recv_msg.msg_iovlen = 2;
+        recv_msg.msg_control = RECV_CONTROL as usize as *mut libc::c_void;
+        recv_msg.msg_controllen = 64;
+        assert_eq!(write_struct(&mut memory, RECV_MSG, &recv_msg), 0);
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmsg,
+                [
+                    socket_fds[1] as u64,
+                    RECV_MSG,
+                    libc::MSG_CMSG_CLOEXEC as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            12
+        );
+
+        // The payload reassembles across the two independent recv segments,
+        // proving the iovec scatter/gather translation is faithful.
+        assert_eq!(
+            read_guest_bytes::<6>(&memory, RECV_SEG0).unwrap(),
+            *b"hello "
+        );
+        assert_eq!(
+            read_guest_bytes::<6>(&memory, RECV_SEG1).unwrap(),
+            *b"world!"
+        );
+
+        let received: libc::msghdr = read_struct(&memory, RECV_MSG);
+        assert_eq!(received.msg_flags & libc::MSG_CTRUNC, 0);
+        let mut received_control = vec![0; received.msg_controllen];
+        memory.read(RECV_CONTROL, &mut received_control).unwrap();
+        let received_fds = control_rights(&received_control);
+        assert_eq!(received_fds, [7, 8]);
+        assert!(received_fds.iter().all(|fd| state.cloexec_fds.contains(fd)));
+        assert!(mutates_file_table(libc::SYS_recvmsg as u64));
+
+        // Both translated descriptors refer to the donated pipe object and are
+        // usable through the guest table in both directions.
+        memory.write(PIPE_PAYLOAD, b"a").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [pipe_fds[1] as u64, PIPE_PAYLOAD, 1, 0, 0, 0],
+            ),
+            1
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [received_fds[0] as u64, PIPE_RESULT, 1, 0, 0, 0],
+            ),
+            1
+        );
+        assert_eq!(read_guest_bytes::<1>(&memory, PIPE_RESULT).unwrap(), *b"a");
+        memory.write(PIPE_PAYLOAD, b"b").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [received_fds[1] as u64, PIPE_PAYLOAD, 1, 0, 0, 0],
+            ),
+            1
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_read,
+                [pipe_fds[0] as u64, PIPE_RESULT, 1, 0, 0, 0],
+            ),
+            1
+        );
+        assert_eq!(read_guest_bytes::<1>(&memory, PIPE_RESULT).unwrap(), *b"b");
+
+        let forked = state.try_clone_for_fork(2).unwrap();
+        assert!(received_fds.iter().all(|fd| forked.files.contains_key(fd)));
+        let mut replacement = test_state(&root.0);
+        replacement.inherit_process_state(state);
+        assert!(
+            received_fds
+                .iter()
+                .all(|fd| !replacement.files.contains_key(fd))
+        );
+        assert!(pipe_fds.iter().all(|fd| replacement.files.contains_key(fd)));
+    }
+
+    #[test]
+    fn sendmsg_rejects_invalid_malformed_and_unvirtualized_control_without_sending() {
+        const PAIR_FDS: u64 = 0x100;
+        const PAYLOAD: u64 = 0x200;
+        const SEND_IOV: u64 = 0x300;
+        const SEND_MSG: u64 = 0x380;
+        const SEND_CONTROL: u64 = 0x400;
+        const RECV_IOV: u64 = 0x500;
+        const RECV_MSG: u64 = 0x580;
+        const RECV_BUFFER: u64 = 0x600;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        memory.write(PAYLOAD, b"x").unwrap();
+        let send_iov = libc::iovec {
+            iov_base: PAYLOAD as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, SEND_IOV, &send_iov), 0);
+        let mut send_message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        send_message.msg_iov = SEND_IOV as usize as *mut libc::iovec;
+        send_message.msg_iovlen = 1;
+        send_message.msg_control = SEND_CONTROL as usize as *mut libc::c_void;
+
+        let invalid_right = rights_control(&[99]);
+        memory.write(SEND_CONTROL, &invalid_right).unwrap();
+        send_message.msg_controllen = invalid_right.len();
+        assert_eq!(write_struct(&mut memory, SEND_MSG, &send_message), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendmsg,
+                [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EBADF)
+        );
+
+        let malformed_right = control_message(libc::SOL_SOCKET, libc::SCM_RIGHTS, &[0]);
+        memory.write(SEND_CONTROL, &malformed_right).unwrap();
+        send_message.msg_controllen = malformed_right.len();
+        assert_eq!(write_struct(&mut memory, SEND_MSG, &send_message), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendmsg,
+                [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EINVAL)
+        );
+
+        let credentials = control_message(
+            libc::SOL_SOCKET,
+            libc::SCM_CREDENTIALS,
+            &vec![0; std::mem::size_of::<libc::ucred>()],
+        );
+        memory.write(SEND_CONTROL, &credentials).unwrap();
+        send_message.msg_controllen = credentials.len();
+        assert_eq!(write_struct(&mut memory, SEND_MSG, &send_message), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendmsg,
+                [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+            ),
+            negative_errno(libc::EOPNOTSUPP)
+        );
+
+        // Every rejected send happened before the host syscall: the peer queue
+        // remains empty and a nonblocking receive reports EAGAIN.
+        let recv_iov = libc::iovec {
+            iov_base: RECV_BUFFER as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, RECV_IOV, &recv_iov), 0);
+        let mut recv_message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        recv_message.msg_iov = RECV_IOV as usize as *mut libc::iovec;
+        recv_message.msg_iovlen = 1;
+        assert_eq!(write_struct(&mut memory, RECV_MSG, &recv_message), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmsg,
+                [
+                    socket_fds[1] as u64,
+                    RECV_MSG,
+                    libc::MSG_DONTWAIT as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::EAGAIN)
+        );
+    }
+
+    #[test]
+    fn received_rights_reservation_and_rewrite_failures_are_transactional() {
+        const PAIR_FDS: u64 = 0x100;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            available_guest_fds_with_limit(&state, 1, 5),
+            Err(negative_errno(libc::EMFILE))
+        );
+
+        let file = std::fs::File::open("/dev/null").unwrap();
+        let raw_fd = file.as_raw_fd();
+        let before = state.files.keys().copied().collect::<Vec<_>>();
+        let error = install_received_rights(
+            &mut state,
+            &mut [0; std::mem::size_of::<libc::c_int>()],
+            vec![PendingReceivedRight {
+                control_offset: std::mem::size_of::<libc::c_int>(),
+                file,
+            }],
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(error, negative_errno(libc::EINVAL));
+        assert_eq!(state.files.keys().copied().collect::<Vec<_>>(), before);
+        // SAFETY: F_GETFD only probes whether rollback closed the descriptor.
+        assert_eq!(unsafe { libc::fcntl(raw_fd, libc::F_GETFD) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+
+        // Unsupported fd-bearing ancillary data is also owned immediately and
+        // closed rather than copied as an unusable host number.
+        let pidfd_file = std::fs::File::open("/dev/null").unwrap();
+        let pidfd = std::os::fd::IntoRawFd::into_raw_fd(pidfd_file);
+        let pidfd_control = control_message(libc::SOL_SOCKET, SCM_PIDFD, &pidfd.to_ne_bytes());
+        let sanitized = sanitize_received_control(&pidfd_control).unwrap();
+        assert!(sanitized.stripped_unsupported);
+        assert!(sanitized.bytes.is_empty());
+        assert!(sanitized.rights.is_empty());
+        // SAFETY: F_GETFD verifies that sanitize_received_control closed it.
+        assert_eq!(unsafe { libc::fcntl(pidfd, libc::F_GETFD) }, -1);
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF)
+        );
+    }
+
+    #[test]
+    fn recvmsg_preserves_timestamps_but_strips_host_credentials() {
+        const PAIR_FDS: u64 = 0x100;
+        const ONE: u64 = 0x180;
+        const PAYLOAD: u64 = 0x200;
+        const RECV_BUFFER: u64 = 0x300;
+        const RECV_IOV: u64 = 0x380;
+        const RECV_CONTROL: u64 = 0x400;
+        const RECV_MSG: u64 = 0x600;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        assert_eq!(write_struct(&mut memory, ONE, &1_i32), 0);
+        for option in [libc::SO_PASSCRED, libc::SO_TIMESTAMPNS] {
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_setsockopt,
+                    [
+                        socket_fds[1] as u64,
+                        libc::SOL_SOCKET as u64,
+                        option as u64,
+                        ONE,
+                        std::mem::size_of::<libc::c_int>() as u64,
+                        0,
+                    ],
+                ),
+                0
+            );
+        }
+        memory.write(PAYLOAD, b"t").unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_write,
+                [socket_fds[0] as u64, PAYLOAD, 1, 0, 0, 0],
+            ),
+            1
+        );
+
+        let recv_iov = libc::iovec {
+            iov_base: RECV_BUFFER as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, RECV_IOV, &recv_iov), 0);
+        memory.write(RECV_CONTROL, &[0xa5; 256]).unwrap();
+        let mut recv_message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        recv_message.msg_iov = RECV_IOV as usize as *mut libc::iovec;
+        recv_message.msg_iovlen = 1;
+        recv_message.msg_control = RECV_CONTROL as usize as *mut libc::c_void;
+        recv_message.msg_controllen = 256;
+        assert_eq!(write_struct(&mut memory, RECV_MSG, &recv_message), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmsg,
+                [socket_fds[1] as u64, RECV_MSG, 0, 0, 0, 0],
+            ),
+            1
+        );
+
+        let received: libc::msghdr = read_struct(&memory, RECV_MSG);
+        assert_ne!(received.msg_flags & libc::MSG_CTRUNC, 0);
+        let mut control = vec![0; received.msg_controllen];
+        memory.read(RECV_CONTROL, &mut control).unwrap();
+        let messages = control_messages(&control).unwrap();
+        assert!(!messages.is_empty());
+        assert!(
+            messages
+                .iter()
+                .all(|message| is_socket_timestamp_cmsg(*message))
+        );
+        assert!(
+            messages
+                .iter()
+                .all(|message| message.kind != libc::SCM_CREDENTIALS)
+        );
+
+        let mut tail = vec![0xff; 256 - received.msg_controllen];
+        memory
+            .read(RECV_CONTROL + received.msg_controllen as u64, &mut tail)
+            .unwrap();
+        assert!(tail.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn recvmsg_rights_truncation_installs_only_reported_descriptors() {
+        const PAIR_FDS: u64 = 0x100;
+        const PIPE_FDS: u64 = 0x180;
+        const PAYLOAD: u64 = 0x200;
+        const SEND_IOV: u64 = 0x280;
+        const SEND_CONTROL: u64 = 0x300;
+        const SEND_MSG: u64 = 0x380;
+        const RECV_IOV: u64 = 0x400;
+        const RECV_CONTROL: u64 = 0x480;
+        const RECV_MSG: u64 = 0x500;
+        const RECV_BUFFER: u64 = 0x580;
+
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_socketpair,
+                [
+                    libc::AF_UNIX as u64,
+                    libc::SOCK_DGRAM as u64,
+                    0,
+                    PAIR_FDS,
+                    0,
+                    0,
+                ],
+            ),
+            0
+        );
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_pipe2,
+                [PIPE_FDS, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        let socket_fds: [libc::c_int; 2] = read_struct(&memory, PAIR_FDS);
+        let pipe_fds: [libc::c_int; 2] = read_struct(&memory, PIPE_FDS);
+        memory.write(PAYLOAD, b"x").unwrap();
+        let send_iov = libc::iovec {
+            iov_base: PAYLOAD as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, SEND_IOV, &send_iov), 0);
+        let send_control = rights_control(&pipe_fds);
+        memory.write(SEND_CONTROL, &send_control).unwrap();
+        let mut send_message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        send_message.msg_iov = SEND_IOV as usize as *mut libc::iovec;
+        send_message.msg_iovlen = 1;
+        send_message.msg_control = SEND_CONTROL as usize as *mut libc::c_void;
+        send_message.msg_controllen = send_control.len();
+        assert_eq!(write_struct(&mut memory, SEND_MSG, &send_message), 0);
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_sendmsg,
+                [socket_fds[0] as u64, SEND_MSG, 0, 0, 0, 0],
+            ),
+            1
+        );
+
+        let recv_iov = libc::iovec {
+            iov_base: RECV_BUFFER as usize as *mut libc::c_void,
+            iov_len: 1,
+        };
+        assert_eq!(write_struct(&mut memory, RECV_IOV, &recv_iov), 0);
+        let mut recv_message = unsafe { std::mem::zeroed::<libc::msghdr>() };
+        recv_message.msg_iov = RECV_IOV as usize as *mut libc::iovec;
+        recv_message.msg_iovlen = 1;
+        recv_message.msg_control = RECV_CONTROL as usize as *mut libc::c_void;
+        // Header plus one fd, deliberately omitting trailing alignment space.
+        recv_message.msg_controllen = cmsg_align(std::mem::size_of::<libc::cmsghdr>()).unwrap()
+            + std::mem::size_of::<libc::c_int>();
+        assert_eq!(write_struct(&mut memory, RECV_MSG, &recv_message), 0);
+        let files_before = state.files.len();
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_recvmsg,
+                [socket_fds[1] as u64, RECV_MSG, 0, 0, 0, 0],
+            ),
+            1
+        );
+        let received: libc::msghdr = read_struct(&memory, RECV_MSG);
+        assert_ne!(received.msg_flags & libc::MSG_CTRUNC, 0);
+        let mut control = vec![0; received.msg_controllen];
+        memory.read(RECV_CONTROL, &mut control).unwrap();
+        assert_eq!(control_rights(&control).len(), 1);
+        assert_eq!(state.files.len(), files_before + 1);
     }
 
     #[test]
@@ -16770,6 +18282,42 @@ mod tests {
         assert!(memory.user_range_is_mapped(first, 2 * PAGE_SIZE));
     }
 
+    // Regression: a root guest renumbered by `KvmBackend::set_root_pid` gets a
+    // synthetic container-init `getppid()` of 1 for ptrace parity. If that
+    // guest-visible value also drove `Guest::ppid`, `Guest::is_root_process`
+    // would be false for the root guest and Detcore would never register the
+    // root thread with its scheduler, hanging every KVM run before the first
+    // syscall. The traced-tree answer must stay independent of `getppid()`.
+    #[test]
+    fn renumbered_root_guest_has_no_traced_parent_but_keeps_getppid() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        // What `KvmBackend::set_root_pid(ROOT_DETPID)` produces.
+        state.pid = 3;
+        state.tid = 3;
+        state.ppid = 1;
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let mut executor = ElfExecutor::new(state, false);
+
+        assert!(executor.parent_pid().is_none());
+        // The guest-visible value is unchanged: `getppid()` still returns 1.
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_getppid as u64, [0, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            1
+        );
+
+        // A CLONE_THREAD worker stays in the root process, so it is also root.
+        let thread = executor.thread_child(4).unwrap();
+        assert!(thread.parent_pid().is_none());
+
+        // A forked child does have a traced parent.
+        let child = executor.fork_child(5, false).unwrap();
+        assert_eq!(child.parent_pid(), Some(reverie::Pid::from_raw(3)));
+    }
+
     #[test]
     fn thread_executors_share_mmap_allocation_cursor() {
         let root = TestDir::new();
@@ -19115,52 +20663,273 @@ mod tests {
     }
 
     #[test]
-    fn robust_list_registration_round_trips_and_resets_on_fork() {
+    fn robust_list_peer_lookup_distinguishes_live_tasks_and_uses_exact_tid() {
         const HEAD_OUTPUT: u64 = 0x100;
         const LENGTH_OUTPUT: u64 = 0x108;
-        const REGISTERED_HEAD: u64 = 0x300;
+        const PARENT_HEAD: u64 = 0x300;
+        const CHILD_HEAD: u64 = 0x500;
+        const THREAD_HEAD: u64 = 0x700;
 
         let root = TestDir::new();
-        let mut state = test_state(&root.0);
+        let mut parent = ElfExecutor::new(test_state(&root.0), false);
+        let mut child = parent.fork_child(2, false).unwrap();
+        let mut thread = parent.thread_child(3).unwrap();
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
 
         assert_eq!(
             set_robust_list(
-                &mut state,
-                &[REGISTERED_HEAD, ROBUST_LIST_HEAD_SIZE, 0, 0, 0, 0],
+                &mut parent.state,
+                &[PARENT_HEAD, ROBUST_LIST_HEAD_SIZE, 0, 0, 0, 0],
             ),
             0
         );
+
+        // A live child that has not registered a head is not ESRCH: Linux
+        // reports a null head and the fixed robust-list header size.
         assert_eq!(
             get_robust_list(
                 &mut memory,
-                &state,
-                &[0, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+                &parent.state,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
             ),
             0
         );
-        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), REGISTERED_HEAD);
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), 0);
         assert_eq!(
             read_struct::<u64>(&memory, LENGTH_OUTPUT),
             ROBUST_LIST_HEAD_SIZE
         );
+
+        assert_eq!(
+            set_robust_list(
+                &mut child.state,
+                &[CHILD_HEAD, ROBUST_LIST_HEAD_SIZE, 0, 0, 0, 0],
+            ),
+            0
+        );
         assert_eq!(
             get_robust_list(
                 &mut memory,
-                &state,
+                &parent.state,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), CHILD_HEAD);
+
+        // A nonleader's numeric query for the group leader must resolve tid 1,
+        // not alias to the caller merely because tid 1 is its tgid.
+        assert_eq!(
+            set_robust_list(
+                &mut thread.state,
+                &[THREAD_HEAD, ROBUST_LIST_HEAD_SIZE, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &thread.state,
+                &[1, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), PARENT_HEAD);
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &thread.state,
+                &[0, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), THREAD_HEAD);
+
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
                 &[99, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
             ),
             negative_errno(libc::ESRCH)
         );
         assert_eq!(
-            set_robust_list(&mut state, &[REGISTERED_HEAD, 8, 0, 0, 0, 0]),
+            set_robust_list(&mut parent.state, &[PARENT_HEAD, 8, 0, 0, 0, 0]),
             negative_errno(libc::EINVAL)
         );
-        assert_eq!(state.robust_list_head, REGISTERED_HEAD);
+    }
 
-        let child = state.try_clone_for_fork(2).unwrap();
-        assert_eq!(child.robust_list_head, 0);
-        assert_eq!(child.robust_list_len, 0);
+    #[test]
+    fn robust_list_lifecycle_resets_on_exec_removes_on_exit_and_reuses_tid() {
+        const HEAD_OUTPUT: u64 = 0x100;
+        const LENGTH_OUTPUT: u64 = 0x108;
+        const CHILD_HEAD: u64 = 0x900;
+
+        let root = TestDir::new();
+        let parent = ElfExecutor::new(test_state(&root.0), false);
+        let mut child = parent.fork_child(2, false).unwrap();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        assert_eq!(
+            set_robust_list(
+                &mut child.state,
+                &[CHILD_HEAD, ROBUST_LIST_HEAD_SIZE, 0, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(
+            prctl(
+                &mut child.state,
+                &[libc::PR_SET_DUMPABLE as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        // Exec retains the task but clears its robust head and resets
+        // dumpability. Peer lookup must still succeed with the empty state.
+        child.replace_after_exec(test_state(&root.0));
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), 0);
+        assert_eq!(
+            read_struct::<u64>(&memory, LENGTH_OUTPUT),
+            ROBUST_LIST_HEAD_SIZE
+        );
+        assert_eq!(
+            prctl(
+                &mut child.state,
+                &[libc::PR_GET_DUMPABLE as u64, 0, 0, 0, 0, 0],
+            ),
+            1
+        );
+
+        // Consuming an exit is the task-exit boundary; executor destruction is
+        // only an idempotent fallback. Reusing the same synthetic tid creates a
+        // fresh empty entry rather than exposing the exited task's pointer.
+        assert_eq!(
+            child.execute(
+                &SyscallRequest::new(libc::SYS_exit as u64, [0, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            0
+        );
+        assert!(child.take_exit().is_some());
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            negative_errno(libc::ESRCH)
+        );
+        let replacement = parent.fork_child(2, false).unwrap();
+        // The exited executor may be destroyed after the tid has been reused;
+        // its stale generation must not remove the replacement's entry.
+        drop(child);
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            0
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), 0);
+        drop(replacement);
+    }
+
+    #[test]
+    fn get_robust_list_checks_access_before_linux_ordered_copyout() {
+        const HEAD_OUTPUT: u64 = 0x100;
+        const LENGTH_OUTPUT: u64 = 0x108;
+        const PARENT_HEAD: u64 = 0x300;
+        const HEAD_SENTINEL: u64 = 0xaaaa_aaaa_aaaa_aaaa;
+        const LENGTH_SENTINEL: u64 = 0xbbbb_bbbb_bbbb_bbbb;
+        const INVALID: u64 = PAGE_SIZE + 8;
+
+        let root = TestDir::new();
+        let mut parent = ElfExecutor::new(test_state(&root.0), false);
+        let mut child = parent.fork_child(2, false).unwrap();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory
+            .write(HEAD_OUTPUT, &HEAD_SENTINEL.to_ne_bytes())
+            .unwrap();
+        memory
+            .write(LENGTH_OUTPUT, &LENGTH_SENTINEL.to_ne_bytes())
+            .unwrap();
+
+        // Fixed-root credentials normally permit peer reads. Once the caller
+        // drops CAP_SYS_PTRACE, a nondumpable process is rejected before either
+        // output location is modified.
+        assert_eq!(
+            prctl(
+                &mut child.state,
+                &[libc::PR_SET_DUMPABLE as u64, 0, 0, 0, 0, 0],
+            ),
+            0
+        );
+        parent.state.capability_effective &= !(1_u64 << CAP_SYS_PTRACE);
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
+                &[2, HEAD_OUTPUT, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            negative_errno(libc::EPERM)
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), HEAD_SENTINEL);
+        assert_eq!(read_struct::<u64>(&memory, LENGTH_OUTPUT), LENGTH_SENTINEL);
+
+        parent.state.capability_effective |= 1_u64 << CAP_SYS_PTRACE;
+        assert_eq!(
+            set_robust_list(
+                &mut parent.state,
+                &[PARENT_HEAD, ROBUST_LIST_HEAD_SIZE, 0, 0, 0, 0],
+            ),
+            0
+        );
+
+        // Linux writes len_ptr first. A bad head_ptr therefore leaves the
+        // length written, while a bad len_ptr leaves head_ptr untouched.
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
+                &[0, INVALID, LENGTH_OUTPUT, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(
+            read_struct::<u64>(&memory, LENGTH_OUTPUT),
+            ROBUST_LIST_HEAD_SIZE
+        );
+
+        memory
+            .write(HEAD_OUTPUT, &HEAD_SENTINEL.to_ne_bytes())
+            .unwrap();
+        assert_eq!(
+            get_robust_list(
+                &mut memory,
+                &parent.state,
+                &[0, HEAD_OUTPUT, INVALID, 0, 0, 0],
+            ),
+            negative_errno(libc::EFAULT)
+        );
+        assert_eq!(read_struct::<u64>(&memory, HEAD_OUTPUT), HEAD_SENTINEL);
+
+        // Target resolution precedes copyout validation.
+        assert_eq!(
+            get_robust_list(&mut memory, &parent.state, &[99, INVALID, INVALID, 0, 0, 0],),
+            negative_errno(libc::ESRCH)
+        );
+
+        drop(child);
     }
 
     #[test]

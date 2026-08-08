@@ -16,6 +16,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use kvm_ioctls::Kvm;
+use reverie::BackendStatsRequest;
+use reverie::BackendStatsSource;
 use reverie::ExitStatus;
 use reverie::GlobalRPC;
 use reverie::GlobalTool;
@@ -39,6 +41,8 @@ use reverie_kvm::Error;
 use reverie_kvm::HierarchicalCounterTool;
 use reverie_kvm::HierarchicalTotals;
 use reverie_kvm::KvmBackend;
+use reverie_kvm::KvmBackendStats;
+use reverie_kvm::KvmExitReason;
 use reverie_kvm::StraceTool;
 
 const MEMORY_SIZE: usize = 16 * 1024 * 1024;
@@ -108,8 +112,53 @@ fn run_host_program_captured(
     (stdout, stderr)
 }
 
+fn run_host_program_with_tool_captured(
+    program: &str,
+    argv: &[&str],
+    cwd: &std::path::Path,
+) -> (Vec<u8>, Vec<u8>) {
+    const REAL_PROGRAM_MEMORY_SIZE: usize = 256 * 1024 * 1024;
+
+    let image = std::fs::read(program).unwrap();
+    let mut backend = KvmBackend::new(REAL_PROGRAM_MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf_with_context(&image, argv, &["PATH=/usr/bin:/bin"], cwd)
+        .unwrap();
+    let (_, code, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<StraceTool>((), true))
+            .unwrap();
+    assert_eq!(
+        code,
+        0,
+        "{program} {argv:?} exited {code}; stdout={}; stderr={}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr),
+    );
+    (stdout, stderr)
+}
+
 fn run_host_program(program: &str, argv: &[&str], cwd: &std::path::Path) {
     let _ = run_host_program_captured(program, argv, cwd);
+}
+
+fn compile_c_program(directory: &std::path::Path, name: &str, source: &str) -> PathBuf {
+    let source_path = directory.join(format!("{name}.c"));
+    let executable_path = directory.join(name);
+    std::fs::write(&source_path, source).unwrap();
+    let output = std::process::Command::new("/usr/bin/gcc")
+        .args(["-O2", "-pthread"])
+        .arg(&source_path)
+        .arg("-o")
+        .arg(&executable_path)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "gcc failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    executable_path
 }
 
 fn set_interrupt_signal_blocked(blocked: bool) -> bool {
@@ -372,6 +421,17 @@ impl Tool for FailingPostExecTool {
 
 fn kvm_is_unavailable(error: &kvm_ioctls::Error) -> bool {
     matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM)
+}
+
+fn kvm_available(test: &str) -> bool {
+    match Kvm::new() {
+        Ok(_) => true,
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping {test}: cannot open /dev/kvm: {error}");
+            false
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
 }
 
 fn assert_invalid_opcode(error: Error) {
@@ -1055,6 +1115,286 @@ fn static_elf_runs_glibc_clone3_thread_and_restores_parent_state() {
 }
 
 #[test]
+fn real_glibc_get_robust_list_tracks_fork_and_thread_lifecycles() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM robust-list lifecycle test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "robust-list-lifecycle",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <linux/futex.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdint.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static int tid_pipe[2];
+static int release_pipe[2];
+
+static void *worker(void *unused) {
+  (void)unused;
+  pid_t tid = (pid_t)syscall(SYS_gettid);
+  struct robust_list_head *self_head = NULL;
+  struct robust_list_head *leader_head = NULL;
+  size_t self_len = 0;
+  size_t leader_len = 0;
+  char byte = 0;
+
+  if (syscall(SYS_get_robust_list, 0, &self_head, &self_len) != 0 ||
+      syscall(SYS_get_robust_list, getpid(), &leader_head, &leader_len) != 0 ||
+      self_head == NULL || leader_head == NULL || self_head == leader_head ||
+      self_len != sizeof(*self_head) || leader_len != sizeof(*leader_head) ||
+      write(tid_pipe[1], &tid, sizeof(tid)) != sizeof(tid) ||
+      read(release_pipe[0], &byte, sizeof(byte)) != sizeof(byte)) {
+    return (void *)(uintptr_t)1;
+  }
+  return NULL;
+}
+
+int main(void) {
+  int ready_pipe[2];
+  int child_release_pipe[2];
+  if (pipe(ready_pipe) != 0 || pipe(child_release_pipe) != 0) {
+    return 10;
+  }
+
+  pid_t child = fork();
+  if (child < 0) {
+    return 11;
+  }
+  if (child == 0) {
+    char byte = 1;
+    if (write(ready_pipe[1], &byte, sizeof(byte)) != sizeof(byte) ||
+        read(child_release_pipe[0], &byte, sizeof(byte)) != sizeof(byte)) {
+      _exit(12);
+    }
+    _exit(0);
+  }
+
+  char byte = 0;
+  if (read(ready_pipe[0], &byte, sizeof(byte)) != sizeof(byte)) {
+    return 13;
+  }
+  struct robust_list_head *head = (void *)(uintptr_t)1;
+  size_t length = 0;
+  if (syscall(SYS_get_robust_list, child, &head, &length) != 0 ||
+      length != sizeof(*head)) {
+    return 14;
+  }
+  byte = 1;
+  if (write(child_release_pipe[1], &byte, sizeof(byte)) != sizeof(byte)) {
+    return 15;
+  }
+  int status = 0;
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) {
+    return 16;
+  }
+  errno = 0;
+  if (syscall(SYS_get_robust_list, child, &head, &length) != -1 ||
+      errno != ESRCH) {
+    return 17;
+  }
+
+  if (pipe(tid_pipe) != 0 || pipe(release_pipe) != 0) {
+    return 18;
+  }
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, worker, NULL) != 0) {
+    return 19;
+  }
+  pid_t tid = 0;
+  if (read(tid_pipe[0], &tid, sizeof(tid)) != sizeof(tid)) {
+    return 20;
+  }
+  head = NULL;
+  length = 0;
+  if (syscall(SYS_get_robust_list, tid, &head, &length) != 0 ||
+      head == NULL || length != sizeof(*head)) {
+    return 21;
+  }
+  byte = 1;
+  if (write(release_pipe[1], &byte, sizeof(byte)) != sizeof(byte)) {
+    return 22;
+  }
+  void *result = NULL;
+  if (pthread_join(thread, &result) != 0 || result != NULL) {
+    return 23;
+  }
+  errno = 0;
+  if (syscall(SYS_get_robust_list, tid, &head, &length) != -1 ||
+      errno != ESRCH) {
+    return 24;
+  }
+
+  puts("robust-list lifecycle ok");
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let (stdout, stderr) =
+        run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+    assert_eq!(stdout, b"robust-list lifecycle ok\n");
+    assert!(
+        stderr.is_empty(),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+}
+
+#[test]
+fn real_glibc_scm_rights_translate_across_thread_and_fork_tables() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM SCM_RIGHTS test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "scm-rights-translation",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static int sockets[2];
+static int received_fds[2] = {-1, -1};
+
+static void *receive_rights(void *unused) {
+  (void)unused;
+  char payload = 0;
+  char control[CMSG_SPACE(2 * sizeof(int))];
+  struct iovec iov = {.iov_base = &payload, .iov_len = 1};
+  struct msghdr message;
+  memset(&message, 0, sizeof(message));
+  memset(control, 0, sizeof(control));
+  message.msg_iov = &iov;
+  message.msg_iovlen = 1;
+  message.msg_control = control;
+  message.msg_controllen = sizeof(control);
+  if (recvmsg(sockets[1], &message, MSG_CMSG_CLOEXEC) != 1 || payload != 'q' ||
+      (message.msg_flags & MSG_CTRUNC) != 0) {
+    return (void *)1;
+  }
+  struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
+  if (cmsg == NULL || cmsg->cmsg_level != SOL_SOCKET ||
+      cmsg->cmsg_type != SCM_RIGHTS ||
+      cmsg->cmsg_len != CMSG_LEN(2 * sizeof(int))) {
+    return (void *)2;
+  }
+  memcpy(received_fds, CMSG_DATA(cmsg), sizeof(received_fds));
+  return NULL;
+}
+
+static int send_rights(const int fds[2]) {
+  char payload = 'q';
+  char control[CMSG_SPACE(2 * sizeof(int))];
+  struct iovec iov = {.iov_base = &payload, .iov_len = 1};
+  struct msghdr message;
+  memset(&message, 0, sizeof(message));
+  memset(control, 0, sizeof(control));
+  message.msg_iov = &iov;
+  message.msg_iovlen = 1;
+  message.msg_control = control;
+  message.msg_controllen = sizeof(control);
+  struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
+  cmsg->cmsg_level = SOL_SOCKET;
+  cmsg->cmsg_type = SCM_RIGHTS;
+  cmsg->cmsg_len = CMSG_LEN(2 * sizeof(int));
+  memcpy(CMSG_DATA(cmsg), fds, 2 * sizeof(int));
+  return (int)sendmsg(sockets[0], &message, 0);
+}
+
+int main(void) {
+  int pipe_fds[2];
+  if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sockets) != 0 || pipe(pipe_fds) != 0 ||
+      sockets[0] != 3 || sockets[1] != 4 || pipe_fds[0] != 5 || pipe_fds[1] != 6) {
+    return 10;
+  }
+
+  int invalid[2] = {pipe_fds[0], 999};
+  errno = 0;
+  if (send_rights(invalid) != -1 || errno != EBADF) {
+    return 11;
+  }
+  if (send_rights(pipe_fds) != 1) {
+    return 12;
+  }
+
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, receive_rights, NULL) != 0) {
+    return 13;
+  }
+  void *thread_result = NULL;
+  if (pthread_join(thread, &thread_result) != 0 || thread_result != NULL) {
+    return 14;
+  }
+  if (received_fds[0] != 7 || received_fds[1] != 8 ||
+      (fcntl(received_fds[0], F_GETFD) & FD_CLOEXEC) == 0 ||
+      (fcntl(received_fds[1], F_GETFD) & FD_CLOEXEC) == 0) {
+    return 15;
+  }
+
+  close(pipe_fds[0]);
+  close(pipe_fds[1]);
+  pid_t child = fork();
+  if (child < 0) {
+    return 16;
+  }
+  if (child == 0) {
+    char byte = 'z';
+    _exit(write(received_fds[1], &byte, 1) == 1 ? 0 : 17);
+  }
+  char byte = 0;
+  int status = 0;
+  if (read(received_fds[0], &byte, 1) != 1 || byte != 'z' ||
+      waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 0) {
+    return 18;
+  }
+
+  puts("scm-rights translation ok");
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let (stdout, stderr) =
+        run_host_program_with_tool_captured(executable, &[executable], &directory.0);
+    assert_eq!(stdout, b"scm-rights translation ok\n");
+    assert!(
+        stderr.is_empty(),
+        "stderr={}",
+        String::from_utf8_lossy(&stderr)
+    );
+}
+
+#[test]
 fn worker_exit_group_terminates_the_root_with_its_status() {
     match Kvm::new() {
         Ok(_) => {}
@@ -1368,6 +1708,235 @@ fn static_elf_getppid_matches_ptrace_parity() {
         0,
         "namespace-init guest pid=1 must report getppid()==0"
     );
+}
+
+fn run_stats_program(code: &[u8], name: &str, request: BackendStatsRequest) -> KvmBackendStats {
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend.set_backend_stats_request(request);
+    backend.install_static_elf(&static_elf(code), name).unwrap();
+    let (_, exit_code, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<StraceTool>((), true))
+            .unwrap();
+    assert_eq!(exit_code, 0, "{name}");
+    assert!(stdout.is_empty(), "{name}");
+    assert!(stderr.is_empty(), "{name}");
+
+    let snapshot = backend.backend_stats();
+    assert_eq!(
+        request.collect(&backend),
+        request.is_enabled().then(|| snapshot.clone()),
+        "{name} request and snapshot source must agree"
+    );
+    snapshot
+}
+
+fn stats_root_program() -> Vec<u8> {
+    vec![
+        0xb8, 0x27, 0x00, 0x00, 0x00, // mov eax, SYS_getpid
+        0x0f, 0x05, // syscall
+        0xb8, 0xe7, 0x00, 0x00, 0x00, // mov eax, SYS_exit_group
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ]
+}
+
+fn patch_stats_jump(code: &mut [u8], operand: usize, target: usize) {
+    let displacement = i32::try_from(target as isize - (operand + 4) as isize).unwrap();
+    code[operand..operand + 4].copy_from_slice(&displacement.to_le_bytes());
+}
+
+fn append_stats_exit(code: &mut Vec<u8>, group: bool) {
+    let number = if group {
+        libc::SYS_exit_group
+    } else {
+        libc::SYS_exit
+    };
+    code.push(0xb8); // mov eax, SYS_exit[_group]
+    code.extend_from_slice(&(number as u32).to_le_bytes());
+    code.extend_from_slice(&[
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ]);
+}
+
+fn stats_fork_program() -> Vec<u8> {
+    let mut code = vec![
+        0xb8, 0x39, 0x00, 0x00, 0x00, // mov eax, SYS_fork
+        0x0f, 0x05, // syscall
+        0x85, 0xc0, // test eax, eax
+        0x0f, 0x84, 0, 0, 0, 0, // jz child
+    ];
+    let child_jump = code.len() - 4;
+
+    code.extend_from_slice(&[
+        0x89, 0xc7, // mov edi, eax
+        0x48, 0x83, 0xec, 0x10, // sub rsp, 16
+        0x48, 0x89, 0xe6, // mov rsi, rsp
+        0x31, 0xd2, // xor edx, edx
+        0x45, 0x31, 0xd2, // xor r10d, r10d
+        0xb8, 0x3d, 0x00, 0x00, 0x00, // mov eax, SYS_wait4
+        0x0f, 0x05, // syscall
+    ]);
+    append_stats_exit(&mut code, true);
+
+    let child = code.len();
+    patch_stats_jump(&mut code, child_jump, child);
+    code.extend_from_slice(&[
+        0xb8, 0x27, 0x00, 0x00, 0x00, // mov eax, SYS_getpid
+        0x0f, 0x05, // syscall
+    ]);
+    append_stats_exit(&mut code, true);
+    code
+}
+
+fn stats_clone_thread_program() -> Vec<u8> {
+    const CHILD_TID: u64 = LOAD_ADDRESS + 0x1800;
+    const CHILD_STACK: u64 = LOAD_ADDRESS + 0x1900;
+    const CHILD_STACK_SIZE: u64 = 0x600;
+
+    let flags = libc::CLONE_VM as u64
+        | libc::CLONE_FS as u64
+        | libc::CLONE_FILES as u64
+        | libc::CLONE_SIGHAND as u64
+        | libc::CLONE_THREAD as u64
+        | libc::CLONE_SYSVSEM as u64
+        | libc::CLONE_CHILD_SETTID as u64
+        | libc::CLONE_CHILD_CLEARTID as u64;
+
+    let mut code = vec![0x48, 0xb9]; // movabs rcx, child_tid
+    code.extend_from_slice(&CHILD_TID.to_le_bytes());
+    code.extend_from_slice(&[
+        0xc7, 0x01, 0xff, 0xff, 0xff, 0x7f, // mov dword ptr [rcx], 0x7fffffff
+        0xb8, 0xb3, 0x01, 0x00, 0x00, // mov eax, SYS_clone3
+        0x48, 0xbf, // movabs rdi, clone_args
+    ]);
+    let clone_args_operand = code.len();
+    code.extend_from_slice(&0_u64.to_le_bytes());
+    code.extend_from_slice(&[
+        0xbe, 0x58, 0x00, 0x00, 0x00, // mov esi, sizeof(clone_args)
+        0x0f, 0x05, // syscall
+        0x85, 0xc0, // test eax, eax
+        0x0f, 0x84, 0, 0, 0, 0, // jz child
+    ]);
+    let child_jump = code.len() - 4;
+
+    code.extend_from_slice(&[0x48, 0xb9]); // movabs rcx, child_tid
+    code.extend_from_slice(&CHILD_TID.to_le_bytes());
+    let wait = code.len();
+    code.extend_from_slice(&[
+        0x83, 0x39, 0x00, // cmp dword ptr [rcx], 0
+        0x0f, 0x85, 0, 0, 0, 0, // jne wait
+    ]);
+    let wait_jump = code.len() - 4;
+    patch_stats_jump(&mut code, wait_jump, wait);
+    append_stats_exit(&mut code, true);
+
+    let child = code.len();
+    patch_stats_jump(&mut code, child_jump, child);
+    code.extend_from_slice(&[
+        0xb8, 0xba, 0x00, 0x00, 0x00, // mov eax, SYS_gettid
+        0x0f, 0x05, // syscall
+    ]);
+    append_stats_exit(&mut code, false);
+
+    while !code.len().is_multiple_of(8) {
+        code.push(0);
+    }
+    let clone_args_address = LOAD_ADDRESS + code.len() as u64;
+    code[clone_args_operand..clone_args_operand + 8]
+        .copy_from_slice(&clone_args_address.to_le_bytes());
+    let mut clone_args = [0_u8; 88];
+    clone_args[0..8].copy_from_slice(&flags.to_le_bytes());
+    clone_args[16..24].copy_from_slice(&CHILD_TID.to_le_bytes());
+    clone_args[40..48].copy_from_slice(&CHILD_STACK.to_le_bytes());
+    clone_args[48..56].copy_from_slice(&CHILD_STACK_SIZE.to_le_bytes());
+    code.extend_from_slice(&clone_args);
+    code
+}
+
+fn assert_exact_stats(snapshot: &KvmBackendStats, hypercalls: u64, halts: u64) {
+    assert_eq!(snapshot.count(KvmExitReason::Hypercall), hypercalls);
+    assert_eq!(snapshot.count(KvmExitReason::Hlt), halts);
+    assert_eq!(snapshot.total_exits(), hypercalls + halts, "{snapshot}");
+}
+
+#[test]
+fn kvm_stats_disabled_run_records_no_exits() {
+    if !kvm_available("kvm_stats_disabled_run_records_no_exits") {
+        return;
+    }
+
+    let snapshot = run_stats_program(
+        &stats_root_program(),
+        "/bin/kvm-stats-disabled",
+        BackendStatsRequest::DISABLED,
+    );
+    assert_exact_stats(&snapshot, 0, 0);
+}
+
+#[test]
+fn kvm_stats_root_production_loop_is_exact_and_repeatable() {
+    if !kvm_available("kvm_stats_root_production_loop_is_exact_and_repeatable") {
+        return;
+    }
+
+    let first = run_stats_program(
+        &stats_root_program(),
+        "/bin/kvm-stats-root",
+        BackendStatsRequest::ENABLED,
+    );
+    let second = run_stats_program(
+        &stats_root_program(),
+        "/bin/kvm-stats-root",
+        BackendStatsRequest::ENABLED,
+    );
+    assert_exact_stats(&first, 2, 0);
+    assert_eq!(first, second);
+}
+
+#[test]
+fn kvm_stats_fork_process_tree_is_exact_and_repeatable() {
+    if !kvm_available("kvm_stats_fork_process_tree_is_exact_and_repeatable") {
+        return;
+    }
+
+    let first = run_stats_program(
+        &stats_fork_program(),
+        "/bin/kvm-stats-fork",
+        BackendStatsRequest::ENABLED,
+    );
+    let second = run_stats_program(
+        &stats_fork_program(),
+        "/bin/kvm-stats-fork",
+        BackendStatsRequest::ENABLED,
+    );
+    // Root: fork + wait4 + exit_group. Child: getpid + exit_group.
+    assert_exact_stats(&first, 5, 1);
+    assert_eq!(first, second);
+}
+
+#[test]
+fn kvm_stats_clone_thread_process_tree_is_exact_and_repeatable() {
+    if !kvm_available("kvm_stats_clone_thread_process_tree_is_exact_and_repeatable") {
+        return;
+    }
+
+    let first = run_stats_program(
+        &stats_clone_thread_program(),
+        "/bin/kvm-stats-thread",
+        BackendStatsRequest::ENABLED,
+    );
+    let second = run_stats_program(
+        &stats_clone_thread_program(),
+        "/bin/kvm-stats-thread",
+        BackendStatsRequest::ENABLED,
+    );
+    // Root: clone3 + exit_group. Child: gettid + exit. The parent waits in
+    // guest memory for CLONE_CHILD_CLEARTID, so the child exit is counted first.
+    assert_exact_stats(&first, 4, 1);
+    assert_eq!(first, second);
 }
 
 #[test]

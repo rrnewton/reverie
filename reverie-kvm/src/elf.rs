@@ -112,6 +112,97 @@ pub(crate) struct SignalFdState {
     pub pending: std::collections::BTreeSet<i32>,
 }
 
+/// Process-tree-wide state whose lifetime follows a guest task rather than an
+/// individual [`LoadedStaticElf`] snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TaskLifecycleState {
+    pub generation: u64,
+    pub tgid: i32,
+    pub robust_list_head: u64,
+    pub dumpable: bool,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct TaskLifecycleTable {
+    next_generation: u64,
+    tasks: std::collections::BTreeMap<i32, TaskLifecycleState>,
+}
+
+impl TaskLifecycleTable {
+    pub(crate) fn with_root(tid: i32, tgid: i32, dumpable: bool) -> Self {
+        let mut table = Self::default();
+        table.register(tid, tgid, dumpable);
+        table
+    }
+
+    pub(crate) fn register(&mut self, tid: i32, tgid: i32, dumpable: bool) -> u64 {
+        self.next_generation = self
+            .next_generation
+            .checked_add(1)
+            .expect("KVM task generation exhausted");
+        let generation = self.next_generation;
+        self.tasks.insert(
+            tid,
+            TaskLifecycleState {
+                generation,
+                tgid,
+                robust_list_head: 0,
+                dumpable,
+            },
+        );
+        generation
+    }
+
+    pub(crate) fn ensure_registered(&mut self, tid: i32, tgid: i32, dumpable: bool) -> u64 {
+        self.tasks
+            .get(&tid)
+            .map(|task| task.generation)
+            .unwrap_or_else(|| self.register(tid, tgid, dumpable))
+    }
+
+    pub(crate) fn remove(&mut self, tid: i32, generation: u64) {
+        if self
+            .tasks
+            .get(&tid)
+            .is_some_and(|task| task.generation == generation)
+        {
+            self.tasks.remove(&tid);
+        }
+    }
+
+    pub(crate) fn reset_after_exec(&mut self, tid: i32, tgid: i32) -> u64 {
+        if let Some(task) = self.tasks.get_mut(&tid) {
+            task.tgid = tgid;
+            task.robust_list_head = 0;
+            task.dumpable = true;
+            task.generation
+        } else {
+            self.register(tid, tgid, true)
+        }
+    }
+
+    pub(crate) fn set_robust_list(&mut self, tid: i32, head: u64) -> bool {
+        let Some(task) = self.tasks.get_mut(&tid) else {
+            return false;
+        };
+        task.robust_list_head = head;
+        true
+    }
+
+    pub(crate) fn get(&self, tid: i32) -> Option<TaskLifecycleState> {
+        self.tasks.get(&tid).copied()
+    }
+
+    pub(crate) fn set_dumpable(&mut self, tgid: i32, dumpable: bool) -> bool {
+        let mut found = false;
+        for task in self.tasks.values_mut().filter(|task| task.tgid == tgid) {
+            task.dumpable = dumpable;
+            found = true;
+        }
+        found
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct LoadedStaticElf {
     pub entry_point: u64,
@@ -134,7 +225,23 @@ pub(crate) struct LoadedStaticElf {
     pub pid: i32,
     // TODO-HUMAN-REVIEW(PR-132): Review single-vCPU thread identity transitions.
     pub tid: i32,
+    /// The value this process reports from `getppid(2)`.
+    ///
+    /// This is a *guest-visible* identity, not the traced-tree parent: the root
+    /// guest synthesizes a container-init parent (see `root_parent_pid`) so that
+    /// `getppid()` matches the ptrace backend's PID namespace, even though the
+    /// root guest has no traced parent. Use [`Self::is_traced_tree_root`] to
+    /// answer the traced-tree question.
     pub ppid: i32,
+    /// True iff this process is the root of the *traced* process tree, i.e. it
+    /// was installed by the backend rather than created by a guest `fork`/`clone`.
+    ///
+    /// Kept separate from [`Self::ppid`] because the two answer different
+    /// questions and disagree for any root guest whose synthetic `getppid()` is
+    /// non-zero. Reverie's `Guest::ppid` contract is "None if this is the root of
+    /// the traced process tree", and `Guest::is_root_process` is derived from it,
+    /// so conflating the two makes the root guest invisible to the tool.
+    pub is_traced_tree_root: bool,
     // Direct KVM workers do not participate in Detcore's virtual clock. Keep a
     // private logical clock so repeated observations advance deterministically
     // without making host thread scheduling observable.
@@ -164,10 +271,11 @@ pub(crate) struct LoadedStaticElf {
     pub signal_mask: [u8; 8],
     pub signal_alt_stack: Option<Vec<u8>>,
     pub signalfd_state: std::sync::Arc<std::sync::Mutex<SignalFdState>>,
-    // AUTONOMOUS-BOT-IMPLEMENTED: Track the task-local robust futex registration.
-    // TODO-HUMAN-REVIEW(PR-232): Review robust-list fork and exec lifecycle semantics.
-    pub robust_list_head: u64,
-    pub robust_list_len: u64,
+    // One process-tree-wide membership table distinguishes a live task with no
+    // robust-list registration from an unknown/dead tid. Entries are created
+    // with each executor, reset across exec, and removed when that executor is
+    // destroyed.
+    pub task_lifecycle: std::sync::Arc<std::sync::Mutex<TaskLifecycleTable>>,
     pub files: std::collections::BTreeMap<i32, std::fs::File>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Keep deterministic random descriptors on the Tool path.
     // TODO-HUMAN-REVIEW(PR-235): Review random-device descriptor lifecycle parity.
@@ -236,6 +344,8 @@ impl LoadedStaticElf {
             pid: child_pid,
             tid: child_pid,
             ppid: self.pid,
+            // A guest-created child always has a traced parent: this process.
+            is_traced_tree_root: false,
             logical_clock_ns: self.logical_clock_ns,
             umask: self.umask,
             random_seed: self.random_seed,
@@ -270,8 +380,7 @@ impl LoadedStaticElf {
                 masks: signalfd_masks,
                 pending: std::collections::BTreeSet::new(),
             })),
-            robust_list_head: 0,
-            robust_list_len: 0,
+            task_lifecycle: self.task_lifecycle.clone(),
             files,
             random_device_fds: self.random_device_fds.clone(),
             stdout_alias_fds: self.stdout_alias_fds.clone(),
@@ -332,6 +441,7 @@ impl LoadedStaticElf {
                 .collect(),
             pending: previous_signalfd_state.pending,
         };
+        let task_lifecycle = previous.task_lifecycle.clone();
         let file_identity_table = previous.file_identity_table.clone();
         {
             let mut table = file_identity_table
@@ -373,6 +483,8 @@ impl LoadedStaticElf {
         self.pid = previous.pid;
         self.tid = previous.tid;
         self.ppid = previous.ppid;
+        // `execve` replaces the image, never the position in the process tree.
+        self.is_traced_tree_root = previous.is_traced_tree_root;
         self.logical_clock_ns = previous.logical_clock_ns;
         self.umask = previous.umask;
         self.random_seed = previous.random_seed;
@@ -393,8 +505,11 @@ impl LoadedStaticElf {
         self.signal_actions = signal_actions;
         self.signal_mask = previous.signal_mask;
         self.signalfd_state = std::sync::Arc::new(std::sync::Mutex::new(signalfd_state));
-        self.robust_list_head = 0;
-        self.robust_list_len = 0;
+        self.task_lifecycle = task_lifecycle;
+        self.task_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .reset_after_exec(self.tid, self.pid);
         self.files = files;
         self.random_device_fds = random_device_fds;
         self.stdout_alias_fds = stdout_alias_fds;
@@ -603,6 +718,10 @@ fn load_executable(
         pid: 1,
         tid: 1,
         ppid: 0,
+        // The backend-installed image is the root of the traced process tree.
+        // `KvmBackend::set_root_pid` may later renumber `pid`/`tid`/`ppid`; it
+        // must not change this.
+        is_traced_tree_root: true,
         logical_clock_ns: 0,
         umask: 0o022,
         random_seed: 0,
@@ -623,8 +742,9 @@ fn load_executable(
         signal_mask: [0; 8],
         signal_alt_stack: None,
         signalfd_state: std::sync::Arc::new(std::sync::Mutex::new(SignalFdState::default())),
-        robust_list_head: 0,
-        robust_list_len: 0,
+        task_lifecycle: std::sync::Arc::new(std::sync::Mutex::new(TaskLifecycleTable::with_root(
+            1, 1, true,
+        ))),
         files: std::collections::BTreeMap::new(),
         random_device_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
