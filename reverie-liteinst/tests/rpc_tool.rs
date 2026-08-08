@@ -73,9 +73,12 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         instruction_guest.stdout,
         b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked\n"
     );
+    let instruction_stderr = String::from_utf8(instruction_guest.stderr).unwrap();
     assert!(
-        instruction_guest.stderr.is_empty(),
-        "the successful instruction path emitted a refusal diagnostic: {instruction_guest:?}"
+        instruction_stderr
+            .lines()
+            .all(|line| line.contains("stage=install-")),
+        "the successful instruction path emitted a refusal diagnostic: {instruction_stderr}"
     );
 
     let nested_instruction_fork = Command::new(binary)

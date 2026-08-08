@@ -822,12 +822,17 @@ fn install_runtime(
     vdso_sites: &[reverie_ptrace::VdsoSyscallSite],
 ) -> io::Result<()> {
     PATCH_PUBLICATION.store(publication as u8, Ordering::Release);
+    emit_in_guest_stage(b"install-prepare-instrumentation-begin");
     prepare_instrumentation()?;
+    emit_in_guest_stage(b"install-prepare-instrumentation-complete");
     install_vdso_sites(vdso_sites)?;
+    emit_in_guest_stage(b"install-vdso-sites-complete");
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-254): Review launcher-selected RuntimeConfig at the install seam.
     let config = runtime_config_from_env()?;
+    emit_in_guest_stage(b"install-runtime-config-complete");
     install_instruction_signal_handler(instructions, config.use_alt_stack)?;
+    emit_in_guest_stage(b"install-instruction-handler-complete");
     unsafe {
         reverie_preload::install(
             Box::new(LiteinstDispatcher::new(stats, publication)),
@@ -835,7 +840,10 @@ fn install_runtime(
             &config,
         )
     }?;
-    enable_instruction_faulting(instructions)
+    emit_in_guest_stage(b"install-seccomp-complete");
+    enable_instruction_faulting(instructions)?;
+    emit_in_guest_stage(b"install-instruction-faulting-complete");
+    Ok(())
 }
 
 struct CompatibilityEventChannel {
