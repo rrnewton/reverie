@@ -3720,8 +3720,10 @@ fn resolve_producer_definition_evidence(
         .map_err(|error| format!("cannot wait for producer-definition resolver: {error}"))?;
     match output.status.code() {
         Some(0) => {
-            let report: serde_json::Value = serde_json::from_slice(&output.stdout)
-                .map_err(|error| format!("producer-definition resolver returned invalid JSON: {error}"))?;
+            let report: serde_json::Value =
+                serde_json::from_slice(&output.stdout).map_err(|error| {
+                    format!("producer-definition resolver returned invalid JSON: {error}")
+                })?;
             if report.get("accepted").and_then(|value| value.as_bool()) != Some(true)
                 || report
                     .get("producer_definition_status")
@@ -5044,7 +5046,10 @@ fn verify_publisher_report(
             values
                 .iter()
                 .map(|value| {
-                    value.as_str().filter(|commit| is_oid(commit)).map(str::to_string)
+                    value
+                        .as_str()
+                        .filter(|commit| is_oid(commit))
+                        .map(str::to_string)
                         .ok_or_else(|| {
                             "publisher artifact producer commit bound is malformed".to_string()
                         })
@@ -5244,16 +5249,15 @@ fn parse_immutable_receipt_reference(
     {
         &"unbounded" => None,
         commits => {
-            let values = commits
-                .split(',')
-                .map(str::to_string)
-                .collect::<Vec<_>>();
+            let values = commits.split(',').map(str::to_string).collect::<Vec<_>>();
             if values.is_empty()
                 || values.iter().any(|commit| !is_oid(commit))
                 || !values.iter().any(|commit| commit == sha)
                 || values.windows(2).any(|pair| pair[0] >= pair[1])
             {
-                return Err("immutable receipt verifier returned invalid producer commit bound".into());
+                return Err(
+                    "immutable receipt verifier returned invalid producer commit bound".into(),
+                );
             }
             Some(values)
         }
@@ -5422,9 +5426,7 @@ fn fetch_and_verify_immutable_receipt(
         || verified.producer_paths != expected_producer_paths
         || verified.producer_valid_commits != expected_producer_valid_commits
     {
-        return Err(
-            "immutable verifier producer condition differs from artifact evidence".into(),
-        );
+        return Err("immutable verifier producer condition differs from artifact evidence".into());
     }
     Ok(verified)
 }
@@ -5949,13 +5951,9 @@ mod tests {
     #[test]
     fn canonical_receipt_accepts_genuine_schema4_and_carries_its_conditions() {
         let row = history_row(schema4_receipt_value());
-        let assessment = assess_canonical_receipts(
-            Path::new("."),
-            &[row],
-            RECEIPT_SHA,
-            CANONICAL_VALIDATE_REPO,
-        )
-        .unwrap();
+        let assessment =
+            assess_canonical_receipts(Path::new("."), &[row], RECEIPT_SHA, CANONICAL_VALIDATE_REPO)
+                .unwrap();
         assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
         let receipt = newest_canonical_receipt(&assessment.qualifying).unwrap();
         assert_eq!(receipt.selected_tests, 786);

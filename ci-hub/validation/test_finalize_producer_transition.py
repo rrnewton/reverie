@@ -129,7 +129,7 @@ def test_no_output_until_replay_and_fetched_main_both_match(monkeypatch, tmp_pat
     assert not output.exists()
 
 
-def test_positive_writes_only_canonically_reverified_registry(monkeypatch, tmp_path):
+def test_positive_writes_only_canonically_reverified_proposal(monkeypatch, tmp_path):
     output = tmp_path / "finalized.json"
     registry = {
         "registered_at": REPLAY,
@@ -161,9 +161,41 @@ def test_positive_writes_only_canonically_reverified_registry(monkeypatch, tmp_p
         fpt, "finalized_registry", lambda *_args: (registry, CANDIDATE)
     )
     report = fpt.execute(args)
-    assert report["action"] == "finalized"
+    assert report["action"] == "proposal-written"
     assert report["merge_commit_oid"] == REPLAY
     assert json.loads(output.read_text()) == registry
+
+
+def test_concurrent_output_creation_is_never_overwritten(monkeypatch, tmp_path):
+    output = tmp_path / "finalized.json"
+    registry = {
+        "registered_at": REPLAY,
+        "registered_coverage_status": "complete",
+        "registered": CANDIDATE["definition"],
+    }
+    args = argparse.Namespace(
+        repo_checkout=tmp_path,
+        verifier=Path("verifier"),
+        ci_hub=Path("ci-hub"),
+        output=output,
+    )
+    monkeypatch.setattr(fpt, "transition_evidence", lambda _verifier: TRANSITION)
+    monkeypatch.setattr(
+        fpt, "landing_evidence", lambda *_args: landing_payload()
+    )
+    monkeypatch.setattr(fpt, "fetched_main_tip", lambda _checkout: MAIN)
+    monkeypatch.setattr(fpt, "resolved_map", lambda *_args: CANDIDATE)
+    monkeypatch.setattr(
+        fpt, "finalized_registry", lambda *_args: (registry, CANDIDATE)
+    )
+
+    def plant_concurrent_artifact(*_args):
+        output.write_text("concurrent-update\n")
+
+    monkeypatch.setattr(fpt, "require_same_active_transition", plant_concurrent_artifact)
+    with pytest.raises(fpt.Refused, match="refusing to overwrite"):
+        fpt.execute(args)
+    assert output.read_text() == "concurrent-update\n"
 
 
 @pytest.mark.parametrize("change", ["registry", "expiry"])

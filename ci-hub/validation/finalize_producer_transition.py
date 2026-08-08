@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prove and materialize one producer-definition transition.
+"""Prove and materialize one producer-definition transition proposal.
 
 This is deliberately a post-landing operation.  The canonical producer
 verifier owns registry shape, lifecycle, exact-map membership, and the
@@ -10,8 +10,10 @@ rebase-merge replay and the freshly fetched main tip still resolves to the
 candidate map.
 
 Without ``--output`` the command is read-only and prints the proposed registry
-and proof.  With ``--output`` it atomically writes those already-proven bytes;
-it never edits the input registry in place while evidence is incomplete.
+and proof.  With ``--output`` it creates a new proposal artifact without ever
+replacing an existing path.  Publishing the proposal into the canonical
+registry remains a separately reviewed repository change; this command cannot
+overwrite a concurrent registry update and falsely call that a compare-and-swap.
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from typing import Any, Callable
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -265,11 +267,8 @@ def finalized_registry(
     return registry, replay_evidence
 
 
-def atomic_write(
-    path: Path,
-    value: dict[str, Any],
-    before_replace: Callable[[], None] | None = None,
-) -> None:
+def write_new_proposal(path: Path, value: dict[str, Any]) -> None:
+    """Publish a new proposal without replacing any concurrent artifact."""
     path.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps(value, indent=2, sort_keys=False) + "\n"
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -279,9 +278,17 @@ def atomic_write(
             handle.write(body)
             handle.flush()
             os.fsync(handle.fileno())
-        if before_replace is not None:
-            before_replace()
-        os.replace(temporary, path)
+        try:
+            os.link(temporary, path)
+        except FileExistsError as error:
+            raise Refused(
+                f"output already exists at {path}; refusing to overwrite it"
+            ) from error
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -289,7 +296,7 @@ def atomic_write(
 def require_same_active_transition(
     verifier: Path, expected: dict[str, Any]
 ) -> None:
-    """CAS the exact registry bytes and live lifecycle at the mutation boundary."""
+    """Recheck the exact registry bytes and lifecycle before proposal publication."""
     observed = transition_evidence(verifier)
     if observed != expected:
         raise Refused(
@@ -315,16 +322,11 @@ def execute(args: argparse.Namespace) -> dict[str, Any]:
     )
     require_candidate(finalized_replay, candidate, "finalized replay")
     if args.output is not None:
-        atomic_write(
-            args.output,
-            registry,
-            before_replace=lambda: require_same_active_transition(
-                args.verifier, transition
-            ),
-        )
+        require_same_active_transition(args.verifier, transition)
+        write_new_proposal(args.output, registry)
     return {
         "schema_version": 1,
-        "action": "finalized" if args.output is not None else "would-finalize",
+        "action": "proposal-written" if args.output is not None else "would-finalize",
         "output": str(args.output) if args.output is not None else None,
         "transition_id": transition["id"],
         "repository": transition["provenance"]["repository"],

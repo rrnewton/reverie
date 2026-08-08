@@ -205,7 +205,7 @@ PY
     "$box/fixture/ci-hub/validate/producer-definition.json")
   printf '[[]]\n' >"$box/comments.json"
   local vrc=0
-  env -i PATH="$PATH" HOME="$box" \
+  env -i PATH="$box/bin:$PATH" HOME="$box" FIXTURE_ROOT="$box/fixture" \
       ${predicate:+QUALIFYING_RECEIPT_PREDICATE="$predicate"} \
       ${producer:+PRODUCER_DEFINITION_REGISTRY="$producer"} \
       bash "$verifier" --repo rrnewton/hermit \
@@ -216,7 +216,10 @@ PY
   local status
   if [ "$mode" = POS ]; then
     pos_total=$((pos_total + 1))
-    if [ "$vrc" -ne 2 ]; then status=OK; pos_accepted=$((pos_accepted + 1)); else status=BAD; fail=1; fi
+    case "$vrc" in
+      0|1) status=OK; pos_accepted=$((pos_accepted + 1)) ;;
+      *) status=BAD; fail=1 ;;
+    esac
   else
     neg_total=$((neg_total + 1))
     if [ "$vrc" -eq 2 ]; then status=OK; neg_refused=$((neg_refused + 1)); else status=BAD; fail=1; fi
