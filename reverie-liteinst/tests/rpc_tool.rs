@@ -62,6 +62,88 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         "{spoofed_sigsys:?}"
     );
 
+    let instruction_guest = Command::new(binary)
+        .arg("instruction-guest")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert!(instruction_guest.status.success(), "{instruction_guest:?}");
+    assert_eq!(
+        instruction_guest.stdout,
+        b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked\n"
+    );
+
+    let nested_instruction_fork = Command::new(binary)
+        .arg("nested-instruction-fork")
+        .arg(&socket)
+        .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1")
+        .output()
+        .unwrap();
+    assert!(
+        nested_instruction_fork.status.success(),
+        "{nested_instruction_fork:?}"
+    );
+    assert_eq!(
+        nested_instruction_fork.stdout,
+        b"nested-cpuid=native nested-rdtsc=native nested-rdtscp=native guest-cpuid=tool guest-rdtsc=tool guest-rdtscp=tool child-getpid=complete child-exit=0\n"
+    );
+    let nested_stderr = String::from_utf8(nested_instruction_fork.stderr).unwrap();
+    let stage_count = |stage: &str| {
+        nested_stderr
+            .lines()
+            .filter(|line| line.ends_with(stage))
+            .count()
+    };
+    for stage in [
+        "stage=fork-child-thread-start-begin",
+        "stage=fork-child-thread-start-complete",
+    ] {
+        assert_eq!(
+            stage_count(stage),
+            1,
+            "stage marker {stage:?} must appear exactly once: {nested_stderr}"
+        );
+    }
+    assert!(
+        stage_count("stage=nested-instruction-native-cpuid") >= 1,
+        "at least the planted nested CPUID must take the native path: {nested_stderr}"
+    );
+    assert!(
+        stage_count("stage=nested-instruction-fault-native-cpuid") >= 1,
+        "unpatched Tool-internal CPUID must bypass publication: {nested_stderr}"
+    );
+    for stage in [
+        "stage=nested-instruction-native-rdtsc",
+        "stage=nested-instruction-native-rdtscp",
+    ] {
+        assert_eq!(
+            stage_count(stage),
+            1,
+            "the planted nested instruction must take the native path once: {nested_stderr}"
+        );
+    }
+
+    let clock_and_vdso_guest = Command::new(binary)
+        .arg("clock-and-vdso-guest")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert!(
+        clock_and_vdso_guest.status.success(),
+        "{clock_and_vdso_guest:?}"
+    );
+    let clock_and_vdso_stdout = String::from_utf8(clock_and_vdso_guest.stdout).unwrap();
+    eprintln!("clock/vDSO evidence: {}", clock_and_vdso_stdout.trim_end());
+    assert!(
+        clock_and_vdso_stdout == "rcb=unmeasured vdso-calls=1\n"
+            || clock_and_vdso_stdout.starts_with("rcb=measured "),
+        "{clock_and_vdso_stdout}"
+    );
+    assert!(
+        clock_and_vdso_stdout.ends_with("vdso-calls=1\n"),
+        "{clock_and_vdso_stdout}"
+    );
+
     let unsubscribed_lifecycle = Command::new(binary)
         .arg("unsubscribed-lifecycle")
         .arg(&socket)
@@ -148,6 +230,29 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         raw_sender_delta, 1,
         "a raw SYS_fork child must reconnect under its own identity: {raw_fork_stdout}"
     );
+
+    for (mode, expected) in [
+        (
+            "clone3-guest",
+            b"clone3=child-reconstructed sender-delta=1\n".as_slice(),
+        ),
+        (
+            "vfork-guest",
+            b"vfork=translated-cow-child sender-delta=1\n".as_slice(),
+        ),
+    ] {
+        let output = Command::new(binary)
+            .arg(mode)
+            .arg(&socket)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{mode}: {output:?}");
+        eprintln!(
+            "process evidence: {}",
+            String::from_utf8_lossy(&output.stdout).trim_end()
+        );
+        assert_eq!(output.stdout, expected, "{mode}: {output:?}");
+    }
 
     for (mode, expected) in [
         (
