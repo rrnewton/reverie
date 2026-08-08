@@ -42,10 +42,11 @@ impl InGuestRcbCounter {
     fn current_thread_with_optional_syscall_gate(
         raw_syscall: Option<unsafe fn(i64, [u64; 6]) -> i64>,
     ) -> Result<Self, Errno> {
+        let config = PmuConfig::try_new().ok_or(Errno::ENODEV)?;
         let mut builder = Builder::new(0, -1);
         builder
             .sample_period(0)
-            .event(PmuConfig::new().rcb_event())
+            .event(config.rcb_event())
             .fast_reads(true);
         let counter = if let Some(raw_syscall) = raw_syscall {
             builder.create_with_raw_syscall(raw_syscall)?
