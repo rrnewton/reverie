@@ -30,7 +30,10 @@ def production_sources() -> list[Path]:
         if not path.is_file() or path.suffix not in {".py", ".rs", ".sh"}:
             continue
         relative = path.relative_to(CI_HUB)
-        if "tests" in relative.parts or path.name.startswith("test_"):
+        # Both naming conventions are used for executable test harnesses. A
+        # hyphenated shell harness is no more a production authority reader
+        # than a test_*.py file; counting it hid the actual 1-reader invariant.
+        if "tests" in relative.parts or path.name.startswith(("test_", "test-")):
             continue
         result.append(path)
     return result

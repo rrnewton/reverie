@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -108,6 +109,19 @@ def pr_gate_repo_budget(
 DEFAULT_QUEUE_GATE_TIMEOUT_SECS = float(
     os.environ.get("CI_HUB_QUEUE_GATE_TIMEOUT", "12")
 )
+# The semantic check makes several GitHub calls. Keep the whole verdict inside
+# tick-hub's 30s subprocess guillotine so a slow upstream is reported as
+# unavailable instead of being killed into an unlabelled failure.
+MERGE_GATE_AUTHORITY_TIMEOUT_SECS = float(
+    os.environ.get("CI_HUB_MERGE_GATE_AUTHORITY_TIMEOUT", "20")
+)
+MERGE_GATE_AUTHORITY_PROBE_TIMEOUT_SECS = float(
+    os.environ.get("CI_HUB_MERGE_GATE_AUTHORITY_PROBE_TIMEOUT", "4")
+)
+MERGE_GATE_AUTHORITY_CHECKER = (
+    ROOT / "hermit" / "scripts" / "configure-merge-gate-ruleset.sh"
+)
+MERGE_GATE_REPO = "rrnewton/hermit"
 DEFAULT_AGENT_SNAPSHOT = ROOT / "ignored" / "ci-hub" / "agent-snapshot.json"
 _AGENT_PANE_RE = re.compile(r"^%\d+$")
 TERMINAL_AGENT_STATES = frozenset(
@@ -1224,7 +1238,9 @@ MEMORY_SKILL_LINTER = ROOT / "scripts" / "lint-memory-skill-sync.rs"
 MEMORY_SKILL_SCANNER = ROOT / "scripts" / "memory-skill-contradiction-scan.rs"
 
 
-def _run_tool(cmd: Sequence[str]) -> tuple[int, str, str]:
+def _run_tool(
+    cmd: Sequence[str], *, timeout: float = 300
+) -> tuple[int, str, str]:
     """Run a checker; return (returncode, stdout, stderr). Non-runnable -> rc 127."""
     try:
         proc = subprocess.run(
@@ -1232,15 +1248,122 @@ def _run_tool(cmd: Sequence[str]) -> tuple[int, str, str]:
             cwd=ROOT,
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=timeout,
         )
     except FileNotFoundError as error:
         return 127, "", str(error)
     except OSError as error:  # e.g. not executable, rust-script missing
         return 127, "", str(error)
     except subprocess.TimeoutExpired:
-        return 124, "", "timeout after 300s"
+        return 124, "", f"timeout after {timeout:g}s"
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def _single_line_detail(stdout: str, stderr: str) -> str:
+    lines = [line.strip() for line in (stdout + "\n" + stderr).splitlines()]
+    return " | ".join(line for line in lines if line) or "checker emitted no detail"
+
+
+def _github_variable_surface_available() -> tuple[bool, str]:
+    """Distinguish a genuinely absent variable from unreadable ambient auth.
+
+    The authoritative shell checker intentionally maps `gh variable get`
+    failures to an empty value so its reconciliation modes can create missing
+    variables. In read-only health that shape is ambiguous: it could be a real
+    half-transition or merely expired credentials. A strict list probe resolves
+    availability only; the shell checker remains the sole semantic authority.
+    """
+
+    gh = ["gh"]
+    if shutil.which("with-proxy") is not None:
+        gh = ["with-proxy", "gh"]
+    rc, stdout, stderr = _run_tool(
+        [*gh, "variable", "list", "--repo", MERGE_GATE_REPO, "--json", "name"],
+        timeout=MERGE_GATE_AUTHORITY_PROBE_TIMEOUT_SECS,
+    )
+    if rc != 0:
+        return False, _single_line_detail(stdout, stderr)
+    try:
+        variables = json.loads(stdout)
+    except json.JSONDecodeError as error:
+        return False, f"variable-list returned invalid JSON: {error}"
+    if not isinstance(variables, list):
+        return False, "variable-list returned a non-list JSON value"
+    return True, "GitHub variable surface readable"
+
+
+def merge_gate_authority_gate(
+    *,
+    checker: Path = MERGE_GATE_AUTHORITY_CHECKER,
+    timeout: float = MERGE_GATE_AUTHORITY_TIMEOUT_SECS,
+) -> int:
+    """Expose an interrupted repository-authority transition as one global fault.
+
+    Equality, ruleset membership, integration identity, and legacy-shim
+    semantics live exclusively in configure-merge-gate-ruleset.sh. This adapter
+    only bounds that verifier and gives its three observable outcomes distinct
+    names: steady, measured half-transition, and unavailable evidence.
+    """
+
+    rc, stdout, stderr = _run_tool([str(checker), "--check"], timeout=timeout)
+    detail = _single_line_detail(stdout, stderr)
+
+    # Require the verifier's own positive statement, not merely an exit code
+    # which could have come from a wrapper that never exercised the predicate.
+    if rc == 0 and "PASS:" in stdout:
+        _emit(
+            {
+                "state": "ok",
+                "scope": "none",
+                "summary": detail,
+            }
+        )
+        return 0
+
+    if rc in (124, 127) or rc != 1 or "FAIL:" not in stderr:
+        _emit(
+            {
+                "state": "unavailable",
+                "scope": "unknown",
+                "summary": (
+                    "merge-authority evidence unavailable; no transition verdict: "
+                    f"{detail}"
+                ),
+            }
+        )
+        return 2
+
+    # `read_variable` deliberately turns a failed variable read into `unset`.
+    # Confirm the surface is readable before treating that word as evidence of
+    # an actually missing binding rather than evidence of lost credentials.
+    if "unset" in stderr:
+        available, availability_detail = _github_variable_surface_available()
+        if not available:
+            _emit(
+                {
+                    "state": "unavailable",
+                    "scope": "unknown",
+                    "summary": (
+                        "merge-authority variables could not be measured; "
+                        "the checker's unset value is NOT transition evidence: "
+                        f"{availability_detail}"
+                    ),
+                }
+            )
+            return 2
+
+    _emit(
+        {
+            "state": "interrupted-transition",
+            "scope": "global-merge-admission",
+            "summary": (
+                "GLOBAL Hermit merge authority is half-applied: "
+                f"{detail}. Complete the serialized transition or roll it back; "
+                "do not diagnose or refire PRs individually."
+            ),
+        }
+    )
+    return 1
 
 
 def _scan_fields(stdout: str) -> dict[str, str]:
@@ -1355,10 +1478,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return queue_health_gate()
     if args == ["memory-skill-sync"]:
         return memory_skill_sync_gate()
+    if args == ["merge-gate-authority"]:
+        return merge_gate_authority_gate()
     print(
         "usage: operational_health.py "
         "<active-work|cache-agents|github-main|pull-requests|primary-snapshot|agents|queue-health|"
-        "memory-skill-sync>",
+        "memory-skill-sync|merge-gate-authority>",
         file=sys.stderr,
     )
     return 2

@@ -20,7 +20,7 @@ description: |-
   orc-internal state costs an agent. Prefer DETECT-ONLY: a gate that reports a
   fact leaves the decision where the authority is.
 
-  Current roster: 12 active reminders, all passing the test above -- 8 external
+  Current roster: 13 active reminders, all passing the test above -- 9 external
   (merge gates, GitHub main, PRs, CI queue, CI lanes, validate wall time x2,
   owner directives), 3 local-but-ORC-invisible (unpushed parent commits, primary
   checkout snapshot, worktree disk residue), 1 report-only resource audit
@@ -269,6 +269,24 @@ reminders:
       fields:
         component: github-main
       title: "GitHub main health is {state}: {summary}"
+
+  # A half-applied repository-authority transition blocked 142/143 open Hermit
+  # PRs while presenting as unrelated per-PR failures. Measure the one shared
+  # authority directly and name its global blast radius. This gate is read-only:
+  # recovery is to complete or roll back the serialized transition, never to
+  # refire individual PRs until the authority is coherent again.
+  - name: hermit_merge_gate_authority
+    cadence_secs: 300
+    gate:
+      cmd: ./ci-hub/health/operational_health.py merge-gate-authority
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: hermit-merge-gate-authority
+      title: "GLOBAL Hermit merge authority is {state}: {summary}"
 
   - name: pull_request_health
     cadence_secs: 900
