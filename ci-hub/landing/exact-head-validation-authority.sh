@@ -56,9 +56,100 @@ if [[ -n $current_base || -n $current_reverie_base || -n $repo_checkout || -n $r
     )
 fi
 
-local_report=$(mktemp)
-hosted_report=$(mktemp)
-trap 'rm -f -- "$local_report" "$hosted_report"' EXIT
+authority_tmp=$(mktemp -d)
+local_report=$authority_tmp/local.json
+hosted_report=$authority_tmp/hosted.json
+trap 'rm -rf -- "$authority_tmp"' EXIT
+
+github_api() {
+    if [[ -n ${EXACT_HEAD_GH_BIN:-} ]]; then
+        "$EXACT_HEAD_GH_BIN" "$@"
+    elif command -v with-proxy >/dev/null 2>&1; then
+        with-proxy gh api "$@"
+    else
+        gh api "$@"
+    fi
+}
+
+# The portable aggregate deliberately fails closed when any required child is
+# cancelled.  That failure records absence, not a negative test verdict.  Only
+# downgrade it to NO_RESULT when the exact run, every leaf conclusion, and the
+# aggregate's own step list prove that the reducer is the sole failure.  Any
+# missing/unknown evidence or genuine leaf/aggregate failure keeps the original
+# hosted red.
+cancellation_derived_portable_absence() {
+    local report=$1 run_id job_id
+    local run_report=$authority_tmp/portable-run.json
+    local jobs_report=$authority_tmp/portable-jobs.json
+    local aggregate_report=$authority_tmp/portable-aggregate.json
+
+    jq -e --arg repo "$repo" --arg sha "$sha" '
+        .authority == "github-actions-exact-head-jobs"
+        and .repo == $repo and .sha == $sha and .state == "red"
+        and .policy_schema_version == 3
+        and .required_positive_count == 1 and .positive_count == 0
+        and (.jobs | type == "array" and length == 1)
+        and .jobs[0].state == "red"
+        and .jobs[0].status == "completed"
+        and .jobs[0].conclusion == "failure"
+        and .jobs[0].job_name == "Regular tests (GitHub-managed portable)"
+        and (.jobs[0].run_id | type == "number" and . > 0)
+        and (.jobs[0].job_id | type == "number" and . > 0)
+    ' "$report" >/dev/null 2>&1 || return 1
+
+    run_id=$(jq -r '.jobs[0].run_id' "$report")
+    job_id=$(jq -r '.jobs[0].job_id' "$report")
+    github_api "repos/${repo}/actions/runs/${run_id}" >"$run_report" 2>/dev/null || return 1
+    github_api "repos/${repo}/actions/runs/${run_id}/jobs?filter=latest&per_page=100" \
+        >"$jobs_report" 2>/dev/null || return 1
+    github_api "repos/${repo}/actions/jobs/${job_id}" >"$aggregate_report" 2>/dev/null || return 1
+
+    jq -e --arg sha "$sha" '
+        .head_sha == $sha
+        and .status == "completed" and .conclusion == "cancelled"
+        and .name == "CI (GitHub-managed portable)"
+        and (.path == ".github/workflows/ci-portable.yml"
+             or .path == "ci-portable.yml")
+    ' "$run_report" >/dev/null 2>&1 || return 1
+
+    jq -e --argjson aggregate_id "$job_id" '
+        .total_count == (.jobs | length)
+        and .total_count > 1 and .total_count <= 100
+        and ([.jobs[].id] | unique | length) == (.jobs | length)
+        and ([.jobs[] | select(.id == $aggregate_id)] | length) == 1
+        and ([.jobs[] | select(.name == "Regular tests (GitHub-managed portable)")]
+             | length) == 1
+        and any(.jobs[];
+            .id != $aggregate_id and .status == "completed"
+            and .conclusion == "cancelled")
+        and all(.jobs[];
+            if .id == $aggregate_id then
+                .status == "completed" and .conclusion == "failure"
+            else
+                .status == "completed"
+                and (.conclusion == "success"
+                     or .conclusion == "skipped"
+                     or .conclusion == "cancelled")
+            end)
+    ' "$jobs_report" >/dev/null 2>&1 || return 1
+
+    jq -e --argjson aggregate_id "$job_id" '
+        .id == $aggregate_id
+        and .name == "Regular tests (GitHub-managed portable)"
+        and .status == "completed" and .conclusion == "failure"
+        and (.steps | type == "array" and length > 0)
+        and ([.steps[] | select(.conclusion == "failure")] | length) == 1
+        and any(.steps[];
+            .name == "Require every portable DAG job to succeed or be deselected"
+            and .status == "completed" and .conclusion == "failure")
+        and all(.steps[];
+            .status == "completed"
+            and (.conclusion == "success"
+                 or .conclusion == "skipped"
+                 or (.name == "Require every portable DAG job to succeed or be deselected"
+                     and .conclusion == "failure")))
+    ' "$aggregate_report" >/dev/null 2>&1
+}
 
 local_rc=0
 "$ci_hub" validate-status --sha "$sha" --repo "$repo" --json \
@@ -122,6 +213,11 @@ elif [[ $hosted_rc -eq 3 ]] && jq -e --arg repo "$repo" --arg sha "$sha" '
     and any(.jobs[]; .state == "red" and .job_id > 0 and .run_id > 0)
 ' "$hosted_report" >/dev/null 2>&1; then
     hosted_state=red
+fi
+if [[ $repo == rrnewton/hermit && $hosted_state == red ]] && \
+   cancellation_derived_portable_absence "$hosted_report"; then
+    echo "Hosted portable aggregate is cancellation-derived absence; treating it as NO_RESULT." >&2
+    hosted_state=no_result
 fi
 
 local_coverage=none
