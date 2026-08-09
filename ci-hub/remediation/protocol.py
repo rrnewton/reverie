@@ -3082,7 +3082,7 @@ def _local_run(
                 "--actual-json",
                 str(cost_path),
                 "--",
-                str(checkout / "validate.sh"),
+                str(checkout / "scripts/validate.rs"),
                 "--no-label-pr",
             ),
             cwd=checkout,
@@ -3097,7 +3097,7 @@ def _local_run(
             record["repo"], record["landed_sha"]
         )
         if state == "green" and not receipt_ok:
-            # A bare validate.sh rc=0 is only a proxy.  The canonical ledger
+            # A bare validation-driver rc=0 is only a proxy. The canonical ledger
             # verifier must dereference a counted clean full/full receipt for
             # this exact SHA before the local leg carries a green authority.
             state = "no_result"

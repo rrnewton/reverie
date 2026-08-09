@@ -3,7 +3,7 @@
 
 Herdr control calls themselves cross the agent jail through short-lived user
 services.  The pane only observes the durable log and systemd unit; it never
-runs validate.sh.  The actual compute remains in the separately admitted
+runs the validation driver. The actual compute remains in the separately admitted
 validate-*.service and then safe-ci-dag-runner's delegated scope.
 """
 

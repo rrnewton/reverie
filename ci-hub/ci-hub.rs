@@ -2712,7 +2712,7 @@ fn format_wait_hm(seconds: i64) -> String {
 /// command never runs it here (the validate-lock serializes box-exclusive compute).
 fn ci_timeout_enqueue_command(head_sha: &str, pr: u64) -> String {
     format!(
-        "ci-hub validate-lock run --kind validate --agent ci-timeout --target {head_sha} -- env PR_NUMBER={pr} ./validate.sh"
+        "ci-hub validate-lock run --kind validate --agent ci-timeout --target {head_sha} -- env PR_NUMBER={pr} ./scripts/validate.rs"
     )
 }
 

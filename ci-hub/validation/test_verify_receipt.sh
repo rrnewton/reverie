@@ -50,18 +50,21 @@ export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 # PR head or candidate blob.
 production_registry=$script_dir/../validate/producer-definition.json
 production_repo=$root/hermit
-production_registered_at=b6051b1cd1402526c76ea768167c875188144328
-production_validate=349f8c0bae065597708019005180d2872d9c90b2
-production_portable=ef7cdc0211ebaeafcaba4286cb2374a80ab9f3fb
+production_registered_at=92aaed5d09dd44ae4fb330a99c7adf28c1fc0cae
+production_validate=1763d88fb892bc541b1f6e01fbb02ed601c501a3
+production_rust=fee576d43d9702e29416918f0996bacdc46c5ed6
+production_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
 previous_validate=836a070e5e02017ae232e243904fb033a5c45b17
 previous_portable=6d47112dbbd6566e6d0453551a0c730bc7aeb8d9
 if ! jq -e \
     --arg at "$production_registered_at" \
     --arg validate "$production_validate" \
+    --arg rust "$production_rust" \
     --arg portable "$production_portable" '
       .registered_at == $at
       and .registered_valid_commits == [$at]
       and .registered["validate.sh"] == $validate
+      and .registered["scripts/validate.rs"] == $rust
       and .registered[".github/workflows/ci-portable.yml"] == $portable
       and (has("transition") | not)
     ' "$production_registry" >/dev/null; then
@@ -245,11 +248,16 @@ base_evidence=$("$verifier" --sha "$sha" --comments "$tmp/comments.json" \
 # only on producer-definition/head binding, not on a stale outer checksum.
 retarget_receipt "$tmp/receipt.json" "$tmp/production-current-retargeted.json" \
     "$production_registered_at"
-jq -cS --arg validate "$production_validate" --arg portable "$production_portable" '
+jq -cS --arg validate "$production_validate" --arg rust "$production_rust" \
+  --arg portable "$production_portable" '
   .producer.definition = {
     "validate.sh": $validate,
+    "scripts/validate.rs": $rust,
     ".github/workflows/ci-portable.yml": $portable
   }
+  | .producer.paths = [
+      ".github/workflows/ci-portable.yml", "scripts/validate.rs", "validate.sh"
+    ]
 ' "$tmp/production-current-retargeted.json" >"$tmp/production-current.json"
 assert_mutated "$tmp/receipt.json" "$tmp/production-current.json" \
     "PRODUCER production rotation from synthetic fixture"
@@ -263,6 +271,7 @@ jq -cS --arg validate "$previous_validate" --arg portable "$previous_portable" '
     "validate.sh": $validate,
     ".github/workflows/ci-portable.yml": $portable
   }
+  | .producer.paths = [".github/workflows/ci-portable.yml", "validate.sh"]
 ' "$tmp/production-current.json" >"$tmp/production-previous.json"
 assert_mutated "$tmp/production-current.json" "$tmp/production-previous.json" \
     "PRODUCER previous registered definition"
@@ -271,7 +280,7 @@ PRODUCER_DEFINITION_REGISTRY=$production_registry \
     "production rotation: previous definition no longer authorizes" \
     '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
 
-jq -cS '.producer.definition["validate.sh"] = ("0" * 40)' \
+jq -cS '.producer.definition["scripts/validate.rs"] = ("0" * 40)' \
     "$tmp/production-current.json" >"$tmp/production-tampered.json"
 assert_mutated "$tmp/production-current.json" "$tmp/production-tampered.json" \
     "PRODUCER tampered current definition"

@@ -49,7 +49,8 @@ class FakeRun:
         if command[:2] == ["mktemp", "-d"]:
             self.fresh = Path(command[2].replace("XXXXXXXX", "abcd1234"))
             self.fresh.mkdir(parents=True, exist_ok=True)
-            (self.fresh / "validate.sh").write_text("#!/bin/sh\n")
+            (self.fresh / "scripts").mkdir(parents=True, exist_ok=True)
+            (self.fresh / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
             if self.fresh_complete:
                 dep = self.fresh / "agent-utils/rs/safe-ci-dag-runner"
                 dep.mkdir(parents=True, exist_ok=True)
@@ -154,7 +155,8 @@ class StartUnitTest(unittest.TestCase):
         start_unit.HOST_TMP_ROOT = self.root / "modeled-host-tmp"
         self.checkout = self.root / "hermit"
         self.checkout.mkdir()
-        (self.checkout / "validate.sh").write_text("#!/bin/sh\n")
+        (self.checkout / "scripts").mkdir()
+        (self.checkout / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
         (self.root / "ci-hub/validate").mkdir(parents=True)
         self.fake = FakeRun(self.checkout)
         self.environment = {"HOME": "/home/test", "PATH": "/usr/bin:/bin"}
@@ -202,12 +204,19 @@ class StartUnitTest(unittest.TestCase):
         lock = systemd.index("validate-lock")
         self.assertEqual(["validate-lock", "run"], systemd[lock : lock + 2])
         self.assertEqual(
-            ["/usr/bin/env", "PR_NUMBER=123", "with-proxy", "./validate.sh", "full", "--ignore-cache"],
+            [
+                "/usr/bin/env",
+                "PR_NUMBER=123",
+                "with-proxy",
+                "./scripts/validate.rs",
+                "full",
+                "--ignore-cache",
+            ],
             systemd[-6:],
         )
         pane_run = next(command for command in self.fake.commands if "pane_watch.py" in " ".join(command))
         self.assertIn("herdr", pane_run)
-        self.assertNotIn("validate.sh", pane_run)
+        self.assertNotIn("scripts/validate.rs", pane_run)
         self.assertFalse(any(command[0] == "herdr" for command in self.fake.commands))
         self.assertIn("HANDLE", output)
         self.assertIn("PANE workspace=wV tab=wV:t2 pane=wV:p2", output)
@@ -229,7 +238,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertFalse((self.root / "run.log").exists())
 
     def test_dirty_checkout_is_refused_before_admission(self) -> None:
-        self.fake.dirty = " M validate.sh\n"
+        self.fake.dirty = " M scripts/validate.rs\n"
 
         rc, _output, error = self.invoke()
 
@@ -274,7 +283,8 @@ class StartUnitTest(unittest.TestCase):
     def test_symlink_to_host_tmp_is_refused_after_canonicalization(self) -> None:
         hidden = start_unit.HOST_TMP_ROOT / "hidden-hermit"
         hidden.mkdir(parents=True)
-        (hidden / "validate.sh").write_text("#!/bin/sh\n")
+        (hidden / "scripts").mkdir()
+        (hidden / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
         checkout_link = self.root / "apparently-safe-checkout"
         checkout_link.symlink_to(hidden, target_is_directory=True)
         self.checkout = checkout_link
@@ -459,7 +469,7 @@ class StartUnitTest(unittest.TestCase):
         self.fake.plant_receipt = rel
 
     def test_ordinary_early_failure_leaves_NO_retained_tree(self) -> None:
-        """The reclaim half. validate.sh is fail-fast: its first gate can abort
+        """The reclaim half. The Rust driver is fail-fast: its first gate can abort
         in seconds, so this is the COMMON outcome, and it used to strand a 26 MB
         worktree every time. Nothing was produced, so nothing is preserved."""
         self.fake.ledger_rows = []

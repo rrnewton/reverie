@@ -163,6 +163,7 @@ FORCE_FULL_PREFIXES = (
     ".cargo/",
     "ci/",
     "validate.sh",
+    "scripts/validate.rs",
     "scripts/lib/",
     ".github/workflows/",
 )

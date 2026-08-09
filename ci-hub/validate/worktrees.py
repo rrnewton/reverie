@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Consume the validate.sh hub-report artifacts.
+"""Consume the Rust validation driver's hub-report artifacts.
 
-`hermit/validate.sh` (as of the smart-selection / worktree-registration work)
+`hermit/scripts/validate.rs` (as of the smart-selection / worktree-registration work)
 walks up from its checkout root, and when it finds this hub it reports every run
 into two gitignored artifacts under the parent `ignored/ci-hub/` store:
 
@@ -130,7 +130,7 @@ def render_table(rows: list[list[str]], headers: list[str]) -> str:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(
-        description="Consume validate.sh hub-report artifacts (read-only).",
+        description="Consume Rust validate hub-report artifacts (read-only).",
     )
     parser.add_argument(
         "--data-dir",
@@ -186,7 +186,7 @@ def main(argv: list[str]) -> int:
     if not entries:
         print(
             f"no worktrees registered yet (looked in {os.path.abspath(args.data_dir)});"
-            " a plain ./validate.sh under this hub registers one."
+            " a plain ./scripts/validate.rs under this hub registers one."
         )
     else:
         rows = []

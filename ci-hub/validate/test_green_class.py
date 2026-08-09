@@ -344,10 +344,11 @@ class MutationSequence(unittest.TestCase):
 class ForceFullDetection(unittest.TestCase):
     def test_detects_each_force_full_class_prefix(self):
         hits = G.force_full_paths_in(
-            ["Cargo.lock", "ci/x.sh", "validate.sh", ".github/workflows/ci.yml",
+            ["Cargo.lock", "ci/x.sh", "validate.sh", "scripts/validate.rs",
+             ".github/workflows/ci.yml",
              "detcore/src/scheduler.rs", "README.md"])
         self.assertEqual(hits, [".github/workflows/ci.yml", "Cargo.lock",
-                                "ci/x.sh", "validate.sh"])
+                                "ci/x.sh", "scripts/validate.rs", "validate.sh"])
 
     def test_ordinary_product_paths_are_not_force_full(self):
         self.assertEqual(G.force_full_paths_in(["detcore/src/x.rs", "docs/a.md"]), [])

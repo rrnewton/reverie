@@ -144,7 +144,7 @@ def prepare_fresh_checkout(
     # produced a misleading fast exit rather than an honest failure.
     missing = [
         rel
-        for rel in ("validate.sh", "agent-utils/rs/safe-ci-dag-runner/Cargo.toml")
+        for rel in ("scripts/validate.rs", "agent-utils/rs/safe-ci-dag-runner/Cargo.toml")
         if not (fresh / rel).exists()
     ]
     if missing:
@@ -220,7 +220,7 @@ def orphaned_receipt_locations(fresh: Path, *, run: Runner) -> list[str]:
         ONLY trace the hazard occurred, so reclaiming it destroys the evidence.
         RETAIN.
       * the run failed before producing any receipt at all -- ordinary, and the
-        common case, because validate.sh is fail-fast and its first gate can
+        common case, because the Rust validation driver is fail-fast and its first gate can
         abort in seconds. Nothing is preserved by keeping 26 MB of build tree.
         RECLAIM.
 
@@ -253,8 +253,8 @@ def validate_checkout(checkout: Path, target: str, *, run: Runner) -> Path:
     checkout = require_guest_visible_root(checkout, role="source checkout")
     if not SHA_RE.fullmatch(target):
         raise ValueError("--target must be an exact lowercase 40-hex commit SHA")
-    if not (checkout / "validate.sh").is_file():
-        raise ValueError(f"missing validate.sh in checkout {checkout}")
+    if not (checkout / "scripts/validate.rs").is_file():
+        raise ValueError(f"missing scripts/validate.rs in checkout {checkout}")
 
     top = Path(
         checked_output(
@@ -374,7 +374,7 @@ def build_systemd_command(
     child = ["/usr/bin/env"]
     if pr is not None:
         child.append(f"PR_NUMBER={pr}")
-    child.extend(["with-proxy", "./validate.sh", *(validate_args or ["full"])])
+    child.extend(["with-proxy", "./scripts/validate.rs", *(validate_args or ["full"])])
 
     # libunwind is not installed system-wide on this host class, so
     # `unwind-sys`'s build.rs panics on
@@ -622,7 +622,7 @@ def attach(
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description=(
-            "Launch validate.sh as a detached systemd user service whose only admission "
+            "Launch scripts/validate.rs as a detached systemd user service whose only admission "
             "path is ci-hub validate-lock."
         )
     )
@@ -662,7 +662,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "validate_args",
         nargs=argparse.REMAINDER,
-        help="validate.sh arguments after -- (default: full)",
+        help="scripts/validate.rs arguments after -- (default: full)",
     )
     return result
 
@@ -874,7 +874,7 @@ def main(
             print(f"validate-run: RECEIPT-NOT-CANONICAL: {error}", file=sys.stderr)
             # Retention is for EVIDENCE, not for every failure. Retaining
             # unconditionally cost 26 MB per failed validate, and because
-            # validate.sh is fail-fast that is most of them.
+            # The Rust validation driver is fail-fast; that is most of them.
             try:
                 orphans = orphaned_receipt_locations(fresh_checkout, run=run)
             except OSError as scan_error:

@@ -123,7 +123,7 @@ admit(){
   esac
 }
 
-# One PR: acquire admission (waiting loudly while queued), run validate.sh in an
+# One PR: acquire admission (waiting loudly while queued), run the Rust driver in an
 # OWN slot, then optionally hand the green PR to the serial FIFO merge.
 run_one(){
   local pr="$1" br="$2" slot="$3"
@@ -152,7 +152,7 @@ run_one(){
     PR="$pr" SLOT="$slot" WT="$wt" $VALIDATE_CMD \
       >"$ROOT/ignored/ci-hub/prevalidate-pr${pr}.log" 2>&1
   else
-    # Recheck the exact fetched head at the last point before validate.sh. The
+    # Recheck the exact fetched head at the last point before the Rust driver. The
     # earlier --pr check saves the box on already-stale work; this second check
     # closes a PR-head/main race between GitHub resolution and slot checkout.
     ( cd "$wt" \
@@ -160,11 +160,11 @@ run_one(){
         && git switch --detach FETCH_HEAD \
         && exact_head=$(git rev-parse "HEAD^{commit}") \
         && $PREFLIGHT_CMD --head "$exact_head" --repo-checkout "$wt" \
-        && ./validate.sh ) >"$ROOT/ignored/ci-hub/prevalidate-pr${pr}.log" 2>&1
+        && ./scripts/validate.rs ) >"$ROOT/ignored/ci-hub/prevalidate-pr${pr}.log" 2>&1
   fi
 
   # Re-mint one exact count-backed schema-5 row from its durable log BEFORE
-  # reading the ledger. validate.sh writes a count-less schema-3 receipt when it
+  # reading the ledger. The validation producer can write a count-less row when it
   # can't reach the parent count helper, and with the uncounted-receipt
   # grandfather removed that would read NotValidated. Resolve the just-validated
   # head and select one source row by its Rust-canonical digest before invoking
