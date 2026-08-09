@@ -73,6 +73,12 @@ scan_file() {
                    name ~ /(^|\/)validate[.]sh$/
         }
 
+        function is_attribution_path(name) {
+            return name == "AGENTS.md" ||
+                   name == ".githooks/hygiene-policy.md" ||
+                   name ~ /^scripts\/(check_commit_attribution[.]py|test_commit_attribution[.]py|test_orc_coord_attribution[.]py|test_parent_main_write[.]py|test_primary_checkout[.]py|tests\/test-parent-main-write-failure-messages[.]sh)$/
+        }
+
         {
             original = $0
             probe = tolower(original)
@@ -81,7 +87,8 @@ scan_file() {
 
             owner_path = probe ~ /\/(home|users)\/[[:alnum:]_.-]+([^[:alnum:]_.-]|$)/
             owner_name = probe ~ /(^|[^[:alnum:]_])newton([^[:alnum:]_]|$)/
-            owner_host = probe ~ /devbig[[:alnum:]._-]*/
+            owner_host = probe ~ /devbig[[:alnum:]._-]*/ &&
+                         !is_attribution_path(path)
             author_header = owner_name && is_comment(original) &&
                             probe ~ /(author|copyright|<[^>]+@[^>]+>)/
 

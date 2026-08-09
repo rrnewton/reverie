@@ -13,6 +13,11 @@ import unittest
 
 
 SOURCE = Path(__file__).resolve().parent.parent
+TRAILER = "[coordinator, Test] [parent-writer-test, devbig999]"
+
+
+def tagged(subject: str) -> str:
+    return f"{subject}\n\n{TRAILER}"
 
 
 def run(*args: str, cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -46,6 +51,10 @@ class ParentMainWriteTests(unittest.TestCase):
 
         (self.repo / "scripts").mkdir()
         shutil.copy2(SOURCE / "scripts/parent-main-write", self.repo / "scripts/parent-main-write")
+        shutil.copy2(
+            SOURCE / "scripts/check_commit_attribution.py",
+            self.repo / "scripts/check_commit_attribution.py",
+        )
         hooks = self.repo / ".githooks"
         hooks.mkdir()
         for name in ("pre-commit", "pre-push", "reference-transaction"):
@@ -54,6 +63,7 @@ class ParentMainWriteTests(unittest.TestCase):
         self.env = {
             "HERMIT_PARENT_MAIN_LOCK_PATH": str(self.lock),
             "HERMIT_PARENT_MAIN_NO_PROXY": "1",
+            "HERMIT_COMMIT_MACHINE": "devbig999",
         }
         self.seed = git(self.repo, "rev-parse", "HEAD").stdout.strip()
 
@@ -88,7 +98,7 @@ class ParentMainWriteTests(unittest.TestCase):
 
     def test_ordinary_writer_commits_pushes_and_proves_ancestry(self) -> None:
         self.change()
-        result = self.writer("commit", "-m", "update notes", "--", "notes.md")
+        result = self.writer("commit", "-m", tagged("update notes"), "--", "notes.md")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("ancestry=1/1 mode=ordinary", result.stdout)
         head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
@@ -105,7 +115,7 @@ class ParentMainWriteTests(unittest.TestCase):
         git(other, "push", "origin", "main")
         self.change()
 
-        result = self.writer("commit", "-m", "stale", "--", "notes.md")
+        result = self.writer("commit", "-m", tagged("stale"), "--", "notes.md")
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("local main is not the freshly fetched origin/main", result.stderr)
@@ -120,7 +130,7 @@ class ParentMainWriteTests(unittest.TestCase):
 
     def test_sensitive_commit_requires_audit_receipt(self) -> None:
         self.change(".githooks/probe", "#!/bin/sh\n")
-        refused = self.writer("commit", "-m", "hook repair", "--", ".githooks/probe")
+        refused = self.writer("commit", "-m", tagged("hook repair"), "--", ".githooks/probe")
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("retained --audit-reason path", refused.stderr)
         self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.seed)
@@ -129,18 +139,26 @@ class ParentMainWriteTests(unittest.TestCase):
         self.change(".githooks/probe", "#!/bin/sh\n")
         reason = "repair hook enforcement"
         allowed = self.writer(
-            "commit", "-m", "hook repair", "--audit-reason", reason, "--", ".githooks/probe"
+            "commit", "-m", tagged("hook repair"), "--audit-reason", reason, "--", ".githooks/probe"
         )
         self.assertEqual(allowed.returncode, 0, allowed.stdout + allowed.stderr)
         message = git(self.repo, "log", "-1", "--format=%B").stdout
         self.assertIn("Parent-Main-Write-Mode: audited", message)
         self.assertIn(f"Parent-Main-Write-Reason: {reason}", message)
         self.assertIn(f"Parent-Main-Write-Base: {self.seed}", message)
+        self.assertEqual(TRAILER, message.rstrip().splitlines()[-1])
+
+    def test_writer_refuses_missing_machine_attribution(self) -> None:
+        self.change()
+        refused = self.writer("commit", "-m", "untagged", "--", "notes.md")
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn("canonical final attribution", refused.stderr)
+        self.assertEqual(self.seed, git(self.repo, "rev-parse", "HEAD").stdout.strip())
 
     def test_clean_slot_direct_push_is_refused_but_wrapper_publish_passes(self) -> None:
         git(self.repo, "switch", "-c", "feature")
         self.change("feature.md", "feature\n")
-        git(self.repo, "commit", "-m", "feature", "--", "feature.md")
+        git(self.repo, "commit", "-m", tagged("feature"), "--", "feature.md")
         direct = run("git", "push", "origin", "HEAD:refs/heads/main", cwd=self.repo, env=self.env)
         self.assertNotEqual(direct.returncode, 0)
         self.assertIn("missing serialized-writer lock receipt", direct.stderr)
@@ -152,7 +170,7 @@ class ParentMainWriteTests(unittest.TestCase):
     def test_sensitive_feature_publish_without_commit_receipt_is_refused(self) -> None:
         git(self.repo, "switch", "-c", "feature")
         self.change(".githooks/probe", "#!/bin/sh\n")
-        git(self.repo, "commit", "-m", "unaudited hook", "--", ".githooks/probe")
+        git(self.repo, "commit", "-m", tagged("unaudited hook"), "--", ".githooks/probe")
         result = self.writer("publish", "--audit-reason", "claimed after the fact")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("lacks Parent-Main-Write-Mode trailer", result.stderr)
@@ -172,7 +190,11 @@ class UnauthoredReversionTests(ParentMainWriteTests):
         """Land a commit on main WITHOUT the writer, so each test takes the host
         mutex exactly once (two writer calls in one test contend on it)."""
         self.change("shared.txt", text)
-        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", message, "--", "shared.txt")
+        git(
+            self.repo,
+            "-c", "core.hooksPath=/dev/null",
+            "commit", "-m", tagged(message), "--", "shared.txt",
+        )
         git(self.repo, "-c", "core.hooksPath=/dev/null", "push", "origin", "HEAD:main")
         return git(self.repo, "rev-parse", "HEAD").stdout.strip()
 
@@ -186,7 +208,7 @@ class UnauthoredReversionTests(ParentMainWriteTests):
         # written out whole onto the current base. Their own diff shows only the
         # added line; the reversion is invisible to them.
         self.change("shared.txt", "alpha\nBETA_original\ngamma\nDELTA_authored\n")
-        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", "add DELTA", "--", "shared.txt")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", tagged("add DELTA"), "--", "shared.txt")
         result = self.writer("publish")
         self.assertNotEqual(0, result.returncode)
         combined = result.stdout + result.stderr
@@ -197,7 +219,7 @@ class UnauthoredReversionTests(ParentMainWriteTests):
     def test_positive_current_tree_whole_file_commit_still_publishes(self) -> None:
         self.land_colleague_change()
         self.change("shared.txt", "alpha\nBETA_LANDED_BY_COLLEAGUE\ngamma\nDELTA_authored\n")
-        result = self.writer("commit", "-m", "add DELTA from a current tree", "--", "shared.txt")
+        result = self.writer("commit", "-m", tagged("add DELTA from a current tree"), "--", "shared.txt")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertIn("PARENT_MAIN_WRITE published=", result.stdout)
 
@@ -214,7 +236,7 @@ class UnauthoredReversionTests(ParentMainWriteTests):
         tip = self.advance_main("alpha\nBETA_LANDED_BY_COLLEAGUE\ngamma\n", "colleague lands BETA")
         git(self.repo, "checkout", "-q", "-B", "author", stale_base)
         self.change("shared.txt", "alpha\nBETA_original\ngamma\nDELTA_authored\n")
-        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", "add DELTA on a stale base", "--", "shared.txt")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", tagged("add DELTA on a stale base"), "--", "shared.txt")
         git(self.repo, "-c", "core.hooksPath=/dev/null", "rebase", tip)
         rebased = git(self.repo, "rev-parse", "HEAD").stdout.strip()
         result = self.writer("publish", rebased)
@@ -224,7 +246,7 @@ class UnauthoredReversionTests(ParentMainWriteTests):
     def test_author_editing_the_same_region_is_a_real_edit_not_a_reversion(self) -> None:
         self.land_colleague_change()
         self.change("shared.txt", "alpha\nBETA_rewritten_by_the_author\ngamma\n")
-        result = self.writer("commit", "-m", "rewrite the line main touched", "--", "shared.txt")
+        result = self.writer("commit", "-m", tagged("rewrite the line main touched"), "--", "shared.txt")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_documented_opt_out_allows_a_deliberate_reversion(self) -> None:
@@ -239,7 +261,7 @@ class UnauthoredReversionTests(ParentMainWriteTests):
         """
         self.land_colleague_change()
         self.change("shared.txt", "alpha\nBETA_original\ngamma\nDELTA_authored\n")
-        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", "add DELTA", "--", "shared.txt")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", tagged("add DELTA"), "--", "shared.txt")
         self.env["HERMIT_PARENT_MAIN_ALLOW_REVERT"] = "1"
         result = self.writer("publish")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
@@ -264,13 +286,13 @@ class PublishedResidueTests(ParentMainWriteTests):
         """
         self.change("shared.txt", "v1\n")
         self.change("work.txt", "w1\n")
-        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", "seed shared")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", tagged("seed shared"))
         git(self.repo, "-c", "core.hooksPath=/dev/null", "push", "origin", "HEAD:main")
         base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
         self.change("shared.txt", "v2\n")
         self.change("work.txt", "w2\n")
         self.change("added.md", "new\n")
-        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", "origin advances")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", tagged("origin advances"))
         git(self.repo, "-c", "core.hooksPath=/dev/null", "push", "origin", "HEAD:main")
         target = git(self.repo, "rev-parse", "HEAD").stdout.strip()
         # Local main falls behind, exactly as the shared parent did.
@@ -321,7 +343,7 @@ class PublishedResidueTests(ParentMainWriteTests):
     def test_neutral_a_clean_current_tree_reports_zero_and_still_syncs(self) -> None:
         # No cry-wolf: the common case must be silent about residue, not noisy.
         self.change("notes.md", "changed\n")
-        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", "ordinary")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", tagged("ordinary"))
         git(self.repo, "-c", "core.hooksPath=/dev/null", "push", "origin", "HEAD:main")
         result = self.writer("sync")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)

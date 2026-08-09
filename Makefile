@@ -271,7 +271,7 @@ lint: ## Lint parent-repository scripts, tests, paths, and submodule policy
 	  fi; \
 	}; \
 	counted rustfmt      files 'ls scripts/*.rs 2>/dev/null | wc -l' 'rustfmt --edition 2021 --check scripts/*.rs'; \
-	counted shellcheck   files 'ls scripts/*.sh scripts/parent-main-write .githooks/pre-commit .githooks/pre-push .githooks/reference-transaction .orc/plugins/hermit-dev/gh-issue-create .orc/plugins/hermit-dev/gh-coord-comment .orc/plugins/hermit-dev/gh-coord-pr-create 2>/dev/null | wc -l' 'shellcheck --severity=warning scripts/*.sh scripts/parent-main-write .githooks/pre-commit .githooks/pre-push .githooks/reference-transaction .orc/plugins/hermit-dev/gh-issue-create .orc/plugins/hermit-dev/gh-coord-comment .orc/plugins/hermit-dev/gh-coord-pr-create'; \
+	counted shellcheck   files 'ls scripts/*.sh scripts/parent-main-write .githooks/pre-commit .githooks/pre-push .githooks/reference-transaction .githooks/commit-msg .githooks/dev-hermit-hook-dispatch .orc/plugins/hermit-dev/gh-issue-create .orc/plugins/hermit-dev/gh-coord-comment .orc/plugins/hermit-dev/gh-coord-pr-create 2>/dev/null | wc -l' 'shellcheck --severity=warning scripts/*.sh scripts/parent-main-write .githooks/pre-commit .githooks/pre-push .githooks/reference-transaction .githooks/commit-msg .githooks/dev-hermit-hook-dispatch .orc/plugins/hermit-dev/gh-issue-create .orc/plugins/hermit-dev/gh-coord-comment .orc/plugins/hermit-dev/gh-coord-pr-create'; \
 	counted py-compile   files 'ls scripts/*.py 2>/dev/null | wc -l' 'python3 -m py_compile scripts/*.py'; \
 	counted py-unittest  tests 'python3 -m unittest discover -s scripts -p "test_*.py" 2>&1 | sed -n "s/^Ran \([0-9]*\) test.*/\1/p"' 'python3 -m unittest discover -s scripts -p "test_*.py"'; \
 	gate error-proxies   '$(MAKE) --no-print-directory check-rust-error-string-proxies'; \
@@ -282,6 +282,7 @@ lint: ## Lint parent-repository scripts, tests, paths, and submodule policy
 	gate codex-setup     '$(MAKE) --no-print-directory check-codex-setup'; \
 	gate claude-md-size  '$(MAKE) --no-print-directory check-claude-md-size'; \
 	gate portability     '$(MAKE) --no-print-directory check-portability'; \
+	gate commit-trailer  'scripts/check_commit_attribution.py --commit HEAD'; \
 	gate harness-help    '$(MAKE) --no-print-directory check-harness-help'; \
 	gate ignored-artifacts 'scripts/check-ignored-experiment-artifacts.sh'; \
 	gate pin-invariant   'scripts/check_reverie_pin_invariant.py'; \

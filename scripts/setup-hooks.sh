@@ -1,11 +1,82 @@
 #!/usr/bin/env bash
-# Install the parent dev-hermit repo-hygiene git hooks for THIS clone.
-# core.hooksPath is local config (not tracked), so each clone runs this once.
+# Install the machine attribution hook without replacing repository-local hooks.
+# Every registered product worktree shares one of the common Git directories
+# below, so configuring the parent + initialized submodules covers present and
+# future slots on this machine.
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
-git config core.hooksPath .githooks
-chmod +x .githooks/* 2>/dev/null || true
-echo "core.hooksPath -> .githooks (serialized parent-main writes + hygiene + main-health active)."
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+mode=install
+case "${1:-}" in
+  '') ;;
+  --check) mode=check ;;
+  *) echo "usage: scripts/setup-hooks.sh [--check]" >&2; exit 2 ;;
+esac
+
+dispatcher="$root/.githooks/dev-hermit-hook-dispatch"
+checker="$root/scripts/check_commit_attribution.py"
+[ -x "$dispatcher" ] || { echo "missing executable dispatcher: $dispatcher" >&2; exit 1; }
+[ -x "$checker" ] || { echo "missing executable checker: $checker" >&2; exit 1; }
+machine=$("$checker" --detect-machine)
+
+# Install every client-side hook name up front. The dispatcher delegates to a
+# tracked <repo>/.githooks/<name> when one exists, so adding a tracked hook later
+# does not require replacing or regenerating this local composite directory.
+hooks=(
+  applypatch-msg pre-applypatch post-applypatch pre-commit pre-merge-commit
+  prepare-commit-msg commit-msg post-commit pre-rebase post-checkout post-merge
+  pre-push post-rewrite sendemail-validate fsmonitor-watchman
+  reference-transaction post-index-change
+)
+
+repos=("$root")
+while read -r _ path; do
+  repo="$root/$path"
+  if [ -e "$repo/.git" ] && git -C "$repo" rev-parse --git-dir >/dev/null 2>&1; then
+    repos+=("$repo")
+  fi
+done < <(git config -f .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null || true)
+
+installed=0
+for repo in "${repos[@]}"; do
+  common=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir)
+  composite="$common/dev-hermit-hooks"
+  if [ "$mode" = check ]; then
+    configured=$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)
+    [ "$configured" = "$composite" ] || {
+      echo "hook check REFUSED: $repo uses ${configured:-<unset>}, expected $composite" >&2
+      exit 1
+    }
+  else
+    mkdir -p "$composite"
+  fi
+
+  for hook in "${hooks[@]}"; do
+    target="$composite/$hook"
+    if [ "$mode" = check ]; then
+      [ -L "$target" ] && [ "$(readlink -f -- "$target")" = "$dispatcher" ] || {
+        echo "hook check REFUSED: $target is not bound to $dispatcher" >&2
+        exit 1
+      }
+    else
+      if [ -e "$target" ] && [ ! -L "$target" ]; then
+        echo "hook install REFUSED: unmanaged file exists at $target" >&2
+        exit 1
+      fi
+      ln -sfn "$dispatcher" "$target"
+    fi
+  done
+
+  if [ "$mode" = install ]; then
+    git -C "$repo" config core.hooksPath "$composite"
+  fi
+  installed=$((installed + 1))
+done
+
+echo "machine commit hooks: mode=$mode machine=$machine repositories=$installed"
+echo "Every commit must end: [<role>, <model>] [<team-slug>, $machine]"
+echo "Repository-local .githooks remain active through the composite dispatcher."
 echo "Policy: .githooks/hygiene-policy.md"
 echo "Override an oversized-but-intended file with: HERMIT_HYGIENE_OVERRIDE=1 git commit ..."
 echo "Every push polls GitHub current-main workflow truth; RED warns but does not block a fix."

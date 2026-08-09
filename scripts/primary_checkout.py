@@ -20,6 +20,7 @@ PRODUCTS = ("hermit", "reverie", "liteinst2")
 MAIN_REF = "refs/heads/main"
 REVERIE_GIT_URL = "https://github.com/rrnewton/reverie.git"
 SNAPSHOT_COMMIT_MESSAGE = "Advance product submodules as consistent snapshot"
+SNAPSHOT_COMMIT_ROLE = "[coordinator, primary-checkout] [hermit-coord, {machine}]"
 SNAPSHOT_AUDIT_REASON = "publish coherent product-main gitlinks"
 REVERIE_SOURCE = re.compile(
     rf"^git\+{re.escape(REVERIE_GIT_URL)}\?rev=([0-9a-f]{{40}})#([0-9a-f]{{40}})$"
@@ -159,6 +160,26 @@ def run_parent_main_write(
         capture_output=True,
         check=False,
         env=env,
+    )
+
+
+def machine_attributed_snapshot_message(root: Path) -> str:
+    """Build the automated snapshot message with this writer's exact machine."""
+
+    checker = root / "scripts" / "check_commit_attribution.py"
+    detected = subprocess.run(
+        (str(checker), "--detect-machine"),
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if detected.returncode != 0 or not detected.stdout.strip():
+        detail = detected.stderr.strip() or "no machine token returned"
+        raise RuntimeError(f"cannot attribute product snapshot commit: {detail}")
+    return (
+        f"{SNAPSHOT_COMMIT_MESSAGE}\n\n"
+        f"{SNAPSHOT_COMMIT_ROLE.format(machine=detected.stdout.strip())}"
     )
 
 
@@ -574,11 +595,17 @@ def publish_parent_snapshot(
         print("ERROR: could not inspect staged product gitlinks.", file=err)
         return SNAPSHOT_BLOCKED
 
+    try:
+        snapshot_message = machine_attributed_snapshot_message(root)
+    except RuntimeError as error:
+        print(f"ERROR: {error}", file=err)
+        return SNAPSHOT_BLOCKED
+
     publish = run_parent_main_write(
         root,
         "commit",
         "-m",
-        SNAPSHOT_COMMIT_MESSAGE,
+        snapshot_message,
         "--audit-reason",
         SNAPSHOT_AUDIT_REASON,
         "--",

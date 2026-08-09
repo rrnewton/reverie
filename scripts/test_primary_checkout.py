@@ -454,6 +454,11 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
     def test_fresh_publishes_one_consistent_parent_snapshot(self) -> None:
         hermit_remote = self.advance("hermit")
         liteinst_remote = self.advance("liteinst2")
+        scripts = self.root / "scripts"
+        scripts.mkdir(exist_ok=True)
+        checker = scripts / "check_commit_attribution.py"
+        shutil.copy2(REPO_ROOT / "scripts" / checker.name, checker)
+        checker.chmod(0o755)
         out, err = StringIO(), StringIO()
 
         result = primary_checkout.checkout_fresh(
@@ -477,6 +482,11 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
         self.assertEqual(
             git(self.root, "rev-parse", "HEAD"),
             git(self.root, "rev-parse", "origin/main"),
+        )
+        machine_attribution_pattern = r"^\[coordinator, primary-checkout\] \[hermit-coord, devbig[0-9]+\]$"
+        self.assertRegex(
+            git(self.root, "log", "-1", "--format=%B").rstrip().splitlines()[-1],
+            machine_attribution_pattern,
         )
         self.assertIn("Published parent snapshot", out.getvalue())
 

@@ -57,6 +57,33 @@ Separate hard gate: every runnable-demo change needs an adversarial green-demo
 attestation before merge. See `demos/ADVERSARIAL-REVIEW-POLICY.md`, the CI job
 `demo-review-gate`, and `.githooks/commit-msg` (checker: `scripts/check-demo-review.sh`).
 
+## Machine-bearing final commit line
+
+Every commit in the parent and its product repositories ends with exactly:
+
+```
+[<role>, <model>] [<team-slug>, devbigNNN]
+```
+
+The machine is a separate final field, not an inference from author email,
+branch name, host alias, or a free-form team string. `scripts/setup-hooks.sh`
+derives this clone's token from the hostname and installs a composite
+`commit-msg` hook in the common Git directory for the parent and every
+initialized submodule. Product worktrees share those common directories. The
+dispatcher runs the machine check and then delegates to each repository's own
+tracked `.githooks/<hook>`, so installing attribution never disables a product
+guard.
+
+For example, the exact machine-attribution history query for devbig030 is:
+
+```
+git log --all --extended-regexp \
+  --grep='^\[(impl agent|adversarial-reviewer agent|coordinator|Human), [^][]+\] \[[^][]+, devbig030\]$'
+```
+
+`scripts/check_commit_attribution.py --commit HEAD` is the CI/lint form;
+`--range <base>..<head>` checks every commit in a proposed publication.
+
 ## GitHub main health before push
 
 `.githooks/pre-push` runs `ci-hub/bin/main-health` before every parent

@@ -139,13 +139,13 @@ class PolicyTextTests(unittest.TestCase):
 
     def test_agents_md_states_role_and_full_team_requirements(self) -> None:
         self.assertIn("Role + team tag", self.text)
-        self.assertIn("[<role>, MODEL] [<full-team-name>]", self.text)
-        self.assertIn("team name includes the machine", self.text)
+        self.assertIn("[<role>, MODEL] [<team-slug>, <machine>]", self.text)
+        self.assertIn("exact final machine token matching `devbigNNN`", self.text)
 
     def test_agents_md_requires_the_tag_on_all_three_surfaces(self) -> None:
-        self.assertIn("Every commit message", self.text)
-        self.assertIn("Every PR description", self.text)
-        self.assertIn("prefix of every GitHub comment", self.text)
+        self.assertIn("each commit's final line", self.text)
+        self.assertIn("PR description opening line", self.text)
+        self.assertIn("cross-team GitHub comment prefix", self.text)
 
     def test_wrappers_are_executable(self) -> None:
         for script in (COMMENT, PR_CREATE):

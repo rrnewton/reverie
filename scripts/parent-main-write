@@ -104,6 +104,29 @@ fetch_expected() {
   export HERMIT_PARENT_MAIN_EXPECT
 }
 
+attribution_checker() {
+  local root=$1 checker="$1/scripts/check_commit_attribution.py"
+  [ -x "$checker" ] || die "machine-attribution checker is missing: $checker"
+  printf '%s\n' "$checker"
+}
+
+verify_proposed_attribution() {
+  local root=$1 message=$2 checker
+  checker=$(attribution_checker "$root")
+  if ! printf '%s\n' "$message" |
+      "$checker" --stdin --expected-machine auto --quiet; then
+    die "commit message lacks this machine's canonical final attribution line"
+  fi
+}
+
+verify_published_attribution() {
+  local root=$1 base=$2 source=$3 checker
+  checker=$(attribution_checker "$root")
+  if ! "$checker" --repo "$root" --range "$base..$source"; then
+    die "publication contains a commit without canonical machine attribution"
+  fi
+}
+
 is_sensitive_path() {
   case "$1" in
     hermit|reverie|liteinst2|agent-utils|.githooks/*|scripts/parent-main-write|scripts/setup-hooks.sh)
@@ -379,6 +402,7 @@ publish_sha() {
   expected=$HERMIT_PARENT_MAIN_EXPECT
   git -C "$root" merge-base --is-ancestor "$expected" "$source" ||
     die "source $source is not based on fetched origin/main $expected"
+  verify_published_attribution "$root" "$expected" "$source"
   refuse_unauthored_reverts "$root" "$expected" "$source"
   if range_has_sensitive_path "$root" "$expected" "$source"; then
     verify_audit_receipt "$root" "$expected" "$source"
@@ -446,6 +470,7 @@ case "$command" in
     done
     [ -n "$message" ] && [ "${#paths[@]}" -gt 0 ] || usage
     root=$(repo_root)
+    verify_proposed_attribution "$root" "$message"
     if [ -n "$audit_reason" ]; then
       [[ "$audit_reason" != *$'\n'* ]] || die "audit reason must be one line"
       HERMIT_PARENT_MAIN_MODE=audited
@@ -460,11 +485,24 @@ case "$command" in
     [ "$(git -C "$root" branch --show-current)" = main ] || die "commit requires local main"
     [ "$(git -C "$root" rev-parse HEAD)" = "$HERMIT_PARENT_MAIN_EXPECT" ] ||
       die "local main is not the freshly fetched origin/main"
-    commit_args=(commit --only -m "$message")
+    commit_args=(commit --only)
     if [ "$HERMIT_PARENT_MAIN_MODE" = audited ]; then
-      commit_args+=( -m "Parent-Main-Write-Mode: audited" \
+      # Audit receipts are trailers too, but the role/team line is required to
+      # remain the FINAL line. Split the already-validated attribution from the
+      # caller's message, insert receipts, then append attribution last.
+      trimmed=$message
+      while [[ "$trimmed" == *$'\n' ]]; do trimmed=${trimmed%$'\n'}; done
+      attribution=${trimmed##*$'\n'}
+      body=${trimmed%"$attribution"}
+      body=${body%$'\n'}
+      [ -n "$body" ] || die "audited commit message needs a subject before attribution"
+      commit_args+=( -m "$body" \
+        -m "Parent-Main-Write-Mode: audited" \
         -m "Parent-Main-Write-Reason: $audit_reason" \
-        -m "Parent-Main-Write-Base: $HERMIT_PARENT_MAIN_EXPECT" )
+        -m "Parent-Main-Write-Base: $HERMIT_PARENT_MAIN_EXPECT" \
+        -m "$attribution" )
+    else
+      commit_args+=( -m "$message" )
     fi
     commit_args+=( -- "${paths[@]}" )
     git -C "$root" "${commit_args[@]}"
