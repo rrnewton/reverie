@@ -21,6 +21,7 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus};
@@ -29,6 +30,21 @@ use std::process::{Command, ExitCode, ExitStatus};
 struct Options {
     root: Option<PathBuf>,
     fetch: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckoutMode {
+    CanonicalShared,
+    IsolatedClone,
+}
+
+impl fmt::Display for CheckoutMode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CanonicalShared => formatter.write_str("canonical-shared"),
+            Self::IsolatedClone => formatter.write_str("isolated-clone"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -128,7 +144,8 @@ fn print_help() {
          \n\
          Fetch agent-utils origin, then require:\n\
            * parent HEAD gitlink == checkout HEAD == origin/main\n\
-           * checkout branch is main\n\
+           * canonical ~/work/dev-hermit checkout branch is main\n\
+           * any other (isolated-clone) checkout is clean; detached HEAD is allowed\n\
            * no local commit is STRANDED: unreachable from every origin/* ref\n\
          \n\
          An unpushed commit on a branch some worktree has checked out is IN FLIGHT:\n\
@@ -149,6 +166,39 @@ fn workspace_root() -> Result<PathBuf, CheckError> {
     }
     let output = run(command.args(["rev-parse", "--show-toplevel"]))?;
     Ok(PathBuf::from(single_line("git workspace root", &output)?))
+}
+
+fn checkout_mode(root: &Path) -> Result<CheckoutMode, CheckError> {
+    let home = env::var_os("HOME").ok_or_else(|| {
+        CheckError::InvalidOutput(
+            "HOME is unset; cannot distinguish the canonical shared checkout from an isolated clone"
+                .to_string(),
+        )
+    })?;
+    let canonical = PathBuf::from(home).join("work/dev-hermit");
+    let resolved_root = fs::canonicalize(root).map_err(|source| CheckError::Io {
+        tool: format!("canonicalize workspace root {}", root.display()),
+        source,
+    })?;
+    let resolved_canonical = match fs::canonicalize(&canonical) {
+        Ok(path) => path,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => canonical,
+        Err(source) => {
+            return Err(CheckError::Io {
+                tool: format!("canonicalize canonical workspace {}", canonical.display()),
+                source,
+            });
+        }
+    };
+    Ok(classify_checkout_mode(&resolved_root, &resolved_canonical))
+}
+
+fn classify_checkout_mode(root: &Path, canonical: &Path) -> CheckoutMode {
+    if root == canonical {
+        CheckoutMode::CanonicalShared
+    } else {
+        CheckoutMode::IsolatedClone
+    }
 }
 
 fn run_costed(root: &Path, original_args: &[OsString]) -> Result<ExitStatus, CheckError> {
@@ -193,6 +243,7 @@ fn check(root: &Path, fetch: bool) -> Result<bool, CheckError> {
         run(&mut fetch_command)?;
     }
 
+    let mode = checkout_mode(root)?;
     let parent_pin = git(root, ["rev-parse", "HEAD:agent-utils"])?;
     let checkout_head = git(&checkout, ["rev-parse", "HEAD"])?;
     let origin_main = git(&checkout, ["rev-parse", "origin/main"])?;
@@ -236,6 +287,7 @@ fn check(root: &Path, fetch: bool) -> Result<bool, CheckError> {
     .is_empty();
 
     println!("agent-utils drift check");
+    println!("  checkout_mode={mode}");
     println!("  parent_gitlink={parent_pin}");
     println!("  checkout_head={checkout_head}");
     println!("  origin_main={origin_main}");
@@ -251,6 +303,7 @@ fn check(root: &Path, fetch: bool) -> Result<bool, CheckError> {
         "  unpushed_unattributed_commits={}",
         split.unattributed.len()
     );
+    println!("  checkout_dirty={dirty}");
     if !split.in_flight.is_empty() {
         println!("  in_flight_branches={}", render_branches(&split.in_flight));
     }
@@ -258,25 +311,18 @@ fn check(root: &Path, fetch: bool) -> Result<bool, CheckError> {
         println!("  stranded_branches={}", render_branches(&split.stranded));
     }
 
-    let mut failures = Vec::new();
-    if branch != "main" {
-        failures.push(format!("checkout branch is {branch:?}, expected main"));
-    }
-    if checkout_head != origin_main || checkout_ahead != 0 || checkout_behind != 0 {
-        failures.push(format!(
-            "checkout is not exactly origin/main (ahead={checkout_ahead}, behind={checkout_behind})"
-        ));
-    }
-    if parent_pin != checkout_head {
-        failures.push(format!(
-            "parent gitlink {parent_pin} does not match checkout {checkout_head}"
-        ));
-    }
-    if parent_pin != origin_main || pin_ahead != 0 || pin_behind != 0 {
-        failures.push(format!(
-            "parent gitlink is not exactly origin/main (ahead={pin_ahead}, behind={pin_behind})"
-        ));
-    }
+    let mut failures = pin_state_failures(
+        mode,
+        &branch,
+        dirty,
+        &parent_pin,
+        &checkout_head,
+        &origin_main,
+        checkout_ahead,
+        checkout_behind,
+        pin_ahead,
+        pin_behind,
+    );
     // Fail on STRANDED work only. Commits on a branch a worktree still holds are in flight —
     // a normal state, and unavoidable while egress is down — so failing on them makes the
     // checker permanently red for a benign condition, which trains every reader to ignore it.
@@ -335,6 +381,49 @@ fn check(root: &Path, fetch: bool) -> Result<bool, CheckError> {
     }
     println!("state=drift");
     Ok(false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pin_state_failures(
+    mode: CheckoutMode,
+    branch: &str,
+    dirty: bool,
+    parent_pin: &str,
+    checkout_head: &str,
+    origin_main: &str,
+    checkout_ahead: u64,
+    checkout_behind: u64,
+    pin_ahead: u64,
+    pin_behind: u64,
+) -> Vec<String> {
+    let mut failures = Vec::new();
+    if mode == CheckoutMode::CanonicalShared && branch != "main" {
+        failures.push(format!(
+            "canonical checkout branch is {branch:?}, expected main"
+        ));
+    }
+    if mode == CheckoutMode::IsolatedClone && dirty {
+        failures.push(
+            "isolated-clone agent-utils checkout is dirty; clean exact-pin equality is required"
+                .to_string(),
+        );
+    }
+    if checkout_head != origin_main || checkout_ahead != 0 || checkout_behind != 0 {
+        failures.push(format!(
+            "checkout is not exactly origin/main (ahead={checkout_ahead}, behind={checkout_behind})"
+        ));
+    }
+    if parent_pin != checkout_head {
+        failures.push(format!(
+            "parent gitlink {parent_pin} does not match checkout {checkout_head}"
+        ));
+    }
+    if parent_pin != origin_main || pin_ahead != 0 || pin_behind != 0 {
+        failures.push(format!(
+            "parent gitlink is not exactly origin/main (ahead={pin_ahead}, behind={pin_behind})"
+        ));
+    }
+    failures
 }
 
 fn divergence(repo: &Path, left: &str, right: &str) -> Result<(u64, u64), CheckError> {
@@ -552,6 +641,10 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 mod tests {
     use super::*;
 
+    fn exact_pin_failures(mode: CheckoutMode, branch: &str, dirty: bool) -> Vec<String> {
+        pin_state_failures(mode, branch, dirty, "same", "same", "same", 0, 0, 0, 0)
+    }
+
     fn branch(name: &str, worktree: Option<&str>, commits: &[&str]) -> UnpushedBranch {
         UnpushedBranch {
             name: name.to_string(),
@@ -699,6 +792,65 @@ mod tests {
     fn parses_git_divergence_counts() {
         assert_eq!(parse_divergence("3\t7\n").unwrap(), (3, 7));
         assert!(parse_divergence("3").is_err());
+    }
+
+    #[test]
+    fn canonical_path_and_other_clone_select_different_modes() {
+        let canonical = Path::new("/home/test/work/dev-hermit");
+        assert_eq!(
+            classify_checkout_mode(canonical, canonical),
+            CheckoutMode::CanonicalShared
+        );
+        assert_eq!(
+            classify_checkout_mode(Path::new("/tmp/dev-hermit-clone/repo"), canonical),
+            CheckoutMode::IsolatedClone
+        );
+    }
+
+    #[test]
+    fn clean_detached_isolated_clone_is_accepted_at_exact_pin() {
+        assert!(exact_pin_failures(CheckoutMode::IsolatedClone, "", false).is_empty());
+    }
+
+    #[test]
+    fn canonical_shared_checkout_still_requires_main() {
+        let detached = exact_pin_failures(CheckoutMode::CanonicalShared, "", false);
+        assert_eq!(detached.len(), 1);
+        assert!(detached[0].contains("expected main"));
+        assert!(exact_pin_failures(CheckoutMode::CanonicalShared, "main", false).is_empty());
+    }
+
+    #[test]
+    fn dirty_isolated_clone_is_refused_even_at_exact_pin() {
+        let failures = exact_pin_failures(CheckoutMode::IsolatedClone, "", true);
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains("clean exact-pin equality is required"));
+    }
+
+    #[test]
+    fn isolated_clone_still_refuses_any_pin_inequality() {
+        let failures = pin_state_failures(
+            CheckoutMode::IsolatedClone,
+            "",
+            false,
+            "parent",
+            "checkout",
+            "origin",
+            1,
+            2,
+            3,
+            4,
+        );
+        assert_eq!(failures.len(), 3);
+        assert!(failures
+            .iter()
+            .any(|failure| failure.contains("checkout is not exactly origin/main")));
+        assert!(failures
+            .iter()
+            .any(|failure| failure.contains("does not match checkout")));
+        assert!(failures
+            .iter()
+            .any(|failure| failure.contains("parent gitlink is not exactly origin/main")));
     }
 
     #[test]

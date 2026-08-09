@@ -141,7 +141,7 @@ restore-primary-freshness: ## Repair only the unambiguous drift (an accidental c
 check-rust-error-string-proxies: ## Reject Rust control flow that classifies typed errors by display strings
 	@scripts/lint-rust-error-string-proxies.py . hermit reverie liteinst2
 
-check-agent-utils-pin: ## Fetch and reject stale/diverged agent-utils state, plus STRANDED local commits (in-flight work on a checked-out branch is reported, not failed)
+check-agent-utils-pin: ## Fetch and require exact agent-utils pin equality; canonical checkout stays on main, isolated clones may be clean+detached
 	@scripts/check-agent-utils-pin.rs
 
 # Keep the root policy compact even though `.codex/config.toml` raises Codex's
