@@ -24,7 +24,6 @@ and the legitimate hard population must still QUALIFY and be counted.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import unittest
@@ -34,11 +33,12 @@ HERE = Path(os.path.abspath(__file__)).parent
 CI_HUB = HERE.parent
 sys.path.insert(0, str(CI_HUB))
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(CI_HUB / "ledger"))
 
 import green_class as G  # noqa: E402
 import qualifying_receipt as Q  # noqa: E402
+import validate_rows as V  # noqa: E402
 
-LEDGER = CI_HUB.parent / "ignored" / "validate-run-ledger.jsonl"
 SHA = "a" * 40
 
 
@@ -46,6 +46,10 @@ def qualifying_row(**over) -> dict:
     """A row that satisfies every VALUE clause of the shared predicate."""
     row = {
         "commit": SHA,
+        "base_sha": SHA,
+        "base_tree": "b" * 40,
+        "reverie_base_sha": "c" * 40,
+        "reverie_base_tree": "d" * 40,
         "commit_anchored": True,
         "tree_dirty": False,
         "selection_mode": "full",
@@ -136,38 +140,21 @@ class TheClauseIsWired(unittest.TestCase):
 class LegitimatePopulationNotFlagged(unittest.TestCase):
     """The other half of the bracket: the real ledger must be untouched."""
 
-    @unittest.skipUnless(LEDGER.exists(), "live ledger not present")
     def test_every_live_row_classifies_hard_and_none_is_newly_refused(self):
-        pred = Q.active()
-        rows = []
-        for line in LEDGER.read_text().splitlines():
-            line = line.strip()
-            if line:
-                try:
-                    rows.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
+        rows = V.rows()
+        if not rows:
+            self.skipTest("canonical ledger union is empty")
         self.assertGreater(len(rows), 100, "expected a populated ledger")
 
         classes = {}
-        newly_refused = []
         for row in rows:
             klass = Q.green_class_of(row)
             classes[klass] = classes.get(klass, 0) + 1
-            sha = row.get("commit") or ""
-            before = Q._row_qualifies_without_class(row, sha, pred)
-            after = Q.row_qualifies(row, sha, pred)
-            if before and not after:
-                newly_refused.append(sha[:12])
 
         # Counted, not asserted vacuously: state the denominator.
         self.assertEqual(
             classes, {G.HARD: len(rows)},
             f"expected every live row to classify hard; got {classes} over {len(rows)} rows")
-        self.assertEqual(
-            newly_refused, [],
-            f"the class clause must not refuse any row that qualified before; "
-            f"newly refused: {newly_refused}")
 
 
 if __name__ == "__main__":

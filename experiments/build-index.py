@@ -208,7 +208,7 @@ corpus reproduces the problem it solves:
 | surface | what is there | how to search |
 | --- | --- | --- |
 | `ai_docs/*.md` | analysis artifacts; many carry measured tables (per-node CPU/wall, ledger stats, corpus counts) | `grep -ril <term> ai_docs/` |
-| `ignored/validate-run-ledger.jsonl` | every local validate run: wall, CPU, result, counts | `ci-hub ledger qualified-rows`, never a raw `grep`+`tail` |
+| `ledger/<team>/<host>/<YYYY-MM>.jsonl` | canonical per-machine validate events: wall, CPU, result, counts | `ci-hub ledger qualified-rows`; readers use `ci-hub/ledger/validate_rows.py`, never a raw shard |
 | ci-hub history store | per-DAG-node CPU/wall distributions | `python3 ci-hub/history/query.py node-cpu-budgets` |
 | task notes | measurements posted but never filed to disk — **the lossy surface** | `tg` search |
 

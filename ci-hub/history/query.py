@@ -930,7 +930,7 @@ def _sum_by_state(intervals: list[dict], lo: float | None = None,
 # full-pass validate receipt are TWO DIFFERENT claims; conflating them is what
 # produced a misleading green figure. So the green wall-clock is split into two
 # sub-buckets, reported SEPARATELY and never silently summed:
-#   green_ledger           green-by-conclusion AND a validate-run-ledger receipt
+#   green_ledger           green-by-conclusion AND a canonical ledger receipt
 #                          at that exact commit SHA satisfies the full-pass
 #                          predicate below (the canonical shared predicate also
 #                          used by ci-hub/lib/validate_status.rs).

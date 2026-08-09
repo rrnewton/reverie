@@ -13,7 +13,7 @@ safe-ci-dag-runner per-node profiling CSVs under
      are retained and appended across runs; this tool indexes them and links
      each run to its profiling by (checkout, git_sha, timestamp).
 
-This is the "validate-run-ledger, extended to machine-wide" deliverable and
+This is the canonical validate ledger's machine-wide aggregation boundary and
 lives in the dev-hermit PARENT per the tracking-goes-outer principle.
 
 Usage:

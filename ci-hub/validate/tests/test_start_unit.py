@@ -249,7 +249,7 @@ class StartUnitTest(unittest.TestCase):
     def test_real_host_tmp_source_is_refused_without_admission_or_ledger_write(self) -> None:
         """Plant the production hazard: this fixture itself is below real /tmp."""
         start_unit.HOST_TMP_ROOT = Path("/tmp").resolve()
-        ledger = self.root / "ignored/validate-run-ledger.jsonl"
+        ledger = self.root / "ledger"
         record = self.root / "ignored/validate/runs/validate-test.json"
 
         rc, _output, error = self.invoke(["--", "full"])
@@ -295,7 +295,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(2, rc)
         self.assertIn(str(hidden.resolve()), error)
         self.assertFalse(self.fake.commands, "canonicalization refusal must precede git/admission")
-        self.assertFalse((self.root / "ignored/validate-run-ledger.jsonl").exists())
+        self.assertFalse((self.root / "ledger").exists())
 
     def test_fresh_parent_symlinked_into_host_tmp_is_refused_before_mktemp(self) -> None:
         hidden_parent = start_unit.HOST_TMP_ROOT / "fresh-parent"
@@ -308,7 +308,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("fresh-checkout parent resolves beneath host /tmp", error)
         self.assertFalse(any(command[:2] == ["mktemp", "-d"] for command in self.fake.commands))
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
-        self.assertFalse((hidden_parent / "validate-run-ledger.jsonl").exists())
+        self.assertFalse((hidden_parent / "ledger").exists())
 
     def test_stale_head_is_refused_before_systemd_admission(self) -> None:
         self.fake.admission_rc = 2
