@@ -65,14 +65,23 @@ local_rc=0
     >"$local_report" 2>/dev/null || local_rc=$?
 local_state=no_result
 if [[ $local_rc -eq 0 ]] && jq -e --arg repo "$repo" --arg sha "$sha" '
-    .repo == $repo and .sha == $sha and .verdict == "VALIDATED"
+    .newest_qualifying as $row
+    | $row.coverage as $coverage
+    | .repo == $repo and .sha == $sha and .verdict == "VALIDATED"
     and .exit_code == 0 and (.qualifying_count | type == "number" and . > 0)
-    and (.newest_qualifying.sha == $sha)
-    and (.newest_qualifying.gates | type == "array")
-    and any(.newest_qualifying.gates[];
-        .name == "portable CI DAG lane" and .result == "pass")
-    and any(.newest_qualifying.gates[];
-        .name == "privileged CI DAG lane" and .result == "pass")
+    and (($row | type) == "object") and $row.sha == $sha
+    and $row.profile == "full" and $row.selection_mode == "full"
+    and $row.coverage_satisfied == true and $row.coverage_status == "satisfied"
+    and ($coverage.planned_test_nodes | type == "number" and . > 0)
+    and ($coverage.executed_test_nodes | type == "number"
+        and . == $coverage.planned_test_nodes)
+    and ($coverage.absent_nodes | type == "array" and length == 0)
+    and ($coverage.zero_executed_nodes | type == "array" and length == 0)
+    and ($row.gates | type == "array" and length > 0)
+    and all($row.gates[]; .result == "pass")
+    and ($row.failures | type == "number" and . == 0)
+    and ($row.executed_tests | type == "number" and . > 0)
+    and ($row.filtered_tests | type == "number" and . >= 0)
 ' "$local_report" >/dev/null 2>&1; then
     local_state=green
 elif [[ $local_rc -eq 3 ]] && jq -e --arg repo "$repo" --arg sha "$sha" '

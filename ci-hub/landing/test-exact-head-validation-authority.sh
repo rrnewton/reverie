@@ -30,11 +30,14 @@ if [[ $command == validate-status ]]; then
         green)
             qualifying_count=${LOCAL_COUNT:-1}
             if [[ ${LOCAL_COVERAGE:-full} == partial ]]; then
-                gates='[{"name":"portable CI DAG lane","result":"pass"}]'
+                planned=19
+                executed_nodes=18
             else
-                gates='[{"name":"portable CI DAG lane","result":"pass"},{"name":"privileged CI DAG lane","result":"pass"}]'
+                planned=19
+                executed_nodes=19
             fi
-            printf '{"repo":"%s","sha":"%s","verdict":"VALIDATED","exit_code":0,"qualifying_count":%s,"newest_qualifying":{"sha":"%s","gates":%s}}\n' "$repo" "$observed_sha" "$qualifying_count" "$observed_sha" "$gates"
+            gates='[{"name":"test.strict_compat","result":"pass"},{"name":"e2e.metadata","result":"pass"}]'
+            printf '{"repo":"%s","sha":"%s","verdict":"VALIDATED","exit_code":0,"qualifying_count":%s,"newest_qualifying":{"sha":"%s","profile":"full","selection_mode":"full","coverage_satisfied":true,"coverage_status":"satisfied","coverage":{"planned_test_nodes":%s,"executed_test_nodes":%s,"absent_nodes":[],"zero_executed_nodes":[]},"gates":%s,"failures":0,"executed_tests":862,"filtered_tests":350}}\n' "$repo" "$observed_sha" "$qualifying_count" "$observed_sha" "$planned" "$executed_nodes" "$gates"
             exit 0 ;;
         red)
             printf '{"repo":"%s","sha":"%s","verdict":"FAILED","exit_code":3,"qualifying_count":0,"newest_qualifying":null}\n' "$repo" "$observed_sha"
@@ -83,7 +86,7 @@ run_case() {
     last_output=$output
 }
 
-run_case 0 "counted local exact-head positive" env LOCAL_STATE=green HOSTED_STATE=no_result
+run_case 0 "current Rust schema-5 counted local exact-head positive" env LOCAL_STATE=green HOSTED_STATE=no_result
 [[ $last_output == *"LOCAL_COVERAGE=portable+privileged"* ]] || {
     echo "FAIL: local authority did not name its full coverage" >&2; exit 1;
 }
@@ -111,7 +114,7 @@ run_case 4 "partial hosted set is no-result" env LOCAL_STATE=no_result HOSTED_ST
 run_case 4 "stale local evidence is refused" env LOCAL_STATE=green HOSTED_STATE=no_result STALE_SHA="$stale"
 run_case 4 "stale hosted evidence is refused" env LOCAL_STATE=no_result HOSTED_STATE=green STALE_SHA="$stale"
 run_case 4 "uncounted local report is refused" env LOCAL_STATE=green HOSTED_STATE=no_result LOCAL_COUNT=0
-run_case 4 "partial local gate coverage is refused" env LOCAL_STATE=green HOSTED_STATE=no_result LOCAL_COVERAGE=partial
+run_case 4 "synthetic-name-free incomplete local coverage is refused" env LOCAL_STATE=green HOSTED_STATE=no_result LOCAL_COVERAGE=partial
 run_case 4 "wrong hosted policy schema is refused" env LOCAL_STATE=no_result HOSTED_STATE=green HOSTED_POLICY=wrong-schema
 run_case 4 "wrong hosted policy job is refused" env LOCAL_STATE=no_result HOSTED_STATE=green HOSTED_POLICY=wrong-job
 
