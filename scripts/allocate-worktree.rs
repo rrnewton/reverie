@@ -1910,8 +1910,7 @@ fn main() {
             // slot -- release-worktree.rs writes it before the status flips.
             if replace_released_predecessor {
                 agents.retain(|a| {
-                    a["read_only"].as_bool().unwrap_or(false)
-                        || a["name"].as_str() == Some(&agent)
+                    a["read_only"].as_bool().unwrap_or(false) || a["name"].as_str() == Some(&agent)
                 });
             }
             if let Some(a) = agents
