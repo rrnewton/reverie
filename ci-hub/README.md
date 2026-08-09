@@ -390,6 +390,22 @@ the exact failed-land/repair/main ancestry and kind proof:
 # or: --kind revert --ref REVERT_SHA
 ```
 
+Completed remediations are terminal: later polls return the recorded repair
+instead of re-evaluating the failed land's historical red producers. If a
+watcher is nevertheless stuck, use the supported exact-identity cancellation
+path rather than a PID-only or pattern signal:
+
+```bash
+./ci-hub/ci-hub cancel-watcher OBLIGATION_ID --reason "stuck after terminal remediation"
+```
+
+Watcher registration persists host, boot ID, PID, and `/proc` start ticks.
+Cancellation opens a pidfd, rechecks those fields, records the request, and
+sends only `SIGTERM`; it never escalates to a stronger signal. A legacy row
+without that durable identity is refused. Cancellation is accepted only after
+the obligation is terminal, and changes only watcher state—the satisfied or
+remediated result remains exactly as before.
+
 ## Why this exists
 
 The [2026-08-03 skills audit](../ai_docs/transient/2026-08-03-skills-audit.md#where-are-the-ci-health-skills)

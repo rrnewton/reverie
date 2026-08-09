@@ -10,7 +10,9 @@ import math
 import os
 from datetime import datetime, timezone
 import re
+import select
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -153,6 +155,9 @@ DEFAULT_NETWORK_TIMEOUT = float(
 # print_status tail, and the gate reports how much of the plan it completed.
 DEFAULT_WATCH_GATE_BUDGET_SECS = float(
     os.environ.get("CI_HUB_WATCH_GATE_BUDGET", "20")
+)
+DEFAULT_WATCH_CANCEL_WAIT_SECS = float(
+    os.environ.get("CI_HUB_WATCH_CANCEL_WAIT", "10")
 )
 # The operational-health taxonomy reserves 3 for an unavailable answer.  A
 # watcher that exhausted its bound did not complete the census, so it is a
@@ -2555,6 +2560,18 @@ def evaluate_obligation(
     main_sha: str | None = None,
 ) -> dict[str, Any]:
     record = obligations.get_record(obligation_id, store_path)
+    remediation = record.get("remediation")
+    if (
+        record.get("overall_state") in obligations.CLOSED_STATES
+        and isinstance(remediation, Mapping)
+        and remediation.get("state") == "completed"
+    ):
+        # A completed repair is a terminal historical fact. Re-polling its
+        # original red producers must not reopen the obligation and strand the
+        # detached watcher inside a landing-lock cleanup domain. `satisfied`
+        # records deliberately keep reconciling an in-flight peer so a later
+        # green/red contradiction can still become investigation_required.
+        return record
     try:
         # Evaluation is an authority consumer, so a legacy record must first
         # acquire its repository policy in the append-only ledger. Merely
@@ -3116,6 +3133,33 @@ def _pid_alive(raw_pid: object) -> bool:
     return True
 
 
+def _process_start_ticks(pid: int) -> int:
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        close = stat.rfind(")")
+        if close < 0:
+            raise ValueError("missing command terminator")
+        fields = stat[close + 2 :].split()
+        return int(fields[19])
+    except (OSError, IndexError, ValueError) as error:
+        raise ProtocolError(f"cannot read process identity for pid {pid}: {error}") from error
+
+
+def _current_boot_id() -> str:
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except OSError as error:
+        raise ProtocolError(f"cannot read host boot identity: {error}") from error
+
+
+def _watcher_process_identity(pid: int) -> dict[str, object]:
+    return {
+        "host": socket.gethostname(),
+        "boot_id": _current_boot_id(),
+        "start_ticks": _process_start_ticks(pid),
+    }
+
+
 class LaunchBusy(ProtocolError):
     """Another live process owns this obligation's launch reconciliation."""
 
@@ -3226,6 +3270,7 @@ def _register_watcher(
     pid: int | None = None,
 ) -> bool:
     watcher_pid = os.getpid() if pid is None else pid
+    identity = _watcher_process_identity(watcher_pid)
     return (
         obligations.transition_if_matches(
             obligation_id,
@@ -3235,6 +3280,7 @@ def _register_watcher(
                     "state": "running",
                     "pid": watcher_pid,
                     "started_at": obligations.utc_now(),
+                    "identity": identity,
                 }
             },
             {
@@ -3346,6 +3392,16 @@ def _watcher_launch_durable(record: Mapping[str, Any]) -> bool:
     # timestamped PID is still observable producer evidence.
     if state in {None, "running"}:
         return bool(watcher.get("started_at")) and _pid_alive(watcher.get("pid"))
+    if state == "cancelled":
+        cancellation = watcher.get("cancellation")
+        return (
+            record.get("overall_state") in obligations.CLOSED_STATES
+            and _watch_complete(record)
+            and bool(watcher.get("started_at") and watcher.get("finished_at"))
+            and watcher.get("pid") is None
+            and isinstance(cancellation, Mapping)
+            and cancellation.get("state") == "completed"
+        )
     return (
         state == "completed"
         and bool(watcher.get("started_at") and watcher.get("finished_at"))
@@ -4463,6 +4519,209 @@ def resolve_obligation(args: argparse.Namespace) -> int:
     return 0
 
 
+def _wait_for_pidfd_exit(pidfd: int, wait_seconds: float) -> bool:
+    poller = select.poll()
+    poller.register(pidfd, select.POLLIN)
+    return bool(poller.poll(max(0, round(wait_seconds * 1000))))
+
+
+def cancel_watcher(args: argparse.Namespace) -> int:
+    """Terminate one durably identified watcher without changing obligation truth."""
+    reason = args.reason.strip()
+    if not reason:
+        raise ProtocolError("--reason must be nonempty")
+    if args.wait_seconds <= 0:
+        raise ProtocolError("--wait-seconds must be positive")
+
+    store_path = args.store.expanduser().resolve()
+    record = obligations.get_record(args.id, store_path)
+    watcher = record.get("watcher")
+    if not isinstance(watcher, Mapping):
+        raise ProtocolError(f"obligation {args.id!r} has no watcher record")
+    if watcher.get("state") in {"cancelled", "completed", "failed"}:
+        print(
+            f"WATCHER ALREADY TERMINAL: obligation={args.id} "
+            f"state={watcher.get('state')}"
+        )
+        return 0
+    if watcher.get("state") != "running":
+        raise ProtocolError(
+            f"obligation {args.id!r} watcher is not running "
+            f"(state={watcher.get('state')!r})"
+        )
+    if (
+        record.get("overall_state") not in obligations.CLOSED_STATES
+        or not _watch_complete(record)
+    ):
+        raise ProtocolError(
+            f"obligation {args.id!r} is not terminal; refusing to cancel its "
+            "only continuous watcher"
+        )
+
+    pid = watcher.get("pid")
+    launch_token = watcher.get("launch_token")
+    identity = watcher.get("identity")
+    if type(pid) is not int or pid <= 0 or not isinstance(launch_token, str):
+        raise ProtocolError(f"obligation {args.id!r} watcher has no durable process owner")
+    if not isinstance(identity, Mapping):
+        raise ProtocolError(
+            f"obligation {args.id!r} watcher predates exact process identities; "
+            "refusing PID-only cancellation"
+        )
+    host = identity.get("host")
+    boot_id = identity.get("boot_id")
+    start_ticks = identity.get("start_ticks")
+    if (
+        not isinstance(host, str)
+        or not isinstance(boot_id, str)
+        or type(start_ticks) is not int
+        or start_ticks <= 0
+    ):
+        raise ProtocolError(f"obligation {args.id!r} watcher identity is malformed")
+    if host != socket.gethostname():
+        raise ProtocolError(
+            f"watcher belongs to host {host!r}, not current host {socket.gethostname()!r}"
+        )
+    if boot_id != _current_boot_id():
+        raise ProtocolError("watcher belongs to an earlier host boot")
+
+    try:
+        pidfd = os.pidfd_open(pid, 0)
+    except (AttributeError, OSError) as error:
+        raise ProtocolError(f"cannot open pidfd for watcher {pid}: {error}") from error
+    try:
+        observed_ticks = _process_start_ticks(pid)
+        if observed_ticks != start_ticks:
+            raise ProtocolError(
+                f"watcher pid {pid} was reused: recorded start_ticks={start_ticks} "
+                f"observed={observed_ticks}"
+            )
+        requested_at = obligations.utc_now()
+        attempt = int((watcher.get("cancellation") or {}).get("attempt") or 0) + 1
+        requested = obligations.transition_if_matches(
+            args.id,
+            "watcher-cancel-requested",
+            {
+                "watcher": {
+                    "cancellation": {
+                        "state": "requested",
+                        "attempt": attempt,
+                        "requested_at": requested_at,
+                        "requested_by": args.actor,
+                        "reason": reason,
+                    }
+                }
+            },
+            {
+                "event_id": record["event_id"],
+                "watcher": {
+                    "state": "running",
+                    "pid": pid,
+                    "launch_token": launch_token,
+                    "identity": {
+                        "host": host,
+                        "boot_id": boot_id,
+                        "start_ticks": start_ticks,
+                    },
+                },
+            },
+            store_path,
+        )
+        if requested is None:
+            raise ProtocolError(
+                f"obligation {args.id!r} changed while watcher identity was verified"
+            )
+
+        delivered_signal = "SIGTERM"
+        exit_code: int | None = 128 + signal.SIGTERM
+        try:
+            signal.pidfd_send_signal(pidfd, signal.SIGTERM, None, 0)
+        except ProcessLookupError:
+            # The exact pidfd cannot retarget a reused PID. If the watcher won
+            # the race and exited after the durable request, finish reconciling
+            # its stale `running` row without pretending a signal was delivered.
+            delivered_signal = "none-already-exited"
+            exit_code = None
+        except OSError as error:
+            raise ProtocolError(
+                f"cannot signal exact watcher {pid}@{start_ticks}: {error}"
+            ) from error
+        if not _wait_for_pidfd_exit(pidfd, args.wait_seconds):
+            obligations.transition_if_matches(
+                args.id,
+                "watcher-cancel-timeout",
+                {"watcher": {"cancellation": {"state": "timed_out"}}},
+                {
+                    "watcher": {
+                        "state": "running",
+                        "pid": pid,
+                        "cancellation": {"requested_at": requested_at},
+                    }
+                },
+                store_path,
+            )
+            raise ProtocolError(
+                f"watcher {pid}@{start_ticks} did not exit after SIGTERM; "
+                "no stronger signal was sent"
+            )
+
+        finished_at = obligations.utc_now()
+        cancelled = obligations.transition_if_matches(
+            args.id,
+            "watcher-cancelled",
+            {
+                "watcher": {
+                    "state": "cancelled",
+                    "pid": None,
+                    "exit_code": exit_code,
+                    "finished_at": finished_at,
+                    "cancellation": {
+                        "state": "completed",
+                        "completed_at": finished_at,
+                        "signal": delivered_signal,
+                    },
+                }
+            },
+            {
+                "watcher": {
+                    "state": "running",
+                    "pid": pid,
+                    "launch_token": launch_token,
+                    "identity": {
+                        "host": host,
+                        "boot_id": boot_id,
+                        "start_ticks": start_ticks,
+                    },
+                    "cancellation": {"requested_at": requested_at},
+                }
+            },
+            store_path,
+        )
+        if cancelled is None:
+            latest = obligations.get_record(args.id, store_path)
+            latest_state = (latest.get("watcher") or {}).get("state")
+            if latest_state not in {
+                "cancelled",
+                "completed",
+                "failed",
+            }:
+                raise ProtocolError(
+                    f"obligation {args.id!r} changed before cancellation was recorded"
+                )
+            print(
+                f"WATCHER TERMINAL: obligation={args.id} "
+                f"identity={pid}@{start_ticks} state={latest_state}"
+            )
+            return 0
+        print(
+            f"WATCHER CANCELLED: obligation={args.id} "
+            f"identity={pid}@{start_ticks} signal={delivered_signal}"
+        )
+        return 0
+    finally:
+        os.close(pidfd)
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -4588,6 +4847,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--store", type=Path, default=obligations.default_store_path()
     )
 
+    cancel_parser = subparsers.add_parser(
+        "cancel-watcher",
+        help="pidfd-cancel one durably identified watcher without closing its obligation",
+    )
+    cancel_parser.add_argument("id")
+    cancel_parser.add_argument("--reason", required=True)
+    cancel_parser.add_argument(
+        "--actor", default=os.environ.get("AGENT", os.environ.get("USER", "unknown"))
+    )
+    cancel_parser.add_argument(
+        "--wait-seconds", type=float, default=DEFAULT_WATCH_CANCEL_WAIT_SECS
+    )
+    cancel_parser.add_argument(
+        "--store", type=Path, default=obligations.default_store_path()
+    )
+
     resolve_parser = subparsers.add_parser(
         "resolve", help="record completed remediation"
     )
@@ -4682,6 +4957,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 store_path=args.store, agent=args.agent, session=args.session
             )
             return 0
+        if args.command == "cancel-watcher":
+            return cancel_watcher(args)
         if args.command == "resolve":
             return resolve_obligation(args)
         if args.command == "_local-run":

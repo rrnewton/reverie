@@ -179,6 +179,14 @@ class LandAndArmTest(unittest.TestCase):
             "_spawn_detached",
             side_effect=register_spawn,
         ) as spawn, mock.patch.object(
+            land_and_arm.protocol,
+            "_watcher_process_identity",
+            return_value={
+                "host": "test-host",
+                "boot_id": "test-boot",
+                "start_ticks": 2020,
+            },
+        ), mock.patch.object(
             land_and_arm.protocol, "_pid_alive", return_value=True
         ), mock.patch.object(
             land_and_arm.protocol, "ensure_github_verification"

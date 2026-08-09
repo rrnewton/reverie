@@ -1401,6 +1401,15 @@ class ProtocolTest(unittest.TestCase):
             mock.patch.object(
                 protocol, "_spawn_detached", side_effect=register_spawn
             ) as spawn,
+            mock.patch.object(
+                protocol,
+                "_watcher_process_identity",
+                return_value={
+                    "host": "test-host",
+                    "boot_id": "test-boot",
+                    "start_ticks": 1020,
+                },
+            ),
             mock.patch.object(protocol, "_pid_alive", return_value=True),
             mock.patch.object(protocol, "ensure_github_verification"),
             redirect_stdout(io.StringIO()),
@@ -1426,6 +1435,7 @@ class ProtocolTest(unittest.TestCase):
             self.assertTrue(protocol.obligation_launch_durable(armed))
         self.assertTrue(protocol._local_policy_skip_valid(armed))
         self.assertEqual(armed["watcher"]["state"], "running")
+        self.assertEqual(armed["watcher"]["identity"]["start_ticks"], 1020)
 
     def test_recovery_reuses_live_legacy_producers_without_duplicate_spawn(
         self,
@@ -2322,6 +2332,208 @@ class ProtocolTest(unittest.TestCase):
             )
         self.assertEqual(record["recommendation"]["action"], "fix-forward")
         self.assertEqual(record["remediation"]["state"], "triggered")
+
+    def test_completed_remediation_is_not_reopened_by_evaluation(self) -> None:
+        """Historical red producers cannot resurrect a discharged obligation."""
+        self.create()
+        self.transition(
+            {"github": {"state": "red", "finished_at": "2026-08-03T01:00:00Z"}}
+        )
+        with redirect_stderr(io.StringIO()):
+            failed = protocol.evaluate_obligation(
+                "test-obligation", store_path=self.store, main_sha=NEXT_SHA
+            )
+        self.assertEqual(failed["overall_state"], "remediation_required")
+        self.assertEqual(failed["remediation"]["state"], "triggered")
+
+        with (
+            mock.patch.object(protocol, "resolve_repo_source", return_value=self.root),
+            mock.patch.object(protocol, "_fetch_target", return_value="main"),
+            mock.patch.object(protocol, "_resolve_raw_sha", side_effect=lambda _s, r: r),
+            mock.patch.object(protocol, "_is_target_ancestor", return_value=True),
+        ):
+            self.assertEqual(protocol.resolve_obligation(self.resolve_args()), 0)
+        closed = obligations.get_record("test-obligation", self.store)
+        self.assertEqual(closed["overall_state"], "remediated")
+        self.assertEqual(closed["remediation"]["state"], "completed")
+        before = self.store.read_bytes()
+
+        with mock.patch.object(protocol, "bind_verification_policy") as bind_policy:
+            reevaluated = protocol.evaluate_obligation(
+                "test-obligation", store_path=self.store, main_sha=NEXT_SHA
+            )
+        bind_policy.assert_not_called()
+        self.assertEqual(reevaluated, closed)
+        self.assertEqual(self.store.read_bytes(), before)
+
+    def _running_watcher(
+        self, *, start_ticks: int = 12345, terminal: bool = True
+    ) -> dict:
+        self.create()
+        patch = {
+            "watcher": {
+                "state": "running",
+                "pid": 4242,
+                "launch_token": "watch-token",
+                "started_at": "2026-08-08T23:00:00Z",
+                "identity": {
+                    "host": protocol.socket.gethostname(),
+                    "boot_id": "test-boot",
+                    "start_ticks": start_ticks,
+                },
+            }
+        }
+        if terminal:
+            patch.update(
+                {
+                    "overall_state": "remediated",
+                    "remediation": {
+                        "state": "completed",
+                        "kind": "fix-forward",
+                        "ref": NEXT_SHA,
+                    },
+                }
+            )
+        return self.transition(patch)
+
+    def test_cancel_watcher_uses_exact_pidfd_identity_and_preserves_obligation(
+        self,
+    ) -> None:
+        self._running_watcher()
+        args = argparse.Namespace(
+            id="test-obligation",
+            reason="operator-requested stuck watcher retirement",
+            actor="test-operator",
+            wait_seconds=1.0,
+            store=self.store,
+        )
+        with (
+            mock.patch.object(protocol, "_current_boot_id", return_value="test-boot"),
+            mock.patch.object(protocol, "_process_start_ticks", return_value=12345),
+            mock.patch.object(protocol.os, "pidfd_open", return_value=77) as pidfd_open,
+            mock.patch.object(protocol.signal, "pidfd_send_signal") as pidfd_signal,
+            mock.patch.object(protocol, "_wait_for_pidfd_exit", return_value=True),
+            mock.patch.object(protocol.os, "close") as close,
+            redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(protocol.cancel_watcher(args), 0)
+        pidfd_open.assert_called_once_with(4242, 0)
+        pidfd_signal.assert_called_once_with(77, protocol.signal.SIGTERM, None, 0)
+        close.assert_called_once_with(77)
+        record = obligations.get_record("test-obligation", self.store)
+        self.assertEqual(record["overall_state"], "remediated")
+        self.assertEqual(record["watcher"]["state"], "cancelled")
+        self.assertIsNone(record["watcher"]["pid"])
+        self.assertEqual(record["watcher"]["identity"]["start_ticks"], 12345)
+        self.assertEqual(record["watcher"]["cancellation"]["state"], "completed")
+
+    def test_cancel_watcher_refuses_reused_pid_before_signalling(self) -> None:
+        self._running_watcher(start_ticks=12345)
+        args = argparse.Namespace(
+            id="test-obligation",
+            reason="must not signal a reused pid",
+            actor="test-operator",
+            wait_seconds=1.0,
+            store=self.store,
+        )
+        before = self.store.read_bytes()
+        with (
+            mock.patch.object(protocol, "_current_boot_id", return_value="test-boot"),
+            mock.patch.object(protocol, "_process_start_ticks", return_value=99999),
+            mock.patch.object(protocol.os, "pidfd_open", return_value=77),
+            mock.patch.object(protocol.signal, "pidfd_send_signal") as pidfd_signal,
+            mock.patch.object(protocol.os, "close"),
+            self.assertRaisesRegex(protocol.ProtocolError, "was reused"),
+        ):
+            protocol.cancel_watcher(args)
+        pidfd_signal.assert_not_called()
+        self.assertEqual(self.store.read_bytes(), before)
+
+    def test_cancel_watcher_terminates_its_exact_child(self) -> None:
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            start_new_session=True,
+        )
+        try:
+            self.create()
+            identity = protocol._watcher_process_identity(child.pid)
+            self.transition(
+                {
+                    "overall_state": "remediated",
+                    "remediation": {
+                        "state": "completed",
+                        "kind": "fix-forward",
+                        "ref": NEXT_SHA,
+                    },
+                    "watcher": {
+                        "state": "running",
+                        "pid": child.pid,
+                        "launch_token": "real-child-token",
+                        "started_at": "2026-08-08T23:00:00Z",
+                        "identity": identity,
+                    },
+                }
+            )
+            args = argparse.Namespace(
+                id="test-obligation",
+                reason="exercise exact child cancellation",
+                actor="test-operator",
+                wait_seconds=2.0,
+                store=self.store,
+            )
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(protocol.cancel_watcher(args), 0)
+            self.assertEqual(child.wait(timeout=2), -protocol.signal.SIGTERM)
+            record = obligations.get_record("test-obligation", self.store)
+            self.assertEqual(record["watcher"]["state"], "cancelled")
+            self.assertEqual(
+                record["watcher"]["identity"]["start_ticks"],
+                identity["start_ticks"],
+            )
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                child.wait(timeout=2)
+
+    def test_cancel_watcher_never_escalates_after_sigterm_timeout(self) -> None:
+        self._running_watcher()
+        args = argparse.Namespace(
+            id="test-obligation",
+            reason="bounded signal timeout",
+            actor="test-operator",
+            wait_seconds=1.0,
+            store=self.store,
+        )
+        with (
+            mock.patch.object(protocol, "_current_boot_id", return_value="test-boot"),
+            mock.patch.object(protocol, "_process_start_ticks", return_value=12345),
+            mock.patch.object(protocol.os, "pidfd_open", return_value=77),
+            mock.patch.object(protocol.signal, "pidfd_send_signal") as pidfd_signal,
+            mock.patch.object(protocol, "_wait_for_pidfd_exit", return_value=False),
+            mock.patch.object(protocol.os, "close"),
+            self.assertRaisesRegex(protocol.ProtocolError, "no stronger signal"),
+        ):
+            protocol.cancel_watcher(args)
+        pidfd_signal.assert_called_once_with(77, protocol.signal.SIGTERM, None, 0)
+        record = obligations.get_record("test-obligation", self.store)
+        self.assertEqual(record["watcher"]["state"], "running")
+        self.assertEqual(record["watcher"]["cancellation"]["state"], "timed_out")
+
+    def test_cancel_watcher_refuses_an_open_obligation(self) -> None:
+        self._running_watcher(terminal=False)
+        args = argparse.Namespace(
+            id="test-obligation",
+            reason="must not suppress active verification",
+            actor="test-operator",
+            wait_seconds=1.0,
+            store=self.store,
+        )
+        with (
+            mock.patch.object(protocol.os, "pidfd_open") as pidfd_open,
+            self.assertRaisesRegex(protocol.ProtocolError, "not terminal"),
+        ):
+            protocol.cancel_watcher(args)
+        pidfd_open.assert_not_called()
 
     def test_resolve_refuses_wrong_state_before_repository_queries(self) -> None:
         self.create()

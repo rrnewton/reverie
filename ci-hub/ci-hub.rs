@@ -123,6 +123,7 @@ POST-LAND REMEDIATION
   obligations             List open or actionable speculative-land obligations
   inherit-obligations     Let a fresh lander claim obligations from a recycled agent
   watch-obligations       Poll verifier state and trigger failure remediation
+  cancel-watcher          Safely terminate one exact, durably identified watcher
   record-obligation-wake  Record an ORC wake-delivery attempt
   resolve-obligation      Record a completed fix-forward or revert
 
@@ -220,6 +221,8 @@ enum HubCommand {
     RecordObligationWake(RecordObligationWakeArgs),
     /// Poll open obligations and record verifier transitions.
     WatchObligations(WatchObligationsArgs),
+    /// Pidfd-cancel one exact watcher without changing obligation truth.
+    CancelWatcher(CancelWatcherArgs),
     /// Record a completed fix-forward or revert.
     ResolveObligation(ResolveObligationArgs),
     /// Incrementally ingest GitHub and local CI history.
@@ -424,6 +427,19 @@ struct WatchObligationsArgs {
     gate: bool,
     #[arg(long, default_value_t = DEFAULT_POLL_SECONDS)]
     poll_seconds: u64,
+    #[arg(long)]
+    store: Option<PathBuf>,
+}
+
+#[derive(Args, Clone, Debug)]
+struct CancelWatcherArgs {
+    id: String,
+    #[arg(long)]
+    reason: String,
+    #[arg(long)]
+    actor: Option<String>,
+    #[arg(long, default_value_t = 10.0)]
+    wait_seconds: f64,
     #[arg(long)]
     store: Option<PathBuf>,
 }
@@ -1145,6 +1161,11 @@ impl HubCommand {
                         .into()
                 },
             },
+            Self::CancelWatcher(_) => CostSpec {
+                tool: "ci-hub/cancel-watcher",
+                basis: "not measured: one local append-only identity check plus a bounded pidfd SIGTERM wait"
+                    .into(),
+            },
             Self::RefreshHistory(args) => CostSpec {
                 tool: "ci-hub/refresh-history",
                 basis: if args.full {
@@ -1630,6 +1651,24 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
                 &mut protocol_args,
                 "--poll-seconds",
                 args.poll_seconds.to_string(),
+            );
+            if let Some(store) = args.store {
+                push_option(&mut protocol_args, "--store", store);
+            }
+            run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
+        }
+        HubCommand::CancelWatcher(args) => {
+            let mut protocol_args = vec![OsString::from("cancel-watcher"), OsString::from(args.id)];
+            push_option(&mut protocol_args, "--reason", args.reason);
+            push_option(
+                &mut protocol_args,
+                "--actor",
+                args.actor.unwrap_or_else(default_actor),
+            );
+            push_option(
+                &mut protocol_args,
+                "--wait-seconds",
+                args.wait_seconds.to_string(),
             );
             if let Some(store) = args.store {
                 push_option(&mut protocol_args, "--store", store);
@@ -6467,6 +6506,29 @@ mod tests {
         assert!(matches!(args.land_mode, LandMode::Admin));
         assert_eq!(args.pr, Some(1219));
         assert!(args.no_dispatch);
+    }
+
+    #[test]
+    fn parses_exact_watcher_cancellation_command() {
+        let cli = Cli::try_parse_from([
+            "ci-hub",
+            "cancel-watcher",
+            "obligation-123",
+            "--reason",
+            "terminal watcher did not unwind",
+            "--actor",
+            "test-operator",
+            "--wait-seconds",
+            "2.5",
+        ])
+        .unwrap();
+        let HubCommand::CancelWatcher(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert_eq!(args.id, "obligation-123");
+        assert_eq!(args.reason, "terminal watcher did not unwind");
+        assert_eq!(args.actor.as_deref(), Some("test-operator"));
+        assert_eq!(args.wait_seconds, 2.5);
     }
 
     #[test]

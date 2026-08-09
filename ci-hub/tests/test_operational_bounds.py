@@ -280,6 +280,18 @@ class OperationalBoundsTest(unittest.TestCase):
             ),
             (
                 (
+                    "cancel-watcher",
+                    "missing",
+                    "--reason",
+                    "test cancellation",
+                    "--store",
+                    str(self.store),
+                ),
+                {2},
+                self.env,
+            ),
+            (
+                (
                     "resolve-obligation",
                     "missing",
                     "--kind",

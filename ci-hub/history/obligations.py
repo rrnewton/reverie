@@ -226,10 +226,12 @@ def create_obligation(
                     "state": "pending",
                     "pid": None,
                     "launch_token": None,
+                    "identity": None,
                     "log_path": None,
                     "started_at": None,
                     "finished_at": None,
                     "exit_code": None,
+                    "cancellation": None,
                 },
                 "alert": {"state": "none", "raised_at": None},
                 "remediation": {
