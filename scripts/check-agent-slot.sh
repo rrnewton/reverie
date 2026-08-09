@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Fail closed when an agent has no assigned worktree slot.
 #
-# WHY. A spawn without `opts.cwd` silently inherits the shared parent
-# /home/newton/work/dev-hermit. Nothing errors and nothing alarms -- it works
+# WHY. A spawn without `opts.cwd` silently inherits the shared parent root
+# resolved below from this script's own location. Nothing errors and nothing
+# alarms -- it works
 # perfectly until two agents write at once, which on 2026-08-07 produced two
 # transient file deletions, a 329-line file nearly destroyed, index contention
 # forcing commit-tree with a temp GIT_INDEX_FILE, a `core.bare` primary, and 148
