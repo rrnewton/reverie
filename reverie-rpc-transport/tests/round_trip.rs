@@ -9,7 +9,7 @@
 //! End-to-end round-trip tests for the cross-process GlobalTool RPC over a real
 //! Unix-domain socket.
 //!
-//! The key property under test is the one the DBI backend currently lacks:
+//! The key property under test is the one the DBT backend currently lacks:
 //! multiple independent client connections (standing in for the processes of a
 //! `fork` tree) all reach **one shared** `GlobalTool` instance, so their effects
 //! aggregate instead of fragmenting per-process.
@@ -146,6 +146,50 @@ async fn aggregates_across_many_connections() {
     }
 
     handle.abort();
+}
+
+#[tokio::test]
+async fn connection_monitor_wakes_only_after_the_last_client_closes() {
+    let global = std::sync::Arc::new(Counter::default());
+    let path = unique_sock_path("connection-monitor");
+    let server = RpcServer::bind(&path, global, "monitor".to_string()).unwrap();
+    let monitor = server.connection_monitor();
+    let server_path = server.path().to_path_buf();
+    let serving = tokio::spawn(async move { server.serve().await });
+
+    let first = RpcClient::<Counter>::connect(&server_path, Tid::from_raw(1))
+        .await
+        .unwrap();
+    let second = RpcClient::<Counter>::connect(&server_path, Tid::from_raw(2))
+        .await
+        .unwrap();
+    assert_eq!(monitor.active_connections(), 2);
+
+    let mut idle = tokio::spawn({
+        let monitor = monitor.clone();
+        async move { monitor.wait_for_idle().await }
+    });
+    tokio::task::yield_now().await;
+    assert!(!idle.is_finished(), "an active connection reported idle");
+
+    drop(first);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(25), &mut idle)
+            .await
+            .is_err(),
+        "the first close woke the idle waiter while a client remained"
+    );
+
+    drop(second);
+    tokio::time::timeout(Duration::from_secs(1), idle)
+        .await
+        .expect("the last close did not promptly wake the idle waiter")
+        .unwrap();
+    assert_eq!(monitor.active_connections(), 0);
+
+    serving.abort();
+    let _ = serving.await;
+    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]

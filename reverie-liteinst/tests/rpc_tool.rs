@@ -1,8 +1,31 @@
 use std::process::Command;
+use std::process::Output;
 use std::process::Stdio;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
+
+use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
+
+const INSTRUCTION_CONTROL_UNAVAILABLE_STATUS: i32 = 77;
+const TEST_STRADDLER_STALENESS_TICKS: &str = "20000";
+
+fn output_with_timeout(mut command: Command, timeout: Duration) -> Output {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn().unwrap();
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child.try_wait().unwrap().is_some() {
+            return child.wait_with_output().unwrap();
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            let output = child.wait_with_output().unwrap();
+            panic!("child exceeded {timeout:?}: {output:?}");
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
 
 #[test]
 fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
@@ -60,6 +83,137 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         spoofed_sigsys.status.code(),
         Some(126),
         "{spoofed_sigsys:?}"
+    );
+
+    let mut instruction_positives = 0;
+    let mut instruction_refusals = 0;
+    for (mode, concurrent) in [
+        ("instruction-guest", true),
+        ("instruction-guest-quiescent", false),
+    ] {
+        let mut instruction_command = Command::new(binary);
+        instruction_command.arg(mode).arg(&socket);
+        if concurrent {
+            instruction_command.env(
+                STRADDLER_STALENESS_TICKS_ENV,
+                TEST_STRADDLER_STALENESS_TICKS,
+            );
+        } else {
+            instruction_command.env_remove(STRADDLER_STALENESS_TICKS_ENV);
+        }
+        let instruction_guest = output_with_timeout(instruction_command, Duration::from_secs(10));
+        if instruction_guest.status.code() == Some(INSTRUCTION_CONTROL_UNAVAILABLE_STATUS) {
+            assert!(
+                instruction_guest.stdout.is_empty(),
+                "{mode}: {instruction_guest:?}"
+            );
+            assert_eq!(
+                instruction_guest.stderr, b"instruction-control-unavailable\n",
+                "{mode}: the refusal path must emit exactly one diagnostic"
+            );
+            instruction_refusals += 1;
+            eprintln!("instruction publication evidence: mode={mode} positive=0 refusal=1");
+        } else {
+            assert!(
+                instruction_guest.status.success(),
+                "{mode}: {instruction_guest:?}"
+            );
+            assert_eq!(
+                instruction_guest.stdout,
+                b"cpuid=tool rdtsc=tool rdtscp=tool rdrand=masked rdseed=masked instruction-handler-rpc=1 patched-native=1 first-use-native=1 nested-syscall-native=1 tool-callbacks=9\n",
+                "{mode}"
+            );
+            assert!(
+                instruction_guest.stderr.is_empty(),
+                "{mode}: the successful instruction path emitted a refusal diagnostic: {instruction_guest:?}"
+            );
+            instruction_positives += 1;
+            eprintln!("instruction publication evidence: mode={mode} positive=1 refusal=0");
+        }
+    }
+    assert!(
+        matches!(
+            (instruction_positives, instruction_refusals),
+            (2, 0) | (0, 2)
+        ),
+        "Concurrent and Quiescent instruction controls must agree: positive={instruction_positives} refusal={instruction_refusals}"
+    );
+    eprintln!(
+        "instruction publication total: positive={instruction_positives} refusal={instruction_refusals}"
+    );
+    let instruction_control_available = instruction_positives == 2;
+
+    if instruction_control_available {
+        let nested_instruction_fork = Command::new(binary)
+            .arg("nested-instruction-fork")
+            .arg(&socket)
+            .env(reverie_liteinst::IN_GUEST_STAGE_STREAM_ENV, "1")
+            .output()
+            .unwrap();
+        assert!(
+            nested_instruction_fork.status.success(),
+            "{nested_instruction_fork:?}"
+        );
+        assert_eq!(
+            nested_instruction_fork.stdout,
+            b"nested-cpuid=native nested-rdtsc=native nested-rdtscp=native guest-cpuid=tool guest-rdtsc=tool guest-rdtscp=tool child-getpid=complete child-exit=0\n"
+        );
+        let nested_stderr = String::from_utf8(nested_instruction_fork.stderr).unwrap();
+        let stage_count = |stage: &str| {
+            nested_stderr
+                .lines()
+                .filter(|line| line.ends_with(stage))
+                .count()
+        };
+        for stage in [
+            "stage=fork-child-thread-start-begin",
+            "stage=fork-child-thread-start-complete",
+        ] {
+            assert_eq!(
+                stage_count(stage),
+                1,
+                "stage marker {stage:?} must appear exactly once: {nested_stderr}"
+            );
+        }
+        assert!(
+            stage_count("stage=nested-instruction-native-cpuid") >= 1,
+            "at least the planted nested CPUID must take the native path: {nested_stderr}"
+        );
+        assert!(
+            stage_count("stage=nested-instruction-fault-native-cpuid") >= 1,
+            "unpatched Tool-internal CPUID must bypass publication: {nested_stderr}"
+        );
+        for stage in [
+            "stage=nested-instruction-native-rdtsc",
+            "stage=nested-instruction-native-rdtscp",
+        ] {
+            assert_eq!(
+                stage_count(stage),
+                1,
+                "the planted nested instruction must take the native path once: {nested_stderr}"
+            );
+        }
+    }
+
+    let clock_and_vdso_guest = Command::new(binary)
+        .arg("clock-and-vdso-guest")
+        .arg(&socket)
+        .output()
+        .unwrap();
+    assert!(
+        clock_and_vdso_guest.status.success(),
+        "{clock_and_vdso_guest:?}"
+    );
+    let clock_and_vdso_stdout = String::from_utf8(clock_and_vdso_guest.stdout).unwrap();
+    eprintln!("clock/vDSO evidence: {}", clock_and_vdso_stdout.trim_end());
+    assert!(
+        clock_and_vdso_stdout == "rcb=unmeasured vdso-calls=1\n"
+            || clock_and_vdso_stdout.starts_with("rcb=measured "),
+        "{clock_and_vdso_stdout}"
+    );
+    assert!(
+        clock_and_vdso_stdout.ends_with("vdso-calls=1\n"),
+        "{clock_and_vdso_stdout}"
     );
 
     let unsubscribed_lifecycle = Command::new(binary)
@@ -148,6 +302,29 @@ fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
         raw_sender_delta, 1,
         "a raw SYS_fork child must reconnect under its own identity: {raw_fork_stdout}"
     );
+
+    for (mode, expected) in [
+        (
+            "clone3-guest",
+            b"clone3=child-reconstructed sender-delta=1\n".as_slice(),
+        ),
+        (
+            "vfork-guest",
+            b"vfork=translated-cow-child sender-delta=1\n".as_slice(),
+        ),
+    ] {
+        let output = Command::new(binary)
+            .arg(mode)
+            .arg(&socket)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{mode}: {output:?}");
+        eprintln!(
+            "process evidence: {}",
+            String::from_utf8_lossy(&output.stdout).trim_end()
+        );
+        assert_eq!(output.stdout, expected, "{mode}: {output:?}");
+    }
 
     for (mode, expected) in [
         (

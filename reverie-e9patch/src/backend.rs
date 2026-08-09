@@ -32,6 +32,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 
 use reverie::Backend;
+use reverie::BackendStatsSource;
 use reverie::Error;
 use reverie::ExitStatus;
 use reverie::GlobalTool;
@@ -44,6 +45,8 @@ use reverie_rpc_transport::RpcServer;
 
 use crate::E9PATCH_SYSCALL_TRAP_MARKER;
 use crate::E9PATCH_SYSCALL_TRAP_RIP;
+use crate::E9patchBackendStatsSnapshot;
+use crate::E9patchBackendStatsSource;
 use crate::E9patchRewriter;
 
 const PRELOAD_BOOTSTRAP_MAGIC: &[u8; 16] = b"REVERIE-E9-V1\0\0\0";
@@ -445,17 +448,18 @@ impl E9patchBackend {
         }
     }
 
-    // TODO-HUMAN-REVIEW(PR-269): Review the first
-    // ptrace-free generic Tool launch boundary and inherited preload contract.
+    // TODO-HUMAN-REVIEW(PR-269): Review the first generic Tool launch boundary
+    // with no host Tool syscall decisions and its inherited preload contract.
     /// Runs a generic Tool through e9patch's direct AOT callback and captures
     /// the guest's output.
     ///
     /// `preload` must be a tool-specific DSO that embeds the same concrete `T`
     /// and calls [`crate::install_tool::<T>`] from its constructor. The
     /// coordinator path is inherited through [`crate::COORDINATOR_ENV`]. This
-    /// opt-in harness is intentionally separate from [`Backend::run`], whose
-    /// ptrace lifecycle remains the production default while direct-tool
-    /// lifecycle coverage is still single-process and single-thread.
+    /// opt-in harness is intentionally separate from [`Backend::run`]. Its
+    /// unit-tool tracer follows and reaps lifecycle events without adding a
+    /// syscall-trace action; it does not establish full generic-Tool process-tree
+    /// or exec-rebootstrap semantics.
     pub async fn run_direct_with_output_and_preload<T>(
         mut command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
@@ -551,7 +555,14 @@ impl E9patchBackend {
         mut command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
         preserve_executable: bool,
-    ) -> Result<(Tracer<T::GlobalState>, ExecutableResource), Error>
+    ) -> Result<
+        (
+            Tracer<T::GlobalState>,
+            ExecutableResource,
+            E9patchBackendStatsSource,
+        ),
+        Error,
+    >
     where
         T: Tool + 'static,
     {
@@ -573,38 +584,32 @@ impl E9patchBackend {
 
         // TODO-HUMAN-REVIEW(PR-103): Review non-ELF ptrace fallback behavior.
         if !is_elf_file(&source)? {
+            let stats = E9patchBackendStatsSource::unsupported_non_elf();
             eprintln!(
-                ":: Backend: e9patch hybrid; recovered_sites=0; patched_sites=0; b0_sites=0; event_source=ptrace; controller=ptrace; ldpreload={ldpreload}; main_executable=non-ELF"
+                ":: Backend: e9patch hybrid; {}; controller=ptrace; ldpreload={ldpreload}",
+                stats.snapshot(),
             );
             command.program(&source).arg0(arg0);
             let tracer = spawn_tracer::<T>(command, config, None).await?;
-            return Ok((tracer, ExecutableResource::Original));
+            return Ok((tracer, ExecutableResource::Original, stats));
         }
 
         let prepared = E9patchRewriter::from_env()?.prepare(&source)?;
         let report = prepared.report();
         let image_entry_address = report.image_entry_address();
         let patched_site_addresses = report.patched_site_addresses().to_vec();
+        let stats = E9patchBackendStatsSource::from_report(report);
         // TODO-HUMAN-REVIEW(PR-103): Review the stable backend coverage diagnostic.
-        let event_source = if report.patched_sites() == 0 {
-            "ptrace"
-        } else {
-            "injected-trap"
-        };
         eprintln!(
-            ":: Backend: e9patch hybrid; recovered_sites={}; patched_sites={}; b0_sites={}; event_source={}; controller=ptrace; ldpreload={}",
-            report.recovered_sites(),
-            report.patched_sites(),
-            report.b0_sites(),
-            event_source,
-            ldpreload,
+            ":: Backend: e9patch hybrid; {}; controller=ptrace; ldpreload={ldpreload}",
+            stats.snapshot(),
         );
 
         // TODO-HUMAN-REVIEW(PR-103): Review zero-site original-image execution.
         if report.patched_sites() == 0 {
             command.program(&source).arg0(arg0);
             let tracer = spawn_tracer::<T>(command, config, None).await?;
-            return Ok((tracer, ExecutableResource::Original));
+            return Ok((tracer, ExecutableResource::Original, stats));
         }
 
         // E9patch's loader reopens the executable, so an anonymous memfd is not
@@ -645,7 +650,7 @@ impl E9patchBackend {
         )
         .await;
         match spawn_result {
-            Ok(tracer) => Ok((tracer, resource)),
+            Ok(tracer) => Ok((tracer, resource, stats)),
             Err(error) => {
                 let _ = resource.cleanup();
                 Err(error)
@@ -662,7 +667,7 @@ impl E9patchBackend {
     where
         T: Tool + 'static,
     {
-        let (tracer, resource) = Self::spawn::<T>(command, config, false).await?;
+        let (tracer, resource, _stats) = Self::spawn::<T>(command, config, false).await?;
         let result = tracer.wait_with_output().await;
         let cleanup = resource.cleanup();
         match (result, cleanup) {
@@ -689,7 +694,7 @@ impl E9patchBackend {
     where
         T: Tool + 'static,
     {
-        let (tracer, resource) = Self::spawn::<T>(command, config, true).await?;
+        let (tracer, resource, _stats) = Self::spawn::<T>(command, config, true).await?;
         let result = tracer.wait().await;
         let cleanup = resource.cleanup();
         match (result, cleanup) {
@@ -716,7 +721,7 @@ impl E9patchBackend {
     where
         T: Tool + 'static,
     {
-        let (tracer, resource) = Self::spawn::<T>(command, config, true).await?;
+        let (tracer, resource, _stats) = Self::spawn::<T>(command, config, true).await?;
         let result = tracer.wait_with_output().await;
         let cleanup = resource.cleanup();
         match (result, cleanup) {
@@ -799,6 +804,25 @@ fn tool_preload_path() -> io::Result<PathBuf> {
     tool_preload_path_from(std::env::var_os(TOOL_PRELOAD_ENV))
 }
 
+/// Prepend the tool DSO to the command's effective `LD_PRELOAD` value.
+///
+/// `get_captured_envs()` already applies ordinary inheritance, explicit
+/// overrides, `env_remove`, and `env_clear`. Absence from that map is therefore
+/// authoritative: consulting the launcher's environment again would resurrect
+/// a value the caller deliberately removed.
+fn configure_tool_preload(command: &mut Command, preload: PathBuf) {
+    let mut ld_preload = preload.into_os_string();
+    if let Some(existing) = command
+        .get_captured_envs()
+        .remove(OsStr::new("LD_PRELOAD"))
+        .filter(|value| !value.is_empty())
+    {
+        ld_preload.push(OsStr::new(":"));
+        ld_preload.push(existing);
+    }
+    command.env("LD_PRELOAD", ld_preload);
+}
+
 async fn launch_direct<T>(
     mut command: Command,
     config: <T::GlobalState as GlobalTool>::Config,
@@ -868,25 +892,25 @@ where
     )
     .map_err(|error| io::Error::other(error.to_string()))?;
 
-    let mut child_command = command.into_std_lossy();
-    let configured_preload = child_command
-        .get_envs()
-        .find(|(key, _)| *key == OsStr::new("LD_PRELOAD"))
-        .map(|(_, value)| value.map(ToOwned::to_owned));
-    let mut ld_preload = preload.into_os_string();
-    let inherited_preload = match configured_preload {
-        Some(value) => value,
-        None => std::env::var_os("LD_PRELOAD"),
-    };
-    if let Some(existing) = inherited_preload.filter(|value| !value.is_empty()) {
-        ld_preload.push(OsStr::new(":"));
-        ld_preload.push(existing);
-    }
-    child_command.env("LD_PRELOAD", ld_preload);
-    let bootstrap = match tool_data {
+    // Merge the tool preload ahead of any LD_PRELOAD already configured on the
+    // command (or inherited from this process), on the reverie `Command` so the
+    // default (environment-bootstrap) path below can be driven by a
+    // lifecycle-only `TracerBuilder<()>` reaper instead of a bare, single-process
+    // spawn.
+    configure_tool_preload(&mut command, preload);
+
+    let wait = match tool_data {
+        // Sealed-memfd bootstrap path. Mirroring reverie-liteinst's memfd branch,
+        // this stays a single-process std spawn: the bootstrap fd is handed to the
+        // guest via a `pre_exec` `F_SETFD` clear, expressed against
+        // `std::process::Command`. This path is not yet tree-reaped.
         Some(tool_data) => {
+            let mut child_command = command.try_into_std()?;
             let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
             let bootstrap_fd = bootstrap.as_raw_fd();
+            // SAFETY: fcntl(2) is async-signal-safe and the closure captures only
+            // the raw fd, which stays valid until `bootstrap` is dropped after the
+            // child has spawned.
             unsafe {
                 child_command.pre_exec(move || {
                     if libc::fcntl(bootstrap_fd, libc::F_SETFD, 0) == -1 {
@@ -895,34 +919,72 @@ where
                     Ok(())
                 });
             }
-            Some(bootstrap)
+            let child = match child_command.spawn() {
+                Ok(child) => child,
+                Err(error) => {
+                    let _ = executable.close();
+                    return Err(error.into());
+                }
+            };
+            drop(bootstrap);
+            let wait = tokio::task::spawn_blocking(move || {
+                if capture_output {
+                    child.wait_with_output().map(ChildWait::Output)
+                } else {
+                    wait_without_output(child).map(ChildWait::Status)
+                }
+            });
+            serve_rpc_until(server, async move {
+                wait.await
+                    .map_err(|error| io::Error::other(error.to_string()))?
+            })
+            .await?
         }
+        // Environment-bootstrap path (the default `run_direct` / output flows).
+        // Lifecycle-only reaper: the unit tool `()` declares no syscall
+        // subscriptions and therefore installs no PTRACE_EVENT_SECCOMP action.
+        // Rewritten syscall sites run entirely in-guest; ptrace follows and reaps
+        // the process tree (exec/clone/fork) and forwards ordinary signal-delivery
+        // stops. In particular, a residual site handled by the guest's SIGSYS
+        // filter is still visible to ptrace as signal delivery, but it is never
+        // emulated by a host Tool. Dynamic-loader syscalls that occur before the
+        // preload constructor installs that guest filter remain outside it.
         None => {
-            child_command.env(crate::COORDINATOR_ENV, &socket);
-            None
+            command.env(crate::COORDINATOR_ENV, &socket);
+            let tracer = match TracerBuilder::<()>::new(command).spawn().await {
+                Ok(tracer) => tracer,
+                Err(error) => {
+                    let _ = executable.close();
+                    return Err(error);
+                }
+            };
+            serve_rpc_until(server, async move {
+                if capture_output {
+                    let (output, ()) = tracer
+                        .wait_with_output()
+                        .await
+                        .map_err(|error| io::Error::other(error.to_string()))?;
+                    Ok(ChildWait::Output(std::process::Output {
+                        status: output.status.into(),
+                        stdout: output.stdout,
+                        stderr: output.stderr,
+                    }))
+                } else {
+                    // `wait_discarding_output`, not the bare `wait`: this arm is
+                    // reached with the caller's stdio possibly piped, and
+                    // `run_direct_with_preload` documents that such pipes are
+                    // drained concurrently and discarded. A bare `wait` leaves
+                    // them unread and a noisy guest deadlocks on a full pipe.
+                    let (status, ()) = tracer
+                        .wait_discarding_output()
+                        .await
+                        .map_err(|error| io::Error::other(error.to_string()))?;
+                    Ok(ChildWait::Status(status.into()))
+                }
+            })
+            .await?
         }
     };
-
-    let child = match child_command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            let _ = executable.close();
-            return Err(error.into());
-        }
-    };
-    drop(bootstrap);
-    let wait = tokio::task::spawn_blocking(move || {
-        if capture_output {
-            child.wait_with_output().map(ChildWait::Output)
-        } else {
-            wait_without_output(child).map(ChildWait::Status)
-        }
-    });
-    let wait = serve_rpc_until(server, async move {
-        wait.await
-            .map_err(|error| io::Error::other(error.to_string()))?
-    })
-    .await?;
     executable.close()?;
     if !connected.load(Ordering::Acquire) {
         return Err(io::Error::new(
@@ -987,6 +1049,8 @@ async fn unwrap_global_after_connections<G>(mut global: Arc<G>) -> io::Result<G>
 
 #[reverie::backend(?Send)]
 impl Backend for E9patchBackend {
+    type Stats = E9patchBackendStatsSnapshot;
+
     async fn run<T>(
         command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
@@ -994,11 +1058,28 @@ impl Backend for E9patchBackend {
     where
         T: Tool + 'static,
     {
-        let (tracer, resource) = Self::spawn::<T>(command, config, false).await?;
+        let (tracer, resource, _stats) = Self::spawn::<T>(command, config, false).await?;
         let result = tracer.wait().await;
         let cleanup = resource.cleanup();
         match (result, cleanup) {
             (Ok(result), Ok(())) => Ok(result),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+        }
+    }
+
+    async fn run_with_stats<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(ExitStatus, T::GlobalState, Self::Stats), Error>
+    where
+        T: Tool + 'static,
+    {
+        let (tracer, resource, stats) = Self::spawn::<T>(command, config, false).await?;
+        let result = tracer.wait().await;
+        let cleanup = resource.cleanup();
+        match (result, cleanup) {
+            (Ok((status, global)), Ok(())) => Ok((status, global, stats.backend_stats())),
             (Err(error), _) => Err(error),
             (Ok(_), Err(error)) => Err(error.into()),
         }
@@ -1012,6 +1093,71 @@ mod tests {
     use std::os::fd::IntoRawFd;
 
     use super::*;
+
+    fn captured_ld_preload(command: &Command) -> OsString {
+        command
+            .get_captured_envs()
+            .remove(OsStr::new("LD_PRELOAD"))
+            .expect("configured command must contain LD_PRELOAD")
+    }
+
+    #[test]
+    fn direct_preload_respects_captured_environment_boundaries() {
+        const CHILD_ENV: &str = "REVERIE_E9PATCH_PRELOAD_ENV_TEST_CHILD";
+        const PARENT_PRELOAD: &str = "reverie-e9patch-parent-preload.so";
+        const EXPLICIT_PRELOAD: &str = "explicit-preload.so";
+        const TOOL_PRELOAD: &str = "/tool-preload.so";
+
+        if std::env::var_os(CHILD_ENV).is_none() {
+            // Run in a child whose real inherited environment contains a
+            // nonempty LD_PRELOAD. The dynamic loader may warn that the sentinel
+            // is not a DSO, but it still starts the test binary; capture that
+            // diagnostic so a failed assertion remains readable.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backend::tests::direct_preload_respects_captured_environment_boundaries",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .env("LD_PRELOAD", PARENT_PRELOAD)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child preload-boundary test failed:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        assert_eq!(std::env::var_os("LD_PRELOAD").unwrap(), PARENT_PRELOAD);
+
+        let mut inherited = Command::new("/bin/true");
+        configure_tool_preload(&mut inherited, PathBuf::from(TOOL_PRELOAD));
+        assert_eq!(
+            captured_ld_preload(&inherited),
+            OsString::from(format!("{TOOL_PRELOAD}:{PARENT_PRELOAD}"))
+        );
+
+        let mut explicit = Command::new("/bin/true");
+        explicit.env("LD_PRELOAD", EXPLICIT_PRELOAD);
+        configure_tool_preload(&mut explicit, PathBuf::from(TOOL_PRELOAD));
+        assert_eq!(
+            captured_ld_preload(&explicit),
+            OsString::from(format!("{TOOL_PRELOAD}:{EXPLICIT_PRELOAD}"))
+        );
+
+        let mut removed = Command::new("/bin/true");
+        removed.env_remove("LD_PRELOAD");
+        configure_tool_preload(&mut removed, PathBuf::from(TOOL_PRELOAD));
+        assert_eq!(captured_ld_preload(&removed), TOOL_PRELOAD);
+
+        let mut cleared = Command::new("/bin/true");
+        cleared.env_clear();
+        configure_tool_preload(&mut cleared, PathBuf::from(TOOL_PRELOAD));
+        assert_eq!(captured_ld_preload(&cleared), TOOL_PRELOAD);
+    }
 
     fn create_sealed_packet(packet: &[u8]) -> libc::c_int {
         let fd = unsafe {
@@ -1040,7 +1186,7 @@ mod tests {
             .stdout(reverie::process::Stdio::piped())
             .stderr(reverie::process::Stdio::piped());
         inherit_stdio(&mut command);
-        let mut child = command.into_std_lossy().spawn().unwrap();
+        let mut child = command.try_into_std().unwrap().spawn().unwrap();
         assert!(child.stdin.is_none());
         assert!(child.stdout.is_none());
         assert!(child.stderr.is_none());

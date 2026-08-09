@@ -93,6 +93,73 @@ impl Default for Container {
 }
 
 impl Container {
+    /// Returns the configured features that cannot be represented by
+    /// `std::process::Command`.
+    pub(super) fn std_conversion_blockers(&self) -> Vec<&'static str> {
+        // Keep this exhaustive: adding Container state must fail to compile
+        // until the standard-command conversion explicitly classifies it.
+        let Self {
+            env: _,
+            current_dir: _,
+            chroot,
+            namespace,
+            stdin: _,
+            stdout: _,
+            stderr: _,
+            uid_map,
+            gid_map,
+            mounts,
+            local_networking_only,
+            hostname,
+            domainname,
+            seccomp,
+            seccomp_notify,
+            pty,
+            affinity,
+        } = self;
+
+        let mut blockers = Vec::new();
+
+        if chroot.is_some() {
+            blockers.push("chroot");
+        }
+        if !namespace.is_empty() {
+            blockers.push("Linux namespaces");
+        }
+        if !uid_map.is_empty() {
+            blockers.push("user ID mappings");
+        }
+        if !gid_map.is_empty() {
+            blockers.push("group ID mappings");
+        }
+        if !mounts.is_empty() {
+            blockers.push("mounts");
+        }
+        if *local_networking_only {
+            blockers.push("local-only networking");
+        }
+        if hostname.is_some() {
+            blockers.push("hostname");
+        }
+        if domainname.is_some() {
+            blockers.push("domain name");
+        }
+        if seccomp.is_some() {
+            blockers.push("seccomp filter");
+        }
+        if *seccomp_notify {
+            blockers.push("seccomp notification");
+        }
+        if pty.is_some() {
+            blockers.push("pseudoterminal");
+        }
+        if affinity.is_some() {
+            blockers.push("CPU affinity");
+        }
+
+        blockers
+    }
+
     /// Creates a new `Container` that inherits everything from the parent
     /// process.
     pub fn new() -> Self {

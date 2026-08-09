@@ -14,17 +14,19 @@
 //! request it sends is dispatched to [`GlobalTool::receive_rpc`] on the shared
 //! instance. Because the instance is shared behind an [`Arc`], all connected
 //! guests — including forked children that connect later — observe one unified
-//! global state, which is exactly the property the DBI backend currently lacks.
+//! global state, which is exactly the property the DBT backend currently lacks.
 
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use reverie::GlobalTool;
 use tokio::net::UnixListener;
 use tokio::net::UnixStream;
+use tokio::sync::Notify;
 
 use crate::codec::DEFAULT_MAX_FRAME_LEN;
 use crate::codec::decode;
@@ -43,6 +45,53 @@ pub struct RpcServer<G: GlobalTool> {
     path: PathBuf,
     readiness: Option<Arc<AtomicBool>>,
     connection_readiness: Option<Arc<AtomicBool>>,
+    connections: ConnectionMonitor,
+}
+
+/// A live, waitable view of a coordinator's accepted connections.
+///
+/// Unlike polling [`RpcServer::connection_count`], [`wait_for_idle`](Self::wait_for_idle)
+/// blocks the current task until the last connection closes. Clones share the
+/// same count and wakeup, so a launcher can obtain a monitor before moving the
+/// server into its serving task.
+#[derive(Clone)]
+pub struct ConnectionMonitor {
+    count: Arc<AtomicUsize>,
+    idle: Arc<Notify>,
+}
+
+impl ConnectionMonitor {
+    fn new() -> Self {
+        Self {
+            count: Arc::new(AtomicUsize::new(0)),
+            idle: Arc::new(Notify::new()),
+        }
+    }
+
+    fn connected(&self) -> ConnectionGuard {
+        self.count.fetch_add(1, Ordering::AcqRel);
+        ConnectionGuard(self.clone())
+    }
+
+    /// Returns the current number of accepted connections.
+    pub fn active_connections(&self) -> usize {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// Waits without polling until every currently tracked connection closes.
+    pub async fn wait_for_idle(&self) {
+        loop {
+            let notified = self.idle.notified();
+            tokio::pin!(notified);
+            // Register before loading the count so a last-close notification
+            // cannot race between the observation and the await.
+            notified.as_mut().enable();
+            if self.active_connections() == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 impl<G> RpcServer<G>
@@ -109,6 +158,7 @@ where
             path,
             readiness,
             connection_readiness,
+            connections: ConnectionMonitor::new(),
         })
     }
 
@@ -122,6 +172,21 @@ where
     /// use, e.g. to generate the final run summary after serving).
     pub fn global(&self) -> Arc<G> {
         self.global.clone()
+    }
+
+    /// A live count of accepted guest connections.
+    ///
+    /// Fork children inherit the underlying socket descriptor, so the count
+    /// remains nonzero until the last process holding that connection exits or
+    /// reconnects. Coordinators can therefore drain an in-guest process tree
+    /// without attaching an external lifecycle tracer.
+    pub fn connection_count(&self) -> Arc<AtomicUsize> {
+        self.connections.count.clone()
+    }
+
+    /// A blocking-wakeup monitor for accepted connection lifetime.
+    pub fn connection_monitor(&self) -> ConnectionMonitor {
+        self.connections.clone()
     }
 
     /// Accept connections forever, spawning one task per connection. Returns
@@ -139,7 +204,9 @@ where
             let config = self.config.clone();
             let readiness = self.readiness.clone();
             let connection_readiness = self.connection_readiness.clone();
+            let connection_guard = self.connections.connected();
             connections.spawn(async move {
+                let _connection_guard = connection_guard;
                 if let Err(e) =
                     serve_connection_inner(global, config, stream, readiness, connection_readiness)
                         .await
@@ -157,6 +224,7 @@ where
     /// is primarily useful for tests and for single-guest scenarios.
     pub async fn serve_one(&self) -> Result<(), RpcError> {
         let (stream, _addr) = self.listener.accept().await?;
+        let _connection_guard = self.connections.connected();
         serve_connection_inner(
             self.global.clone(),
             self.config.clone(),
@@ -165,6 +233,18 @@ where
             self.connection_readiness.clone(),
         )
         .await
+    }
+}
+
+struct ConnectionGuard(ConnectionMonitor);
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        let previous = self.0.count.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "connection count underflow");
+        if previous == 1 {
+            self.0.idle.notify_waiters();
+        }
     }
 }
 

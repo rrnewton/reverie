@@ -34,6 +34,7 @@ mod stdio;
 mod util;
 
 use std::ffi::CString;
+use std::io;
 
 pub use child::Child;
 pub use child::Output;
@@ -104,27 +105,72 @@ impl Command {
         result
     }
 
-    /// This provides a *lossy* conversion to [`std::process::Command`]. The
-    /// features that are not supported by [`std::process::Command`] but *are*
-    /// supported by [`Command`] cannot be converted. For example, namespace and
-    /// mount configurations cannot be converted since they are not supported by
-    /// [`std::process::Command`].
-    pub fn into_std_lossy(self) -> std::process::Command {
-        let mut result = std::process::Command::new(self.get_program());
-        result.args(self.get_args());
+    /// Converts this command to [`std::process::Command`].
+    ///
+    /// This fails if the command contains container configuration that cannot
+    /// be represented by [`std::process::Command`], rather than silently
+    /// discarding that configuration. This includes namespaces, mounts,
+    /// seccomp filters, pseudoterminals, and CPU affinity.
+    pub fn try_into_std(self) -> io::Result<std::process::Command> {
+        let blockers = self.container.std_conversion_blockers();
+        if !blockers.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "cannot convert to std::process::Command without losing: {}",
+                    blockers.join(", ")
+                ),
+            ));
+        }
 
-        if self.container.env.is_cleared() {
+        Ok(self.into_std())
+    }
+
+    /// Converts this command to [`std::process::Command`], refusing to discard
+    /// any container configuration.
+    ///
+    /// This compatibility shim preserves the former return type for callers
+    /// whose commands are representable. It panics instead of silently losing
+    /// unsupported configuration. New callers should use [`Self::try_into_std`]
+    /// to handle that refusal explicitly.
+    pub fn into_std_lossy(self) -> std::process::Command {
+        self.try_into_std().unwrap_or_else(|error| {
+            panic!("Command::into_std_lossy refused unsupported configuration: {error}")
+        })
+    }
+
+    fn into_std(self) -> std::process::Command {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // Keep this exhaustive: adding Command state must fail to compile until
+        // the standard-command conversion explicitly preserves or refuses it.
+        let Self {
+            program,
+            args,
+            pre_exec,
+            container,
+        } = self;
+
+        let mut result = std::process::Command::new(OsStr::from_bytes(program.to_bytes()));
+        result.args(
+            args.iter()
+                .skip(1)
+                .map(|arg| OsStr::from_bytes(arg.to_bytes())),
+        );
+
+        if container.env.is_cleared() {
             result.env_clear();
         }
 
-        for (key, value) in self.get_envs() {
+        for (key, value) in container.get_envs() {
             match value {
                 Some(value) => result.env(key, value),
                 None => result.env_remove(key),
             };
         }
 
-        if let Some(dir) = self.get_current_dir() {
+        if let Some(dir) = container.get_current_dir() {
             result.current_dir(dir);
         }
 
@@ -132,18 +178,18 @@ impl Command {
         {
             use std::os::unix::process::CommandExt;
 
-            result.arg0(self.get_arg0());
+            result.arg0(OsStr::from_bytes(args.get(0).to_bytes()));
 
-            for mut f in self.pre_exec {
+            for mut f in pre_exec {
                 unsafe {
                     result.pre_exec(move || f().map_err(Into::into));
                 }
             }
         }
 
-        result.stdin(self.container.stdin);
-        result.stdout(self.container.stdout);
-        result.stderr(self.container.stderr);
+        result.stdin(container.stdin);
+        result.stdout(container.stdout);
+        result.stderr(container.stderr);
 
         result
     }
@@ -618,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn into_std_lossy() {
+    fn into_std_lossy_compatibility() {
         let mut cmd = Command::new("env");
         cmd.args(["-0"]);
         cmd.current_dir("/foo/bar");
@@ -637,6 +683,64 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(envs, [("BAR", Some("2")), ("FOO", Some("1"))]);
+    }
+
+    #[test]
+    fn try_into_std_refuses_container_configuration() {
+        use syscalls::Sysno;
+
+        use super::seccomp::Action;
+        use super::seccomp::FilterBuilder;
+
+        let filter = FilterBuilder::new()
+            .default_action(Action::Allow)
+            .syscalls([(Sysno::brk, Action::KillProcess)])
+            .build();
+        let mut command = Command::new("true");
+        command.seccomp(filter);
+        let error = command.try_into_std().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "cannot convert to std::process::Command without losing: seccomp filter"
+        );
+
+        let filter = FilterBuilder::new()
+            .default_action(Action::Allow)
+            .syscalls([(Sysno::brk, Action::KillProcess)])
+            .build();
+        let mut command = Command::new("true");
+        command.seccomp(filter);
+        let panic =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| command.into_std_lossy()))
+                .unwrap_err();
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .expect("legacy conversion panic must carry a string diagnostic");
+        assert_eq!(
+            message,
+            "Command::into_std_lossy refused unsupported configuration: cannot convert to std::process::Command without losing: seccomp filter"
+        );
+
+        let mut command = Command::new("true");
+        command.unshare(Namespace::MOUNT);
+        let error = command.try_into_std().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "cannot convert to std::process::Command without losing: Linux namespaces"
+        );
+
+        let mut command = Command::new("true");
+        command.container.affinity(0);
+        let error = command.try_into_std().unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            error.to_string(),
+            "cannot convert to std::process::Command without losing: CPU affinity"
+        );
     }
 
     #[tokio::test]
