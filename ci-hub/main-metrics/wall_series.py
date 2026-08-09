@@ -296,7 +296,6 @@ def render(rep: dict) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--ledger", default=DEFAULT_LEDGER)
     ap.add_argument("--repo", default="hermit", help="product checkout for ancestry checks")
     ap.add_argument("--all-commits", action="store_true",
                     help="do NOT restrict to main (default is main-only)")
@@ -317,7 +316,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--min-days", type=float, default=90.0)
     ap.add_argument("--min-conditioned-frac", type=float, default=0.9)
     args = ap.parse_args(argv)
-    rep = build(Path(args.ledger), Path(args.repo), not args.all_commits,
+    rep = build(DEFAULT_LEDGER, Path(args.repo), not args.all_commits,
                 args.profile or None, args.result or None)
 
     if args.gate_regression or args.readiness:

@@ -34,7 +34,7 @@ value) so the Rust consumer can re-derive the verdict from receipt fields alone.
 
 Usage:
   finalize_receipt.py --log LOG --sha SHA --hermit-checkout DIR --emit-only
-  finalize_receipt.py --scan --ledger LEDGER --sha SHA \
+  finalize_receipt.py --scan --sha SHA \
     --selected-row-sha256 DIGEST --hermit-checkout DIR
 """
 from __future__ import annotations
@@ -59,6 +59,8 @@ import qualifying_receipt  # noqa: E402
 # aggregate.py and protocol.py). Mirror aggregate.py's sys.path setup.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "remediation"))
 from nonzero_result import per_node_counts  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ledger"))
+import validate_rows as canonical_ledger  # noqa: E402
 
 SCHEMA_VERSION = 5
 RECEIPT_CANONICALIZATION = "serde_json::to_vec(HistoryRow)-v1"
@@ -349,6 +351,8 @@ def _clone_upgraded(
     # finalizer-minted row claim to have been produced by the original driver, which is
     # precisely the misattribution the column exists to prevent.
     row["producer"] = PRODUCER
+    row["corrects"] = base_row.get("record_id")
+    row["record_id"] = f"finalized-{selected_row_sha256}"
     return row
 
 
@@ -434,7 +438,7 @@ def _existing_finalization(
     return matches[0]
 
 
-def select_candidate_sha256(ledger_path: str, sha: str) -> str:
+def select_candidate_sha256(ledger_path: str | None, sha: str) -> str:
     """Select the newest exact-SHA finalizable source and return its canonical ID.
 
     This is a read-only convenience for trusted callers. Mutation still requires
@@ -443,8 +447,11 @@ def select_candidate_sha256(ledger_path: str, sha: str) -> str:
     """
     if SHA_RE.fullmatch(sha) is None:
         raise SelectedRowError("invalid-sha", "--sha must be exactly 40 lowercase hex")
-    with _locked_ledger(ledger_path, exclusive=False) as handle:
-        rows = _load_rows(handle)
+    if ledger_path is None:
+        rows = canonical_ledger.rows()
+    else:
+        with _locked_ledger(ledger_path, exclusive=False) as handle:
+            rows = _load_rows(handle)
     candidates = [
         row
         for row in rows
@@ -490,7 +497,7 @@ def select_candidate_sha256(ledger_path: str, sha: str) -> str:
 
 
 def scan_and_finalize(
-    ledger_path: str,
+    ledger_path: str | None,
     hermit_checkout: str,
     sha: str,
     selected_row_sha256: str,
@@ -509,9 +516,13 @@ def scan_and_finalize(
             Path(os.environ.get("DEV_HERMIT_PARENT", Path(__file__).resolve().parents[2]))
             / "reverie"
         )
-    with _locked_ledger(ledger_path, exclusive=True) as handle:
-        rows = _load_rows(handle)
+    if ledger_path is None:
+        rows = canonical_ledger.rows()
         selected = dict(_resolve_selected_row(rows, sha, selected_row_sha256))
+    else:
+        with _locked_ledger(ledger_path, exclusive=True) as handle:
+            rows = _load_rows(handle)
+            selected = dict(_resolve_selected_row(rows, sha, selected_row_sha256))
 
     if not _is_finalizable_clean_full_pass(selected):
         return {
@@ -637,8 +648,8 @@ def scan_and_finalize(
     # merely claims an incomplete source can never launder that source into an
     # `already-finalized` success. A concurrent append can neither redirect the
     # request to another same-SHA row nor create a second clone of this source.
-    with _locked_ledger(ledger_path, exclusive=True) as handle:
-        rows = _load_rows(handle)
+    if ledger_path is None:
+        rows = canonical_ledger.rows()
         _resolve_selected_row(rows, sha, selected_row_sha256)
         if _existing_finalization(rows, sha, selected_row_sha256) is not None:
             return {
@@ -658,10 +669,33 @@ def scan_and_finalize(
                 "exit_code": 0,
                 "appended": 0,
             }
-        handle.seek(0, os.SEEK_END)
-        handle.write(json.dumps(clone, separators=(",", ":")) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+        canonical_ledger.record(clone)
+    else:
+        with _locked_ledger(ledger_path, exclusive=True) as handle:
+            rows = _load_rows(handle)
+            _resolve_selected_row(rows, sha, selected_row_sha256)
+            if _existing_finalization(rows, sha, selected_row_sha256) is not None:
+                return {
+                    "sha": sha,
+                    "satisfied": True,
+                    "reason": "already-finalized",
+                    "exit_code": 0,
+                    "appended": 0,
+                }
+            if dry_run:
+                return {
+                    "sha": sha,
+                    "satisfied": True,
+                    "reason": "would-mint",
+                    "executed_tests": executed_tests,
+                    "planned_test_nodes": coverage["planned_test_nodes"],
+                    "exit_code": 0,
+                    "appended": 0,
+                }
+            handle.seek(0, os.SEEK_END)
+            handle.write(json.dumps(clone, separators=(",", ":")) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
     return {
         "sha": sha,
         "satisfied": True,
@@ -686,7 +720,7 @@ def main(argv: list[str] | None = None) -> int:
         default=str(Path(os.environ.get("DEV_HERMIT_PARENT", Path(__file__).resolve().parents[2])) / "reverie"),
         help="Reverie checkout/object store used to bind the pinned commit tree",
     )
-    ap.add_argument("--ledger", help="append-only validation ledger JSONL")
+    ap.add_argument("--ledger", help=argparse.SUPPRESS)
     ap.add_argument(
         "--selected-row-sha256",
         help="Rust-canonical SHA-256 identity of the one source row to finalize",
@@ -704,14 +738,18 @@ def main(argv: list[str] | None = None) -> int:
                     help="with --scan: report what would be minted; do NOT write")
     args = ap.parse_args(argv)
 
+    if args.ledger and os.environ.get("CI_HUB_LEDGER_FIXTURE_MODE") != "1":
+        print("finalize_receipt: --ledger is test-fixture-only", file=sys.stderr)
+        return 2
+
     if args.select_candidate_sha256:
-        if args.scan or not args.ledger or not args.sha:
+        if args.scan or not args.sha:
             print(
-                "finalize_receipt: --select-candidate-sha256 requires --ledger and --sha, not --scan",
+                "finalize_receipt: --select-candidate-sha256 requires --sha, not --scan",
                 file=sys.stderr,
             )
             return 2
-        if not os.path.isfile(args.ledger):
+        if args.ledger and not os.path.isfile(args.ledger):
             print(f"finalize_receipt: ledger not found: {args.ledger}", file=sys.stderr)
             return 2
         try:
@@ -725,7 +763,6 @@ def main(argv: list[str] | None = None) -> int:
         missing = [
             name
             for name, value in (
-                ("--ledger", args.ledger),
                 ("--sha", args.sha),
                 ("--selected-row-sha256", args.selected_row_sha256),
             )
@@ -737,7 +774,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 2
-        if not os.path.isfile(args.ledger):
+        if args.ledger and not os.path.isfile(args.ledger):
             print(f"finalize_receipt: ledger not found: {args.ledger}", file=sys.stderr)
             return 2
         try:

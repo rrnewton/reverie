@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""The one validation-ledger boundary used by producers and consumers.
+
+The authority is the append-only per-team/per-machine event union under
+``ledger/<team>/<host>/<YYYY>-<MM>.jsonl``. Producers append the schema event
+directly to that machine's shard, and readers union those shards. There is no
+raw shadow ledger, checkout-local fallback, or discovery path.
+
+No checkout-local or parent-discovered receipt file is consulted here.  Keeping
+path resolution in this module is intentional: a new reader cannot quietly
+invent another source of truth.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import hashlib
+import socket
+import sys
+from pathlib import Path
+from typing import Iterable
+
+from ledger import read_shard, union_events, validate_event
+WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
+
+
+def repository_root() -> Path:
+    if os.environ.get("HERMIT_VALIDATE_STOP_TEST_MODE") == "1":
+        test_root = os.environ.get("CI_HUB_VALIDATE_LEDGER_TEST_ROOT")
+        if test_root:
+            return Path(test_root)
+    return Path(__file__).resolve().parents[2]
+
+
+def short_hostname() -> str:
+    return socket.gethostname().split(".", 1)[0]
+
+
+def shard_paths(root: Path) -> list[Path]:
+    """Every published team/machine/month shard, in deterministic order."""
+    return sorted(root.glob("ledger/*/*/[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl"))
+
+
+def _replace(value, old: str, new: str):
+    if isinstance(value, str):
+        return value.replace(old, new)
+    if isinstance(value, dict):
+        return {key: _replace(item, old, new) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace(item, old, new) for item in value]
+    return value
+
+
+def _workspace_root_for_row(row: dict, fallback: Path) -> str:
+    cwd = str(row.get("cwd") or "")
+    if "/worktrees/" in cwd:
+        return cwd.split("/worktrees/", 1)[0]
+    if cwd.endswith("/hermit") or cwd.endswith("/reverie"):
+        return str(Path(cwd).parent)
+    return str(fallback)
+
+
+def _event_for_row(row: dict, root: Path) -> dict:
+    record_id = str(row.get("record_id") or "")
+    if not record_id:
+        body = json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
+        record_id = "legacy-row-" + hashlib.sha256(body).hexdigest()
+    host = str(row.get("host") or short_hostname()).split(".", 1)[0]
+    emitted_at = str(row.get("finished_at") or "")
+    if len(emitted_at) < 7:
+        raise ValueError("validation row has no usable finished_at")
+    team = str(row.get("repo") or "hermit")
+    outcome = str(row.get("result") or "no_result")
+    if outcome not in {"pass", "fail", "timeout", "incomplete", "killed", "no_result"}:
+        outcome = "no_result"
+    portable = _replace(row, _workspace_root_for_row(row, root), WORKSPACE_TOKEN)
+    event = {
+        "schema": "validate-ledger/v1",
+        "event_id": record_id,
+        "event_type": "run.result",
+        "run_id": record_id,
+        "emitted_at": emitted_at,
+        "team": team,
+        "host": host,
+        "producer": {
+            "source": "observed",
+            "tool": str(row.get("producer") or "unknown"),
+            "tool_version": str(row.get("schema_version") or "unknown"),
+        },
+        "outcome": outcome,
+        "commit": row.get("commit"),
+        "started_at": row.get("started_at"),
+        "workspace": {"repo_relative": portable.get("cwd")},
+        "legacy_row": portable,
+    }
+    rel = f"ledger/{team}/{host}/{emitted_at[:7]}.jsonl"
+    violations = validate_event(event, rel)
+    if violations:
+        raise ValueError(f"validation event violates {','.join(violations)}")
+    return event
+
+
+def record(row: dict, *, root: Path | None = None) -> dict:
+    """Append one observed row to its canonical tracked per-machine shard."""
+    root = (root or repository_root()).resolve()
+    event = _event_for_row(row, root)
+    relative = Path("ledger") / event["team"] / event["host"] / f"{event['emitted_at'][:7]}.jsonl"
+    target = root / relative
+    from ledger import append_events
+    append_events(target, [event])
+    return {
+        "schema": "ci-hub-validate-ledger-record/v1",
+        "event_id": event["event_id"],
+        "run_id": event["run_id"],
+        "shard": relative.as_posix(),
+    }
+
+
+def _read_rows(path: Path) -> list[dict]:
+    text = path.read_text()
+    if text and not text.endswith("\n"):
+        raise ValueError(f"{path}: truncated final ledger line")
+    out = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        value = json.loads(line)
+        if not isinstance(value, dict):
+            raise ValueError(f"{path}:{number}: row is not an object")
+        out.append(value)
+    return out
+
+
+def events(*, root: Path | None = None) -> list[dict]:
+    """The canonical union of every tracked team/machine/month shard."""
+    root = (root or repository_root()).resolve()
+    gathered: list[dict] = []
+    for path in shard_paths(root):
+        gathered.extend(read_shard(path))
+    return union_events(gathered)
+
+
+def rows(*, root: Path | None = None) -> list[dict]:
+    """HistoryRow compatibility view of the one canonical event union."""
+    root = (root or repository_root()).resolve()
+    out: list[dict] = []
+    seen: set[str] = set()
+    for event in events(root=root):
+        row = event.get("legacy_row")
+        if isinstance(row, dict):
+            restored = _replace(row, WORKSPACE_TOKEN, str(root))
+            identity = json.dumps(restored, sort_keys=True, separators=(",", ":"))
+            if identity not in seen:
+                seen.add(identity)
+                out.append(restored)
+    return out
+
+
+def emit_jsonl(items: Iterable[dict]) -> None:
+    for item in items:
+        print(json.dumps(item, sort_keys=True, separators=(",", ":")))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("rows", help="emit the canonical HistoryRow compatibility view")
+    commands.add_parser("events", help="emit the canonical event union")
+    commands.add_parser("record", help="read one HistoryRow JSON object from stdin and journal it")
+    args = parser.parse_args(argv)
+    if args.command == "record":
+        try:
+            value = json.load(sys.stdin)
+            if not isinstance(value, dict):
+                raise ValueError("input is not a JSON object")
+            print(json.dumps(record(value), sort_keys=True))
+            return 0
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            print(f"validate-ledger: REFUSED: {error}", file=sys.stderr)
+            return 2
+    emit_jsonl(events() if args.command == "events" else rows())
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

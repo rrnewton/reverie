@@ -102,7 +102,6 @@ def judge(cpu: float, base: dict, tolerance: float) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER)
     ap.add_argument("--profile", default="full", help="compare like with like; '' for all")
     ap.add_argument("--tolerance", type=float, default=1.25,
                     help="regression iff CPU > p90 * tolerance (default 1.25)")
@@ -115,10 +114,7 @@ def main(argv: list[str] | None = None) -> int:
                          "baseline has been watched, not by the commit adding it")
     a = ap.parse_args(argv)
 
-    if not a.ledger.exists():
-        print(f"UNVERIFIABLE: no ledger at {a.ledger}", file=sys.stderr)
-        return 2
-    rows = load(a.ledger, a.profile or None)
+    rows = load(DEFAULT_LEDGER, a.profile or None)
     base = baseline(rows)
     if base is None:
         # Refusing is the point: a threshold derived from a handful of runs

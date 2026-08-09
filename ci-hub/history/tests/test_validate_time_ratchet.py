@@ -12,6 +12,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 MODULE = Path(__file__).resolve().parents[1] / "validate_time_ratchet.py"
@@ -56,28 +57,32 @@ def row(
 
 
 class RatchetTest(unittest.TestCase):
+    def run_main(self, ledger_path: Path, arguments: list[str]) -> int:
+        with mock.patch.object(vtr, "DEFAULT_LEDGER", ledger_path):
+            return vtr.main(arguments)
+
     def test_positive_a_normal_run_is_not_flagged(self):
         """Load-bearing: a tool that alarms on ordinary runs gets muted."""
         with tempfile.TemporaryDirectory() as tmp:
             led = ledger(tmp, [100.0] * 40)
-            self.assertEqual(0, vtr.main(["--ledger", str(led), "--cpu-seconds", "105", "--gate"]))
+            self.assertEqual(0, self.run_main(led, ["--cpu-seconds", "105", "--gate"]))
 
     def test_negative_a_regressed_run_is_flagged_and_gates(self):
         with tempfile.TemporaryDirectory() as tmp:
             led = ledger(tmp, [100.0] * 40)
-            self.assertEqual(1, vtr.main(["--ledger", str(led), "--cpu-seconds", "500", "--gate"]))
+            self.assertEqual(1, self.run_main(led, ["--cpu-seconds", "500", "--gate"]))
 
     def test_gate_is_opt_in_so_the_default_cannot_block_landing(self):
         """Same regressed input, no --gate: reports but exits 0."""
         with tempfile.TemporaryDirectory() as tmp:
             led = ledger(tmp, [100.0] * 40)
-            self.assertEqual(0, vtr.main(["--ledger", str(led), "--cpu-seconds", "500"]))
+            self.assertEqual(0, self.run_main(led, ["--cpu-seconds", "500"]))
 
     def test_too_few_samples_refuses_rather_than_inventing_a_threshold(self):
         """A p90 over 3 runs is a number with no authority behind it."""
         with tempfile.TemporaryDirectory() as tmp:
             led = ledger(tmp, [100.0] * 3)
-            self.assertEqual(2, vtr.main(["--ledger", str(led), "--cpu-seconds", "500", "--gate"]))
+            self.assertEqual(2, self.run_main(led, ["--cpu-seconds", "500", "--gate"]))
 
     def test_profiles_are_not_mixed_into_one_baseline(self):
         """`quick` and `full` are different workloads; pooling them is meaningless.
@@ -92,11 +97,11 @@ class RatchetTest(unittest.TestCase):
                     f.write(json.dumps(row(10, "quick", commit=f"1{index:039x}")) + "\n")
                 for index in range(40):
                     f.write(json.dumps(row(500, "full", commit=f"2{index:039x}")) + "\n")
-            self.assertEqual(0, vtr.main(["--ledger", str(p), "--profile", "full",
-                                          "--cpu-seconds", "500", "--gate"]))
+            self.assertEqual(0, self.run_main(p, ["--profile", "full",
+                                                  "--cpu-seconds", "500", "--gate"]))
             # Judged against the cheap quick baseline, the same number IS a regression.
-            self.assertEqual(1, vtr.main(["--ledger", str(p), "--profile", "quick",
-                                          "--cpu-seconds", "500", "--gate"]))
+            self.assertEqual(1, self.run_main(p, ["--profile", "quick",
+                                                  "--cpu-seconds", "500", "--gate"]))
 
     def test_rows_without_timing_do_not_enter_the_baseline(self):
         with tempfile.TemporaryDirectory() as tmp:

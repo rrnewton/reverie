@@ -21,6 +21,8 @@ from typing import Mapping
 CI_HUB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CI_HUB / "remediation"))
 from nonzero_result import per_node_counts  # noqa: E402
+sys.path.insert(0, str(CI_HUB / "ledger"))
+import validate_rows as canonical_ledger  # noqa: E402
 
 
 DEFAULT_REGISTRY = Path(__file__).with_name("flaky-cells.json")
@@ -776,7 +778,6 @@ def build_evidence(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--log", required=True, type=Path)
-    parser.add_argument("--ledger", type=Path)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--dag-jobs", required=True, type=int)
     parser.add_argument("--concurrent-validates", required=True)
@@ -799,7 +800,7 @@ def main(argv: list[str] | None = None) -> int:
     evidence = build_evidence(
         log_text=log_text,
         registry=registry,
-        prior=ledger_rows(args.ledger),
+        prior=canonical_ledger.rows(),
         commit=args.commit,
         dag_jobs=args.dag_jobs,
         concurrent_validates=concurrent,

@@ -1,25 +1,14 @@
 #!/usr/bin/env python3
-"""Machine-wide validate-run visibility.
+"""Machine-wide view of the canonical per-machine validation-ledger union.
 
 Sweeps and aggregates EVERY validate run on this machine into one view,
 regardless of which repo (hermit or reverie), worktree, agent, or slot produced
 it. Each record carries a `repo` discriminator so the two products are queryable
-through one command and comparable over time. It unifies three data sources that
-today live in disconnected places:
+through one command and comparable over time. Receipt rows come from exactly one
+source: ``ci-hub/ledger/validate_rows.py``. Raw logs remain diagnostic evidence;
+they are never reconstructed into receipt-like rows.
 
-  1. Structured JSONL ledgers written by hermit/scripts/validate.rs and reverie/validate.sh
-     (append_validation_ledger). hermit's default path is
-     `$DEV_HERMIT_PARENT/ignored/validate-run-ledger.jsonl`, but a run whose
-     DEV_HERMIT_PARENT is unset (most worktree / standalone runs) skips the
-     append entirely, so the parent ledger only ever sees a fraction of runs.
-     reverie instead writes to its own checkout-local `<root>/ignored/` (no
-     DEV_HERMIT_PARENT dependence), which the per-worktree/primary globs below
-     already discover, so a detached reverie run is recorded, not reconstructed.
-  2. Raw per-run logs `$TMPDIR/{hermit,reverie}-validate.XXXXXX.log` (always
-     written via mktemp, for EVERY run). These are the ground truth: this tool
-     reconstructs a ledger-equivalent record for any log not covered by a JSONL
-     ledger, recovering the otherwise-invisible worktree/standalone runs.
-  3. safe-ci-dag-runner per-node profiling CSVs under
+safe-ci-dag-runner per-node profiling CSVs under
      `<checkout>/.safe-ci-dag-runner/profiles/` (aggregate + per-step). These
      are retained and appended across runs; this tool indexes them and links
      each run to its profiling by (checkout, git_sha, timestamp).
@@ -27,14 +16,10 @@ today live in disconnected places:
 This is the "validate-run-ledger, extended to machine-wide" deliverable and
 lives in the dev-hermit PARENT per the tracking-goes-outer principle.
 
-Read-only by default. `--write-global` persists the unified view to
-`<parent>/ignored/validate-run-global.jsonl` (a gitignored durable artifact).
-
 Usage:
   ci-hub/validate/aggregate.py                 # table, newest last
   ci-hub/validate/aggregate.py --json          # unified records as JSON
   ci-hub/validate/aggregate.py --csv out.csv   # flat CSV
-  ci-hub/validate/aggregate.py --write-global  # persist unified JSONL
   ci-hub/validate/aggregate.py --since 2026-08-03  # filter by date
   ci-hub/validate/aggregate.py --profiling     # profiling coverage view
 """
@@ -46,6 +31,7 @@ import datetime as dt
 import glob
 import json
 import os
+from pathlib import Path
 import re
 import sys
 
@@ -65,6 +51,8 @@ from nonzero_result import executed_test_count, filtered_test_count  # noqa: E40
 # -j width + concurrent-validate count and enforces re-run-before-write.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import flake_class  # noqa: E402
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ledger"))
+import validate_rows as canonical_ledger  # noqa: E402
 
 SHA_RE = re.compile(r"\b[0-9a-f]{40}\b")
 DUR_RE = re.compile(r"(\d+)")
@@ -159,45 +147,15 @@ def repo_from(cwd: str | None, path: str | None, header_repo: str | None) -> str
 # Source 1 + 2: ledgers and raw logs -> unified run records
 # ---------------------------------------------------------------------------
 
-def discover_ledgers(parent: str) -> list[str]:
-    paths = set()
-    paths.add(os.path.join(parent, "ignored", "validate-run-ledger.jsonl"))
-    # Per-worktree / nested ledgers.
-    for pat in (
-        os.path.join(parent, "worktrees", "*", "ignored", "validate-run-ledger.jsonl"),
-        os.path.join(parent, "worktrees", "*", "*", "ignored", "validate-run-ledger.jsonl"),
-        os.path.join(parent, "*", "ignored", "validate-run-ledger.jsonl"),
-    ):
-        paths.update(glob.glob(pat))
-    # Ad-hoc named ledgers (HERMIT_VALIDATE_LEDGER overrides) usually land in tmp.
-    for d in tmpdirs():
-        paths.update(glob.glob(os.path.join(d, "hermit-validate-ledger*.jsonl")))
-        paths.update(glob.glob(os.path.join(d, "*validate*ledger*.jsonl")))
-    return sorted(p for p in paths if os.path.isfile(p))
-
-
 def load_ledger_records(parent: str):
     records = {}  # keyed by canonical log_file (fallback: synthetic key)
-    for lf in discover_ledgers(parent):
-        try:
-            with open(lf, errors="replace") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    rec["_source"] = "ledger"
-                    rec["_ledger_file"] = lf
-                    # Only reverie/validate.sh writes `repo`; a record without it
-                    # is a hermit ledger row (hermit never emitted the field).
-                    rec.setdefault("repo", "hermit")
-                    key = rec.get("log_file") or f"{lf}:{rec.get('started_at')}"
-                    records[key] = rec
-        except OSError:
-            continue
+    for index, source in enumerate(canonical_ledger.rows(root=Path(parent))):
+        rec = dict(source)
+        rec["_source"] = "ledger"
+        rec["_ledger_file"] = "canonical-union"
+        rec.setdefault("repo", "hermit")
+        key = rec.get("record_id") or rec.get("log_file") or f"canonical:{index}"
+        records[key] = rec
     return records
 
 
@@ -401,22 +359,6 @@ def parse_raw_log(path: str) -> dict:
 
 def load_all_runs(parent: str) -> list[dict]:
     records = load_ledger_records(parent)
-    # Add reconstructed records for every raw log not already covered. Both
-    # products write `<product>-validate.XXXXXX.log` via mktemp on every run.
-    for d in tmpdirs():
-        for prefix in ("hermit-validate", "reverie-validate"):
-            for path in glob.glob(os.path.join(d, f"{prefix}.*.log")):
-                if path in records:
-                    continue
-                records[path] = parse_raw_log(path)
-    # Also scan committed worktree run logs (validate-run-*.log) under any
-    # ignored/ dir, pruning heavy build trees.
-    def is_run_log(fn: str) -> bool:
-        return fn.startswith("validate-run") and fn.endswith(".log")
-
-    for path in walk_pruned(parent, is_run_log):
-        if os.sep + "ignored" + os.sep in path and path not in records:
-            records[path] = parse_raw_log(path)
     runs = list(records.values())
     for r in runs:
         r.setdefault("_mtime", 0)
@@ -612,8 +554,6 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--json", action="store_true", help="emit unified records as JSON")
     ap.add_argument("--csv", metavar="FILE", help="write a flat CSV")
-    ap.add_argument("--write-global", action="store_true",
-                    help="persist unified JSONL to <parent>/ignored/validate-run-global.jsonl")
     ap.add_argument("--since", metavar="YYYY-MM-DD", help="only runs on/after this UTC date")
     ap.add_argument("--slot", metavar="NAME", help="filter to one slot/worktree")
     ap.add_argument("--profiling", action="store_true",
@@ -698,17 +638,6 @@ def main() -> int:
                 print(f"      - {reason}")
         return 0
 
-    if args.write_global:
-        outp = os.path.join(parent, "ignored", "validate-run-global.jsonl")
-        os.makedirs(os.path.dirname(outp), exist_ok=True)
-        with open(outp, "w") as fh:
-            for r in runs:
-                clean = {k: v for k, v in r.items() if not k.startswith("_")}
-                clean["source"] = r.get("_source")
-                clean["profiling_linked"] = bool(r.get("_profiling"))
-                fh.write(json.dumps(clean) + "\n")
-        print(f"wrote {len(runs)} unified records -> {outp}")
-
     if args.csv:
         with open(args.csv, "w", newline="") as fh:
             w = csvmod.writer(fh)
@@ -741,7 +670,7 @@ def main() -> int:
         print(json.dumps(out, indent=2))
         return 0
 
-    if not args.csv and not args.write_global:
+    if not args.csv:
         print(render_table(runs))
     print(summarize(runs, profiles, linked))
     return 0

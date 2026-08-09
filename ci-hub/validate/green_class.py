@@ -113,7 +113,7 @@ reads that file inherits the decision — instead of each consumer quietly decid
 for itself what a soft row means.
 
 USAGE
-  green_class.py --ledger PATH [--sha SHA] [--json]     # classify rows
+  green_class.py [--sha SHA] [--json]                   # classify canonical rows
   from green_class import classify_row, classify_delta  # library
 
 EXIT CODES
@@ -465,7 +465,6 @@ def classify_delta(checkout: Path, ancestor: str, head: str, old_base: str,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Classify ledger rows as hard/soft green.")
-    parser.add_argument("--ledger", required=True)
     parser.add_argument("--sha", default=None, help="only rows for this commit")
     parser.add_argument("--predicate", default=str(DEFAULT_PREDICATE))
     parser.add_argument("--json", action="store_true")
@@ -480,20 +479,13 @@ def main(argv: list[str] | None = None) -> int:
 
     verdicts, malformed = [], 0
     try:
-        with open(args.ledger) as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    malformed += 1
-                    continue
-                if args.sha and row.get("commit") != args.sha:
-                    continue
-                verdicts.append(classify_row(row, predicate))
-    except OSError as exc:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
+        import validate_rows as canonical_ledger
+        for row in canonical_ledger.rows():
+            if args.sha and row.get("commit") != args.sha:
+                continue
+            verdicts.append(classify_row(row, predicate))
+    except (OSError, ValueError) as exc:
         print(f"green_class: cannot read ledger: {exc}", file=sys.stderr)
         return EXIT_ERROR
 

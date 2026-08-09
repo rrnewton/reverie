@@ -47,7 +47,12 @@ question you are asking first.
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
 from typing import Any, Mapping
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
+import validate_rows as canonical_ledger  # noqa: E402
 
 TOTAL = "TOTAL"
 INCREMENTAL = "INCREMENTAL"
@@ -227,25 +232,12 @@ def incremental_chain_depth(rows, *, passes_only: bool = True) -> dict[str, Any]
     }
 
 
-def _audit(path: str) -> int:
+def _audit() -> int:
     """Report scope breakdown and chain depth for a ledger, with denominators."""
     import collections
-    import json
-
-    rows = []
-    with open(path, errors="replace") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                value = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(value, dict):
-                rows.append(value)
+    rows = canonical_ledger.rows()
     if not rows:
-        print(f"totality: no rows in {path}")
+        print("totality: no rows in canonical ledger union")
         return 2
 
     def table(label, subset):
@@ -256,7 +248,7 @@ def _audit(path: str) -> int:
             print(f"  {scope:<12} {n:>5}  ({100 * n / len(subset):5.1f}%)")
         return counts
 
-    print(f"ledger: {path}  rows={len(rows)}\n")
+    print(f"ledger: canonical-union  rows={len(rows)}\n")
     table("ALL ROWS", rows)
     passes = [r for r in rows if r.get("result") == "pass"]
     if passes:
@@ -286,8 +278,4 @@ def _audit(path: str) -> int:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ledger", default="ignored/validate-run-ledger.jsonl")
-    raise SystemExit(_audit(parser.parse_args().ledger))
+    raise SystemExit(_audit())

@@ -1,0 +1,74 @@
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+
+import validate_rows  # noqa: E402
+
+
+def row(root: Path, *, record_id: str = "host-1-7", host: str = "hosta") -> dict:
+    return {
+        "schema_version": 5,
+        "record_id": record_id,
+        "repo": "hermit",
+        "producer": "hermit-validate-rs",
+        "host": host,
+        "started_at": "2026-08-09T01:00:00Z",
+        "finished_at": "2026-08-09T01:01:00Z",
+        "result": "pass",
+        "commit": "a" * 40,
+        "cwd": str(root / "worktrees" / "slot" / "hermit"),
+    }
+
+
+def test_record_is_immediately_visible_through_canonical_union(tmp_path: Path):
+    source = row(tmp_path)
+    report = validate_rows.record(source, root=tmp_path)
+
+    assert report["shard"] == "ledger/hermit/hosta/2026-08.jsonl"
+    assert validate_rows.rows(root=tmp_path) == [source]
+
+
+def test_repeated_record_of_same_event_unions_once(tmp_path: Path):
+    source = row(tmp_path)
+    validate_rows.record(source, root=tmp_path)
+    validate_rows.record(source, root=tmp_path)
+
+    assert len(validate_rows.events(root=tmp_path)) == 1
+    assert validate_rows.rows(root=tmp_path) == [source]
+
+
+def test_every_published_machine_is_implicitly_unioned(tmp_path: Path):
+    first = row(tmp_path, record_id="hosta-1-7", host="hosta")
+    second = row(tmp_path, record_id="hostb-1-8", host="hostb")
+    for source in (first, second):
+        event = validate_rows._event_for_row(source, tmp_path)
+        shard = (
+            tmp_path
+            / "ledger"
+            / "hermit"
+            / source["host"]
+            / "2026-08.jsonl"
+        )
+        shard.parent.mkdir(parents=True)
+        shard.write_text(json.dumps(event, sort_keys=True) + "\n")
+
+    assert {item["host"] for item in validate_rows.rows(root=tmp_path)} == {
+        "hosta",
+        "hostb",
+    }
+
+
+@pytest.mark.parametrize("field", ["finished_at"])
+def test_incomplete_row_is_refused_without_creating_an_alternate_ledger(
+    tmp_path: Path, field: str
+):
+    source = row(tmp_path)
+    del source[field]
+    with pytest.raises(ValueError):
+        validate_rows.record(source, root=tmp_path)
+    assert not (tmp_path / "ledger").exists()

@@ -42,6 +42,7 @@ from pathlib import Path
 
 CI_HUB = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CI_HUB))
+sys.path.insert(0, str(CI_HUB / "ledger"))
 
 from check_outcome import (
     CheckOutcome,
@@ -50,6 +51,7 @@ from check_outcome import (
     select_latest_workflow_attempts,
 )
 import qualifying_receipt
+import validate_rows as canonical_ledger
 
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
@@ -936,31 +938,17 @@ def _sum_by_state(intervals: list[dict], lo: float | None = None,
 # A row missing both count fields does NOT corroborate, and schema-5+ rows must
 # prove complete per-node coverage. `filtered_tests` is diagnostic: full runs
 # legitimately filter tests outside their planned DAG nodes.
-LEDGER_REL = os.path.join("ignored", "validate-run-ledger.jsonl")
-
-
 def load_ledger_index(parent: str) -> dict[str, list[dict]]:
-    """commit SHA -> [ledger rows] from ignored/validate-run-ledger.jsonl.
-
-    Absent file -> empty index -> every green falls to conclusion-only. One
-    malformed JSONL line is skipped, not fatal (the ledger has many writers).
-    """
-    path = os.path.join(parent, LEDGER_REL)
+    """commit SHA -> rows from the canonical per-machine ledger union."""
     idx: dict[str, list[dict]] = {}
-    if not os.path.isfile(path):
+    try:
+        rows = canonical_ledger.rows(root=Path(parent))
+    except (OSError, ValueError, json.JSONDecodeError):
         return idx
-    with open(path, errors="replace") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            sha = row.get("commit")
-            if sha:
-                idx.setdefault(sha, []).append(row)
+    for row in rows:
+        sha = row.get("commit")
+        if sha:
+            idx.setdefault(sha, []).append(row)
     return idx
 
 

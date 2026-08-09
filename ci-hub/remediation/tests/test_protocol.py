@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -3558,7 +3559,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn("bound to rrnewton/hermit", evidence["reason"])
 
     def test_real_canonical_cli_brackets_planted_receipts(self) -> None:
-        ledger = self.root / "isolated-ledger.jsonl"
+        ledger = self.root / "ledger" / "hermit" / "test-host" / "2026-08.jsonl"
         observed_commands: list[tuple[str, ...]] = []
         producer_sha = json.loads(PRODUCER_REGISTRY.read_text())["registered_at"]
         subprocess.run(
@@ -3575,16 +3576,24 @@ class ProtocolTest(unittest.TestCase):
         def run_actual_cli(command, **kwargs):
             canonical_command = tuple(command)
             observed_commands.append(canonical_command)
+            environment = os.environ.copy()
+            environment.update(
+                HERMIT_VALIDATE_STOP_TEST_MODE="1",
+                CI_HUB_VALIDATE_LEDGER_TEST_ROOT=str(self.root),
+            )
             return subprocess.run(
-                [*canonical_command, "--ledger", str(ledger)],
+                canonical_command,
                 check=False,
                 text=True,
                 capture_output=True,
+                env=environment,
                 timeout=kwargs.get("timeout"),
             )
 
         def verify(row: dict) -> tuple[bool, dict]:
-            ledger.write_text(json.dumps(row) + "\n", encoding="utf-8")
+            ledger.parent.mkdir(parents=True, exist_ok=True)
+            event = protocol.canonical_ledger._event_for_row(row, self.root)
+            ledger.write_text(json.dumps(event) + "\n", encoding="utf-8")
             with mock.patch.object(protocol, "_run", side_effect=run_actual_cli):
                 return protocol.verify_local_receipt("rrnewton/hermit", producer_sha)
 

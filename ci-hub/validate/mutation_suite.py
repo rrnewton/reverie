@@ -50,8 +50,9 @@ from typing import Any, Callable, Optional
 HERE = Path(__file__).resolve().parent
 CI_HUB = HERE.parent
 PARENT = CI_HUB.parent
-for p in (HERE, CI_HUB, CI_HUB / "landing", CI_HUB / "timeout_audit"):
+for p in (HERE, CI_HUB, CI_HUB / "landing", CI_HUB / "timeout_audit", CI_HUB / "ledger"):
     sys.path.insert(0, str(p))
+import validate_rows as canonical_ledger  # noqa: E402
 
 KILLED = "KILLED"
 SURVIVED = "SURVIVED"
@@ -359,16 +360,14 @@ def _catalogue() -> tuple[list[Mutant], list[Population]]:
                    "13h schema-5 producer outage report",
                    lambda: not QR.is_qualified(_row(finished_at=None))),
         ]
-        ledger = PARENT / "ignored" / "validate-run-ledger.jsonl"
-        if ledger.is_file():
-            def _pop():
-                rows = [json.loads(l) for l in ledger.read_text().splitlines() if l.strip()]
-                qual = [r for r in rows if QR.is_qualified(r)]
-                # The control: a guard that killed everything would qualify 0.
-                return (0 if qual else 1, len(rows))
-            pops.append(Population("qualified_rows",
-                                   "real ledger rows still qualify (guard is not kill-everything)",
-                                   _pop))
+        def _pop():
+            rows = canonical_ledger.rows(root=PARENT)
+            qual = [r for r in rows if QR.is_qualified(r)]
+            # The control: a guard that killed everything would qualify 0.
+            return (0 if qual else 1, len(rows))
+        pops.append(Population("qualified_rows",
+                               "real ledger rows still qualify (guard is not kill-everything)",
+                               _pop))
     except Exception as err:                                  # pragma: no cover
         mutants.append(Mutant("qualified_rows/UNAVAILABLE", "qualified_rows",
                               f"import failed: {err}", lambda: False))

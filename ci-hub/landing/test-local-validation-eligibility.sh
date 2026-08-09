@@ -30,6 +30,7 @@ authority=$script_dir/exact-head-validation-authority.sh
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
 ledger=$tmp/ledger.jsonl
+canonical_root=$tmp/canonical
 
 # HEAD is the live registered producer commit: the authoritative consumer now
 # resolves the whole producer map from Git, so a nonexistent synthetic SHA can
@@ -106,8 +107,23 @@ tampered_row() { pass_row "$HEAD_SHA" | jq -c "$1"; }
 check() {
   local side=$1 expected_rc=$2 expected_verdict=$3 name=$4; shift 5
   local output rc verdict status=OK
+  rm -rf -- "$canonical_root/ledger"
+  mkdir -p -- "$canonical_root"
+  ROOT="$root" CANONICAL_ROOT="$canonical_root" RAW_LEDGER="$ledger" python3 -c '
+import json, os, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(os.environ["ROOT"]) / "ci-hub" / "ledger"))
+import validate_rows
+source = Path(os.environ["RAW_LEDGER"])
+if source.is_file():
+    for line in source.read_text().splitlines():
+        if line.strip():
+            validate_rows.record(json.loads(line), root=Path(os.environ["CANONICAL_ROOT"]))
+'
   set +e
-  output=$(CI_HUB_VALIDATE_LEDGER="$ledger" "$helper" "$@" 2>&1)
+  output=$(HERMIT_VALIDATE_STOP_TEST_MODE=1 \
+    CI_HUB_VALIDATE_LEDGER_TEST_ROOT="$canonical_root" \
+    "$helper" "$@" 2>&1)
   rc=$?
   set -e
   verdict=$(grep '^ELIGIBILITY=' <<<"$output" | tail -1 || true)
@@ -307,20 +323,20 @@ else
 fi
 
 # 3b. The predicate's authority is only as strong as the environment it runs in:
-#     CI_HUB_VALIDATE_STATUS_BIN replaces the authority binary and
-#     CI_HUB_VALIDATE_LEDGER replaces the ledger (and the step-4a re-mint's
-#     ledger). Those overrides are what make THIS test inert and possible, so
-#     they stay -- but a real landing must not inherit them. The lander clears
-#     both before anything reads them; assert the clear is still there and still
+#     CI_HUB_VALIDATE_STATUS_BIN replaces the authority binary. That override
+#     makes one fail-closed bracket possible, but a real landing must not inherit
+#     it. The ledger fixture instead uses the adapter's stop-test-only root, which
+#     the real producer path can never enter. The lander clears the binary override
+#     before anything reads it; assert the clear is still there and still
 #     ahead of the first read.
 # `|| true` is load-bearing: under `set -euo pipefail` a non-matching grep would
 # abort the script here, and a guard that crashes is not a guard that fired.
-unset_line=$( { grep -n '^unset CI_HUB_VALIDATE_STATUS_BIN CI_HUB_VALIDATE_LEDGER$' "$lander" || true; } | head -1 | cut -d: -f1)
+unset_line=$( { grep -n '^unset CI_HUB_VALIDATE_STATUS_BIN$' "$lander" || true; } | head -1 | cut -d: -f1)
 first_read=$( { grep -n 'exact-head-validation-authority\.sh"\|scan-finalize\.sh' "$lander" || true; } | head -1 | cut -d: -f1)
 if [ -n "$unset_line" ] && [ -n "$first_read" ] && [ "$unset_line" -lt "$first_read" ]; then
-  audit "land-pr.sh clears both validate env overrides (line $unset_line) before first read (line $first_read)" ok
+  audit "land-pr.sh clears the validate binary override (line $unset_line) before first read (line $first_read)" ok
 else
-  audit "land-pr.sh does not clear CI_HUB_VALIDATE_STATUS_BIN/LEDGER before use (unset=${unset_line:-none} first-read=${first_read:-none})" bad
+  audit "land-pr.sh does not clear CI_HUB_VALIDATE_STATUS_BIN before use (unset=${unset_line:-none} first-read=${first_read:-none})" bad
 fi
 
 # 4. COORDINATOR DECISION: no merge path outside land-pr.sh. A bare label can

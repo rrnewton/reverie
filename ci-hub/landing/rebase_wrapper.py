@@ -162,9 +162,7 @@ def parent_root() -> str:
 
 
 def default_store() -> str:
-    """Canonical rebase-records store path -- beside the validate ledger
-    (ignored/validate-run-ledger.jsonl) at the parent root, so a lander finds
-    both provenance stores in one place.
+    """Canonical rebase-records store path at the parent root.
 
     CI_HUB_REBASE_STORE overrides outright (a fleet can pin ONE shared path);
     otherwise the path is anchored to the canonical `parent_root()`, NEVER to

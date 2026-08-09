@@ -41,12 +41,9 @@ from failure_evidence import (  # noqa: E402
     DEFAULT_REGISTRY,
     classify_failed_substeps,
     flaky_cells,
-    ledger_rows,
 )
-
-DEFAULT_LEDGER = (
-    Path(__file__).resolve().parents[2] / "ignored" / "validate-run-ledger.jsonl"
-)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
+import validate_rows as canonical_ledger  # noqa: E402
 
 # The durable capture. WHY IT EXISTS: the run ledger's ``log_file`` points at
 # ephemeral /tmp state that outlives neither recycling nor a reboot, so a red row
@@ -434,7 +431,6 @@ def _render(record: Mapping[str, object]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER)
     parser.add_argument("--registry", type=Path, default=DEFAULT_REGISTRY)
     parser.add_argument(
         "--commit", help="only rows whose commit starts with this prefix"
@@ -492,7 +488,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    rows = ledger_rows(args.ledger)
+    rows = canonical_ledger.rows()
     reds = [r for r in rows if _is_red(r)]
     if args.commit:
         reds = [r for r in reds if str(r.get("commit") or "").startswith(args.commit)]

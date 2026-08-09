@@ -35,6 +35,7 @@ def _producer_definition_fixture(monkeypatch):
     use synthetic SHAs and non-git paths, so provide explicit derived evidence
     rather than weakening the production resolver.
     """
+    monkeypatch.setenv("CI_HUB_LEDGER_FIXTURE_MODE", "1")
     monkeypatch.setattr(
         fr.qualifying_receipt,
         "resolve_producer_definition",

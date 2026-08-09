@@ -561,11 +561,6 @@ struct ValidateStatusArgs {
     /// Repository used to resolve --pr head SHAs.
     #[arg(long, default_value = "rrnewton/hermit")]
     repo: String,
-    /// Override the validate ledger path. Default: the parent-repo ledger named
-    /// by validate_status::LEDGER_REL (resolved against the repo root by
-    /// ledger_path); the literal lives only in that const, never restated here.
-    #[arg(long)]
-    ledger: Option<PathBuf>,
     /// Emit the machine-readable verdict report.
     #[arg(long)]
     json: bool,
@@ -631,17 +626,10 @@ enum LedgerCommand {
 }
 
 #[derive(Args, Clone, Debug)]
-struct QualifiedRowsArgs {
-    /// Override ignored/validate-run-ledger.jsonl.
-    #[arg(long)]
-    ledger: Option<PathBuf>,
-}
+struct QualifiedRowsArgs {}
 
 #[derive(Args, Clone, Debug)]
 struct AttributeRedsArgs {
-    /// Override ignored/validate-run-ledger.jsonl.
-    #[arg(long)]
-    ledger: Option<PathBuf>,
     /// Only rows whose commit starts with this prefix.
     #[arg(long)]
     commit: Option<String>,
@@ -674,9 +662,6 @@ struct HistoryQueryArgs {
     /// Remote branch to walk, newest first.
     #[arg(long, default_value = "main")]
     branch: String,
-    /// Override the canonical local validate ledger.
-    #[arg(long)]
-    ledger: Option<PathBuf>,
     /// Do not refresh origin/<branch> before querying (offline/reproducible use).
     #[arg(long)]
     no_fetch: bool,
@@ -716,11 +701,6 @@ struct ApplyLocalLabelArgs {
     /// Repository whose PRs are labeled.
     #[arg(long, default_value = "rrnewton/hermit")]
     repo: String,
-    /// Override the validate ledger path. Default: the parent-repo ledger named
-    /// by validate_status::LEDGER_REL (resolved against the repo root by
-    /// ledger_path); the literal lives only in that const, never restated here.
-    #[arg(long)]
-    ledger: Option<PathBuf>,
     /// Report intended label actions without editing any label.
     #[arg(long)]
     dry_run: bool,
@@ -1790,17 +1770,11 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
         }
         HubCommand::Ledger(args) => match args.command {
             LedgerCommand::QualifiedRows(qualified_args) => {
-                let mut forwarded = Vec::new();
-                if let Some(ledger) = qualified_args.ledger {
-                    push_option(&mut forwarded, "--ledger", ledger);
-                }
-                run_python(root, "ci-hub/validate/qualified_rows.py", forwarded)
+                let _ = qualified_args;
+                run_python(root, "ci-hub/validate/qualified_rows.py", Vec::new())
             }
             LedgerCommand::AttributeReds(red_args) => {
                 let mut forwarded = Vec::new();
-                if let Some(ledger) = red_args.ledger {
-                    push_option(&mut forwarded, "--ledger", ledger);
-                }
                 if let Some(commit) = red_args.commit {
                     push_option(&mut forwarded, "--commit", commit);
                 }
@@ -3372,18 +3346,38 @@ fn run_local_history(root: &Path, args: LocalHistoryArgs) -> Result<i32, CiHubEr
     run_python(root, "ci-hub/validate/aggregate.py", forwarded)
 }
 
-/// Resolve the validate ledger path, honoring an explicit override.
-fn ledger_path(root: &Path, override_path: &Option<PathBuf>) -> PathBuf {
-    override_path
-        .clone()
-        .unwrap_or_else(|| root.join(validate_status::LEDGER_REL))
+/// Resolve the one logical validate-ledger root.
+fn ledger_path(root: &Path) -> PathBuf {
+    root.join(validate_status::LEDGER_REL)
 }
 
-/// Load and parse the validate ledger. A missing ledger is an empty history (a
-/// commit is simply NOT validated), never an error. Unparseable lines are
-/// skipped with a warning so one bad append never blinds the whole query.
+/// Load and parse the validate ledger. The default `ledger/` argument is a
+/// LOGICAL root, not a file: the one canonical adapter unions per-machine live
+/// journals and published shards. A file is accepted only as an explicit
+/// diagnostic/test fixture; production call sites never manufacture one.
 fn load_ledger_rows(path: &Path) -> Result<Vec<HistoryRow>, CiHubError> {
-    let buf = match std::fs::read_to_string(path) {
+    let canonical = path.file_name().is_some_and(|name| name == "ledger");
+    let buf = if canonical {
+        let root = path.parent().unwrap_or_else(|| Path::new("."));
+        let output = Command::new("python3")
+            .arg(root.join("ci-hub/ledger/validate_rows.py"))
+            .arg("rows")
+            .output()
+            .map_err(|source| CiHubError::Launch {
+                tool: "canonical validate-ledger union".into(),
+                source,
+            })?;
+        if !output.status.success() {
+            return Err(CiHubError::ValidateStatus(format!(
+                "canonical validate-ledger union refused: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            )));
+        }
+        String::from_utf8(output.stdout).map_err(|error| {
+            CiHubError::ValidateStatus(format!("canonical ledger emitted non-UTF-8 data: {error}"))
+        })?
+    } else {
+        match std::fs::read_to_string(path) {
         Ok(buf) => buf,
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         Err(source) => {
@@ -3391,6 +3385,7 @@ fn load_ledger_rows(path: &Path) -> Result<Vec<HistoryRow>, CiHubError> {
                 path: path.to_path_buf(),
                 source,
             })
+        }
         }
     };
     let (rows, skipped) = validate_status::parse_ledger(&buf);
@@ -4184,6 +4179,41 @@ fn ledger_stamp(path: &Path) -> Result<(u64, u128), CiHubError> {
             })
         }
     };
+    if metadata.is_dir() {
+        let mut total = 0_u64;
+        let mut newest = 0_u128;
+        let mut pending = vec![path.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).map_err(|source| CiHubError::LedgerRead {
+                path: dir.clone(),
+                source,
+            })? {
+                let entry = entry.map_err(|source| CiHubError::LedgerRead {
+                    path: dir.clone(),
+                    source,
+                })?;
+                let item = entry.path();
+                let item_meta = entry.metadata().map_err(|source| CiHubError::LedgerRead {
+                    path: item.clone(),
+                    source,
+                })?;
+                if item_meta.is_dir() {
+                    pending.push(item);
+                } else if item.extension().is_some_and(|ext| ext == "jsonl") {
+                    total = total.saturating_add(item_meta.len());
+                    newest = newest.max(
+                        item_meta
+                            .modified()
+                            .ok()
+                            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|duration| duration.as_nanos())
+                            .unwrap_or(0),
+                    );
+                }
+            }
+        }
+        return Ok((total, newest));
+    }
     let modified_ns = metadata
         .modified()
         .ok()
@@ -4480,7 +4510,7 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
         &effective_floor.sha,
     )?;
     let branch_tip = commits.first().expect("nonempty history");
-    let ledger = ledger_path(root, &args.query.ledger);
+    let ledger = ledger_path(root);
     let (ledger_len, ledger_modified_ns) = ledger_stamp(&ledger)?;
     let producer_definition_authority = producer_definition_authority_key(root)?;
     let cache_path = history_queries::cache_path(root, &args.cache);
@@ -4672,7 +4702,7 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
     }
     let commits = branch_history(&repo, &branch_ref)?;
     let main_set: std::collections::BTreeSet<&str> = commits.iter().map(String::as_str).collect();
-    let ledger = ledger_path(root, &args.query.ledger);
+    let ledger = ledger_path(root);
     let mut rows = load_ledger_rows(&ledger)?;
     rows.retain(|row| {
         row.commit
@@ -4748,7 +4778,7 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
 /// Exit 0 VALIDATED, 3 FAILED (known-bad), 4 for every
 /// re-measurement state (TRUNCATED, NEEDS-RERUN, NO-RESULT, or NOT-VALIDATED).
 fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiHubError> {
-    let path = ledger_path(root, &args.ledger);
+    let path = ledger_path(root);
     let rows = load_ledger_rows(&path)?;
     // A SHA may arrive as `--sha` or positionally; clap already forbids giving
     // both, or either together with `--pr`.
@@ -5157,7 +5187,7 @@ fn publish_selected_receipt(
     selected: &QualifyingReceipt,
     dry_run: bool,
 ) -> Result<VerifiedPublishedReceipt, CiHubError> {
-    let ledger_arg = ledger.display().to_string();
+    let _ = ledger;
     let mut command = Command::new("python3");
     command
         .arg(publisher)
@@ -5166,8 +5196,6 @@ fn publish_selected_receipt(
             repo,
             "--sha",
             sha,
-            "--ledger",
-            &ledger_arg,
             "--selected-receipt-sha256",
             &selected.canonical_sha256,
             "--canonicalization",
@@ -5617,7 +5645,7 @@ fn bind_verified_receipt_to_pr(
 /// full-validate record and lacks the label. Never fabricates the label: a PR
 /// whose head is not VALIDATED is left untouched.
 fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, CiHubError> {
-    let path = ledger_path(root, &args.ledger);
+    let path = ledger_path(root);
     let rows = load_ledger_rows(&path)?;
     let prs = match (args.pr, args.all_open) {
         (Some(pr), false) => vec![pr],
@@ -6275,8 +6303,6 @@ mod tests {
         std::fs::create_dir_all(&temp).unwrap();
         let log = temp.join("validate.log");
         std::fs::write(&log, b"test result: ok. 786 passed; 0 failed\n").unwrap();
-        let ledger = temp.join("ledger.jsonl");
-
         // MERGE NOTE (w9/reconcile-round2): publish_receipt.py now binds each
         // receipt to the producer definition it was minted by, resolved from the
         // VALIDATED COMMIT. So the row must name a real checkout at a real sha;
@@ -6295,8 +6321,6 @@ mod tests {
                 CANONICAL_VALIDATE_REPO,
                 "--sha",
                 &receipt_sha,
-                "--ledger",
-                ledger.to_str().unwrap(),
                 "--selected-receipt-sha256",
                 &selected.canonical_sha256,
                 "--canonicalization",
@@ -6533,21 +6557,14 @@ mod tests {
 
     #[test]
     fn parses_qualified_ledger_rows_command() {
-        let cli = Cli::try_parse_from([
-            "ci-hub",
-            "ledger",
-            "qualified-rows",
-            "--ledger",
-            "/tmp/ledger.jsonl",
-        ])
+        let cli = Cli::try_parse_from(["ci-hub", "ledger", "qualified-rows"])
         .unwrap();
         let HubCommand::Ledger(args) = cli.command else {
             panic!("wrong command variant")
         };
-        let LedgerCommand::QualifiedRows(args) = args.command else {
+        let LedgerCommand::QualifiedRows(_) = args.command else {
             panic!("wrong ledger subcommand variant")
         };
-        assert_eq!(args.ledger, Some(PathBuf::from("/tmp/ledger.jsonl")));
     }
 
     #[test]
@@ -6556,8 +6573,6 @@ mod tests {
             "ci-hub",
             "ledger",
             "attribute-reds",
-            "--ledger",
-            "/tmp/ledger.jsonl",
             "--commit",
             "fedc81ed",
             "--last",
@@ -6572,7 +6587,6 @@ mod tests {
         let LedgerCommand::AttributeReds(args) = args.command else {
             panic!("wrong ledger subcommand variant")
         };
-        assert_eq!(args.ledger, Some(PathBuf::from("/tmp/ledger.jsonl")));
         assert_eq!(args.commit.as_deref(), Some("fedc81ed"));
         assert_eq!(args.last, Some(0));
         assert!(args.json);

@@ -40,6 +40,23 @@ the time — which is what makes `timeline()` meaningful, and what makes a
 rewritten or deleted line a *detectable violation* rather than an ordinary
 update.
 
+## Live producer and reader boundary
+
+The tracked shards above are also the live source of truth. Hermit and Reverie
+send each completed HistoryRow to `validate_rows.py record`; it converts the row
+to the versioned event envelope, redacts workspace-local paths, and atomically
+appends one whole line to `ledger/<team>/<host>/<month>.jsonl`. Every ci-hub
+consumer calls `validate_rows.py rows` (directly or through the Rust front
+controller), which unions every shard and exposes the compatibility HistoryRow.
+
+There is deliberately no checkout-local, ignored, discovered-parent, or
+environment-selected receipt ledger. Test fixtures may inject an isolated file
+only behind their explicit test-mode guard; a real validate has one destination.
+
+The publisher below remains the serialized Git transport for events created in
+an isolated spool. It is not a second readable validation ledger: production
+receipt consumers read only the tracked shard union.
+
 ## Publishing
 
 ```python

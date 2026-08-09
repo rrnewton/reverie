@@ -26,12 +26,14 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci-hub"))
 sys.path.insert(0, str(ROOT / "ci-hub/history"))
+sys.path.insert(0, str(ROOT / "ci-hub/ledger"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import obligations
 from check_outcome import CheckOutcome, classify_check, select_latest_workflow_attempts
 from check_outcome import FAIL_CONCLUSIONS as _RED_CONCLUSIONS
 from nonzero_result import is_zero_test_green
+import validate_rows as canonical_ledger
 
 DEFAULT_REPO = "rrnewton/hermit"
 PARENT_REPO = "rrnewton/dev-hermit"
@@ -1308,26 +1310,34 @@ def _percentile(values: Sequence[float], fraction: float) -> float:
     return ordered[index]
 
 
-def estimate_local_validate_cost(
-    ledger_path: Path = ROOT / "ignored/validate-run-ledger.jsonl",
-) -> dict[str, Any]:
+def estimate_local_validate_cost(ledger_path: Path | None = None) -> dict[str, Any]:
     samples: list[tuple[float, float]] = []
-    if ledger_path.exists():
+    if ledger_path is None:
         try:
-            with ledger_path.open("r", encoding="utf-8") as handle:
-                for line in handle:
-                    try:
-                        record = json.loads(line)
-                        wall = float(record.get("real_seconds") or 0)
-                        cpu = float(record.get("user_seconds") or 0) + float(
-                            record.get("sys_seconds") or 0
-                        )
-                    except (json.JSONDecodeError, TypeError, ValueError):
-                        continue
-                    if record.get("profile") == "full" and wall > 0 and cpu >= 0:
-                        samples.append((wall, cpu))
-        except OSError:
-            samples = []
+            records = canonical_ledger.rows(root=ROOT)
+        except (OSError, ValueError, json.JSONDecodeError):
+            records = []
+    elif ledger_path.exists():
+        try:
+            records = [
+                json.loads(line)
+                for line in ledger_path.read_text().splitlines()
+                if line.strip()
+            ]
+        except (OSError, json.JSONDecodeError):
+            records = []
+    else:
+        records = []
+    for record in records:
+        try:
+            wall = float(record.get("real_seconds") or 0)
+            cpu = float(record.get("user_seconds") or 0) + float(
+                record.get("sys_seconds") or 0
+            )
+        except (TypeError, ValueError):
+            continue
+        if record.get("profile") == "full" and wall > 0 and cpu >= 0:
+            samples.append((wall, cpu))
     samples = samples[-50:]
     if samples:
         wall = _percentile([x[0] for x in samples], 0.9)
@@ -3124,9 +3134,6 @@ def _local_run(
         environment.update(
             {
                 "CI_HUB_OBLIGATION_ID": obligation_id,
-                "HERMIT_VALIDATE_LEDGER": str(
-                    ROOT / "ignored/validate-run-ledger.jsonl"
-                ),
                 "VALIDATE_LABEL_PR": "0",
             }
         )

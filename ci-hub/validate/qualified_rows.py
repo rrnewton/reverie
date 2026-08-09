@@ -23,12 +23,14 @@ from pathlib import Path
 import sys
 from typing import Iterable, Mapping
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
+import validate_rows as canonical_ledger  # noqa: E402
+
+DEFAULT_LEDGER = Path(__file__).resolve().parents[2] / "ledger"
+
 from flake_class import gate_counts
 from green_class import HARD
 from green_class import derive_class
-
-
-DEFAULT_LEDGER = Path(__file__).resolve().parents[2] / "ignored" / "validate-run-ledger.jsonl"
 
 
 def event_time(row: Mapping[str, object]) -> dt.datetime | None:
@@ -89,6 +91,8 @@ def qualified_rows(rows: Iterable[Mapping[str, object]]) -> list[dict[str, objec
 
 
 def load_rows(path: Path) -> tuple[list[dict[str, object]], int]:
+    if path.resolve() == DEFAULT_LEDGER.resolve():
+        return canonical_ledger.rows(), 0
     rows: list[dict[str, object]] = []
     malformed = 0
     with path.open(errors="replace") as handle:
@@ -109,12 +113,12 @@ def load_rows(path: Path) -> tuple[list[dict[str, object]], int]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER)
-    args = parser.parse_args(argv)
+    parser.parse_args(argv)
     try:
-        rows, malformed = load_rows(args.ledger)
-    except OSError as error:
-        print(f"qualified-rows: cannot read {args.ledger}: {error}", file=sys.stderr)
+        rows = canonical_ledger.rows()
+        malformed = 0
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        print(f"qualified-rows: canonical ledger union refused: {error}", file=sys.stderr)
         return 2
     selected = qualified_rows(rows)
     for row in selected:

@@ -25,9 +25,6 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd -- "$script_dir/../.." && pwd)
 status_bin=${CI_HUB_VALIDATE_STATUS_BIN:-$root/ci-hub/ci-hub}
 status_args=(validate-status --sha "$sha")
-if [ -n "${CI_HUB_VALIDATE_LEDGER:-}" ]; then
-  status_args+=(--ledger "$CI_HUB_VALIDATE_LEDGER")
-fi
 
 status_output=$("$status_bin" "${status_args[@]}" 2>&1)
 status_rc=$?

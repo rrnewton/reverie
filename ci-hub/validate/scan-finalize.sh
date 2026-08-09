@@ -10,8 +10,8 @@
 # durable log, BEFORE a landing consumer reads the ledger -- so a genuine green
 # is never stranded merely because the producer failed to inline its counts.
 #
-# SAFETY: finalize_receipt.py --scan is APPEND-ONLY and holds the same ledger
-# flock as scripts/validate.rs. Exact SHA plus the Rust-canonical source-row digest bind
+# SAFETY: finalize_receipt.py --scan is APPEND-ONLY through the canonical
+# per-machine shard adapter. Exact SHA plus the Rust-canonical source-row digest bind
 # it to one row; a matching duplicate is refused. It NEVER fabricates: a row
 # whose log is gone ("no-log") or whose manifest is not derivable at that sha
 # ("no-manifest") is reported and skipped, not minted. It is best-effort at its
@@ -21,9 +21,9 @@
 #
 # Usage:
 #   scan-finalize.sh --hermit-checkout <path> --sha <40-hex> \
-#     --select-candidate-sha256 [--ledger <path>]
+#     --select-candidate-sha256
 #   scan-finalize.sh --hermit-checkout <path> --sha <40-hex> \
-#     --selected-row-sha256 <64-hex> [--ledger <path>]
+#     --selected-row-sha256 <64-hex>
 set -uo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -33,14 +33,18 @@ hermit_checkout=""
 sha=""
 selected_row_sha256=""
 select_candidate=0
-ledger="${CI_HUB_VALIDATE_LEDGER:-$ROOT/ignored/validate-run-ledger.jsonl}"
+fixture_ledger=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --hermit-checkout) hermit_checkout=$2; shift 2 ;;
-    --ledger) ledger=$2; shift 2 ;;
     --sha) sha=$2; shift 2 ;;
     --selected-row-sha256) selected_row_sha256=$2; shift 2 ;;
     --select-candidate-sha256) select_candidate=1; shift ;;
+    --ledger)
+      if [ "${CI_HUB_LEDGER_FIXTURE_MODE:-0}" != 1 ]; then
+        echo "scan-finalize: --ledger is test-fixture-only" >&2; exit 2
+      fi
+      fixture_ledger=$2; shift 2 ;;
     *) echo "scan-finalize: unknown arg '$1'" >&2; exit 2 ;;
   esac
 done
@@ -69,19 +73,20 @@ fi
 if [ ! -r "$finalizer" ]; then
   echo "scan-finalize: REFUSE (finalizer not found at $finalizer)" >&2; exit 2
 fi
-if [ ! -f "$ledger" ]; then
-  echo "scan-finalize: REFUSE (ledger not found at $ledger)" >&2; exit 2
-fi
 if [ ! -d "$hermit_checkout/.git" ] && [ ! -f "$hermit_checkout/.git" ]; then
   echo "scan-finalize: REFUSE (hermit checkout $hermit_checkout is not a git repo)" >&2; exit 2
 fi
 
 if [ "$select_candidate" -eq 1 ]; then
-  exec python3 "$finalizer" --select-candidate-sha256 --ledger "$ledger" \
+  fixture_args=()
+  [ -z "$fixture_ledger" ] || fixture_args=(--ledger "$fixture_ledger")
+  exec python3 "$finalizer" --select-candidate-sha256 "${fixture_args[@]}" \
     --hermit-checkout "$hermit_checkout" --sha "$sha"
 fi
 
-out=$(python3 "$finalizer" --scan --ledger "$ledger" \
+fixture_args=()
+[ -z "$fixture_ledger" ] || fixture_args=(--ledger "$fixture_ledger")
+out=$(python3 "$finalizer" --scan "${fixture_args[@]}" \
   --hermit-checkout "$hermit_checkout" --sha "$sha" \
   --selected-row-sha256 "$selected_row_sha256" 2>&1)
 rc=$?

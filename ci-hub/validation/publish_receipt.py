@@ -77,11 +77,10 @@ def selected_record(
     return row
 
 
-def preserve_log(ledger: Path, sha: str, row: dict[str, Any]) -> Path:
+def preserve_log(evidence_dir: Path, sha: str, row: dict[str, Any]) -> Path:
     source = Path(row["log_file"])
     if not source.is_absolute() or not source.is_file():
         fail(f"ledger log is not a readable absolute file: {source}")
-    evidence_dir = ledger.parent / "validation-evidence"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     started = "".join(ch for ch in row["started_at"] if ch.isalnum())
     destination = evidence_dir / f"{sha}-{started}.log"
@@ -293,7 +292,6 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True)
     parser.add_argument("--sha", required=True)
-    parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--selected-receipt-sha256", required=True)
     parser.add_argument("--canonicalization", required=True)
     parser.add_argument("--receipt-repo", default=RECEIPT_REPO)
@@ -311,7 +309,13 @@ def execute(args: argparse.Namespace, canonical_record: bytes) -> dict[str, Any]
         expected_digest=args.selected_receipt_sha256,
         canonicalization=args.canonicalization,
     )
-    durable_log = preserve_log(args.ledger, args.sha, row)
+    fixture_ledger = getattr(args, "ledger", None)
+    evidence_dir = (
+        fixture_ledger.parent / "validation-evidence"
+        if fixture_ledger is not None
+        else Path(__file__).resolve().parents[2] / "ignored" / "validation-evidence"
+    )
+    durable_log = preserve_log(evidence_dir, args.sha, row)
     receipt, body, artifact_digest = build_receipt(
         args.repo,
         args.sha,

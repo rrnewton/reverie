@@ -67,7 +67,7 @@ WHEN TO REFRESH (DERIVED, never a picked commit count):
     per-node duration emission in the receipt.
 
 USAGE
-  anchor_select.py --target <sha-or-ref> [--checkout <path>] [--ledger <path>]
+  anchor_select.py --target <sha-or-ref> [--checkout <path>]
                    [--selector <path/to/select-tests.rs>] [--include-dirty]
                    [--max-scan N] [--no-floor] [--json]
 
@@ -100,9 +100,11 @@ CI_HUB = HERE.parent
 PARENT = CI_HUB.parent
 sys.path.insert(0, str(CI_HUB))
 import qualifying_receipt  # noqa: E402
+sys.path.insert(0, str(CI_HUB / "ledger"))
+import validate_rows as canonical_ledger  # noqa: E402
 
 DEFAULT_CHECKOUT = PARENT / "hermit"
-DEFAULT_LEDGER = PARENT / "ignored" / "validate-run-ledger.jsonl"
+DEFAULT_LEDGER = PARENT / "ledger"
 DEFAULT_PREDICATE = HERE / "qualifying-receipt.json"
 DEFAULT_SELECTOR_REL = Path("ci") / "select-tests.rs"
 GATE_FLOORS = HERE / "gate_floors.py"
@@ -165,6 +167,8 @@ def row_qualifies(row: dict, predicate: dict) -> tuple[bool, str]:
 
 
 def load_ledger(path: Path) -> tuple[list[dict], int]:
+    if path.name == "ledger":
+        return canonical_ledger.rows(root=path.parent), 0
     rows: list[dict] = []
     malformed = 0
     with open(path) as handle:
@@ -668,7 +672,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Select the green-inheritance anchor for a target commit.")
     parser.add_argument("--target", default="HEAD", help="commit or ref to validate incrementally")
     parser.add_argument("--checkout", default=str(DEFAULT_CHECKOUT))
-    parser.add_argument("--ledger", default=str(DEFAULT_LEDGER))
     parser.add_argument("--predicate", default=str(DEFAULT_PREDICATE))
     parser.add_argument("--selector", default=None,
                         help="path to select-tests.rs (default <checkout>/ci/select-tests.rs)")
@@ -687,7 +690,7 @@ def main(argv: list[str] | None = None) -> int:
 
     checkout = Path(args.checkout)
     selector = Path(args.selector) if args.selector else checkout / DEFAULT_SELECTOR_REL
-    ledger = Path(args.ledger)
+    ledger = DEFAULT_LEDGER
     predicate = Path(args.predicate)
 
     for path, what in ((checkout, "checkout"), (ledger, "ledger"), (predicate, "predicate"),

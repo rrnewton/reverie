@@ -79,6 +79,8 @@ from typing import Callable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci-hub"))
+sys.path.insert(0, str(ROOT / "ci-hub" / "ledger"))
+import validate_rows as canonical_ledger  # noqa: E402
 
 from check_outcome import CheckOutcome, classify_check, select_latest_checks
 from actions_job_outcome import (
@@ -835,9 +837,7 @@ def banked_green_commits(
 _FAILURE_TIER_STRENGTH = {"no-result": 0, "needs-rerun": 1, "ok": 2}
 
 
-def banked_failure_tier_commits(
-    repo: str, *, ledger_rel: str = "ignored/validate-run-ledger.jsonl"
-) -> dict[str, str]:
+def banked_failure_tier_commits(repo: str) -> dict[str, str]:
     """Map each ``repo`` head SHA that FAILED locally to its strongest failure tier.
 
     The symmetric peer of :func:`banked_green_commits`. That function dereferences
@@ -861,20 +861,12 @@ def banked_failure_tier_commits(
     verdict untouched.
     """
     name = repo.rsplit("/", 1)[-1]
-    path = ROOT / ledger_rel
     try:
-        text = path.read_text()
-    except OSError:
+        rows = canonical_ledger.rows(root=ROOT)
+    except (OSError, ValueError, json.JSONDecodeError):
         return {}
     tiers: dict[str, str] = {}
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for row in rows:
         if not isinstance(row, dict) or row.get("result") not in ("fail", "timeout"):
             continue
         cwd = str(row.get("cwd") or "")

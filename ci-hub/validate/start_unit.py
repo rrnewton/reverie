@@ -78,10 +78,8 @@ def default_unit(agent: str, target: str) -> str:
     return sanitize_unit(f"validate-{safe_agent}-{target[:12]}-{int(time.time())}")
 
 
-# Relative path of the canonical ledger, restated here ONLY as a comment so this
-# file stays a non-reader for the ledger-reader allowlist: the row lookup below
-# goes through `ci-hub ledger qualified-rows`-adjacent tooling, never by opening
-# `ignored/validate-run-ledger.jsonl` directly.
+# The row lookup below goes through the canonical union command. This module
+# never opens a ledger shard itself.
 
 
 def prepare_fresh_checkout(
@@ -454,24 +452,9 @@ def build_systemd_command(
         f"PATH={path}",
         "--setenv",
         "CI_HUB_VALIDATE_PRODUCER=systemd-user-v1",
-        # WHERE THE RECEIPT LANDS. validate.rs `ledger_path()` picks, in order:
-        # $HERMIT_VALIDATE_LEDGER, then the parent ledger under
-        # $DEV_HERMIT_PARENT (the filename lives only in
-        # `validate_status::LEDGER_REL`; it is deliberately not restated here,
-        # so this file stays a non-reader for the ledger-reader allowlist),
-        # then an in-repo per-(team,machine) shard.
-        # The unit's environment is deliberately minimal, so with neither set it
-        # fell through to the shard -- and `ci-hub validate-status` only reads
-        # the parent ledger. The sole sanctioned admission point therefore could
-        # not produce a receipt its own authority would see.
-        #
-        # Measured 2026-08-07 on PR #1635 at 291a2fd684f5: a full-profile run
-        # passed (862 executed, 0 failed, 58/58 gates) and validate-status still
-        # reported NOT-VALIDATED with "0 non-qualifying record(s)", because the
-        # record went to <checkout>/ci/validate-ledger/local.<host>.jsonl.
-        # The run even said so: "counted validation recorded, but the ci-hub
-        # receipt publisher is unavailable (no CI_HUB_APPLY_LOCAL_LABEL and no
-        # DEV_HERMIT_PARENT)". A green nobody can dereference is a no-result.
+        # DEV_HERMIT_PARENT remains available to non-ledger helpers. Receipt
+        # storage does not use it: validate.rs invokes the fixed parent adapter,
+        # which appends the tracked per-machine shard that ci-hub unions.
         "--setenv",
         f"DEV_HERMIT_PARENT={root}",
         *lu_env,

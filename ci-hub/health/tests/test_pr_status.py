@@ -1201,9 +1201,8 @@ class ExecutedTestsCarveOutTests(unittest.TestCase):
             ]
         )
         with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "ignored").mkdir()
-            (Path(d) / "ignored" / "validate-run-ledger.jsonl").write_text(ledger)
-            with mock.patch.object(pr_status, "ROOT", Path(d)):
+            rows = [json.loads(line) for line in ledger.splitlines()]
+            with mock.patch.object(pr_status.canonical_ledger, "rows", return_value=rows):
                 tiers = pr_status.banked_failure_tier_commits("rrnewton/hermit")
         self.assertEqual(tiers[self.HEAD_GENUINE], "ok")  # named gate wins over the no-gate dup
         self.assertEqual(tiers[self.HEAD_NO_RESULT], "no-result")

@@ -58,10 +58,12 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-DEFAULT_LEDGER = "ignored/validate-run-ledger.jsonl"
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
+import validate_rows as canonical_ledger  # noqa: E402
 
 # Robust upper-control-limit knobs. UCL = median + K * MAD_scaled, but never
 # tighter than REL_FLOOR of the median (a low-variance baseline must not
@@ -144,24 +146,29 @@ class Run:
     concurrency: int = 0  # between-validate overlap, filled by load_runs
 
 
-def load_runs(path: str) -> list[Run]:
+def load_runs(path: str | None = None) -> list[Run]:
     runs: list[Run] = []
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                raw = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            runs.append(
-                Run(
-                    raw=raw,
-                    started=_parse_ts(raw.get("started_at")),
-                    finished=_parse_ts(raw.get("finished_at")),
-                )
+    if path is None:
+        raw_rows = canonical_ledger.rows()
+    else:
+        raw_rows = []
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    raw_rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    for raw in raw_rows:
+        runs.append(
+            Run(
+                raw=raw,
+                started=_parse_ts(raw.get("started_at")),
+                finished=_parse_ts(raw.get("finished_at")),
             )
+        )
     _annotate_concurrency(runs)
     return runs
 
@@ -375,9 +382,9 @@ def _render(v: Verdict, as_json: bool) -> str:
 
 def cmd_check(args: argparse.Namespace) -> int:
     try:
-        runs = load_runs(args.ledger)
+        runs = load_runs()
     except OSError as exc:
-        print(f"error: cannot read ledger {args.ledger}: {exc}", file=sys.stderr)
+        print(f"error: cannot read canonical ledger: {exc}", file=sys.stderr)
         return 1
     target = _pick_target(runs, args.profile, args.commit)
     if target is None:
@@ -402,9 +409,9 @@ def cmd_check(args: argparse.Namespace) -> int:
 
 def cmd_report(args: argparse.Namespace) -> int:
     try:
-        runs = load_runs(args.ledger)
+        runs = load_runs()
     except OSError as exc:
-        print(f"error: cannot read ledger {args.ledger}: {exc}", file=sys.stderr)
+        print(f"error: cannot read canonical ledger: {exc}", file=sys.stderr)
         return 1
     passing = [r for r in runs if r.result == "pass" and r.wall is not None]
     buckets: dict[tuple[str, str, str], list[Run]] = {}
@@ -412,7 +419,7 @@ def cmd_report(args: argparse.Namespace) -> int:
         buckets.setdefault((r.profile, r.cache_state, r.host), []).append(r)
 
     span_days = _ledger_span_days(runs)
-    print(f"# ledger {args.ledger}: {len(runs)} rows, span {span_days:.1f} days")
+    print(f"# ledger canonical-union: {len(runs)} rows, span {span_days:.1f} days")
     if span_days < RECOMMENDED_RETENTION_DAYS:
         print(
             f"#   RETENTION WARNING: span {span_days:.1f}d < recommended "
@@ -444,7 +451,6 @@ def _ledger_span_days(runs: list[Run]) -> float:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--ledger", default=DEFAULT_LEDGER, help=f"validate-run ledger (default {DEFAULT_LEDGER})")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pc = sub.add_parser("check", help="ratchet a run against its trailing baseline")

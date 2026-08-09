@@ -446,10 +446,18 @@ class TempParentTest(unittest.TestCase):
                 "created_at": created, "updated_at": updated}
 
     def _write_ledger(self, rows):
-        path = self.parent / "ignored" / "validate-run-ledger.jsonl"
+        path = self.parent / "ledger" / "hermit" / "testhost" / "2026-08.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w") as fh:
-            for r in rows:
-                fh.write(json.dumps(r) + "\n")
+            for index, source in enumerate(rows):
+                r = dict(source)
+                r.setdefault("record_id", f"history-test-{index}")
+                r.setdefault("repo", "hermit")
+                r.setdefault("host", "testhost")
+                r.setdefault("started_at", "2026-08-03T00:00:00Z")
+                r.setdefault("finished_at", "2026-08-03T00:01:00Z")
+                event = query.canonical_ledger._event_for_row(r, self.parent)
+                fh.write(json.dumps(event, sort_keys=True) + "\n")
 
     def _full_pass_row(self, sha, **over):
         row = {"schema_version": 5, "commit": sha,
