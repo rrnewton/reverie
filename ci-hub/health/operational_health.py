@@ -1299,10 +1299,11 @@ def merge_gate_authority_gate(
 ) -> int:
     """Expose an interrupted repository-authority transition as one global fault.
 
-    Equality, ruleset membership, integration identity, and legacy-shim
-    semantics live exclusively in configure-merge-gate-ruleset.sh. This adapter
-    only bounds that verifier and gives its three observable outcomes distinct
-    names: steady, measured half-transition, and unavailable evidence.
+    The absence of required hosted checks and the separate default-branch
+    history protections live exclusively in
+    configure-merge-gate-ruleset.sh. This adapter only bounds that verifier and
+    gives its three observable outcomes distinct names: steady, measured
+    half-transition, and unavailable evidence.
     """
 
     rc, stdout, stderr = _run_tool([str(checker), "--check"], timeout=timeout)

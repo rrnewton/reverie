@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bracket the live merge-authority verifier, including both half states."""
+"""Bracket the live merge-authority verifier at the owner-policy boundary."""
 
 from __future__ import annotations
 
@@ -21,7 +21,12 @@ import operational_health
 
 
 ROOT = Path(__file__).resolve().parents[3]
-REAL_CHECKER = ROOT / "hermit" / "scripts" / "configure-merge-gate-ruleset.sh"
+REAL_CHECKER = Path(
+    os.environ.get(
+        "MERGE_GATE_AUTHORITY_TEST_CHECKER",
+        ROOT / "hermit" / "scripts" / "configure-merge-gate-ruleset.sh",
+    )
+)
 
 
 class MergeGateAuthorityTest(unittest.TestCase):
@@ -40,42 +45,54 @@ import sys
 
 args = sys.argv[1:]
 if args[:2] == ["api", "--paginate"] and args[2:] == ["repos/rrnewton/hermit/rulesets"]:
-    print(json.dumps([{"id": 20244443, "name": "main check gating (admin-bypassable)"}]))
+    if os.environ.get("STUB_RULESET_AUTH_FAIL") == "1":
+        print("HTTP 403: Resource not accessible", file=sys.stderr)
+        raise SystemExit(1)
+    print(json.dumps([
+        {"id": 20244443, "name": "main check gating (admin-bypassable)"},
+        {"id": 20307165, "name": "main history protection"},
+    ]))
     raise SystemExit(0)
 if args[:2] == ["api", "repos/rrnewton/hermit/rulesets/20244443"]:
+    required = []
+    context = os.environ.get("STUB_REQUIRED_CONTEXT", "")
+    if context:
+        required.append({"context": context, "integration_id": 15368})
+    rules = []
+    if required:
+        rules.append({"type": "required_status_checks", "parameters": {
+            "required_status_checks": required
+        }})
     print(json.dumps({
         "id": 20244443,
         "name": "main check gating (admin-bypassable)",
         "target": "branch",
         "enforcement": "active",
-        "conditions": {},
-        "rules": [{"type": "required_status_checks", "parameters": {
-            "required_status_checks": [{"context": "merge-gate-v4", "integration_id": 15368}]
-        }}],
+        "conditions": {"ref_name": {
+            "include": ["~DEFAULT_BRANCH"],
+            "exclude": [],
+        }},
+        "rules": rules,
         "bypass_actors": [],
     }))
     raise SystemExit(0)
-if (args[:3] == ["api", "--method", "GET"] and
-        "contents/.github/workflows/merge-gate.yml" in args[3]):
-    print(os.environ["STUB_MAIN_BLOB"])
-    raise SystemExit(0)
-if args[:2] == ["variable", "get"]:
-    if os.environ.get("STUB_VARIABLE_AUTH_FAIL") == "1":
-        print("HTTP 403: Resource not accessible", file=sys.stderr)
-        raise SystemExit(1)
-    name = args[2]
-    if name == "MERGE_GATE_V4_BLOB":
-        print(os.environ["STUB_EXPECTED_BLOB"])
-    elif name == "MERGE_GATE_LEGACY_CONTEXT":
-        print(os.environ.get("STUB_LEGACY_SHIM", "false"))
-    else:
-        raise SystemExit(1)
-    raise SystemExit(0)
-if args[:2] == ["variable", "list"]:
-    if os.environ.get("STUB_VARIABLE_AUTH_FAIL") == "1":
-        print("HTTP 403: Resource not accessible", file=sys.stderr)
-        raise SystemExit(1)
-    print(json.dumps([{"name": "MERGE_GATE_V4_BLOB"}, {"name": "MERGE_GATE_LEGACY_CONTEXT"}]))
+if args[:2] == ["api", "repos/rrnewton/hermit/rulesets/20307165"]:
+    rules = [{"type": "deletion"}]
+    if os.environ.get("STUB_HISTORY_NON_FF", "1") == "1":
+        rules.append({"type": "non_fast_forward"})
+    print(json.dumps({
+        "id": 20307165,
+        "name": "main history protection",
+        "target": os.environ.get("STUB_HISTORY_TARGET", "branch"),
+        "enforcement": os.environ.get("STUB_HISTORY_ENFORCEMENT", "active"),
+        "conditions": {"ref_name": {
+            "include": ["~DEFAULT_BRANCH"],
+            "exclude": [],
+        }},
+        "rules": rules,
+        "bypass_actors": ([{"actor_id": 5}] if
+                          os.environ.get("STUB_HISTORY_BYPASS", "0") == "1" else []),
+    }))
     raise SystemExit(0)
 print("unsupported fake gh invocation: " + repr(args), file=sys.stderr)
 raise SystemExit(2)
@@ -89,52 +106,73 @@ raise SystemExit(2)
         return path
 
     def _run(
-        self, main_blob: str, expected_blob: str, *, auth_fail: bool = False
+        self,
+        *,
+        required_context: str = "",
+        history_non_ff: bool = True,
+        history_bypass: bool = False,
+        history_target: str = "branch",
+        ruleset_auth_fail: bool = False,
     ) -> tuple[int, dict[str, str]]:
         env = {
             "PATH": f"{self.bin}:{os.environ['PATH']}",
-            "STUB_MAIN_BLOB": main_blob,
-            "STUB_EXPECTED_BLOB": expected_blob,
-            "STUB_LEGACY_SHIM": "false",
+            "STUB_REQUIRED_CONTEXT": required_context,
+            "STUB_HISTORY_NON_FF": "1" if history_non_ff else "0",
+            "STUB_HISTORY_BYPASS": "1" if history_bypass else "0",
+            "STUB_HISTORY_TARGET": history_target,
         }
-        if auth_fail:
-            env["STUB_VARIABLE_AUTH_FAIL"] = "1"
+        if ruleset_auth_fail:
+            env["STUB_RULESET_AUTH_FAIL"] = "1"
         output = io.StringIO()
         with mock.patch.dict(os.environ, env, clear=False), contextlib.redirect_stdout(output):
             rc = operational_health.merge_gate_authority_gate(checker=REAL_CHECKER)
         fields = dict(line.split("=", 1) for line in output.getvalue().splitlines())
         return rc, fields
 
-    def test_matching_authority_and_main_are_accepted(self) -> None:
-        rc, fields = self._run("a" * 40, "a" * 40)
+    def test_owner_policy_without_hosted_check_is_accepted(self) -> None:
+        rc, fields = self._run()
         self.assertEqual(0, rc)
         self.assertEqual("ok", fields["state"])
         self.assertEqual("none", fields["scope"])
 
-    def test_authority_advanced_before_main_is_loudly_refused(self) -> None:
-        old, new = "a" * 40, "b" * 40
-        rc, fields = self._run(old, new)
+    def test_retired_v4_required_context_is_loudly_refused(self) -> None:
+        rc, fields = self._run(required_context="merge-gate-v4")
         self.assertEqual(1, rc)
         self.assertEqual("interrupted-transition", fields["state"])
         self.assertEqual("global-merge-admission", fields["scope"])
-        self.assertIn(old, fields["summary"])
-        self.assertIn(new, fields["summary"])
+        self.assertIn("types=required_status_checks", fields["summary"])
 
-    def test_main_advanced_before_authority_is_loudly_refused(self) -> None:
-        old, new = "a" * 40, "b" * 40
-        rc, fields = self._run(new, old)
+    def test_unrelated_required_context_is_loudly_refused(self) -> None:
+        rc, fields = self._run(required_context="some-other-gate")
         self.assertEqual(1, rc)
         self.assertEqual("interrupted-transition", fields["state"])
         self.assertEqual("global-merge-admission", fields["scope"])
-        self.assertIn(old, fields["summary"])
-        self.assertIn(new, fields["summary"])
+        self.assertIn("types=required_status_checks", fields["summary"])
 
-    def test_unreadable_variables_are_unknown_not_a_transition(self) -> None:
-        rc, fields = self._run("a" * 40, "a" * 40, auth_fail=True)
+    def test_missing_non_fast_forward_protection_is_loudly_refused(self) -> None:
+        rc, fields = self._run(history_non_ff=False)
+        self.assertEqual(1, rc)
+        self.assertEqual("interrupted-transition", fields["state"])
+        self.assertIn("types=deletion ", fields["summary"])
+
+    def test_bypassable_history_protection_is_loudly_refused(self) -> None:
+        rc, fields = self._run(history_bypass=True)
+        self.assertEqual(1, rc)
+        self.assertEqual("interrupted-transition", fields["state"])
+        self.assertIn("bypass_count=1", fields["summary"])
+
+    def test_history_protection_scoped_off_branches_is_loudly_refused(self) -> None:
+        rc, fields = self._run(history_target="tag")
+        self.assertEqual(1, rc)
+        self.assertEqual("interrupted-transition", fields["state"])
+        self.assertIn("scope=tag", fields["summary"])
+
+    def test_unreadable_rulesets_are_unknown_not_a_transition(self) -> None:
+        rc, fields = self._run(ruleset_auth_fail=True)
         self.assertEqual(2, rc)
         self.assertEqual("unavailable", fields["state"])
         self.assertEqual("unknown", fields["scope"])
-        self.assertIn("NOT transition evidence", fields["summary"])
+        self.assertIn("evidence unavailable", fields["summary"])
 
     def test_timeout_is_unknown_not_a_transition(self) -> None:
         sleeper = self._write_executable(
