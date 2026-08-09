@@ -782,7 +782,6 @@ selected_digest=$(sha256sum "$tmp/strong-canonical-row.json" | awk '{print $1}')
 strong_report=$(python3 "$publisher" \
     --repo rrnewton/hermit \
     --sha "$sha" \
-    --ledger "$tmp/strong-ledger.jsonl" \
     --selected-receipt-sha256 "$selected_digest" \
     --canonicalization 'serde_json::to_vec(HistoryRow)-v1' \
     --dry-run <"$tmp/strong-canonical-row.json")

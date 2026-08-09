@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -20,6 +21,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 HUB = ROOT / "ci-hub" / "ci-hub"
 HERMIT = ROOT / "hermit"
+LEDGER_ADAPTER = ROOT / "ci-hub" / "ledger" / "validate_rows.py"
 
 
 def run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> str:
@@ -47,6 +49,7 @@ class LocalProducerAuthorityTests(unittest.TestCase):
         run("git", "clone", "-q", "--shared", str(HERMIT), str(repo))
         primary = json.loads((ROOT / "ci-hub/validate/producer-definition.json").read_text())
         primary_sha = primary["registered_at"]
+        primary_paths = sorted(primary["registered"])
         run("git", "checkout", "-q", "--detach", primary_sha, cwd=repo)
 
         git_env = {
@@ -57,14 +60,15 @@ class LocalProducerAuthorityTests(unittest.TestCase):
             "GIT_COMMITTER_EMAIL": "test@example.com",
         }
 
-        (repo / "validate.sh").write_text("#!/usr/bin/env bash\necho candidate\n")
+        with (repo / "scripts/validate.rs").open("a") as handle:
+            handle.write("\n// producer-authority candidate fixture\n")
         (repo / "ci/validate_peer_snapshot.py").write_text(
             "#!/usr/bin/env python3\nprint('candidate helper')\n"
         )
         run(
             "git",
             "add",
-            "validate.sh",
+            "scripts/validate.rs",
             "ci/validate_peer_snapshot.py",
             cwd=repo,
             env=git_env,
@@ -73,8 +77,9 @@ class LocalProducerAuthorityTests(unittest.TestCase):
         candidate_sha = run("git", "rev-parse", "HEAD", cwd=repo)
 
         run("git", "checkout", "-q", "--detach", primary_sha, cwd=repo)
-        (repo / "validate.sh").write_text("#!/usr/bin/env bash\necho candidate\n")
-        run("git", "add", "validate.sh", cwd=repo, env=git_env)
+        with (repo / "scripts/validate.rs").open("a") as handle:
+            handle.write("\n// producer-authority candidate fixture\n")
+        run("git", "add", "scripts/validate.rs", cwd=repo, env=git_env)
         run("git", "commit", "-qm", "validate-only producer", cwd=repo, env=git_env)
         crossed_validate_sha = run("git", "rev-parse", "HEAD", cwd=repo)
 
@@ -95,15 +100,11 @@ class LocalProducerAuthorityTests(unittest.TestCase):
 
         primary_map = {
             path: blob(primary_sha, path)
-            for path in ("validate.sh", ".github/workflows/ci-portable.yml")
+            for path in primary_paths
         }
         candidate_map = {
             path: blob(candidate_sha, path)
-            for path in (
-                "validate.sh",
-                ".github/workflows/ci-portable.yml",
-                "ci/validate_peer_snapshot.py",
-            )
+            for path in (*primary_paths, "ci/validate_peer_snapshot.py")
         }
         registry = {
             "registered_at": primary_sha,
@@ -173,11 +174,30 @@ class LocalProducerAuthorityTests(unittest.TestCase):
                 **os.environ,
                 "CI_HUB_TOOL_COST_ACTIVE": "1",
                 "PRODUCER_DEFINITION_REGISTRY": str(registry),
+                "HERMIT_VALIDATE_STOP_TEST_MODE": "1",
+                "CI_HUB_VALIDATE_LEDGER_TEST_ROOT": str(registry.parent),
             },
             capture_output=True,
             text=True,
             timeout=120,
         )
+
+    @staticmethod
+    def record(root: Path, row: dict[str, object]) -> None:
+        result = subprocess.run(
+            [sys.executable, str(LEDGER_ADAPTER), "record"],
+            input=json.dumps(row),
+            env={
+                **os.environ,
+                "HERMIT_VALIDATE_STOP_TEST_MODE": "1",
+                "CI_HUB_VALIDATE_LEDGER_TEST_ROOT": str(root),
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
 
     def test_validate_status_whole_map_and_versioned_reporting(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -192,12 +212,9 @@ class LocalProducerAuthorityTests(unittest.TestCase):
             ]
             for index, (name, expected_rc, status, path_count) in enumerate(cases):
                 with self.subTest(name=name):
-                    ledger = root / f"{name}.jsonl"
-                    ledger.write_text(
-                        json.dumps(
-                            self.row(repo, shas[name], f"2026-08-08T12:0{index}:00Z")
-                        )
-                        + "\n"
+                    self.record(
+                        root,
+                        self.row(repo, shas[name], f"2026-08-08T12:0{index}:00Z"),
                     )
                     result = self.hub(
                         registry,
@@ -206,8 +223,6 @@ class LocalProducerAuthorityTests(unittest.TestCase):
                         shas[name],
                         "--repo",
                         "rrnewton/hermit",
-                        "--ledger",
-                        str(ledger),
                         "--json",
                     )
                     self.assertEqual(result.returncode, expected_rc, result.stderr)
@@ -228,12 +243,9 @@ class LocalProducerAuthorityTests(unittest.TestCase):
             primary_only.pop("transition")
             primary_only_registry = root / "primary-only-registry.json"
             primary_only_registry.write_text(json.dumps(primary_only))
-            unregistered_candidate_ledger = root / "unregistered-candidate.jsonl"
-            unregistered_candidate_ledger.write_text(
-                json.dumps(
-                    self.row(repo, shas["candidate"], "2026-08-08T12:09:00Z")
-                )
-                + "\n"
+            self.record(
+                root,
+                self.row(repo, shas["candidate"], "2026-08-08T12:09:00Z"),
             )
             refused = self.hub(
                 primary_only_registry,
@@ -242,8 +254,6 @@ class LocalProducerAuthorityTests(unittest.TestCase):
                 shas["candidate"],
                 "--repo",
                 "rrnewton/hermit",
-                "--ledger",
-                str(unregistered_candidate_ledger),
                 "--json",
             )
             self.assertEqual(refused.returncode, 4, refused.stderr)
@@ -255,9 +265,9 @@ class LocalProducerAuthorityTests(unittest.TestCase):
             repo, registry, shas = self.fixture(root)
             candidate = shas["candidate"]
             run("git", "update-ref", "refs/remotes/origin/main", candidate, cwd=repo)
-            ledger = root / "ledger.jsonl"
-            ledger.write_text(
-                json.dumps(self.row(repo, candidate, "2026-08-08T12:10:00Z")) + "\n"
+            self.record(
+                root,
+                self.row(repo, candidate, "2026-08-08T12:10:00Z"),
             )
             cache = root / "newest-green-cache.json"
             args = (
@@ -266,8 +276,6 @@ class LocalProducerAuthorityTests(unittest.TestCase):
                 "main",
                 "--repo-dir",
                 str(repo),
-                "--ledger",
-                str(ledger),
                 "--cache",
                 str(cache),
                 "--no-fetch",
@@ -281,7 +289,7 @@ class LocalProducerAuthorityTests(unittest.TestCase):
             self.assertEqual(len(evidence["paths"]), 3)
 
             tampered = json.loads(registry.read_text())
-            tampered["transition"]["candidate"]["validate.sh"] = "0" * 40
+            tampered["transition"]["candidate"]["scripts/validate.rs"] = "0" * 40
             tampered_path = root / "tampered-registry.json"
             tampered_path.write_text(json.dumps(tampered))
             refused = self.hub(tampered_path, *args)
