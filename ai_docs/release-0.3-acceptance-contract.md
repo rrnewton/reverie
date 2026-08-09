@@ -45,7 +45,7 @@ one caused by a rebase, is `NO_RESULT`.
 From an exact clean Hermit slot at `tested_rc_sha`, run sequentially and bypass all caches:
 
 ```sh
-CI_DAG_JOBS=1 ./validate.sh full --ignore-cache --no-label-pr --verbose 2>&1 | tee "$RAW_LOG"
+CI_DAG_JOBS=1 ./scripts/validate.rs full --ignore-cache --no-label-pr --verbose 2>&1 | tee "$RAW_LOG"
 status=${PIPESTATUS[0]}
 printf '%s\n' "$status" >"$EXIT_FILE"
 ```

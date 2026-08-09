@@ -7,8 +7,8 @@ description: "Historical Hermit rebase hotspot: derive record/replay compatibili
 
 Some Hermit revisions couple an expected-count constant to a program-label
 collection. When both main and a feature branch add programs, the collection may
-merge while the scalar conflicts. Inspect the exact current `validate.sh` or its
-Rust replacement before assuming this mechanism still exists.
+merge while the scalar conflicts. Inspect the exact current
+`scripts/validate.rs` before assuming this mechanism still exists.
 
 If it does, preserve the union of intentional entries, derive the count from the
 merged collection with the repository's current verifier, and update the scalar

@@ -18,7 +18,7 @@ per-syscall cost/behavior comparison current.
 
 - KVM backend code in `reverie` (KVM guest/tool adapter, syscall transport,
   hypercall path) and the KVM-specific classification/handling in `hermit`.
-- The KVM columns of `validate.sh --backend-compat-only` (full strict corpus
+- The KVM columns of `scripts/validate.rs --backend-compat-only` (full strict corpus
   per backend; non-blocking real numbers).
 - KVM example-tool / static-guest exercises.
 

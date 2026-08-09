@@ -18,8 +18,8 @@ THE THREE RULES IT ENFORCES (owner directive, task
      SINGLE selection decision against a known-full baseline.
 
      Enforced structurally: the anchor predicate requires
-     `selection_mode == "full"`, and validate.sh stamps `selection_mode=selective`
-     on every selective run (validate.sh `VALIDATION_SELECTION_MODE`). A
+     `selection_mode == "full"`, and scripts/validate.rs stamps
+     `selection_mode=selective` on every selective run. A
      selective receipt therefore can never be an anchor -- there is no second
      hop to take. `hop=1` is emitted in the record so the property is OBSERVED,
      not assumed. See `test_anchor_select.py::test_selective_receipt_refused`.
@@ -51,7 +51,7 @@ WHEN TO REFRESH (DERIVED, never a picked commit count):
   * HARD, exact, available today: `selector decision == full` => the selected set
     IS the full set => the saving is exactly ZERO => RE-ANCHOR NOW. Because
     `force_full` is MONOTONIC over the union of the window, once ANY commit since
-    the anchor touches a force_full-class path (`Cargo.*`, `ci/**`, `validate.sh`,
+    the anchor touches a force_full-class path (`Cargo.*`, `ci/**`, `scripts/validate.rs`,
     `rust-toolchain.toml`, `.cargo/**`, gated workflows) the cumulative diff
     forces full at EVERY greater distance. The decay is therefore a CLIFF, not a
     smooth curve; this tool reports the FIRST force_full-class path in the window

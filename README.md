@@ -169,7 +169,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 `cargo test --workspace` does not cover the complete historical Buck test
 matrix. Report PMU, CPUID, namespace, ignored, quarantined, and unlanded cases
-separately. `validate.sh` is the broader repository gate, but its
+separately. `scripts/validate.rs` is the broader repository gate, but its
 hardware-specific steps require a suitably provisioned host.
 
 ## Contribution flow

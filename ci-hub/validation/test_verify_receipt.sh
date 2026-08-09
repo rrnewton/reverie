@@ -17,7 +17,7 @@ mkdir -p "$tmp/receipts/$receipt_commit"
 # produced it, and to match the REGISTERED current one exactly. Point the
 # bracket at a FIXTURE registry so these cases stay stable against real blob
 # churn on hermit main -- registering real blobs here would make the bracket
-# fail every time validate.sh legitimately changes.
+# fail every time the validation producer legitimately changes.
 # ONE fixture producer checkout and ONE registry for the whole bracket. The
 # end-to-end leg mints through the real publisher, which derives the definition
 # from `git rev-parse <sha>:<path>`, so the registered blobs must be this repo's
@@ -50,20 +50,18 @@ export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 # PR head or candidate blob.
 production_registry=$script_dir/../validate/producer-definition.json
 production_repo=$root/hermit
-production_registered_at=92aaed5d09dd44ae4fb330a99c7adf28c1fc0cae
-production_validate=1763d88fb892bc541b1f6e01fbb02ed601c501a3
-production_rust=fee576d43d9702e29416918f0996bacdc46c5ed6
+production_registered_at=93575493f406fb6115134b95d54d4a4650214a07
+production_rust=15879c97c0ddcfeafaed18deaab0cba2fab30312
 production_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
 previous_validate=836a070e5e02017ae232e243904fb033a5c45b17
 previous_portable=6d47112dbbd6566e6d0453551a0c730bc7aeb8d9
 if ! jq -e \
     --arg at "$production_registered_at" \
-    --arg validate "$production_validate" \
     --arg rust "$production_rust" \
     --arg portable "$production_portable" '
       .registered_at == $at
       and .registered_valid_commits == [$at]
-      and .registered["validate.sh"] == $validate
+      and (.registered | keys | sort) == [".github/workflows/ci-portable.yml", "scripts/validate.rs"]
       and .registered["scripts/validate.rs"] == $rust
       and .registered[".github/workflows/ci-portable.yml"] == $portable
       and (has("transition") | not)
@@ -248,15 +246,14 @@ base_evidence=$("$verifier" --sha "$sha" --comments "$tmp/comments.json" \
 # only on producer-definition/head binding, not on a stale outer checksum.
 retarget_receipt "$tmp/receipt.json" "$tmp/production-current-retargeted.json" \
     "$production_registered_at"
-jq -cS --arg validate "$production_validate" --arg rust "$production_rust" \
+jq -cS --arg rust "$production_rust" \
   --arg portable "$production_portable" '
   .producer.definition = {
-    "validate.sh": $validate,
     "scripts/validate.rs": $rust,
     ".github/workflows/ci-portable.yml": $portable
   }
   | .producer.paths = [
-      ".github/workflows/ci-portable.yml", "scripts/validate.rs", "validate.sh"
+      ".github/workflows/ci-portable.yml", "scripts/validate.rs"
     ]
 ' "$tmp/production-current-retargeted.json" >"$tmp/production-current.json"
 assert_mutated "$tmp/receipt.json" "$tmp/production-current.json" \

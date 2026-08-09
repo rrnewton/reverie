@@ -21,14 +21,14 @@ small generated artifacts are not separate operator entrypoints.
 | `ci-hub` front door and direct wrappers printed invented wall/CPU constants, including a one-second `land-lock` estimate even though acquisition may queue and `run` includes an arbitrary child command. | Substantive operations use `wall=unknown cpu=unknown`, with an operation-specific `not measured:` basis, and measured actuals. Trivial control/status paths print no cost lines. |
 | Speculative-land local validation used invented 30-minute wall / 2-hour CPU floors, including when no ledger rows existed. | With history: p90 of the last at most 50 usable successful full-profile ledger rows, with `n` in the basis. Without history: explicit unknown and JSON `null`, never a floor. |
 | Full history refresh described “approximately 19000” runs and converted that constant into a four-hour estimate without counting or profiling the query. | Explicit unknown; the GitHub result count and runtime history do not exist before the query. |
-| `hermit/validate.sh` printed a static per-profile ETA table. | Owned by `hermit-227b`: same-profile/cache/host ledger estimate with sample size/range, or explicit insufficient history. |
+| `hermit/scripts/validate.rs` prints a per-profile ETA. | Owned by `hermit-227b`: same-profile/cache/host ledger estimate with sample size/range, or explicit insufficient history. |
 | `hermit/ci/power-to-weight.rs` displayed unmeasured DAG hints as `dur_s` and used a `>=120s` flag. | Hermit PR: unitless `declared_unmeasured_weight`; measured selection rate names exact commit window and `n`; the candidate rule is labeled a configured heuristic. |
 
 The Hermit sweep also confirmed that selector/harness counts, stress progress,
 compatibility and coverage percentages, and final validation durations are
 computed from live inputs or results. `RR_COMPAT_EXPECTED=139` has recorded
 provenance. Four other legitimate compatibility ratchets still need equivalent
-source comments while the `validate.sh` owner has that file:
+source comments in the Rust validation driver:
 `STRICT_COMPAT_TOTAL=191`, `SABRE_COMPAT_EXPECTED=207`,
 `SABRE_COMPAT_TOTAL=212`, and `E9PATCH_COMPAT_TOTAL=155`.
 
@@ -36,7 +36,7 @@ source comments while the `validate.sh` owner has that file:
 
 | Tool | Owner/task | Required completion |
 | --- | --- | --- |
-| `hermit/validate.sh` | `hermit-227b` / `wire-affected-test-selection-and-measure` | History-derived warm/cold estimate; final wall + CPU on every exit. |
+| `hermit/scripts/validate.rs` | `hermit-227b` / `wire-affected-test-selection-and-measure` | History-derived warm/cold estimate; final wall + CPU on every exit. |
 | Multisect tool | `hermit-231b` / `multisect-tool-design` | `(build + run) x repetitions x ceil(log2(commits)) / parallelism` wall estimate, summed CPU estimate, final wall + CPU. |
 
 ## Follow-up list

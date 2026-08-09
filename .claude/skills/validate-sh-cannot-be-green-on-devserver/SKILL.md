@@ -5,7 +5,7 @@ description: "Retraction: full Hermit validation can pass on a development serve
 
 # Retraction: development hosts have no structural red floor
 
-The old claim that full `validate.sh` cannot pass on a development server was
+The old claim that full Hermit validation cannot pass on a development server was
 disproved on 2026-08-03 by a complete five-gate green run. Never assume a host is
 intrinsically red or green.
 

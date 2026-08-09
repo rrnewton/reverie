@@ -53,7 +53,7 @@ are both ``""`` here and must not be conflated. Treating a read failure as
 re-dispatch real greens whenever a log read hiccups, so the closing predicate
 belongs at the read site (which can stat the file) rather than in this
 string-only function. NOT a legitimate-empty concern at the ``_classify_local``
-layer: a genuine exit-0 ``validate.sh`` always emits its ``Validation summary``
+layer: a genuine exit-0 validation driver always emits its ``Validation summary``
 line, so empty output there is no-evidence, not a valid banner-less pass. (The
 distinct, legitimate no-banner-but-NONEMPTY case — build-only / skipped-gate
 summaries — is exactly why ``executed_test_count`` returns ``None`` for it,
@@ -229,7 +229,7 @@ def _ledger_fields(output: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI so a NON-Python ledger writer (`validate.sh`) can call the ONE
+    """CLI so a non-Python ledger writer (Hermit's Rust driver) can call the ONE
     extractor instead of re-implementing the banner regexes in bash.
 
     ``nonzero_result.py --ledger-fields <log>`` prints the two JSON-literal counts

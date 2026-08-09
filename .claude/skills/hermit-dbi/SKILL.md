@@ -16,7 +16,7 @@ runtime footprint, RPATH) working.
 
 - The DBI client and `DbiGuest`/Tool adapter in `reverie`, and DBI-specific
   handling in `hermit`.
-- The DBI columns of `validate.sh --backend-compat-only`.
+- The DBI columns of `scripts/validate.rs --backend-compat-only`.
 - DBI example-tool exercises and the vendored DynamoRIO runtime wiring.
 
 ## Constraints

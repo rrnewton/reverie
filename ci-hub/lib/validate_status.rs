@@ -7,9 +7,9 @@
 //!     The independently dereferenced hosted job set is the peer positive; this
 //!     module makes no GitHub calls and does not define the total landing rule.
 //!
-//! One store, one predicate: hermit/reverie `validate.sh` WRITE the JSONL ledger
-//! (`append_validation_ledger`), this module READS it. There is deliberately no
-//! second table.
+//! One store, one predicate: Hermit's `scripts/validate.rs` and Reverie's
+//! `validate.sh` WRITE the JSONL ledger, this module READS it. There is
+//! deliberately no second table.
 //!
 //! ## The predicate (VALIDATED) — version-aware over a schema transition
 //!
@@ -17,7 +17,7 @@
 //! Binding, parent da98bdd): a clean, commit-anchored, FULL-profile,
 //! FULL-selection PASS with a nonzero executed-test count AND zero filtered-out.
 //! But the PRODUCER TRAVELS WITH THE BRANCH: a receipt's writer is whatever
-//! `validate.sh` shipped on that PR's branch, and older writers do not emit the
+//! validation producer shipped on that PR's branch, and older writers do not emit the
 //! count fields at all. Enforcing the count clauses on EVERY receipt therefore
 //! strands every pre-count receipt (measured 2026-08-04: 35/35 clean full passes
 //! in the ledger flip to NOT-VALIDATED), identically to the bfb0a9ef anchor
@@ -63,11 +63,11 @@
 //! fields themselves; the schema escalator exists only to catch a count-capable
 //! writer that emits nothing.
 //!
-//! This is intentionally NEVER LOOSER than `hermit/validate.sh`'s own
+//! This is intentionally NEVER LOOSER than `hermit/scripts/validate.rs`'s own
 //! `locally-validated` stamp guard, which fires only when
 //! `VALIDATION_LEVEL == full && failures == 0` on a commit-anchored, non-dirty,
-//! non-subset run (validate.sh:4161 with :283/:404). `profile` is `VALIDATION_
-//! LEVEL` unless a subset mode overrode it, so requiring both `profile == "full"`
+//! non-subset run. `profile` is the selected validation level unless a subset
+//! mode overrode it, so requiring both `profile == "full"`
 //! and `selection_mode == "full"` reproduces "level==full AND not a subset run".
 //! A `quick`/`super`/`portable-only` level, or any `--only`/`--selective`/
 //! `*-only` subset run, is fail-closed rejected: a subset must never masquerade
@@ -78,9 +78,9 @@ use crate::records::HistoryRow;
 use std::collections::BTreeSet;
 
 /// Canonical ledger path relative to the workspace root. This is the exact file
-/// `validate.sh` appends to: it sets `VALIDATION_LEDGER_FILE` to
-/// `$DEV_HERMIT_PARENT/ignored/validate-run-ledger.jsonl` (validate.sh line ~350)
-/// and `append_validation_ledger()` writes one JSONL record per run there. The
+/// Hermit's Rust driver appends to: it resolves `VALIDATION_LEDGER_FILE` or
+/// `$DEV_HERMIT_PARENT/ignored/validate-run-ledger.jsonl` and writes one JSONL
+/// record per run there. The
 /// landing gate MUST read this same file or it sees an empty history and reports
 /// "no clean validate" for every PR. (`ci-hub/validate-runs.jsonl` is a stale
 /// path; `ci-hub/validate/worktrees.py`'s `validate-runs.jsonl` is a different,

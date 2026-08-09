@@ -1703,7 +1703,7 @@ impl ValidateLock {
         // The authoritative owner PROCESS IDENTITY, read from the flock-guarded
         // owner sidecar (the ONLY writer is an actual `validate-lock run`/lease
         // acquisition). Consumers that must prove a run descends from the live
-        // lease holder -- e.g. hermit validate.sh's admission guard -- MUST read
+        // lease holder -- e.g. Hermit's Rust driver's admission guard -- MUST read
         // owner_pid/owner_boot_id/owner_start_ticks from HERE, never from an env
         // var or an agent-writable file, because only a real acquisition writes
         // this record. boot_id defeats reboots; start_ticks defeats PID reuse.

@@ -7,7 +7,7 @@ dep on the critical path) is invisible, because the new numbers have nothing to
 compare against and become the new normal. This tool makes the comparison
 happen every run and attributes a crossing to the commit that first caused it.
 
-It reads the same validate-run ledger that validate.sh writes and
+It reads the same validate-run ledger that Hermit's Rust validation driver writes and
 ci-hub/validate/aggregate.py aggregates (schema >= 1) — we do NOT invent a
 parallel store (see ci-hub/history/README.md, "The ONE store").
 

@@ -46,7 +46,7 @@ ZOMBIE_WARN=${ZOMBIE_WARN:-15}
 ZOMBIE_CRIT=${ZOMBIE_CRIT:-40}
 PROC_WARN=${PROC_WARN:-250}       # processes owned by this user
 PROC_CRIT=${PROC_CRIT:-500}
-VALIDATE_WARN=${VALIDATE_WARN:-3} # concurrent validate.sh runs
+VALIDATE_WARN=${VALIDATE_WARN:-3} # concurrent Hermit validation runs
 VALIDATE_CRIT=${VALIDATE_CRIT:-6}
 STALE_TMP_AGE_HOURS=${STALE_TMP_AGE_HOURS:-6}   # age before a codesync clone is "stale"
 DISK_PATHS=${DISK_PATHS:-"/ /tmp /data"}
@@ -211,13 +211,13 @@ lvl=$(level_for "$my_procs" "$PROC_WARN" "$PROC_CRIT")
 finding "$lvl" procs "$my_procs processes owned by $(id -un)"
 metric my_procs "$my_procs"
 
-builders=$(pgrep -u "$(id -u)" -c -x 'cc1|cc1plus|rustc|cargo|ld|lld|as|buck2' 2>/dev/null || echo 0)
+builders=$(pgrep -u "$(id -u)" -c -x 'cc1|cc1plus|rustc|cargo|ld|lld|as|buck2' 2>/dev/null) || builders=0
 metric build_procs "$builders"
 finding OK build "${builders} active compiler/build processes"
 
-validates=$(pgrep -u "$(id -u)" -f -c 'validate\.sh' 2>/dev/null || echo 0)
+validates=$(pgrep -u "$(id -u)" -f -c 'scripts/validate\.rs' 2>/dev/null) || validates=0
 lvl=$(level_for "$validates" "$VALIDATE_WARN" "$VALIDATE_CRIT")
-finding "$lvl" validate "${validates} concurrent validate.sh runs"
+finding "$lvl" validate "${validates} concurrent scripts/validate.rs runs"
 metric validate_runs "$validates"
 
 # ---------------------------------------------------------------------------

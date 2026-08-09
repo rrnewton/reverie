@@ -46,7 +46,7 @@ echo "t_s,mem_current_bytes,cpu_usage_usec,inst_cores" > "$SAMPLES"
 # a valid peak-so-far). Override with VALIDATE_TIMEOUT (seconds).
 VT="${VALIDATE_TIMEOUT:-2700}"
 wall_start=$(date +%s.%N)
-bash -c "echo \$\$ > '$CG/cgroup.procs'; cd '$HERMIT'; exec timeout ${VT}s ./validate.sh $VARGS" \
+bash -c "echo \$\$ > '$CG/cgroup.procs'; cd '$HERMIT'; exec timeout ${VT}s ./scripts/validate.rs $VARGS" \
   > "$OUT/validate.stdout" 2> "$OUT/validate.stderr"
 RC=$?
 wall_end=$(date +%s.%N)

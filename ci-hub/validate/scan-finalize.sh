@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scan-finalize.sh -- consume-path wiring for finalize_receipt.py --scan.
 #
-# WHY: hermit's validate.sh can write a count-less receipt whenever it
+# WHY: Hermit's Rust validation driver can write a count-less receipt whenever it
 # cannot reach the parent count helper (DEV_HERMIT_PARENT unset in the slot /
 # systemd-run producer env -> executed_tests/filtered_tests stay null). With the
 # uncounted-receipt grandfather REMOVED (ci-hub/lib/validate_status.rs), such a
@@ -11,7 +11,7 @@
 # is never stranded merely because the producer failed to inline its counts.
 #
 # SAFETY: finalize_receipt.py --scan is APPEND-ONLY and holds the same ledger
-# flock as validate.sh. Exact SHA plus the Rust-canonical source-row digest bind
+# flock as scripts/validate.rs. Exact SHA plus the Rust-canonical source-row digest bind
 # it to one row; a matching duplicate is refused. It NEVER fabricates: a row
 # whose log is gone ("no-log") or whose manifest is not derivable at that sha
 # ("no-manifest") is reported and skipped, not minted. It is best-effort at its

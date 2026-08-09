@@ -9,7 +9,7 @@ most-severe-first chain::
     fail > timeout > incomplete > no_result(zero tests) > pass-partial > pass
 
 `interruption_signal` does not appear in that chain. It is WRITTEN by
-`hermit/validate.sh` (:1422, :1525, :1574), asserted by
+the former shell producer (:1422, :1525, :1574), asserted by
 `hermit/scripts/test_validate_stop_paths.py`, and — measured 2026-08-07 by
 grepping the whole parent — **consumed by nothing**. A typed fact is computed,
 serialised, and thrown away, which is the same failure mode already recorded on
@@ -90,7 +90,7 @@ class Completion(Enum):
     """Ran to its own conclusion. Only this value can ever certify."""
 
     INTERRUPTED = "interrupted"
-    """A signal stopped it (validate.sh's `interruption_signal`). CANCELLED."""
+    """A signal stopped it (the driver's `interruption_signal`). CANCELLED."""
 
     KILLED_BY_BOUND = "killed-by-bound"
     """A wall/CPU/memory bound killed it. CONTENTION — a resource story."""

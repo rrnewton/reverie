@@ -88,7 +88,7 @@ workload invariant must supply the failure predicate.
 ### Repository, build, and workflow
 
 - `rrnewton/hermit` is the maintained product fork. Cargo is the primary
-  external build, and `validate.sh` covers workspace build/tests, clippy,
+  external build, and `scripts/validate.rs` covers workspace build/tests, clippy,
   formatting, docs, and the evolving integration gates.
 - `dev-hermit` is the parent harness. It pins Hermit and Reverie, owns durable
   research and experiments, and provides isolated paired worktrees.

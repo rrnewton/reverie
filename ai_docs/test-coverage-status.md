@@ -159,7 +159,7 @@ The current GitHub workflow still runs less than the local workspace:
   were unavailable, so it ran Hermit unit tests only. Hermit mode,
   record/replay, and black-box CLI integrations were not exercised.
 
-Consequently, `./validate.sh` or `cargo test --workspace` on a capable host is
+Consequently, `./scripts/validate.rs` or `cargo test --workspace` on a capable host is
 still the only complete main-branch run. Current main CI is not green.
 
 ## Original Buck Inventory

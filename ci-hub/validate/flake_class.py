@@ -19,7 +19,7 @@ Two MEASURED false-red sources, both real:
 
 This is the READ-SIDE half (parent tooling): it reclassifies already-recorded
 reds so the false ones surface for re-measurement, and it works retroactively on
-the whole ledger history. The WRITE-SIDE half — hermit/validate.sh recording the
+the whole ledger history. The WRITE-SIDE half — hermit/scripts/validate.rs recording the
 ``-j`` width and concurrent-validate count at run time, splitting the DAG gate
 into manifest-check vs lane-run, and enforcing "re-run solo at -j4 before writing
 FAILURE" — is a separate hermit PR. Until then this module DERIVES concurrency
@@ -84,7 +84,7 @@ def is_full_coverage(record: dict) -> bool:
     narrowed ``*-only``/subset profile (``portable-strict-compat-only``,
     ``only-portable``, ``portable-only``, ``quick``, ...).
 
-    ``validate.sh`` and ``aggregate.py`` both name a partial run with a non-
+    Hermit's Rust driver and ``aggregate.py`` both name a partial run with a non-
     ``full`` profile, and ``aggregate.py`` additionally records an explicit
     ``full_coverage`` boolean. Prefer that explicit field when present; otherwise
     fall back to the profile taxonomy. This keys on the SAME ``profile == "full"``

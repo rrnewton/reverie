@@ -301,7 +301,7 @@ fn rules() -> Vec<Rule> {
                 "rust-toolchain.toml",
                 ".cargo/**",
                 "ci/**",
-                "validate.sh",
+                "scripts/validate.rs",
                 "scripts/lib/**",
                 ".github/workflows/ci-portable.yml",
                 ".github/workflows/ci-privileged.yml",
@@ -1470,8 +1470,8 @@ fn self_test() {
         matches!(classify("ci/dag/portable.json").0, Action::Full),
     );
     check(
-        "validate.sh -> Full",
-        matches!(classify("validate.sh").0, Action::Full),
+        "scripts/validate.rs -> Full",
+        matches!(classify("scripts/validate.rs").0, Action::Full),
     );
     check(
         "core hermit detcore/ -> Full (unmapped)",

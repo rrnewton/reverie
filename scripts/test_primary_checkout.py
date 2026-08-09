@@ -233,7 +233,7 @@ class _ParentWorkspaceFixture(unittest.TestCase):
                 'target_dir.join("liteinst-runtime-build")\n'
             ),
             Path("hermit-install/build.rs"): 'build_root.join("liteinst-runtime")\n',
-            Path("validate.sh"): "$ROOT_DIR/target/liteinst-runtime-build\n",
+            Path("scripts/validate.rs"): "$ROOT_DIR/target/liteinst-runtime-build\n",
             # The derivation site the check now asserts.
             Path("scripts/stage-liteinst-runtime.sh"): (
                 "#!/usr/bin/env bash\n"
@@ -577,9 +577,9 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
         green.
         """
         original_parent = git(self.root, "rev-parse", "HEAD")
-        cache = self.seeds["hermit"] / "validate.sh"
+        cache = self.seeds["hermit"] / "scripts" / "validate.rs"
         cache.write_text("liteinst-runtime-build-00000000\n")
-        git(self.seeds["hermit"], "add", "validate.sh")
+        git(self.seeds["hermit"], "add", "scripts/validate.rs")
         git(self.seeds["hermit"], "commit", "-m", "stale cache")
         git(self.seeds["hermit"], "push", "origin", "main")
         out, err = StringIO(), StringIO()
@@ -595,7 +595,7 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
 
         self.assertEqual(result, 1)
         self.assertEqual(git(self.root, "rev-parse", "HEAD"), original_parent)
-        self.assertIn("validate.sh: hardcoded LiteInst cache key", err.getvalue())
+        self.assertIn("scripts/validate.rs: hardcoded LiteInst cache key", err.getvalue())
 
     def test_check_pins_passes_on_consistent_tree(self) -> None:
         out, err = StringIO(), StringIO()
@@ -678,9 +678,9 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
         # in the RECORDED tree must still not block check-pins -- the snapshot
         # path reports it (see test_snapshot_refuses_hardcoded_revision_cache_key),
         # this one must not.
-        cache = self.root / "hermit" / "validate.sh"
+        cache = self.root / "hermit" / "scripts" / "validate.rs"
         cache.write_text("liteinst-runtime-build-00000000\n")
-        git(self.root / "hermit", "add", "validate.sh")
+        git(self.root / "hermit", "add", "scripts/validate.rs")
         git(self.root / "hermit", "commit", "-m", "stale cache key")
         git(self.root, "add", "hermit")
         out, err = StringIO(), StringIO()

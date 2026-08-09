@@ -778,7 +778,7 @@ def banked_green_commits(
     ``statusCheckRollup`` is the only index that feeds ``green``/``gate``; its
     selected failed Actions checks may be refined by exact-job evidence. A PR
     head can be red or pending on GitHub (e.g. the blanket self-hosted red) while
-    LOCAL ``validate.sh`` proved a complete, nonempty PASS at that exact SHA and
+    LOCAL ``scripts/validate.rs`` proved a complete, nonempty PASS at that exact SHA and
     banked a receipt the merge gate honors. Without this cross-reference the tool
     reports ``green=0`` even when banked greens exist — the local evidence and the
     GitHub display never meet, which reads as "no validated work" when the truth is

@@ -1892,7 +1892,7 @@ fn on_path(binary: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// `validate.sh` intentionally points XDG_CONFIG_HOME at an isolated temporary
+/// The validation driver intentionally points XDG_CONFIG_HOME at an isolated temporary
 /// directory. Preserve that isolation, but let the control-plane `gh` child read
 /// its dedicated credential directory when the caller did not set one.
 fn gh_config_dir() -> Option<PathBuf> {
@@ -5612,7 +5612,7 @@ fn bind_verified_receipt_to_pr(
 }
 
 /// `ci-hub apply-local-label --pr <N> | --all-open` — close the retroactive gap:
-/// when a commit was validated BEFORE its PR existed, validate.sh could not stamp
+/// when a commit was validated BEFORE its PR existed, the driver could not stamp
 /// `locally-validated`. This applies it to any PR whose head has a clean
 /// full-validate record and lacks the label. Never fabricates the label: a PR
 /// whose head is not VALIDATED is left untouched.

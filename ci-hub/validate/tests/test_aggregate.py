@@ -2,7 +2,7 @@
 """Tests for ci-hub/validate/aggregate.py.
 
 Focus: the faithful per-gate classifier and the run-level de-conflation it
-feeds. Every class is anchored ONLY on markers hermit/validate.sh writes itself
+feeds. Every class is anchored ONLY on markers the Hermit validation driver writes itself
 (`Command:`, `Skipped:`, `Gate timed out after`, `Exit:`, `Duration:`), never on
 workload text — a gate whose *output* contains the words "panic" or "timeout"
 must not be misclassified. These tests therefore include adversarial workload

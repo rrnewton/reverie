@@ -8,7 +8,7 @@ down. Add this to every heartbeat / fleet-monitor cycle.
 
 | Script | Role | Mutating? |
 | --- | --- | --- |
-| `scripts/resource_audit.sh` | Read-only audit: cgroup memory/swap/PSI, cpu PSI + load, disk, user process count, heavy build fan-out, concurrent `validate.sh`, zombies, stale codesync eden mounts. | No — never kills or unmounts. |
+| `scripts/resource_audit.sh` | Read-only audit: cgroup memory/swap/PSI, cpu PSI + load, disk, user process count, heavy build fan-out, concurrent Rust validation runs, zombies, stale codesync eden mounts. | No — never kills or unmounts. |
 | `scripts/cleanup_stale_eden.sh` | Reclaims stale `/tmp/codesync-*` / `/data/tmpvol/codesync-*` eden clones via `edenfsctl remove`. Protects `~/work/orc-dev/fbsource*`. | Only with `--apply`; dry-run by default. |
 
 Both live in the parent harness (`scripts/`) and are plain bash — no compile
@@ -36,7 +36,7 @@ Escalation ladder keyed on the exit code:
   scripts/cleanup_stale_eden.sh            # dry-run, shows the plan
   ```
 - **rc == 2 (CRIT)** — treat as an operator-health incident (this is the OOMD
-  precursor). Post it to the coordinator, throttle new local `validate.sh` /
+  precursor). Post it to the coordinator, throttle new local `scripts/validate.rs` /
   experiment launches, and reclaim stale eden clones:
   ```bash
   scripts/cleanup_stale_eden.sh --apply    # remove stale codesync clones

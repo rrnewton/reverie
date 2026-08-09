@@ -19,7 +19,8 @@ infrastructure flakes, and improve the CI configuration and validation harness.
 
 ## What this agent owns
 
-- CI workflow definitions and the `validate.sh` harness in `hermit`/`reverie`.
+- CI workflow definitions, Hermit's `scripts/validate.rs` driver, and Reverie's
+  `validate.sh` harness.
 - Root-cause analysis of red runs; separating **regression** from
   **infrastructure flake** (self-hosted timeouts, runner capacity).
 - CI throughput improvements (batching, queue-waste reduction, split lanes).

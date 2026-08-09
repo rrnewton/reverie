@@ -364,7 +364,7 @@ locally executed backend coverage beyond the job's declared scope.
 ### Running validate — `systemd-run --user` Is The Producer Path
 
 **Pre-anchor preflight — run BEFORE claiming ANY Hermit PR for validation.** A PR head not descending from
-hermit `bfb0a9ef` runs its own older `validate.sh` and is a **guaranteed rejection even when fully green** (fix
+hermit `bfb0a9ef` runs its own older validation producer and is a **guaranteed rejection even when fully green** (fix
 by **rebase**, not re-validation):
 
 ```
@@ -376,9 +376,9 @@ git -C <checkout> merge-base --is-ancestor bfb0a9ef1c303d1977f5f02903b70cc93e514
 Re-derive the live pre-anchor set with the loop; do not trust a stale list. HOLD mass-rebase until the
 version-aware counts consumer lands (task `prs-predating-commit-anchoring-can-never-produce-a-qualifying-receipt`).
 
-**An agent sandbox CANNOT run `validate.sh` directly** (BpfJailer denies creating its own cgroup; the wrapper
+**An agent sandbox CANNOT run `scripts/validate.rs` directly** (BpfJailer denies creating its own cgroup; the driver
 exits 3 in ~9s having run nothing, tell: `CPU/wall 1.0x`). `ci-hub validate-run` is the sole admission point.
-It launches a transient user unit which enters through `ci-hub validate-lock` before invoking `validate.sh` —
+It launches a transient user unit which enters through `ci-hub validate-lock` before invoking `scripts/validate.rs` —
 still boxed, detached, and with a durable log that outlives recycling (green *evidence*, not a *claim*).
 The live call prints a `validate-*` handle, creates an observer-only tab in the `validate-hermit` Herdr
 workspace, then blocks on the detached unit. If the caller recycles, the run continues and its successor uses
@@ -391,7 +391,7 @@ workspace, then blocks on the detached unit. If the caller recycles, the run con
 
 The Herdr pane is visibility, not the producer: it tails the durable log and reports the actual service
 descendants' `safe-ci-*` cgroup paths. Validation still runs only in the admitted systemd service through
-`validate-lock` → `validate.sh` → `safe-ci-dag-runner`. Pane creation is fail-closed before service launch.
+`validate-lock` → `scripts/validate.rs` → `safe-ci-dag-runner`. Pane creation is fail-closed before service launch.
 
 Let `apply-local-label` add the label FROM the ledger record — never by hand. Derive safe concurrency against
 total cores before fanning out. The Hermit Merge Gate must execute `ci-hub/validation/verify_receipt.sh` from

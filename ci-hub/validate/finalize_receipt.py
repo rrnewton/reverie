@@ -11,7 +11,7 @@ already exist on `main`:
   2. the PLANNED test-node set, read from the DAG manifests AT THE EXACT COMMIT
      via `git show <sha>:ci/dag/{portable,privileged}.json`.
 
-Reading the manifest at the commit — WITHOUT running that branch's `validate.sh`
+Reading the manifest at the commit — WITHOUT running that branch's validation driver
 — is what makes this main-reachable and version-independent: the planned set is
 the branch's own declared intent, but the finalizer that judges it lives on main
 and cannot be weakened by an older PR-branch YAML.
@@ -141,7 +141,7 @@ def _load_rows(handle) -> list[dict]:
 
 @contextmanager
 def _locked_ledger(ledger_path: str, *, exclusive: bool):
-    """Lock the ledger inode using the same ``flock`` domain as validate.sh."""
+    """Lock the ledger inode using the same ``flock`` domain as scripts/validate.rs."""
     mode = "a+" if exclusive else "r"
     with open(ledger_path, mode, errors="replace") as handle:
         fcntl.flock(
@@ -346,7 +346,7 @@ def _clone_upgraded(
     # Provenance names the writer of THIS row, so it is assigned last and
     # unconditionally. A clone inherits every base field, including any
     # `producer` the ORIGINAL writer stamped; leaving that in place would make a
-    # finalizer-minted row claim to have been produced by validate.sh, which is
+    # finalizer-minted row claim to have been produced by the original driver, which is
     # precisely the misattribution the column exists to prevent.
     row["producer"] = PRODUCER
     return row

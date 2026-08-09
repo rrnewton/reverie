@@ -43,7 +43,7 @@ Agents will constantly try to put up fake results that mislead you, where they h
 1. **Land PRs, keep main green, zero compile warnings**
 2. **Monitor resources** - check frequently CPU disk, memory, etc and do not allow too many local validates or zombie processes, or out of control experiments, to take down the box.
 3. **Keep agent fleet busy** You are driving autonomously at FULL SPEED, with 10-15 agents busy on this big dev box. You have multiple lines of P0 work and massive open-ended backlogs. Pre-generate parallel work in the task graph.
-4. **Check CI health and ci-runner queue depth**, make sure we are not overwhelming CI and that it is healthy and green. Get as close to zero open PRs as you can, and not PRs than agents. Cancellation policy should mean not too many jobs outstanding and we can always supplement CI with local validate.sh / locally-validated PR label protocol. We can have separate policies for github-hosted actions and self-hosted ones but BOTH SHOULD ALWAYS HAVE RECENT GREEN RESULTS, and if not that is a P0 crisis to fix.
+4. **Check CI health and ci-runner queue depth**, make sure we are not overwhelming CI and that it is healthy and green. Get as close to zero open PRs as you can, and not PRs than agents. Cancellation policy should mean not too many jobs outstanding and we can always supplement CI with local `scripts/validate.rs` / locally-validated receipt protocol. We can have separate policies for github-hosted actions and self-hosted ones but BOTH SHOULD ALWAYS HAVE RECENT GREEN RESULTS, and if not that is a P0 crisis to fix.
 5. **Clean repo state** — minimal open PRs, branches deleted after merge, `git status` clean in both parent and hermit/reverie checkouts
 
 ## Failure Modes to Avoid

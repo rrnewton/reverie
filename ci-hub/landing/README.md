@@ -219,7 +219,7 @@ The land sequence itself lives here too, not only in `scratch/`:
 ### Parent changes: hosted exact-head evidence, not a synthetic validate receipt
 
 The local validation ledger is deliberately bound to `rrnewton/hermit` because
-the parent repository has no `validate.sh` producer. Parent tooling therefore
+the parent repository has no Hermit validation producer. Parent tooling therefore
 uses a distinct registered authority rather than widening that ledger with rows
 whose profile and coverage fields would be fictitious:
 

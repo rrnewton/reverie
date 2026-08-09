@@ -25,8 +25,8 @@
     },
     "manual-sequential-validation": {
       "description": "A human-launched, single-job, cache-disabled full validate run in an exact clean Hermit slot",
-      "identity": "manual-command:CI_DAG_JOBS=1 ./validate.sh full --ignore-cache --no-label-pr --verbose",
-      "probe_paths": ["hermit/validate.sh"]
+      "identity": "manual-command:CI_DAG_JOBS=1 ./scripts/validate.rs full --ignore-cache --no-label-pr --verbose",
+      "probe_paths": ["hermit/scripts/validate.rs"]
     },
     "parent-hosted": {
       "description": "Raw exact-head artifacts for the registered four-job parent GitHub Actions authority",
@@ -83,7 +83,7 @@
       "id": "AC-STRICT-03",
       "title": "Exact-RC manual sequential full validation executes nonzero raw tests",
       "evaluator": "manual_validate_log",
-      "command": ["bash", "-o", "pipefail", "-c", "CI_DAG_JOBS=1 ./validate.sh full --ignore-cache --no-label-pr --verbose 2>&1 | tee \"$RAW_LOG\"; status=${PIPESTATUS[0]}; printf '%s\\n' \"$status\" > \"$EXIT_FILE\"; exit \"$status\""],
+      "command": ["bash", "-o", "pipefail", "-c", "CI_DAG_JOBS=1 ./scripts/validate.rs full --ignore-cache --no-label-pr --verbose 2>&1 | tee \"$RAW_LOG\"; status=${PIPESTATUS[0]}; printf '%s\\n' \"$status\" > \"$EXIT_FILE\"; exit \"$status\""],
       "fields": ["artifact.path", "artifact.sha256", "exit_artifact.path", "exit_artifact.sha256", "parsed.commit", "parsed.selection", "parsed.validation_level", "parsed.final_summary", "parsed.pipeline_exit", "parsed.libtest_passed_sum"],
       "denominator": {"field": "parsed.libtest_passed_sum", "unit": "raw libtest tests passed", "minimum": 1},
       "threshold": {"field": "parsed.pipeline_exit", "op": "eq", "value": 0},

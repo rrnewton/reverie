@@ -52,7 +52,7 @@ CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
 ./ci-hub/ci-hub runner-health --all
 
 # Launch one detached full validate through the sole admission point. The user
-# service runs ci-hub validate-lock before validate.sh and writes a durable log.
+# service runs ci-hub validate-lock before scripts/validate.rs and writes a durable log.
 # A ci-hub-owned observer tab appears in the validate-hermit Herdr workspace.
 ./ci-hub/ci-hub validate-run --checkout worktrees/slot01/hermit \
   --agent hermit-example --target aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
@@ -66,7 +66,7 @@ CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
 `validate-run` and the inner `validate-lock` both call the same fail-closed
 admission authority. It refreshes `origin/main`, requires that exact tip to be
 an ancestor of the exact validation SHA, and checks every fixed receipt/merge
-floor before `validate.sh` can start. A stale or unresolvable base is a refusal,
+floor before `scripts/validate.rs` can start. A stale or unresolvable base is a refusal,
 not a soft warning. Historical differential debugging on an older head is
 non-qualifying and runs outside this receipt-producing path.
 
@@ -98,7 +98,7 @@ independent `validate-*` user service. Before that service starts, ci-hub create
 an observer-only tab in the `validate-hermit` Herdr workspace, titled with the
 PR (or unit), exact head prefix, and start time. Pane control crosses the agent
 jail through short-lived `systemd-run` broker calls. The pane tails the durable
-log and observes the service's `/proc` descendants; it never runs `validate.sh`
+log and observes the service's `/proc` descendants; it never runs `scripts/validate.rs`
 and therefore cannot become an unboxed second producer. It prints every
 observed `safe-ci-*` cgroup path and stores those paths in the durable handle at
 `ignored/validate/runs/<unit>.json`.
@@ -114,7 +114,7 @@ Stop the unit, not the watcher: `./ci-hub/ci-hub validate-stop --unit
 validate-NAME.service` targets one run, while `./ci-hub/ci-hub validate-stop
 --all` enumerates every active `validate-*` user service or scope. The command
 refuses unrelated unit names, uses `systemctl --user stop` on each exact unit,
-and fails if any unit remains active. A signal-aware `validate.sh` records that
+and fails if any unit remains active. The signal-aware Rust driver records that
 operator stop as `no_result`, never as a product failure.
 
 ## Standing receipt reconciliation
@@ -218,7 +218,7 @@ policy requires this gateway and forbids raw terminal-status updates.
 | `health/` | Dev-hermit-specific current-main, PR, primary, and agent health adapters plus tick configuration. | Generic cadence or PR-CI classification engines. |
 | `history/` | Incremental/idempotent GitHub Actions and local commit/CI knowledge store, ingestion, and queries. | Current-live status presentation. |
 | `remediation/` | Mandatory post-land dual verification, exact-SHA local execution, watcher, and remediation recommendation. | CI-history ingestion or automatic source-code reverts. |
-| `validate/` | Legacy/local `validate.sh` ledger aggregation and linkage to retained profiles. | The generic DAG runner/profile format. |
+| `validate/` | Local validation ledger aggregation and linkage to retained profiles. | The generic DAG runner/profile format. |
 | `runners/` | Self-hosted runner image, lifecycle, and host status tooling. | Generic CI scheduling. |
 | `landing/` | Shared-file **landing mutex** (`land-lock`) that serializes PR landings touching the shared manifest registries. | The land sequence itself (re-union/push/stamp/merge). |
 | `closure/` | Verification and evidence recording required before TaskGraph closure. | Task implementation or coordinator judgement that a goal is complete. |
@@ -294,7 +294,7 @@ Reverie never inherits Hermit's default. Arming appends that OPEN event to
 
 1. clones the obligation's registered source repository into
    `ignored/ci-hub/obligations/<id>/hermit`, checks out the exact landed commit
-   detached, runs full `./validate.sh --no-label-pr`, and dereferences the
+   detached, runs full `./scripts/validate.rs --no-label-pr`, and dereferences the
    canonical counted exact-SHA receipt with `ci-hub validate-status`;
 2. dereferences the policy-bound jobs from their exact workflow runs for the
    same SHA, dispatching the workflows only when GitHub `main` still equals
@@ -348,7 +348,7 @@ arming; the machine-local intent lets ORC recover that window when the same
 workspace returns. Raw merges bypass the intent, and loss of the workspace/disk
 loses its machine-local recovery state.
 
-A local `validate.sh` exit code is never green authority by itself. Local green
+A local `scripts/validate.rs` exit code is never green authority by itself. Local green
 requires the persisted canonical `validate-status --sha ... --repo ... --json`
 report and its digest: `VALIDATED`, a nonzero qualifying count, full profile and
 selection, a passing dereferenced receipt, and exact landed-SHA provenance.

@@ -25,12 +25,12 @@ run_with_optional_proxy() {
 }
 
 if [ "$scope" != demos ]; then
-  if [ ! -x "$ROOT/hermit/validate.sh" ]; then
+  if [ ! -x "$ROOT/hermit/scripts/validate.rs" ]; then
     echo "Hermit submodule is missing; initializing it..."
     run_with_optional_proxy git -C "$ROOT" submodule update --init --checkout -- hermit
   fi
   echo "=== Super validation: Hermit product stress profile ==="
-  run_with_optional_proxy "$ROOT/hermit/validate.sh" super --no-label-pr
+  run_with_optional_proxy "$ROOT/hermit/scripts/validate.rs" super --no-label-pr
 fi
 
 if [ "$scope" != product ]; then

@@ -138,7 +138,7 @@ pub struct HistoryRow {
     #[serde(default)]
     pub filtered_tests: Option<i64>,
     /// Per-DAG-node test-coverage obligation outcome, written by the producer
-    /// (`validate.sh`) from the run's own per-node banners/terminal lines. Carries
+    /// (Hermit's Rust driver) from the run's own per-node banners/terminal lines. Carries
     /// the CONDITION with the value (Proxy Binding): the NAMES of any inert or
     /// absent nodes travel in the receipt, so the landing predicate decides from
     /// receipt fields alone and never re-reads a log. `None` on a pre-coverage

@@ -232,7 +232,7 @@ for pr in "${prs[@]}"; do
     --hold 1200 \
     --child-deadline 3600 \
     -- /bin/bash -lc \
-      "cd '$repo' && CARGO_BUILD_JOBS=2 THIRD_PARTY_BUILD_JOBS=2 ./validate.sh full" \
+      "cd '$repo' && CARGO_BUILD_JOBS=2 THIRD_PARTY_BUILD_JOBS=2 ./scripts/validate.rs full" \
     >"$log" 2>&1
   validate_rc=$?
   set -e

@@ -43,7 +43,7 @@ jobs:
           # scripts/release-0.3-acceptance.py, whose validate_contract() probes
           # every runner/signer `probe_paths` entry with (repo_root/path).
           # exists() -- and two of those live inside hermit/
-          # (hermit/validate.sh, hermit/.github/workflows/ci-portable.yml).
+          # (hermit/scripts/validate.rs, hermit/.github/workflows/ci-portable.yml).
           # With hermit/ still an empty dir the contract reports 2 deployment
           # errors, the report short-circuits to exit_code 2
           # DEPLOYMENT_DEFECT with an EMPTY results list, and all 15 of that

@@ -312,7 +312,7 @@ fi
 # Only the ledger-guarded applier may materialize the optional local cache label.
 #
 # 4a. Re-mint one exact count-backed schema-5 row from its durable log BEFORE
-# reading the ledger. hermit's validate.sh writes a count-less schema-3 receipt
+# reading the ledger. Hermit's Rust driver can write a count-less receipt
 # when it can't reach the parent count helper; with the uncounted-receipt
 # grandfather removed, such a genuine green would be NotValidated. Select one
 # exact HEAD row by its Rust-canonical digest, then pass both identities into the
@@ -333,7 +333,7 @@ fi
 # /tmp log is evicted. Append-only + idempotent, so it races no appender and never
 # duplicates; best-effort (never a fatal error) and never affects the landing
 # verdict below -- it only preserves attribution that would otherwise die with the
-# log. Until hermit validate.sh inlines first_error_line into the red row it
+# log. Until Hermit's Rust driver inlines first_error_line into the red row it
 # writes, this is what makes a red attributable to which BUG (not just which gate)
 # after the log is gone.
 python3 "$ROOT/ci-hub/validate/attribute_reds.py" --last 0 --persist >/dev/null 2>&1 || true

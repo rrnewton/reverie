@@ -221,10 +221,6 @@ class AcceptanceDirectionTest(unittest.TestCase):
                 r"^PRODUCER\s*=",
                 r'^PRODUCER\s*=\s*"([^"]+)"',
             ),
-            "hermit/validate.sh": (
-                r'\\"producer\\"',
-                r'schema_version\\":4,\\"producer\\":\\"([^\\"]+)',
-            ),
             "hermit/scripts/validate.rs": (
                 r"LEDGER_PRODUCER",
                 r'LEDGER_PRODUCER:\s*&str\s*=\s*"([^"]+)"',

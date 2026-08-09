@@ -10,7 +10,7 @@ and deadline before starting. Routine fixes use the normal single-path workflow.
 For each coherent candidate head, start both tracks immediately:
 
 1. Push the explicit ref and launch GitHub CI for that SHA.
-2. In its isolated worktree, run the focused checks and `./validate.sh` (or every
+2. In its isolated worktree, run the focused checks and `./scripts/validate.rs` (or every
    locally runnable gate the change can affect).
 
 Do not wait for the slow CI result before beginning local validation. Let local
@@ -21,7 +21,7 @@ Local validation does not silently replace the repository merge gate. If the
 owner/task explicitly authorizes urgent landing on local evidence, bind the
 evidence to the exact SHA, land, keep watching PR/main CI, and fix forward. With
 no explicit exception, authoritative CI must still be green before landing. If
-`validate.sh` has a known host-only baseline failure, prove it on clean main and
+`scripts/validate.rs` has a known host-only baseline failure, prove it on clean main and
 report the exact focused passes instead of claiming a false green.
 
 ## Babysit CI

@@ -774,7 +774,7 @@ cargo test -p hermit --test epoll_determinism --test rcx_canonicalization -- --i
 cargo test -p hermit --test rr_suite rr_scratch_directories_are_fresh_and_cleaned -- --exact # [run] ci/dag/hosted.json test/rr_suite_contract
 python3 tests/backend-parity/run_matrix.py --hermit target/release/hermit --backend dbi --require-backend # [both/mixed] ci/dag/hosted.json test/dbi_parity
 set -e; HERMIT=target/debug/hermit; ARGS='run --base-env=minimal --no-virtualize-cpuid --max-timeslice=disabled'; REPS=${L4_REPS:-20}; run_probe() { local c="$1"; timeout 30s $HERMIT $ARGS --strict -- $c </dev/null; timeout 30s $HERMIT $ARGS --strict --verify -- $c </dev/null; timeout 30s $HERMIT $ARGS --strict --verify --detlog-heap --detlog-stack -- $c </dev/null; local i; for ((i=0;i<REPS;i++)); do timeout 30s $HERMIT $ARGS --strict --verify -- $c </dev/null; done; }; run_probe '/bin/true'; run_probe '/bin/echo hermit-envelope'; run_probe '/bin/date -u +%Y' # [verify] ci/dag/hosted.json test/envelope_levels
-./validate.sh --hosted-strict-compat-only --no-label-pr --verbose # [verify] ci/dag/hosted.json test/strict_compat
+./scripts/validate.rs --hosted-strict-compat-only --no-label-pr --verbose # [verify] ci/dag/hosted.json test/strict_compat
 cargo test -p hermit --test cli run_kvm_ -- --test-threads=1 # [both/mixed] ci/dag/hardware.json kvm/cli
 cargo test -p hermit --test cli backend_accepted_in_global_position -- --exact --test-threads=1 # [both/mixed] ci/dag/hardware.json kvm/global_position
 cargo test -p hermit --test arch_prctl --test compression --test madvise --test ppoll_simulation --test redis_strict --test sqlite_veryquick --test syscall_file_io --test syscall_file_metadata --test syscall_quick_wins --test thread_scheduling_fairness --test writev_determinism -- --test-threads=1 # [both/mixed] ci/dag/hardware.json hw/integration
@@ -791,6 +791,6 @@ env HERMIT_LEVELDB_BUILD_DIR=target/hermit-leveldb-build-ci cargo test -p hermit
 cargo test -p hermit --test redis_strict -- --ignored --test-threads=1 # [both/mixed] ci/dag/hardware.json redis/extended
 test -f third-party/rr/src/test/util.h || { echo 'FAIL: PMU rr syscall suite requires initialized third-party/rr' >&2; exit 1; }; cargo test -p hermit --test rr_suite -- --ignored --skip rr_ppoll --skip rr_rlimit --skip rr_sched_yield_to_lower_priority --test-threads=1 # [record/replay] ci/dag/hardware.json rr/suite
 set -e; HERMIT=target/debug/hermit; for c in '/bin/true' '/bin/echo hermit-envelope' '/bin/date -u +%Y'; do timeout ${HERMIT_RR_TIMEOUT:-30s} $HERMIT record start --verify -- $c </dev/null; done # [record/replay] ci/dag/hardware.json rr/envelope
-./validate.sh --rr-compat-only --no-label-pr # [record/replay] ci/dag/hardware.json rr/compat_baseline
+./scripts/validate.rs --rr-compat-only --no-label-pr # [record/replay] ci/dag/hardware.json rr/compat_baseline
 ./tests/debugger/run_debugger_tests.sh # [both/mixed] ci/dag/hardware.json debugger/integration
 python3 tests/backend-parity/run_matrix.py --backend ptrace # [both/mixed] ci/dag/hardware.json ptrace/parity

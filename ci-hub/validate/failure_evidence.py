@@ -482,7 +482,7 @@ def checkout_root(log_text: str) -> Path | None:
     The runner's profile store is CWD-relative (``DEFAULT_PROFILE_DIR``), so it
     lives inside the checkout. Reading the root from the log means the timing
     lookup binds to THIS run's own store without threading a new argument
-    through validate.sh.
+    through the validation driver.
     """
     match = re.search(r"^Root: (.+)$", log_text, re.M)
     if not match:
@@ -678,7 +678,7 @@ def classify_failed_substeps(
                 and sub_step == "lane-run"
                 and cell in registry,
                 # WHY this node ran out of time, when it did. Additive: consumers
-                # read the row with .get()/Option, and validate.sh inlines this
+                # read the row with .get()/Option, and the driver inlines this
                 # list wholesale, so no producer-side change is needed downstream.
                 "timing": node_timing(profile_rows, node, commit or ""),
             }

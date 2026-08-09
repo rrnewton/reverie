@@ -51,7 +51,7 @@ DEFAULT_LEDGER = (
 # The durable capture. WHY IT EXISTS: the run ledger's ``log_file`` points at
 # ephemeral /tmp state that outlives neither recycling nor a reboot, so a red row
 # is attributable only while its log happens to survive — every evicted log
-# strands its row permanently. Until the PRODUCER (hermit validate.sh) inlines the
+# strands its row permanently. Until the PRODUCER (Hermit's Rust driver) inlines the
 # verbatim fault line into every red row it writes, this sidecar is the read-side
 # that captures it NOW: run before a log is evicted, it lifts the node / fault
 # class / VERBATIM first_error_line out of each surviving red log and appends a

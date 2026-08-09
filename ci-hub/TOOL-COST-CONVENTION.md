@@ -85,7 +85,7 @@ ci-hub/bin/tool-cost \
 v1 containing the same estimate plus actual wall, total/user/system CPU, and
 exit fields. Long-lived stores should ingest or reference that JSON instead of
 parsing human-facing log lines. The speculative-land obligation store uses this
-path for its detached local `validate.sh` run. `estimate.kind` is `derived` or
+path for its detached local `scripts/validate.rs` run. `estimate.kind` is `derived` or
 `unknown`; unknown estimates store JSON `null` for wall and CPU seconds.
 
 For a self-contained product tool that cannot depend on the parent checkout,
@@ -121,7 +121,7 @@ should still use the shared wrapper rather than adding another timer.
 - Asserted ratchets are legitimate when their provenance is recorded beside the
   declaration and the code verifies the count. For example,
   `RR_COMPAT_EXPECTED=139` records the establishing PRs, measured exclusions,
-  and the exact passing-label set in `hermit/validate.sh`. That is an intentional
+  and the exact passing-label set in `hermit/scripts/validate.rs`. That is an intentional
   compatibility floor, not a fabricated measurement. A ratchet without recorded
   provenance is an audit failure even when its current value happens to be right.
 - A summary must not imply that work was measured if a probe did not run. Emit

@@ -7,7 +7,7 @@ it. Each record carries a `repo` discriminator so the two products are queryable
 through one command and comparable over time. It unifies three data sources that
 today live in disconnected places:
 
-  1. Structured JSONL ledgers written by hermit/validate.sh and reverie/validate.sh
+  1. Structured JSONL ledgers written by hermit/scripts/validate.rs and reverie/validate.sh
      (append_validation_ledger). hermit's default path is
      `$DEV_HERMIT_PARENT/ignored/validate-run-ledger.jsonl`, but a run whose
      DEV_HERMIT_PARENT is unset (most worktree / standalone runs) skips the
@@ -61,7 +61,7 @@ from nonzero_result import executed_test_count, filtered_test_count  # noqa: E40
 # validate/ dir). A recorded `fail` that is actually a known-flaky-cell coin-flip
 # or a cargo-cache contention artifact gets a `flake_analysis` annotation so the
 # false red surfaces for re-measurement instead of permanently condemning a
-# healthy commit. Read-side half; the producer (hermit/validate.sh) records the
+# healthy commit. Read-side half; the producer (hermit/scripts/validate.rs) records the
 # -j width + concurrent-validate count and enforces re-run-before-write.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import flake_class  # noqa: E402
@@ -201,9 +201,9 @@ def load_ledger_records(parent: str):
     return records
 
 
-# Faithful per-gate classes. Each is anchored ONLY on markers hermit/validate.sh
+# Faithful per-gate classes. Each is anchored ONLY on markers the Hermit driver
 # writes itself, never on workload text (a test named "panic" or a program that
-# prints "timeout" must not sway the class). See hermit/validate.sh:
+# prints "timeout" must not sway the class). See hermit/scripts/validate.rs.
 #   * real gate  -> `=== name ===`, `Command: ...`, [output], then ALWAYS
 #     `Exit: <status>` + `Duration: <n>s`
 #     (run_check_with_timeout / wait_for_background_checks / *_compatibility_probe).
@@ -270,7 +270,7 @@ def parse_raw_log(path: str) -> dict:
                 # stays single-sourced there.
                 if "running " in ln or "test result:" in ln:
                     test_banner_lines.append(ln)
-                # validate.sh prints `... ; selection: <mode>` on the Commit line.
+                # Validation producers print `... ; selection: <mode>` on the Commit line.
                 if selection is None and "selection:" in ln:
                     selection = ln.rsplit("selection:", 1)[1].strip() or None
                 if header_repo is None and ln.startswith("Hermit validation"):
@@ -290,7 +290,7 @@ def parse_raw_log(path: str) -> dict:
                 elif cur is not None and ln.startswith("Skipped:"):
                     cur["_skipped"] = True
                 elif cur is not None and ln.startswith("Gate timed out after"):
-                    # validate.sh writes this as its own line (run_timed_command);
+                    # Validation producers write this as their own timed-command line;
                     # requiring the line prefix keeps guest stdout from ever
                     # forging the marker.
                     cur["_timed_out"] = True
@@ -329,7 +329,7 @@ def parse_raw_log(path: str) -> dict:
     banner_text = "\n".join(test_banner_lines)
     executed_tests = executed_test_count(banner_text)
     filtered_tests = filtered_test_count(banner_text)
-    # A PASS must also carry WHAT it covered. `validate.sh` overrides the profile
+    # A PASS must also carry WHAT it covered. The validation driver overrides the profile
     # name to the "-only" form for every partial run (and to `selective`/`only-X`
     # for subset selections), so `Level:` — parsed into `level` — is `full` iff
     # the run was a full-coverage validate. `full_coverage` lets any reader tell a
@@ -483,7 +483,7 @@ def link_profiling(runs: list[dict], profiles: list[dict], window_s: int = 90) -
         match_kind = "git_sha"
         if not cands:
             # Fallback: same slot + profiling timestamp within window of the run.
-            # (validate.sh and safe-ci-dag-runner record different SHA fields for
+            # (validation drivers and safe-ci-dag-runner record different SHA fields for
             # the same invocation, but the wall-clock timestamps coincide.)
             rt = _epoch(r.get("finished_at") or r.get("started_at"))
             if rt is not None:

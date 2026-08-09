@@ -202,7 +202,7 @@ def build_receipt(
         # Producer binding: WHICH check definition produced this receipt, at
         # which head. The consumer requires this to equal the registered
         # current definition, so a receipt minted by an older/foreign
-        # validate.sh cannot authorize a landing (task bind_receipt_to_producer).
+        # A validation producer cannot authorize a landing (task bind_receipt_to_producer).
         "producer": producer_definition(row, sha),
         "selected_receipt_identity": {
             "digest_algorithm": "sha256",

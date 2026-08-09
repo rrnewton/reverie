@@ -36,13 +36,13 @@ Before landing, require all of the following:
 
 `locally-validated` is only a cache derived from the receipt. Never type it by
 hand or treat its presence, a command exit, a comment, or a copied status as
-authority. Do not use raw worktree operations, direct `./validate.sh` from an
+authority. Do not use raw worktree operations, direct `./scripts/validate.rs` from an
 agent sandbox, `--admin`, or a primary checkout. The author shepherds a new PR
 through this protocol; a dedicated lander is reserved for backlog recovery.
 
 ## Parent repository evidence is a different authority
 
-`rrnewton/dev-hermit` has no `validate.sh` producer, so it cannot honestly mint
+`rrnewton/dev-hermit` has no Hermit validation producer, so it cannot honestly mint
 a Hermit full-profile local receipt. Do not append synthetic parent rows to the
 Hermit ledger and do not treat that absence as a bypass. A parent commit's
 qualifying authority is instead:

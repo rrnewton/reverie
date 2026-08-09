@@ -1,6 +1,6 @@
-# `validate/` — local `validate.sh` run visibility
+# `validate/` — local validation run visibility
 
-This object turns the records that `hermit/validate.sh` writes into readable,
+This object turns the records that `hermit/scripts/validate.rs` writes into readable,
 machine-wide views. It owns the linkage from local run records to retained
 profiles; it does **not** own the generic DAG runner or the profile format
 (those belong to the pinned `safe-ci-dag-runner`).
@@ -9,7 +9,7 @@ Two consumers live here:
 
 | Command | Reads | Answers |
 | --- | --- | --- |
-| `validate/aggregate.py` | Every `validate.sh` run on this machine (parent JSONL ledger + raw per-run logs + `safe-ci-dag-runner` profiling CSVs). | "What has every worktree/agent/slot validated, and where is the profiling?" |
+| `validate/aggregate.py` | Every validation run on this machine (parent JSONL ledger + raw per-run logs + `safe-ci-dag-runner` profiling CSVs). | "What has every worktree/agent/slot validated, and where is the profiling?" |
 | `validate/worktrees.py` | This hub's two report artifacts under parent `ignored/ci-hub/`. | "Which worktrees are registered with this hub, how fresh is each, and how did their recent runs go?" |
 
 Both are read-only. The front door exposes them as `ci-hub local-history` and
@@ -17,7 +17,7 @@ Both are read-only. The front door exposes them as `ci-hub local-history` and
 
 ## Hub-report artifacts
 
-`hermit/validate.sh` walks up from its checkout root through at most three parent
+`hermit/scripts/validate.rs` walks up from its checkout root through at most three parent
 directories looking for `ci-hub/ci-hub`. It fails before validation when the hub
 or its required store dependencies are missing, so a run cannot silently lose
 its receipt. A standalone product checkout may pass `--allow-no-ci-hub` (or set
