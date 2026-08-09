@@ -23,7 +23,7 @@
 #
 # The scanner is REPORT-ONLY. It never edits skills or memories.
 
-skill | main+unprotected | main IS protected since 2026-08-03: two rulesets (history=non_fast_forward+deletion, ZERO bypass; check-gating=admin-bypass). `--admin` bypasses FAILING CHECKS only, never rewinds history. "main unprotected" as a landing rationale is now false. Current truth: memory [[main-forcepush-lockdown-dual-layer]].
+skill | main+unprotected | main IS protected: the active default-branch history ruleset enforces deletion, non_fast_forward, and required_linear_history with ZERO bypass; the legacy check-gating ruleset is intentionally rule-empty. "main unprotected" as a landing rationale is false. Current truth: memory [[main-forcepush-lockdown-dual-layer]].
 
 skill | hermit landing requires+local receipt | Hermit landing is not local-receipt-only: owner-authorized exact-head counted-local OR versioned-hosted green is sufficient, while any genuine red blocks.
 skill | hermit landing+github results are supplemental | GitHub exact-head results are an interchangeable positive Hermit landing authority, not merely supplemental to local validation.
