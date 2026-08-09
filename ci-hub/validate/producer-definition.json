@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical registration of the VALIDATE PRODUCER DEFINITION -- which exact whole-file map is currently allowed to mint a landing-authorizing receipt. `registered` is the primary definition. A future producer change may add at most one strictly shaped, time-bounded `transition.candidate`; no candidate is registered now. Colocated with qualifying-receipt.json / rebase-base-floors.json. Task bind-receipt-to-producer-definition-not-only-the-gate-file.",
+  "_comment": "Canonical registration of the VALIDATE PRODUCER DEFINITION -- which exact whole-file map is currently allowed to mint a landing-authorizing receipt. `registered` is the primary definition. One strictly shaped, time-bounded `transition.candidate` is staged for rrnewton/hermit PR #2008. Colocated with qualifying-receipt.json / rebase-base-floors.json. Task bind-receipt-to-producer-definition-not-only-the-gate-file.",
   "_why": "hermit #1579 bound the GATE FILE: the run's own .github/workflows/merge-gate.yml blob must equal vars.MERGE_GATE_V4_BLOB. It did NOT bind the PRODUCER. A PR could therefore present a CURRENT gate file while its receipt had been minted by an OLDER validate.sh -- i.e. by an older, weaker definition of what 'validated' means. That is the #231 shape (signal not bound to fact) applied to the producer instead of the consumer. This file is the producer-side half, symmetric with MERGE_GATE_V4_BLOB.",
   "_not_hypothetical": "Measured 2026-08-06: validate.sh blob was 9a9c31ce24abaa764089af7c4cafc820709c4c77 at hermit f89c69766371806d3c9b2c3003531df2d59d6118 and 836a070e5e02017ae232e243904fb033a5c45b17 at 4c70658e785834737cbe1524f77330c781a6f5ea -- the producer definition changed within 8 commits on main in a single day, while ci-portable.yml did not move. A receipt minted at the older head was produced by a different definition than the current one.",
   "_rotation_2026_08_08": "Audited rrnewton/hermit main b6051b1cd1402526c76ea768167c875188144328: it resolves validate.sh to 349f8c0bae065597708019005180d2872d9c90b2 and ci-portable.yml to ef7cdc0211ebaeafcaba4286cb2374a80ab9f3fb. This versioned primary predates direct test-harness binding. It remains qualifying as legacy-selected-paths evidence and must never be reported as complete producer coverage.",
@@ -16,6 +16,23 @@
   "registered": {
     "scripts/validate.rs": "15879c97c0ddcfeafaed18deaab0cba2fab30312",
     ".github/workflows/ci-portable.yml": "0fb49d65b8b6571a681b253d076f57a82f2edb55"
+  },
+  "transition": {
+    "id": "rrnewton-hermit-pr-2008",
+    "registered_at": "d21bce4e90416dab44880cc7949a8a54d2451d90",
+    "provenance": {
+      "repository": "rrnewton/hermit",
+      "pull_request": 2008,
+      "head": "d21bce4e90416dab44880cc7949a8a54d2451d90"
+    },
+    "finalize_after": "2026-08-09T17:45:00Z",
+    "expires_at": "2026-08-10T17:45:00Z",
+    "candidate_coverage_status": "complete",
+    "added_paths": [],
+    "candidate": {
+      "scripts/validate.rs": "15879c97c0ddcfeafaed18deaab0cba2fab30312",
+      ".github/workflows/ci-portable.yml": "34beade4840a0a143937ca2a93f5b5c4932c1370"
+    }
   },
   "legacy": [
     {
