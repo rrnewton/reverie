@@ -52,19 +52,31 @@ export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 # transition is malformed.
 production_registry=$script_dir/../validate/producer-definition.json
 production_repo=$root/hermit
-production_registered_at=93575493f406fb6115134b95d54d4a4650214a07
-production_rust=15879c97c0ddcfeafaed18deaab0cba2fab30312
-production_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
-previous_validate=836a070e5e02017ae232e243904fb033a5c45b17
-previous_portable=6d47112dbbd6566e6d0453551a0c730bc7aeb8d9
+production_registered_at=b02e7d229c9e5e18c17ed3d84cab9972e9c57bc1
+production_rust=8c5504c037b54f52f89ff2ad16947097c1e008b5
+production_history=2814723223adcf3e4f077cce325978036c599839
+production_receipt=465f6c7e1f027ba81daf09f5011f84ebdd08deb0
+production_portable=34beade4840a0a143937ca2a93f5b5c4932c1370
+previous_rust=15879c97c0ddcfeafaed18deaab0cba2fab30312
+previous_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
 if ! jq -e \
     --arg at "$production_registered_at" \
     --arg rust "$production_rust" \
+    --arg history "$production_history" \
+    --arg receipt "$production_receipt" \
     --arg portable "$production_portable" '
       .registered_at == $at
-      and .registered_valid_commits == [$at]
-      and (.registered | keys | sort) == [".github/workflows/ci-portable.yml", "scripts/validate.rs"]
+      and .registered_coverage_status == "complete"
+      and (has("registered_valid_commits") | not)
+      and (.registered | keys | sort) == [
+        ".github/workflows/ci-portable.yml",
+        "scripts/lib/validate_history.rs",
+        "scripts/lib/validate_receipt.rs",
+        "scripts/validate.rs"
+      ]
       and .registered["scripts/validate.rs"] == $rust
+      and .registered["scripts/lib/validate_history.rs"] == $history
+      and .registered["scripts/lib/validate_receipt.rs"] == $receipt
       and .registered[".github/workflows/ci-portable.yml"] == $portable
     ' "$production_registry" >/dev/null; then
     echo "FAIL: production producer-definition registry does not match the audited primary" >&2
@@ -248,14 +260,23 @@ base_evidence=$("$verifier" --sha "$sha" --comments "$tmp/comments.json" \
 retarget_receipt "$tmp/receipt.json" "$tmp/production-current-retargeted.json" \
     "$production_registered_at"
 jq -cS --arg rust "$production_rust" \
+  --arg history "$production_history" \
+  --arg receipt "$production_receipt" \
   --arg portable "$production_portable" '
   .producer.definition = {
     "scripts/validate.rs": $rust,
+    "scripts/lib/validate_history.rs": $history,
+    "scripts/lib/validate_receipt.rs": $receipt,
     ".github/workflows/ci-portable.yml": $portable
   }
   | .producer.paths = [
-      ".github/workflows/ci-portable.yml", "scripts/validate.rs"
+      ".github/workflows/ci-portable.yml",
+      "scripts/lib/validate_history.rs",
+      "scripts/lib/validate_receipt.rs",
+      "scripts/validate.rs"
     ]
+  | .producer.coverage_status = "complete"
+  | del(.producer.valid_commits)
 ' "$tmp/production-current-retargeted.json" >"$tmp/production-current.json"
 assert_mutated "$tmp/receipt.json" "$tmp/production-current.json" \
     "PRODUCER production rotation from synthetic fixture"
@@ -264,12 +285,12 @@ PRODUCER_DEFINITION_REGISTRY=$production_registry \
     "production rotation: exact current definition qualifies" \
     '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
 
-jq -cS --arg validate "$previous_validate" --arg portable "$previous_portable" '
+jq -cS --arg rust "$previous_rust" --arg portable "$previous_portable" '
   .producer.definition = {
-    "validate.sh": $validate,
+    "scripts/validate.rs": $rust,
     ".github/workflows/ci-portable.yml": $portable
   }
-  | .producer.paths = [".github/workflows/ci-portable.yml", "validate.sh"]
+  | .producer.paths = [".github/workflows/ci-portable.yml", "scripts/validate.rs"]
 ' "$tmp/production-current.json" >"$tmp/production-previous.json"
 assert_mutated "$tmp/production-current.json" "$tmp/production-previous.json" \
     "PRODUCER previous registered definition"

@@ -203,9 +203,12 @@ class LocalProducerAuthorityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repo, registry, shas = self.fixture(root)
+            fixture_registry = json.loads(registry.read_text())
+            primary_path_count = len(fixture_registry["registered"])
+            candidate_path_count = len(fixture_registry["transition"]["candidate"])
             cases = [
-                ("primary", 0, "legacy-selected-paths", 2),
-                ("candidate", 0, "complete", 3),
+                ("primary", 0, "legacy-selected-paths", primary_path_count),
+                ("candidate", 0, "complete", candidate_path_count),
                 ("crossed_validate", 4, None, 0),
                 ("crossed_helper", 4, None, 0),
                 ("legacy_replay", 4, None, 0),
@@ -286,7 +289,10 @@ class LocalProducerAuthorityTests(unittest.TestCase):
             report = json.loads(positive.stdout)["report"]
             evidence = report["green"]["producer_definition"]
             self.assertEqual(evidence["coverage_status"], "complete")
-            self.assertEqual(len(evidence["paths"]), 3)
+            self.assertEqual(
+                len(evidence["paths"]),
+                len(json.loads(registry.read_text())["transition"]["candidate"]),
+            )
 
             tampered = json.loads(registry.read_text())
             tampered["transition"]["candidate"]["scripts/validate.rs"] = "0" * 40

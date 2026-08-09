@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical registration of the VALIDATE PRODUCER DEFINITION -- which exact whole-file map is currently allowed to mint a landing-authorizing receipt. `registered` is the primary definition. One strictly shaped, time-bounded `transition.candidate` is staged for rrnewton/hermit PR #2016. Colocated with qualifying-receipt.json / rebase-base-floors.json. Task bind-receipt-to-producer-definition-not-only-the-gate-file.",
+  "_comment": "Canonical registration of the VALIDATE PRODUCER DEFINITION -- which exact whole-file map is currently allowed to mint a landing-authorizing receipt. `registered` is the primary definition; no producer transition is currently staged. Colocated with qualifying-receipt.json / rebase-base-floors.json. Task bind-receipt-to-producer-definition-not-only-the-gate-file.",
   "_why": "hermit #1579 bound the GATE FILE: the run's own .github/workflows/merge-gate.yml blob must equal vars.MERGE_GATE_V4_BLOB. It did NOT bind the PRODUCER. A PR could therefore present a CURRENT gate file while its receipt had been minted by an OLDER validate.sh -- i.e. by an older, weaker definition of what 'validated' means. That is the #231 shape (signal not bound to fact) applied to the producer instead of the consumer. This file is the producer-side half, symmetric with MERGE_GATE_V4_BLOB.",
   "_not_hypothetical": "Measured 2026-08-06: validate.sh blob was 9a9c31ce24abaa764089af7c4cafc820709c4c77 at hermit f89c69766371806d3c9b2c3003531df2d59d6118 and 836a070e5e02017ae232e243904fb033a5c45b17 at 4c70658e785834737cbe1524f77330c781a6f5ea -- the producer definition changed within 8 commits on main in a single day, while ci-portable.yml did not move. A receipt minted at the older head was produced by a different definition than the current one.",
   "_rotation_2026_08_08": "Audited rrnewton/hermit main b6051b1cd1402526c76ea768167c875188144328: it resolves validate.sh to 349f8c0bae065597708019005180d2872d9c90b2 and ci-portable.yml to ef7cdc0211ebaeafcaba4286cb2374a80ab9f3fb. This versioned primary predates direct test-harness binding. It remains qualifying as legacy-selected-paths evidence and must never be reported as complete producer coverage.",
@@ -9,36 +9,13 @@
   "_generalises_the_anchor": "The pre-anchor rule (a PR head must descend from hermit bfb0a9ef, else it runs its own older validate.sh) is a SINGLE-COMMIT ANCHOR: it goes stale every time the producer changes and must be hand-advanced. This registration is its hash-valued generalisation, exactly as #1579 generalised the gate-file case.",
   "_semantics": "EXACT WHOLE-MAP EQUALITY, fail closed. A qualifying receipt MUST carry producer.definition whose key set and blob values equal one complete current/candidate map, or equal a legacy map at one of that record's explicit valid_commits, exactly. A receipt with no producer block, a missing file, an undeclared extra file, a crossed map, a legacy map at another commit, or any differing blob is REFUSED. Candidate keys may exceed primary keys only by the exact explicit transition.added_paths set; no removals or implicit drift are allowed, and maps are never field-unioned. Every verdict carries coverage_status plus the exact paths and any commit bound. An unreadable or malformed registration, legacy record, or transition is a DEPLOY DEFECT (exit 2), never a lenient fallback. Expiry removes only the candidate; the b605 primary remains qualifying only at its explicitly registered commit.",
   "_advancing_this": "Stage a producer change by adding one strictly shaped transition without changing `registered`. Derive every candidate SHA and blob from the selected head; never copy values from a superseded PR. After that exact head lands, freshly prove target-main containment and resolve its producer blobs before promoting the candidate to `registered`, advancing `registered_at`, and deleting `transition`. A timestamp never authorizes promotion. If the candidate does not land before expiry, remove or replace the transition; never extend it implicitly.",
-  "registered_at": "93575493f406fb6115134b95d54d4a4650214a07",
-  "registered_coverage_status": "legacy-selected-paths",
-  "registered_valid_commits": [
-    "93575493f406fb6115134b95d54d4a4650214a07"
-  ],
+  "registered_at": "b02e7d229c9e5e18c17ed3d84cab9972e9c57bc1",
+  "registered_coverage_status": "complete",
   "registered": {
-    "scripts/validate.rs": "15879c97c0ddcfeafaed18deaab0cba2fab30312",
-    ".github/workflows/ci-portable.yml": "0fb49d65b8b6571a681b253d076f57a82f2edb55"
-  },
-  "transition": {
-    "id": "rrnewton-hermit-pr-2016",
-    "registered_at": "b02e7d229c9e5e18c17ed3d84cab9972e9c57bc1",
-    "provenance": {
-      "repository": "rrnewton/hermit",
-      "pull_request": 2016,
-      "head": "b02e7d229c9e5e18c17ed3d84cab9972e9c57bc1"
-    },
-    "finalize_after": "2026-08-09T22:25:00Z",
-    "expires_at": "2026-08-10T22:25:00Z",
-    "candidate_coverage_status": "complete",
-    "added_paths": [
-      "scripts/lib/validate_history.rs",
-      "scripts/lib/validate_receipt.rs"
-    ],
-    "candidate": {
-      "scripts/validate.rs": "8c5504c037b54f52f89ff2ad16947097c1e008b5",
-      ".github/workflows/ci-portable.yml": "34beade4840a0a143937ca2a93f5b5c4932c1370",
-      "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
-      "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0"
-    }
+    ".github/workflows/ci-portable.yml": "34beade4840a0a143937ca2a93f5b5c4932c1370",
+    "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
+    "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+    "scripts/validate.rs": "8c5504c037b54f52f89ff2ad16947097c1e008b5"
   },
   "legacy": [
     {
@@ -64,6 +41,18 @@
       "definition": {
         "validate.sh": "349f8c0bae065597708019005180d2872d9c90b2",
         ".github/workflows/ci-portable.yml": "ef7cdc0211ebaeafcaba4286cb2374a80ab9f3fb"
+      }
+    },
+    {
+      "id": "pre-rrnewton-hermit-pr-2016",
+      "registered_at": "93575493f406fb6115134b95d54d4a4650214a07",
+      "coverage_status": "legacy-selected-paths",
+      "valid_commits": [
+        "93575493f406fb6115134b95d54d4a4650214a07"
+      ],
+      "definition": {
+        ".github/workflows/ci-portable.yml": "0fb49d65b8b6571a681b253d076f57a82f2edb55",
+        "scripts/validate.rs": "15879c97c0ddcfeafaed18deaab0cba2fab30312"
       }
     }
   ]
