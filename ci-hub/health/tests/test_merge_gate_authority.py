@@ -80,6 +80,8 @@ if args[:2] == ["api", "repos/rrnewton/hermit/rulesets/20307165"]:
     rules = [{"type": "deletion"}]
     if os.environ.get("STUB_HISTORY_NON_FF", "1") == "1":
         rules.append({"type": "non_fast_forward"})
+    if os.environ.get("STUB_HISTORY_LINEAR", "1") == "1":
+        rules.append({"type": "required_linear_history"})
     print(json.dumps({
         "id": 20307165,
         "name": "main history protection",
@@ -110,6 +112,7 @@ raise SystemExit(2)
         *,
         required_context: str = "",
         history_non_ff: bool = True,
+        history_linear: bool = True,
         history_bypass: bool = False,
         history_target: str = "branch",
         ruleset_auth_fail: bool = False,
@@ -118,6 +121,7 @@ raise SystemExit(2)
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "STUB_REQUIRED_CONTEXT": required_context,
             "STUB_HISTORY_NON_FF": "1" if history_non_ff else "0",
+            "STUB_HISTORY_LINEAR": "1" if history_linear else "0",
             "STUB_HISTORY_BYPASS": "1" if history_bypass else "0",
             "STUB_HISTORY_TARGET": history_target,
         }
@@ -153,7 +157,13 @@ raise SystemExit(2)
         rc, fields = self._run(history_non_ff=False)
         self.assertEqual(1, rc)
         self.assertEqual("interrupted-transition", fields["state"])
-        self.assertIn("types=deletion ", fields["summary"])
+        self.assertIn("types=deletion,required_linear_history", fields["summary"])
+
+    def test_missing_linear_history_protection_is_loudly_refused(self) -> None:
+        rc, fields = self._run(history_linear=False)
+        self.assertEqual(1, rc)
+        self.assertEqual("interrupted-transition", fields["state"])
+        self.assertIn("types=deletion,non_fast_forward", fields["summary"])
 
     def test_bypassable_history_protection_is_loudly_refused(self) -> None:
         rc, fields = self._run(history_bypass=True)
