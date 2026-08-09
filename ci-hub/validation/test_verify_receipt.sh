@@ -45,9 +45,11 @@ export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 
 # Exact production primary under review. Keep the previous pair as a planted
 # negative: yesterday's once-valid producer must not authorize while the exact
-# registered primary remains accepted. Transition behavior is exercised only
-# with the synthetic repository below, so this test never embeds an in-flight
-# PR head or candidate blob.
+# registered primary remains accepted. A time-bounded production transition may
+# coexist with that primary; its exact behavior is exercised with the synthetic
+# repository below so this test never embeds an in-flight PR head or candidate
+# blob. The live verifier positive below still fails closed if any coexisting
+# transition is malformed.
 production_registry=$script_dir/../validate/producer-definition.json
 production_repo=$root/hermit
 production_registered_at=93575493f406fb6115134b95d54d4a4650214a07
@@ -64,7 +66,6 @@ if ! jq -e \
       and (.registered | keys | sort) == [".github/workflows/ci-portable.yml", "scripts/validate.rs"]
       and .registered["scripts/validate.rs"] == $rust
       and .registered[".github/workflows/ci-portable.yml"] == $portable
-      and (has("transition") | not)
     ' "$production_registry" >/dev/null; then
     echo "FAIL: production producer-definition registry does not match the audited primary" >&2
     exit 1

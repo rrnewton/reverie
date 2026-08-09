@@ -461,14 +461,18 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
         checker.chmod(0o755)
         out, err = StringIO(), StringIO()
 
-        result = primary_checkout.checkout_fresh(
-            self.root,
-            publish_parent=True,
-            strict=True,
-            use_proxy=False,
-            out=out,
-            err=err,
-        )
+        # Hosted runners deliberately have no devbigNNN hostname. Production
+        # automation supplies this explicit machine identity; the fixture must
+        # exercise that supported path instead of borrowing the developer host.
+        with patch.dict(os.environ, {"HERMIT_COMMIT_MACHINE": "devbig030"}):
+            result = primary_checkout.checkout_fresh(
+                self.root,
+                publish_parent=True,
+                strict=True,
+                use_proxy=False,
+                out=out,
+                err=err,
+            )
 
         self.assertEqual(result, 0, err.getvalue())
         self.assertEqual(git(self.root, "rev-parse", "HEAD:hermit"), hermit_remote)
