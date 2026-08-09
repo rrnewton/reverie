@@ -235,6 +235,17 @@ _TEST_FAILURE_MARKERS = (
     "panicked at",  # a rust test panic
 )
 _TEST_FAILURE_COUNT_RE = re.compile(r"\b([1-9]\d*)\s+failed\b")  # pytest "3 failed"
+# safe-ci-dag-runner's OWN closing summary, e.g.
+#   safe-ci-dag-runner: FAIL - 8 passed, 1 failed, 0 aborted, 39 skipped in 234.1s
+# Its "N failed" counts DAG NODES, not tests, so _TEST_FAILURE_COUNT_RE must not
+# read it as a test verdict.  A node can be "failed" because it TIMED OUT, was
+# cancelled, or was killed -- none of which is a product test failure, and the
+# measured instance was a node frozen in do_signal_stop for ~210s that completes
+# in 54-58s unfrozen.  Matched as a whole line so only the aggregate is removed;
+# genuine runner output on every other line is still read.
+_DAG_RUNNER_AGGREGATE_RE = re.compile(
+    r"(?mi)^[^\n]*\bsafe-ci-dag-runner:\s*(?:fail|ok|pass)\b[^\n]*$"
+)
 # These forms bind the failure to a product test suite rather than to the DAG's
 # aggregate ``N failed`` node count.  They are intentionally narrower than
 # _has_test_failures: when an unrelated build marker is also present, only a
@@ -340,11 +351,26 @@ def _has_test_failures(output: str) -> bool:
 
     Over-inclusive on purpose: a false positive here only forces a genuine RED
     (revertable), never swallows one, so unusual failure formatting fails safe.
+
+    THE ONE THING IT MUST NOT COUNT is safe-ci-dag-runner's own aggregate, whose
+    "N failed" counts DAG NODES.  A node is "failed" when it times out, is
+    cancelled, or is killed, so counting it here manufactures a PRODUCT red from
+    an infrastructure event.  Measured 2026-08-08 on obligation
+    20260809-012006-649cee3a8339-dad6e4: a log with ZERO test-failure markers
+    classified ("red", "test-failure") purely on the literal text "1 failed",
+    where the failing node was a TIMEOUT caused by a frozen cgroup.
+    The sibling _has_explicit_product_test_failure already documents excluding
+    this exact text "because it may count DAG nodes"; this catch-all was
+    re-admitting what the strong predicate deliberately threw out.
+
+    Stripping is line-scoped, so this stays over-inclusive everywhere else: a
+    genuine "3 failed" from a test runner on any other line still counts.
     """
     lowered = output.lower()
     if any(marker in lowered for marker in _TEST_FAILURE_MARKERS):
         return True
-    return _TEST_FAILURE_COUNT_RE.search(lowered) is not None
+    without_node_aggregate = _DAG_RUNNER_AGGREGATE_RE.sub("", lowered)
+    return _TEST_FAILURE_COUNT_RE.search(without_node_aggregate) is not None
 
 
 def _has_explicit_product_test_failure(output: str) -> bool:

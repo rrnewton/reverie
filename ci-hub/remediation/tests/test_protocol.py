@@ -4013,6 +4013,64 @@ class EnvironmentalLocalClassificationTest(unittest.TestCase):
                 self.assertEqual(state, "no_result")
                 self.assertEqual(reason, "non-test-failure:build-tool")
 
+    def test_dag_runner_node_aggregate_is_not_a_product_test_verdict(self) -> None:
+        # REAL incident, planted verbatim: obligation
+        # 20260809-012006-649cee3a8339-dad6e4 at hermit 649cee3a. The run had ZERO
+        # test-failure markers of any kind; the red rested ENTIRELY on the literal
+        # text "1 failed" inside safe-ci-dag-runner's own closing summary, whose
+        # counts are DAG NODES. The failing node was a TIMEOUT -- its cgroup held
+        # processes in do_signal_stop for ~210s on a node that finishes in 54-58s
+        # unfrozen -- so an infrastructure freeze was rendered as a product red.
+        #
+        # _has_explicit_product_test_failure already excluded this text "because
+        # it may count DAG nodes"; the catch-all was re-admitting it.
+        output = (
+            "[e2e.metadata] ✗ FAIL   metadata (233s, TIMEOUT >60s)\n"
+            "safe-ci-dag-runner: FAIL - 8 passed, 1 failed, 0 aborted, "
+            "39 skipped in 234.1s\n"
+        )
+        state, reason = protocol._classify_local(1, output)
+        self.assertEqual(state, "no_result")
+        self.assertNotEqual(reason, "test-failure")
+
+    def test_node_aggregate_strip_is_line_scoped_not_a_blanket_disable(self) -> None:
+        # A fix that stopped manufacturing reds by never counting again would be
+        # as useless as the bug. The aggregate is removed by LINE, so a genuine
+        # bare count elsewhere in the same log still reds.
+        runner = (
+            "safe-ci-dag-runner: FAIL - 8 passed, 1 failed, 0 aborted, "
+            "39 skipped in 234.1s\n"
+        )
+        with self.subTest("bare count alone still reds"):
+            state, reason = protocol._classify_local(1, "collected 12 items\n3 failed, 9 passed\n")
+            self.assertEqual((state, reason), ("red", "test-failure"))
+        with self.subTest("bare count ALONGSIDE the aggregate still reds"):
+            state, reason = protocol._classify_local(1, "3 failed, 9 passed\n" + runner)
+            self.assertEqual((state, reason), ("red", "test-failure"))
+        with self.subTest("libtest verdict alongside the aggregate still reds"):
+            output = "test result: FAILED. 2 passed; 1 failed; 0 ignored\n" + runner
+            state, reason = protocol._classify_local(1, output)
+            self.assertEqual((state, reason), ("red", "test-failure"))
+
+    def test_a_node_that_could_not_run_is_never_a_product_red(self) -> None:
+        # The three outcomes, at the classifier: a node can be "failed" because it
+        # TIMED OUT, was CANCELLED, or was ABORTED. None of those is a product test
+        # verdict, and collapsing them into red is what trains a fleet to distrust
+        # real reds.
+        for label, node_line in (
+            ("timeout", "[e2e.metadata] ✗ FAIL metadata (233s, TIMEOUT >60s)"),
+            ("cpu-timeout", "[build.dbt] ✗ FAIL dbt (61s, CPU-TIMEOUT >60s cpu)"),
+            ("oom", "[test.big] ✗ FAIL big (12s, OOM-KILLED (hit inner MemoryMax))"),
+        ):
+            with self.subTest(label):
+                output = (
+                    f"{node_line}\n"
+                    "safe-ci-dag-runner: FAIL - 0 passed, 1 failed, 0 aborted, "
+                    "0 skipped in 234.1s\n"
+                )
+                state, _ = protocol._classify_local(1, output)
+                self.assertEqual(state, "no_result", f"{label} must not be a product red")
+
     def test_explicit_test_verdict_wins_over_unrelated_build_marker(self) -> None:
         # Positive half of the mixed-output bracket. Combined DAG output can
         # carry an unrelated build-node marker and a genuine product-test
