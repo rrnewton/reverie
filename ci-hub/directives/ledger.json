@@ -184,7 +184,7 @@
       "repository": "rrnewton/hermit",
       "checkout": "hermit",
       "target": "main",
-      "task": "defer-dbi-to-dbt-rename-until-pr-queue-drains",
+      "task": "dbi-to-dbt-rename-and-install-path-factoring",
       "owner": "hermit-dbi",
       "source_row": "9",
       "parent_id": null,
