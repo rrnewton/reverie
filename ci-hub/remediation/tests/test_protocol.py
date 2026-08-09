@@ -3757,6 +3757,8 @@ class ProtocolTest(unittest.TestCase):
             }
         )
 
+        validate_commands = []
+
         def fake_run(command, **_kwargs):
             command = list(command)
             if command[:2] == ["git", "clone"]:
@@ -3768,6 +3770,7 @@ class ProtocolTest(unittest.TestCase):
                     command, 0, stdout=SHA + "\n", stderr=""
                 )
             if "tool-cost" in command[0]:
+                validate_commands.append(command)
                 payload = {
                     "schema_version": 1,
                     "tool": "speculative-land/local-validate",
@@ -3809,6 +3812,34 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(record["local"]["cost"]["record_path"], str(cost_path))
         self.assertEqual(record["local"]["receipt_verification"]["state"], "verified")
         self.assertTrue(protocol._local_launch_durable(record))
+        self.assertEqual(len(validate_commands), 1)
+        launched = validate_commands[0]
+        boundary = launched.index("--") + 1
+        self.assertEqual(
+            launched[boundary : boundary + 2],
+            [str(self.root / "ci-hub/ci-hub"), "validate-run"],
+        )
+        self.assertEqual(
+            launched[launched.index("--checkout") + 1], str(workspace / "hermit")
+        )
+        self.assertEqual(
+            launched[launched.index("--agent") + 1], "obligation-test-obligation"
+        )
+        self.assertEqual(launched[launched.index("--target") + 1], SHA)
+        self.assertEqual(launched[launched.index("--log") + 1], str(log_path))
+        self.assertNotIn("--in-place", launched)
+        self.assertEqual(launched[-2:], ["--", "--no-label-pr"])
+        self.assertEqual(
+            [argument for argument in launched if argument.endswith("/validate.sh")], []
+        )
+        self.assertEqual(
+            [
+                argument
+                for argument in launched
+                if argument.endswith("/scripts/validate.rs")
+            ],
+            [],
+        )
 
 
 class GithubStateClassificationTest(unittest.TestCase):

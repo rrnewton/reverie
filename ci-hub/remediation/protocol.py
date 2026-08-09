@@ -3082,10 +3082,26 @@ def _local_run(
                 "--actual-json",
                 str(cost_path),
                 "--",
-                str(checkout / "scripts/validate.rs"),
+                # A validation-driver exit is not admission evidence. Route this
+                # producer through the same non-overridable boundary as every
+                # manual validate so the receipt carries canonical lock-owner
+                # ancestry and concurrency proof.  validate-run deliberately
+                # defaults to a fresh checkout of the exact target; do not add
+                # --in-place here.
+                str(ROOT / "ci-hub/ci-hub"),
+                "validate-run",
+                "--checkout",
+                str(checkout),
+                "--agent",
+                f"obligation-{obligation_id}",
+                "--target",
+                record["landed_sha"],
+                "--log",
+                str(log_path),
+                "--",
                 "--no-label-pr",
             ),
-            cwd=checkout,
+            cwd=ROOT,
             check=False,
             capture_output=False,
             env=environment,
