@@ -63,6 +63,24 @@ def test_every_published_machine_is_implicitly_unioned(tmp_path: Path):
     }
 
 
+def test_ignored_ephemeral_checkout_is_redacted_without_weakening_guard(
+    tmp_path: Path,
+):
+    source = row(tmp_path)
+    source["cwd"] = "/home/test/work/dev-hermit/ignored/validate-fresh-abc"
+    source["first_error_line"] = "/home/test/.cargo/git/checkouts/reverie/file.rs:7"
+
+    event = validate_rows._event_for_row(source, tmp_path)
+
+    assert event["legacy_row"]["cwd"] == (
+        "{{WORKSPACE_ROOT}}/ignored/validate-fresh-abc"
+    )
+    assert event["legacy_row"]["first_error_line"] == (
+        "{{HOME}}/.cargo/git/checkouts/reverie/file.rs:7"
+    )
+    assert "/home/" not in json.dumps(event)
+
+
 @pytest.mark.parametrize("field", ["finished_at"])
 def test_incomplete_row_is_refused_without_creating_an_alternate_ledger(
     tmp_path: Path, field: str
