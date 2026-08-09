@@ -1,0 +1,2 @@
+safe-ci-dag-runner: cgroup boxing ACTIVE (two-level cgroup-v2 scope; per-step memory/CPU caps + setsid-proof teardown).
+safe-ci-dag-runner: sweep: step 'check.skill_discovery' FAILED at -j16; aborting the sweep

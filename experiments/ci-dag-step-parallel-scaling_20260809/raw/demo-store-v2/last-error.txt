@@ -1,0 +1,4 @@
+safe-ci-dag-runner: cgroup boxing ACTIVE (two-level cgroup-v2 scope; per-step memory/CPU caps + setsid-proof teardown).
+safe-ci-dag-runner: perf CSVs written under /home/newton/work/dev-hermit/experiments/ci-dag-step-parallel-scaling_20260809/raw/demo-store-v2:
+  /home/newton/work/dev-hermit/experiments/ci-dag-step-parallel-scaling_20260809/raw/demo-store-v2/AMD_EPYC_9D85_158-Core_Processor.csv
+  /home/newton/work/dev-hermit/experiments/ci-dag-step-parallel-scaling_20260809/raw/demo-store-v2/step_profiles_AMD_EPYC_9D85_158-Core_Processor_affinity316_cpu-max-unknown.csv

@@ -1,0 +1,97 @@
+{
+  "experiment": "ci-dag-step-parallel-scaling",
+  "date_utc": "2026-08-09",
+  "run_window_utc": "2026-08-09T02:30Z/2026-08-09T03:05Z",
+  "question": "Per CI DAG step, where does parallel scaling plateau or regress, and can the ci-dag runner capture the data and derive that plateau as the step's max-threads on a given machine?",
+  "host": {
+    "short_hostname": "devbig014",
+    "cpu_model": "AMD EPYC 9D85 158-Core Processor",
+    "hardware_threads": 316,
+    "physical_cores": 158,
+    "kernel": "6.18.39-0_fbk0_hardened_0_ga43d5727b443",
+    "python": "3.12.13+meta"
+  },
+  "shas": {
+    "hermit": "b0b7c9c1f77bbbdcb4ef92eb6330bb30821c04f2",
+    "agent_utils": "7eb49bd4240f1ae8929dbdaa75cee1a4375b4bb3",
+    "agent_utils_dirty": false,
+    "dev_hermit_parent": "f27ea1259140a1fe93ea3d477198a4d502a51cd9"
+  },
+  "slot": "worktrees/budget-fix/hermit",
+  "instrument": {
+    "tool": "safe-ci-dag-runner sweep",
+    "note": "All wall/CPU/effective_cores/peak values are the runner's own cgroup-recorded per-step profile rows. This experiment adds no external stopwatch.",
+    "wrapper": "systemd-run --user --property=Delegate=yes",
+    "wrapper_reason": "The agent sandbox scope exposes cgroup.controllers='io memory pids' with no cpu controller, so cpu.max cannot be set and a sweep's width would be inert. systemd-run --user yields 'cpuset cpu io memory pids'."
+  },
+  "method": {
+    "width_order": "independently shuffled per replicate; defends against ambient load drift aliasing onto the width axis",
+    "widths_full_box": [1, 2, 4, 8, 16, 32, 64, 128, 192, 256, 316, 384, 512],
+    "widths_container16": [1, 4, 16, 32, 64],
+    "widths_hermit_step": [1, 4, 16, 64, 256],
+    "replicates": {"full_box": 3, "container16": 2, "hermit_step": 3},
+    "primary_statistic": "median",
+    "dispersion": ["min", "max", "IQR"],
+    "plateau_rule": "smallest width whose median wall is within 5% of the best median",
+    "regression_rule": "smallest width above best whose median exceeds best by >5% AND whose [min,max] range is disjoint from best's; overlapping candidates are reported 'suspected' and are not actionable",
+    "failed_samples": "excluded from the derived table, retained in raw/"
+  },
+  "workload": {
+    "capability_demo": {
+      "payload_file": "/tmp/scaling-payload.bin",
+      "payload_bytes": 201326592,
+      "payload_sha256": "07748d65d29ff11613a81bc8981d85b92f2f5c6595299142fe051e788ce294d1",
+      "total_units": 576,
+      "unit": "sha256sum of the page-cached payload (~0.163 s)",
+      "shape": "fixed total work split into exactly <width> forked workers; forks scale with width, not with unit count",
+      "cache_state": "page-cache warm, warmed before the first sample; no cold/warm mode exists for this payload"
+    },
+    "hermit_step": "check.portability_paths from hermit ci/dag/portable.json"
+  },
+  "ambient": {
+    "samples": 198,
+    "load1_min": 58, "load1_median": 76, "load1_max": 107,
+    "ambient_bucket_all_samples": "busy",
+    "note": "Shared box with roughly 14 concurrent agents. Randomized width order and replication defend against drift aliasing onto the width axis; they do not make this an idle-host measurement."
+  },
+  "producers": {
+    "runners/sweep-driver.sh": "edce345c031625790f3361c342677da4ccc080f8584e57247039d748e91f6fb7",
+    "runners/parallel-payload.sh": "f1dae10cebe70f6b70d6c663d55d40784fc48cea7824b5b7dd4664426804c1f5",
+    "runners/analyze-curve.py": "957720ee3905631f27731a5e5c2e60eed67d22cae51cf0dd84de413c6800bcf3"
+  },
+  "raw_data": {
+    "raw/demo-store": "NEGATIVE CONTROL: first sweep, every width killed by the 10 CPU-second default cpu_timeout. Truncation times form a plausible but entirely fictitious scaling curve. Do not use as measurements.",
+    "raw/demo-store-v2": "192-unit sweep; per-unit fork overhead floored effective_cores at ~58/316",
+    "raw/demo-store-v3": "PRIMARY: 576-unit chunked strong-scaling sweep, 13 widths x 3 reps, 39/39 valid",
+    "raw/container16-store": "same workload under AllowedCPUs=0-15",
+    "raw/hermit-steps-store": "three real hermit check.* steps; only check.portability_paths succeeded",
+    "raw/collision-demo": "the two datasets merged as a shared store would merge them, demonstrating Defect 5",
+    "raw/cc-recheck": "single-sample reproduction of the container_class mis-record"
+  },
+  "key_results": {
+    "capability_demo_316cpu": {"baseline_wall_s": 94.435, "best_width": 316, "best_wall_s": 0.678, "speedup": 139.28, "plateau_width_5pct_rule": 316, "plateau_width_dispersion_aware": 192, "regression_confirmed": null, "regression_suspected_width": 384},
+    "capability_demo_16cpu": {"baseline_wall_s": 94.081, "best_width": 16, "best_wall_s": 6.612, "speedup": 14.23, "plateau_width": 16, "regression_confirmed": null},
+    "hermit_check_portability_paths": {"baseline_wall_s": 1.821, "best_width": 16, "best_wall_s": 1.671, "speedup": 1.09, "effective_cores_all_widths": 1.0, "verdict": "flat by construction, single-threaded; not a measured plateau"},
+    "estimator_recommendation_full_box": 192,
+    "estimator_recommendation_container16": 16,
+    "estimator_recommendation_collided": 192
+  },
+  "defects_found": [
+    "1: plateau estimator has never fired - 0 curves from 129 real rows / 52 steps; 52/52 steps have exactly one inner_jobs width vs _SPEEDUP_MIN_LEVELS=2",
+    "2: the runner's width knob cannot reach a hermit step's parallelism - default_jobs_flag is null and 19/48 portable steps hardcode --test-threads=N or CARGO_BUILD_JOBS=8 in the cmd string",
+    "3: plateau and cliff are indistinguishable in StepSpeedup output; the recommendation is nonetheless SAFE (greedy stop-at-first-failure never advances past a degradation)",
+    "4: the estimator ingests FAILED samples - bucketize_rows/sample_from_row never inspect ok/returncode/timed_out/oom_kills",
+    "5: container_class collides under cgroup boxing - 16-CPU container rows record affinity316, and the quota half reads the ROOT cgroup cpu.max; merged, the estimator recommends 192 threads for a 16-CPU container",
+    "6: analyze.summarize() keys on duration_s but the store writes elapsed_s; drops 100% of rows for all 52 steps"
+  ],
+  "limitations": [
+    "Every sample is ambient_bucket=busy; absolute walls would be lower on a quiet host",
+    "The estimator applies a contention discount: 71.278 s reported vs 94.435 s measured median at width 1 (25%). Tables report raw measured medians; only recommended_inner_jobs comes from the discounted path",
+    "1a/1b are a synthetic CPU-bound payload, not a hermit workload",
+    "Only one real hermit step swept; check.script_sigpipe (rc=2) and check.skill_discovery (rc=127, rustc absent from the transient unit PATH) failed at every width",
+    "The 12 --test-threads steps and 7 build steps were not swept: they need a full workspace build and per Defect 2 their thread counts would not move",
+    "Privileged lane not measured",
+    "No confirmed regression anywhere in this dataset; two suspected points fail the dispersion test",
+    "n=2 for the 16-CPU container run, n=3 elsewhere"
+  ]
+}

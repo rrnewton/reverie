@@ -1,0 +1,18 @@
+{
+  "default_step_timeout": 600,
+  "steps": [
+    {
+      "group": "demo",
+      "job": "fixed_work_parallel",
+      "desc": "Fixed total CPU work (192 sha256 units) spread over the runner-supplied width",
+      "cmd": "bash /home/newton/work/dev-hermit/experiments/ci-dag-step-parallel-scaling_20260809/runners/parallel-payload.sh",
+      "jobs_flag": "%d",
+      "timeout": 600,
+      "hint": {
+        "classification": "cpu-bound",
+        "hard_mem_max_bytes": 2147483648
+      },
+      "cpu_timeout": 600
+    }
+  ]
+}
