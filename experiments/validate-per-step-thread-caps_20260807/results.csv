@@ -1,0 +1,48 @@
+step,resource,shipped_test_threads,knob,shipped_wall_s,shipped_cpu_s,shipped_effective_cores,peak_GiB,curve_T1,curve_T2,curve_T4,curve_T8,curve_T16,curve_T32,best_threads,best_wall_s,speedup_T1_to_best,knee_threads,pass_at_every_T,samples
+e2e.manifest_language_runtimes,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),65.29,56.2,0.86,0.1,,,,,,,,,,,,
+test.strict_compat,hermit_guest,,NONE (shell/python step),56.08,85.7,1.53,0.15,,,,,,,,,,,,
+test.hermit_integration,hermit_guest,1,libtest --test-threads,48.97,71.3,1.46,2.06,48.57,41.26,41.48,41.11,43.51,44.47,8,41.11,1.18,2,True,1
+e2e.manifest_system_utils,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),40.06,26.4,0.66,0.14,,,,,,,,,,,,
+test.command_strict_verify,hermit_guest,1,libtest --test-threads,39.6,40.0,1.01,0.12,38.0,37.95,38.35,38.42,39.56,38.51,2,37.95,1.0,1,True,1
+test.liteinst_strict,hermit_guest,1,libtest --test-threads,33.95,46.4,1.37,1.81,33.55,19.48,12.21,5.36,7.12,7.07,8,5.36,6.26,8,True,3
+e2e.manifest_determinism_stress,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),32.24,18.6,0.58,0.1,,,,,,,,,,,,
+e2e.metadata,,,NONE (shell/python step),23.04,38.5,1.67,0.31,,,,,,,,,,,,
+test.hermit_modes,hermit_guest,1,libtest --test-threads,22.23,22.3,1.0,0.31,21.83,22.03,21.53,22.14,21.93,22.43,4,21.53,1.01,1,True,3
+e2e.manifest_applications,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),21.93,7.5,0.34,0.1,,,,,,,,,,,,
+test.app_strict_verify,hermit_guest,1,libtest --test-threads,21.83,77.3,3.54,0.61,21.13,16.58,14.92,14.62,15.02,15.03,8,14.62,1.45,4,True,1
+e2e.manifest_c_programs,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),20.59,20.8,1.01,0.1,,,,,,,,,,,,
+test.regular_crates,,,"CARGO_BUILD_JOBS (build width, not test width)",18.53,5.4,0.29,0.42,,,,,,,,,,,,
+doc.doctests,,,"CARGO_BUILD_JOBS (build width, not test width)",17.68,15.1,0.86,1.39,,,,,,,,,,,,
+lint.clippy,,,"CARGO_BUILD_JOBS (build width, not test width)",17.62,1.5,0.08,0.07,,,,,,,,,,,,
+test.sabre_examples,hermit_guest,1,libtest --test-threads,17.57,29.8,1.7,1.64,15.42,14.27,15.43,13.12,13.57,16.88,8,13.12,1.18,8,True,1
+doc.rustdoc,,,"CARGO_BUILD_JOBS (build width, not test width)",16.87,1.6,0.09,0.07,,,,,,,,,,,,
+test.rr_suite_contract,,,"CARGO_BUILD_JOBS (build width, not test width)",12.07,16.5,1.36,1.64,,,,,,,,,,,,
+e2e.manifest_data_handling,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),11.67,12.4,1.06,0.1,,,,,,,,,,,,
+build.manifest_guests,,,NONE (shell/python step),11.37,12.0,1.06,0.18,,,,,,,,,,,,
+e2e.manifest_backend_parity_c,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),10.82,6.6,0.61,0.1,,,,,,,,,,,,
+test.envelope_levels,hermit_guest,,NONE (shell/python step),10.27,11.0,1.07,0.03,,,,,,,,,,,,
+e2e.manifest_determinism_stress_c,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),9.31,9.6,1.03,0.1,,,,,,,,,,,,
+e2e.manifest_bin_c,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),8.98,6.1,0.68,0.1,,,,,,,,,,,,
+test.hermit_unit,hermit_guest,1,libtest --test-threads,8.26,23.7,2.87,3.18,8.28,2.06,1.2,1.2,1.25,1.2,4,1.2,6.88,4,True,3
+test.cli,hermit_guest,1,libtest --test-threads,8.01,7.1,0.89,0.55,13.42,4.81,3.56,2.86,2.46,2.46,16,2.46,5.47,16,True,3
+build.workspace,,,cargo/rustc inner jobs,7.96,75.2,9.44,4.47,,,,,,,,,,,,
+test.arbitrary_binaries,hermit_guest,1,libtest --test-threads,6.91,19.4,2.81,1.64,1.25,1.0,1.05,1.05,1.1,1.0,2,1.0,1.25,2,True,1
+test.detcore_unit,,,"CARGO_BUILD_JOBS (build width, not test width)",6.31,1.1,0.18,0.12,,,,,,,,,,,,
+test.dbi_parity,hermit_guest,,NONE (shell/python step),6.31,6.0,0.96,0.16,,,,,,,,,,,,
+e2e.manifest_shared_futex_c,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),5.96,6.1,1.03,0.1,,,,,,,,,,,,
+e2e.manifest_util_c,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),5.91,6.0,1.02,0.1,,,,,,,,,,,,
+e2e.manifest_chaos_c,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),5.86,6.0,1.02,0.1,,,,,,,,,,,,
+e2e.manifest_debugger_c,manifest_guest,,NONE (ci/test_harness.sh run_required is a serial while-read loop),5.86,6.0,1.02,0.1,,,,,,,,,,,,
+check.portability_paths,,,NONE (shell/python step),1.91,1.9,0.98,0.06,,,,,,,,,,,,
+check.backend_abstraction,,,NONE (shell/python step),1.75,1.8,1.03,0.13,,,,,,,,,,,,
+test.detcore_parallel,hermit_guest,4,libtest --test-threads,1.75,6.7,3.8,0.38,1.7,1.75,1.7,1.75,1.7,1.75,1,1.7,1.0,1,True,1
+check.reverie_pin,,,NONE (shell/python step),1.1,4.7,4.25,0.15,,,,,,,,,,,,
+lint.rustfmt,,,NONE (shell/python step),1.0,0.9,0.94,0.04,,,,,,,,,,,,
+build.runtime_release,,,cargo/rustc inner jobs,0.75,0.8,1.04,0.07,,,,,,,,,,,,
+test.detcore_misc,hermit_guest,1,libtest --test-threads,0.75,0.7,0.92,0.1,0.7,0.55,0.45,0.5,0.85,0.85,4,0.45,1.55,4,True,1
+build.liteinst_runtime_release,,,NONE (shell/python step),0.6,0.8,1.26,0.07,,,,,,,,,,,,
+check.skill_discovery,,,NONE (shell/python step),0.3,0.4,1.4,0.07,,,,,,,,,,,,
+check.script_sigpipe,,,NONE (shell/python step),0.2,0.2,0.95,0.04,,,,,,,,,,,,
+setup.nextest,,,cargo/rustc inner jobs,0.1,0.0,0.39,0.02,,,,,,,,,,,,
+test.applications_e2e,hermit_guest,,NONE (shell/python step),,,,,,,,,,,,,,,,
+test.ignored_syscall_regressions,hermit_guest,1,libtest --test-threads,,,,,1.35,1.05,0.95,1.01,1.0,1.0,4,0.95,1.42,4,True,1

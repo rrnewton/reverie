@@ -64,6 +64,103 @@ DEFAULT_ATTRIBUTION = (
 )
 
 
+# --------------------------------------------------------------------------
+# REQUIRED COLUMNS PER SCHEMA VERSION.
+#
+# WHY THIS EXISTS. At v5 the run ledger silently stopped writing about a dozen
+# columns that v4 had populated -- toolchain 203/206 -> 2/51, tree 201/206 ->
+# 2/51, and with them `concurrent_validates`, `known_flaky_failure`, `dag_jobs`
+# and `zero_byte_purged`. Nothing caught it, because NOTHING DECLARED WHAT v5
+# OWED, and whole-ledger percentages actively hid the drop as ordinary
+# sparseness. A declared required set would have failed every one of them AT
+# WRITE TIME instead of surfacing months later as unattributable gaps.
+#
+# WHY IT IS DECLARED AND NOT INFERRED FROM COVERAGE. A percentage cannot tell a
+# defect from correct behaviour: `coverage` at 7.0% is HEALTHY (conditional by
+# design) while `toolchain` at 28.3% was a regression. Only a declared set
+# distinguishes them.
+#
+# WHY IT IS PER-VERSION. A single global set is unsatisfiable -- older rows
+# legitimately lack columns invented later. Older rows are UNQUALIFIED, never
+# retro-failed. THERE IS NO BACKFILL: an absent value stays absent and honest.
+ATTRIBUTION_SCHEMA_VERSION = 1
+
+#: Columns whose absence is ALWAYS a defect, per schema version. This is the one
+#: place that decides non-verdict; a new field becomes enforced by being added
+#: here, never by growing a bespoke branch at its own call site.
+REQUIRED_COLUMNS: dict[int, frozenset[str]] = {
+    1: frozenset(
+        {"commit", "finished_at", "log_file", "node", "sub_step_class", "fault_class"}
+    ),
+}
+
+#: Columns that are CONDITIONAL BY DESIGN -- null is their legitimate value, so
+#: requiring them would turn every healthy row into a non-verdict. Named
+#: explicitly rather than merely omitted, so a future author sees the decision
+#: instead of assuming an oversight. `first_error_line` is the load-bearing
+#: example: a red whose log was evicted genuinely has none, and fabricating one
+#: is the failure this whole sidecar exists to avoid.
+CONDITIONAL_COLUMNS: frozenset[str] = frozenset(
+    {"first_error_line", "infra_signature"}
+)
+
+#: The three states, kept distinct on purpose. Collapsing UNQUALIFIED into
+#: NON_VERDICT would retro-condemn every older row; collapsing either into
+#: FAILED would report a bookkeeping gap as a product failure.
+VERDICT = "verdict"
+NON_VERDICT = "non_verdict"
+UNQUALIFIED = "unqualified"
+
+
+def missing_required(
+    row: Mapping[str, object], version: int = ATTRIBUTION_SCHEMA_VERSION
+) -> list[str]:
+    """Required columns absent or null in ``row``, sorted.
+
+    Null counts as missing: a column present with a null value carries exactly
+    as much diagnostic information as one that was never written, and treating
+    them differently is how a regression hides behind key-presence statistics.
+    An unknown version requires nothing -- see ``classify_row``.
+    """
+    required = REQUIRED_COLUMNS.get(version, frozenset())
+    return sorted(name for name in required if row.get(name) in (None, ""))
+
+
+def classify_row(row: Mapping[str, object]) -> str:
+    """Which of the three states ``row`` is in.
+
+    A row stamped with a version we do not know -- an OLDER writer, or the
+    orphaned correction schema (`corrects` / `correction_*`) that no live
+    producer emits -- is UNQUALIFIED. It is not failed and not refused: we
+    simply cannot judge a row against a contract we never declared. That is the
+    deliberate answer to "what does an orphaned schema mean", rather than
+    crashing on it or silently passing it as complete.
+    """
+    version = row.get("schema_version")
+    if not isinstance(version, int) or version not in REQUIRED_COLUMNS:
+        return UNQUALIFIED
+    return NON_VERDICT if missing_required(row, version) else VERDICT
+
+
+def seal_row(row: dict[str, object]) -> dict[str, object]:
+    """Stamp ``row`` with its schema version and its verdict state.
+
+    A row missing a currently-required column is written AS A NON-VERDICT --
+    not dropped, not accepted as a verdict. Dropping it would lose the evidence
+    that a writer regressed; accepting it would let the gap masquerade as a
+    real attribution. `missing_required` names WHICH columns, so the reason is
+    machine-readable rather than folklore.
+    """
+    row["schema_version"] = ATTRIBUTION_SCHEMA_VERSION
+    absent = missing_required(row)
+    if absent:
+        row["result"] = NON_VERDICT
+        row["missing_required"] = absent
+    else:
+        row["result"] = VERDICT
+    return row
+
+
 def _is_red(row: Mapping[str, object]) -> bool:
     """A row worth attributing: it recorded a genuine failure.
 
@@ -192,16 +289,18 @@ def persist_attributions(
             seen.add(key)
             pending.append(
                 json.dumps(
-                    {
-                        "commit": commit,
-                        "finished_at": finished_at,
-                        "log_file": record.get("log_file"),
-                        "node": node,
-                        "sub_step_class": cls.get("sub_step_class"),
-                        "fault_class": cls.get("fault_class"),
-                        "infra_signature": cls.get("infra_signature"),
-                        "first_error_line": cls.get("first_error_line"),
-                    },
+                    seal_row(
+                        {
+                            "commit": commit,
+                            "finished_at": finished_at,
+                            "log_file": record.get("log_file"),
+                            "node": node,
+                            "sub_step_class": cls.get("sub_step_class"),
+                            "fault_class": cls.get("fault_class"),
+                            "infra_signature": cls.get("infra_signature"),
+                            "first_error_line": cls.get("first_error_line"),
+                        }
+                    ),
                     separators=(",", ":"),
                     sort_keys=True,
                 )

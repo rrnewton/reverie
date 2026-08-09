@@ -1,0 +1,24 @@
+{
+  "experiment": "pin-gate-refusal-proof",
+  "date": "2026-08-08",
+  "task": "implement-pin-ancestry-plus-monotonicity",
+  "author": "[impl agent, claude-opus-5] [reverie-pin-devbig014]",
+  "purpose": "Prove the two REFUSALS of the relaxed pin gate actually fire, and have been seen to fail when the clauses are broken.",
+  "checker_commit": "265e84d43329667f3602a2db93902ba5ae0fe3cb",
+  "remote": "https://github.com/rrnewton/reverie.git",
+  "shas": {
+    "ancestor_old": "038e993926e45514264d30367b70df9b6ac3b9b8",
+    "ancestor_mid": "fb963d90dc6c5a136cfff23d3e898ab06f8cb265",
+    "ancestor_new": "ab44bbf7351e2329a0de5270d22a02a0c8142f4a",
+    "off_history": "88363a56870dcdd88b13b1309233706b691f6a41",
+    "off_history_provenance": "real dead commit: only on rename/dbi-to-dbt (PR #390), rebased away before merge; object-PRESENT in a blobless fetch of main yet never reachable from it"
+  },
+  "result": {"passed": 4, "failed": 0},
+  "mutations": [
+    {"clause": "monotonicity", "effect": "REGRESSED pin accepted rc=0 while printing 'does not regress'", "offhistory_still_refuses": true},
+    {"clause": "reachability->presence", "effect": "BOTH refusals stop firing; a dead commit is accepted", "offhistory_still_refuses": false}
+  ],
+  "restored": {"passed": 4, "failed": 0, "tree_clean": true},
+  "independence": "real remote, real SHAs, real launcher, inert temp fixtures; shares no code or fixture with the author's unit suite",
+  "reproduce": "./prove-refusals.sh <hermit-checkout>"
+}

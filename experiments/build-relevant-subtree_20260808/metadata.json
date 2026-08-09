@@ -1,0 +1,39 @@
+{
+  "experiment": "build-relevant-subtree",
+  "date": "2026-08-08",
+  "task": "define-build-relevant-subtree-for-receipt-reuse",
+  "author": "[impl agent, claude-opus-5] [reverie-pin-devbig014]",
+  "status": "PROPOSAL - not landed; for review by cihub-auditor",
+  "question": "When may a Hermit receipt validated against Reverie pin X be reused for pin Y?",
+  "host": "devbig014",
+  "inputs": {
+    "hermit_sha": "f65f74462931c10ce822a2d46fbb8a9ea9d86305",
+    "reverie_tip": "108f9ab47605a7a2e8ae40353fde21f8a8b2310c",
+    "consumed_packages": 17,
+    "package_set_source": "cargo metadata --format-version 1 --locked, on hermit"
+  },
+  "headline": {
+    "real_pin_bumps_measured": 48,
+    "reusable_strict": 2,
+    "reusable_no_tests": 2,
+    "reuse_rate_real_bumps_pct": 4.2,
+    "reuse_rate_gap1_pct": 25.3,
+    "note": "Refutes the author's earlier prediction that MOST staling deltas are build-irrelevant; that was a selection effect from the docs-only bump then in flight."
+  },
+  "relevant_set_files": {"strict": 1473, "no_tests": 1425, "total_tracked": 2453},
+  "brackets": {
+    "negative_planted_refused": "9/9 in both modes",
+    "negative_real_historical": "6144323c->038e9939 REVALIDATE (touched reverie-dbi/native/client.c)",
+    "positive_permitted": "6/6 inert deltas REUSE",
+    "positive_proof_case": "038e9939->108f9ab4 REUSE, BRS identical over 1473 files",
+    "guard_fires": "G3 submodule-gitlink-in-consumed-package -> REFUSE exit 2, not a hash"
+  },
+  "recommendation": {
+    "mode": "strict",
+    "drop": "no-tests mode buys 0 additional real reuses; not worth its premise",
+    "exclude_gitmodules": "costs 1 of 2 reusable bumps (50% of payoff) to guard a hazard G4 shows is not live",
+    "bill_as": "race-window optimisation composing with half A, not a general 12min->2s win"
+  },
+  "reproduce": "python3 brs.py --repo <reverie> --compare <X> <Y> [--mode strict|no-tests]",
+  "artifacts": ["README.md", "brs.py", "results.csv", "scan-strict.csv", "scan-no-tests.csv"]
+}

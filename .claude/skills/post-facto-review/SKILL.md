@@ -76,6 +76,48 @@ head and every finding is resolved. A head change invalidates both approvals:
 run both reviewers again and refresh cache labels only after fresh exact-head
 approval. Changes-requested findings likewise invalidate the affected approval.
 
+### Closing a PR is a reviewer action, and it has preconditions
+
+A review can require changes. **A review cannot delete work.** Close a PR only
+through the registered wrapper, never with raw `gh pr close`:
+
+```
+./.orc/plugins/hermit-dev/gh-pr-close --repo rrnewton/hermit <pr> --comment "<body>"
+```
+
+It refuses a close that violates any of the three rules below, and it
+dereferences the successor rather than trusting the marker — a
+`SUPERSEDED-BY:` naming a PR that does not resolve in the same repository is a
+refusal, not a pass. Both directions are bracketed by
+`.orc/plugins/hermit-dev/gh-pr-close-test.sh`.
+
+1. **No close without a named successor.** A PR is either **updated in place**
+   or its closing comment names the replacement as `SUPERSEDED-BY: #<n>`, and
+   that successor must already exist when the predecessor closes. The only
+   other disposition is `OWNER-AUTHORIZED-CLOSE: <quote the owner instruction>`.
+   Updating in place is the default and the preferred outcome; replacement is
+   the exception.
+2. **A rejection must name the concrete change required.** "Procedurally
+   deficient", "does not meet our standard", and "out of scope" are not
+   reviews. A reviewer who cannot state the specific change is not ready to
+   reject: leave the finding as a review comment and let the author update the
+   PR. Rejection is not a disposition a close can carry.
+3. **A taskgraph task is not a substitute for a PR.** "I filed a task to track
+   the rework" never authorizes a close. The owner's figure for the cohort he
+   examined on 2026-08-07: **106 tasks tagged `implemented` → 38 landed → 4
+   goal-met.** Independently reproducible today over the whole local graph:
+   `tg sql "SELECT COUNT(*) FROM tasks WHERE tags LIKE '%\"implemented\"%'"` =
+   **1734 of 5246 tasks**, of which **1665 are already CLOSED** — so the
+   `implemented` tag is applied at scale and closure does not establish that
+   code landed. A task is an intention; a PR is code, and that gap is the whole
+   reason this rule exists.
+
+Origin: [hermit#1635](https://github.com/rrnewton/hermit/pull/1635), the
+validate Rust port and a key critical path, was closed by an adversarial
+reviewer with a generic procedural rejection and no successor. The owner:
+"You cannot just kill a PR without it being replaced by a better
+implementation, and it generally should just be UPDATED, not ever replaced."
+
 ## 3. Mandatory PR description sections
 
 Every PR description must contain:

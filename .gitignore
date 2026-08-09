@@ -76,6 +76,7 @@
 # never commit the extensionless ELF binaries produced next to it.
 /experiments/dbi_perf_leader_baseline_20260801/src/branch_heavy
 /experiments/dbi_perf_leader_baseline_20260801/src/syscall_loop
+/experiments/gvisor-blog-repro-v2_20260807/scripts/getpid-threads
 
 # Heavy raw preempt-traces are bulk scratch evidence; keep the experiment's
 # README/CSV/JSON summary in-tree and leave multi-MiB traces untracked.
@@ -162,6 +163,17 @@ ACTIVE.md
 /pr_status*.json
 /prstatus*.err
 /prstatus*.json
+# A zero-byte root file left by a stray shell redirect on 2026-08-08 (almost
+# certainly a truncated `critical-path` word). It holds no bytes and no work, but
+# deleting another agent's file is the owner's call, so it is ignored rather than
+# removed. Delete `critical` and this line together once that is confirmed.
+/critical
+
+# One-off manual snapshot taken before the compat-envelope provenance migration
+# (291 KiB, 2026-08-08). A backup copy of a tracked CSV is working state, not
+# durable evidence, so it stays out of history; its author may still need it on
+# disk. Remove the file and this rule once the migration is settled.
+/compat-envelope/*.pre-provenance-migration
 
 # herdr-run run spools + sandbox-crossing audit log (machine-local command OUTPUT, never source)
 .herdr-run/

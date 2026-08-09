@@ -1,0 +1,34 @@
+{
+  "question": "Fresh validate profiling: total wall clock, overall parallel speedup and its true ceiling, per-step parallel speedup curves, and whether each step's thread cap is derived from those curves or guessed.",
+  "utc_date": "2026-08-08",
+  "short_host": "devbig014",
+  "cpu": "AMD EPYC 9D85, 316 logical cores (nproc=316)",
+  "os": "CentOS Stream 9",
+  "toolchain": "rustc 1.99.0-nightly (26ae60a9e 2026-07-28)",
+  "repository": "rrnewton/hermit",
+  "hermit_sha": "61edbef424ad83e0434730ec24eb83389a196243",
+  "checkout": "worktrees/soltiming/hermit (dedicated slot, detached, clean, commit_anchored=true, tree_dirty=false)",
+  "sha_provenance": "every ledger record's own commit= field, cross-checked against git rev-parse HEAD of the checkout that ran; NOT the intended checkout",
+  "profile": "portable (ci/dag/portable.json), 47 nodes",
+  "outer_jobs": "CI_DAG_JOBS=16 for whole-DAG runs; CI_DAG_JOBS=1 for single-step sweeps",
+  "cache_state": "warm unless a row says cold; cold = target/ debug and release both absent",
+  "driver": "scripts/validate.rs (rust wrapper, safe-ci-dag-runner rust library, boxed in safe-ci.slice)",
+  "accounting": "/usr/bin/time -v (RUSAGE_CHILDREN) for whole-run wall+CPU; safe-ci-dag-runner --perf-dir cgroup CSV (elapsed_s, cpu.usage_usec, effective_cores, peak_bytes) for per-step",
+  "accounting_cross_check": "on the cold run /usr/bin/time reported user 2757.05s sys 780.90s wall 8:34.46 while validate.sh's own times builtin reported 45m57s / 13m01s / 8m34s -- same metric",
+  "load1_at_start_range": [
+    32.2,
+    47.5
+  ],
+  "concurrency_caveat": "shared box, 15-20 other agents; between-run box load was not held constant and is recorded per row in the perf CSVs",
+  "warmups": "each timed whole-DAG run followed a same-driver predecessor; the two drivers do not share a warm cargo cache",
+  "repetitions": "whole-DAG configs n=1..2; replicated per-step points n=3 (marked samples=3 in results.csv); unreplicated sweep points n=1",
+  "statistic": "median for n=3, single value for n=1",
+  "raw_artifacts": "ignored/soltiming/ (logs, /usr/bin/time output, per-step perf CSVs, generated one-step DAG files)",
+  "script_sha256": {
+    "confirm.py": "d9aff67450c10c7125314d4781f78a2c8ec09f7934505be595d0222f4206e5dd",
+    "launch.sh": "3c7d98ade9e29413d04b9b29998f88790b8f96b359c4ccceec079111a88f16fd",
+    "run.sh": "bc3d335ffa1b95733cf99b51b6f79d2cf4107282c3b4f7c8047b973519d7d540",
+    "sweep.py": "4d5b146b588d072337a03c88f6f0e786a91d2e6a1805c15c4e9a2441d377e169"
+  },
+  "results_csv_sha256": "e71d03b32a18614d39df08016c6fbd6e32fd2a355839283b746d0ab52d432f90"
+}
