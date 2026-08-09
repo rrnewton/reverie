@@ -183,6 +183,17 @@ DEFAULT_LOCAL_REDISPATCH_LIMIT = int(
 LAUNCH_REGISTRATION_TIMEOUT = float(
     os.environ.get("CI_HUB_LAUNCH_REGISTRATION_TIMEOUT", "10")
 )
+# Optional flags this producer would like to hand the target's validate driver.
+# Each is passed ONLY when that driver says it accepts it.  An obligation runs
+# the driver AT THE LANDED COMMIT, which can predate a flag by minutes:
+# hermit 649cee3a landed EIGHT MINUTES before 36a84ddce added `--no-label-pr`,
+# and passing it unconditionally made that obligation permanently
+# undischargeable -- the driver exited on `unknown option` in ~5s, before a
+# single test ran, so no re-run could ever have helped.
+# ADD FUTURE FLAGS HERE AND NOTHING ELSE CHANGES: the probe is generic, so the
+# next flag added to the driver does not need another fix in this file.
+OPTIONAL_DRIVER_FLAGS: tuple[str, ...] = ("--no-label-pr",)
+DRIVER_PROBE_TIMEOUT = float(os.environ.get("CI_HUB_DRIVER_PROBE_TIMEOUT", "120"))
 LOCAL_RECEIPT_AUTHORITY = ROOT / "ci-hub/ci-hub"
 LOCAL_RECEIPT_CANONICALIZATION = "serde_json::to_vec(HistoryRow)-v1"
 LOCAL_RECEIPT_COUNT_DERIVATION = (
@@ -2967,6 +2978,69 @@ def _spawn_detached(arguments: Sequence[str], log_path: Path) -> int:
     return process.pid
 
 
+def _driver_advertises(help_text: str, flag: str) -> bool:
+    """Whether `help_text` offers exactly `flag`, not merely contains its text.
+
+    The boundary is `[\\w-]` rather than `\\b` because these tokens are
+    hyphenated, so `\\b` would still match a longer neighbour. Containment
+    over-matches on PREFIXES: a driver advertising only `--label-pr` contains
+    the text `--label`, and a naive test would report that shorter flag as
+    supported and pass it to a driver that rejects it -- reintroducing exactly
+    the usage-error abort this probe exists to prevent.
+    """
+    return re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", help_text) is not None
+
+
+def driver_accepted_flags(
+    checkout: Path,
+    wanted: Sequence[str] = OPTIONAL_DRIVER_FLAGS,
+    *,
+    timeout: float = DRIVER_PROBE_TIMEOUT,
+) -> tuple[list[str], str]:
+    """ASK the target's validate driver which of `wanted` it accepts.
+
+    RECORDED, NOT DERIVED. A commit-date or ordering comparison is an inference
+    about what a binary supports; `--help` is the binary answering for itself.
+    This file was already burned once by the derived form, and re-running could
+    never have detected it -- the mistake reproduces identically every time.
+
+    UNKNOWN IS NOT SUPPORT. When the driver cannot be asked, the flag is
+    OMITTED, because the two errors are not symmetric: omitting a supported
+    flag degrades behaviour a little, while passing an unsupported one aborts
+    the run on a usage error before any test executes. The reason string is
+    returned so the caller can log it -- an omission must never be silent.
+
+    Returns (accepted flags in `wanted` order, one-line human reason).
+    """
+    # Resolve before exec: `cwd=checkout` would otherwise re-resolve a relative
+    # program path against the new directory and report "driver absent" for a
+    # driver that is present.
+    driver = (checkout / "scripts/validate.rs").resolve()
+    if not driver.is_file():
+        return [], f"driver absent at {driver}; omitting {' '.join(wanted)}"
+    try:
+        probe = _run(
+            (str(driver), "--help"),
+            cwd=checkout,
+            check=False,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except (ProtocolError, OSError) as error:
+        return [], f"driver could not be asked ({type(error).__name__}); omitting"
+    # Usage text is worth reading whatever the exit status: a driver that
+    # prints its options and exits nonzero has still told us what it accepts.
+    help_text = f"{probe.stdout or ''}\n{probe.stderr or ''}"
+    if not help_text.strip():
+        return [], "driver answered with no usage text; omitting"
+    accepted = [flag for flag in wanted if _driver_advertises(help_text, flag)]
+    omitted = [flag for flag in wanted if flag not in accepted]
+    return accepted, (
+        f"driver accepts [{' '.join(accepted) or 'none'}]"
+        f"; not advertised [{' '.join(omitted) or 'none'}]"
+    )
+
+
 def _local_run(
     obligation_id: str,
     source: Path,
@@ -3066,6 +3140,16 @@ def _local_run(
             if estimate["kind"] == "derived"
             else ("--estimate-unknown",)
         )
+        # Ask the driver AT THIS COMMIT which optional flags it takes, rather
+        # than assuming the set this parent happens to know about. Printed
+        # BEFORE log_offset on purpose: the line belongs in the durable log for
+        # audit, but must stay outside the slice `_classify_local` reads so a
+        # probe note can never colour a product verdict.
+        driver_flags, driver_probe_reason = driver_accepted_flags(checkout)
+        print(
+            f"ci-hub obligation={obligation_id} driver-probe: {driver_probe_reason}",
+            flush=True,
+        )
         # Everything from here streams to the same log the watcher opened, so
         # capture the offset now: the bytes after it are exactly this validate
         # run's output, used to tell a product test failure from an
@@ -3099,7 +3183,7 @@ def _local_run(
                 "--log",
                 str(log_path),
                 "--",
-                "--no-label-pr",
+                *driver_flags,
             ),
             cwd=ROOT,
             check=False,

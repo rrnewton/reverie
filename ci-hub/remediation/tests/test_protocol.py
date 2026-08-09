@@ -3762,8 +3762,24 @@ class ProtocolTest(unittest.TestCase):
         def fake_run(command, **_kwargs):
             command = list(command)
             if command[:2] == ["git", "clone"]:
-                (self.root / "ignored/ci-hub/obligations/test-obligation/hermit").mkdir(
-                    parents=True
+                checkout = (
+                    self.root / "ignored/ci-hub/obligations/test-obligation/hermit"
+                )
+                (checkout / "scripts").mkdir(parents=True)
+                # The capability probe execs this path, so it must exist.
+                (checkout / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
+            # POSITIVE BRACKET: this driver ADVERTISES --no-label-pr, so the
+            # producer must still hand it over. A probe that always omitted the
+            # flag would pass the negative case while silently dropping
+            # behaviour, so this direction is asserted too.
+            if command[-1] == "--help" and command[0].endswith("/scripts/validate.rs"):
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout="usage: validate.rs <profile> [options]\n"
+                    "  --label-pr       Publish a receipt and label the PR (default).\n"
+                    "  --no-label-pr    Disable the receipt publication and label update.\n",
+                    stderr="",
                 )
             if "rev-parse" in command:
                 return subprocess.CompletedProcess(
@@ -3840,6 +3856,84 @@ class ProtocolTest(unittest.TestCase):
             ],
             [],
         )
+
+
+class DriverCapabilityProbeTest(unittest.TestCase):
+    """Bracket the capability probe in BOTH directions, against real binaries.
+
+    These deliberately exec a real script instead of mocking ``_run``: the whole
+    point of the probe is that it ASKS the driver, so a test that mocks the
+    asking would verify the inference it exists to remove.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.checkout = Path(self.tmp.name)
+        (self.checkout / "scripts").mkdir(parents=True)
+
+    def _write_driver(self, usage: str) -> None:
+        driver = self.checkout / "scripts/validate.rs"
+        driver.write_text(
+            "#!/bin/sh\n" f"cat <<'USAGE'\n{usage}\nUSAGE\n"
+        )
+        driver.chmod(0o755)
+
+    def test_flag_is_passed_when_the_driver_advertises_it(self) -> None:
+        # POSITIVE: a probe that always omitted the flag would satisfy the
+        # negative case while silently dropping behaviour. This is the guard.
+        self._write_driver(
+            "usage: validate.rs <profile> [options]\n"
+            "  --no-label-pr    Disable the receipt publication and label update."
+        )
+        accepted, reason = protocol.driver_accepted_flags(self.checkout)
+        self.assertEqual(accepted, ["--no-label-pr"])
+        self.assertIn("accepts [--no-label-pr]", reason)
+
+    def test_flag_is_omitted_when_the_driver_does_not_advertise_it(self) -> None:
+        # NEGATIVE: this is hermit 649cee3a, which predates the flag by eight
+        # minutes. Passing it there aborted the run on a usage error before any
+        # test executed, leaving the obligation permanently undischargeable.
+        self._write_driver(
+            "usage: validate.rs <profile> [options]\n"
+            "  -k, --keep-going Do not eager-exit on the first failure."
+        )
+        accepted, reason = protocol.driver_accepted_flags(self.checkout)
+        self.assertEqual(accepted, [])
+        self.assertIn("not advertised [--no-label-pr]", reason)
+
+    def test_unknown_is_not_support_when_the_driver_cannot_be_asked(self) -> None:
+        # No driver at all: omit, and say so. Never assume support.
+        accepted, reason = protocol.driver_accepted_flags(self.checkout)
+        self.assertEqual(accepted, [])
+        self.assertIn("driver absent", reason)
+
+    def test_a_flag_does_not_match_as_a_prefix_of_a_longer_one(self) -> None:
+        # A driver advertising only `--label-pr` CONTAINS the text `--label`.
+        # Naive containment would call the shorter flag supported and pass it to
+        # a driver that rejects it -- the exact usage-error abort this probe
+        # exists to prevent. The boundary must be `[\w-]`, not `\b`: `\b` sits
+        # between `l` and `-`, so it would not reject this either.
+        usage = "  --label-pr    Publish a receipt and label the PR."
+        self.assertFalse(protocol._driver_advertises(usage, "--label"))
+        self.assertTrue(protocol._driver_advertises(usage, "--label-pr"))
+        # And the negation is a genuinely distinct token from the positive.
+        negated = "  --no-label-pr    Disable the receipt publication."
+        self.assertFalse(protocol._driver_advertises(negated, "--label"))
+        self.assertTrue(protocol._driver_advertises(negated, "--no-label-pr"))
+
+    def test_every_optional_flag_is_gated_not_just_the_known_one(self) -> None:
+        # The mechanism must generalise: a future flag added to
+        # OPTIONAL_DRIVER_FLAGS needs no further change in protocol.py.
+        self._write_driver(
+            "usage: validate.rs <profile> [options]\n"
+            "  --no-label-pr    Disable the receipt publication.\n"
+            "  --future-flag    Something added later."
+        )
+        accepted, _ = protocol.driver_accepted_flags(
+            self.checkout, ("--no-label-pr", "--future-flag", "--never-existed")
+        )
+        self.assertEqual(accepted, ["--no-label-pr", "--future-flag"])
 
 
 class GithubStateClassificationTest(unittest.TestCase):
