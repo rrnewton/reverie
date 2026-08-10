@@ -97,7 +97,7 @@ choice drives which levers are even eligible.
 |---|---|---|
 | **A. Time / clocks** | clock_gettime, gettimeofday, RDTSC, timerfd, HPET, POSIX timers | single global logical clock; time is an *output* |
 | **B. Thread interleaving** | which thread's side effects land first | serialize onto one logical CPU + deterministic next-thread pick |
-| **C. Preemption timing / skid** | *where* a running thread is interrupted | PMU-counted RCBs; slow single-step for exactness; DBI inline branch count |
+| **C. Preemption timing / skid** | *where* a running thread is interrupted | PMU-counted RCBs; slow single-step for exactness; DBT inline branch count |
 | **D. Signals (esp. SIGCHLD)** | host-async *arrival time* of a signal/child-exit | convert async delivery → scheduled event at a logical deadline |
 | **E. Randomness** | urandom/getrandom, RDRAND, AT_RANDOM, uuid, hash seeds | fixed deterministic PCG streams per thread |
 | **F. PIDs/TIDs/identity** | getpid/gettid/getppid | virtual id namespace + pedigree lineage |
@@ -183,7 +183,7 @@ one-shot `Ivar` grant / reusable `Mvar`). To add/adjust a *result* determinizer:
 - **Cost:** if it consumes virtual time, extend `detcore-model/src/time.rs`
   cost model.
 - **Shared state / new coordination:** add a `GlobalRequest`/`GlobalResponse`
-  variant (append-only — never reorder; the tuple is bincoded over the KVM/DBI
+  variant (append-only — never reorder; the tuple is bincoded over the KVM/DBT
   wire) + a `recv_*` handler + `Arc<Mutex<..>>` field in `GlobalState`; model a
   new *blocking* primitive as a `ResourceID` variant granted via `Ivar`/`Mvar`.
 
@@ -247,7 +247,7 @@ policy).
   bounded* number of rounds, never "after N host-timed polls."
 - **M12 Move the decision into the coordinator** — keep the deterministic
   decision OUT of the guest address space (in-process backends share guest
-  libc/malloc/PLT → a naive in-guest scheduler turn is fatally re-entrant; DBI
+  libc/malloc/PLT → a naive in-guest scheduler turn is fatally re-entrant; DBT
   redirects to a proven-safe syscall boundary instead).
 
 **Discovery / reproduction moves:**
@@ -273,7 +273,7 @@ policy).
 |---|---|---|
 | **dOS / dettrace** (ASPLOS'20, direct lineage) | fair round-robin + **blocking-via-polling** | rewrite blocking syscalls to nonblocking poll+retry (source of the polling wedges — mine it *and* its failure modes) |
 | **Kendo** (ASPLOS'09) | **min-vtime** | lowest-logical-clock thread runs; **a waiter must advance its clock** or it deadlocks (reused only scoped, in `timed_waiters`) |
-| **DMP / CoreDet** (ASPLOS'09/'10) | token + bounded quantum | deterministic serial/parallel phase split; instruction-count quantum (reused as DBI branch-budget quantum) |
+| **DMP / CoreDet** (ASPLOS'09/'10) | token + bounded quantum | deterministic serial/parallel phase split; instruction-count quantum (reused as DBT branch-budget quantum) |
 | **DThreads** (SOSP'11) | ownership token + phases | serialize-then-relax phase structure keyed on sync ops |
 | **Determinator** (OSDI'10) | structured fork/join | no shared-writable state ⇒ no race to order (parallelize non-communicating processes) |
 | **rr** (ATC'17) | record/replay | RCB "ticks" + repeated-breakpoint replay + register-fingerprint validation |
@@ -293,7 +293,7 @@ worse than a candidate with a stated limitation.
 2. **Coverage / fail mode** — which nondet sources it catches; does an uncaught
    one **fail closed or leak silently**?
 3. **Performance** — per-syscall vs per-branch; ptrace ~40µs/syscall (~3–6×
-   wall), reverie-kvm ~29µs, systrap ~8µs, DBI ~1.4µs/syscall (but per-branch),
+   wall), reverie-kvm ~29µs, systrap ~8µs, DBT ~1.4µs/syscall (but per-branch),
    sabre/gvisor-kvm ~1µs.
 4. **Faithfulness** — exact Linux ABI vs approximation; silent-write-back risk.
 5. **Virtual-time continuity preserved?** Coarsening/freezing/rounding/resetting

@@ -30,7 +30,7 @@ distinguishable. Otherwise report the mismatch.
 
 1. Snapshot: full SHAs and environment.
 2. Coverage slope: `passed / attempted` per mode and the first lost workload.
-3. Same-app matrix: ptrace strict verify, record/replay, DBI, KVM, SaBRe,
+3. Same-app matrix: ptrace strict verify, record/replay, DBT, KVM, SaBRe,
    LiteInst, and e9patch as available. Use identical inputs.
 4. Repository health: focused tests plus the exact-head local and hosted
    authority states; identify which owner-authorized path supplied green and

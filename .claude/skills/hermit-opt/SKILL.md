@@ -9,7 +9,7 @@ description: "Purpose-fixed role for the hermit-opt agent: performance and bench
 
 Measure and improve Hermit/Reverie **performance**: startup tax, per-syscall
 trap cost, CPU-bound overhead, and cross-backend throughput. Produce
-reproducible, apples-to-apples benchmarks (ptrace vs DBI vs SaBRe vs KVM, and
+reproducible, apples-to-apples benchmarks (ptrace vs DBT vs SaBRe vs KVM, and
 against the gVisor reference) and hand off well-scoped optimizations for normal
 review and landing.
 

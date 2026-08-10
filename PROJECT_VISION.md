@@ -4,7 +4,7 @@
 
 ## Mission
 
-Aggressively drive hermit toward its final form: a production-grade deterministic execution engine with multiple backends (ptrace, KVM, Liteinst first party, plus DBI, e9patch, sabre with 3rd party deps) that all produce identical behavior/logs/memory, i.e. PARITY, plus record/replay and chaos concurrency testing that is equally broadly-compatible with arbitrary guest programs.
+Aggressively drive hermit toward its final form: a production-grade deterministic execution engine with multiple backends (ptrace, KVM, Liteinst first party, plus DBT, e9patch, sabre with 3rd party deps) that all produce identical behavior/logs/memory, i.e. PARITY, plus record/replay and chaos concurrency testing that is equally broadly-compatible with arbitrary guest programs.
 
 Don't forget your general princples around CLEAR and SPECIFIC communication (which programs ran what under what mode and which branch/version was experimented with?) and presenting EVIDENCE for claims, including wherever possible reproducer commands.
 
@@ -32,7 +32,7 @@ Then the above modes can run in each of the backends, with running in non-ptrace
 ## Mode Expansion Mandate
 
 Every mode must catch up to the one before it, and advanced, higher-perf backends must catch up with the reference one:
-- Example: 300 programs in --strict --verify → same 300 in record/replay → same in DBI → same in KVM, and the denominator are always the e2e tests we planned in the overhaul.
+- Example: 300 programs in --strict --verify → same 300 in record/replay → same in DBT → same in KVM, and the denominator are always the e2e tests we planned in the overhaul.
 - There is NO stopping while trailing modes are weaker
 - Always add NEW programs to coverage even as trailing modes catch up
 
@@ -94,18 +94,18 @@ hermit-cli → Detcore<KvmGuest> → KVM (gvisor model)
 ```
 ### LiteInst Backend
 
-Aside from KVM and ptrace, ALL other binary patching/instrumentation backends keep the Reverie local tool INSIDE the guest address space (communicating to the global state through RPC that shares code between reverie-liteinst, reverie-dbi, reverie-sabre, reverie-e9patch).
+Aside from KVM and ptrace, ALL other binary patching/instrumentation backends keep the Reverie local tool INSIDE the guest address space (communicating to the global state through RPC that shares code between reverie-liteinst, reverie-dbt, reverie-sabre, reverie-e9patch).
 
 Based on my instruction punning invention and our new reimplemntation (liteinst2), which provides DYNAMIC hooking of arbitrary instructions.
 In this backend, we trap nondeterministic instructions (syscalls/cpuid/rdtsc/rdrand/etc) but on the first trap we patch them to hook directly into the guest.
 
 Our plan is to use LD_PRELOAD to infect the guest (and its children) and remove the need for ptrace as much as possible, but resort to a ptrace supervisor as a backup if there is a corner case we cannot handle.
 
-### DBI Backend
+### DBT Backend
 Dynamic Binary Translation based on DynamoRIO. This should be foolproof at catching nondeterministic instructions, and has the benefit that it can build branch-counting directly in, avoiding the problem of massive skid on PMU retired branch conditional timers. But it will probably fail on self-modifying code, e.g JVM JITs or QEMU TCG.
 
 ```
-hermit-cli → Detcore<DbiGuest> → DynamoRIO
+hermit-cli → Detcore<DbtGuest> → DynamoRIO
   NO hacks or temporary proof-of-concepts. Fully runs all hermit --strict --verify that ptrace can.
 ```
 

@@ -21,9 +21,10 @@ content-addressed caching correct.
   (`resolve_e9patch_backend`, the `HERMIT_E9PATCH_BACKEND` / `REVERIE_E9TOOL`
   overrides, content-addressed digests).
 - The `e9patch` cargo feature gate in `hermit-cli/Cargo.toml`
-  (`e9patch_unavailable_reason`). A separate standalone e9patch repository is
-  outside the canonical slot and requires its own explicitly authorized
-  publication and worktree protocol.
+  (`hermit::e9patch::unavailable_reason()` in `hermit-cli/src/e9patch.rs`,
+  called from `hermit-cli/src/bin/hermit/record_start.rs`). A separate
+  standalone e9patch repository is outside the canonical slot and requires its
+  own explicitly authorized publication and worktree protocol.
 - e9patch example-tool exercises (counter1/counter2/noop/strace-style).
 
 ## Constraints

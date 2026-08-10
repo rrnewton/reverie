@@ -45,7 +45,7 @@ review gate:
    of both this trigger and the determinism rationale reviewers need.
 
 Routine backend-parity work toward the golden ptrace reference implementation
-does **not** trigger human review merely because it changes KVM, DBI, SaBRe,
+does **not** trigger human review merely because it changes KVM, DBT, SaBRe,
 LiteInst, or another non-ptrace backend. Apply the label only when that work also
 meets one of the four triggers above; "backend parity change" is not a valid
 review rationale by itself.

@@ -155,10 +155,11 @@ timeout 300 tests/util/hermit_analyze_test.sh \
   "$PWD/target/debug/hello_race"
 ```
 
-The broader two-fixture CI wrapper exists on Hermit PR #7 at this snapshot and
-has passed locally, but its self-hosted CI run is blocked by the runner's AMD
-PMU defect. Do not claim that gate is landed or green until the PR and hardware
-job pass.
+The broader two-fixture CI wrapper landed on `main` via
+[Hermit PR #7](https://github.com/rrnewton/hermit/pull/7) (merged
+2026-07-22); do not treat that as settled evidence that its hardware-lane
+CI is currently green — reverify the self-hosted PMU-dependent run's live
+status separately before relying on it.
 
 ## Known limitations
 

@@ -409,6 +409,6 @@ specific enough that another engineer can act without re-deriving the scope.
 - **Never headline a bare pass ratio.** `10/10 pass` is not a headline. Name the program category, the exact programs (or link a table), the Hermit mode and backend, and why that batch was selected.
 - **Separate new results from baseline.** Label every rollup `New this run`, `Baseline reconfirmed`, `Regression`, or `Not rerun`, and state the commit/PR that changed between compared runs.
 - **Classify programs before totaling** (system utilities, text-processing, interpreters/runtimes, compilers/build tools, databases, network programs, interactive applications, virtualization/emulators); mixed batches need subtotals.
-- **Name execution context** (native baseline, ptrace, DBI, KVM; strict run / strict verify / record-replay / relaxed) and why it answers the batch question.
+- **Name execution context** (native baseline, ptrace, DBT, KVM; strict run / strict verify / record-replay / relaxed) and why it answers the batch question.
 - **Name the tool** — never "the Tool"; say `StraceTool`, `Detcore`, `CounterTool`, etc.
 - **Give the exact command line**, **say where** (`main`, `PR #N`, or exact branch/SHA), and **qualify the result** (determinism level `L0`/`L1`/`L2`, pass count `18/20`, exact programs/tests covered). "It works" is not a result. Bind evidence to commits, not branch names.

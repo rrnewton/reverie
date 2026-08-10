@@ -29,7 +29,7 @@ cleanup passes only buy hours before the next few concurrent lanes refill it.
 
 ### (a) Shared/centralized cargo target dir, or sccache — REJECTED / DEFERRED
 
-- **Shared writable `target/` per backend** directly violates Hard Invariant #68
+- **Shared writable `target/` per backend** directly violates Hard Invariant 8
   ("no shared writable build dirs between worktrees"). It is also genuinely
   unsafe: cargo's incremental state and fingerprints are keyed to one source
   tree; two worktrees with different sources sharing one `target/` corrupt each

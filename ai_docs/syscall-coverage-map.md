@@ -2,6 +2,13 @@
 
 Status: research snapshot, 2026-07-21
 
+**Superseded in part:** the 291-entry MISSING count below is a point-in-time
+count against Hermit `592d5c6c`. Several families this snapshot marks MISSING
+(SysV IPC semaphores/shm, Landlock, `cachestat`) have since gained
+`Determinized` entries in `hermit/detcore/src/syscall_classification.rs`. Do
+not cite 291 as the current count; re-derive it from that file. This body is
+left as the historical snapshot it was when written; only this pointer is new.
+
 ## Executive summary
 
 This audit uses Hermit revision

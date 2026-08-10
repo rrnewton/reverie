@@ -1,38 +1,51 @@
 ---
 name: hermit-dbi
-description: "Purpose-fixed role for the hermit-dbi agent: ratchet the DBI/DynamoRIO backend's compatibility and tool integration. Load when acting as hermit-dbi or dispatching DynamoRIO backend work."
+description: "Purpose-fixed role for the hermit-dbi agent: ratchet the DBT/DynamoRIO backend's compatibility and tool integration. Load when acting as hermit-dbi or dispatching DynamoRIO backend work."
 ---
 
-# hermit-dbi — DBI / DynamoRIO backend agent
+# hermit-dbi — DBT / DynamoRIO backend agent
+
+The backend and product source were renamed **DBI -> DBT** on 2026-08-06/08
+(hermit `e565b1ab`, reverie `752f06cd`: "DynamoRIO performs dynamic binary
+*translation*... 'DBI' (instrumentation) is the generic superset and is the
+wrong label"). Both SHAs verified as ancestors of their current `origin/main`
+(2026-08-10). This role's slug (`hermit-dbi`), its worktree slot
+(`worktrees/dbi/`), and its skill filename are retained as the established
+fleet identity — renaming them touches `scripts/allocate-worktree.rs`,
+`ci-hub/lib/landing_lock.rs`, and other coordinator tooling beyond a docs
+sweep — but every technical fact below uses the current **DBT** spelling.
 
 ## Purpose
 
-Advance the **DBI (DynamoRIO) backend** so more of the corpus runs under
-`hermit run --backend dbi` with a real Detcore Tool driving the guest. Ratchet
-the pass count upward with evidence, and keep the DBI packaging (client `.so`,
+Advance the **DBT (DynamoRIO) backend** so more of the corpus runs under
+`hermit run --backend dbt` with a real Detcore Tool driving the guest. Ratchet
+the pass count upward with evidence, and keep the DBT packaging (client `.so`,
 runtime footprint, RPATH) working.
 
 ## What this agent owns
 
-- The DBI client and `DbiGuest`/Tool adapter in `reverie`, and DBI-specific
+- The DBT client and `DbtGuest`/Tool adapter in `reverie`, and DBT-specific
   handling in `hermit`.
-- The DBI columns of `scripts/validate.rs --backend-compat-only`.
-- DBI example-tool exercises and the vendored DynamoRIO runtime wiring.
+- The DBT rows of `tests/backend-parity/run_matrix.py` (`BACKENDS = ("ptrace",
+  "dbt", "kvm")`), whose live L1/L2 pass counts are tracked in
+  `tests/backend-parity/README.md`. There is no `--backend-compat-only` flag
+  (verified absent from current source); that name is stale.
+- DBT example-tool exercises and the vendored DynamoRIO runtime wiring.
 
 ## Constraints
 
-- **The DBI client must be release-built** — debug frames overflow DynamoRIO's
+- **The DBT client must be release-built** — debug frames overflow DynamoRIO's
   ~56K client stack.
-- **Panics abort under DBI** — a Rust panic in a handler `SIGABRT`s the process;
+- **Panics abort under DBT** — a Rust panic in a handler `SIGABRT`s the process;
   `catch_unwind` is dead. Fail deterministically, do not rely on unwinding.
 - The Tool is compiled into `client.so`; there is **no runtime tool selection**
-  and `--backend dbi`/`sabre` is a build-time choice, not a runtime flag.
-- DBI follows fork/exec children by default (`-follow_children` ON).
+  and `--backend dbt`/`sabre` is a build-time choice, not a runtime flag.
+- DBT follows fork/exec children by default (`-follow_children` ON).
 - **Additive Reverie API only** (see `AGENTS.md` Reverie API Policy); discuss
   core abstraction changes with the user first.
-- **Bind claims to Hermit+Reverie SHAs, backend, and `L0/L1/L2`.** A DBI pin
+- **Bind claims to Hermit+Reverie SHAs, backend, and `L0/L1/L2`.** A DBT pin
   bump can break the backend (undefined-symbol regressions) — validate
-  `run_dbi_*` CLI tests against the exact Reverie SHA before proposing a pin.
+  `run_dbt_*` CLI tests against the exact Reverie SHA before proposing a pin.
 - A parity pass requires byte equality of exit status, stdout, stderr, and the
   complete INFO log. Never strip numeric values to manufacture agreement.
 
@@ -44,9 +57,11 @@ support (leave `AUTONOMOUS-BOT-IMPLEMENTED` + `TODO-HUMAN-REVIEW(PR-id)` tags),
 (3) a new determinization strategy, (4) a core DetCore scheduling change (always
 labeled; canonical example is Hermit PR #1151). Routine backend parity is not a
 trigger by itself. Required PR sections: `Summary`, `Determinism`, `Validation`,
-plus `Relationship to gVisor` for KVM and `Human Review Required` (naming the
-numbered trigger) when labeled. Full trigger definitions and the adversarial-review
-gate: [post-facto-review](../post-facto-review/SKILL.md); policy in `AGENTS.md`.
+plus `Relationship to gVisor` for KVM. A labeled PR is additionally gated by
+`scripts/core-review-protocol-lint.sh`, which requires `Linux Semantics` and
+`Human Review Required` (naming the numbered trigger) too — label-scoped, not
+universal. Full trigger definitions and the adversarial-review gate:
+[post-facto-review](../post-facto-review/SKILL.md); policy in `AGENTS.md`.
 
 ## Worktree assignment
 

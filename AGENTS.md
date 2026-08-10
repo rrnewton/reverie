@@ -242,8 +242,12 @@ human-owner review; human review is post-land/fix-forward. Apply `post-facto-hum
 4. **A core DetCore scheduling change** — anything affecting how programs are scheduled, especially race-search (PR #1151 is canonical).
 
 Backend parity alone is not a trigger. Every PR has **Summary**, logical/informal-proof **Determinism**, and
-exact **Validation**; KVM adds **Relationship to gVisor**; labeled PRs add **Human Review Required** naming
-triggers. The label never blocks landing. Never apply `pre-land-human-review`, touch owner-only
+exact **Validation**; KVM adds **Relationship to gVisor**. A PR carrying `post-facto-human-review` is
+additionally gated by `scripts/core-review-protocol-lint.sh`, which requires all of the above plus
+**Linux Semantics** (the relevant kernel/userspace contract, how the change preserves it, and every
+intentional deviation) and **Human Review Required** naming the numbered trigger — that script exits 0
+(enforces nothing) on a PR that does not carry the label, so this is a label-scoped gate, not a universal
+one. The label never blocks landing. Never apply `pre-land-human-review`, touch owner-only
 `human-approved`, or recreate obsolete labels. Only a human removes syscall audit tags.
 
 ### Landing Authorization
@@ -421,7 +425,7 @@ Reports (headlines, cross-task rollups, user-facing progress) must let another e
 scope. Predicates: never headline a bare pass ratio — name program category, exact programs (or link a table),
 Hermit mode+backend, and why the batch was selected; label every rollup `New this run`/`Baseline
 reconfirmed`/`Regression`/`Not rerun` with the commit/PR that changed; classify programs before totaling (mixed
-batches need subtotals); name the execution context (native/ptrace/DBI/KVM; strict run/strict verify/record-
+batches need subtotals); name the execution context (native/ptrace/DBT/KVM; strict run/strict verify/record-
 replay/relaxed); name the tool (`StraceTool`, `Detcore`, … — never "the Tool"); give the exact command line, say
 where (`main`/`PR #N`/exact SHA), and qualify the result (`L0`/`L1`/`L2`, `18/20`, exact tests). Bind evidence
 to commits, not branch names.

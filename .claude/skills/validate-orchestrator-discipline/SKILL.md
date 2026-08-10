@@ -17,10 +17,15 @@ timeouts; flaky-is-RED trinary stress classification; history-derived cost
 estimates always-printed on every exit path (EXIT trap); honest count ratchets
 (`RR_COMPAT_EXPECTED=139` etc. guarded against the actual array size); and a
 four-layer architecture (`scripts/validate.rs` → `ci/run-dag.sh` → `safe-ci-dag-runner`
-→ shared TOML manifests, determinism via `hermit --verify`, not bash). It does
-NOT enforce: any CPU-time / `RLIMIT_CPU` budget (all timeouts are wall-clock),
-any performance ratchet (profiling CSVs are observability-only), or a dirty-tree
-refusal. **There is NO symlink sharing between `dev-hermit/.claude/skills` and
+→ shared TOML manifests, determinism via `hermit --verify`, not bash). At that
+2026-08-03 verification it did NOT enforce a CPU-time / `RLIMIT_CPU` budget (all
+timeouts were wall-clock only); a per-node `cpu_timeout` budget has since been
+added and IS enforced (`safe-ci-dag-runner/src/scheduler.rs` polls
+`cpu_used_s >= cpu_timeout`, and `scripts/validate.rs`'s caps-audit refuses any
+node that declares none) — reconfirm this against current source rather than
+trusting either snapshot. Still not enforced as of this note: any performance
+ratchet (profiling CSVs remain observability-only) or a dirty-tree refusal.
+**There is NO symlink sharing between `dev-hermit/.claude/skills` and
 `hermit`'s skill dirs** — this cross-reference is an EXPLICIT LINK, not
 inheritance; read both.
 
@@ -65,7 +70,9 @@ inheritance; read both.
    true — grep the call sites and read the config, because directives drift from
    reality (e.g. `--cgroups` was accepted-but-inert for months before it was
    removed — it now hard-errors with exit 2 in both engines, and cgroup-v2 boxing
-   is ON by default; ALL DAG nodes lack `cpu_timeout`).
+   is ON by default; DAG nodes were observed lacking `cpu_timeout` on
+   2026-08-03, but a `cpu_timeout` budget and its enforcement have since been
+   added — reconfirm current node coverage rather than assuming either state).
    Report the delta between the stated directive and the verified state.
 
 See [compatibility-counter rebases](../validate-sh-rr-compat-counter-conflict/SKILL.md)

@@ -16,9 +16,12 @@ support (leave `AUTONOMOUS-BOT-IMPLEMENTED` + `TODO-HUMAN-REVIEW(PR-id)` tags),
 (3) a new determinization strategy, (4) a core DetCore scheduling change (always
 labeled; canonical example is Hermit PR #1151). Routine backend parity is not a
 trigger by itself. Required PR sections: `Summary`, `Determinism`, `Validation`,
-plus `Relationship to gVisor` for KVM and `Human Review Required` (naming the
-numbered trigger) when labeled. Full trigger definitions and the dual-review
-gate: [post-facto-review](../post-facto-review/SKILL.md); policy in `AGENTS.md`.
+plus `Relationship to gVisor` for KVM. A labeled PR is additionally gated by
+`scripts/core-review-protocol-lint.sh`, which requires `Linux Semantics` and
+`Human Review Required` (naming the numbered trigger) too — that script exits 0
+on an unlabeled PR, so those two are label-scoped, not universal. Full trigger
+definitions and the dual-review gate:
+[post-facto-review](../post-facto-review/SKILL.md); policy in `AGENTS.md`.
 
 ## Milestone Completion Gate
 
@@ -41,7 +44,7 @@ gate: [post-facto-review](../post-facto-review/SKILL.md); policy in `AGENTS.md`.
 Before assigning a backend score, trace and record the literal implementation path.
 
 1. Trace `--backend X` from CLI parsing and dispatch to `Detcore<XxxGuest>`; identify any path that bypasses Detcore.
-2. Inspect `run_kvm()` and `run_dbi()`. Each must instantiate `detcore::Config` and construct a real Detcore tool (or the exact shared Detcore construction used by ptrace).
+2. Inspect `run_kvm()` and `run_dbt()`. Each must instantiate `detcore::Config` and construct a real Detcore tool (or the exact shared Detcore construction used by ptrace).
 3. Trace representative syscalls from backend interception into Detcore handlers and back to the guest; determine whether they are determinized or merely passed through to the host.
 4. Capture exit code, stdout, stderr, and complete INFO logs for the same program
    under ptrace and backend X. Compare bytes without stripping numbers,
@@ -106,7 +109,7 @@ grep -rn 'Detcore<' hermit-cli/src/ detcore/src/
 grep -n 'reverie-' hermit-cli/Cargo.toml
 
 # 5. Trace CLI dispatch and real Detcore construction
-rg -n 'run_kvm|run_dbi|detcore::Config|Detcore<' hermit-cli/src/ detcore/src/
+rg -n 'run_kvm|run_dbt|detcore::Config|Detcore<' hermit-cli/src/ detcore/src/
 
 # 6. Trace syscall interception, determinization, and possible passthrough
 rg -n 'syscall|intercept|passthrough|forward' hermit-cli/src/ detcore/src/ reverie-*/src/

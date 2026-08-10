@@ -21,7 +21,7 @@ selection/fork behavior of example tools correct.
 ## Constraints
 
 - **Additive Reverie API only** (see `AGENTS.md` Reverie API Policy). SaBRe is a
-  low-overhead trap backend (~1us/syscall like DBI/gVisor-KVM vs ~40us ptrace);
+  low-overhead trap backend (~1us/syscall like DBT/gVisor-KVM vs ~40us ptrace);
   keep the trap-cost advantage but do not change core Reverie contracts without
   a user design discussion.
 - **Bind claims to Hermit+Reverie SHAs, backend, mode, and `L0/L1/L2`.** Report
