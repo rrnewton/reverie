@@ -24,9 +24,9 @@ poisons every downstream analysis):
                                      green that is three pages deep surfaces here.
   4. SELF-HOSTED RUNNER HEALTH     — CONFIGURED vs LIVE (a registered-but-offline
                                      runner is silently-dead capacity), busy/idle,
-                                     labels, and whether the single serial PMU
-                                     lane (`pmu-serial`) is the binding
-                                     constraint.
+                                     labels, and an eligibility-honest capacity
+                                     signal that never promotes an inventory
+                                     label into a workflow constraint.
   5. NAMED IN-FLIGHT RUNS          — "run X on branch Y", not "something is
                                      running".
   6. LAST-WINDOW RUN AGGREGATES    — started/completed/success/failure/cancelled
@@ -543,23 +543,44 @@ def analyze_runners(runner_api: dict | None) -> RunnerHealth | None:
 
 def binding_constraint(queues: dict[str, WorkflowQueue],
                        rh: RunnerHealth | None) -> str | None:
-    """Return a one-line binding-constraint verdict, or None if not saturated.
+    """Return a one-line capacity signal, or None if no pressure is observed.
 
-    Basis is embedded in the string: it is derived from live runner idle counts
-    and current queued depth, not folklore.
+    The run-list snapshot says which *workflow runs* are queued, but not the
+    labels requested by their queued jobs.  Runner labels are therefore
+    inventory, not proof of eligibility.  Keep the legacy function name for
+    callers, but never name PMU, gate, or pmu-serial as the binding constraint
+    without job-level evidence this cheap tick path does not fetch.
     """
     if rh is None:
         return None
     total_queued = sum(q.queued for q in queues.values())
-    if rh.pmu_total and rh.pmu_idle == 0 and total_queued > 0:
-        serial = (f"; single serial lane pmu-serial={','.join(rh.serial_runners)}"
-                  f" is {'BUSY' if rh.serial_busy else 'idle'}"
-                  if rh.serial_runners else "")
-        return (f"self-hosted PMU lane saturated: 0 idle of {rh.pmu_total} pmu "
-                f"runners with {total_queued} run(s) queued{serial}")
-    if rh.idle == 0 and total_queued > 0:
-        return (f"no idle self-hosted runner (0 of {rh.total}) with "
-                f"{total_queued} run(s) queued")
+    if total_queued <= 0:
+        return None
+
+    offline = [r for r in rh.runners if r.get("status") != "online"]
+    if offline:
+        details = []
+        for runner in offline:
+            labels = [
+                str(label.get("name"))
+                for label in runner.get("labels", [])
+                if label.get("name") not in {"self-hosted", "Linux", "X64"}
+            ]
+            details.append(
+                f"{runner.get('name') or '?'}[{','.join(labels) or 'no-custom-label'}]"
+            )
+        return (
+            f"configured self-hosted capacity missing: {','.join(details)} offline; "
+            f"{total_queued} workflow run(s) queued; queued-job labels were not "
+            "queried, so causal binding is not established"
+        )
+    if rh.idle == 0:
+        return (
+            f"all online self-hosted runners busy: 0 idle of {rh.online} online "
+            f"({rh.total} configured) with {total_queued} workflow run(s) queued; "
+            "queued-job labels were not queried, so PMU, gate, and pmu-serial "
+            "cannot be named as binding"
+        )
     return None
 
 
@@ -844,10 +865,11 @@ def report_repo(repo: str, gh_cmd: str, limit: int, sample: int,
         print(f"    - {q.workflow:<32} queued={q.queued} running={q.running}"
               f"{age}")
 
-    # Binding constraint.
+    # Capacity signal.  The cheap run-list path does not expose queued-job labels,
+    # so this deliberately refuses to name a label-specific binding constraint.
     bc = binding_constraint(queues, rh)
     if bc:
-        print(f"  ^ BINDING CONSTRAINT: {bc}")
+        print(f"  ^ CAPACITY SIGNAL (binding label not established): {bc}")
 
     # (5) NAMED in-flight runs — "run X on branch Y", not "something is running".
     inflight = [r for r in runs if r.get("status") in INFLIGHT_STATUSES]
@@ -1048,7 +1070,7 @@ def compute_gate(repo: str, gh_cmd: str, limit: int, now: datetime | None = None
     if stale_green:
         reasons.append("stale-green " + ",".join(stale_green))
     if bc:
-        reasons.append("binding-constraint")
+        reasons.append("capacity-signal")
 
     state = "red" if reasons else "ok"
     runners_txt = (f"total={rh.total},idle={rh.idle},pmu_idle={rh.pmu_idle}"

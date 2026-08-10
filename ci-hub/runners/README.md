@@ -48,9 +48,11 @@ The report shows, per repo (analysis lives in the importable `queue_health.py`;
   workflow (not one aggregate number), plus the **current queue age**
   (`now − createdAt`) median/max, an honest *lower bound* on each run's final
   wait.
-- **binding constraint** — a live verdict derived from runner idle counts and
-  queued depth, e.g. "self-hosted PMU lane saturated: 0 idle of 3 pmu runners …
-  single serial lane pmu-serial=<name> is BUSY".
+- **capacity signal** — observed missing/offline capacity or a fully busy
+  self-hosted pool, reported alongside queued depth. The cheap run-list query
+  does **not** expose queued-job labels, so the signal explicitly refuses to
+  name `pmu`, `gate`, or `pmu-serial` as binding. A runner label is inventory;
+  it is not evidence that a queued workflow selected that label.
 - **time since last green, per workflow** — both the elapsed wall time and **how
   many runs back** the last success was, so a green buried pages deep surfaces
   here instead of forcing a manual page-through.
@@ -89,7 +91,7 @@ non-zero (hard-warning the coordinator) when any workflow's queued depth reaches
 `CI_QUEUE_AGE_WARN_SECS` (1800), a workflow with at least
 `CI_GREEN_GATE_MIN_RUNS` (4) runs in the window has no green within
 `CI_GREEN_RUNS_BACK_WARN` (15) runs / `CI_GREEN_AGE_WARN_SECS` (6h), or the
-self-hosted lane is the active binding constraint. All thresholds are
+self-hosted capacity signal is active. All thresholds are
 environment-overridable; `CI_GREEN_GATE_EXCLUDE` (comma-separated substrings,
 default empty) silences the no-green gate for a structurally non-green workflow
 without a code change. The gate does no jobs-API sampling, so a tick stays cheap.
@@ -105,7 +107,7 @@ carries only the single-runner lifecycle targets (`build`/`init`/`start`/
 `verify`/`stop`/`drain`/`status`). What existed before this change was a partial
 reimplementation (`ci-status.py`: runner counts + one aggregate in-flight number
 + last-green), off the tick and missing per-workflow depth, wait-time
-distribution, runs-back, and the binding-constraint verdict. This directory now
+distribution, runs-back, and the eligibility-honest capacity signal. This directory now
 ports the **capability** (all of the items above) into ci-hub and wires the cheap
 core to the tick, rather than porting the target.
 
@@ -134,9 +136,9 @@ This is a **capacity** problem, not a broken-tests problem.
   runners**. (Update — basis: `gh api .../actions/runners`, 2026-08-03:
   `rrnewton/hermit` now has **three** PMU runners `hermit-ci-newton{,-2,-3}` plus
   a gate-only [`hermit-gate-newton`](#runner-identities); exactly one,
-  `hermit-ci-newton`, carries
-  `pmu-serial` — the single serial lane. `runner-health` reports the live count,
-  so prefer it over this prose.)
+  `hermit-ci-newton`, carries the residual `pmu-serial` inventory label. Current
+  workflows do not select that label, so it must not be described as a binding
+  lane. `runner-health` reports the live count, so prefer it over this prose.)
 - **reverie** drains fine: its Rust job runs ~2–3 min, so one runner stays idle
   and every push goes green quickly.
 - **hermit** is jammed: the Rust ("Regular tests") job is much heavier and PR/push

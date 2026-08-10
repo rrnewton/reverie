@@ -203,7 +203,10 @@ class TickTest(unittest.TestCase):
         self.assertIsNone(lh.latest_observation(self.path, "r/h"))
 
     def test_saturated_records_and_sustains_after_threshold(self):
-        self._fake_qh("red", "self-hosted PMU lane saturated: 0 idle of 3 pmu")
+        self._fake_qh(
+            "red",
+            "all online self-hosted runners busy; binding label not established",
+        )
         rc1 = lh.do_tick("r/h", "gh", 100, path=self.path, sustained_ticks=3,
                          now=(1.0, "t1"))
         rc2 = lh.do_tick("r/h", "gh", 100, path=self.path, sustained_ticks=3,

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Durable CI-lane saturation record + an observable, self-bounding throttle.
+"""Durable self-hosted capacity record + an observable, self-bounding throttle.
 
 WHY THIS EXISTS
-    ci-hub's queue-health check already DETECTS when the self-hosted PMU lane is
-    saturated (0 idle runners with runs queued -- see
-    ``queue_health.binding_constraint``). But detection alone lived only in an
+    ci-hub's queue-health check DETECTS observed self-hosted capacity pressure
+    (missing configured capacity, or zero idle runners with runs queued -- see
+    ``queue_health.binding_constraint``). It does not query queued-job labels,
+    so it deliberately does not claim which label is binding. Detection alone
+    lived only in an
     agent's working context and in a one-shot coordinator hard-warn message.
     Neither survives agent recycling, and we recycle agents many times a day,
     several at 0% context. An alarm that lives in a thought is not an alarm.
@@ -295,7 +297,7 @@ def throttle_status(path: Path, repo: str, *, now_epoch: float,
     if latest.sustained and latest.saturated:
         return ThrottleStatus(
             True, EXIT_THROTTLED,
-            f"throttle ENGAGED: {repo} PMU lane saturated "
+            f"throttle ENGAGED: {repo} self-hosted capacity pressure sustained "
             f"{latest.consecutive_saturated} consecutive observations (since "
             f"{latest.streak_since}); {latest.reason}",
             "SUPPRESSES: new speculative CI load (CI refires / non-landing "
@@ -306,7 +308,7 @@ def throttle_status(path: Path, repo: str, *, now_epoch: float,
     if latest.saturated:
         return ThrottleStatus(
             False, EXIT_CLEAR,
-            f"throttle CLEAR: {repo} lane saturated but only "
+            f"throttle CLEAR: {repo} capacity pressure observed but only "
             f"{latest.consecutive_saturated} of {sustained_ticks} consecutive "
             f"observations -- not yet sustained",
             "Suppresses nothing yet (recording, watching). " + unthrottle)
@@ -387,7 +389,7 @@ def do_tick(repo: str, gh_cmd: str, limit: int, *,
     host_txt = ("host=suitable" if obs.host_suitable is True else
                 "host=unsuitable" if obs.host_suitable is False else "host=n/a")
     if obs.saturated:
-        summary = (f"{repo} lane saturated {obs.consecutive_saturated} consec "
+        summary = (f"{repo} capacity pressure {obs.consecutive_saturated} consec "
                    f"(since {obs.streak_since}); {host_txt}; {green_txt}; "
                    f"{obs.reason}")
     else:

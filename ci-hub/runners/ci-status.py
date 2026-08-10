@@ -3,8 +3,8 @@
 
 Non-mutating. Reports, per repo: self-hosted runner health, per-workflow QUEUE
 DEPTH, WAIT TIMES (time-in-queue kept strictly separate from run duration),
-TIME SINCE LAST GREEN (elapsed + how many runs back), and whether the single
-serial PMU lane is the binding constraint.
+TIME SINCE LAST GREEN (elapsed + how many runs back), and an eligibility-honest
+capacity signal that does not infer a workflow constraint from runner labels.
 
 The analysis lives in the importable `queue_health` module so the same code
 backs both this human report and the ops-tick gate

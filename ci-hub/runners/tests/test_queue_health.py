@@ -74,7 +74,7 @@ class RunnerAndConstraintTests(unittest.TestCase):
         return {"name": name, "status": status, "busy": busy,
                 "labels": [{"name": l} for l in labels]}
 
-    def test_pmu_serial_binding_constraint(self) -> None:
+    def test_residual_pmu_serial_label_is_not_a_binding_constraint(self) -> None:
         api = {"total_count": 3, "runners": [
             self._runner("r1", True, ["pmu", "pmu-serial", "gate"]),
             self._runner("r2", True, ["pmu", "gate"]),
@@ -86,9 +86,35 @@ class RunnerAndConstraintTests(unittest.TestCase):
         self.assertTrue(rh.serial_busy)
         queues = qh.analyze_queue([run("ci", "queued", rid=1)], now=NOW)
         bc = qh.binding_constraint(queues, rh)
-        self.assertIsNotNone(bc)
-        self.assertIn("PMU lane saturated", bc)
-        self.assertIn("pmu-serial=r1", bc)
+        self.assertIsNone(bc)
+
+    def test_offline_gate_runner_is_named_without_claiming_causality(self) -> None:
+        api = {"total_count": 4, "runners": [
+            self._runner("r1", False, ["pmu", "pmu-serial", "gate"]),
+            self._runner("r2", False, ["pmu", "gate"]),
+            self._runner("r3", False, ["pmu", "gate"]),
+            self._runner("hermit-gate-newton", False, ["gate"], status="offline"),
+        ]}
+        rh = qh.analyze_runners(api)
+        queues = qh.analyze_queue([run("Merge Gate", "queued", rid=1)], now=NOW)
+        signal = qh.binding_constraint(queues, rh)
+        self.assertIsNotNone(signal)
+        self.assertIn("hermit-gate-newton[gate] offline", signal)
+        self.assertIn("causal binding is not established", signal)
+        self.assertNotIn("pmu-serial=", signal)
+
+    def test_all_busy_reports_generic_pressure_not_a_lane(self) -> None:
+        api = {"total_count": 2, "runners": [
+            self._runner("r1", True, ["pmu", "pmu-serial", "gate"]),
+            self._runner("r2", True, ["pmu", "gate"]),
+        ]}
+        rh = qh.analyze_runners(api)
+        queues = qh.analyze_queue([run("ci", "queued", rid=1)], now=NOW)
+        signal = qh.binding_constraint(queues, rh)
+        self.assertIsNotNone(signal)
+        self.assertIn("all online self-hosted runners busy", signal)
+        self.assertIn("cannot be named as binding", signal)
+        self.assertNotIn("pmu-serial=", signal)
 
     def test_no_constraint_when_idle_pmu(self) -> None:
         api = {"total_count": 2, "runners": [
