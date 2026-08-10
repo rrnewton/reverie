@@ -118,6 +118,21 @@ run_case() {
     last_output=$output
 }
 
+run_local_only_case() {
+    local expected=$1 label=$2
+    shift 2
+    local rc=0 output
+    output=$(env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
+        EXACT_HEAD_GH_BIN="$tmp/gh-api" EXPECTED_SHA="$sha" \
+        "$@" "$authority" --local-only --repo rrnewton/hermit --sha "$sha") || rc=$?
+    if [[ $rc -ne $expected ]]; then
+        printf 'FAIL: %s expected rc=%s got rc=%s output=%s\n' \
+            "$label" "$expected" "$rc" "$output" >&2
+        exit 1
+    fi
+    last_output=$output
+}
+
 run_case 0 "current Rust schema-5 counted local exact-head positive" env LOCAL_STATE=green HOSTED_STATE=no_result
 [[ $last_output == *"LOCAL_COVERAGE=portable+privileged"* ]] || {
     echo "FAIL: local authority did not name its full coverage" >&2; exit 1;
@@ -174,4 +189,23 @@ grep -Fq 'AUTHORITY=hosted ' "$tmp/receipt-fallback" || {
     echo "FAIL: receipt refusal did not downgrade the local path" >&2; exit 1;
 }
 
-echo "PASS: local/hosted OR positives=5; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"
+# Hermit's landing consumer is deliberately narrower than the historical OR
+# evaluator above: only the local ledger decides. These cases bracket both
+# directions and prove hosted state is not even consulted as a fallback/veto.
+run_local_only_case 0 "local-only admits qualifying ledger green despite hosted red" \
+    env LOCAL_STATE=green HOSTED_STATE=red
+[[ $last_output == *"AUTHORITY=local "* && $last_output == *"HOSTED=not_consulted"* ]] || {
+    echo "FAIL: local-only green did not exclude hosted authority" >&2; exit 1;
+}
+run_local_only_case 4 "local-only refuses hosted-only green" \
+    env LOCAL_STATE=no_result HOSTED_STATE=green
+run_local_only_case 3 "local-only preserves genuine ledger red" \
+    env LOCAL_STATE=red HOSTED_STATE=green
+rc=0
+env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
+    LOCAL_STATE=green HOSTED_STATE=green RECEIPT_RC=1 \
+    "$authority" --local-only --repo rrnewton/hermit --sha "$sha" --comments "$comments" \
+    >"$tmp/local-only-unbound" || rc=$?
+[[ $rc -eq 4 ]] || { echo "FAIL: local-only accepted an unbound receipt via hosted fallback" >&2; exit 1; }
+
+echo "PASS: historical local/hosted OR positives=5; local-only positive=1; local-only negatives=3; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"

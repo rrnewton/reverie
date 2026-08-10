@@ -7,10 +7,10 @@
 # can outlive a dead agent and wedge the FIFO (the 2040-minute starvation bug).
 #
 # Sequence (while holding the land-lock):
-#   fetch fresh main -> exact-head local-OR-hosted authority -> rebase
+#   fetch fresh main -> exact-head local-ledger authority -> rebase
 #   (union|plain, SKIPPED by --no-rebase) + push -> recheck the exact pushed head
 #   -> derive the optional locally-validated cache only for a local receipt ->
-#   bounded merge-gate poll -> gh pr merge --rebase (NEVER --admin)
+#   advisory merge-gate observation -> gh pr merge --rebase (NEVER --admin)
 #   -> ancestry-verify.
 #
 # Three fixes distilled from the 2026-08-03 stuck-gate diagnosis:
@@ -225,13 +225,12 @@ abandon(){
 with-proxy git -C "$WT" fetch -q origin main || abandon "fetch origin/main failed" 2
 with-proxy git -C "$WT" fetch -q origin "$BR" 2>/dev/null || true
 
-# 1b. Owner-authorized exact-head OR gate. A counted local receipt and the
-# registered hosted job set are interchangeable positive authorities; a
-# genuine red from either blocks. Missing/partial/stale evidence is NO_RESULT,
-# never a green. The same predicate is checked again after a SHA-changing rebase.
+# 1b. Owner-authorized exact-head local-ledger gate. Hosted CI is diagnostic:
+# it neither authorizes nor vetoes a landing. Missing/partial/stale local
+# evidence is NO_RESULT, never green. Re-check after every SHA-changing rebase.
 verify_pr_belongs_to_repo
 ORIG=$(git -C "$WT" rev-parse "origin/$BR" 2>/dev/null) || abandon "cannot resolve origin/$BR head for eligibility gate" 4
-VS=$("$SCRIPT_DIR/exact-head-validation-authority.sh" --repo "$R" --sha "$ORIG" 2>&1); VRC=$?
+VS=$("$SCRIPT_DIR/exact-head-validation-authority.sh" --local-only --repo "$R" --sha "$ORIG" 2>&1); VRC=$?
 say "exact-head validation(head=$ORIG) rc=$VRC: $VS"
 case "$VRC" in
   0) say "landing eligibility: exact-head authority green for $ORIG" ;;
@@ -305,8 +304,8 @@ else
   say "pushed head=$HEAD"
 fi
 
-# 4. The pushed exact head needs a fresh positive from either registered
-# authority. A rebase that changed the SHA cannot inherit the old authorization.
+# 4. The pushed exact head needs a fresh positive from the local ledger. A
+# rebase that changed the SHA cannot inherit the old authorization.
 # Only the ledger-guarded applier may materialize the optional local cache label.
 #
 # 4a. Re-mint one exact count-backed schema-5 row from its durable log BEFORE
@@ -335,86 +334,44 @@ fi
 # writes, this is what makes a red attributable to which BUG (not just which gate)
 # after the log is gone.
 python3 "$ROOT/ci-hub/validate/attribute_reds.py" --last 0 --persist >/dev/null 2>&1 || true
-VS=$("$SCRIPT_DIR/exact-head-validation-authority.sh" --repo "$R" --sha "$HEAD" 2>&1); VRC=$?
+VS=$("$SCRIPT_DIR/exact-head-validation-authority.sh" --local-only --repo "$R" --sha "$HEAD" 2>&1); VRC=$?
 say "post-push exact-head validation(head=$HEAD) rc=$VRC: $VS"
 [ "$VRC" -eq 0 ] || abandon "pushed head $HEAD has no accepted exact-head validation authority (rc=$VRC)" 4
-if grep -q 'LOCAL=green' <<<"$VS"; then
-  "$ROOT/ci-hub/ci-hub" apply-local-label --pr "$PR" --repo "$R" \
-    || abandon "ledger-guarded apply-local-label failed" 4
-  sleep 4
-  LB=$(with-proxy gh pr view "$PR" -R "$R" --json labels -q '[.labels[].name]|join(",")')
-  grep -q locally-validated <<<"$LB" || abandon "locally-validated stripped immediately (labels=$LB)" 4
-  say "ledger-derived label present; labels=$LB"
-else
-  say "hosted exact-head authority selected; no local-receipt cache label required"
-fi
+"$ROOT/ci-hub/ci-hub" apply-local-label --pr "$PR" --repo "$R" \
+  || abandon "ledger-guarded apply-local-label failed" 4
+sleep 4
+LB=$(with-proxy gh pr view "$PR" -R "$R" --json labels -q '[.labels[].name]|join(",")')
+grep -q locally-validated <<<"$LB" || abandon "locally-validated stripped immediately (labels=$LB)" 4
+say "ledger-derived label present; labels=$LB"
 
-# 4b. a draft PR cannot be merged; marking ready fires a fresh (label-present)
-# merge-gate run, which the poll below waits on.
+# 4b. A draft PR cannot be merged. Marking it ready may fire advisory CI, but
+# that hosted result is not landing authority.
 if [ "$(with-proxy gh pr view "$PR" -R "$R" --json isDraft -q .isDraft)" = "true" ]; then
   with-proxy gh pr ready "$PR" -R "$R" >/dev/null && say "marked ready (was draft)"
   sleep 4
 fi
 
-# 5. FIX 1 + FIX 3: bounded, race-tolerant merge-gate poll. Query Actions by the
-# exact PR head and admit only pull_request/workflow_dispatch runs. The latter is
-# load-bearing: merge-gate's workflow_run controller dispatches the real PR-head
-# gate, but that success is absent from PR statusCheckRollup. A genuine FAILED
-# result stops immediately. NO_RESULT (cancelled/skipped/neutral/pending/absent)
-# blocks without becoming a failure and re-dispatches the gate once per observed
-# terminal hole. UNKNOWN/stuck exits with a distinct temporary/no-result code.
+# 5. Observe merge-gate once as a diagnostic. The owner deliberately removed
+# required hosted checks: this observation must not authorize, veto, dispatch,
+# or delay a ledger-authorized landing.
 selector="$SCRIPT_DIR/merge-gate-status.jq"
 outcome_helper="$ROOT/ci-hub/check_outcome.py"
-deadline=$((SECONDS+GATE_DEADLINE)); gate=""; cj="UNAVAILABLE/PENDING"; gate_detail="no successful Actions query"; dispatched_run=""; gate_status="UNAVAILABLE"; gate_conclusion="PENDING"
-while (( SECONDS < deadline )); do
-  if actions_json=$(with-proxy gh api \
-      "repos/$R/actions/workflows/merge-gate.yml/runs?head_sha=$HEAD&per_page=100" \
-      2>/dev/null); then
-    gate_run=$(python3 "$outcome_helper" \
-        --select-latest-run --head-sha "$HEAD" \
-        --event pull_request --event workflow_dispatch <<<"$actions_json")
-    row=$(jq -r -f "$selector" <<<"$gate_run")
-    IFS=$'\t' read -r gate_status gate_conclusion gate_event gate_run gate_url gate_created <<<"$row"
-    cj="${gate_status}/${gate_conclusion}"
-    gate_detail="event=$gate_event run=$gate_run created=$gate_created url=$gate_url"
-  else
-    gate_status="UNAVAILABLE"
-    gate_conclusion="PENDING"
-    cj="UNAVAILABLE/PENDING"
-    gate_detail="Actions API unavailable"
-  fi
+if actions_json=$(with-proxy gh api \
+    "repos/$R/actions/workflows/merge-gate.yml/runs?head_sha=$HEAD&per_page=100" \
+    2>/dev/null); then
+  gate_run=$(python3 "$outcome_helper" \
+      --select-latest-run --head-sha "$HEAD" \
+      --event pull_request --event workflow_dispatch <<<"$actions_json")
+  row=$(jq -r -f "$selector" <<<"$gate_run")
+  IFS=$'\t' read -r gate_status gate_conclusion gate_event gate_run gate_url gate_created <<<"$row"
   check_outcome=$(python3 "$outcome_helper" --status "$gate_status" --conclusion "$gate_conclusion")
-  say "merge-gate(exact-head)=$cj outcome=$check_outcome $gate_detail"
-  case "$check_outcome" in
-    PASSED) gate=ok; break ;;
-    FAILED) abandon "merge-gate produced a genuine FAILED verdict for exact head $HEAD ($cj; $gate_detail)" 5 ;;
-    NO_RESULT)
-      # A terminal hole or an absent run needs a new observation. Do not duplicate
-      # an already queued/running run, and do not dispatch the same terminal hole
-      # repeatedly while GitHub is still creating its successor.
-      if { [ "$gate_status" = "COMPLETED" ] || [ "$gate_status" = "MISSING" ]; } &&
-         [ "${gate_run:--}" != "$dispatched_run" ]; then
-        if with-proxy gh workflow run merge-gate.yml -R "$R" --ref "$BR" -f pr_number="$PR"; then
-          dispatched_run="${gate_run:--}"
-          say "merge-gate NO_RESULT re-dispatched for exact head $HEAD"
-        else
-          say "merge-gate NO_RESULT re-dispatch failed; will retry"
-        fi
-      fi
-      ;;
-  esac
-  sleep 15
-done
-if [ "$gate" != ok ]; then
-  reason="merge-gate remained NO_RESULT for exact head $HEAD through the ${GATE_DEADLINE}s deadline (last=$cj; $gate_detail)"
-  say "NO-RESULT: $reason"
-  comment_no_result "$reason"
-  exit 75
+  say "merge-gate diagnostic only: ${gate_status}/${gate_conclusion} outcome=$check_outcome event=$gate_event run=$gate_run created=$gate_created url=$gate_url"
+else
+  say "merge-gate diagnostic only: unavailable (landing authority remains the local ledger)"
 fi
 
-# 5b. Re-evaluate the exact-head OR policy at the final mutation boundary. A
-# local positive now additionally dereferences its immutable receipt comment;
-# a hosted positive remains independently sufficient. Any genuine red blocks.
+# 5b. Re-evaluate the local-ledger policy at the final mutation boundary. The
+# positive now additionally dereferences its immutable receipt comment.
 # Mutable-tip currency is asserted HERE, exactly once: refresh both authorities
 # immediately before dereferencing the receipt. A stale receipt costs this gate
 # rerun, never another full validation. No ancestry-distance budget exists.
@@ -437,7 +394,7 @@ if ! with-proxy gh api --paginate --slurp \
   printf '[]\n' >"$receipt_comments"
 fi
 receipt_detail=$("$SCRIPT_DIR/exact-head-validation-authority.sh" \
-  --repo "$R" --sha "$HEAD" --comments "$receipt_comments" \
+  --local-only --repo "$R" --sha "$HEAD" --comments "$receipt_comments" \
   --current-base "$current_base" \
   --current-reverie-base "$current_reverie_base" \
   --repo-checkout "$WT" --reverie-checkout "$ROOT/reverie" 2>&1)

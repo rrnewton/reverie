@@ -11,6 +11,7 @@ receipt_verifier=${VERIFY_RECEIPT_BIN:-$root/ci-hub/validation/verify_receipt.sh
 repo=rrnewton/hermit
 sha=
 comments=
+local_only=0
 current_base=
 current_reverie_base=
 repo_checkout=
@@ -21,12 +22,13 @@ while [[ $# -gt 0 ]]; do
         --repo) repo=${2:-}; shift 2 ;;
         --sha) sha=${2:-}; shift 2 ;;
         --comments) comments=${2:-}; shift 2 ;;
+        --local-only) local_only=1; shift ;;
         --current-base) current_base=${2:-}; shift 2 ;;
         --current-reverie-base) current_reverie_base=${2:-}; shift 2 ;;
         --repo-checkout) repo_checkout=${2:-}; shift 2 ;;
         --reverie-checkout) reverie_checkout=${2:-}; shift 2 ;;
         -h|--help)
-            echo "usage: exact-head-validation-authority.sh --repo OWNER/REPO --sha 40_HEX [--comments FILE]"
+            echo "usage: exact-head-validation-authority.sh --repo OWNER/REPO --sha 40_HEX [--comments FILE] [--local-only]"
             exit 0
             ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -38,6 +40,10 @@ if [[ ! $sha =~ ^[0-9a-f]{40}$ ]] || [[ ! $repo =~ ^[^/]+/[^/]+$ ]]; then
 fi
 if [[ -n $comments && ! -r $comments ]]; then
     echo "exact-head authority comments file is unreadable: $comments" >&2
+    exit 2
+fi
+if [[ $local_only -eq 1 && $repo != rrnewton/hermit ]]; then
+    echo "exact-head authority --local-only is defined only for rrnewton/hermit" >&2
     exit 2
 fi
 boundary_args=()
@@ -191,6 +197,28 @@ if [[ $local_state == green && -n $comments ]]; then
     if [[ $receipt_rc -ne 0 ]]; then
         local_state=no_result
     fi
+fi
+
+# Hermit's owner-authorized landing policy is local-ledger only. Keep this
+# mode ahead of every hosted query: hosted green must not authorize and hosted
+# red or unavailability must not veto a qualifying local receipt. The broader
+# evaluator remains available for historical/remediation consumers and
+# Reverie's separately versioned hosted authority.
+if [[ $local_only -eq 1 ]]; then
+    case $local_state in
+        green)
+            printf 'AUTHORITY=local LOCAL=green HOSTED=not_consulted LOCAL_COVERAGE=portable+privileged HOSTED_COVERAGE=none REQUIRED_COVERAGE=local:portable+privileged SHA=%s\n' "$sha"
+            exit 0
+            ;;
+        red)
+            printf 'AUTHORITY=refused LOCAL=red HOSTED=not_consulted LOCAL_COVERAGE=none HOSTED_COVERAGE=none REQUIRED_COVERAGE=local:portable+privileged SHA=%s\n' "$sha"
+            exit 3
+            ;;
+        *)
+            printf 'AUTHORITY=no_result LOCAL=no_result HOSTED=not_consulted LOCAL_COVERAGE=none HOSTED_COVERAGE=none REQUIRED_COVERAGE=local:portable+privileged SHA=%s\n' "$sha"
+            exit 4
+            ;;
+    esac
 fi
 
 hosted_rc=0
