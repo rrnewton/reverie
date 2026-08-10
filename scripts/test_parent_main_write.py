@@ -588,7 +588,7 @@ class ReconcileTests(ParentMainWriteTests):
         )
         self.assertEqual("ANOTHER AGENT STAGED THIS\n", (self.repo / "bystander.txt").read_text())
 
-    # ---- the superseded-copy asymmetry, both modes -------------------------
+    # ---- superseded copies: REPORTED, never replaced, in EITHER mode -------
 
     def stale_published_copy(self) -> tuple[str, str]:
         """Leave on disk a copy that is published, but not published LAST."""
@@ -600,29 +600,55 @@ class ReconcileTests(ParentMainWriteTests):
         (self.repo / "drift.txt").write_text("V1\n")
         return first, target
 
-    def test_negative_sync_refuses_a_superseded_copy_and_names_its_commit(self) -> None:
-        first, _ = self.stale_published_copy()
-        result = self.writer("sync")
-        self.assertNotEqual(0, result.returncode)
-        combined = result.stdout + result.stderr
-        self.assertIn("drift.txt", combined)
-        self.assertIn("SUPERSEDED", combined)
-        self.assertIn(first[:12], combined)
-        self.assertEqual("V1\n", (self.repo / "drift.txt").read_text())
+    def uncommitted_edit_that_looks_published(self) -> str:
+        """THE D1 SHAPE, exactly as the cross-model review reproduced it.
 
-    def test_positive_reconcile_refreshes_a_superseded_copy_and_names_recovery(self) -> None:
+        A TRACKED file with an uncommitted edit in progress whose bytes happen to
+        equal a version published earlier. Byte-coincidence with history is not
+        consent to discard it, and no test can tell this apart from a stale
+        leftover -- which is precisely why neither mode may act on it.
+        """
+        self.publish_from_a_second_clone({"drift.txt": "V1\n"}, "publish V1")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "merge", "-q", "--ff-only", "origin/main")
+        v2 = self.publish_from_a_second_clone({"drift.txt": "V2\n"}, "publish V2")
+        self.publish_from_a_second_clone({"drift.txt": "V3\n"}, "publish V3")
+        self.assertEqual(
+            0, git(self.repo, "ls-files", "--error-unmatch", "drift.txt").returncode
+        )
+        (self.repo / "drift.txt").write_text("V2\n")
+        return v2
+
+    def assert_edit_survived(self, result: subprocess.CompletedProcess[str]) -> None:
+        combined = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode, combined)
+        self.assertEqual("V2\n", (self.repo / "drift.txt").read_text())
+        self.assertIn("SUPERSEDED", combined)
+        self.assertNotIn("refreshed", combined)
+        self.assertIn("Nothing was staged or modified", combined)
+        self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout.strip())
+
+    def test_negative_sync_never_replaces_an_uncommitted_edit(self) -> None:
+        self.uncommitted_edit_that_looks_published()
+        self.assert_edit_survived(self.writer("sync"))
+
+    def test_negative_reconcile_never_replaces_an_uncommitted_edit(self) -> None:
+        """reconcile must never be HARSHER than sync. It was: it overwrote V2
+        with V3 and reported a clean tree."""
+        self.uncommitted_edit_that_looks_published()
+        self.assert_edit_survived(self.writer("reconcile"))
+
+    def test_negative_the_refusal_names_the_commit_and_the_owner_only_remedy(self) -> None:
         first, target = self.stale_published_copy()
         result = self.writer("reconcile")
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertNotEqual(0, result.returncode)
         combined = result.stdout + result.stderr
-        self.assertIn("refreshed superseded copy drift.txt", combined)
-        self.assertIn(f"git show {first}:drift.txt", combined)
-        self.assertIn("refreshed=1", result.stdout)
-        self.assertEqual("V2\n", (self.repo / "drift.txt").read_text())
-        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn(f"[SUPERSEDED — these exact bytes are this path at {first[:12]}", combined)
+        # Actionable, but the ACTION belongs to the owner, not to this tool.
+        self.assertIn(f"checkout {target} -- <path>", combined)
+        self.assertIn("Only the path's OWNER can tell those apart", combined)
+        self.assertEqual("V1\n", (self.repo / "drift.txt").read_text())
 
-    def test_negative_reconcile_still_refuses_a_copy_published_nowhere(self) -> None:
-        """The refresh is authorised by a NAMED commit, not by "looks stale"."""
+    def test_negative_reconcile_refuses_a_copy_published_nowhere(self) -> None:
         self.stale_published_copy()
         (self.repo / "drift.txt").write_text("NEVER PUBLISHED ANYWHERE\n")
         result = self.writer("reconcile")
@@ -631,8 +657,44 @@ class ReconcileTests(ParentMainWriteTests):
         self.assertIn("drift.txt", combined)
         self.assertIn("differ from BOTH your HEAD", combined)
         self.assertNotIn("SUPERSEDED", combined)
-        self.assertNotIn("refreshed superseded copy", combined)
         self.assertEqual("NEVER PUBLISHED ANYWHERE\n", (self.repo / "drift.txt").read_text())
+
+    # ---- nothing mutates until every gate has passed -----------------------
+
+    def test_negative_a_rehearsal_failure_leaves_the_shared_index_untouched(self) -> None:
+        """The dry run must run BEFORE the index is written, not after.
+
+        An unmerged index entry is something only another agent's abandoned
+        conflict can produce, and classification cannot see it -- it inspects
+        paths, not index stages. So `read-tree -m` is the gate that catches it,
+        and it must catch it while the refusal's promise is still true.
+        """
+        self.strand_a_patch_equivalent_commit()
+        # Residue that WOULD be adopted, so there is something to leave behind.
+        (self.repo / "notes.md").write_text("moved on\n")
+        # Another agent left a conflicted entry for an unrelated path.
+        blob = subprocess.run(
+            ["git", "hash-object", "-w", "--stdin"], cwd=self.repo, input="conflicted\n",
+            text=True, capture_output=True, check=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "update-index", "--index-info"], cwd=self.repo,
+            input=f"100644 {blob} 1\tconflict.txt\n100644 {blob} 2\tconflict.txt\n",
+            text=True, capture_output=True, check=True,
+        )
+        index_before = git(self.repo, "ls-files", "--stage").stdout
+        head_before = git(self.repo, "rev-parse", "refs/heads/main").stdout.strip()
+
+        result = self.writer("reconcile")
+
+        combined = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode, combined)
+        self.assertIn("REHEARSAL against a copy of the index", combined)
+        self.assertIn("nothing was staged, moved, or modified", combined)
+        # The proof: not one index entry moved, and the ref did not move.
+        self.assertEqual(index_before, git(self.repo, "ls-files", "--stage").stdout)
+        self.assertEqual(head_before, git(self.repo, "rev-parse", "refs/heads/main").stdout.strip())
+        self.assertNotIn("adopted published residue", combined)
 
     # ---- the hook re-derives the predicate itself --------------------------
 
@@ -663,6 +725,132 @@ class ReconcileTests(ParentMainWriteTests):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("would DROP the commit(s) above", result.stderr)
         self.assertIn(kept[:12], result.stderr)
+
+    def test_negative_a_forged_expect_cannot_name_the_target(self) -> None:
+        """D2: the CAS receipt is a ref, not an environment variable.
+
+        Holding the writer lock, export an arbitrary LOCAL commit as the
+        "freshly fetched origin/main" and drive a hooked `update-ref`. The
+        predicate was already re-derived from the transaction's own old/new --
+        but the TARGET it was derived against was whatever the caller said.
+        """
+        stranded, target = self.strand_a_patch_equivalent_commit()
+        arbitrary = stranded  # any local commit that is not origin/main
+        self.assertNotEqual(arbitrary, git(self.repo, "rev-parse", "origin/main").stdout.strip())
+        script = (
+            f'exec 9>"{self.lock}"; flock -n 9 || exit 90; '
+            f'export HERMIT_PARENT_MAIN_LOCK_FD=9 HERMIT_PARENT_MAIN_LOCK_PATH="{self.lock}"; '
+            f'export HERMIT_PARENT_MAIN_MODE=reconcile HERMIT_PARENT_MAIN_EXPECT="{arbitrary}"; '
+            f'exec "{self.repo}/scripts/parent-main-write" verify-ref "{target}" "{arbitrary}"'
+        )
+        result = run("bash", "-c", script, cwd=self.repo, env=self.env)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not match refs/remotes/origin/main", result.stderr)
+        self.assertIn("cannot establish what origin/main is", result.stderr)
+
+    def test_negative_a_forged_expect_is_refused_in_every_mode(self) -> None:
+        """A forged base is a forged base whichever arm consumes it."""
+        stranded, _ = self.strand_a_patch_equivalent_commit()
+        for mode in ("sync", "ordinary", "audited", "reconcile"):
+            # A FRESH lock file per mode. The host mutex is deliberately
+            # non-reentrant across invocations (a backgrounded hook inherits the
+            # fd and holds the flock past the writer's own exit), which is a
+            # property of the harness, not of the gate under test.
+            lock = f"{self.lock}.{mode}"
+            script = (
+                f'exec 9>"{lock}"; flock -n 9 || exit 90; '
+                f'export HERMIT_PARENT_MAIN_LOCK_FD=9 HERMIT_PARENT_MAIN_LOCK_PATH="{lock}"; '
+                f'export HERMIT_PARENT_MAIN_MODE={mode} HERMIT_PARENT_MAIN_EXPECT="{stranded}"; '
+                f'exec "{self.repo}/scripts/parent-main-write" verify-ref "{self.seed}" "{stranded}"'
+            )
+            result = run("bash", "-c", script, cwd=self.repo, env=self.env)
+            self.assertNotEqual(0, result.returncode, f"{mode}: {result.stdout}{result.stderr}")
+            self.assertIn("does not match refs/remotes/origin/main", result.stderr, mode)
+
+    # ---- D3: patch-id is a prefilter, the strict digest is the proof -------
+
+    def test_negative_a_whitespace_only_difference_is_not_a_duplicate(self) -> None:
+        """patch-id normalises whitespace away; the strict digest does not."""
+        kept = self.local_commit({"code.py": "def f():\n    return 1\n"}, "add f")
+        # Upstream has the SAME change with different indentation: same patch-id,
+        # genuinely different content.
+        self.publish_from_a_second_clone(
+            {"code.py": "def f():\n\treturn 1\n"}, "add f (tabs)"
+        )
+        self.publish_from_a_second_clone({"notes.md": "moved on\n"}, "main moves on")
+        local_id = subprocess.run(
+            f"git diff-tree -p --no-commit-id {kept} | git patch-id --stable",
+            shell=True, cwd=self.repo, text=True, capture_output=True,
+        ).stdout.split()
+        upstream_id = subprocess.run(
+            "git rev-list origin/main~1..origin/main~0 >/dev/null; "
+            f"git diff-tree -p --no-commit-id origin/main~1 | git patch-id --stable",
+            shell=True, cwd=self.repo, text=True, capture_output=True,
+        ).stdout.split()
+        # Precondition: patch-id ALONE would have called these the same change.
+        self.assertEqual(local_id[:1], upstream_id[:1], f"{local_id} {upstream_id}")
+
+        result = self.writer("reconcile")
+
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn("by patch-id but NOT byte-for-byte", combined)
+        self.assertIn(kept[:12], combined)
+        self.assertEqual(kept, git(self.repo, "rev-parse", "refs/heads/main").stdout.strip())
+
+    def test_negative_two_local_commits_cannot_share_one_upstream_commit(self) -> None:
+        """Multiplicity, ISOLATED: injectivity is the only thing that refuses.
+
+        Every one of the three local commits has a byte-exact upstream match, so
+        the digest is fully satisfied. But the flip A and the flip C are the SAME
+        diff and there is only ONE upstream commit carrying it -- and upstream
+        flipped back afterwards, so local's net state (`2`) is upstream nowhere.
+        Without the consumed-set this reports three proven commits and silently
+        moves the tree to `1`.
+        """
+        self.local_commit({"flip.txt": "1\n"}, "seed flip")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "push", "-q", "origin", "HEAD:main")
+        git(self.repo, "fetch", "-q", "origin", "main")
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        a = self.local_commit({"flip.txt": "2\n"}, "flip to 2")
+        self.local_commit({"flip.txt": "1\n"}, "flip back to 1")
+        c = self.local_commit({"flip.txt": "2\n"}, "flip to 2 again")
+
+        other = Path(self.temp.name) / "other-flip"
+        git(Path(self.temp.name), "clone", "-q", str(self.remote), str(other))
+        git(other, "config", "user.name", "Other")
+        git(other, "config", "user.email", "other@example.invalid")
+        for text, msg in (("2\n", "flip to 2 (rebuilt)"), ("1\n", "flip back to 1 (rebuilt)")):
+            (other / "flip.txt").write_text(text)
+            git(other, "add", "flip.txt")
+            git(other, "commit", "-m", tagged(msg))
+        (other / "notes.md").write_text("moved on\n")
+        git(other, "add", "notes.md")
+        git(other, "commit", "-m", tagged("main moves on"))
+        git(other, "push", "-q", "origin", "HEAD:main")
+        git(self.repo, "fetch", "-q", "origin", "main")
+        self.assertEqual(base, git(self.repo, "merge-base", "HEAD", "origin/main").stdout.strip())
+
+        result = self.writer("reconcile")
+
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn(c[:12], combined)
+        self.assertIn("an EARLIER local commit already", combined)
+        self.assertIn("discharges at most ONE local commit", combined)
+        self.assertEqual(c, git(self.repo, "rev-parse", "refs/heads/main").stdout.strip())
+        # Local's net state survives: it is upstream nowhere.
+        self.assertEqual("2\n", (self.repo / "flip.txt").read_text())
+        self.assertEqual("1\n", git(self.repo, "show", "origin/main:flip.txt").stdout)
+        self.assertNotEqual(a, c)
+
+    def test_positive_evidence_reports_the_strict_digest_not_just_a_patch_id(self) -> None:
+        stranded, _ = self.strand_a_patch_equivalent_commit()
+        result = self.writer("reconcile")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("strict diff digest", result.stdout)
+        self.assertIn("byte-exact, one-to-one", result.stdout)
+        self.assertIn(stranded[:12], result.stdout)
 
     def test_negative_verify_ref_reconcile_refuses_a_target_that_is_not_fetched_origin(self) -> None:
         stranded, target = self.strand_a_patch_equivalent_commit()

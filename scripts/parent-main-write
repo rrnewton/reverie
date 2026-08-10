@@ -180,10 +180,40 @@ verify_audit_receipt() {
     die "audited commit $commit is not bound to fetched base $base"
 }
 
+# THE RECEIPT IS A REF, NOT AN ENVIRONMENT VARIABLE.
+#
+# `HERMIT_PARENT_MAIN_EXPECT` is set by `fetch_expected` from the ref that the
+# fetch just wrote, and every verify-* entry point trusted the variable. But
+# hooks inherit the caller's environment, so what the hook read as "the freshly
+# fetched origin/main" was whatever the caller said it was. Demonstrated by the
+# cross-model review, 2026-08-10: holding the writer lock and exporting an
+# arbitrary LOCAL commit as EXPECT, a hooked `update-ref` accepted that commit as
+# the target -- `local_main=bc910c31 origin_main=7f673b18 arbitrary=bc910c31`.
+# The predicate was being re-derived honestly while the TARGET it was derived
+# against was caller-supplied, which is the same defect one level down.
+#
+# So the hook now reads `refs/remotes/origin/main` itself and requires the
+# variable to AGREE with it. The variable survives only as a cross-check that the
+# ref did not move under the operation; the authority is the ref that `git fetch`
+# wrote. This binds every mode at once -- ordinary, audited, sync, reconcile --
+# because a forged base is a forged base whichever arm consumes it.
+#
+# It is not a complete answer to a local attacker, who could also rewrite
+# `refs/remotes/origin/main`, and it is not claimed to be: `refs/remotes/*` is
+# outside the shared-branch guard. It removes the accident and the one-variable
+# forgery, and it makes the remaining forgery a ref write rather than an export.
 verify_context() {
-  local expected=${HERMIT_PARENT_MAIN_EXPECT:-}
+  local root=${1:?repo root required} expected=${HERMIT_PARENT_MAIN_EXPECT:-} fetched
   verify_lock
   [[ "$expected" =~ ^[0-9a-f]{40}$ ]] || die "missing fetched-origin CAS receipt"
+  fetched=$(git -C "$root" rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' || true)
+  [ -n "$fetched" ] ||
+    die "no refs/remotes/origin/main to bind the CAS receipt to; fetch first"
+  [ "$expected" = "$fetched" ] ||
+    die "the fetched-origin receipt does not match refs/remotes/origin/main
+  (receipt=$expected refs/remotes/origin/main=$fetched). The receipt is a
+  cross-check on the ref, never a substitute for it: an environment variable
+  the caller sets cannot establish what origin/main is."
   printf '%s\n' "$expected"
 }
 
@@ -192,7 +222,7 @@ verify_commit() {
   root=$(repo_root)
   branch=$(git -C "$root" branch --show-current)
   [ "$branch" = main ] || return 0
-  expected=$(verify_context)
+  expected=$(verify_context "$root")
   head=$(git -C "$root" rev-parse HEAD)
   [ "$head" = "$expected" ] ||
     die "ordinary main commit is stale (HEAD=$head fetched-origin=$expected)"
@@ -238,14 +268,36 @@ verify_commit() {
 # method and is therefore REFUSED, not skipped. Fail-closed is the whole point:
 # absence of a patch id is absence of evidence, never evidence of absence.
 #
-# WHAT PATCH-ID EQUIVALENCE DOES AND DOES NOT PROMISE. `git patch-id` normalises
-# away whitespace and line positions, so a local commit that adds line L to file
-# F at line 10 matches an upstream commit that adds the same L to F at line 500.
-# That normalisation is DESIRABLE here -- it is exactly why a rebase-and-
-# republish still matches -- and it does not lose content: the added text is on
-# origin/main either way, and origin/main's own copy of F is the authority. It
-# is stated because the guard's exactness is its only value: this proves "this
-# change is upstream", not "these two commits are identical objects".
+# PATCH-ID ALONE IS NOT ENOUGH, AND IS NOT THE AUTHORITY HERE.
+#
+# `git patch-id` deliberately normalises away whitespace AND line positions, so
+# two genuinely different changes can share one id: the same added text at a
+# different call site in the same file, or the same text differing only in
+# indentation. Worse, an id is not a pairing -- N local commits can all "match"
+# ONE upstream commit and every one of them counts as proven.
+#
+# So patch-id is used only as a cheap PREFILTER, and the proof is a STRICT DIFF
+# DIGEST plus an INJECTIVE pairing:
+#
+#   * STRICT: the digest hashes `diff-tree -p --full-index --binary` verbatim --
+#     every added, removed and context line byte-for-byte, INCLUDING whitespace,
+#     plus file names, modes, rename headers and binary payloads. Only two things
+#     are normalised away, and only because a faithful republish must change
+#     them: the `index <old>..<new>` blob line, and the NUMBERS in the `@@ -a,b
+#     +c,d @@` hunk header. Line positions may therefore shift, but the context
+#     lines around every hunk may not -- which is what distinguishes "the same
+#     change, rebased" from "the same text somewhere else".
+#   * INJECTIVE: each upstream commit is CONSUMED by at most one local commit, so
+#     three local commits cannot all be discharged by one upstream commit.
+#
+# Verified against the real case this mode was built for: the stranded c7a05a16
+# and its rebuilt twin d9f5508b, published from a different base, have identical
+# strict digests (494bfe22...). The strictness costs nothing on a genuine
+# republish and refuses the coincidences patch-id would have accepted.
+#
+# A commit with NO diff at all -- a merge, or an empty commit -- has no digest,
+# is unprovable by this method, and is REFUSED rather than skipped. Fail-closed
+# is the whole point: absence of a patch is absence of evidence.
 #
 # NOTHING IS DESTROYED EITHER WAY. The old tip stays in the reflog and in the
 # object store; the printed old= sha is the recovery handle.
@@ -262,9 +314,26 @@ patch_id_pairs() {
     git -C "$root" patch-id --stable
 }
 
+# Print the strict digest of COMMIT's diff, or return 1 if it has no diff.
+#
+# Written through a FILE, not a `$(...)`: command substitution strips trailing
+# newlines, and a digest that cannot see trailing whitespace is not the
+# whitespace-preserving digest this claims to be.
+strict_diff_digest() {
+  local root=$1 commit=$2 scratch=$3
+  # Each stage guarded: `grep -v`/`sed` exit non-zero on empty input, and under
+  # `set -e -o pipefail` that would abort the script mid-proof -- silently.
+  git -C "$root" diff-tree -p --no-commit-id --full-index --binary "$commit" \
+    | { grep -v '^index [0-9a-f]*\.\.[0-9a-f]*' || true; } \
+    | { sed -E 's/^@@ -[0-9]+(,[0-9]+)? \+[0-9]+(,[0-9]+)? @@/@@/' || true; } \
+    >"$scratch"
+  [ -s "$scratch" ] || return 1
+  git -C "$root" hash-object --stdin <"$scratch"
+}
+
 verify_reconcile_is_lossless() {
   local root=$1 old=$2 new=$3
-  local tmp sha id match reason dropped=0 proven=0 unproven='' evidence=''
+  local tmp sha id match near taken reason subject digest dropped=0 proven=0 unproven='' evidence=''
   RECONCILE_DROPPED=0
   RECONCILE_PROVEN=0
   RECONCILE_EVIDENCE=''
@@ -277,30 +346,65 @@ verify_reconcile_is_lossless() {
     return 0
   fi
   tmp=$(mktemp -d) || die "cannot create a scratch directory for the reconcile scan"
-  git -C "$root" rev-list "$new..$old" >"$tmp/left-behind"
-  patch_id_pairs "$root" "$new..$old" >"$tmp/local"
-  patch_id_pairs "$root" "$old..$new" >"$tmp/upstream"
+  # Oldest first, so the pairing consumes upstream commits in replay order and
+  # the evidence reads in the order the work happened.
+  git -C "$root" rev-list --reverse "$new..$old" >"$tmp/left-behind"
+  patch_id_pairs "$root" "$new..$old" >"$tmp/local-ids"
+  patch_id_pairs "$root" "$old..$new" >"$tmp/upstream-ids"
+  : >"$tmp/consumed"
   while IFS= read -r sha; do
     [ -n "$sha" ] || continue
     dropped=$((dropped + 1))
-    id=$(awk -v c="$sha" '$2 == c { print $1; exit }' "$tmp/local")
+    subject=$(git -C "$root" log -1 --format=%s "$sha")
+    id=$(awk -v c="$sha" '$2 == c { print $1; exit }' "$tmp/local-ids")
+    digest=''
+    if strict_diff_digest "$root" "$sha" "$tmp/scratch" >"$tmp/digest"; then
+      digest=$(cat "$tmp/digest")
+    fi
     match=''
-    if [ -n "$id" ]; then
-      match=$(awk -v p="$id" '$1 == p { print $2; exit }' "$tmp/upstream")
+    taken=''
+    near=''
+    if [ -n "$digest" ]; then
+      # Prefilter by patch-id, then require a BYTE-EXACT strict digest, and
+      # never reuse an upstream commit another local commit already consumed.
+      while IFS= read -r candidate; do
+        [ -n "$candidate" ] || continue
+        if grep -Fqx "$candidate" "$tmp/consumed"; then taken=$candidate; continue; fi
+        if strict_diff_digest "$root" "$candidate" "$tmp/scratch" >"$tmp/cand-digest" &&
+           [ "$(cat "$tmp/cand-digest")" = "$digest" ]; then
+          match=$candidate
+          break
+        fi
+        # Same patch-id, different bytes: exactly what patch-id alone would
+        # have accepted. Remember it so the refusal can say so.
+        near=$candidate
+      done < <(awk -v p="$id" '$1 == p { print $2 }' "$tmp/upstream-ids")
     fi
     if [ -n "$match" ]; then
       proven=$((proven + 1))
-      evidence+="  ${sha:0:12} $(git -C "$root" log -1 --format=%s "$sha")"$'\n'
+      printf '%s\n' "$match" >>"$tmp/consumed"
+      evidence+="  ${sha:0:12} $subject"$'\n'
       evidence+="      is already upstream as ${match:0:12} $(git -C "$root" log -1 --format=%s "$match")"$'\n'
-      evidence+="      patch-id $id"$'\n'
+      evidence+="      strict diff digest ${digest} (byte-exact, one-to-one)"$'\n'
     else
-      if [ -z "$id" ]; then
+      if [ -z "$digest" ]; then
         reason="has NO comparable patch -- a merge commit or an empty commit. Patch
       equivalence cannot speak for it, so it is refused rather than skipped."
-      else
+      elif [ -n "$taken" ]; then
+        reason="matches upstream ${taken:0:12}, but an EARLIER local commit already
+      claimed it. One upstream commit discharges at most ONE local commit;
+      applying the same change twice locally is not the same as it being
+      upstream twice."
+      elif [ -n "$near" ]; then
+        reason="matches upstream ${near:0:12} by patch-id but NOT byte-for-byte:
+      whitespace, hunk context or file structure differs, so this is a
+      DIFFERENT change that patch-id alone would have accepted."
+      elif [ -n "$id" ]; then
         reason="carries a patch no upstream commit has (patch-id $id)."
+      else
+        reason="carries a patch no upstream commit has."
       fi
-      unproven+="  ${sha:0:12} $(git -C "$root" log -1 --format=%s "$sha")"$'\n'
+      unproven+="  ${sha:0:12} $subject"$'\n'
       unproven+="      $reason"$'\n'
     fi
   done <"$tmp/left-behind"
@@ -311,8 +415,8 @@ verify_reconcile_is_lossless() {
   tool cannot prove their content is already upstream. Nothing was moved.
   Publish them instead -- \`parent-main-write publish <sha>\` rebased onto
   freshly fetched origin/main -- or, if they really are obsolete, say so by
-  publishing an explicit revert. reconcile only ever drops a commit whose patch
-  it can point at a NAMED upstream commit for."
+  publishing an explicit revert. reconcile only ever drops a commit whose diff
+  it can match BYTE-FOR-BYTE against its own NAMED upstream commit."
   fi
   RECONCILE_DROPPED=$dropped
   RECONCILE_PROVEN=$proven
@@ -322,7 +426,7 @@ verify_reconcile_is_lossless() {
 verify_ref() {
   local old=${1:?old SHA required} new=${2:?new SHA required} root expected mode
   root=$(repo_root)
-  expected=$(verify_context)
+  expected=$(verify_context "$root")
   mode=${HERMIT_PARENT_MAIN_MODE:-}
   case "$mode" in
     sync)
@@ -365,7 +469,7 @@ verify_push() {
   root=$(repo_root)
   [ "$remote" = origin ] || die "parent main may be published only to remote 'origin'"
   [ "$remote_old" != "$ZERO" ] || die "refusing to create a missing remote main"
-  expected=$(verify_context)
+  expected=$(verify_context "$root")
   [ "$remote_old" = "$expected" ] ||
     die "remote main moved after fetch (remote=$remote_old fetched-origin=$expected)"
   git -C "$root" merge-base --is-ancestor "$remote_old" "$new" ||
@@ -479,11 +583,26 @@ refuse_unauthored_reverts() {
 # Name the newest commit reachable from TARGET whose version of PATH is
 # byte-identical to the copy on disk, or print nothing.
 #
-# This is the evidence behind the SUPERSEDED classification below. It is a
-# NAMED-COMMIT test, never a heuristic: "this file looks stale" authorises
-# nothing, "these exact bytes are $path at <sha>, and <sha> is reachable from
-# freshly fetched origin/main" authorises replacing them, because the bytes
-# survive in the object store either way.
+# DIAGNOSTIC ONLY. IT AUTHORISES NOTHING, and an earlier version of this file
+# had it authorise a refresh -- which is the defect the cross-model review found
+# on 2026-08-10 and the reason for the warning in this comment.
+#
+# Reproduced: an agent mid-edit on a tracked file whose in-progress bytes
+# happened to equal a version published earlier (V2, while the target was V3).
+# `sync` refused and left the edit alone; `reconcile` overwrote it with V3 and
+# reported a clean tree. Byte-coincidence with history is not consent to discard
+# an edit in progress, and it cannot be: the test cannot tell "a stale leftover
+# somebody checked out" from "work that happens to look like an old version".
+#
+# The distinction that DOES hold, and the one adoption rests on: adopting a path
+# whose disk bytes equal the TARGET moves zero bytes on disk. Refreshing a path
+# whose disk bytes equal an ANCESTOR overwrites the disk. Those are different
+# acts and only the first is authorised by byte equality. Git's own two-way
+# merge overwrites a path only when it is CLEAN against the index -- cleanliness
+# is the consent, and a superseded copy is by construction not clean.
+#
+# So this now only makes the refusal ACTIONABLE: it names the commit that still
+# holds the bytes, so the path's owner can decide. The tool never decides.
 SUPERSEDED_SCAN_DEPTH=${HERMIT_PARENT_MAIN_SUPERSEDED_SCAN_DEPTH:-60}
 published_at_commit() {
   local root=$1 target=$2 path=$3 disk commit blob
@@ -522,42 +641,36 @@ published_at_commit() {
 # the freeze by hand -- it stopped on a genuinely different ai_docs file and
 # waited for its owner rather than reasoning past it.
 #
-# SUPERSEDED COPIES (third argument, `reconcile` only -- see below).
+# SUPERSEDED COPIES are REPORTED AND REFUSED, never refreshed, in every mode.
 #
-# A long-frozen parent grows a residue class this function cannot classify: an
-# on-disk copy that is byte-identical to the path's content at some ANCESTOR of
-# the target rather than at the target itself.  It is published, just not
-# published LAST.  Measured on the live parent 2026-08-10: of the 42 paths
-# differing between the frozen local main and origin/main, 22 were target-
-# identical residue, 8 were superseded copies of exactly this kind (each one
-# matched a named commit already on origin/main), and 0 were unpublished work.
+# A long-frozen parent grows a residue class this cannot adopt: an on-disk copy
+# byte-identical to the path's content at some ANCESTOR of the target rather
+# than at the target itself -- published, just not published LAST. On the live
+# parent, 10 of 42 differing paths were that shape.
 #
-# Passing 1 as the third argument authorises REFRESHING those from the target.
-# The authorisation is the same one this whole function rests on -- published
-# content is nobody's uncommitted work -- and it is not a new power: for a path
-# whose disk copy matches HEAD, `merge --ff-only`/`reset --keep` ALREADY
-# overwrites it with the target's version.  Git's own check is keyed to HEAD
-# specifically; this generalises it to "any commit reachable from the target",
-# which is the same durability guarantee.  Every refresh names the commit that
-# still holds the replaced bytes, so the recovery is a `git show` away.
+# It is tempting, and it was briefly implemented, to refresh those from the
+# target on the grounds that the replaced bytes remain recoverable at a named
+# commit. That is wrong, and the reproduction is in `published_at_commit` above:
+# the same test matches an agent's uncommitted edit that happens to equal an
+# older published version, and refreshing silently discards it. `reconcile` must
+# never be harsher than `sync`, and refreshing made it exactly that.
 #
-# It is OFF for `sync` and ON only for `reconcile`, deliberately: a `sync`
-# refusal is cheap (main is merely ahead; wait and retry), whereas `reconcile`
-# is the deliberate repair of a parent that is already stuck, and refusing there
-# on bytes provably present upstream would leave the freeze in place forever.
-adopt_published_residue() {
-  local root=$1 target=$2 refresh_superseded=${3:-0}
-  local path mode blob adopted=0 refreshed=0 gitlinks=0
-  local blockers="" plan="" refresh_plan="" superseded_at=""
+# TWO PASSES, DELIBERATELY, and now split into two FUNCTIONS. A single pass that
+# stages as it goes leaves the index half-adopted when it later hits a blocker --
+# the very class of residue this exists to remove, created by the thing removing
+# it, on the failure path where nobody is looking. It also made the refusal
+# message ("Nothing was staged or modified") a lie. Classify everything first;
+# mutate only once the whole set is known to be safe. `reconcile` splits the two
+# further apart still, so that its own later gates also run before any mutation.
+RESIDUE_PLAN=''
+classify_published_residue() {
+  local root=$1 target=$2
+  local path mode blob gitlinks=0
+  local blockers="" plan="" superseded_at=""
   # Scoped deliberately: an unscoped flag would leak into a later call in the
   # same process and attach the wrong remedy to a clean classification.
   local blocker_modified="" blocker_untracked="" blocker_superseded=""
-  # TWO PASSES, DELIBERATELY. A single pass that stages as it goes leaves the
-  # index half-adopted when it later hits a blocker -- which is the very class of
-  # residue this function exists to remove, created by the thing removing it, on
-  # the failure path where nobody is looking. It also made the refusal message
-  # ("Nothing was staged or modified") a lie. Classify everything first; mutate
-  # only once the whole set is known to be safe.
+  RESIDUE_PLAN=''
   while IFS= read -r path; do
     [ -n "$path" ] || continue
     # Not present on disk: the merge simply creates or removes it.
@@ -617,12 +730,8 @@ adopt_published_residue() {
       # reader can `git show` the replaced bytes.
       superseded_at=$(published_at_commit "$root" "$target" "$path")
       if [ -n "$superseded_at" ]; then
-        if [ "$refresh_superseded" = 1 ]; then
-          refresh_plan+="$superseded_at"$'\t'"$path"$'\n'
-        else
-          blockers+="  $path  [SUPERSEDED — these exact bytes are this path at ${superseded_at:0:12}, already on origin/main]"$'\n'
-          blocker_superseded=1
-        fi
+        blockers+="  $path  [SUPERSEDED — these exact bytes are this path at ${superseded_at:0:12}, already on origin/main]"$'\n'
+        blocker_superseded=1
       elif git -C "$root" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
         blockers+="  $path  [MODIFIED here — differs from HEAD and $target]"$'\n'
         blocker_modified=1
@@ -649,9 +758,11 @@ adopt_published_residue() {
     fi
     if [ -n "${blocker_superseded:-}" ]; then
       advice+="
-  SUPERSEDED paths hold bytes that ARE published, just not last: the named
-  commit above is on origin/main, so nothing on disk is unrecoverable. This is
-  the class \`reconcile\` refreshes; \`sync\` deliberately does not."
+  SUPERSEDED paths hold bytes that ARE published, just not last, so nothing on
+  disk is unrecoverable -- but that is NOT authority to replace them, because
+  the same test matches an uncommitted edit that happens to equal an older
+  version. Only the path's OWNER can tell those apart. If it really is a stale
+  leftover: git -C $root checkout $target -- <path>"
     fi
     # Name the mode the caller actually ran. "Then re-run sync" printed under
     # `reconcile` sends the reader to the one command that cannot help them.
@@ -660,26 +771,30 @@ adopt_published_residue() {
   cannot classify them as published residue. Nothing was staged or modified.$advice
   Then re-run $mode."
   fi
+  RESIDUE_PLAN=$plan
+  printf 'PARENT_MAIN_WRITE residue planned=%s gitlinks=%s target=%s\n' \
+    "$(printf '%s' "$plan" | grep -c . || true)" "$gitlinks" "$target"
+}
 
+# THE ONLY MUTATION. Every entry here was authorised by byte equality with the
+# target, so each `update-index` stages content the working tree already holds:
+# zero bytes move on disk, by construction.
+apply_published_residue() {
+  local root=$1 target=$2 entry adopted=0
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     git -C "$root" update-index --add --cacheinfo "$entry" ||
       die "cannot adopt published residue at ${entry##*,}"
     adopted=$((adopted + 1))
     echo "parent-main-write: adopted published residue (bytes identical to $target): ${entry##*,}" >&2
-  done <<<"$plan"
-  while IFS=$'\t' read -r superseded_at path; do
-    [ -n "$path" ] || continue
-    # `checkout <tree-ish> -- <path>` writes index AND working tree with the
-    # target's mode; it moves no ref, so no reference-transaction is involved.
-    git -C "$root" checkout "$target" -- "$path" ||
-      die "cannot refresh superseded published copy at $path"
-    refreshed=$((refreshed + 1))
-    echo "parent-main-write: refreshed superseded copy $path (replaced bytes are still published: git show $superseded_at:$path)" >&2
-  done <<<"$refresh_plan"
+  done <<<"$RESIDUE_PLAN"
   # Never a silent action: say how many entries moved, including none.
-  printf 'PARENT_MAIN_WRITE residue adopted=%s refreshed=%s gitlinks=%s target=%s\n' \
-    "$adopted" "$refreshed" "$gitlinks" "$target"
+  printf 'PARENT_MAIN_WRITE residue adopted=%s target=%s\n' "$adopted" "$target"
+}
+
+adopt_published_residue() {
+  classify_published_residue "$1" "$2"
+  apply_published_residue "$1" "$2"
 }
 
 publish_sha() {
@@ -765,7 +880,37 @@ case "$command" in
     printf 'PARENT_MAIN_WRITE reconcile leaving behind %s commit(s), all proven upstream:\n' \
       "$RECONCILE_DROPPED"
     printf '%s' "$RECONCILE_EVIDENCE"
-    adopt_published_residue "$root" "$target" 1
+    # CLASSIFY, then REHEARSE, and only then mutate anything.
+    #
+    # The order matters and the first version got it wrong: it adopted residue
+    # into the SHARED index and only afterwards ran the dry run, so a refusal
+    # from the dry run left the index already rewritten while the message said
+    # "Nothing was staged or modified". Classification is read-only, and the
+    # rehearsal below applies the adoption plan to a COPY of the index, so every
+    # gate has passed before one byte of shared state changes.
+    classify_published_residue "$root" "$target"
+    rehearsal=$(mktemp -u "${TMPDIR:-/tmp}/parent-main-write-rehearsal.XXXXXX")
+    cp "$(git -C "$root" rev-parse --git-path index)" "$rehearsal" ||
+      die "cannot copy the index for a rehearsal; nothing was modified"
+    rehearse() {
+      local entry
+      while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        GIT_INDEX_FILE=$rehearsal git -C "$root" update-index --add --cacheinfo "$entry" ||
+          return 1
+      done <<<"$RESIDUE_PLAN"
+      # THE SAME two-way merge the real move performs, against the index the
+      # real move would see. `-n` computes it and writes nothing.
+      GIT_INDEX_FILE=$rehearsal git -C "$root" read-tree -m -n "$head" "$target"
+    }
+    if ! rehearse; then
+      rm -f "$rehearsal"
+      die "the two-way merge from $head to $target would overwrite local changes;
+  nothing was staged, moved, or modified. The paths are named in git's own
+  error above. This was a REHEARSAL against a copy of the index."
+    fi
+    rm -f "$rehearsal"
+
     # THE MOVE ITSELF: the SAME two-way merge `sync` performs, then a
     # compare-and-swap on the ref. Neither half force-writes anything.
     #
@@ -779,14 +924,11 @@ case "$command" in
     # sync's exact semantics (twoway_merge cases 14/15 keep an entry that is
     # identical in both trees) so reconcile is never harsher than sync.
     #
-    # DRY RUN FIRST, and the ref move BEFORE the real one. If the hook refuses
-    # the transaction, the index and working tree have not been touched at all,
-    # which is what the refusal claims. The dry run is what makes the remaining
-    # window -- ref moved, tree not yet updated -- a near-impossibility rather
-    # than a coin flip, and the mutex is held across both.
-    git -C "$root" read-tree -m -n "$head" "$target" ||
-      die "the two-way merge from $head to $target would overwrite local changes;
-  nothing was moved. The paths are named in git's own error above."
+    # The ref moves BEFORE the working tree is written: the rehearsal has
+    # already proved the merge computes, so the remaining window -- ref moved,
+    # tree not yet updated -- is a near-impossibility rather than a coin flip,
+    # and the mutex is held across both.
+    apply_published_residue "$root" "$target"
     git -C "$root" update-ref refs/heads/main "$target" "$head"
     git -C "$root" read-tree -m -u "$head" "$target" ||
       die "main now points at $target but the working tree was not updated.
