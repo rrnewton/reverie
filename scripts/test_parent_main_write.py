@@ -16,6 +16,8 @@ import unittest
 
 
 SOURCE = Path(__file__).resolve().parent.parent
+# Captured BEFORE any test prepends a shim directory to PATH.
+REAL_GIT = shutil.which("git") or "/usr/bin/git"
 TRAILER = "[coordinator, Test] [parent-writer-test, devbig999]"
 
 
@@ -660,6 +662,140 @@ class ReconcileTests(ParentMainWriteTests):
         self.assertEqual("NEVER PUBLISHED ANYWHERE\n", (self.repo / "drift.txt").read_text())
 
     # ---- nothing mutates until every gate has passed -----------------------
+
+    def moving_git_shim(self, trigger: str, moves_to: str) -> Path:
+        """A `git` wrapper that moves the tracking ref ONCE, mid-operation.
+
+        A rehearsal proves the operation computes; it cannot prove the world
+        holds still afterwards. This is the only way to land inside the
+        time-of-check-to-time-of-use window deterministically, and it is the
+        harness the cross-model review used to find the defect.
+        """
+        marker = Path(self.temp.name) / f"moved.{trigger}"
+        shim_dir = Path(self.temp.name) / f"shim.{trigger}"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        shim.write_text(
+            f'#!/bin/bash\n'
+            f'if [ "$1" = "-C" ] && [ "$3" = "{trigger}" ] && [ ! -e "{marker}" ]; then\n'
+            f'  : > "{marker}"\n'
+            f'  "{REAL_GIT}" -C "$2" update-ref refs/remotes/origin/main {moves_to}\n'
+            f'fi\n'
+            f'exec "{REAL_GIT}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        return shim_dir
+
+    def test_negative_a_refusal_at_the_ref_transaction_leaves_the_index_untouched(self) -> None:
+        """C1: the TOCTOU half. The hook refuses AFTER the rehearsal passed.
+
+        Ordering, not the rehearsal, is what makes "Nothing was staged, moved,
+        or modified" true here: the ref transaction is the one step that is
+        all-or-nothing, so it must run before anything touches shared state.
+        """
+        self.strand_a_patch_equivalent_commit()
+        # Residue that WOULD be adopted, so there is something to leave behind.
+        (self.repo / "notes.md").write_text("moved on\n")
+        shim_dir = self.moving_git_shim("update-ref", self.seed)
+        index_before = git(self.repo, "ls-files", "--stage").stdout
+        head_before = git(self.repo, "rev-parse", "refs/heads/main").stdout.strip()
+
+        result = run(
+            str(self.repo / "scripts/parent-main-write"), "reconcile",
+            cwd=self.repo, env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}"),
+        )
+
+        combined = result.stdout + result.stderr
+        self.assertNotEqual(0, result.returncode, combined)
+        self.assertIn("does not match refs/remotes/origin/main", combined)
+        # THE POINT: the shared index of a fifteen-agent tree is byte-identical.
+        self.assertEqual(index_before, git(self.repo, "ls-files", "--stage").stdout)
+        self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout.strip())
+        self.assertNotIn("adopted published residue", combined)
+        self.assertEqual(head_before, git(self.repo, "rev-parse", "refs/heads/main").stdout.strip())
+        self.assertEqual("moved on\n", (self.repo / "notes.md").read_text())
+
+    def test_negative_a_stale_tracking_ref_is_not_a_fresh_target(self) -> None:
+        """C2: a tracking ref records what the LAST fetch saw. No rewrite needed.
+
+        reconcile is the only mode that moves main to a non-descendant, so it is
+        the only one that pays a network round trip to prove its target is what
+        origin actually has right now.
+        """
+        stranded, tracking = self.strand_a_patch_equivalent_commit()
+        # The remote moves on; this checkout simply does not fetch again.
+        other = Path(self.temp.name) / "mover"
+        git(Path(self.temp.name), "clone", "-q", str(self.remote), str(other))
+        git(other, "config", "user.name", "Other")
+        git(other, "config", "user.email", "other@example.invalid")
+        (other / "later.md").write_text("the remote moved on\n")
+        git(other, "add", "later.md")
+        git(other, "commit", "-m", tagged("remote moves again"))
+        git(other, "push", "-q", "origin", "HEAD:main")
+        actual = git(other, "rev-parse", "HEAD").stdout.strip()
+        self.assertEqual(
+            tracking, git(self.repo, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        )
+        self.assertNotEqual(tracking, actual, "the tracking ref must actually be stale")
+
+        result = self.verify_ref_directly(stranded, tracking)
+
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("is NOT origin's current main", result.stderr)
+        self.assertIn(actual[:12], result.stderr)
+        self.assertIn("records what the last fetch saw", result.stderr)
+
+    def test_negative_a_stale_base_is_caught_at_push_time_in_ordinary_mode(self) -> None:
+        """Why ordinary/audited do NOT pay for the remote probe.
+
+        The boundary statement above verify_context claims a stale base is
+        caught by the push CAS instead. That is the justification for a
+        deliberate residual, so it is evidenced here rather than asserted:
+        verify_push compares against the value the REMOTE itself advertises, so
+        a stale receipt cannot survive publication.
+        """
+        _, tracking = self.strand_a_patch_equivalent_commit()
+        other = Path(self.temp.name) / "mover-push"
+        git(Path(self.temp.name), "clone", "-q", str(self.remote), str(other))
+        git(other, "config", "user.name", "Other")
+        git(other, "config", "user.email", "other@example.invalid")
+        (other / "later.md").write_text("the remote moved on\n")
+        git(other, "add", "later.md")
+        git(other, "commit", "-m", tagged("remote moves again"))
+        git(other, "push", "-q", "origin", "HEAD:main")
+        remote_now = git(other, "rev-parse", "HEAD").stdout.strip()
+
+        # The push hook is handed the remote's OWN advertised old value.
+        lock = f"{self.lock}.push"
+        script = (
+            f'exec 9>"{lock}"; flock -n 9 || exit 90; '
+            f'export HERMIT_PARENT_MAIN_LOCK_FD=9 HERMIT_PARENT_MAIN_LOCK_PATH="{lock}"; '
+            f'export HERMIT_PARENT_MAIN_MODE=ordinary HERMIT_PARENT_MAIN_EXPECT="{tracking}"; '
+            f'exec "{self.repo}/scripts/parent-main-write" verify-push origin '
+            f'"{remote_now}" "{tracking}"'
+        )
+        result = run("bash", "-c", script, cwd=self.repo, env=self.env)
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("remote main moved after fetch", result.stderr)
+        self.assertIn(remote_now, result.stderr)
+
+    def test_positive_a_freshly_fetched_target_passes_the_remote_probe(self) -> None:
+        """The freshness gate must not be inert: the fresh case still fires."""
+        stranded, target = self.strand_a_patch_equivalent_commit()
+        self.assertEqual(
+            target, git(self.repo, "rev-parse", "refs/remotes/origin/main").stdout.strip()
+        )
+        result = self.verify_ref_directly(stranded, target)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+
+    def test_negative_an_unreadable_remote_refuses_rather_than_proceeds(self) -> None:
+        """Fail-closed: an unprovable target is not a fresh target."""
+        stranded, target = self.strand_a_patch_equivalent_commit()
+        git(self.repo, "remote", "set-url", "origin", str(Path(self.temp.name) / "does-not-exist.git"))
+        result = self.verify_ref_directly(stranded, target)
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("cannot read origin's current main", result.stderr)
+        self.assertIn("Nothing was moved", result.stderr)
 
     def test_negative_a_rehearsal_failure_leaves_the_shared_index_untouched(self) -> None:
         """The dry run must run BEFORE the index is written, not after.

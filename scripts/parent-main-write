@@ -198,10 +198,33 @@ verify_audit_receipt() {
 # wrote. This binds every mode at once -- ordinary, audited, sync, reconcile --
 # because a forged base is a forged base whichever arm consumes it.
 #
-# It is not a complete answer to a local attacker, who could also rewrite
-# `refs/remotes/origin/main`, and it is not claimed to be: `refs/remotes/*` is
-# outside the shared-branch guard. It removes the accident and the one-variable
-# forgery, and it makes the remaining forgery a ref write rather than an export.
+# EXACTLY WHAT THIS GUARANTEES, AND EXACTLY WHAT IT DOES NOT.
+#
+# GUARANTEES: the target equals this checkout's `refs/remotes/origin/main` at the
+# instant the ref transaction runs. That is a real binding and it is what catches
+# both a forged EXPECT and a tracking ref that moves mid-operation.
+#
+# DOES NOT GUARANTEE FRESHNESS. A tracking ref only records what the LAST fetch
+# saw. Demonstrated by the cross-model review, 2026-08-10, with no rewrite at all
+# -- just a remote that moved and a checkout that did not re-fetch:
+# `tracking 412cccd  actual_remote 11bcf115  stale True`, accepted by sync,
+# ordinary, audited and reconcile alike. Every mode calls `fetch_expected` first,
+# so the ordinary path is fresh in practice; the HOOK simply cannot prove it, and
+# "in practice" is not a guarantee. Nor is it a complete answer to a local
+# process, which could rewrite `refs/remotes/origin/main` directly --
+# `refs/remotes/*` is outside the shared-branch guard.
+#
+# WHY THAT RESIDUAL IS TOLERATED HERE, mode by mode, rather than paid for with a
+# network round trip on every commit:
+#   * ordinary / audited -- a stale base makes the eventual PUSH fail, because
+#     `verify_push` requires the REMOTE's own reported old value to equal the
+#     receipt and the remote itself rejects a non-fast-forward. The remote is the
+#     authority and it is consulted.
+#   * sync -- the move must be a fast-forward, so a stale target only means
+#     "less far forward than it could be". Harmless and self-correcting.
+#   * reconcile -- moves main to a NON-DESCENDANT, so a stale target is the one
+#     case that does real damage. It therefore pays for the round trip: see
+#     `remote_main_now` and the reconcile arm of `verify_ref`.
 verify_context() {
   local root=${1:?repo root required} expected=${HERMIT_PARENT_MAIN_EXPECT:-} fetched
   verify_lock
@@ -215,6 +238,32 @@ verify_context() {
   cross-check on the ref, never a substitute for it: an environment variable
   the caller sets cannot establish what origin/main is."
   printf '%s\n' "$expected"
+}
+
+# Ask the REMOTE what its main is, right now, over the network.
+#
+# The only way to prove freshness is to consult the authority: a tracking ref
+# says what the last fetch saw, which is a different claim. `ls-remote` reads and
+# writes nothing, so unlike a fetch it is safe to call from inside an open ref
+# transaction -- there is no nested transaction to re-enter.
+#
+# BOUNDED AND FAIL-CLOSED. This runs while git holds the lock on
+# refs/heads/main, so an unbounded call would hold that lock for as long as the
+# network hangs. On timeout, error, or an unparsable answer the caller REFUSES:
+# an unproven target is not a fresh target.
+REMOTE_PROBE_TIMEOUT=${HERMIT_PARENT_MAIN_REMOTE_PROBE_TIMEOUT:-60}
+remote_main_now() {
+  local root=$1 url out
+  url=$(git -C "$root" remote get-url origin 2>/dev/null || true)
+  [ -n "$url" ] || return 1
+  if [ "${HERMIT_PARENT_MAIN_NO_PROXY:-}" = 1 ] ||
+     [ "${url#/}" != "$url" ] || [ "${url#file://}" != "$url" ] ||
+     ! command -v with-proxy >/dev/null 2>&1; then
+    out=$(timeout "$REMOTE_PROBE_TIMEOUT" git -C "$root" ls-remote origin refs/heads/main 2>/dev/null) || return 1
+  else
+    out=$(timeout "$REMOTE_PROBE_TIMEOUT" with-proxy git -C "$root" ls-remote origin refs/heads/main 2>/dev/null) || return 1
+  fi
+  printf '%s\n' "$out" | awk '$2 == "refs/heads/main" { print $1; exit }'
 }
 
 verify_commit() {
@@ -424,7 +473,7 @@ verify_reconcile_is_lossless() {
 }
 
 verify_ref() {
-  local old=${1:?old SHA required} new=${2:?new SHA required} root expected mode
+  local old=${1:?old SHA required} new=${2:?new SHA required} root expected mode remote_now
   root=$(repo_root)
   expected=$(verify_context "$root")
   mode=${HERMIT_PARENT_MAIN_MODE:-}
@@ -437,6 +486,26 @@ verify_ref() {
     reconcile)
       [ "$new" = "$expected" ] ||
         die "reconcile target $new is not fetched origin $expected"
+      # PROVE FRESHNESS AGAINST THE REMOTE ITSELF, not against a tracking ref.
+      #
+      # This is the only mode that moves main to a NON-DESCENDANT, so it is the
+      # only mode where a target that is merely "what the last fetch saw" does
+      # real damage -- and the only one that pays a network round trip for it.
+      # The other three are covered by the remote's own push CAS or by requiring
+      # a fast-forward; see the boundary statement above `verify_context`.
+      #
+      # Refusing on an unreadable remote is deliberate: reconcile already
+      # required the network to fetch its target, so an unprovable target here
+      # means retry, not proceed.
+      remote_now=$(remote_main_now "$root") ||
+        die "cannot read origin's current main, so the target cannot be proven
+  fresh. Nothing was moved. reconcile needs the network; retry when it is back."
+      [[ "$remote_now" =~ ^[0-9a-f]{40}$ ]] ||
+        die "origin did not report a usable refs/heads/main; nothing was moved"
+      [ "$new" = "$remote_now" ] ||
+        die "reconcile target $new is NOT origin's current main $remote_now.
+  A tracking ref records what the last fetch saw; origin has moved since. Re-run
+  reconcile so it retargets the commit origin actually has. Nothing was moved."
       # RE-DERIVED HERE, from the transaction's OWN old and new. The caller
       # already ran this check before mutating anything, and that run is not
       # evidence: an environment variable the caller sets cannot authorise a ref
@@ -924,12 +993,33 @@ case "$command" in
     # sync's exact semantics (twoway_merge cases 14/15 keep an entry that is
     # identical in both trees) so reconcile is never harsher than sync.
     #
-    # The ref moves BEFORE the working tree is written: the rehearsal has
-    # already proved the merge computes, so the remaining window -- ref moved,
-    # tree not yet updated -- is a near-impossibility rather than a coin flip,
-    # and the mutex is held across both.
-    apply_published_residue "$root" "$target"
+    # THE REF TRANSACTION GOES FIRST, BEFORE ANY SHARED STATE IS TOUCHED.
+    #
+    # A rehearsal proves the operation COMPUTES; it cannot prove the world holds
+    # still afterwards. This parent's origin/main moves every few minutes, so
+    # between the rehearsal and the transaction a concurrent fetch can move
+    # refs/remotes/origin/main and the hook will then -- correctly -- refuse.
+    #
+    # An earlier ordering adopted residue into the SHARED index first and moved
+    # the ref second. Reproduced 2026-08-10 by wrapping `git` so the tracking ref
+    # moved during the operation: `rc 128, index_same False, cached_paths
+    # notes.md`, with the refusal printing "Nothing was staged, moved, or
+    # modified" over a notes.md that was, in fact, now staged. Gate ORDERING was
+    # fixed by the rehearsal; this is the time-of-check-to-time-of-use half, and
+    # only the order of the two mutations closes it.
+    #
+    # The transaction is the one operation nothing can un-do and nothing can
+    # partially do: the hook either refuses (nothing anywhere has changed) or the
+    # ref moves. Only afterwards do we touch the index and the working tree, and
+    # both of those are exactly what `sync` does.
+    #
+    # Restoring a captured index on the failure path was the alternative and was
+    # rejected: fifteen agents share this index, so a snapshot taken before the
+    # transaction and written back after it would silently revert any `git add`
+    # a bystander made in between -- trading a stale-index bug for a lost-work
+    # bug, which is the trade this whole file exists to refuse.
     git -C "$root" update-ref refs/heads/main "$target" "$head"
+    apply_published_residue "$root" "$target"
     git -C "$root" read-tree -m -u "$head" "$target" ||
       die "main now points at $target but the working tree was not updated.
   Nothing is lost; finish with: git -C $root read-tree -m -u $head $target"
