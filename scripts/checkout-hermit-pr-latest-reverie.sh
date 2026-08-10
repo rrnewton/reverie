@@ -100,15 +100,17 @@ done
 ((${#prs[@]} > 0)) || die "at least one PR is required"
 repo=$(realpath "$repo")
 [[ -d $repo/.git || -f $repo/.git ]] || die "not a Git worktree: $repo"
-machine=$(hostname -s)
-[[ $machine =~ ^devbig[0-9]+$ ]] || die "unexpected machine name: $machine"
+workspace=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+attribution_checker="$workspace/scripts/check_commit_attribution.py"
+[[ -x $attribution_checker ]] || die "missing attribution checker: $attribution_checker"
+machine=$("$attribution_checker" --detect-machine) || \
+  die "could not derive the commit-attribution machine"
 commit_attribution="[impl agent, $model] [$agent, $machine]"
 
 command -v gh >/dev/null || die "gh is required"
 command -v jq >/dev/null || die "jq is required"
 command -v with-proxy >/dev/null || die "with-proxy is required"
 
-workspace=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ci_hub="$workspace/ci-hub/ci-hub"
 [[ -x $ci_hub ]] || die "missing ci-hub executable: $ci_hub"
 evidence_dir="$workspace/scratch/pin-bump-evidence"
@@ -136,6 +138,7 @@ if ! $foreground; then
     --collect \
     --setenv "HOME=$HOME" \
     --setenv "PATH=$PATH" \
+    --setenv "HERMIT_COMMIT_MACHINE=$machine" \
     --property "StandardOutput=append:$launcher_log" \
     --property "StandardError=append:$launcher_log" \
     "${relaunch[@]}"
