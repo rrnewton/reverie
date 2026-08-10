@@ -35,6 +35,9 @@ class FakeRun:
         self.fresh: Path | None = None
         self.fresh_complete = True
         self.ledger_rows: list[str] | None = None
+        self.admission_verdict = "NOT-VALIDATED"
+        self.admission_status_rc = 4
+        self.validate_status_calls = 0
         self.canonical_verdict = "VALIDATED"
         self.canonical_status_rc = 0
         self.removed: list[str] = []
@@ -98,19 +101,26 @@ class FakeRun:
             tracked = set(self.fresh_tracked_jsonl.splitlines())
             return completed(command, rc=0 if relative in tracked else 1)
         if command[0].endswith("ci-hub") and command[1:3] == ["validate-status", "--sha"]:
+            self.validate_status_calls += 1
+            if self.validate_status_calls == 1:
+                verdict = self.admission_verdict
+                status_rc = self.admission_status_rc
+            else:
+                verdict = self.canonical_verdict
+                status_rc = self.canonical_status_rc
             rows = self.ledger_rows
             if rows is None:
                 rows = [f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}']
-            qualifying = len(rows) if self.canonical_verdict == "VALIDATED" else 0
+            qualifying = len(rows) if verdict == "VALIDATED" else 0
             report = {
                 "sha": SHA,
-                "verdict": self.canonical_verdict,
+                "verdict": verdict,
                 "qualifying_count": qualifying,
                 "disqualified_count": len(rows) - qualifying,
             }
             return completed(
                 command,
-                rc=self.canonical_status_rc,
+                rc=status_rc,
                 stdout=json.dumps(report),
             )
         if len(command) >= 3 and command[-2].endswith("validate_rows.py") and command[-1] == "rows":
@@ -337,7 +347,9 @@ class StartUnitTest(unittest.TestCase):
         rc, output, error = self.invoke(["--dry-run"])
 
         self.assertEqual(0, rc, error)
-        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+        self.assertFalse(
+            any(command[0] == "systemd-run" for command in self.fake.commands)
+        )
         self.assertIn("WOULD-START", output)
         self.assertIn("PANE-PLAN workspace=validate-hermit role=observer-only", output)
         self.assertIn("ci-hub validate-lock run", output)
@@ -351,6 +363,64 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(2, rc)
         self.assertIn("checkout is dirty", error)
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_terminal_failed_sha_is_refused_before_any_launch_artifact(self) -> None:
+        self.fake.admission_verdict = "FAILED"
+        self.fake.admission_status_rc = 3
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(2, rc)
+        self.assertIn("terminal verdict FAILED", error)
+        self.assertIn("Advance HEAD", error)
+        self.assertFalse(
+            any(command[:2] == ["mktemp", "-d"] for command in self.fake.commands)
+        )
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+        self.assertFalse(
+            (self.root / "ignored/validate/runs/validate-test.json").exists()
+        )
+
+    def test_terminal_validated_sha_is_refused_before_any_launch_artifact(self) -> None:
+        self.fake.admission_verdict = "VALIDATED"
+        self.fake.admission_status_rc = 0
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(2, rc)
+        self.assertIn("terminal verdict VALIDATED", error)
+        self.assertFalse(
+            any(command[:2] == ["mktemp", "-d"] for command in self.fake.commands)
+        )
+        self.assertFalse(
+            any(command[0] == "systemd-run" for command in self.fake.commands)
+        )
+
+    def test_needs_rerun_sha_remains_eligible_for_remeasurement(self) -> None:
+        self.fake.admission_verdict = "NEEDS-RERUN"
+        self.fake.admission_status_rc = 4
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(0, rc, error)
+        self.assertTrue(
+            any(
+                command[0] == "systemd-run" and "validate-lock" in command
+                for command in self.fake.commands
+            )
+        )
+
+    def test_unreadable_canonical_status_fails_closed_before_launch(self) -> None:
+        self.fake.admission_verdict = "UNKNOWN"
+        self.fake.admission_status_rc = 2
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(2, rc)
+        self.assertIn("canonical validate-status refused admission", error)
+        self.assertFalse(
+            any(command[0] == "systemd-run" for command in self.fake.commands)
+        )
 
     def test_exact_owner_validate_symlink_is_the_only_dirty_exception(self) -> None:
         (self.checkout / "validate").symlink_to("scripts/validate.rs")
@@ -590,7 +660,7 @@ class StartUnitTest(unittest.TestCase):
             or (len(command) >= 2 and command[-2].endswith("validate_rows.py"))
             or command[3:5] == ["worktree", "remove"]
         ]
-        self.assertEqual(["status", "identity", "remove"], kinds)
+        self.assertEqual(["status", "status", "identity", "remove"], kinds)
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
     def test_canonical_nonpass_is_a_real_receipt_not_an_orphan(self) -> None:
