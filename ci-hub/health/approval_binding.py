@@ -147,7 +147,26 @@ def lane_shas(comments: list[dict[str, Any]], lane: str,
         malformed = []
 
     def undecorate(line: str) -> str:
-        return line.strip().strip("*_`").strip()
+        """Remove only markdown that wraps the complete verdict line.
+
+        ``str.strip("*_`")`` also removed a lone opening backtick.  That
+        promoted an inline-code quotation followed by prose into a verdict-ish
+        line, even though the comment explicitly said it was not a re-approval.
+        Whole-line emphasis is legitimate; a code span embedded in prose is
+        not a binding.
+        """
+        line = line.strip()
+        while True:
+            for wrapper in ("`", "**", "__", "*", "_"):
+                if (
+                    line.startswith(wrapper)
+                    and line.endswith(wrapper)
+                    and len(line) > 2 * len(wrapper)
+                ):
+                    line = line[len(wrapper):-len(wrapper)].strip()
+                    break
+            else:
+                return line
 
     reject = re.compile(r"^REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}$", re.IGNORECASE)
     approve = re.compile(
@@ -177,7 +196,12 @@ def lane_shas(comments: list[dict[str, Any]], lane: str,
             m = approve.match(line)
             if not m:
                 if suspect.match(line) and not reject.match(line):
-                    malformed.append((c.get("html_url") or c.get("url") or "?", line[:120]))
+                    finding = (c.get("html_url") or c.get("url") or "?", line[:120])
+                    # collect_live checks the same comment once per approval
+                    # lane.  Count a malformed source line once, not once per
+                    # label, or one defect becomes a confident count of two.
+                    if finding not in malformed:
+                        malformed.append(finding)
                 continue
             explicit_lane, sha = m.group(1), m.group(2)
             if explicit_lane:

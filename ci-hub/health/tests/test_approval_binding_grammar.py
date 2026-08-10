@@ -80,6 +80,14 @@ case("**APPROVED-AT <sha>** (bold) BINDS",
      C(f"[adversarial-reviewer agent, CLAUDE] [x]\n**APPROVED-AT {CUR}**\n"), "claude", ab.BOUND_CURRENT, CUR)
 case("`APPROVED-AT: claude <sha>` (backticked) BINDS",
      C(f"[adversarial-reviewer agent, claude-opus-5]\n`APPROVED-AT: claude {CUR}`\n"), "claude", ab.BOUND_CURRENT, CUR)
+quoted = []
+quoted_shas = ab.lane_shas(
+    C(f"[adversarial-reviewer agent, claude-opus-5]\n"
+      f"`APPROVED-AT: claude {CUR}` all stand exactly as posted -- this is not a re-approval.\n"),
+    "claude", quoted)
+cases.append((quoted_shas == [] and quoted == [],
+              "inline-code binding quoted in prose neither BINDS nor reports malformed",
+              f"bound={quoted_shas} malformed={len(quoted)}"))
 case("bold REJECTION still does NOT bind",
      C(f"[adversarial-reviewer agent, CLAUDE]\n**REQUEST CHANGES AT {CUR}**\n"), "claude", ab.UNDETERMINED)
 
@@ -91,6 +99,11 @@ case("bold REJECTION still does NOT bind",
 mal = []
 ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED @ {CUR}\n"), "claude", mal)
 cases.append((len(mal) == 1, "an unrecognised binding-shaped line is REPORTED, not ignored",
+              f"malformed={len(mal)}"))
+# The live collector scans one comment for each approval lane.  The same raw
+# malformed line is still one defect and must not inflate the headline count.
+ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED @ {CUR}\n"), "codex", mal)
+cases.append((len(mal) == 1, "one malformed source line is counted once across lanes",
               f"malformed={len(mal)}"))
 mal2 = []
 ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT {CUR}\n"), "claude", mal2)
