@@ -69,6 +69,38 @@ case("codex-tagged approval DOES satisfy the codex lane",
 # 6. ambiguous tag (the real #1727 case) fails closed
 case("ambiguous 'gpt-5.6-sol' tag with no explicit lane fails CLOSED",
      C(f"[adversarial-reviewer agent, gpt-5.6-sol]\nAPPROVED-AT {CUR}\n"), "codex", ab.UNDETERMINED)
+
+# --- VARIANT 3: MARKDOWN EMPHASIS. The one that cost a real approval. --------
+# #1864 carries **APPROVED-AT <sha>** and the line-anchored match required the
+# line to START with APPROVED-AT, so the leading ** defeated it and a valid
+# exact-head approval read as UNDETERMINED / bound_to None. Reviewers write
+# verdicts in markdown; bolding the load-bearing line is natural, so decoration
+# is stripped rather than legislated away.
+case("**APPROVED-AT <sha>** (bold) BINDS",
+     C(f"[adversarial-reviewer agent, CLAUDE] [x]\n**APPROVED-AT {CUR}**\n"), "claude", ab.BOUND_CURRENT, CUR)
+case("`APPROVED-AT: claude <sha>` (backticked) BINDS",
+     C(f"[adversarial-reviewer agent, claude-opus-5]\n`APPROVED-AT: claude {CUR}`\n"), "claude", ab.BOUND_CURRENT, CUR)
+case("bold REJECTION still does NOT bind",
+     C(f"[adversarial-reviewer agent, CLAUDE]\n**REQUEST CHANGES AT {CUR}**\n"), "claude", ab.UNDETERMINED)
+
+# --- LOUD ON THE UNKNOWN ------------------------------------------------------
+# A line plainly trying to be a binding, matching neither grammar, must be
+# REPORTED. Silently skipping an unrecognised variant is how variant three went
+# unnoticed: an approval that exists but is not seen reads as no approval, and a
+# consumer acting on that retires real authorisation.
+mal = []
+ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED @ {CUR}\n"), "claude", mal)
+cases.append((len(mal) == 1, "an unrecognised binding-shaped line is REPORTED, not ignored",
+              f"malformed={len(mal)}"))
+mal2 = []
+ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT {CUR}\n"), "claude", mal2)
+cases.append((len(mal2) == 0, "a WELL-FORMED binding is not reported as malformed",
+              f"malformed={len(mal2)}"))
+mal3 = []
+ab.lane_shas(C("[adversarial-reviewer agent, CLAUDE]\nThis looks good, nice work.\n"), "claude", mal3)
+cases.append((len(mal3) == 0, "ordinary prose with no SHA is not reported as malformed",
+              f"malformed={len(mal3)}"))
+
 p=sum(1 for ok,_,_ in cases if ok); f=len(cases)-p
 for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
 print(f"assertions: {p} passed, {f} failed")

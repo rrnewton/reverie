@@ -96,7 +96,8 @@ def gh_json(args: list[str]) -> Any:
     return json.loads(out.stdout or "null")
 
 
-def lane_shas(comments: list[dict[str, Any]], lane: str) -> list[str]:
+def lane_shas(comments: list[dict[str, Any]], lane: str,
+               malformed: list[tuple[str, str]] | None = None) -> list[str]:
     """SHAs a lane EXPLICITLY bound itself to, oldest first. Never inferred.
 
     *** THIS DELIBERATELY REFUSES TO GUESS, AND THE FIRST VERSION DID GUESS. ***
@@ -126,34 +127,59 @@ def lane_shas(comments: list[dict[str, Any]], lane: str) -> list[str]:
     UNDETERMINED -- flagged, not passed. A gate that guesses is worse than no
     gate, which is exactly what the heuristic version demonstrated.
     """
-    # GRAMMAR, converged with the rejection format another reviewer introduced on
-    # #2026 (comment 5235451519), whose line 2 is:
-    #     REQUEST CHANGES AT <40-hex>
-    # so the positive form is its mirror. Both spellings are accepted because
-    # both are already in the wild -- `APPROVED-AT <sha>` (the form the fix was
-    # specified as) and `APPROVED-AT: <lane> <sha>` (used on #1851) -- and one
-    # converged parser beats two competing conventions.
+    # GRAMMAR, pinned. Three shapes exist in the wild and all three are real
+    # verdicts, so all three are accepted:
+    #   APPROVED-AT: <lane> <40-hex>     #1851, both lanes
+    #   APPROVED-AT <40-hex>             bare, lane from the role tag
+    #   **APPROVED-AT <40-hex>**         #1864 -- MARKDOWN EMPHASIS
+    # and the rejection mirror introduced on #2026 (comment 5235451519):
+    #   REQUEST CHANGES AT <40-hex>
     #
-    # *** A REJECTION MUST NEVER BIND AS A POSITIVE. *** A comment carrying
-    # `REQUEST CHANGES AT <sha>` contributes NOTHING here, even if it also
-    # contains an APPROVED-AT-shaped string. That is not hypothetical: a comment
-    # DOCUMENTING this convention necessarily contains the literal token, and
-    # twice tonight a check of mine matched prose about a defect as the defect
-    # (a /DELETE/ grep firing on a docstring about deletion, and NOT_EVALUATED
-    # matching inside "NOT_EVALUATED: 0"). Rejection wins over approval within a
-    # comment, which fails closed in the safe direction.
-    reject = re.compile(r"^\s*REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}\s*$", re.IGNORECASE | re.MULTILINE)
+    # *** THE THIRD SHAPE COST A REAL APPROVAL. *** Before this normalisation the
+    # line-anchored match required the line to START with APPROVED-AT, so the
+    # leading `**` on #1864 defeated it and a valid exact-head approval read as
+    # UNDETERMINED / bound_to None. An approval that EXISTS but is NOT SEEN reads
+    # as NO APPROVAL, and a consumer acting on that retires real authorisation --
+    # the inverse of the false-authorisation defect this tool exists to prevent.
+    # Reviewers write verdicts in markdown; bolding the load-bearing line is the
+    # natural thing to do, so decoration is stripped rather than legislated away.
+    if malformed is None:
+        malformed = []
+
+    def undecorate(line: str) -> str:
+        return line.strip().strip("*_`").strip()
+
+    reject = re.compile(r"^REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}$", re.IGNORECASE)
     approve = re.compile(
-        r"^\s*APPROVED[-\s]AT:?\s*(?:(claude|codex)\s+)?([0-9a-f]{40})\s*$",
-        re.IGNORECASE | re.MULTILINE,
+        r"^APPROVED[-\s]AT:?\s*(?:(claude|codex)\s+)?([0-9a-f]{40})$", re.IGNORECASE
     )
+    # LOUD ON THE UNKNOWN. A line that is plainly trying to be a verdict binding
+    # -- a verdict-ish keyword on the same line as a 40-hex -- but which matches
+    # neither grammar is reported, never ignored. Silently skipping an
+    # unrecognised variant is how variant three went unnoticed; the next one must
+    # announce itself instead.
+    suspect = re.compile(
+        r"^(?:APPROV|REQUEST\s+CHANGES|REJECT|LGTM|SIGN(?:ED)?[-\s]?OFF|ACK)[^\n]*\b[0-9a-f]{40}\b",
+        re.IGNORECASE,
+    )
+
     found: list[str] = []
     for c in comments:
         body = c.get("body") or ""
-        if reject.search(body):
+        lines = [undecorate(l) for l in body.split("\n")]
+        # A rejection contributes NOTHING, even if the same comment also carries
+        # an APPROVED-AT-shaped line -- a comment quoting the convention, or
+        # quoting the approval it supersedes, must not bind as a positive.
+        if any(reject.match(l) for l in lines):
             continue
-        first_line = (body.split("\n", 1)[0] or "").lower()
-        for explicit_lane, sha in approve.findall(body):
+        first_line = (lines[0] if lines else "").lower()
+        for line in lines:
+            m = approve.match(line)
+            if not m:
+                if suspect.match(line) and not reject.match(line):
+                    malformed.append((c.get("html_url") or c.get("url") or "?", line[:120]))
+                continue
+            explicit_lane, sha = m.group(1), m.group(2)
             if explicit_lane:
                 if explicit_lane.lower() == lane:
                     found.append(sha)
@@ -161,9 +187,7 @@ def lane_shas(comments: list[dict[str, Any]], lane: str) -> list[str]:
             # No explicit lane: derive from the role tag, but ONLY from an
             # unambiguous token. "gpt-5.6-sol" tags a Codex-family reviewer on
             # #1727 yet says neither "codex" nor "claude", so inferring from it
-            # would be the guessing this tool exists to refuse. Ambiguous tag =>
-            # no binding, which is why the lane-explicit spelling is the one to
-            # standardise on.
+            # would be the guessing this tool exists to refuse.
             tagged_claude = "claude" in first_line
             tagged_codex = "codex" in first_line
             if tagged_claude ^ tagged_codex:
@@ -172,7 +196,7 @@ def lane_shas(comments: list[dict[str, Any]], lane: str) -> list[str]:
     return found
 
 
-def collect_live(repo: str) -> list[dict[str, Any]]:
+def collect_live(repo: str, malformed: list[tuple[str, str]]) -> list[dict[str, Any]]:
     prs = gh_json(
         ["pr", "list", "--repo", repo, "--state", "open", "--limit", "300",
          "--json", "number,headRefOid,labels,mergeable"]
@@ -206,7 +230,7 @@ def collect_live(repo: str) -> list[dict[str, Any]]:
         comments, runs = f["comments"], f["runs"]
         for label in approvals:
             lane = label.rsplit("-", 1)[-1]
-            shas = lane_shas(comments, lane)
+            shas = lane_shas(comments, lane, malformed)
             rows.append(
                 {
                     "number": pr["number"],
@@ -222,12 +246,15 @@ def collect_live(repo: str) -> list[dict[str, Any]]:
     return rows
 
 
-def collect_fixture(path: str) -> list[dict[str, Any]]:
+def collect_fixture(path: str, malformed: list[tuple[str, str]]) -> list[dict[str, Any]]:
     rows = []
     for pr in json.load(open(path)):
         for label in pr["labels"]:
             lane = label.rsplit("-", 1)[-1]
-            shas = pr.get("lane_shas", {}).get(lane, [])
+            if "comments" in pr:
+                shas = lane_shas([{"body": b} for b in pr["comments"]], lane, malformed)
+            else:
+                shas = pr.get("lane_shas", {}).get(lane, [])
             rows.append(
                 {
                     "number": pr["number"],
@@ -271,7 +298,8 @@ def main() -> int:
     a = ap.parse_args()
     a.gate_on = getattr(a, "gate_on", "all")
 
-    rows = collect_fixture(a.fixture) if a.fixture else collect_live(a.repo)
+    malformed: list[tuple[str, str]] = []
+    rows = collect_fixture(a.fixture, malformed) if a.fixture else collect_live(a.repo, malformed)
     bad = [r for r in rows if r["state"] != BOUND_CURRENT]
     # The composed state: an approval that no longer holds, on a head nothing
     # evaluated. Approved, unevaluated, and indistinguishable from ready.
@@ -292,6 +320,9 @@ def main() -> int:
                   f"bound-to {bound}  head {r['head'][:12]}  runs={r['runs_at_head']}{flag}")
         if not bad:
             print("  every approval label is bound to the current head")
+        for where, line in malformed:
+            # LOUD, never ignored: something tried to be a binding and is not one.
+            print(f"  MALFORMED-BINDING  {line}   ({where})")
 
     if a.gate_on == "superseded":
         gating = [r for r in rows if r["state"] == SUPERSEDED] + [
@@ -302,6 +333,14 @@ def main() -> int:
     else:
         gating = bad
 
+    if a.gate and malformed:
+        print(
+            f"GATE FAIL: {len(malformed)} line(s) look like a verdict binding but match no known "
+            "grammar. An unrecognised variant that is silently skipped reads as NO approval, which "
+            "retires real authorisation -- so this is reported, not ignored.",
+            file=sys.stderr,
+        )
+        return 1
     if a.gate and gating:
         print(
             f"GATE FAIL ({a.gate_on}): {len(gating)} of {len(rows)} approval label(s) do not bind "
