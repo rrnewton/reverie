@@ -208,25 +208,24 @@ class StartUnitEnvTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 build(self.root, env)
 
-    # -- the receipt must reach the authority, not a per-checkout shard -------
+    # -- parent-owned validation authorities remain reachable -----------------
 
-    def test_parent_ledger_is_pointed_at_so_the_receipt_is_readable(self) -> None:
-        """DEV_HERMIT_PARENT must reach the unit, or the green is unreadable.
+    def test_parent_root_is_propagated_for_shared_authorities(self) -> None:
+        """DEV_HERMIT_PARENT reaches consumers that still need the workspace root.
 
-        validate.rs `ledger_path()` falls back to an in-repo per-(team,machine)
-        shard when neither $HERMIT_VALIDATE_LEDGER nor $DEV_HERMIT_PARENT is set,
-        and `ci-hub validate-status` reads only the parent ledger. Without this
-        the sole sanctioned admission point produces receipts its own authority
-        cannot see -- measured on PR #1635 at 291a2fd684f5, which passed full
-        profile with 862 executed / 0 failed and still read NOT-VALIDATED.
+        The ledger producer deliberately does not consult this variable: it uses
+        one fixed adapter path even when DEV_HERMIT_PARENT is absent. Other
+        parent-owned operations (receipt finalization, durable logs and ci-hub
+        helpers) still need the workspace root, so the admitted unit propagates
+        it explicitly.
 
         Asserting the exact path, not just presence: pointing at the wrong root
-        would be the same defect wearing the right variable name.
+        would make those other authorities unreachable.
         """
         self.plant_libunwind()
         env = setenvs(build(self.root, dict(self.base_env)))
         self.assertIn(
-            "DEV_HERMIT_PARENT", env, "the unit cannot reach the parent ledger"
+            "DEV_HERMIT_PARENT", env, "the unit cannot reach parent-owned authorities"
         )
         self.assertEqual(env["DEV_HERMIT_PARENT"], str(self.root))
 
