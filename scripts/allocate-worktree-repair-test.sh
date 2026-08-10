@@ -48,6 +48,9 @@ new_repo() { # dir  checked-out-branch  [extra-local-branch]
   touch "$dir/seed"; git -C "$dir" add seed; git -C "$dir" commit -q -m seed
   [[ -n $extra ]] && git -C "$dir" branch "$extra"   # local ref, never checked out
   git -C "$dir" switch -q -c "$branch"
+  git init -q --bare "$dir-origin.git"
+  git -C "$dir" remote add origin "$dir-origin.git"
+  git -C "$dir" push -q -u origin "$branch"
 }
 
 # drift70:  physical hermit on physical-70, but state records an UNPUSHED local
@@ -221,6 +224,24 @@ state["slots"]["ascent72"]["hermit_path"] = "worktrees/ascent72/hermit"
 path.write_text(json.dumps(state, indent=2) + "\n")
 PY
 
+# The parent-ascent fixture has served its purpose. Remove only its temporary
+# registry row so the scoped two-fault bracket below contains exactly one
+# excluded journal and one repairable drift.
+python3 - "$root/worktree-state.json" "$root/worktrees/ACTIVE.md" <<'PY'
+import json
+import pathlib
+import sys
+
+state_path, active_path = map(pathlib.Path, sys.argv[1:])
+state = json.loads(state_path.read_text())
+state["slots"].pop("ascent72")
+state_path.write_text(json.dumps(state, indent=2) + "\n")
+active_path.write_text("\n".join(
+    line for line in active_path.read_text().splitlines()
+    if not line.startswith("| ascent72 |")
+) + "\n")
+PY
+
 # --- RELEASE-JOURNAL ISOLATION: a fenced checkout is intentionally absent at
 # its canonical path. Neither repair nor ordinary re-adoption may translate
 # that transient absence into branch="-" or status=active.
@@ -254,6 +275,108 @@ grep -Fq 'REFUSING repair while slot release transaction(s) require guarded reco
 [[ $(sha256sum "$root/worktree-state.json") == "$journal_hash" ]] \
   || { echo 'FAIL: refused repair mutated the release journal' >&2; exit 1; }
 
+# TWO-FAULT POSITIVE: an armed journal in ok71 and an unrelated drift in
+# drift70 no longer deadlock. The exclusion is explicit in output, the excluded
+# row/journal is untouched, and only the clean, remote-contained drift is fixed.
+python3 - "$root/worktree-state.json" <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path(__import__('sys').argv[1])
+state = json.loads(path.read_text())
+state["slots"]["drift70"]["hermit_branch"] = "stale-again"
+path.write_text(json.dumps(state, indent=2) + "\n")
+PY
+excluded_journal=$(jq -cS '.slots.ok71.release_journal' "$root/worktree-state.json")
+excluded_active_row=$(grep -F '| ok71 |' "$root/worktrees/ACTIVE.md")
+(cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --exclude-slot ok71) \
+  >"$root/scoped-exclude.out" 2>&1 \
+  || { echo 'FAIL: explicit exclusion did not break the two-fault deadlock' >&2; \
+       cat "$root/scoped-exclude.out" >&2; exit 1; }
+grep -Fq 'repair scope: excluded=ok71 (not inspected or modified)' \
+  "$root/scoped-exclude.out" \
+  || { echo 'FAIL: excluded slot was not recorded in repair output' >&2; exit 1; }
+jq -e '.slots.drift70.hermit_branch == "physical-70"' \
+  "$root/worktree-state.json" >/dev/null \
+  || { echo 'FAIL: scoped repair did not reconcile the included drift' >&2; exit 1; }
+[[ $(jq -cS '.slots.ok71.release_journal' "$root/worktree-state.json") == "$excluded_journal" ]] \
+  || { echo 'FAIL: scoped repair changed the excluded journal' >&2; exit 1; }
+[[ $(grep -F '| ok71 |' "$root/worktrees/ACTIVE.md") == "$excluded_active_row" ]] \
+  || { echo 'FAIL: scoped ACTIVE repair changed the excluded row' >&2; exit 1; }
+
+# UNPUBLISHED NEGATIVE: scope is not force. A local-only current HEAD refuses
+# before either registry file changes, even though the unrelated journal is
+# explicitly excluded.
+printf 'local-only\n' >"$root/worktrees/drift70/hermit/local-only"
+git -C "$root/worktrees/drift70/hermit" add local-only
+git -C "$root/worktrees/drift70/hermit" commit -q -m 'local only fixture'
+python3 - "$root/worktree-state.json" <<'PY'
+import json
+import pathlib
+
+path = pathlib.Path(__import__('sys').argv[1])
+state = json.loads(path.read_text())
+state["slots"]["drift70"]["hermit_branch"] = "stale-unpublished"
+path.write_text(json.dumps(state, indent=2) + "\n")
+PY
+unpublished_hash=$(sha256sum "$root/worktree-state.json")
+if (cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --exclude-slot ok71) \
+    >"$root/scoped-unpublished.out" 2>&1; then
+  echo 'FAIL: scoped repair accepted an unpushed current HEAD' >&2; exit 1
+fi
+grep -Fq 'commit(s) are reachable from HEAD but no remote ref' \
+  "$root/scoped-unpublished.out" \
+  || { echo 'FAIL: unpublished refusal was not explicit' >&2; \
+       cat "$root/scoped-unpublished.out" >&2; exit 1; }
+[[ $(sha256sum "$root/worktree-state.json") == "$unpublished_hash" ]] \
+  || { echo 'FAIL: unpublished refusal changed registry state' >&2; exit 1; }
+
+# Publish the fixture commit, then prove the alternate named-slot scope works
+# while the unrelated ok71 journal remains armed.
+git -C "$root/worktrees/drift70/hermit" push -q origin physical-70
+(cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --slot drift70) \
+  >"$root/scoped-only.out" 2>&1 \
+  || { echo 'FAIL: named-slot repair refused a published target' >&2; \
+       cat "$root/scoped-only.out" >&2; exit 1; }
+grep -Fq 'repair scope: only slot=drift70' "$root/scoped-only.out" \
+  || { echo 'FAIL: named repair scope was not reported' >&2; exit 1; }
+[[ $(jq -cS '.slots.ok71.release_journal' "$root/worktree-state.json") == "$excluded_journal" ]] \
+  || { echo 'FAIL: named-slot repair changed the unrelated journal' >&2; exit 1; }
+
+# ACTIVE-ONLY UNCOMMITTED NEGATIVE: even when no branch cell changes, scoped
+# repair rewrites the selected ACTIVE row and therefore must prove the selected
+# checkout clean before touching it.
+python3 - "$root/worktrees/ACTIVE.md" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace(
+    "| drift70 | agent-70 | physical-70 |",
+    "| drift70 | agent-70 | stale-active-only |",
+))
+PY
+printf 'dirty\n' >"$root/worktrees/drift70/hermit/untracked-active-only"
+active_only_state_hash=$(sha256sum "$root/worktree-state.json")
+active_only_active_hash=$(sha256sum "$root/worktrees/ACTIVE.md")
+if (cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --slot drift70) \
+    >"$root/scoped-active-only.out" 2>&1; then
+  echo 'FAIL: scoped ACTIVE-only repair accepted uncommitted selected work' >&2; exit 1
+fi
+grep -Fq 'uncommitted work is present' "$root/scoped-active-only.out" \
+  || { echo 'FAIL: ACTIVE-only unpublished refusal was not explicit' >&2; \
+       cat "$root/scoped-active-only.out" >&2; exit 1; }
+[[ $(sha256sum "$root/worktree-state.json") == "$active_only_state_hash" ]] \
+  || { echo 'FAIL: ACTIVE-only refusal changed registry state' >&2; exit 1; }
+[[ $(sha256sum "$root/worktrees/ACTIVE.md") == "$active_only_active_hash" ]] \
+  || { echo 'FAIL: ACTIVE-only refusal changed ACTIVE' >&2; exit 1; }
+rm -f "$root/worktrees/drift70/hermit/untracked-active-only"
+(cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --slot drift70) \
+  >"$root/scoped-active-only-clean.out" 2>&1 \
+  || { echo 'FAIL: clean ACTIVE-only repair was refused' >&2; \
+       cat "$root/scoped-active-only-clean.out" >&2; exit 1; }
+
+preadopt_hash=$(sha256sum "$root/worktree-state.json")
 if (cd "$root" && "$root/scripts/allocate-worktree.rs" \
     --agent agent-71 --slot ok71 --task task-71 --product hermit) \
     >"$root/releasing-adopt.out" 2>&1; then
@@ -261,7 +384,7 @@ if (cd "$root" && "$root/scripts/allocate-worktree.rs" \
 fi
 grep -Fq 'slot ok71 has an unfinished release transaction' "$root/releasing-adopt.out" \
   || { echo 'FAIL: re-adoption did not refuse the journaled slot' >&2; cat "$root/releasing-adopt.out" >&2; exit 1; }
-[[ $(sha256sum "$root/worktree-state.json") == "$journal_hash" ]] \
+[[ $(sha256sum "$root/worktree-state.json") == "$preadopt_hash" ]] \
   || { echo 'FAIL: refused re-adoption mutated the release journal' >&2; exit 1; }
 
 
@@ -346,4 +469,4 @@ grep -Fq 'require guarded recovery: drift70' "$root/revoke-dirty.out" \
        cat "$root/revoke-dirty.out" >&2; exit 1; }
 rm -f "$root/worktrees/drift70/hermit/uncommitted-file"
 
-echo "allocate-worktree-repair-test: PASS (POSITIVE: 1 planted drift reconciled -> 0 drift; NEGATIVE: unpushed branch ref preserved and parent-ascent/path-alias residue skipped/refused; CONTROL: 1/1 correct row untouched; release journal isolated from repair/re-adoption; revocation phase gate bracketed 3 ways [unfinished REFUSED, finished+clean SKIPPED with journal preserved, finished+dirty REFUSED]; human content preserved; idempotent)"
+echo "allocate-worktree-repair-test: PASS (scoped two-fault exclusion and named-slot repair; unpushed + ACTIVE-only uncommitted work REFUSED without mutation; excluded journal/row preserved; POSITIVE: 1 planted drift reconciled -> 0 drift; parent-ascent/path-alias residue skipped/refused; CONTROL: 1/1 correct row untouched; revocation phase gate bracketed 3 ways; human content preserved; idempotent)"

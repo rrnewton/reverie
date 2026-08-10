@@ -26,6 +26,7 @@
 //! ```
 use fs2::FileExt;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
@@ -103,6 +104,11 @@ Options:
                       coordinator reason for the binding-only migration.
   --check-only        Run registry branch/content consistency plus workspace
                       homeostasis, then exit WITHOUT allocating anything.
+  --repair            Reconcile recorded branch cells from physical checkouts.
+  --dry-run           With --repair, report the exact scoped changes only.
+  --exclude-slot SLOT With --repair, explicitly exclude a named slot. May be
+                      repeated; exclusions are printed and never inspected.
+                      Alternatively, --repair --slot SLOT repairs one slot.
   -h, --help          Show this help.
 
 Homeostasis (ADVISORY, never blocks — allocation always completes): every
@@ -215,6 +221,59 @@ fn slot_has_uncommitted_work(root: &Path, record: &Value) -> bool {
         }
     }
     false
+}
+
+/// A scoped repair may change only registry strings, but it must not normalize
+/// away the only pointer to unpublished checkout state. Prove the exact current
+/// checkout is clean and its HEAD is reachable from at least one remote ref
+/// before changing that product's recorded branch cell.
+fn verify_repair_checkout_published(
+    root: &Path,
+    slot: &str,
+    product: &str,
+    actual: &str,
+) -> Result<(), String> {
+    if actual == "-" {
+        return Err(format!(
+            "{slot}/{product}: checkout is absent; unpublished state cannot be proven"
+        ));
+    }
+    let path = root.join(format!("worktrees/{slot}/{product}"));
+    exact_checkout_root(&path)
+        .map_err(|error| format!("{slot}/{product}: exact checkout unavailable: {error}"))?;
+    let (status_ok, status, status_error) = git(
+        &path,
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    );
+    if !status_ok {
+        return Err(format!(
+            "{slot}/{product}: could not inspect uncommitted work: {status_error}"
+        ));
+    }
+    if !status.is_empty() {
+        return Err(format!(
+            "{slot}/{product}: uncommitted work is present ({})",
+            status.lines().count()
+        ));
+    }
+    let (rev_ok, count, rev_error) = git(
+        &path,
+        &["rev-list", "--count", "HEAD", "--not", "--remotes"],
+    );
+    if !rev_ok {
+        return Err(format!(
+            "{slot}/{product}: could not prove remote containment: {rev_error}"
+        ));
+    }
+    let unpushed = count.parse::<u64>().map_err(|_| {
+        format!("{slot}/{product}: invalid unpushed-commit count {count:?}")
+    })?;
+    if unpushed != 0 {
+        return Err(format!(
+            "{slot}/{product}: {unpushed} commit(s) are reachable from HEAD but no remote ref"
+        ));
+    }
+    Ok(())
 }
 
 /// Whether a `coordinator_lease_revocation` journal should still block `--repair`.
@@ -572,11 +631,41 @@ fn durable_replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
     result
 }
 
+const ACTIVE_BEGIN: &str =
+    "<!-- BEGIN worktree-state (managed by scripts/allocate-worktree.rs; do not edit inside) -->";
+const ACTIVE_END: &str = "<!-- END worktree-state -->";
+
+fn active_row(name: &str, slot: &Value) -> String {
+    let agents = slot["agents"].as_array().cloned().unwrap_or_default();
+    let owner = agents
+        .iter()
+        .find(|agent| !agent["read_only"].as_bool().unwrap_or(false))
+        .and_then(|agent| agent["name"].as_str())
+        .unwrap_or("-");
+    let read_only_agents: Vec<String> = agents
+        .iter()
+        .filter(|agent| agent["read_only"].as_bool().unwrap_or(false))
+        .filter_map(|agent| agent["name"].as_str().map(str::to_string))
+        .collect();
+    let agent_cell = if read_only_agents.is_empty() {
+        owner.to_string()
+    } else {
+        format!("{owner} (+ro: {})", read_only_agents.join(", "))
+    };
+    let hermit = slot["hermit_branch"].as_str().unwrap_or("-");
+    let reverie = slot["reverie_branch"].as_str().unwrap_or("-");
+    let liteinst2 = slot["liteinst2_branch"].as_str().unwrap_or("-");
+    let task = slot["task"].as_str().unwrap_or("-");
+    let status = slot["status"].as_str().unwrap_or("active");
+    let shared = if read_only_agents.is_empty() { "no" } else { "shared" };
+    format!(
+        "| {name} | {agent_cell} | {hermit} | {reverie} | {liteinst2} | {task} | {status} | {shared} |"
+    )
+}
+
 /// Rewrite the managed table block inside worktrees/ACTIVE.md from state.
 /// Human-authored content outside the markers is preserved verbatim.
 fn regen_active_md(root: &Path, state: &Value) -> bool {
-    const BEGIN: &str = "<!-- BEGIN worktree-state (managed by scripts/allocate-worktree.rs; do not edit inside) -->";
-    const END: &str = "<!-- END worktree-state -->";
 
     let mut rows = String::new();
     rows.push_str("| Slot | Agent | HermitBranch | ReverieBranch | LiteInst2Branch | Task | Status | ReadOnly |\n");
@@ -585,40 +674,18 @@ fn regen_active_md(root: &Path, state: &Value) -> bool {
         let mut names: Vec<&String> = slots.keys().collect();
         names.sort();
         for name in names {
-            let s = &slots[name];
-            let agents = s["agents"].as_array().cloned().unwrap_or_default();
-            let owner = agents
-                .iter()
-                .find(|a| !a["read_only"].as_bool().unwrap_or(false))
-                .and_then(|a| a["name"].as_str())
-                .unwrap_or("-");
-            let ro_agents: Vec<String> = agents
-                .iter()
-                .filter(|a| a["read_only"].as_bool().unwrap_or(false))
-                .filter_map(|a| a["name"].as_str().map(|n| n.to_string()))
-                .collect();
-            let agent_cell = if ro_agents.is_empty() {
-                owner.to_string()
-            } else {
-                format!("{owner} (+ro: {})", ro_agents.join(", "))
-            };
-            let hb = s["hermit_branch"].as_str().unwrap_or("-");
-            let rb = s["reverie_branch"].as_str().unwrap_or("-");
-            let lb = s["liteinst2_branch"].as_str().unwrap_or("-");
-            let task = s["task"].as_str().unwrap_or("-");
-            let status = s["status"].as_str().unwrap_or("active");
-            let read_only = if ro_agents.is_empty() { "no" } else { "shared" };
-            rows.push_str(&format!(
-                "| {name} | {agent_cell} | {hb} | {rb} | {lb} | {task} | {status} | {read_only} |\n"
-            ));
+            rows.push_str(&active_row(name, &slots[name]));
+            rows.push('\n');
         }
     }
-    let block = format!("{BEGIN}\n{rows}{END}\n");
+    let block = format!("{ACTIVE_BEGIN}\n{rows}{ACTIVE_END}\n");
 
     let path = root.join("worktrees").join("ACTIVE.md");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let new_content = if let (Some(b), Some(e)) = (existing.find(BEGIN), existing.find(END)) {
-        let e_end = e + END.len();
+    let new_content = if let (Some(b), Some(e)) =
+        (existing.find(ACTIVE_BEGIN), existing.find(ACTIVE_END))
+    {
+        let e_end = e + ACTIVE_END.len();
         let after = existing[e_end..]
             .strip_prefix('\n')
             .unwrap_or(&existing[e_end..]);
@@ -645,6 +712,73 @@ fn regen_active_md(root: &Path, state: &Value) -> bool {
             .unwrap_or_else(|e| die(&format!("write ACTIVE.md: {e}")));
     }
     changed
+}
+
+/// Update only named managed rows. Rows outside `selected` are preserved
+/// byte-for-byte, so an explicit exclusion is a real mutation boundary rather
+/// than merely a verifier filter.
+fn regen_active_md_scoped(
+    root: &Path,
+    state: &Value,
+    selected: &BTreeSet<String>,
+) -> Result<bool, String> {
+    let path = root.join("worktrees/ACTIVE.md");
+    let existing = fs::read_to_string(&path)
+        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    let begin = existing
+        .find(ACTIVE_BEGIN)
+        .ok_or_else(|| "ACTIVE.md lacks managed BEGIN marker".to_string())?;
+    let content_start = begin + ACTIVE_BEGIN.len();
+    let relative_end = existing[content_start..]
+        .find(ACTIVE_END)
+        .ok_or_else(|| "ACTIVE.md lacks managed END marker".to_string())?;
+    let end = content_start + relative_end;
+    let managed = &existing[content_start..end];
+    let slots = state["slots"]
+        .as_object()
+        .ok_or_else(|| "worktree-state.json lacks object field 'slots'".to_string())?;
+    let mut seen = BTreeSet::new();
+    let mut rewritten = String::new();
+    for line in managed.lines() {
+        let name = line
+            .strip_prefix('|')
+            .and_then(|row| row.split('|').next())
+            .map(str::trim);
+        if let Some(name) = name.filter(|name| selected.contains(*name)) {
+            if !seen.insert(name.to_string()) {
+                return Err(format!("ACTIVE.md has duplicate managed row for scoped slot {name}"));
+            }
+            let slot = slots
+                .get(name)
+                .ok_or_else(|| format!("scoped slot {name} is absent from state"))?;
+            rewritten.push_str(&active_row(name, slot));
+        } else {
+            rewritten.push_str(line);
+        }
+        rewritten.push('\n');
+    }
+    for name in selected {
+        if seen.contains(name) {
+            continue;
+        }
+        let slot = slots
+            .get(name)
+            .ok_or_else(|| format!("scoped slot {name} is absent from state"))?;
+        rewritten.push_str(&active_row(name, slot));
+        rewritten.push('\n');
+    }
+    let new_content = format!(
+        "{}{}{}",
+        &existing[..content_start],
+        rewritten,
+        &existing[end..]
+    );
+    if new_content == existing {
+        return Ok(false);
+    }
+    durable_replace(&path, new_content.as_bytes())
+        .map_err(|error| format!("write {}: {error}", path.display()))?;
+    Ok(true)
 }
 
 /// Physical checkout of a product worktree, read from git porcelain. Mirrors the
@@ -725,26 +859,62 @@ fn validate_canonical_slot_paths(slot: &str, record: &Value) -> Result<(), Strin
 ///     so a transient fault cannot erase a legitimate record.
 /// Runs the verifier before and after so the drift delta is observable, not
 /// inferred.
-fn repair_registry(root: &Path, dry_run: bool) -> ! {
+fn repair_registry(
+    root: &Path,
+    dry_run: bool,
+    only_slot: Option<&str>,
+    excluded_slots: &BTreeSet<String>,
+) -> ! {
     let checker = root.join("scripts/check-worktree-registry.rs");
     let root_arg = root.to_string_lossy().into_owned();
-    let run_checker = |label: &str| {
+    let run_checker = |label: &str| -> bool {
         eprintln!("── verifier {label} repair ──");
-        let _ = Command::new(&checker)
-            .args(["--root", root_arg.as_str()])
-            .status();
+        let mut command = Command::new(&checker);
+        command.args(["--root", root_arg.as_str()]);
+        if let Some(slot) = only_slot {
+            command.args(["--slot", slot]);
+        }
+        for slot in excluded_slots {
+            command.args(["--exclude-slot", slot]);
+        }
+        command.status().is_ok_and(|status| status.success())
     };
-    run_checker("BEFORE");
 
     let mut state = load_state(root);
-    let active_reconciled = !dry_run && regen_active_md(root, &state);
-    if active_reconciled {
-        println!("repair: regenerated the managed ACTIVE.md block from authoritative JSON state.");
-    }
-    let slot_names: Vec<String> = state["slots"]
+    let all_slot_names: Vec<String> = state["slots"]
         .as_object()
         .map(|s| s.keys().cloned().collect())
         .unwrap_or_default();
+    if let Some(slot) = only_slot {
+        if !all_slot_names.iter().any(|name| name == slot) {
+            die(&format!("scoped repair slot {slot:?} is not registered"));
+        }
+    }
+    for slot in excluded_slots {
+        if !all_slot_names.iter().any(|name| name == slot) {
+            die(&format!("excluded repair slot {slot:?} is not registered"));
+        }
+    }
+    let slot_names: Vec<String> = all_slot_names
+        .into_iter()
+        .filter(|slot| only_slot.map_or(true, |only| only == slot))
+        .filter(|slot| !excluded_slots.contains(slot))
+        .collect();
+    if slot_names.is_empty() {
+        die("repair scope selects no registered slots");
+    }
+    let selected: BTreeSet<String> = slot_names.iter().cloned().collect();
+    if let Some(slot) = only_slot {
+        println!("repair scope: only slot={slot}");
+    } else if !excluded_slots.is_empty() {
+        println!(
+            "repair scope: excluded={} (not inspected or modified)",
+            excluded_slots.iter().cloned().collect::<Vec<_>>().join(",")
+        );
+    } else {
+        println!("repair scope: all registered slots");
+    }
+    run_checker("BEFORE");
 
     let releasing: Vec<&String> = slot_names
         .iter()
@@ -771,6 +941,8 @@ fn repair_registry(root: &Path, dry_run: bool) -> ! {
 
     let mut changed = 0usize;
     let mut skipped = 0usize;
+    let mut changes: Vec<(String, String, String)> = Vec::new();
+    let mut observed: Vec<(String, String, String)> = Vec::new();
     for slot in &slot_names {
         if let Err(error) = validate_canonical_slot_paths(slot, &state["slots"][slot]) {
             skipped += 3;
@@ -791,6 +963,7 @@ fn repair_registry(root: &Path, dry_run: bool) -> ! {
                     );
                 }
                 Some(actual) => {
+                    observed.push((slot.clone(), product.to_string(), actual.clone()));
                     // "detached" recorded value already matches any detached SHA in
                     // the verifier; don't churn a detached:<sha> recording into bare
                     // "detached" if it already agrees.
@@ -799,34 +972,81 @@ fn repair_registry(root: &Path, dry_run: bool) -> ! {
                     if !already_ok {
                         changed += 1;
                         println!("  reconcile {slot}/{product}: '{recorded}' -> '{actual}'");
-                        if !dry_run {
-                            state["slots"][slot][format!("{product}_branch")] = json!(actual);
-                        }
+                        changes.push((slot.clone(), product.to_string(), actual));
                     }
                 }
             }
         }
     }
 
+    let mut unpublished = Vec::new();
+    let scoped = only_slot.is_some() || !excluded_slots.is_empty();
+    let publication_checks = if scoped { &observed } else { &changes };
+    for (slot, product, actual) in publication_checks {
+        if actual == "-" {
+            if changes.iter().any(|(changed_slot, changed_product, changed_actual)| {
+                changed_slot == slot && changed_product == product && changed_actual == actual
+            }) {
+                unpublished.push(format!(
+                    "{slot}/{product}: checkout is absent; unpublished state cannot be proven"
+                ));
+            }
+            continue;
+        }
+        if let Err(error) = verify_repair_checkout_published(root, slot, product, actual) {
+            unpublished.push(error);
+        }
+    }
+    if skipped != 0 && scoped {
+        die(&format!(
+            "scoped repair could not verify {skipped} selected branch cell(s); registry left unchanged"
+        ));
+    }
+    if !unpublished.is_empty() {
+        for finding in &unpublished {
+            eprintln!("REFUSING repair: unpublished work check failed: {finding}");
+        }
+        die("repair scope contains unpublished or unverifiable work; registry left unchanged");
+    }
+
     if dry_run {
-        println!("repair --dry-run: {changed} branch cell(s) would change, {skipped} skipped (unreadable). No files written.");
+        println!("repair --dry-run: {changed} branch cell(s) would change, {skipped} skipped (unreadable), unpublished=0. No files written.");
         exit(if changed == 0 { 0 } else { 1 });
     }
 
+    for (slot, product, actual) in &changes {
+        state["slots"][slot][format!("{product}_branch")] = json!(actual);
+    }
     if changed > 0 {
         save_state(root, &mut state);
-        regen_active_md(root, &state);
-        println!("repair: reconciled {changed} branch cell(s), {skipped} skipped (unreadable).");
+        if scoped {
+            regen_active_md_scoped(root, &state, &selected)
+                .unwrap_or_else(|error| die(&format!("scoped ACTIVE.md repair failed: {error}")));
+        } else {
+            regen_active_md(root, &state);
+        }
+        println!("repair: reconciled {changed} branch cell(s), {skipped} skipped (unreadable), unpublished=0.");
         println!("  state:  {}", state_path(root).display());
         println!("  active: {}", root.join("worktrees/ACTIVE.md").display());
     } else {
         // ACTIVE is derived independently from branch-cell drift. The
         // preflight regeneration above must still run when changed == 0 so a
         // crash between the two durable files cannot remain self-deadlocking.
-        println!("repair: 0 branch cells needed reconciliation ({skipped} skipped unreadable).");
+        let active_reconciled = if scoped {
+            regen_active_md_scoped(root, &state, &selected)
+                .unwrap_or_else(|error| die(&format!("scoped ACTIVE.md repair failed: {error}")))
+        } else {
+            regen_active_md(root, &state)
+        };
+        println!("repair: 0 branch cells needed reconciliation ({skipped} skipped unreadable, unpublished=0).");
+        if active_reconciled {
+            println!("repair: regenerated the selected managed ACTIVE.md row(s).");
+        }
     }
 
-    run_checker("AFTER");
+    if !run_checker("AFTER") && scoped {
+        die("scoped post-repair verifier refused; selected scope is not consistent");
+    }
     exit(0);
 }
 
@@ -1421,6 +1641,7 @@ fn main() {
     let mut check_only = false;
     let mut repair = false;
     let mut dry_run = false;
+    let mut excluded_slots = BTreeSet::new();
     let mut codex_systemd_sentinel = false;
     let mut recover_legacy_unbound_owner = false;
     let mut recovery_note = String::new();
@@ -1453,6 +1674,9 @@ fn main() {
             "--check-only" => check_only = true,
             "--repair" | "--sync" => repair = true,
             "--dry-run" => dry_run = true,
+            "--exclude-slot" => {
+                excluded_slots.insert(take(&mut i, &argv, "--exclude-slot"));
+            }
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return;
@@ -1466,9 +1690,31 @@ fn main() {
     // porcelain (never touches git objects or ownership). Runs before the normal
     // allocation path so it cannot be confused with a slot request.
     if repair {
+        if !slot.is_empty() && !excluded_slots.is_empty() {
+            die("--repair --slot and --exclude-slot are mutually exclusive");
+        }
+        if !slot.is_empty() && !valid_slot(&slot) {
+            die(&format!("invalid repair --slot value {slot:?}"));
+        }
+        for excluded in &excluded_slots {
+            if !valid_slot(excluded) {
+                die(&format!("invalid --exclude-slot value {excluded:?}"));
+            }
+        }
         let root = find_root();
         let _registry_lock = lock_registry(&root);
-        repair_registry(&root, dry_run);
+        repair_registry(
+            &root,
+            dry_run,
+            (!slot.is_empty()).then_some(slot.as_str()),
+            &excluded_slots,
+        );
+    }
+    if dry_run {
+        die("--dry-run is valid only with --repair");
+    }
+    if !excluded_slots.is_empty() {
+        die("--exclude-slot is valid only with --repair");
     }
 
     // Health check only: report homeostasis and exit without allocating.

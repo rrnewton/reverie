@@ -15,7 +15,12 @@ const BEGIN: &str =
     "<!-- BEGIN worktree-state (managed by scripts/allocate-worktree.rs; do not edit inside) -->";
 const END: &str = "<!-- END worktree-state -->";
 
-const USAGE: &str = r#"Usage: check-worktree-registry.rs [--root PATH]
+const USAGE: &str = r#"Usage: check-worktree-registry.rs [--root PATH] [SCOPE]
+
+Scope (mutually exclusive):
+  --slot SLOT          Verify exactly one named slot.
+  --exclude-slot SLOT  Verify every slot except this explicitly named slot.
+                       May be repeated; every exclusion is reported.
 
 Fail unless every worktree-state.json branch agrees with the actual checkout and
 the managed ACTIVE.md row agrees with worktree-state.json. Detached expectations
@@ -33,6 +38,13 @@ enum Actual {
 fn die(message: &str) -> ! {
     eprintln!("worktree-registry: ERROR {message}");
     exit(2);
+}
+
+fn valid_slot(slot: &str) -> bool {
+    !slot.is_empty()
+        && slot
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
 fn find_root() -> PathBuf {
@@ -232,6 +244,8 @@ fn state_row(slot: &str, state: &Value) -> Vec<String> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut root = None;
+    let mut only_slot = None;
+    let mut excluded_slots = BTreeSet::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -242,6 +256,20 @@ fn main() {
                 }
                 root = Some(PathBuf::from(&args[i]));
             }
+            "--slot" => {
+                i += 1;
+                if i >= args.len() {
+                    die("--slot requires a value");
+                }
+                only_slot = Some(args[i].clone());
+            }
+            "--exclude-slot" => {
+                i += 1;
+                if i >= args.len() {
+                    die("--exclude-slot requires a value");
+                }
+                excluded_slots.insert(args[i].clone());
+            }
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return;
@@ -249,6 +277,19 @@ fn main() {
             other => die(&format!("unknown argument {other}\n\n{USAGE}")),
         }
         i += 1;
+    }
+    if only_slot.is_some() && !excluded_slots.is_empty() {
+        die("--slot and --exclude-slot are mutually exclusive");
+    }
+    if let Some(slot) = &only_slot {
+        if !valid_slot(slot) {
+            die(&format!("invalid --slot value {slot:?}"));
+        }
+    }
+    for slot in &excluded_slots {
+        if !valid_slot(slot) {
+            die(&format!("invalid --exclude-slot value {slot:?}"));
+        }
     }
     let root = root.unwrap_or_else(find_root);
     let state_path = root.join("worktree-state.json");
@@ -261,9 +302,35 @@ fn main() {
         .unwrap_or_else(|| die("worktree-state.json lacks object field 'slots'"));
     let active = active_rows(&root.join("worktrees/ACTIVE.md"));
 
+    if let Some(slot) = &only_slot {
+        if !slots.contains_key(slot) && !active.contains_key(slot) {
+            die(&format!("scoped slot {slot:?} exists in neither registry"));
+        }
+        println!("worktree-registry: SCOPE slot={slot}");
+    }
+    for slot in &excluded_slots {
+        if !slots.contains_key(slot) && !active.contains_key(slot) {
+            die(&format!("excluded slot {slot:?} exists in neither registry"));
+        }
+    }
+    if !excluded_slots.is_empty() {
+        println!(
+            "worktree-registry: SCOPE excluded={} (not inspected)",
+            excluded_slots.iter().cloned().collect::<Vec<_>>().join(",")
+        );
+    }
+
+    let in_scope = |slot: &str| {
+        only_slot.as_deref().map_or(true, |only| only == slot)
+            && !excluded_slots.contains(slot)
+    };
+
     let mut issues: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut drift_cells = 0usize;
     for (slot, entry) in slots {
+        if !in_scope(slot) {
+            continue;
+        }
         if let Err(error) = validate_owners(slot, entry) {
             issues
                 .entry(slot.clone())
@@ -306,7 +373,7 @@ fn main() {
 
     let state_names: BTreeSet<&String> = slots.keys().collect();
     for slot in active.keys() {
-        if !state_names.contains(slot) {
+        if in_scope(slot) && !state_names.contains(slot) {
             issues
                 .entry(slot.clone())
                 .or_default()
@@ -321,8 +388,14 @@ fn main() {
     }
     let rows = state_names
         .iter()
+        .filter(|name| in_scope(name.as_str()))
         .map(|name| name.as_str())
-        .chain(active.keys().map(|name| name.as_str()))
+        .chain(
+            active
+                .keys()
+                .filter(|name| in_scope(name.as_str()))
+                .map(|name| name.as_str()),
+        )
         .collect::<BTreeSet<_>>()
         .len();
     let drift_rows = issues.len();

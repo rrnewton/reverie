@@ -54,10 +54,14 @@ else:
 PY
   chmod +x "$root/bin/podman"
   : >"$root/.gitmodules"
-  cp "$subject" "$root/scripts/release-worktree.rs"
-  cp "$registry_subject" "$root/scripts/check-worktree-registry.rs"
-  cp "$podman_subject" "$root/scripts/agent-podman.rs"
-  chmod +x "$root/scripts/release-worktree.rs"
+  cat >"$root/scripts/check-worktree-registry.rs" <<EOF
+#!/usr/bin/env bash
+exec "$registry_subject" "\$@"
+EOF
+  cat >"$root/scripts/agent-podman.rs" <<EOF
+#!/usr/bin/env bash
+exec "$podman_subject" "\$@"
+EOF
   chmod +x "$root/scripts/check-worktree-registry.rs"
   chmod +x "$root/scripts/agent-podman.rs"
   printf '%s\n' '# fixture ACTIVE' >"$root/worktrees/ACTIVE.md"
@@ -127,6 +131,37 @@ write_state() {
     '<!-- END worktree-state -->' >"$root/worktrees/ACTIVE.md"
 }
 
+add_unrelated_drift() {
+  local root=$1 name=${2:-unrelated}
+  add_target "$root" hermit "$name"
+  python3 - "$root/worktree-state.json" "$root/worktrees/ACTIVE.md" "$name" <<'PY'
+import json
+import pathlib
+import sys
+
+state_path, active_path = map(pathlib.Path, sys.argv[1:3])
+name = sys.argv[3]
+state = json.loads(state_path.read_text())
+state["slots"][name] = {
+    "agents": [{"name": "unrelated-owner", "read_only": False}],
+    "hermit_branch": "wrong-branch",
+    "hermit_path": f"worktrees/{name}/hermit",
+    "reverie_branch": "-",
+    "reverie_path": f"worktrees/{name}/reverie",
+    "liteinst2_branch": "-",
+    "liteinst2_path": f"worktrees/{name}/liteinst2",
+    "task": "unrelated-task",
+    "status": "active",
+}
+state_path.write_text(json.dumps(state, indent=2) + "\n")
+active = active_path.read_text()
+row = f"| {name} | unrelated-owner | wrong-branch | - | - | unrelated-task | active | no |\n"
+active_path.write_text(active.replace(
+    "<!-- END worktree-state -->", row + "<!-- END worktree-state -->"
+))
+PY
+}
+
 run_release() {
   local root=$1 slot=$2
   (
@@ -136,7 +171,7 @@ run_release() {
       HERMIT_RELEASE_TEST_TMUX_PANES="$root/test-tmux-panes" \
       HERMIT_RELEASE_TEST_PODMAN_BIN="$root/bin/podman" \
       RELEASE_TEST_PODMAN_STATE="$root/podman.json" \
-      scripts/release-worktree.rs --slot "$slot" --clean
+      "$subject" --slot "$slot" --clean
   )
 }
 
@@ -149,7 +184,7 @@ run_recovery() {
       HERMIT_RELEASE_TEST_TMUX_PANES="$root/test-tmux-panes" \
       HERMIT_RELEASE_TEST_PODMAN_BIN="$root/bin/podman" \
       RELEASE_TEST_PODMAN_STATE="$root/podman.json" \
-      scripts/release-worktree.rs --slot "$slot" --clean \
+      "$subject" --slot "$slot" --clean \
         --recover-submodule-cleanup
   )
 }
@@ -358,9 +393,48 @@ fi
 grep -Eq 'unfinished release journal' "$root/retry.out" \
   || fail 'ordinary locked-target retry refusal was not explicit'
 git -C "$root/hermit" worktree unlock "$root/worktrees/target/hermit"
-run_recovery "$root" target >/dev/null
+add_unrelated_drift "$root"
+run_recovery "$root" target >"$root/recovery.out" 2>&1
+grep -Fq 'release recovery scope: slot=target; unrelated registry rows are not inspected' \
+  "$root/recovery.out" \
+  || fail 'scoped recovery did not report its exact slot boundary'
 jq -e '.slots.target == null' "$root/worktree-state.json" >/dev/null \
   || fail 'locked-target recovery did not complete release'
+[[ -e "$root/worktrees/unrelated/hermit" ]] \
+  || fail 'scoped recovery touched the unrelated drifted checkout'
+jq -e '.slots.unrelated.hermit_branch == "wrong-branch"' \
+  "$root/worktree-state.json" >/dev/null \
+  || fail 'scoped recovery rewrote the unrelated drifted registry row'
+
+# Two-fault negative: scoped recovery still refuses local-only work in its own
+# target and retains the armed journal. Scope is not a force bypass.
+root="$test_root/locked-unpublished"
+init_root "$root"
+add_target "$root" hermit target
+write_state "$root" target detached - -
+git -C "$root/hermit" worktree lock "$root/worktrees/target/hermit"
+if run_release "$root" target >"$root/release.out" 2>&1; then
+  fail 'locked unpublished fixture unexpectedly completed initial release'
+fi
+git -C "$root/hermit" worktree unlock "$root/worktrees/target/hermit"
+printf '%s\n' local-only >"$root/worktrees/target/hermit/local-only"
+git -C "$root/worktrees/target/hermit" add local-only
+git -C "$root/worktrees/target/hermit" commit -qm 'local-only recovery fixture'
+add_unrelated_drift "$root"
+if run_recovery "$root" target >"$root/recovery.out" 2>&1; then
+  fail 'scoped recovery discarded a local-only target commit'
+fi
+grep -Fq 'committed work not on origin' "$root/recovery.out" \
+  || { cat "$root/recovery.out" >&2; fail 'local-only recovery refusal was not explicit'; }
+jq -e '.slots.target.status == "releasing" and
+       .slots.target.release_journal.phase == "armed"' \
+  "$root/worktree-state.json" >/dev/null \
+  || fail 'local-only refusal cleared the target recovery journal'
+[[ -e "$root/worktrees/target/hermit/local-only" ]] \
+  || fail 'local-only refusal removed unpublished target content'
+jq -e '.slots.unrelated.hermit_branch == "wrong-branch"' \
+  "$root/worktree-state.json" >/dev/null \
+  || fail 'local-only refusal changed unrelated drift state'
 
 # Negative plus recovery: if a later exact product removal fails, completed
 # removals are recorded per product and retry resumes the remaining target.
@@ -392,4 +466,4 @@ if grep -nE 'worktree.*prune|\["worktree", "prune"\]' "$subject" >/dev/null; the
   fail 'release script still contains a worktree prune call'
 fi
 
-echo 'release-worktree-target-scope-test: PASS (3 positive; 10 negative; 3/3 unrelated registries preserved)'
+echo 'release-worktree-target-scope-test: PASS (4 positive; 10 negative; scoped two-fault recovery disclosed; local-only recovery refused; 3/3 unrelated registries preserved)'

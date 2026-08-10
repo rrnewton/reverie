@@ -352,6 +352,18 @@ fn canonical_exact(root: &Path, relative: &Path) -> Result<PathBuf, String> {
 /// physical-path binding remains local below because that verifier deliberately
 /// checks checkout state, not destructive-target identity.
 fn verify_registry(root: &Path) -> Result<(), String> {
+    verify_registry_scope(root, None)
+}
+
+/// Recovery is already bound to one state-recorded canonical slot. Verifying
+/// that same slot prevents unrelated drift from deadlocking a guarded retry;
+/// it does not relax any target identity, ownership, cleanliness, publication,
+/// or process proof inside the selected slot.
+fn verify_registry_slot(root: &Path, slot: &str) -> Result<(), String> {
+    verify_registry_scope(root, Some(slot))
+}
+
+fn verify_registry_scope(root: &Path, slot: Option<&str>) -> Result<(), String> {
     let checker = root.join("scripts/check-worktree-registry.rs");
     if !checker.is_file() {
         return Err(format!(
@@ -360,8 +372,12 @@ fn verify_registry(root: &Path) -> Result<(), String> {
         ));
     }
     let root_arg = root.to_string_lossy().into_owned();
-    let output = Command::new(&checker)
-        .args(["--root", &root_arg])
+    let mut command = Command::new(&checker);
+    command.args(["--root", &root_arg]);
+    if let Some(slot) = slot {
+        command.args(["--slot", slot]);
+    }
+    let output = command
         .output()
         .map_err(|error| format!("could not run {}: {error}", checker.display()))?;
     if !output.status.success() {
@@ -1727,8 +1743,13 @@ fn final_removal_boundary(
     expected_target: &CleanTarget,
     expected_repositories: &[RepoSnapshot],
     allow_dirty: bool,
+    registry_scope: Option<&str>,
 ) -> Result<(), String> {
-    verify_registry(root)?;
+    if let Some(slot) = registry_scope {
+        verify_registry_slot(root, slot)?;
+    } else {
+        verify_registry(root)?;
+    }
     let current_state = load_state(root);
     let current_slot = current_state["slots"]
         .get(slot)
@@ -5075,8 +5096,14 @@ fn main() {
                 }
             }
         }
-        verify_registry(&root)
-            .unwrap_or_else(|error| die(&format!("clean preflight failed: {error}")));
+        if recover_submodules {
+            println!("release recovery scope: slot={slot}; unrelated registry rows are not inspected");
+            verify_registry_slot(&root, &slot)
+                .unwrap_or_else(|error| die(&format!("scoped clean preflight failed: {error}")));
+        } else {
+            verify_registry(&root)
+                .unwrap_or_else(|error| die(&format!("clean preflight failed: {error}")));
+        }
         let clean_targets = clean_targets_from_state(&root, &state, &slot)
             .unwrap_or_else(|error| die(&format!("clean preflight failed: {error}")));
         let preflight_target_paths: Vec<PathBuf> = clean_targets
@@ -5168,20 +5195,6 @@ fn main() {
         if recover_submodules && !recovered_any {
             die("--recover-submodule-cleanup found no interrupted transaction marker");
         }
-        if recover_submodules && state["slots"][&slot].get("release_journal").is_some() {
-            clear_release_journal(
-                &root,
-                &mut state,
-                &slot,
-                journal_clear_crash_marker.as_deref(),
-            )
-            .unwrap_or_else(|error| die(&format!("release journal recovery interrupted: {error}")));
-            verify_registry(&root).unwrap_or_else(|error| {
-                die(&format!(
-                    "post-recovery registry verification failed: {error}"
-                ))
-            });
-        }
         if any_dirty {
             eprintln!(
                 "⚠  {slot} has uncommitted changes. Commit and push to a feature branch first."
@@ -5255,6 +5268,25 @@ fn main() {
             eprintln!("✓ verified {count} outer/nested repository HEAD(s) on origin");
         }
 
+        // Retain the armed journal until the exact scoped target has passed
+        // both uncommitted-work and remote-durability checks. A refusal above
+        // therefore cannot turn ambiguous/local-only work into an unjournaled
+        // ordinary slot merely because path restoration succeeded.
+        if recover_submodules && state["slots"][&slot].get("release_journal").is_some() {
+            clear_release_journal(
+                &root,
+                &mut state,
+                &slot,
+                journal_clear_crash_marker.as_deref(),
+            )
+            .unwrap_or_else(|error| die(&format!("release journal recovery interrupted: {error}")));
+            verify_registry_slot(&root, &slot).unwrap_or_else(|error| {
+                die(&format!(
+                    "scoped post-recovery registry verification failed: {error}"
+                ))
+            });
+        }
+
         let target_paths: Vec<PathBuf> = clean_targets
             .iter()
             .map(|target| target.path.clone())
@@ -5317,6 +5349,7 @@ fn main() {
                 target,
                 expected_repositories,
                 force,
+                recover_submodules.then_some(slot.as_str()),
             )
             .unwrap_or_else(|error| {
                 die(&format!(
