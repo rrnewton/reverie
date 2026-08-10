@@ -180,7 +180,7 @@ def test_split_preserves_remote_bytes_and_adopts_untouched_source_order(
         clone,
         source,
         [rel],
-        attribution="[impl agent, TEST] [ledger-test, devbig999]",
+        attribution="ledger split test attribution",
     )
 
     assert report["split"] == 1

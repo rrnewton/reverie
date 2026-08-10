@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Detect deletion of a self-hosted gate runner across four independent surfaces.
 
-Certification condition 9. On 2026-08-08 the `hermit-gate-newton` installation
+Certification condition 9. On 2026-08-08 the gate-runner installation
 and credentials were deleted; the user service stayed **enabled** and failed
 203/EXEC for roughly two days without reporting the deletion, and the shortfall
 presented as CI saturation. The runner was later restored and executed gate jobs
@@ -44,7 +44,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
-DEFAULT_INSTALL_ROOT = "/home/newton/work/dev-hermit/ci-runner/state-gate"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_INSTALL_ROOT = str(REPO_ROOT / "ci-runner" / "state-gate")
 DEFAULT_SERVICE = "hermit-gate-runner.service"
 DEFAULT_REPO = "rrnewton/hermit"
 
