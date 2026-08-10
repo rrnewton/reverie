@@ -942,6 +942,64 @@ class PreCommitHookTests(_ParentWorkspaceFixture):
         self.assertIn("HERMIT_PIN_DRIFT_OVERRIDE=1 set", result.stderr)
 
 
+class ProxyDisableFlagTests(unittest.TestCase):
+    """PRIMARY_CHECKOUT_DISABLE_PROXY is VALUE-checked, not presence-checked.
+
+    The presence form `os.environ.get(name)` is truthy for "0", because "0" is
+    a non-empty string. So `DISABLE_PROXY=0` -- the natural way to write "do
+    not disable" -- silently switched the proxy OFF, doing the opposite of what
+    it reads. Empty and unset were already correct (`bool("")` is False); the
+    broken values were "0" and every other non-empty value that is not "1".
+
+    The inverse case is bracketed too: a seam that never engages is as broken
+    as one that always does, so "1" must really suppress the proxy.
+    """
+
+    def _command(self, value: str | None) -> list[str]:
+        captured: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            captured.append(list(command))
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        env = dict(os.environ)
+        env.pop("PRIMARY_CHECKOUT_DISABLE_PROXY", None)
+        if value is not None:
+            env["PRIMARY_CHECKOUT_DISABLE_PROXY"] = value
+        with unittest.mock.patch.dict(os.environ, env, clear=True), \
+             unittest.mock.patch.object(primary_checkout.shutil, "which", return_value="/usr/bin/with-proxy"), \
+             unittest.mock.patch.object(primary_checkout.subprocess, "run", fake_run):
+            primary_checkout.run_git(Path("/tmp"), "ls-remote", network=True)
+        return captured[0]
+
+    def test_unset_keeps_the_proxy(self) -> None:
+        self.assertIn("/usr/bin/with-proxy", self._command(None))
+
+    def test_zero_keeps_the_proxy(self) -> None:
+        # THE REGRESSION CASE: "0" is truthy, so the presence form disabled here.
+        self.assertIn("/usr/bin/with-proxy", self._command("0"))
+
+    def test_empty_keeps_the_proxy(self) -> None:
+        self.assertIn("/usr/bin/with-proxy", self._command(""))
+
+    def test_arbitrary_value_keeps_the_proxy(self) -> None:
+        # Only the exact "1" disables; we do not guess at "true".
+        self.assertIn("/usr/bin/with-proxy", self._command("true"))
+
+    def test_one_actually_disables_the_proxy(self) -> None:
+        # INVERSE CONTROL: the seam must still work when correctly set.
+        self.assertNotIn("/usr/bin/with-proxy", self._command("1"))
+
+    def test_predicate_directly(self) -> None:
+        for value, want in ((None, False), ("", False), ("0", False), ("true", False), ("1", True)):
+            env = dict(os.environ)
+            env.pop("PRIMARY_CHECKOUT_DISABLE_PROXY", None)
+            if value is not None:
+                env["PRIMARY_CHECKOUT_DISABLE_PROXY"] = value
+            with unittest.mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(primary_checkout.proxy_disabled(), want, f"value={value!r}")
+
+
 class GitEnvironmentScrubTests(unittest.TestCase):
     """`git -C <repo>` must mean <repo> even under an inherited git environment.
 
