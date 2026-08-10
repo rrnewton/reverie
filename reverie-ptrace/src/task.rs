@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock as StdOnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -528,9 +529,32 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) syscall_marker: u64,
     pub(crate) newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
     pub(crate) held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+    /// Records a fail-closed LiteInst refusal raised by any task.
+    ///
+    /// A non-root task's error cannot reach the root's cleanup guard, so
+    /// without this the session could finish "successfully" after a child was
+    /// released untraced. The root consults it before reporting success.
+    pub(crate) session_failure: Arc<StdMutex<Option<String>>>,
+    /// Set once the guest has created a second task.
+    ///
+    /// Hook installation is single-task-only (see `maybe_install_liteinst_site`).
+    pub(crate) multi_task: Arc<AtomicBool>,
+    /// TID of the session's root tracee, published once the guest is spawned.
+    ///
+    /// The root-stop lease and its cleanup guard are owned by exactly this
+    /// TID. A forked child is its own thread-group leader, so the
+    /// `tid == pid` shape cannot distinguish it from the root.
+    pub(crate) root_tid: Arc<StdOnceLock<Pid>>,
     pub(crate) instrumentation_stats: Option<Arc<StdMutex<LiteinstInstrumentationStats>>>,
     #[cfg(test)]
     pub(crate) fail_preinit: bool,
+    /// Synthesises a fail-closed error at the new-task boundary.
+    ///
+    /// Production no longer refuses task creation, so the cleanup guard's
+    /// whole-group reaping needs an explicit trigger that still produces a
+    /// multi-task tree at the moment of failure.
+    #[cfg(test)]
+    pub(crate) fail_new_task: bool,
     #[cfg(test)]
     pub(crate) pause_new_task: Option<mpsc::UnboundedSender<Pid>>,
     #[cfg(test)]
@@ -578,7 +602,6 @@ pub(crate) enum RootStopPause {
 struct LiteinstRootStopArmer {
     root_tid: Pid,
     held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
-    newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
 }
 
 impl LiteinstRootStopArmer {
@@ -586,26 +609,12 @@ impl LiteinstRootStopArmer {
         if task.pid() != self.root_tid {
             return Ok(());
         }
-        if let Event::NewChild(op, child) = event {
-            self.newborn_tracees
-                .lock()
-                .unwrap()
-                .entry(child.pid())
-                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
-        }
         HeldRootStop::arm_empty(&self.held_root_stop, task, event)
     }
 
     fn ensure(&self, task: &Stopped, event: &Event) -> Result<(), TraceError> {
         if task.pid() != self.root_tid {
             return Ok(());
-        }
-        if let Event::NewChild(op, child) = event {
-            self.newborn_tracees
-                .lock()
-                .unwrap()
-                .entry(child.pid())
-                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
         }
         HeldRootStop::ensure_current(&self.held_root_stop, task, event)
     }
@@ -695,6 +704,17 @@ fn is_liteinst_mapping_syscall(nr: Sysno) -> bool {
         nr,
         // AUTONOMOUS-BOT-IMPLEMENTED
         Sysno::mmap | Sysno::munmap | Sysno::mremap | Sysno::mprotect | Sysno::pkey_mprotect
+    )
+}
+
+/// Syscalls whose return lands in two tasks at once.
+///
+/// The kernel starts the new task at the instruction following the `syscall`,
+/// so the site must still decode as the original instruction stream there.
+fn is_task_creating_syscall(nr: Sysno) -> bool {
+    matches!(
+        nr,
+        Sysno::clone | Sysno::clone3 | Sysno::fork | Sysno::vfork
     )
 }
 
@@ -2527,7 +2547,14 @@ impl<L: Tool + 'static> TracedTask<L> {
             | LiteinstRuntimePhase::Waiting
             | LiteinstRuntimePhase::Bootstrap => LiteinstActivationStage::PreReady,
         };
-        self.liteinst_failure = Some(LiteinstActivationFailure::new(stage, reason, error));
+        let failure = LiteinstActivationFailure::new(stage, reason, error);
+        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
+            let mut slot = runtime.session_failure.lock().unwrap();
+            if slot.is_none() {
+                *slot = Some(format!("tracee {}: {failure}", self.tid()));
+            }
+        }
+        self.liteinst_failure = Some(failure);
     }
 
     fn reject_liteinst_activation_signal(
@@ -3662,8 +3689,27 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn maybe_install_liteinst_site(
         &mut self,
         task: Stopped,
+        nr: Sysno,
     ) -> Result<(Stopped, bool, Option<u64>), Error> {
         if self.global_state.liteinst_runtime.is_none() {
+            return Ok((task, false, None));
+        }
+        // A task-creating syscall must not be patched. Patching overwrites the
+        // instruction bytes AT the site, and the new task is resumed with the
+        // register context captured before the injection -- i.e. with `rip`
+        // pointing just past the original two-byte `syscall`. Once the site
+        // holds a longer relocating jump, that address is no longer an
+        // instruction boundary and the child executes rubbish. Leaving these
+        // sites unpatched costs nothing: they are entered once per task.
+        if is_task_creating_syscall(nr) {
+            return Ok((task, false, None));
+        }
+        if self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.multi_task.load(Ordering::Acquire))
+        {
             return Ok((task, false, None));
         }
         let regs = task.getregs()?;
@@ -3828,7 +3874,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         self.record_retained_liteinst_fallback_hit(&task);
         let (installed_task, syscall_already_skipped, liteinst_resume_rip) =
-            self.maybe_install_liteinst_site(task).await?;
+            self.maybe_install_liteinst_site(task, nr).await?;
         task = installed_task;
         #[cfg(target_arch = "x86_64")]
         let is_legacy_vsyscall = !syscall_already_skipped
@@ -3945,33 +3991,38 @@ impl<L: Tool + 'static> TracedTask<L> {
         .await
     }
 
+    /// The LiteInst config, but only when this task is the session root.
+    ///
+    /// The root-stop lease and the fail-closed cleanup guard are owned by the
+    /// single spawned root TID. `tid == pid` is NOT that predicate: a forked
+    /// child is its own thread-group leader and would otherwise take the
+    /// root's shared lease, whose `root_tid` check then rejects every
+    /// transition with `EINVAL`.
+    fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+        let runtime = self.liteinst_root_config()?;
+        (Some(&task.pid()) == runtime.root_tid.get()).then_some(runtime)
+    }
+
+    /// The LiteInst config, but only when *this task* is the session root.
+    fn liteinst_root_config(&self) -> Option<&LiteinstRuntimeConfig> {
+        let runtime = self.global_state.liteinst_runtime.as_ref()?;
+        (Some(&self.tid()) == runtime.root_tid.get()).then_some(runtime)
+    }
+
     fn liteinst_root_stop_slot(
         &self,
         task: &Stopped,
     ) -> Option<Arc<StdMutex<Option<HeldRootStop>>>> {
-        (task.pid() == self.pid() && self.tid() == self.pid())
-            .then(|| {
-                self.global_state
-                    .liteinst_runtime
-                    .as_ref()
-                    .map(|runtime| Arc::clone(&runtime.held_root_stop))
-            })
-            .flatten()
+        self.liteinst_root_runtime(task)
+            .map(|runtime| Arc::clone(&runtime.held_root_stop))
     }
 
     fn liteinst_root_stop_armer(&self, task: &Stopped) -> Option<LiteinstRootStopArmer> {
-        (task.pid() == self.pid() && self.tid() == self.pid())
-            .then(|| {
-                self.global_state
-                    .liteinst_runtime
-                    .as_ref()
-                    .map(|runtime| LiteinstRootStopArmer {
-                        root_tid: self.pid(),
-                        held_root_stop: Arc::clone(&runtime.held_root_stop),
-                        newborn_tracees: Arc::clone(&runtime.newborn_tracees),
-                    })
-            })
-            .flatten()
+        let runtime = self.liteinst_root_runtime(task)?;
+        Some(LiteinstRootStopArmer {
+            root_tid: task.pid(),
+            held_root_stop: Arc::clone(&runtime.held_root_stop),
+        })
     }
 
     pub(crate) fn arm_liteinst_root_stop(&self, task: &Stopped, event: &Event) {
@@ -3983,14 +4034,37 @@ impl<L: Tool + 'static> TracedTask<L> {
             .expect("rearmed an undisarmed or mismatched root stop lease");
     }
 
+    /// Gives the cleanup guard ownership of a newborn tracee's wait statuses.
+    ///
+    /// This is deliberately NOT root-scoped, unlike the root-stop lease: the
+    /// guard has to be able to reap the whole descendant tree, and
+    /// `handle_new_task` requires the entry to exist for every child it sees.
+    /// A grandchild is reported to its own non-root parent, so scoping this to
+    /// the root leaves it unregistered.
+    fn register_liteinst_newborn(&self, task: &Stopped, event: &Event) {
+        let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
+            return;
+        };
+        if let Event::NewChild(op, child) = event {
+            runtime
+                .newborn_tracees
+                .lock()
+                .unwrap()
+                .entry(child.pid())
+                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
+        }
+    }
+
     fn arm_liteinst_wait(&self, wait: &Wait) {
         if let Wait::Stopped(task, event) = wait {
+            self.register_liteinst_newborn(task, event);
             self.arm_liteinst_root_stop(task, event);
         }
     }
 
     fn ensure_liteinst_wait(&self, wait: &Wait) {
         if let Wait::Stopped(task, event) = wait {
+            self.register_liteinst_newborn(task, event);
             let Some(armer) = self.liteinst_root_stop_armer(task) else {
                 return;
             };
@@ -4060,6 +4134,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Wait, TraceError> {
         if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
+            runtime.multi_task.store(true, Ordering::Release);
             let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
             let child_pid = child.pid();
             if let Some(error) = newborn_tracees
@@ -4095,13 +4170,24 @@ impl<L: Tool + 'static> TracedTask<L> {
                     future::pending::<()>().await;
                 }
             }
-            // This first hybrid slice intentionally has one tracee and one
-            // thread: its patch-helper stack and bootstrap phase are
-            // process-global. Root cleanup owns both process children and
-            // CLONE_THREAD TIDs after this fail-closed error.
-            // It signals only group-leader pidfds and drains every bound
-            // notifier generation on the ptracer thread.
-            return Err(Errno::ENOTSUPP.into());
+            #[cfg(test)]
+            if runtime.fail_new_task {
+                return Err(Errno::ENOTSUPP.into());
+            }
+            if op == ChildOp::Vfork {
+                // A vfork child borrows the parent's memory and suspends it
+                // until the child execs or exits, and exec cannot preserve the
+                // preload runtime (see `handle_exec_event`). Refusing here
+                // keeps the refusal on the root, where the cleanup guard owns
+                // teardown; letting the child through only moves the same
+                // refusal into a task whose parent is frozen behind it.
+                return Err(Errno::ENOTSUPP.into());
+            }
+            // Any other new task proceeds under the ordinary ptrace lifecycle.
+            // Root cleanup still owns every process child and CLONE_THREAD TID
+            // if a later LiteInst failure does fail closed: it signals only
+            // group-leader pidfds and drains every bound notifier generation on
+            // the ptracer thread.
         }
         tracing::debug!(
             "[scheduler] handling fork from parent {} to child {}: {:?}",
@@ -4136,6 +4222,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         let child_restore_context = child_context.or(context);
 
         let id = child.pid();
+        // Under the LiteInst runtime the cleanup guard registers every newborn
+        // with the notifier the moment its parent reports `Event::NewChild`, so
+        // the "notifier is not yet aware of this PID" precondition for the raw
+        // `wait` below no longer holds: the notifier worker would consume the
+        // initial stop and the raw `wait` would block forever. Take the initial
+        // stop from the notifier instead, which is the same state by a
+        // registered route.
+        let notifier_owns_initial_stop = self.global_state.liteinst_runtime.is_some();
 
         let task = tokio::task::spawn_local(async move {
             // The child could potentially exit here. In most cases the first
@@ -4146,7 +4240,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             //
             // NOTE: It is okay to call `wait` instead of the async `next_state`
             // here because the notifier is not yet aware of the new process.
-            let (child, event) = match child.wait() {
+            let initial_stop = if notifier_owns_initial_stop {
+                child.next_state().await
+            } else {
+                child.wait()
+            };
+            let (child, event) = match initial_stop {
                 Ok(wait) => wait.assume_stopped(),
                 Err(TraceError::Died(zombie)) => {
                     let exit_status = match zombie.reap().await {
@@ -4206,15 +4305,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
 
             let tid = child.pid();
-            let detach_held_root_stop = (child_task.tid() == child_task.pid())
-                .then(|| {
-                    child_task
-                        .global_state
-                        .liteinst_runtime
-                        .as_ref()
-                        .map(|runtime| Arc::clone(&runtime.held_root_stop))
-                })
-                .flatten();
+            let detach_held_root_stop = child_task
+                .liteinst_root_config()
+                .map(|runtime| Arc::clone(&runtime.held_root_stop));
             match child_task.run(child).await {
                 Err(err) => {
                     tracing::error!("Error in tracee tid {}: {}", tid, err);
@@ -4324,7 +4417,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .and_then(|wait| self.check_swbreak(wait))
                 .await
         } else {
-            Ok(self.step_stopped(parent, None)?.next_state().await?)
+            // This nested parent step consumes the root-stop lease, so the
+            // resulting stop has to re-arm it before returning to a caller
+            // that will transition the root again. Every other nested handler
+            // does the same; this one only looks new because the whole
+            // new-task path used to be unreachable under LiteInst.
+            let wait = self.step_stopped(parent, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            Ok(wait)
         }
     }
 
@@ -4590,10 +4690,10 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Drive a single guest thread to completion. Returns the final exit code
     /// when that guest thread exits.
     pub async fn run(mut self, child: Stopped) -> Result<ExitStatus, reverie::Error> {
+        // Only the session root owns the shared root-stop lease; a child task
+        // that superseded it would strand the root's cleanup handoff.
         let exit_held_root_stop = self
-            .global_state
-            .liteinst_runtime
-            .as_ref()
+            .liteinst_root_config()
             .map(|runtime| Arc::clone(&runtime.held_root_stop));
         let outcome = {
             let exit_event = child.exit_event().fuse();
@@ -4613,11 +4713,38 @@ impl<L: Tool + 'static> TracedTask<L> {
                 exit_status = run_loop => exit_status,
             }
         };
-        let exit_status = match (outcome, self.liteinst_failure.take()) {
-            (_, Some(original)) => return Err(anyhow::Error::new(original).into()),
-            (Ok(exit_status), None) => exit_status,
-            (Err(error), _) => return Err(error),
+        let (exit_status, failure) = match (outcome, self.liteinst_failure.take()) {
+            (_, Some(original)) => (
+                None,
+                Some(reverie::Error::from(anyhow::Error::new(original))),
+            ),
+            (Ok(exit_status), None) => (Some(exit_status), None),
+            (Err(error), _) => (None, Some(error)),
         };
+        if let Some(failure) = failure {
+            // A failed task skips the normal `tool_exit` bookkeeping below, so
+            // a deterministic scheduler keeps waiting for a thread whose tracee
+            // the error path has already detached and the session makes no
+            // further progress. Release a failed NON-ROOT task from the tool so
+            // the error can surface; the root must not do this, because its
+            // error is the session's error and its outer guard owns teardown.
+            //
+            // Only reachable under the LiteInst runtime today, where a child
+            // task can hit a fail-closed refusal (post-start exec) of its own.
+            if self.global_state.liteinst_runtime.is_some() && self.liteinst_root_config().is_none()
+            {
+                let tid = self.tid();
+                if let Err(error) = self.tool_exit(ExitStatus::Exited(1)).await {
+                    tracing::warn!(
+                        %tid,
+                        %error,
+                        "tool exit hook failed while releasing a failed LiteInst task"
+                    );
+                }
+            }
+            return Err(failure);
+        }
+        let exit_status = exit_status.expect("a task without a failure has an exit status");
         if self.global_state.liteinst_runtime.is_some() {
             let phase = self.liteinst_runtime.lock().unwrap().phase;
             if phase != LiteinstRuntimePhase::Ready {
@@ -4634,6 +4761,19 @@ impl<L: Tool + 'static> TracedTask<L> {
                 ))
                 .into());
             }
+        }
+
+        // A fail-closed refusal raised by a non-root task cannot reach the
+        // root's cleanup guard, and that task's tracee was released so the rest
+        // of the guest could finish. Refuse to report success over it.
+        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref()
+            && self.liteinst_root_config().is_some()
+            && let Some(message) = runtime.session_failure.lock().unwrap().clone()
+        {
+            return Err(anyhow::anyhow!(
+                "LiteInst session failed closed in a non-root task: {message}"
+            )
+            .into());
         }
 
         if let Some(stats) = &self.global_state.backend_stats {

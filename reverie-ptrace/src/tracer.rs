@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
-#[cfg(test)]
+use std::sync::OnceLock as StdOnceLock;
 use std::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
@@ -1962,11 +1962,16 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             syscall_marker,
             newborn_tracees: Arc::new(StdMutex::new(HashMap::new())),
             held_root_stop: Arc::new(StdMutex::new(None)),
+            root_tid: Arc::new(StdOnceLock::new()),
+            multi_task: Arc::new(AtomicBool::new(false)),
+            session_failure: Arc::new(StdMutex::new(None)),
             instrumentation_stats: stats_request
                 .is_enabled()
                 .then(|| Arc::new(StdMutex::new(LiteinstInstrumentationStats::default()))),
             #[cfg(test)]
             fail_preinit: false,
+            #[cfg(test)]
+            fail_new_task: false,
             #[cfg(test)]
             pause_new_task: None,
             #[cfg(test)]
@@ -2011,6 +2016,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .as_mut()
             .expect("LiteInst runtime must be configured before preinit failure injection")
             .fail_preinit = true;
+        self
+    }
+
+    #[cfg(test)]
+    fn fail_liteinst_new_task_for_test(mut self) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before new-task failure injection")
+            .fail_new_task = true;
         self
     }
 
@@ -2285,6 +2299,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
         let mut child = command.spawn().context("Failed to spawn tracee")?;
         let guest_pid = child.id();
+        if let Some(runtime) = self.liteinst_runtime.as_ref() {
+            // Publish the session root before any task can observe the config.
+            // Everything LiteInst-root-scoped keys off this exact TID rather
+            // than the `tid == pid` shape, which a forked child also has.
+            runtime
+                .root_tid
+                .set(guest_pid)
+                .expect("LiteInst root TID is published exactly once per spawn");
+        }
         let running_child = Running::new(guest_pid);
         let liteinst_newborn_tracees = self
             .liteinst_runtime
@@ -3635,6 +3658,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
@@ -3736,6 +3760,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .fail_liteinst_discovery_once_for_test(Arc::clone(&fail_once))
             .spawn()
@@ -3785,6 +3810,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .fail_liteinst_after_task_scan_once_for_test(
                 Arc::clone(&fail_once),
@@ -3833,6 +3859,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
