@@ -25,5 +25,14 @@ int main(int argc, char **argv) {
     _exit(0);
   }
   int status = 0;
-  return waitpid(child, &status, 0) == child ? 0 : 11;
+  if (waitpid(child, &status, 0) != child) {
+    return 11;
+  }
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    return 12;
+  }
+  /* Printed only after the child has been created, run and reaped, so a run
+     that never forked cannot satisfy the assertion by exiting zero. */
+  puts("fork-followed");
+  return 0;
 }
