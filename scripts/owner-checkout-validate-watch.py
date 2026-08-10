@@ -224,20 +224,28 @@ def qualify_row(parent: Path, checkout: Path, sha: str, row: dict[str, Any]) -> 
 
 
 def lock_block_evidence(log: Path) -> dict[str, Any] | None:
-    """Recognize a fail-closed validate-lock quarantine from durable output."""
+    """Recognize an explicit fail-closed validate-lock refusal from durable output."""
     if not log.is_file():
         return None
     text = log.read_text(encoding="utf-8", errors="replace")
-    quarantine = "quarantine: ACTIVE" in text or "QUARANTINED" in text
+    markers = [
+        marker
+        for marker in (
+            "quarantine: ACTIVE",
+            "QUARANTINED",
+            "REFUSED: box-exclusive anchor held",
+        )
+        if marker in text
+    ]
     exit_three = any(
         "validate-lock" in line and "exit=3" in line
         for line in text.splitlines()
     )
-    if not (quarantine and exit_three):
+    if not (markers and exit_three):
         return None
     return {
-        "kind": "validate-lock-quarantine",
-        "quarantine_marker": True,
+        "kind": "validate-lock-refusal",
+        "refusal_markers": markers,
         "validate_lock_exit": 3,
         "log": str(log),
         "interpretation": "validation was refused before product work executed",
@@ -523,7 +531,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             result.update(
                 state="BLOCKED_ON_LOCK",
                 reason=(
-                    "validate-lock quarantine refused admission before product work; "
+                    "validate-lock refused admission before product work; "
                     "no exact-attempt ledger row"
                 ),
             )

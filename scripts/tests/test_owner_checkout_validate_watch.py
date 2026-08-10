@@ -237,6 +237,17 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             log.write_text("# ci-hub/validate-lock tool COST ACTUAL exit=3\n")
             self.assertIsNone(watch.lock_block_evidence(log))
 
+    def test_box_exclusive_anchor_refusal_is_lock_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text(
+                "REFUSED: box-exclusive anchor held by pid=123 host=fixture\n"
+                "# ci-hub/validate-lock tool COST ACTUAL exit=3\n"
+            )
+            evidence = watch.lock_block_evidence(log)
+            self.assertIsNotNone(evidence)
+            self.assertEqual(evidence["kind"], "validate-lock-refusal")
+
     def test_exact_ledger_failure_outranks_wrapper_success(self) -> None:
         source = (ROOT / "scripts/owner-checkout-validate-watch.py").read_text()
         ledger_clause = 'row is not None and row.get("result") == "fail"'
