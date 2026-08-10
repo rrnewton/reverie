@@ -248,6 +248,22 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertIsNotNone(evidence)
             self.assertEqual(evidence["kind"], "validate-lock-refusal")
 
+    def test_launcher_capture_cannot_overwrite_concurrent_lock_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            with watch.append_launcher_output(log) as launcher:
+                with log.open("a", encoding="utf-8") as service:
+                    service.write(
+                        "REFUSED: box-exclusive anchor held by pid=123 host=fixture\n"
+                        "# ci-hub/validate-lock tool COST ACTUAL exit=3\n"
+                    )
+                launcher.write("validate-run: FINISHED fixture.service\n")
+
+            text = log.read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("REFUSED: box-exclusive anchor held"))
+            self.assertIn("validate-run: FINISHED", text)
+            self.assertIsNotNone(watch.lock_block_evidence(log))
+
     def test_exact_ledger_failure_outranks_wrapper_success(self) -> None:
         source = (ROOT / "scripts/owner-checkout-validate-watch.py").read_text()
         ledger_clause = 'row is not None and row.get("result") == "fail"'

@@ -252,6 +252,17 @@ def lock_block_evidence(log: Path) -> dict[str, Any] | None:
     }
 
 
+def append_launcher_output(log: Path):
+    """Capture validate-run's wrapper output without overwriting its service log.
+
+    ``start_unit.py`` points systemd's stdout/stderr at this same path.  The
+    wrapper remains alive while that service writes, so a normal ``"w"`` file
+    descriptor can later overwrite the beginning of the service's refusal.
+    O_APPEND makes the two writers preserve each other's complete evidence.
+    """
+    return log.open("a", encoding="utf-8")
+
+
 def preserve_and_restore(
     checkout: Path,
     pre: dict[str, Any],
@@ -488,7 +499,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "5",
         ]
         launched = True
-        with validate_log.open("w", encoding="utf-8") as output:
+        with append_launcher_output(validate_log) as output:
             completed = run(command, cwd=parent, stdout=output, stderr=subprocess.STDOUT)
         result["validate_run_rc"] = completed.returncode
         lock_block = lock_block_evidence(validate_log)
