@@ -249,6 +249,115 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(evidence["kind"], "validate-lock-refusal")
             self.assertEqual(evidence["refusal_pid"], 123)
 
+    def test_acquired_marker_binds_agent_kind_and_exact_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            target = "a" * 40
+            log.write_text(
+                "validate-lock: ACQUIRED by another-agent running validate "
+                + target
+                + " (lease 1200s)\n"
+                "validate-lock: ACQUIRED by owner-checkout-watch running benchmark "
+                + target
+                + " (lease 1200s)\n"
+                "validate-lock: ACQUIRED by owner-checkout-watch running validate "
+                + ("b" * 40)
+                + " (lease 1200s)\n"
+                "validate-lock: ACQUIRED by owner-checkout-watch running validate "
+                + target
+                + " (lease 1200s)\n"
+            )
+
+            self.assertIn(target, watch.acquired_line(log, target=target))
+            self.assertIsNone(watch.acquired_line(log, target="c" * 40))
+
+    def test_admission_status_brackets_admitted_not_admitted_and_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+
+            rc, status = watch.admission_status_since(state, "100")
+            self.assertEqual((rc, status["state"]), (2, "UNKNOWN"))
+
+            with mock.patch.object(watch, "epoch_millis", return_value=200_000):
+                watch.ensure_admission_cursor(state)
+            rc, status = watch.admission_status_since(state, "200")
+            self.assertEqual((rc, status["state"]), (1, "NOT_ADMITTED"))
+
+            result = {
+                "attempt_id": "fixture-attempt",
+                "result_json": str(state / "results/fixture.json"),
+            }
+            with mock.patch.object(watch, "epoch_millis", return_value=201_250), mock.patch.object(
+                watch, "utc_now", return_value="1970-01-01T00:03:21.250Z"
+            ):
+                admission = watch.record_admission(
+                    state,
+                    result,
+                    target="d" * 40,
+                    evidence_line=(
+                        "validate-lock: ACQUIRED by owner-checkout-watch running validate "
+                        + "d" * 40
+                        + " (lease 1200s)"
+                    ),
+                )
+            self.assertEqual(admission["state"], "ADMITTED")
+            rc, status = watch.admission_status_since(state, "200")
+            self.assertEqual((rc, status["state"]), (0, "ADMITTED"))
+            self.assertEqual(status["admission"]["attempt_id"], "fixture-attempt")
+            rc, status = watch.admission_status_since(state, "202")
+            self.assertEqual((rc, status["state"]), (1, "NOT_ADMITTED"))
+
+    def test_boundary_before_observation_is_unknown_not_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            with mock.patch.object(watch, "epoch_millis", return_value=200_000):
+                watch.ensure_admission_cursor(state)
+            rc, status = watch.admission_status_since(state, "199")
+            self.assertEqual((rc, status["state"]), (2, "UNKNOWN"))
+            self.assertFalse(status["admitted"])
+
+    def test_running_producer_publishes_admission_before_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary) / "state"
+            log = state / "logs/attempt.log"
+            log.parent.mkdir(parents=True)
+            target = "e" * 40
+            result_path = state / "results/attempt.json"
+            result = {
+                "schema_version": 1,
+                "attempt_id": "attempt",
+                "result_json": str(result_path),
+                "state": "CANNOT_START",
+                "lock_admission": {"state": "UNKNOWN"},
+            }
+            marker = (
+                "validate-lock: ACQUIRED by owner-checkout-watch running validate "
+                + target
+                + " (lease 1200s)"
+            )
+
+            completed = watch.run_validate_observing_admission(
+                ["bash", "-c", f"printf '%s\\n' '{marker}'; sleep 0.4"],
+                cwd=Path(temporary),
+                log=log,
+                state_dir=state,
+                result=result,
+                target=target,
+            )
+
+            self.assertEqual(completed.returncode, 0)
+            in_flight = json.loads(result_path.read_text())
+            self.assertEqual(in_flight["lock_admission"]["state"], "ADMITTED")
+            self.assertEqual(in_flight["lock_admission"]["target"], target)
+            boundary = in_flight["lock_admission"]["admitted_at_epoch_ms"] / 1000 - 1
+            rc, status = watch.admission_status_since(state, str(boundary))
+            self.assertEqual((rc, status["state"]), (0, "ADMITTED"))
+
+    def test_invalid_boundary_is_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            rc, status = watch.admission_status_since(Path(temporary), "infinity")
+            self.assertEqual((rc, status["state"]), (2, "UNKNOWN"))
+
     def test_launcher_capture_cannot_overwrite_concurrent_lock_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "validate.log"

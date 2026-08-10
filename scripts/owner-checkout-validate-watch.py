@@ -20,6 +20,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from typing import Any, Iterable, Sequence
 
 
@@ -30,12 +31,23 @@ CANNOT_START = 3
 RESTORE_FAILED = 4
 NOTIFY_FAILED = 5
 BLOCKED_ON_LOCK = 6
+ADMISSION_STATUS_UNKNOWN = 2
 KNOWN_EXCEPTION_PATH = "validate"
 KNOWN_EXCEPTION_TARGET = "scripts/validate.rs"
+ADMISSION_CURSOR_SCHEMA = 1
+ADMISSION_CURSOR_NAME = "owner-watch-admission.json"
+ACQUIRED_PATTERN = re.compile(
+    r"^validate-lock: ACQUIRED by (?P<agent>\S+) running "
+    r"(?P<kind>\S+) (?P<target>[0-9a-f]{40})(?:\s|$)"
+)
 
 
 def utc_now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def epoch_millis() -> int:
+    return time.time_ns() // 1_000_000
 
 
 def run(
@@ -151,6 +163,179 @@ def append_jsonl(path: Path, record: dict[str, Any]) -> None:
         output.write(json.dumps(record, sort_keys=True) + "\n")
         output.flush()
         os.fsync(output.fileno())
+
+
+def admission_cursor_path(state_dir: Path) -> Path:
+    return state_dir / ADMISSION_CURSOR_NAME
+
+
+def load_admission_cursor(state_dir: Path) -> dict[str, Any] | None:
+    path = admission_cursor_path(state_dir)
+    try:
+        cursor = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(cursor, dict):
+        return None
+    if cursor.get("schema_version") != ADMISSION_CURSOR_SCHEMA:
+        return None
+    if not isinstance(cursor.get("observation_started_at_epoch_ms"), int):
+        return None
+    admission = cursor.get("last_admission")
+    if admission is not None and not (
+        isinstance(admission, dict)
+        and isinstance(admission.get("admitted_at_epoch_ms"), int)
+        and isinstance(admission.get("attempt_id"), str)
+        and isinstance(admission.get("target"), str)
+    ):
+        return None
+    return cursor
+
+
+def ensure_admission_cursor(state_dir: Path) -> dict[str, Any]:
+    cursor = load_admission_cursor(state_dir)
+    if cursor is not None:
+        return cursor
+    now_ms = epoch_millis()
+    cursor = {
+        "schema_version": ADMISSION_CURSOR_SCHEMA,
+        "observation_started_at": utc_now(),
+        "observation_started_at_epoch_ms": now_ms,
+        "last_admission": None,
+    }
+    atomic_write(
+        admission_cursor_path(state_dir),
+        json.dumps(cursor, indent=2, sort_keys=True) + "\n",
+    )
+    return cursor
+
+
+def acquired_line(log: Path, *, target: str) -> str | None:
+    """Return the exact owner-watch acquisition line bound to ``target``.
+
+    The marker is near the beginning of validate-lock output.  Bound the read so
+    polling it remains cheap even while a full validation grows a large log.
+    """
+    try:
+        with log.open("r", encoding="utf-8", errors="replace") as source:
+            text = source.read(128 * 1024)
+    except OSError:
+        return None
+    for line in text.splitlines():
+        match = ACQUIRED_PATTERN.match(line)
+        if not match:
+            continue
+        if (
+            match.group("agent") == "owner-checkout-watch"
+            and match.group("kind") == "validate"
+            and match.group("target") == target
+        ):
+            return line
+    return None
+
+
+def record_admission(
+    state_dir: Path,
+    result: dict[str, Any],
+    *,
+    target: str,
+    evidence_line: str,
+) -> dict[str, Any]:
+    """Atomically publish the watch's exact lock admission, never its verdict."""
+    observed_at = utc_now()
+    observed_ms = epoch_millis()
+    admission = {
+        "state": "ADMITTED",
+        "agent": "owner-checkout-watch",
+        "kind": "validate",
+        "target": target,
+        "attempt_id": result["attempt_id"],
+        "admitted_at": observed_at,
+        "admitted_at_epoch_ms": observed_ms,
+        "evidence_line": evidence_line,
+        "result_json": result["result_json"],
+    }
+    result["lock_admission"] = admission
+    cursor = ensure_admission_cursor(state_dir)
+    cursor["last_admission"] = admission
+    atomic_write(
+        admission_cursor_path(state_dir),
+        json.dumps(cursor, indent=2, sort_keys=True) + "\n",
+    )
+    # Publish the in-flight fact immediately. A red, killed, or still-running
+    # validation is nevertheless an admission; the final writer adds verdict.
+    atomic_write(
+        Path(str(result["result_json"])),
+        json.dumps(result, indent=2, sort_keys=True) + "\n",
+    )
+    return admission
+
+
+def parse_boundary(value: str) -> int:
+    try:
+        # Release records carry epoch seconds. Preserve fractional input while
+        # comparing at millisecond precision so same-second handoffs are visible.
+        return int(float(value) * 1000)
+    except ValueError:
+        parsed = parse_time(value)
+        if parsed is None:
+            raise ValueError("boundary must be epoch seconds or RFC3339")
+        return int(parsed.timestamp() * 1000)
+
+
+def admission_status_since(state_dir: Path, boundary: str) -> tuple[int, dict[str, Any]]:
+    """Cheap public observable: did the watch acquire after ``boundary``?"""
+    try:
+        boundary_ms = parse_boundary(boundary)
+    except (ValueError, OverflowError) as error:
+        return ADMISSION_STATUS_UNKNOWN, {
+            "schema_version": 1,
+            "state": "UNKNOWN",
+            "admitted": False,
+            "reason": str(error),
+            "boundary": boundary,
+        }
+    cursor = load_admission_cursor(state_dir)
+    if cursor is None:
+        return ADMISSION_STATUS_UNKNOWN, {
+            "schema_version": 1,
+            "state": "UNKNOWN",
+            "admitted": False,
+            "reason": "owner-watch admission cursor is missing, unreadable, or unknown-schema",
+            "boundary_epoch_ms": boundary_ms,
+            "cursor": str(admission_cursor_path(state_dir)),
+        }
+    observation_ms = int(cursor["observation_started_at_epoch_ms"])
+    admission = cursor.get("last_admission")
+    if isinstance(admission, dict) and admission["admitted_at_epoch_ms"] > boundary_ms:
+        return 0, {
+            "schema_version": 1,
+            "state": "ADMITTED",
+            "admitted": True,
+            "reason": "exact owner-watch validate-lock acquisition observed after boundary",
+            "boundary_epoch_ms": boundary_ms,
+            "observation_started_at_epoch_ms": observation_ms,
+            "admission": admission,
+        }
+    if boundary_ms < observation_ms:
+        return ADMISSION_STATUS_UNKNOWN, {
+            "schema_version": 1,
+            "state": "UNKNOWN",
+            "admitted": False,
+            "reason": "boundary predates authoritative admission observation",
+            "boundary_epoch_ms": boundary_ms,
+            "observation_started_at_epoch_ms": observation_ms,
+            "last_admission": admission,
+        }
+    return 1, {
+        "schema_version": 1,
+        "state": "NOT_ADMITTED",
+        "admitted": False,
+        "reason": "no exact owner-watch validate-lock acquisition observed after boundary",
+        "boundary_epoch_ms": boundary_ms,
+        "observation_started_at_epoch_ms": observation_ms,
+        "last_admission": admission,
+    }
 
 
 def parse_time(value: Any) -> dt.datetime | None:
@@ -456,6 +641,50 @@ def append_launcher_output(log: Path):
     return log.open("a", encoding="utf-8")
 
 
+def run_validate_observing_admission(
+    command: Sequence[str | os.PathLike[str]],
+    *,
+    cwd: Path,
+    log: Path,
+    state_dir: Path,
+    result: dict[str, Any],
+    target: str,
+) -> subprocess.CompletedProcess:
+    """Run the detached producer while publishing its exact ACQUIRED event."""
+    admission_seen = False
+    with append_launcher_output(log) as output:
+        process = subprocess.Popen(
+            [str(item) for item in command],
+            cwd=cwd,
+            stdout=output,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        while process.poll() is None:
+            if not admission_seen:
+                line = acquired_line(log, target=target)
+                if line is not None:
+                    record_admission(
+                        state_dir,
+                        result,
+                        target=target,
+                        evidence_line=line,
+                    )
+                    admission_seen = True
+            time.sleep(0.2)
+        returncode = process.wait()
+    if not admission_seen:
+        line = acquired_line(log, target=target)
+        if line is not None:
+            record_admission(
+                state_dir,
+                result,
+                target=target,
+                evidence_line=line,
+            )
+    return subprocess.CompletedProcess(command, returncode)
+
+
 def preserve_and_restore(
     checkout: Path,
     pre: dict[str, Any],
@@ -517,6 +746,7 @@ def render_message(result: dict[str, Any]) -> str:
         f"canonical_qualified: {result.get('canonical_qualified')!r}",
         f"exception_adjusted_qualified: {result.get('exception_adjusted_qualified')!r}",
         f"landing_authority: {result.get('landing_authority')!r}",
+        f"lock_admission: {result.get('lock_admission')!r}",
         f"lock_block_evidence: {result.get('lock_block_evidence')!r}",
         f"lock_holder: {result.get('lock_holder')!r}",
         f"privileged_tests_node: {result.get('privileged_tests_node')!r}",
@@ -563,14 +793,23 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--no-fetch", action="store_true", help=argparse.SUPPRESS)
     result.add_argument("--no-notify", action="store_true", help=argparse.SUPPRESS)
     result.add_argument("--dry-run", action="store_true")
+    result.add_argument(
+        "--admission-status-since",
+        metavar="EPOCH_OR_RFC3339",
+        help="print cheap ADMITTED/NOT_ADMITTED/UNKNOWN JSON; performs no git or network operation",
+    )
     return result
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    state_dir = args.state_dir.resolve()
+    if args.admission_status_since is not None:
+        rc, status = admission_status_since(state_dir, args.admission_status_since)
+        print(json.dumps(status, sort_keys=True))
+        return rc
     checkout = args.checkout.resolve()
     parent = checkout.parent.resolve()
-    state_dir = args.state_dir.resolve()
     # The timer and a manual spot check can begin in the same second. Include
     # microseconds and PID so their start/failure records can never overwrite
     # one another before the nonblocking singleton lock decides the winner.
@@ -590,6 +829,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         "executed_tests": None,
         "dirty_paths_after": None,
         "landing_authority": False,
+        "lock_admission": {
+            "state": "NOT_ATTEMPTED",
+            "reason": "watch preflight has not launched validate-lock",
+        },
         "known_dirty_exception": {
             "policy_path": KNOWN_EXCEPTION_PATH,
             "applied": False,
@@ -597,6 +840,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "observed_status": [],
         },
     }
+    ensure_admission_cursor(state_dir)
     append_jsonl(invocation_ledger, {**result, "event": "attempt-start"})
 
     lock_path = state_dir / "watch.lock"
@@ -695,12 +939,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             "5",
         ]
         launched = True
-        with append_launcher_output(validate_log) as output:
-            completed = run(command, cwd=parent, stdout=output, stderr=subprocess.STDOUT)
+        result["lock_admission"] = {
+            "state": "UNKNOWN",
+            "reason": "validate-lock launched but no exact admission or refusal observed yet",
+        }
+        completed = run_validate_observing_admission(
+            command,
+            cwd=parent,
+            log=validate_log,
+            state_dir=state_dir,
+            result=result,
+            target=pre["head"],
+        )
         result["validate_run_rc"] = completed.returncode
         lock_block = lock_block_evidence(validate_log)
         if lock_block is not None:
             result["lock_block_evidence"] = lock_block
+            if result.get("lock_admission", {}).get("state") != "ADMITTED":
+                result["lock_admission"] = {
+                    "state": "NOT_ADMITTED",
+                    "reason": "explicit validate-lock refusal before product work",
+                    "evidence": lock_block,
+                }
             holder = lock_holder_attribution(parent, lock_block)
             result["lock_holder"] = holder
 
