@@ -165,6 +165,7 @@ class GhEngineClassificationTests(unittest.TestCase):
         for name in (
             "reverie-pin-is-latest-main",
             "reverie-pin-ancestry-and-monotonicity",
+            "reverie-pin-ancestor-and-monotonic",
             "liteinst2-pin-is-latest-main",
             "Pin Is Latest Main",
         ):
@@ -179,6 +180,8 @@ class GhEngineClassificationTests(unittest.TestCase):
         for name in (
             "prefix-reverie-pin-ancestry-and-monotonicity",
             "reverie-pin-ancestry-and-monotonicity-summary",
+            "prefix-reverie-pin-ancestor-and-monotonic",
+            "reverie-pin-ancestor-and-monotonic-summary",
             "failure summary: reverie-pin-is-latest-main",
             "liteinst2-pin-is-latest-main diagnostic",
             "Pin Is Latest Main summary",

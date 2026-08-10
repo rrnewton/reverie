@@ -71,7 +71,8 @@ class _VerifiedJob:
     completed_at: datetime
 
 
-_PREREQUISITE_SOURCE_NAME = "reverie-pin-ancestry-and-monotonicity"
+_PREREQUISITE_SOURCE_NAME = "reverie-pin-ancestor-and-monotonic"
+_PREREQUISITE_TRANSITION_SOURCE_NAME = "reverie-pin-ancestry-and-monotonicity"
 _PREREQUISITE_LEGACY_SOURCE_NAME = "reverie-pin-is-latest-main"
 _PREREQUISITE_GATE_NAME = "merge-gate-v4"
 _PREREQUISITE_WORKFLOW_NAME = "Merge Gate"
@@ -85,10 +86,20 @@ _PREREQUISITE_LEGACY_GATE_STEPS: tuple[tuple[str, int, str, str], ...] = (
     ("Require successful CI or local validation", 6, "completed", "skipped"),
     ("Complete job", 7, "completed", "success"),
 )
-_PREREQUISITE_GATE_STEPS: tuple[tuple[str, int, str, str], ...] = (
+_PREREQUISITE_TRANSITION_GATE_STEPS: tuple[tuple[str, int, str, str], ...] = (
     *_PREREQUISITE_LEGACY_GATE_STEPS[:4],
     (
         "Require the Reverie-pin ancestry-and-monotonicity gate",
+        5,
+        "completed",
+        "failure",
+    ),
+    *_PREREQUISITE_LEGACY_GATE_STEPS[5:],
+)
+_PREREQUISITE_GATE_STEPS: tuple[tuple[str, int, str, str], ...] = (
+    *_PREREQUISITE_LEGACY_GATE_STEPS[:4],
+    (
+        "Require the Reverie-pin ancestor-and-monotonic gate",
         5,
         "completed",
         "failure",
@@ -107,9 +118,10 @@ class _PrerequisiteContract:
 
 
 # These are paired contracts, not independent allowlists.  The first is the
-# historical reviewed gate, the second records the currently deployed old-name
-# gate, and the third is the owner-approved ancestry+monotonicity rename.  A
-# crossed name/blob or name/receipt combination must fail closed.
+# historical reviewed gate, the second records the later deployed old-name
+# gate, the third records the ancestry+monotonicity transition, and the fourth
+# is the owner-approved ancestor-and-monotonic identity.  A crossed name/blob or
+# name/receipt combination must fail closed.
 _PREREQUISITE_CONTRACTS = (
     _PrerequisiteContract(
         _PREREQUISITE_LEGACY_SOURCE_NAME,
@@ -122,8 +134,13 @@ _PREREQUISITE_CONTRACTS = (
         _PREREQUISITE_LEGACY_GATE_STEPS,
     ),
     _PrerequisiteContract(
-        _PREREQUISITE_SOURCE_NAME,
+        _PREREQUISITE_TRANSITION_SOURCE_NAME,
         "8aa4c71066d1575d6d3714827be02dd4f7c8b623",
+        _PREREQUISITE_TRANSITION_GATE_STEPS,
+    ),
+    _PrerequisiteContract(
+        _PREREQUISITE_SOURCE_NAME,
+        "3ce527cb6dc7aede207d3cd07859d922a5241e38",
         _PREREQUISITE_GATE_STEPS,
     ),
 )

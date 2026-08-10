@@ -22,12 +22,15 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 POSITIVE_HEAD = "d282a85726a5e0101cad069c2f3d6e2e23b9d6cd"
 NEGATIVE_HEAD = "d93d512826c522dff89a27a1aa2d4eda0377796b"
 OLD_PIN_JOB = "reverie-pin-is-latest-main"
-NEW_PIN_JOB = "reverie-pin-ancestry-and-monotonicity"
+TRANSITION_PIN_JOB = "reverie-pin-ancestry-and-monotonicity"
+NEW_PIN_JOB = "reverie-pin-ancestor-and-monotonic"
 LEGACY_WORKFLOW_BLOB = "579f5e7816c7e2844eadfd7018d95ee37c8d8640"
 CURRENT_OLD_WORKFLOW_BLOB = "1502659be5e773f9bdfa9d6e6bb7346d77f03ad9"
-NEW_WORKFLOW_BLOB = "8aa4c71066d1575d6d3714827be02dd4f7c8b623"
+TRANSITION_WORKFLOW_BLOB = "8aa4c71066d1575d6d3714827be02dd4f7c8b623"
+NEW_WORKFLOW_BLOB = "3ce527cb6dc7aede207d3cd07859d922a5241e38"
 OLD_GATE_STEP = "Require the latest-Reverie pin gate"
-NEW_GATE_STEP = "Require the Reverie-pin ancestry-and-monotonicity gate"
+TRANSITION_GATE_STEP = "Require the Reverie-pin ancestry-and-monotonicity gate"
+NEW_GATE_STEP = "Require the Reverie-pin ancestor-and-monotonic gate"
 
 
 def _fixture(job_id: int) -> dict[str, object]:
@@ -171,10 +174,11 @@ class PayloadVerifierTests(unittest.TestCase):
         self.assertEqual(result.job_id, 92670128104)
         self.assertEqual(result.source_job_id, 92660569815)
 
-    def test_all_three_reviewed_name_blob_step_contracts_are_accepted(self) -> None:
+    def test_all_four_reviewed_name_blob_step_contracts_are_accepted(self) -> None:
         contracts = (
             (OLD_PIN_JOB, LEGACY_WORKFLOW_BLOB, OLD_GATE_STEP),
             (OLD_PIN_JOB, CURRENT_OLD_WORKFLOW_BLOB, OLD_GATE_STEP),
+            (TRANSITION_PIN_JOB, TRANSITION_WORKFLOW_BLOB, TRANSITION_GATE_STEP),
             (NEW_PIN_JOB, NEW_WORKFLOW_BLOB, NEW_GATE_STEP),
         )
         for name, blob, step_name in contracts:
@@ -199,6 +203,9 @@ class PayloadVerifierTests(unittest.TestCase):
             (NEW_PIN_JOB, LEGACY_WORKFLOW_BLOB, NEW_GATE_STEP),
             (OLD_PIN_JOB, NEW_WORKFLOW_BLOB, OLD_GATE_STEP),
             (NEW_PIN_JOB, NEW_WORKFLOW_BLOB, OLD_GATE_STEP),
+            (NEW_PIN_JOB, TRANSITION_WORKFLOW_BLOB, NEW_GATE_STEP),
+            (TRANSITION_PIN_JOB, NEW_WORKFLOW_BLOB, TRANSITION_GATE_STEP),
+            (NEW_PIN_JOB, NEW_WORKFLOW_BLOB, TRANSITION_GATE_STEP),
         )
         for name, blob, step_name in crossed:
             with self.subTest(name=name, blob=blob, step=step_name):

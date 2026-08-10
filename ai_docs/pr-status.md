@@ -41,12 +41,13 @@ the authority dereferences the complete failed-check set before following this
 link. It separately binds the exact run path and exact-head workflow contents to
 one reviewed name/blob/step contract that declares
 `merge-gate.needs: [..., reverie-pin]` and reads `needs.reverie-pin.result`; a
-successful step name alone is not proof. The current owner-approved rule is
-ancestry plus monotonicity, not equality: the candidate pin must be a
-`reverie/main` ancestor without regressing from the landing-base pin. The
-transition accepts the historical `reverie-pin-is-latest-main` name and the
-accurate `reverie-pin-ancestry-and-monotonicity` name only in their respective
-reviewed contracts.
+successful step name alone is not proof. The current owner-approved rule treats
+the pin as an ancestor of Reverie's linear main history that advances
+monotonically: the candidate must be a `reverie/main` ancestor without regressing from the
+landing-base pin, and tip equality is explicitly unnecessary. The transition
+accepts `reverie-pin-is-latest-main`, `reverie-pin-ancestry-and-monotonicity`,
+and the final `reverie-pin-ancestor-and-monotonic` name only in their respective
+reviewed name/blob/receipt contracts.
 A generic failed gate step, a missing source, another workflow/version/blob,
 another run, or any changed/executed product step remains red.
 

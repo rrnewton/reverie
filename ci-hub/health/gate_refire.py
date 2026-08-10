@@ -123,8 +123,14 @@ def gh_json(args: Sequence[str], timeout: int):
 
 # The merge gate's own trusted pin checker, run on the gate runner from main's
 # code. Its verdict is what we READ; we do not recompute the comparison here.
-PIN_JOB = "reverie-pin-ancestry-and-monotonicity"
-PIN_JOBS = frozenset({PIN_JOB, "reverie-pin-is-latest-main"})
+PIN_JOB = "reverie-pin-ancestor-and-monotonic"
+PIN_JOBS = frozenset(
+    {
+        PIN_JOB,
+        "reverie-pin-ancestry-and-monotonicity",
+        "reverie-pin-is-latest-main",
+    }
+)
 
 
 def pin_verdict(repo: str, run_id: int, call_timeout: int):

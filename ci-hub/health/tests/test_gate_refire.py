@@ -434,23 +434,28 @@ def test_the_refirable_set_is_provably_refirable():
     assert state == gr.REFIRE_DUE
 
 
-def test_pin_verdict_accepts_only_both_exact_transition_names():
-    """Old in-flight runs and new runs work; substrings never impersonate either."""
+def test_pin_verdict_accepts_only_exact_reviewed_names():
+    """Historical, transition, and current runs work; substrings never do."""
     from unittest import mock
 
-    for name in (gr.PIN_JOB, "reverie-pin-is-latest-main"):
+    for name in (
+        gr.PIN_JOB,
+        "reverie-pin-ancestry-and-monotonicity",
+        "reverie-pin-is-latest-main",
+    ):
         _runs, jobs = _due_head("failure", pin_job=name)
         with mock.patch.object(gr, "gh_json", return_value=jobs):
             assert gr.pin_verdict("r/x", 901, 10) == "failure"
 
-    for near_miss in (
-        f"prefix-{gr.PIN_JOB}",
-        f"{gr.PIN_JOB}-summary",
-        f"failure summary: {gr.PIN_JOB}",
-    ):
-        _runs, jobs = _due_head("failure", pin_job=near_miss)
-        with mock.patch.object(gr, "gh_json", return_value=jobs):
-            assert gr.pin_verdict("r/x", 901, 10) is None
+    for exact_name in gr.PIN_JOBS:
+        for near_miss in (
+            f"prefix-{exact_name}",
+            f"{exact_name}-summary",
+            f"failure summary: {exact_name}",
+        ):
+            _runs, jobs = _due_head("failure", pin_job=near_miss)
+            with mock.patch.object(gr, "gh_json", return_value=jobs):
+                assert gr.pin_verdict("r/x", 901, 10) is None
 
 
 def test_a_pin_blocked_head_reports_FUTILE_not_DUE():

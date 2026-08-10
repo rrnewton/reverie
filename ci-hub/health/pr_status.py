@@ -639,7 +639,9 @@ def _rollup_ci_state(rollup: object, *, head_sha: str = "") -> str:
 # the policy then. The owner changed the rule on 2026-08-08 to ancestry plus
 # monotonicity: the candidate pin must be on reverie/main history and must not
 # regress from the landing-base pin; tip equality is explicitly not required.
-# The new identity `reverie-pin-ancestry-and-monotonicity` encodes that decision.
+# The final identity `reverie-pin-ancestor-and-monotonic` names both clauses:
+# the pin is on Reverie's linear main history and advances only forward.  The
+# ancestry-and-monotonicity identity remains an exact transition name only.
 # A single unrecognised check name defeated the
 # `all(...)` test below and turned shared pin drift into a phantom product break.
 #
@@ -659,6 +661,7 @@ _GATE_META_CHECK_NAMES = frozenset(
         "core-review-protocol",
         "reverie-pin-is-latest-main",
         "reverie-pin-ancestry-and-monotonicity",
+        "reverie-pin-ancestor-and-monotonic",
     }
 )
 _LEGACY_PIN_GATE_NAME = re.compile(
