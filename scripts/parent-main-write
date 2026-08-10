@@ -653,9 +653,12 @@ adopt_published_residue() {
   commit above is on origin/main, so nothing on disk is unrecoverable. This is
   the class \`reconcile\` refreshes; \`sync\` deliberately does not."
     fi
-    die "the paths above differ from BOTH your HEAD and $target, so this sync
+    # Name the mode the caller actually ran. "Then re-run sync" printed under
+    # `reconcile` sends the reader to the one command that cannot help them.
+    local mode=${HERMIT_PARENT_MAIN_MODE:-sync}
+    die "the paths above differ from BOTH your HEAD and $target, so this $mode
   cannot classify them as published residue. Nothing was staged or modified.$advice
-  Then re-run sync."
+  Then re-run $mode."
   fi
 
   while IFS= read -r entry; do
