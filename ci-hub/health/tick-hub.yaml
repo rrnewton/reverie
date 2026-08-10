@@ -500,4 +500,39 @@ reminders:
         component: approval-binding-readiness
       title: "approval(s) cannot be bound to any head; reviewers emit no APPROVED-AT line: {summary}"
 
+  # THE GATE RUNNER WAS GONE FOR TWO DAYS AND NOTHING SAID SO. On 2026-08-08 the
+  # `hermit-gate-newton` installation and credentials were deleted; the user
+  # service stayed ENABLED and failed 203/EXEC for ~two days, and the missing
+  # capacity presented as CI saturation -- gates parked with every leg finished,
+  # Merge Gate repeatedly the worst workflow. It was later restored, but
+  # restoring capacity is not the same as being able to SEE capacity disappear.
+  # Correct-but-unscheduled is not protection, which is the whole reason this
+  # entry exists rather than the tool merely existing.
+  #
+  # FOUR SURFACES, CHECKED SEPARATELY, and that is the design -- do not collapse
+  # it. The service surface reported PRESENT over a DELETED installation, so a
+  # naive single-surface monitor reproduces the original blindness exactly:
+  # installation (not just "the directory exists" -- `_work` survived the
+  # deletion), credentials, service (enabled is necessary and never sufficient --
+  # it was enabled the entire two days), and registration with the repo.
+  #
+  # Absence is NO_RESULT and exits 2, never silence, so this is fail-visible in
+  # the direction that matters. Verified by its own deletion bracket
+  # (tests/test_gate_runner_presence.sh, 14 assertions) rather than by reading:
+  # it builds a scratch install and unit, deletes the installation while leaving
+  # the unit enabled, and reproduces UnitFileState=enabled with
+  # ExecMainStatus=203. Live runner untouched.
+  - name: gate_runner_presence
+    cadence_secs: 900
+    gate:
+      cmd: python3 ci-hub/health/gate_runner_presence.py --record .tick-hub/gate-runner-presence.json
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: gate-runner-presence
+      title: "gate runner is not confirmably present on all four surfaces: {summary}"
+
 health_checks: []

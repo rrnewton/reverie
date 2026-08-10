@@ -200,19 +200,29 @@ A recorded `PRESENT` older than `--max-age` is itself `NO_RESULT`: a monitor
 whose last answer is arbitrarily old cannot discharge "within a defined
 cadence".
 
-### Cadence wiring — NOT YET APPLIED
+### Cadence wiring — APPLIED 2026-08-10
 
-`ci-hub/ci-hub.rs` loads exactly one tick config (`ci-hub/health/tick-hub.yaml`)
-with no drop-in directory, and that file currently carries another agent's
-uncommitted work, so this block is documented rather than merged in. Add it once
-that file is clean:
+Wired into `ci-hub/health/tick-hub.yaml` at a 900s cadence, fail-visible
+(`when: failure`; the tool exits 2 on NO_RESULT).
 
-```yaml
-  - name: gate_runner_presence
-    every_min: 15
-    check:
-      cmd: python3 ci-hub/health/gate_runner_presence.py --record .tick-hub/gate-runner-presence.json
-```
+Two corrections to what was parked here, recorded because both would have bitten
+whoever pasted it:
+
+* **The block was in the wrong schema.** It used `every_min:` and `check:`;
+  `tick-hub.yaml` uses `cadence_secs:` and `gate:`/`emit:`, and `every_min`
+  appears nowhere in the file. Pasted verbatim it would not have scheduled
+  anything.
+* **The file was not held by another agent.** The 79 "uncommitted lines" were an
+  already-landed commit showing as dirt because the local parent checkout was 8
+  commits behind `origin/main`. `git diff origin/main -- <file>` was empty the
+  whole time. Declining to edit was still the right call on the evidence
+  available — the fix is to ask "is this dirty?" against freshly fetched
+  `origin/main` rather than a stale local `HEAD`.
+
+The structural problem the original note identified is real and unfixed:
+`ci-hub/ci-hub.rs` loads exactly one tick config with no drop-in directory, so
+every detector serialises through one file. See the drop-in proposal in
+`ai_docs/2026-08-10-tick-hub-dropin-proposal.md`.
 
 ### Brackets
 
