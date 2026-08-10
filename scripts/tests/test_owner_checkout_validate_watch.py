@@ -216,8 +216,26 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
         service = (
             ROOT / "scripts/systemd/hermit-owner-checkout-validate.service"
         ).read_text()
-        self.assertIn("SuccessExitStatus=0 1 2 3 4\n", service)
+        self.assertIn("SuccessExitStatus=0 1 2 3 4 6\n", service)
         self.assertNotIn("SuccessExitStatus=0 1 2 3 4 5", service)
+
+    def test_lock_quarantine_is_distinct_from_product_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text(
+                "payload quarantine: ACTIVE: payload identities remain active\n"
+                "# ci-hub/validate-lock tool COST ACTUAL wall=1.1s exit=3\n"
+            )
+            evidence = watch.lock_block_evidence(log)
+            self.assertIsNotNone(evidence)
+            self.assertEqual(evidence["validate_lock_exit"], 3)
+            self.assertIn("before product work", evidence["interpretation"])
+
+    def test_exit_three_without_quarantine_is_not_called_lock_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text("# ci-hub/validate-lock tool COST ACTUAL exit=3\n")
+            self.assertIsNone(watch.lock_block_evidence(log))
 
     def test_validation_side_effects_are_preserved_then_fully_restored(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

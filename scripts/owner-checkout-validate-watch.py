@@ -28,6 +28,7 @@ NO_RESULT = 2
 CANNOT_START = 3
 RESTORE_FAILED = 4
 NOTIFY_FAILED = 5
+BLOCKED_ON_LOCK = 6
 KNOWN_EXCEPTION_PATH = "validate"
 KNOWN_EXCEPTION_TARGET = "scripts/validate.rs"
 
@@ -222,6 +223,27 @@ def qualify_row(parent: Path, checkout: Path, sha: str, row: dict[str, Any]) -> 
     )
 
 
+def lock_block_evidence(log: Path) -> dict[str, Any] | None:
+    """Recognize a fail-closed validate-lock quarantine from durable output."""
+    if not log.is_file():
+        return None
+    text = log.read_text(encoding="utf-8", errors="replace")
+    quarantine = "quarantine: ACTIVE" in text or "QUARANTINED" in text
+    exit_three = any(
+        "validate-lock" in line and "exit=3" in line
+        for line in text.splitlines()
+    )
+    if not (quarantine and exit_three):
+        return None
+    return {
+        "kind": "validate-lock-quarantine",
+        "quarantine_marker": True,
+        "validate_lock_exit": 3,
+        "log": str(log),
+        "interpretation": "validation was refused before product work executed",
+    }
+
+
 def preserve_and_restore(
     checkout: Path,
     pre: dict[str, Any],
@@ -283,6 +305,7 @@ def render_message(result: dict[str, Any]) -> str:
         f"canonical_qualified: {result.get('canonical_qualified')!r}",
         f"exception_adjusted_qualified: {result.get('exception_adjusted_qualified')!r}",
         f"landing_authority: {result.get('landing_authority')!r}",
+        f"lock_block_evidence: {result.get('lock_block_evidence')!r}",
         f"pre_tree_hash: {result.get('pre_tree_hash') or 'unavailable'}",
         f"post_tree_hash: {result.get('post_tree_hash') or 'unavailable'}",
         f"dirty_paths_after: {result.get('dirty_paths_after')!r}",
@@ -460,6 +483,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         with validate_log.open("w", encoding="utf-8") as output:
             completed = run(command, cwd=parent, stdout=output, stderr=subprocess.STDOUT)
         result["validate_run_rc"] = completed.returncode
+        lock_block = lock_block_evidence(validate_log)
+        if lock_block is not None:
+            result["lock_block_evidence"] = lock_block
 
         row = latest_attempt_row(
             canonical_ledger_rows(parent),
@@ -493,7 +519,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             exception_qualified = False
             result["validate_log"] = str(validate_log)
 
-        if completed.returncode != 0:
+        if row is None and lock_block is not None:
+            result.update(
+                state="BLOCKED_ON_LOCK",
+                reason=(
+                    "validate-lock quarantine refused admission before product work; "
+                    "no exact-attempt ledger row"
+                ),
+            )
+        elif completed.returncode != 0:
             result.update(
                 state="FAIL",
                 reason=f"make validate exit={completed.returncode}; {reason}",
@@ -581,6 +615,7 @@ def finish(
         "NO_RESULT": NO_RESULT,
         "CANNOT_START": CANNOT_START,
         "RESTORE_FAILED": RESTORE_FAILED,
+        "BLOCKED_ON_LOCK": BLOCKED_ON_LOCK,
     }.get(str(result["state"]), CANNOT_START)
 
 
