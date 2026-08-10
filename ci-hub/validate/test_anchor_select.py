@@ -26,7 +26,60 @@ import anchor_select as A  # noqa: E402
 PREDICATE = HERE / "qualifying-receipt.json"
 
 
-def qualifying_row(commit: str, **over) -> dict:
+def git_output(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def seed_registered_producer_files(path: Path) -> None:
+    """Materialize the exact allowed producer map in a Hermit fixture repo."""
+    source = HERE.parents[1] / "hermit"
+    for relative, expected_blob in A.qualifying_receipt.registered_producer_definition().items():
+        content = subprocess.run(
+            ["git", "-C", str(source), "cat-file", "blob", expected_blob],
+            capture_output=True,
+            check=True,
+        ).stdout
+        destination = path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+
+
+def single_commit_repo(
+    path: Path, name: str, *, producer_definition: bool = False
+) -> tuple[Path, str]:
+    """Create a real commit whose SHA/tree may be claimed as fixture evidence."""
+    path.mkdir()
+    git_output(path, "init", "-q", "-b", "main")
+    git_output(path, "config", "user.email", "anchor-fixture@example.invalid")
+    git_output(path, "config", "user.name", "anchor-fixture")
+    if producer_definition:
+        seed_registered_producer_files(path)
+    (path / f"{name}.txt").write_text(f"{name}\n")
+    git_output(path, "add", "-A")
+    git_output(path, "commit", "-q", "-m", name)
+    return path, git_output(path, "rev-parse", "HEAD")
+
+
+def base_evidence(
+    hermit: Path, base: str, reverie: Path, reverie_base: str
+) -> dict[str, str]:
+    """Build exact receipt provenance from objects that exist in fixture repos."""
+    return {
+        "base_sha": base,
+        "base_tree": git_output(hermit, "rev-parse", f"{base}^{{tree}}"),
+        "reverie_base_sha": reverie_base,
+        "reverie_base_tree": git_output(
+            reverie, "rev-parse", f"{reverie_base}^{{tree}}"
+        ),
+    }
+
+
+def qualifying_row(commit: str, *, evidence: dict[str, str], **over) -> dict:
     """A receipt that satisfies every clause of the shared predicate."""
     row = {
         "commit": commit,
@@ -47,6 +100,7 @@ def qualifying_row(commit: str, **over) -> dict:
         "concurrency_proof": "validate_lock_owner_ancestry",
         "coverage": {"planned_test_nodes": 19, "zero_executed_nodes": [], "absent_nodes": []},
     }
+    row.update(evidence)
     row.update(over)
     return row
 
@@ -54,8 +108,29 @@ def qualifying_row(commit: str, **over) -> dict:
 class PredicateBrackets(unittest.TestCase):
     """Boundary 1: which receipts may be an anchor at all."""
 
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        cls.repo, cls.commit = single_commit_repo(
+            root / "hermit", "anchor", producer_definition=True
+        )
+        cls.reverie, cls.reverie_commit = single_commit_repo(
+            root / "reverie", "reverie"
+        )
+        cls.evidence = base_evidence(
+            cls.repo, cls.commit, cls.reverie, cls.reverie_commit
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
     def setUp(self):
         self.predicate = A.load_predicate(PREDICATE)
+
+    def row(self, **over):
+        return qualifying_row(self.commit, evidence=self.evidence, **over)
 
     def assert_refused(self, row, fragment):
         ok, reason = A.row_qualifies(row, self.predicate)
@@ -64,49 +139,54 @@ class PredicateBrackets(unittest.TestCase):
 
     # --- POSITIVE bracket: the gate is not inert -------------------------------
     def test_qualifying_receipt_accepted(self):
-        ok, reason = A.row_qualifies(qualifying_row("a" * 40), self.predicate)
+        ok, reason = A.row_qualifies(self.row(), self.predicate)
         self.assertTrue(ok, f"a fully-qualifying receipt was refused: {reason}")
+
+    def test_schema5_receipt_without_base_sha_refused(self):
+        row = self.row()
+        del row["base_sha"]
+        self.assert_refused(row, "base-sha-missing")
 
     # --- NEGATIVE brackets, one per clause ------------------------------------
     def test_selective_receipt_refused(self):
         """THE 1-HOP RULE. An incremental receipt is never an anchor, so no chain
         of incrementals can form. This is the load-bearing clause: if it is ever
         relaxed, green-inheritance silently becomes N-hop."""
-        self.assert_refused(qualifying_row("b" * 40, selection_mode="selective"), "1-hop")
+        self.assert_refused(self.row(selection_mode="selective"), "1-hop")
 
     def test_only_mode_receipt_refused(self):
-        self.assert_refused(qualifying_row("b" * 40, selection_mode="only"), "1-hop")
+        self.assert_refused(self.row(selection_mode="only"), "1-hop")
 
     def test_compat_only_profile_refused(self):
         """The owner's named hazard: ~164 portable-strict-compat-only rows in the
         live ledger say result=pass. Keying on result would anchor on them."""
         self.assert_refused(
-            qualifying_row("c" * 40, profile="portable-strict-compat-only", executed_tests=2),
+            self.row(profile="portable-strict-compat-only", executed_tests=2),
             "profile",
         )
 
     def test_dirty_tree_refused(self):
-        self.assert_refused(qualifying_row("d" * 40, tree_dirty=True), "tree_dirty")
+        self.assert_refused(self.row(tree_dirty=True), "tree_dirty")
 
     def test_unanchored_refused(self):
-        self.assert_refused(qualifying_row("e" * 40, commit_anchored=False), "commit_anchored")
+        self.assert_refused(self.row(commit_anchored=False), "commit_anchored")
 
     def test_zero_executed_refused(self):
-        self.assert_refused(qualifying_row("f" * 40, executed_tests=0), "executed_tests==0")
+        self.assert_refused(self.row(executed_tests=0), "executed_tests==0")
 
     def test_count_capable_without_coverage_refused(self):
-        row = qualifying_row("0" * 40)
+        row = self.row()
         del row["coverage"]
         self.assert_refused(row, "coverage")
 
     def test_count_capable_with_absent_nodes_refused(self):
-        row = qualifying_row("1" * 40)
+        row = self.row()
         row["coverage"] = {"planned_test_nodes": 19, "zero_executed_nodes": [],
                            "absent_nodes": ["e2e.manifest_backend_parity_c"]}
         self.assert_refused(row, "coverage")
 
     def test_failing_receipt_refused(self):
-        self.assert_refused(qualifying_row("2" * 40, result="fail", failures=3), "result")
+        self.assert_refused(self.row(result="fail", failures=3), "result")
 
 
 class GitRepoBrackets(unittest.TestCase):
@@ -120,10 +200,11 @@ class GitRepoBrackets(unittest.TestCase):
         cls.git("init", "-q", "-b", "main")
         cls.git("config", "user.email", "t@t")
         cls.git("config", "user.name", "t")
+        seed_registered_producer_files(cls.repo)
         cls.shas = {}
         for name in ("base", "mid", "tip"):
             (cls.repo / f"{name}.txt").write_text(name)
-            cls.git("add", f"{name}.txt")
+            cls.git("add", "-A")
             cls.git("commit", "-q", "-m", name)
             cls.shas[name] = cls.git("rev-parse", "HEAD").stdout.strip()
         # A sibling line that is NOT an ancestor of tip.
@@ -133,6 +214,14 @@ class GitRepoBrackets(unittest.TestCase):
         cls.git("commit", "-q", "-m", "side")
         cls.shas["side"] = cls.git("rev-parse", "HEAD").stdout.strip()
         cls.git("checkout", "-q", "main")
+        cls.reverie, cls.reverie_commit = single_commit_repo(
+            Path(cls.tmp.name) / "reverie", "reverie"
+        )
+        cls.foreign_repo, cls.foreign_commit = single_commit_repo(
+            Path(cls.tmp.name) / "foreign-hermit",
+            "foreign",
+            producer_definition=True,
+        )
 
     @classmethod
     def tearDownClass(cls):
@@ -148,6 +237,13 @@ class GitRepoBrackets(unittest.TestCase):
         path.write_text("".join(json.dumps(r) + "\n" for r in rows))
         return path
 
+    def row(self, commit: str, *, repo: Path | None = None, **over):
+        source = repo or self.repo
+        evidence = base_evidence(
+            source, commit, self.reverie, self.reverie_commit
+        )
+        return qualifying_row(commit, evidence=evidence, **over)
+
     def pick(self, rows, target="tip"):
         return A.select_anchor(
             checkout=self.repo,
@@ -159,15 +255,15 @@ class GitRepoBrackets(unittest.TestCase):
 
     # --- POSITIVE: an ancestor anchor is found and is the NEAREST one ----------
     def test_nearest_ancestor_wins(self):
-        report = self.pick([qualifying_row(self.shas["base"]),
-                            qualifying_row(self.shas["mid"])])
+        report = self.pick([self.row(self.shas["base"]),
+                            self.row(self.shas["mid"])])
         self.assertEqual(report["anchor"]["sha"], self.shas["mid"])
         self.assertEqual(report["anchor"]["distance_commits"], 1)
         self.assertEqual(report["anchor"]["hop"], 1)
         self.assertEqual(report["eligible_anchors"], 2)
 
     def test_farther_ancestor_used_when_it_is_the_only_one(self):
-        report = self.pick([qualifying_row(self.shas["base"])])
+        report = self.pick([self.row(self.shas["base"])])
         self.assertEqual(report["anchor"]["sha"], self.shas["base"])
         self.assertEqual(report["anchor"]["distance_commits"], 2)
 
@@ -176,27 +272,33 @@ class GitRepoBrackets(unittest.TestCase):
         """A green on a sibling line is NOT an anchor. select-tests.rs uses a
         three-dot diff, which would silently relocate the anchor to
         merge-base(side, tip) = base -- a commit with no receipt."""
-        report = self.pick([qualifying_row(self.shas["side"])])
+        report = self.pick([self.row(self.shas["side"])])
         self.assertEqual(report["verdict"], A.VERDICT_NO_ANCHOR)
         self.assertEqual(report["candidates_non_ancestor"], 1)
 
     def test_absent_commit_refused(self):
-        report = self.pick([qualifying_row("9" * 40)])
+        report = self.pick([
+            self.row(
+                self.foreign_commit,
+                repo=self.foreign_repo,
+                cwd=str(self.foreign_repo),
+            )
+        ])
         self.assertEqual(report["verdict"], A.VERDICT_NO_ANCHOR)
         self.assertEqual(report["candidates_not_present_locally"], 1)
 
     def test_no_qualifying_receipt_means_no_anchor(self):
-        report = self.pick([qualifying_row(self.shas["mid"], selection_mode="selective"),
-                            qualifying_row(self.shas["base"], profile="portable-strict-compat-only")])
+        report = self.pick([self.row(self.shas["mid"], selection_mode="selective"),
+                            self.row(self.shas["base"], profile="portable-strict-compat-only")])
         self.assertEqual(report["verdict"], A.VERDICT_NO_ANCHOR)
         self.assertEqual(report["qualifying_receipts"], 0)
 
     def test_max_scan_bounds_the_search(self):
-        report = self.pick([qualifying_row(self.shas["base"])])
+        report = self.pick([self.row(self.shas["base"])])
         self.assertEqual(report["anchor"]["distance_commits"], 2)
         bounded = A.select_anchor(
             checkout=self.repo,
-            ledger_path=self.write_ledger([qualifying_row(self.shas["base"])]),
+            ledger_path=self.write_ledger([self.row(self.shas["base"])]),
             predicate_path=PREDICATE,
             target_ref=self.shas["tip"],
             apply_floor=False,
