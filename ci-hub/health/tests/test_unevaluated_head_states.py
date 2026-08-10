@@ -23,14 +23,26 @@ def run(concl=None, status="completed", age=0):
             "created_at": datetime.fromtimestamp(NOW-age, timezone.utc).isoformat().replace("+00:00","Z")}
 
 cases, jobs0, jobsN = [], (lambda r: 0), (lambda r: 36)
-def case(name, expect_state, expect_stale, runs, jobs_of=None):
-    st, stale = uh.classify(runs, now=NOW, jobs_of=jobs_of)
+def case(name, expect_state, expect_stale, runs, jobs_of=None, successor_of=None):
+    st, stale, ev = uh.classify(runs, now=NOW, jobs_of=jobs_of, successor_of=successor_of)
     ok = (st, stale) == (expect_state, expect_stale)
-    cases.append((ok, name, f"{st} stale={stale}"))
+    cases.append((ok, name, f"{st} stale={stale} ev={ev}"))
 
 # --- the five states, each named exactly once ---------------------------------
 case("no runs at all -> NEVER_RAN",              uh.NEVER_RAN,      False, [])
-case("cancelled with ZERO jobs -> SUPERSEDED",   uh.SUPERSEDED,     False, [run("cancelled")], jobs0)
+# *** THE CAUSE-LAYER CORRECTION. *** A reviewer found that the first version
+# returned SUPERSEDED whenever jobs==0 OR the jobs query FAILED, while the reason
+# text asserted "superseded by a newer push" -- reintroducing absence-as-verdict
+# one layer down, in the CAUSE rather than the STATE. Zero jobs also admits a
+# manual or pre-start cancellation; a failed query admits an executed cancel.
+# Supersession is now asserted ONLY on visible successor evidence.
+case("cancelled, ZERO jobs, NO successor -> NOT superseded",
+     uh.CANCELLED_UNVERIFIED, False, [run("cancelled")], jobs0)
+case("cancelled, ZERO jobs, successor VISIBLE -> SUPERSEDED",
+     uh.SUPERSEDED, False, [run("cancelled")], jobs0, (lambda r: "run 999 created 2026-08-10T02:14:12Z"))
+case("cancelled, jobs query FAILS -> UNVERIFIED, never a cause",
+     uh.CANCELLED_UNVERIFIED, False, [run("cancelled")],
+     (lambda r: (_ for _ in ()).throw(RuntimeError("api down"))))
 case("cancelled WITH jobs -> EVALUATED_FAIL",    uh.EVALUATED_FAIL, False, [run("cancelled")], jobsN)
 case("fresh pending -> PENDING, not stale",      uh.PENDING,        False, [run(None,"in_progress",10)])
 case("old pending -> PENDING, STALE",            uh.PENDING,        True,  [run(None,"in_progress",5000)])
@@ -40,17 +52,30 @@ case("a real failure -> EVALUATED_FAIL",         uh.EVALUATED_FAIL, False, [run(
 # --- THE REGRESSION THIS EXISTS FOR ------------------------------------------
 # A run with no verdict must NEVER read as the good state.
 for label, r in (("queued", run(None,"queued",10)), ("in_progress", run(None,"in_progress",10))):
-    st,_ = uh.classify([r], now=NOW)
+    st,_,_ = uh.classify([r], now=NOW)
     cases.append((st != uh.EVALUATED_PASS,
                   f"a {label} run must NOT read as EVALUATED_PASS (the old defect)", st))
 
 # --- refusing to guess when job counts are unavailable ------------------------
-case("cancelled with NO jobs resolver -> SUPERSEDED, never PASS",
-     uh.SUPERSEDED, False, [run("cancelled")], None)
+case("cancelled with NO jobs resolver -> UNVERIFIED, never PASS",
+     uh.CANCELLED_UNVERIFIED, False, [run("cancelled")], None)
 
 # --- precedence: a real failure outranks a pending sibling --------------------
 case("failure + pending -> EVALUATED_FAIL wins",
      uh.EVALUATED_FAIL, False, [run("failure"), run(None,"in_progress",10)])
+
+# The reason text must not assert a cause it did not observe.
+st, stale, ev = uh.classify([run("cancelled")], now=NOW, jobs_of=jobs0)
+r_unver = uh.likely_reason({"mergeable": "MERGEABLE"}, st, stale, ev)
+cases.append(("CAUSE IS NOT ESTABLISHED" in r_unver and "will not guess" in r_unver,
+              "unverified cancel REASON says the cause is not established", r_unver[:60]))
+cases.append(("superseded by a newer push under queue-depth-1" not in r_unver,
+              "unverified cancel REASON does NOT assert supersession as fact", "ok"))
+st2, stale2, ev2 = uh.classify([run("cancelled")], now=NOW, jobs_of=jobs0,
+                               successor_of=(lambda r: "run 999"))
+r_ver = uh.likely_reason({"mergeable": "MERGEABLE"}, st2, stale2, ev2)
+cases.append(("OBSERVED here rather than inferred" in r_ver and "run 999" in r_ver,
+              "VERIFIED supersession names its successor evidence", r_ver[:60]))
 
 p = sum(1 for ok,_,_ in cases if ok); f = len(cases)-p
 for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
