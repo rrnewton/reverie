@@ -279,7 +279,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     checkout = args.checkout.resolve()
     parent = checkout.parent.resolve()
     state_dir = args.state_dir.resolve()
-    attempt_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    # The timer and a manual spot check can begin in the same second. Include
+    # microseconds and PID so their start/failure records can never overwrite
+    # one another before the nonblocking singleton lock decides the winner.
+    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    attempt_id = f"{timestamp}-{os.getpid()}"
     result_path = state_dir / "results" / f"{attempt_id}.json"
     message_path = state_dir / "results" / f"{attempt_id}.md"
     invocation_ledger = state_dir / "invocations.jsonl"

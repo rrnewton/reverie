@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -101,6 +102,37 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertIsNone(result["executed_tests"])
             self.assertEqual(result["dirty_paths_after"], [])
             self.assertEqual(result["pre_tree_hash"], result["post_tree_hash"])
+
+    def test_notification_failure_is_a_distinct_loud_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            (repo / "owner-untracked.txt").write_text("must survive\n")
+
+            with mock.patch.object(watch, "notify", return_value=(1, "wake refused")):
+                rc = watch.main(
+                    [
+                        "--checkout", str(repo),
+                        "--state-dir", str(state),
+                        "--no-fetch",
+                    ]
+                )
+
+            self.assertEqual(rc, watch.NOTIFY_FAILED)
+            result = json.loads(
+                next((state / "results").glob("*.json")).read_text()
+            )
+            self.assertEqual(result["state"], "CANNOT_START")
+            self.assertEqual(result["notification_rc"], 1)
+            self.assertEqual(result["notification_detail"], "wake refused")
+
+    def test_systemd_does_not_launder_notification_failure_as_success(self) -> None:
+        service = (
+            ROOT / "scripts/systemd/hermit-owner-checkout-validate.service"
+        ).read_text()
+        self.assertIn("SuccessExitStatus=0 1 2 3 4\n", service)
+        self.assertNotIn("SuccessExitStatus=0 1 2 3 4 5", service)
 
     def test_validation_side_effects_are_preserved_then_fully_restored(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
