@@ -45,6 +45,19 @@ DRIFT_STATES = (
     "unaccountable",
     "not_landed",
     "invalid",
+)
+# `unverifiable` and `fetch_failed` are deliberately NOT drift. They must never
+# read as green -- they do not: `_evaluate` maps either to overall `unknown`
+# with exit 2 -- but "the checker could not look" and "the work regressed" need
+# OPPOSITE responses (retry or raise the deadline, versus re-land), so they must
+# not share a bucket. Measured at d6450b82 with `--deadline-secs 1`: 19
+# satisfied, landed directives rendered as `drift=19`, and three such rows were
+# relayed to the owner as real drift on 2026-08-09. The count scaled with the
+# deadline (1s -> 19, the shipped 24s default -> 4, 300s -> 0), which is the tell
+# that it measured how far the run got rather than the state of the work.
+# `_print_fields` reports them by name in the summary so removing them from
+# `drift` cannot turn a false alarm into a silent pass.
+NO_RESULT_STATES = (
     "unverifiable",
     "fetch_failed",
 )
@@ -469,7 +482,7 @@ def evaluate(
     *,
     ledger_path: Path,
     run: Run = _run,
-    deadline_seconds: float = 24,
+    deadline_seconds: float = 180,
     checked_at: str | None = None,
 ) -> Report:
     schema_version, directives = load_ledger(ledger_path)
@@ -560,7 +573,23 @@ def evaluate(
         # impossible to record a completed decision without filing an artificial forever-open
         # task. Keep only explicitly named gates exempt; a closed task plus no implementation
         # and no gate remains genuine drift.
-        if state not in {"satisfied", "gated"} and "closed_task" in issues:
+        # A NO-RESULT IS NOT A NEGATIVE. `unverifiable` and `fetch_failed` mean the
+        # checker could not look -- a deadline expired, or the landing verifier
+        # errored -- not that the obligation is unmet. Demoting them here asserts
+        # "nothing will surface this unmet obligation" about a row that was never
+        # evaluated, and the summary then renders it as drift. Measured at
+        # d6450b82 with `--deadline-secs 1`: 19 satisfied, landed directives
+        # reported as `drift=19` with `unverifiable=0` -- the state describing what
+        # actually happened was erased before it reached the report. The count
+        # scales with the deadline (1s -> 19, the shipped 24s default -> 4, 300s ->
+        # 0), which is the tell that it measures how far the run got, not the work.
+        # They stay NON-GREEN and still fail the run; they simply stop sharing a
+        # bucket with drift, because the two need opposite responses: retry or
+        # raise the deadline, versus re-land the work.
+        if (
+            state not in {"satisfied", "gated", "unverifiable", "fetch_failed"}
+            and "closed_task" in issues
+        ):
             reason = (
                 f"{reason}; accountable task {directive.task!r} is CLOSED, so nothing will "
                 f"surface this unmet obligation"
@@ -645,16 +674,27 @@ def _field(value: object) -> str:
 
 def _print_fields(report: Report) -> None:
     drift = [item.id for item in report.directives if item.state in DRIFT_STATES]
+    no_result = [item.id for item in report.directives if item.state in NO_RESULT_STATES]
     gated = [item.id for item in report.directives if item.state == "gated"]
     unaccountable = [item.id for item in report.directives if item.state == "unaccountable"]
+    archived = report.issue_counts.get("task_in_archived_db", 0)
     in_progress = report.counts.get("open", 0)
-    if not drift:
+    if drift:
+        summary = "drift=" + ",".join(drift[:8])
+    elif no_result:
+        # NOT "no directive drift": the run did not finish, so it has no opinion
+        # about drift to report. Saying so is what keeps this from becoming the
+        # silent pass that removing these states from `drift` could otherwise buy.
+        summary = (
+            f"INCOMPLETE: {len(no_result)} record(s) unverified"
+            f" ({','.join(no_result[:5])}); no drift verdict"
+        )
+    else:
         summary = (
             "no directive drift"
             f"; in_progress={in_progress} gated={len(gated)}"
+            f" task_in_archived_db={archived}"
         )
-    else:
-        summary = "drift=" + ",".join(drift[:8])
     fields = {
         "state": report.overall_state,
         "source_rows": report.source_rows,
@@ -670,6 +710,7 @@ def _print_fields(report: Report) -> None:
         "task_in_archived_db": report.issue_counts.get("task_in_archived_db", 0),
         "not_landed": report.counts.get("not_landed", 0),
         "unverifiable": report.counts.get("unverifiable", 0),
+        "no_result": len(no_result),
         "drift": len(drift),
         "summary": summary,
     }
@@ -692,7 +733,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER)
     parser.add_argument("--output", type=Path, default=DEFAULT_REPORT)
-    parser.add_argument("--deadline-secs", type=float, default=24)
+    parser.add_argument("--deadline-secs", type=float, default=180)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-write", action="store_true")
     parser.add_argument("--quickstart", action="store_true")
