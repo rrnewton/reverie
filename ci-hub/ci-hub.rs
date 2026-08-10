@@ -5941,8 +5941,26 @@ fn latest_obligations(path: &Path) -> Result<Vec<ObligationRecord>, CiHubError> 
         if line.trim().is_empty() {
             continue;
         }
-        let record: ObligationRecord =
+        let value: serde_json::Value =
             serde_json::from_str(&line).map_err(|source| CiHubError::ObligationJson {
+                path: path.to_path_buf(),
+                line: line_number,
+                source,
+            })?;
+        // Projection checkpoints are append-only acceleration hints, not
+        // obligation records.  The original checkpoint writer intentionally
+        // omitted `obligation_id`; a later writer added a synthetic one, so
+        // deserializing every JSONL line directly as ObligationRecord makes a
+        // valid mixed-version store unreadable.  Ignore both checkpoint shapes
+        // by their typed event marker while retaining strict parsing for real
+        // obligation events.
+        if value.get("event_type").and_then(serde_json::Value::as_str)
+            == Some("projection-checkpoint")
+        {
+            continue;
+        }
+        let record: ObligationRecord =
+            serde_json::from_value(value).map_err(|source| CiHubError::ObligationJson {
                 path: path.to_path_buf(),
                 line: line_number,
                 source,
@@ -6034,6 +6052,48 @@ mod tests {
     use super::*;
 
     const RECEIPT_SHA: &str = "630f44aab7fdf4ee52e572c38ae09818e92271b2";
+
+    #[test]
+    fn obligation_reader_ignores_legacy_and_current_projection_checkpoints() {
+        let path = std::env::temp_dir().join(format!(
+            "ci-hub-obligation-checkpoints-{}-{}.jsonl",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let obligation = serde_json::json!({
+            "schema_version": 1,
+            "obligation_id": "o1",
+            "repo": "rrnewton/hermit",
+            "landed_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "opened_at": "2026-08-10T00:00:00Z",
+            "overall_state": "pending",
+            "local": {"state": "pending"},
+            "github": {"state": "pending"}
+        });
+        let legacy_checkpoint = serde_json::json!({
+            "schema_version": 1,
+            "event_type": "projection-checkpoint",
+            "checkpoint_schema_version": 1,
+            "checkpoint_id": "legacy"
+        });
+        let current_checkpoint = serde_json::json!({
+            "schema_version": 1,
+            "obligation_id": "__ci_hub_projection_checkpoint__",
+            "event_type": "projection-checkpoint",
+            "checkpoint_schema_version": 1,
+            "checkpoint_id": "current"
+        });
+        std::fs::write(
+            &path,
+            format!("{legacy_checkpoint}\n{obligation}\n{current_checkpoint}\n"),
+        )
+        .unwrap();
+
+        let records = latest_obligations(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].obligation_id, "o1");
+    }
 
     fn schema4_receipt_value() -> serde_json::Value {
         serde_json::json!({
