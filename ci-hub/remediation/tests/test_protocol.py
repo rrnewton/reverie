@@ -4860,6 +4860,66 @@ class LocalRedispatchTest(unittest.TestCase):
         self.assertEqual(record["local"]["redispatch_count"], 1)
         self.assertNotEqual(record["overall_state"], "remediation_required")
 
+    def test_no_result_reports_bounded_receipt_window_then_exhaustion(self) -> None:
+        self._seed(
+            {
+                "local": {
+                    "state": "no_result",
+                    "source": str(self.source),
+                    "redispatch_count": 0,
+                    "pid": None,
+                }
+            }
+        )
+        awaiting = obligations.get_record("ob", self.store)
+        self.assertEqual(
+            protocol._local_receipt_disposition(awaiting)["state"],
+            "awaiting_receipt",
+        )
+        self.assertTrue(
+            protocol._local_receipt_disposition(awaiting)[
+                "will_consume_later_receipt"
+            ]
+        )
+
+        self._seed(
+            {
+                "local": {
+                    "state": "no_result",
+                    "redispatch_count": protocol.DEFAULT_LOCAL_REDISPATCH_LIMIT,
+                }
+            }
+        )
+        exhausted = obligations.get_record("ob", self.store)
+        disposition = protocol._local_receipt_disposition(exhausted)
+        self.assertEqual(disposition["state"], "receipt_window_exhausted")
+        self.assertFalse(disposition["will_consume_later_receipt"])
+        self.assertEqual(disposition["automatic_rechecks_remaining"], 0)
+
+    def test_exhausted_no_result_does_not_pretend_to_consume_late_receipt(
+        self,
+    ) -> None:
+        self._seed(
+            {
+                "local": {
+                    "state": "no_result",
+                    "source": str(self.source),
+                    "redispatch_count": protocol.DEFAULT_LOCAL_REDISPATCH_LIMIT,
+                    "pid": None,
+                }
+            }
+        )
+        with mock.patch.object(
+            protocol, "_dereference_current_local_receipt"
+        ) as dereference:
+            record = protocol.bind_local_receipt_authority("ob", self.store)
+        dereference.assert_not_called()
+        self.assertEqual(record["local"]["state"], "no_result")
+        self.assertEqual(
+            protocol._local_receipt_disposition(record)["state"],
+            "receipt_window_exhausted",
+        )
+
     def test_provisional_local_red_re_dispatches_not_reverts(self) -> None:
         self._seed(
             {
@@ -5124,6 +5184,34 @@ def _report_record(*, state="open", remediation_state="none"):
             "kind": "fix-forward" if remediation_state != "none" else None,
         },
     }
+
+
+def test_summary_distinguishes_exhausted_receipt_window():
+    record = _report_record()
+    record["local"]["redispatch_count"] = protocol.DEFAULT_LOCAL_REDISPATCH_LIMIT
+    rendered = protocol._summary_line(record)
+    assert "local=no_result" in rendered
+    assert "local_receipt=receipt_window_exhausted" in rendered
+
+
+def test_json_status_carries_receipt_window_disposition(tmp_path):
+    record = _report_record()
+    record["local"]["redispatch_count"] = protocol.DEFAULT_LOCAL_REDISPATCH_LIMIT
+    output = io.StringIO()
+    with mock.patch.object(
+        obligations, "latest_records", return_value={record["obligation_id"]: record}
+    ), redirect_stdout(output):
+        protocol.print_status(
+            tmp_path / "unused-store.jsonl",
+            include_closed=True,
+            json_output=True,
+            gate=False,
+            decision_waits_path=tmp_path / "no-decision-waits.json",
+        )
+    reported = json.loads(output.getvalue())["obligations"][0]
+    disposition = reported["local"]["receipt_disposition"]
+    assert disposition["state"] == "receipt_window_exhausted"
+    assert disposition["will_consume_later_receipt"] is False
 
 
 def _decision_wait_registry(path):

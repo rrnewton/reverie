@@ -1143,6 +1143,81 @@ def bind_local_receipt_authority(
     )
 
 
+def _local_receipt_disposition(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Describe whether the local leg will consume a future receipt.
+
+    ``no_result`` says only that no verdict exists.  It does not say whether an
+    obligation-owned producer can still create one.  Keep the producer window
+    bounded by the existing redispatch limit and report the exhausted latch
+    explicitly instead of making it look like an active wait.
+    """
+    local = record.get("local")
+    if not isinstance(local, Mapping):
+        return {
+            "state": "unavailable",
+            "will_consume_later_receipt": False,
+            "reason": "obligation has no typed local leg",
+        }
+    state = str(local.get("state") or "unknown")
+    if state in {"pending", "starting", "running"}:
+        return {
+            "state": "producer_active",
+            "will_consume_later_receipt": True,
+            "reason": "an obligation-owned local producer is active",
+        }
+    if state in {"green", "red"}:
+        return {
+            "state": "receipt_observed",
+            "will_consume_later_receipt": False,
+            "reason": "the local leg already carries a terminal receipt verdict",
+        }
+    if state != "no_result":
+        return {
+            "state": "unavailable",
+            "will_consume_later_receipt": False,
+            "reason": f"local state {state!r} has no receipt-consumption contract",
+        }
+
+    raw_spent = local.get("redispatch_count", 0)
+    if type(raw_spent) is not int or raw_spent < 0:
+        return {
+            "state": "unavailable",
+            "will_consume_later_receipt": False,
+            "reason": "local redispatch count is missing or malformed",
+        }
+    spent = raw_spent
+    remaining = max(0, DEFAULT_LOCAL_REDISPATCH_LIMIT - spent)
+    common = {
+        "redispatch_count": spent,
+        "redispatch_limit": DEFAULT_LOCAL_REDISPATCH_LIMIT,
+        "automatic_rechecks_remaining": remaining,
+    }
+    if remaining == 0:
+        return {
+            **common,
+            "state": "receipt_window_exhausted",
+            "will_consume_later_receipt": False,
+            "reason": (
+                "bounded local redispatches are exhausted; use the explicit "
+                "fix-forward/revert resolution path"
+            ),
+        }
+    source = local.get("source")
+    if not isinstance(source, str) or not source or not Path(source).is_dir():
+        return {
+            **common,
+            "state": "receipt_window_unavailable",
+            "will_consume_later_receipt": False,
+            "reason": "no readable donor checkout exists for the remaining redispatch",
+        }
+    return {
+        **common,
+        "state": "awaiting_receipt",
+        "will_consume_later_receipt": True,
+        "reason": "an obligation-owned bounded local redispatch remains available",
+    }
+
+
 def verification_policy_for_repo(repo: str) -> dict[str, Any]:
     """Return the only supported exact-SHA verification policy for ``repo``.
 
@@ -4986,9 +5061,11 @@ def _summary_line(
         if decision_wait is not None
         else ""
     )
+    local_receipt = _local_receipt_disposition(record)["state"]
     return (
         f"{record['obligation_id']} {record['repo']}@{record['landed_sha'][:12]} "
         f"overall={record['overall_state']} local={record['local']['state']} "
+        f"local_receipt={local_receipt} "
         f"github={record['github']['state']} recommendation={action} "
         f"remediation={remediation_state} dispatch={dispatch_state}{blocker}"
     )
@@ -5008,6 +5085,13 @@ def print_status(
         raise ProtocolError("--actionable and --awaiting-decision are mutually exclusive")
     decision_wait_registry = _load_decision_waits(decision_waits_path)
     records = list(obligations.latest_records(store_path).values())
+    # Reporting enrichment only: never append an obligation event merely to
+    # explain an existing state. Refusal paths and read-only status commands
+    # must remain byte-for-byte read-only.
+    for record in records:
+        local = record.get("local")
+        if isinstance(local, dict):
+            local["receipt_disposition"] = _local_receipt_disposition(record)
     if actionable_only:
         records = [
             record

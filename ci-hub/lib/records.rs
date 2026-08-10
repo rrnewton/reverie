@@ -1,8 +1,9 @@
 //! Typed schemas consumed by the ci-hub front door.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::path::Path;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ObligationRecord {
@@ -46,6 +47,89 @@ impl ObligationRecord {
             .and_then(|remediation| remediation.dispatch.as_ref())
             .and_then(|dispatch| dispatch.state.as_deref())
             .unwrap_or("-")
+    }
+}
+
+impl VerificationState {
+    pub fn receipt_disposition(&self, redispatch_limit: u64) -> Value {
+        let state = self.state.as_str();
+        if matches!(state, "pending" | "starting" | "running") {
+            return json!({
+                "state": "producer_active",
+                "will_consume_later_receipt": true,
+                "reason": "an obligation-owned local producer is active",
+            });
+        }
+        if matches!(state, "green" | "red") {
+            return json!({
+                "state": "receipt_observed",
+                "will_consume_later_receipt": false,
+                "reason": "the local leg already carries a terminal receipt verdict",
+            });
+        }
+        if state != "no_result" {
+            return json!({
+                "state": "unavailable",
+                "will_consume_later_receipt": false,
+                "reason": format!("local state {state:?} has no receipt-consumption contract"),
+            });
+        }
+        let spent = match self.extra.get("redispatch_count") {
+            None => 0,
+            Some(value) => match value.as_u64() {
+                Some(spent) => spent,
+                None => {
+                    return json!({
+                        "state": "unavailable",
+                        "will_consume_later_receipt": false,
+                        "reason": "local redispatch count is malformed",
+                    });
+                }
+            },
+        };
+        let remaining = redispatch_limit.saturating_sub(spent);
+        if remaining == 0 {
+            return json!({
+                "state": "receipt_window_exhausted",
+                "will_consume_later_receipt": false,
+                "redispatch_count": spent,
+                "redispatch_limit": redispatch_limit,
+                "automatic_rechecks_remaining": remaining,
+                "reason": "bounded local redispatches are exhausted; use the explicit fix-forward/revert resolution path",
+            });
+        }
+        let source_available = self
+            .extra
+            .get("source")
+            .and_then(Value::as_str)
+            .is_some_and(|source| Path::new(source).is_dir());
+        if !source_available {
+            return json!({
+                "state": "receipt_window_unavailable",
+                "will_consume_later_receipt": false,
+                "redispatch_count": spent,
+                "redispatch_limit": redispatch_limit,
+                "automatic_rechecks_remaining": remaining,
+                "reason": "no readable donor checkout exists for the remaining redispatch",
+            });
+        }
+        json!({
+            "state": "awaiting_receipt",
+            "will_consume_later_receipt": true,
+            "redispatch_count": spent,
+            "redispatch_limit": redispatch_limit,
+            "automatic_rechecks_remaining": remaining,
+            "reason": "an obligation-owned bounded local redispatch remains available",
+        })
+    }
+
+    pub fn receipt_disposition_state(&self) -> &str {
+        self.extra
+            .get("receipt_disposition")
+            .and_then(Value::as_object)
+            .and_then(|disposition| disposition.get("state"))
+            .and_then(Value::as_str)
+            .unwrap_or("unclassified")
     }
 }
 
@@ -307,6 +391,34 @@ mod tests {
         assert_eq!(
             record.remediation.unwrap().dispatch.unwrap().extra["wake_id"],
             "w1"
+        );
+    }
+
+    #[test]
+    fn obligation_schema_reports_typed_receipt_disposition() {
+        let state: VerificationState = serde_json::from_str(
+            r#"{
+                "state":"no_result",
+                "receipt_disposition":{
+                    "state":"receipt_window_exhausted",
+                    "will_consume_later_receipt":false
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            state.receipt_disposition_state(),
+            "receipt_window_exhausted"
+        );
+
+        let mut legacy: VerificationState =
+            serde_json::from_str(r#"{"state":"no_result","redispatch_count":2}"#).unwrap();
+        legacy
+            .extra
+            .insert("receipt_disposition".into(), legacy.receipt_disposition(2));
+        assert_eq!(
+            legacy.receipt_disposition_state(),
+            "receipt_window_exhausted"
         );
     }
 

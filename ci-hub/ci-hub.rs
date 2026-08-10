@@ -5812,6 +5812,17 @@ fn print_obligations(root: &Path, args: ObligationsArgs) -> Result<i32, CiHubErr
         .or_else(|| env::var_os("CI_HUB_OBLIGATIONS_STORE").map(PathBuf::from))
         .unwrap_or_else(|| root.join("ignored/ci-hub/obligations.jsonl"));
     let mut records = latest_obligations(&store)?;
+    let redispatch_limit = env::var("CI_HUB_LOCAL_REDISPATCH_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(2);
+    for record in &mut records {
+        let disposition = record.local.receipt_disposition(redispatch_limit);
+        record
+            .local
+            .extra
+            .insert("receipt_disposition".into(), disposition);
+    }
     if args.actionable {
         records.retain(|record| record.remediation_required());
     }
@@ -5959,12 +5970,13 @@ fn latest_obligations(path: &Path) -> Result<Vec<ObligationRecord>, CiHubError> 
 
 fn obligation_summary(record: &ObligationRecord) -> String {
     format!(
-        "{} {}@{} overall={} local={} github={} recommendation={} dispatch={}",
+        "{} {}@{} overall={} local={} local_receipt={} github={} recommendation={} dispatch={}",
         record.obligation_id,
         record.repo,
         &record.landed_sha[..record.landed_sha.len().min(12)],
         record.overall_state,
         record.local.state,
+        record.local.receipt_disposition_state(),
         record.github.state,
         record.recommendation_action(),
         record.dispatch_state()
