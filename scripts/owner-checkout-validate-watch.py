@@ -527,6 +527,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "no exact-attempt ledger row"
                 ),
             )
+        elif row is not None and row.get("result") == "fail":
+            result.update(
+                state="FAIL",
+                reason=(
+                    "exact-attempt canonical ledger row reports result=fail; "
+                    f"wrapper exit={completed.returncode} is not the job verdict"
+                ),
+            )
         elif completed.returncode != 0:
             result.update(
                 state="FAIL",

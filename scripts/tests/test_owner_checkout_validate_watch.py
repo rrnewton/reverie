@@ -237,6 +237,13 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             log.write_text("# ci-hub/validate-lock tool COST ACTUAL exit=3\n")
             self.assertIsNone(watch.lock_block_evidence(log))
 
+    def test_exact_ledger_failure_outranks_wrapper_success(self) -> None:
+        source = (ROOT / "scripts/owner-checkout-validate-watch.py").read_text()
+        ledger_clause = 'row is not None and row.get("result") == "fail"'
+        wrapper_clause = "elif completed.returncode != 0:"
+        self.assertIn(ledger_clause, source)
+        self.assertLess(source.index(ledger_clause), source.index(wrapper_clause))
+
     def test_validation_side_effects_are_preserved_then_fully_restored(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
