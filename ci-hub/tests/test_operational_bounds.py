@@ -696,13 +696,12 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertNotIn(
             'gh pr view "$PR" -R "$R" --json statusCheckRollup', script
         )
-        self.assertIn("merge-gate remained NO_RESULT", script)
+        self.assertIn("merge-gate diagnostic only", script)
         self.assertIn('check_outcome=$(python3 "$outcome_helper"', script)
-        self.assertIn('FAILED) abandon "merge-gate produced a genuine FAILED verdict', script)
-        self.assertIn('NO_RESULT)', script)
-        self.assertIn("gh workflow run merge-gate.yml", script)
-        self.assertIn("exit 75", script)
+        self.assertNotIn("gh workflow run merge-gate.yml", script)
+        self.assertNotIn("merge-gate remained NO_RESULT", script)
         self.assertIn("exact-head-validation-authority.sh", script)
+        self.assertEqual(script.count("--local-only"), 3)
         self.assertNotIn("local-validation-eligibility.sh", script)
         self.assertIn("apply-local-label --pr", script)
         self.assertIn('--repo "$R" --sha "$HEAD" --comments "$receipt_comments"', script)
@@ -804,11 +803,23 @@ class OperationalBoundsTest(unittest.TestCase):
             text=True,
             timeout=WALL_SECONDS,
         )
-        self.assertIn("local/hosted OR positives=4", result.stdout)
+        self.assertIn("local-only positive=1", result.stdout)
         self.assertIn(
-            "red/partial/stale/unbound/count/coverage/policy negatives=11",
+            "local-only negatives=3",
             result.stdout,
         )
+
+    def test_direct_main_lander_brackets_ledger_authority(self) -> None:
+        result = subprocess.run(
+            [str(ROOT / "ci-hub/landing/test-land-direct-main.sh")],
+            cwd=ROOT,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=WALL_SECONDS,
+        )
+        self.assertIn("positive=1/1 negative=3/3", result.stdout)
 
     def test_skill_denylist_guards_against_local_only_landing_claims(self) -> None:
         denylist = (
