@@ -836,13 +836,15 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertIn("direct_inner_refused=2/2", result.stdout)
         self.assertIn("entry_points=3/3", result.stdout)
 
-    def test_skill_denylist_guards_against_local_only_landing_claims(self) -> None:
+    def test_skill_denylist_guards_validate_first_landing_authority(self) -> None:
         denylist = (
             ROOT / "ci-hub/health/skill-contradiction-denylist.txt"
         ).read_text().lower()
         guarded_claims = (
-            ("hermit landing requires", "local receipt"),
-            ("hermit landing", "github results are supplemental"),
+            ("local-or-hosted",),
+            ("interchangeable positives",),
+            ("required merge-gate",),
+            ("red from either authority",),
         )
         skill_bodies = {
             path: path.read_text().lower()

@@ -11,7 +11,7 @@ description: |-
            as an instruction to a coordinator mandated to close and respawn
            agents without asking. Agent liveness, task ownership, and TaskGraph
            census are permanently out of scope.
-    NO  -> it belongs here. GitHub, hosted CI queues, runner lanes, merge gates,
+    NO  -> it belongs here. GitHub, GH Actions queues, runner lanes, merge gates,
            local disk consumption and local git state are exactly the things the
            coordinator genuinely cannot see, and reminding it is the whole point.
 
@@ -367,7 +367,7 @@ reminders:
   #
   # THE TEST EVERY GATE MUST NOW PASS: can ORC observe this directly? If YES,
   # tick-hub must not police it -- ORC holds the authoritative view and a second
-  # observer can only manufacture disagreement. If NO (GitHub, hosted CI queues,
+  # observer can only manufacture disagreement. If NO (GitHub, GH Actions queues,
   # runner lanes, local disk, local git), tick-hub is exactly the right mechanism.
   #
   # The danger is ASYMMETRIC, which is why these four went rather than getting

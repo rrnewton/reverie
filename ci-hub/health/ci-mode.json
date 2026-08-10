@@ -1,6 +1,6 @@
 {
   "mode": "auto",
-  "reason": "initial committed state: CI-constrained mode defaults to auto (every PR push fans out hosted CI); switch with `ci-hub ci-mode set`",
+  "reason": "initial committed state: GH Actions-constrained mode defaults to auto (every PR push fans out hosted workflows); switch with `ci-hub ci-mode set`",
   "since": "2026-08-03T22:00:29Z",
   "actor": "ci-hub ci-mode seed"
 }

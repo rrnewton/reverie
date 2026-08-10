@@ -30,8 +30,9 @@ with a generated pointer file, a link to `SKILL.md` alone, or a root-level
   generic `slotNN`, not a fixed fleet role).
 - Review, planning, reporting: `backend-reality-reviewer`, `benchmarking`,
   `post-facto-review`, `progress-rubric`, and `research-planning-persona`.
-- Validation and CI: `validate-orchestrator-discipline`, `manual-ci-mode`
-  (exact-head local receipt protocol), and the focused CI/validation references.
+- Validation and hosted diagnostics: `validate-orchestrator-discipline`,
+  `manual-ci-mode` (the validate-first self-landing protocol), and focused
+  historical references.
 - Safety references: feature-base, worktree, stash, pinned-branch, syscall, and
   record/replay skills.
 
@@ -53,13 +54,27 @@ repository skills. The linter gates repository structure and reports local
 drift only as advisory; explicit `--adopt-skill` exports a reviewed repository
 skill. See `core-memory-skill-sync-tooling` before maintaining that bridge.
 
-## CI implementation home
+## Validation and GH Actions implementation home
 
-Current CI code, live queries, history, runner operations, validation receipts,
+Current validation and GH Actions code, live queries, history, runner operations, validation receipts,
 and landing mechanics live under `ci-hub/`. Skills describe when and why to use
 those authorities; they should not duplicate a flag-by-flag command manual that
 can drift. Generic engines stay in the pinned `agent-utils` submodule and are
 reached through the parent adapters.
+
+Parent `AGENTS.md` is authoritative under the owner's 2026-08-10 decision:
+VALIDATE is the normal Hermit landing authority, LEDGER is its durable record,
+GH ACTIONS is advisory P2, and RUNNER means the machine. A normal author works,
+validates, applies the ledger-derived label, lands its own PR, and repeats. The
+only Hermit producer exception is a PR modifying `scripts/validate.rs`.
+
+## Agent identity and purpose
+
+New general agents use neutral sequential ids such as `codex-1` or `claude-1`;
+task-shaped ids go stale when an agent is reassigned. Do not rename live agents
+that already have historical ids. Commits keep the final role/agent/machine
+attribution line and add repeatable `Task: <stable-task-id>` trailers so actor
+identity and work purpose remain separate, durable facts.
 
 ## Product scope
 

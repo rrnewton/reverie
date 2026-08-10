@@ -13,13 +13,14 @@
 #   advisory merge-gate observation -> gh pr merge --rebase (NEVER --admin)
 #   -> ancestry-verify.
 #
-# Three fixes distilled from the 2026-08-03 stuck-gate diagnosis:
-#   1. Trinary gate poll: PASSED lands, FAILED stops, and NO_RESULT blocks while
-#      re-dispatching. PR statusCheckRollup is too narrow: it omits the
-#      workflow_run-triggered dispatch that can carry the success.
+# Three fixes distilled from the 2026-08-03 stuck-gate diagnosis and superseded
+# by the owner's validate-first decision on 2026-08-10:
+#   1. The exact-head LEDGER result authorizes a normal Hermit landing. The
+#      merge-gate is observed once as GH Actions diagnostics and never waited on.
 #   2. The merge command is the mergeability arbiter, NOT mergeStateStatus (which
 #      sticks at UNKNOWN); attempt `gh pr merge --rebase` in a bounded retry loop.
-#   3. A genuine gate failure is never overwritten by re-stamping metadata.
+#   3. Labels and GH Actions state are diagnostics/caches, never substitutes for
+#      the selected exact-head authority.
 #
 # Boxing principle applied to ourselves: EVERY wait here is bounded, and every
 # terminal bail emits a visible ABANDON signal (stderr + a role-tagged PR comment)
@@ -37,10 +38,11 @@
 #                    exclusive with --union. Rationale + how to re-verify it:
 #                    see the step-2 comment. Default behaviour is UNCHANGED.
 #   --agent NAME     lock holder + PR-comment role tag (default: hermit-lander).
-#   --gate-deadline  bound on the merge-gate poll (default 1080).
+#   --gate-deadline  compatibility bound retained for callers and for sizing the
+#                    default whole-child deadline; no GH Actions poll waits on it.
 #   --child-deadline hard ceiling for the whole land subtree (default: twice the
 #                    gate deadline); passed to `land-lock run`, which kills and
-#                    releases on breach. It must be greater than gate-deadline.
+#                    releases on breach. It must exceed the compatibility bound.
 #   --foreground     diagnostic escape hatch; default launches under nohup+setsid
 #                    with a durable timestamped log and returns immediately.
 #   --gate-rotation  independently verify an owner-recorded merge-gate definition
@@ -312,7 +314,7 @@ abandon(){
 with-proxy git -C "$WT" fetch -q origin main || abandon "fetch origin/main failed" 2
 with-proxy git -C "$WT" fetch -q origin "$BR" 2>/dev/null || true
 
-# 1b. Owner-authorized exact-head local-ledger gate. Hosted CI is diagnostic:
+# 1b. Owner-authorized exact-head local-ledger gate. GH Actions is diagnostic:
 # it neither authorizes nor vetoes a landing. Missing/partial/stale local
 # evidence is NO_RESULT, never green. Re-check after every SHA-changing rebase.
 verify_pr_belongs_to_repo
@@ -365,15 +367,15 @@ fi
 # re-derives the exact-head authority at the NEW sha, and every exact-head green
 # earned at the old sha is orphaned -- a rebase can only ever downgrade an
 # already-authorized head to NO_RESULT. Measured 2026-08-07 on #1705/#1711/#1678:
-# all three held a qualifying `AUTHORITY=hosted` green (~30 min of hosted CI
-# each) that an unconditional rebase would have voided the moment another team
+# all three held a qualifying historical `AUTHORITY=hosted` result (~30 min of
+# GH Actions each) that an unconditional rebase would have voided the moment another team
 # advanced main. See also rrnewton/hermit#1812, where an unconditional
 # rebase-and-force-push in the union driver amended main's tip onto two PR
 # branches and landed #1188/#1209 as semantic no-ops.
 #
 # This flag removes a MUTATION, never a CHECK. Still executed on this path: the
 # land-lock (outer `land-lock run`), the step-1b exact-head authority, the step-4
-# recheck at the head actually being merged, the merge-gate poll, the step-5b
+# recheck at the head actually being merged, the merge-gate diagnostic observation, the step-5b
 # final-boundary authority + receipt dereference, `--match-head-commit`,
 # obligation arming, and the post-merge mergeCommit.oid ancestry proof.
 if [ "$NO_REBASE" -eq 1 ]; then
@@ -452,7 +454,7 @@ else
   say "ledger-derived label present; labels=$LB"
 fi
 
-# 4b. A draft PR cannot be merged. Marking it ready may fire advisory CI, but
+# 4b. A draft PR cannot be merged. Marking it ready may fire advisory GH Actions, but
 # that hosted result is not landing authority.
 if [ "$(with-proxy gh pr view "$PR" -R "$R" --json isDraft -q .isDraft)" = "true" ]; then
   with-proxy gh pr ready "$PR" -R "$R" >/dev/null && say "marked ready (was draft)"

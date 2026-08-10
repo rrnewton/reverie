@@ -2,8 +2,8 @@
 # INERT both-sided bracket of the landing eligibility predicate.
 #
 # `local-validation-eligibility.sh` exposes the local-receipt predicate used by
-# the local half of the exact-head local-or-hosted authority. The GitHub
-# `locally-validated` label is a CACHE of that result; the ledger is the truth
+# the normal Hermit exact-head VALIDATE/LEDGER authority. The GitHub
+# `locally-validated` label is a CACHE of that result; the LEDGER is the truth
 # (#231/#243). This test exercises the local predicate DIRECTLY against synthetic
 # ledger fixtures in a temp dir, then audits the production combiner and lander:
 # no PR is read, no label is written, no merge is attempted, and no authorization

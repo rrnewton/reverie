@@ -61,7 +61,7 @@ root-cause one specific blocker with replayable evidence.
 
 The coordinator assigns this workstream to a numeric agent in a generic
 **`worktrees/slotNN/{hermit,reverie,liteinst2}`** slot and registers it with
-`scripts/allocate-worktree.rs --agent hermit-NNN --slot slotNN --task <task-id>
+`scripts/allocate-worktree.rs --agent <neutral-agent-id> --slot slotNN --task <task-id>
 --product all --purpose "<one-line>"`. Create a Reverie branch only when a real
 lower-level change is required; otherwise leave that child and LiteInst2
 detached at their parent gitlinks. Follow the cross-repository change protocol

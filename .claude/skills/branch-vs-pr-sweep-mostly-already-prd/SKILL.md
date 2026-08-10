@@ -20,7 +20,7 @@ one of: (a) superseded by a merged PR (verify content on freshly fetched main
 and merge ancestry), (b) owned in-progress work in an active or uncertain slot
 (see [parked-slot races](../parked-slot-reuse-is-racy/SKILL.md) and
 [busy clean slots](../detached-clean-merged-slot-can-be-busy/SKILL.md)) — do not poach,
-(c) stale rebase/CI helper variants, or (d) obsolete frontier work (see
+(c) stale rebase/automation helper variants, or (d) obsolete frontier work (see
 [main-only branches](../base-feature-branches-on-frontier/SKILL.md)). Real orphaned
 completed work is rare.
 

@@ -25,8 +25,10 @@
 
 skill | main+unprotected | main IS protected: the active default-branch history ruleset enforces deletion, non_fast_forward, and required_linear_history with ZERO bypass; the legacy check-gating ruleset is intentionally rule-empty. "main unprotected" as a landing rationale is false. Current truth: memory [[main-forcepush-lockdown-dual-layer]].
 
-skill | hermit landing requires+local receipt | Hermit landing is not local-receipt-only: owner-authorized exact-head counted-local OR versioned-hosted green is sufficient, while any genuine red blocks.
-skill | hermit landing+github results are supplemental | GitHub exact-head results are an interchangeable positive Hermit landing authority, not merely supplemental to local validation.
+skill | local-or-hosted | Superseded by the owner's 2026-08-10 decision: normal Hermit landing requires exact-head VALIDATE in the LEDGER; GH Actions is advisory P2 except for a PR modifying scripts/validate.rs.
+skill | interchangeable positives | Superseded: VALIDATE/LEDGER and GH Actions are not interchangeable for a normal Hermit PR.
+skill | required merge-gate | Superseded: merge-gate is a GH Actions diagnostic, not normal Hermit landing authority.
+skill | red from either authority | Superseded: only a red from the repository-selected authority blocks; ordinary Hermit GH Actions red is advisory P2.
 
 # The compatibility slug `validate-sh-cannot-be-green-on-devserver` now contains
 # an explicit retraction. Do not denylist a filename as a proxy for its content.

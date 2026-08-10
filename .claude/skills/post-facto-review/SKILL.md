@@ -1,6 +1,6 @@
 ---
 name: post-facto-review
-description: "Land exact-head validated changes before human review while enforcing dual Claude+Codex adversarial review for post-facto-human-review changes."
+description: "Land exact-head validated changes before human review, using the owner's single-review preference and two-agent review for critical syscall, scheduling, or Reverie API changes."
 ---
 
 # Post-Facto-Review Mode
@@ -15,9 +15,9 @@ the applicable role tag:
 - `[coordinator, MODEL]` for coordinator agents
 - `[Human]` for the human owner
 
-This is the **canonical and currently active** landing discipline. Changes land
-as soon as required adversarial review is resolved and the repository's
-authoritative exact-head validation verifier is green. Human review happens
+This is the **canonical and currently active** review discipline. Normal Hermit
+changes land as soon as required adversarial review is resolved and the exact
+head has a qualifying VALIDATE recorded in the LEDGER. Human review happens
 *after* landing, and corrections fix
 forward. The old pre-land protocol is retained only as an
 [archived historical document](../../archived_skills/human-review-first/SKILL.md);
@@ -53,17 +53,30 @@ review rationale by itself.
 This technical review is a pre-land quality gate. Human-owner review is not:
 the owner still reviews the already-landed change after the fact.
 
-## 2. Dual adversarial-review gate and evidence
+## 2. Adversarial-review policy and evidence
 
-Every PR carrying `post-facto-human-review` requires two independent
-adversarial reviews before landing: one by a Claude-family reviewer and one by
-a Codex-family reviewer. Neither reviewer may be the author; when the author
-uses one of those families, use a separate reviewer instance from that family.
+The owner-set policy (2026-08-10) is authoritative verbatim:
+
+> FOR SINGLE-REVIEW PRs CROSS-AGENT REVIEW IS PREFERRED (NOT MANDATORY, PENDING API OUTAGES ETC ETC). FOR CRITICAL CHANGES AS I DEFINED THEM DOUBLE-REVIEW PRs IT'S GOOD TO HAVE TWO DIFFERENT AGENTS (CLAUDE, CODEX, OR METAMATE IF NEEDED).
+
+Critical means Hermit syscall handling (trigger 1), a Reverie API change
+(trigger 2), or DetCore scheduling (trigger 4). Those PRs use two different
+review agents; Claude, Codex, or Metamate may fill either review. Trigger 3, a
+new determinization strategy, still requires `post-facto-human-review`, but is
+a single-review PR unless it also enters one of those three critical domains.
+For single-review PRs, prefer a reviewer other than the author, but do not turn
+an API outage into an indefinite landing hold.
+
+The earlier Codex-only direction was temporary for rate-limit recovery, with a
+12-hour lifetime, and is expired. Do not enforce or restate it as standing
+policy. Any future temporary review directive records its reason and an expiry
+or explicit review trigger.
+
 Reviewers try to refute correctness, determinism, Linux semantics, the
 Reverie/Detcore boundary, security, and the validation claims at the exact PR
 head.
 
-Bind both reviews to the exact head SHA in role-tagged comments. Review labels
+Bind every required review to the exact head SHA in role-tagged comments. Review labels
 are caches for routing and activity, not the approval authority:
 
 - `adversarial-review-codexN` and `adversarial-review-claudeN` record review
@@ -71,10 +84,10 @@ are caches for routing and activity, not the approval authority:
 - `passed-review-codex` and `passed-review-claude` may cache the corresponding
   exact-head approvals. The role-tagged comments and SHA remain authoritative.
 
-Do not land until both model-family reviewers have approved the exact current
-head and every finding is resolved. A head change invalidates both approvals:
-run both reviewers again and refresh cache labels only after fresh exact-head
-approval. Changes-requested findings likewise invalidate the affected approval.
+Do not land until the required reviewer set has approved the exact current
+head and every finding is resolved. A head change invalidates those approvals:
+run the required reviewer set again and refresh cache labels only after fresh
+exact-head approval. Changes-requested findings likewise invalidate the affected approval.
 
 ### Closing a PR is a reviewer action, and it has preconditions
 
@@ -242,26 +255,25 @@ Verify both markers before labeling or landing trigger 1. They are not blanket
 markers for bot-authored code, backend changes, or routine parity fixes. Use
 them only at the smallest new-syscall regions, not across untouched code.
 
-## 7. Land when review and exact-head validation are green
+## 7. Land when review and exact-head validation qualify
 
-Once required adversarial review is resolved and the authoritative gate is
-green, land the authorized change without waiting for a human.
+Once required adversarial review is resolved and the selected exact-head
+authority qualifies, the author lands the change without waiting for a human
+or GH Actions.
 
-- Hermit accepts either exact-head authority: `ci-hub validate-status` for the
-  clean, counted local receipt, or `ci-hub hosted-status` for the versioned
-  GitHub job policy. The parent policy requires the portable `Regular tests
-  (GitHub-managed portable)` job, not an implicit portable+privileged 2/2.
-  Missing, partial, stale, cancelled, and skipped evidence is NO_RESULT; a
-  genuine red from either authority blocks even if the peer is green.
-  This is not end-to-end deployed until
-  [`hermit-merge-gate-authority-deployment`](../../../ci-hub/landing/README.md#deployment-obligation-hermit-merge-gate-authority-deployment)
-  lands in Hermit; meanwhile its required merge-gate still requires
-  portable+privileged and pins the older verifier. Obey that gate.
+- Normal Hermit authority is `ci-hub validate-status` over the clean, counted
+  exact-head LEDGER receipt. Let `apply-local-label` derive
+  `locally-validated`, then land through the tracked lander. GH Actions is
+  advisory P2 and does not delay or veto that path.
+- The sole Hermit exception is a PR modifying the registered producer
+  `scripts/validate.rs`; it uses `ci-hub hosted-status` for the registered
+  exact-head GH Actions job because its own producer cannot vouch for itself.
+  Do not generalize this exception.
 - Reverie requires its repository-defined exact-head validation authority.
 - When one of the four triggers applies, add `post-facto-human-review`, verify
   every required PR section, verify both exact-head reviews, post role-tagged
   evidence, land through `ci-hub/landing/land-pr.sh` (which re-dereferences the
-  local-or-hosted policy at the final exact head) using the repository's
+  selected policy at the final exact head) using the repository's
   current merge mode, record the exact landed SHA, and rebase dependents in
   dependency order. Do not add the label to a routine non-triggering PR.
 

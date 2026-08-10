@@ -41,7 +41,7 @@ row only from exact code and tests, never from a PR description.
 | **Adversarial/human review:** reviewer lane, verdict, PR number, and exact reviewed head in a durable receipt produced by that lane. | **None.** `scripts/core-review-protocol-lint.sh` checks cache labels only. | **MISSING.** Push-time label invalidation narrows staleness but does not prove who reviewed what; `passed-review-*`, numbered review labels, and `human-approved` are assertions until a lane-specific exact-head receipt is dereferenced. |
 | **Landing authorization:** a durable coordinator/owner decision names the exact repository, PR, and head allowed to land, with no unresolved hold. | **None.** `land-pr.sh` accepts command-line PR/branch arguments and does not dereference a task authorization record. | **MISSING.** Agent assignment, a ready label, or invoking the lander is not authorization. A future verifier must consume an exact-head authorization receipt; keep this human/coordinator gate explicit until then. |
 | **Landed PR identity and task closure:** GitHub's `mergeCommit.oid` is reachable from a freshly fetched target branch. | `ci-hub verify-landing`; `ci-hub/closure/verified_close.py` calls it. | **PARTIAL.** `ci-hub/landing/land-pr.sh` reimplements the proof, and `ci-hub/remediation/land_and_arm.py` can arm from `state == MERGED` plus a shaped `mergeCommit.oid` without proving ancestry. Route both through `verify-landing`; never substitute PR-head ancestry, `MERGED`, or `mergeStateStatus`. |
-| **Hosted CI result:** a registered workflow/job result for the exact head, with terminal success distinct from failure and `NO_RESULT`; landing authority only for a registered-producer-changing Hermit PR (and repositories whose policy explicitly selects hosted). | Exact-head GitHub API run/job lookup plus the canonical result classifier in `ci-hub/check_outcome.py`. | **PARTIAL.** The producer exception, remediation, health, and history paths call the classifier, but other consumers still hand-roll lookup/classification. Cancelled/skipped/missing/queued/stale are `NO_RESULT`, not red or green. |
+| **GH Actions result:** a registered workflow/job result for the exact head, with terminal success distinct from failure and `NO_RESULT`; landing authority only for a Hermit PR modifying `scripts/validate.rs` (and repositories whose policy explicitly selects hosted). | Exact-head GitHub API run/job lookup plus the canonical result classifier in `ci-hub/check_outcome.py`. | **PARTIAL.** The producer exception, remediation, health, and history paths call the classifier, but other consumers still hand-roll lookup/classification. Cancelled/skipped/missing/queued/stale are `NO_RESULT`, not red or green. |
 | **Workflow-policy version:** the required context was emitted by the trusted current workflow definition, not an older PR-branch YAML with weaker rules. | Hermit #1579's versioned context/blob check and ruleset reconciler. | **MISSING on main.** Until the versioned gate lands and every required-context consumer switches, stale branch YAML can emit a current-looking green. |
 | **Live dependency currency:** every tracked manifest and lockfile pin equals the freshly resolved canonical remote ref. | `scripts/check-reverie-pin.rs` from Hermit #1591: live `git ls-remote`, tracked `Cargo.toml` + `Cargo.lock` scan, exact equality. | **PARTIAL until #1591 lands and all paths call it.** The reviewed verifier has an exact-tip positive and real ancestor-behind negative; local validate, both DAGs, hosted aggregate, merge gate, and receipt production are the required consumers. |
 | **Workspace ownership:** `worktree-state.json`, the managed `ACTIVE.md` row, registered worktrees, and actual checked-out branches/detached SHAs agree. | `scripts/check-worktree-registry.rs`; its fixture accepts 2/2 correct rows and refuses planted content drift while preserving a 1/1 correct control. | **PARTIAL.** `allocate-worktree.rs --check-only` calls it, but normal allocation, `release-worktree.rs`, and `worktree-gc.sh` do not all run the verifier before acting. They must call it rather than trusting or independently parsing one surface. |
@@ -150,7 +150,7 @@ surprising, interrogate the denominator before filing work against the numerator
 ### Hermit landing hierarchy — evidence, authorization, enforcement
 
 The owner settled the hierarchy repeatedly on 2026-08-10: **"we land based on local validate recorded in
-the ledger"** and **"we have largely given up on hosted CI for now."** Most-recent owner direction wins over
+the ledger"** and hosted workflows are distant P2 diagnostics. Most-recent owner direction wins over
 older prose. Parent `AGENTS.md` is the fleet publication authority because it owns checkout, review, landing,
 and direct-main permissions. Hermit product docs describe the mechanism. GitHub rulesets enforce deletion,
 non-fast-forward, and linear-history safety. A mechanism that can push and a server that accepts a push do not
@@ -164,15 +164,40 @@ The resulting distinctions are load-bearing:
 
 - A counted full local validate at the exact head in the canonical ledger is Hermit's normal landing
   **evidence**. Missing, stale, partial, killed, zero-execution, or failed evidence is not green.
-- Hosted CI is distant P2 diagnostic information and ordinarily decides nothing. The narrow exception is a PR
-  modifying a registered local-validation producer: candidate-produced evidence cannot vouch for that producer,
+- GH Actions is distant P2 diagnostic information and ordinarily decides nothing. The narrow exception is a PR
+  modifying the registered producer `scripts/validate.rs`: candidate-produced evidence cannot vouch for that producer,
   so local is intentionally non-authoritative and registered exact-head hosted authority is required. #2073's
   local 56/56 therefore did not authorize its producer-definition change.
 - Reverie's separately versioned hosted policy is unchanged.
+- The normal author loop is work, reviewed PR, exact-head VALIDATE, qualifying LEDGER row, derived
+  `locally-validated` label, self-landing through the tracked lander, ancestry proof, and repeat. A normal author
+  never waits for GH Actions or hands a fresh PR to a backlog lander.
 - Normal Hermit publication remains a reviewed feature PR through the tracked lander. Local green is necessary
   evidence, not a free-standing permission to push `main`.
 - Direct-main authority exists only in named scopes: Red-Tip Direct Land and Gate-Definition Rotation. The live
   ruleset's advisory gate neither creates a third exception nor weakens either scope.
+
+The owner also settled review routing on 2026-08-10, verbatim:
+
+> FOR SINGLE-REVIEW PRs CROSS-AGENT REVIEW IS PREFERRED (NOT MANDATORY, PENDING API OUTAGES ETC ETC). FOR CRITICAL CHANGES AS I DEFINED THEM DOUBLE-REVIEW PRs IT'S GOOD TO HAVE TWO DIFFERENT AGENTS (CLAUDE, CODEX, OR METAMATE IF NEEDED).
+
+Critical here means Hermit syscall handling, DetCore scheduling, or a Reverie API change. This supersedes the
+temporary Codex-only direction, whose reason was model rate limiting and whose owner-confirmed lifetime was 12
+hours. Preserving that direction as history is correct; continuing to dispatch by it is not. More generally, a
+temporary directive records why it exists and when it expires or must be reviewed, so the reason cannot disappear
+while the restriction silently becomes permanent.
+
+### Neutral agent ids and task trailers
+
+An agent id is a durable join key, not a job description. Agents are routinely reassigned, so a name such as
+`codex-hostload` becomes a false historical claim as soon as that process takes different work. New general
+agents therefore use purpose-free sequential ids (`codex-1`, `claude-1`, and so on). Existing live agents are
+not renamed because their current ids already join processes, TaskGraph notes, and commits; this is a
+forward-only convention.
+
+Commits still need actor attribution, so the final role/agent/machine line remains. Purpose moves to repeatable
+`Task: <stable-task-id>` trailers immediately above it. Repeated task trailers cover the rare explicitly folded
+commit without forcing either the stable agent id or stable task id to pretend to be the other.
 
 Remediation consumes that same repository-specific authority; it cannot promote a diagnostic into a landing
 verdict. For Hermit, an ordinary hosted red remains P2 and cannot recommend or dispatch a `main` mutation. A
@@ -397,11 +422,11 @@ for — the agent holding the shell runs the commands and reports.
 - **Before closeout:** each changed repo has a clean committed feature branch; record exact SHAs + validation in the task and `ARCHIVED.md`; detach slot children at their parent-pinned gitlinks; remove/update the slot row; keep ≤ 5 parked; leave unrelated concurrent work exactly as found.
 - **Before closing a task (the OWNING AGENT closes it — superseded 2026-08-08):** the coordinator-only closure gate is GONE. An agent closes its own task with plain `tg update <id> --status closed` once it has posted the PR/artifact URL, exact SHA, and validation evidence and tagged `implemented`. `./ci-hub/bin/close-task` is retained but optional; it is still the only writer of the `CLOSURE-VERIFIED` note that discharges landing debt, so use it once the change is on `main`. See AGENTS.md **Task Lifecycle And Closure**.
 
-### Manual hosted-CI dispatch under `merge-gate-v4` — the measurements
+### Manual GH Actions dispatch under `merge-gate-v4` — the measurements
 
-Evidence for the AGENTS.md predicate (Coordinator Judgement Rules). On a NO_RESULT the gate re-dispatches the
-missing legs and then *deliberately cancels itself*, logging `NO_RESULT blocks landing but is not a failure;
-cancelling gate run <id> after re-dispatch`. Measured on hermit#1911 at `18758e9a`: a hand-rolled second
+Evidence for the AGENTS.md predicate (Coordinator Judgement Rules). On a NO_RESULT the diagnostic gate may
+re-dispatch missing legs and then deliberately cancel itself. Its historical log language about landing is
+superseded by the owner's 2026-08-10 validate-first decision. Measured on hermit#1911 at `18758e9a`: a hand-rolled second
 dispatch at the same SHA left 30+ jobs succeeding and exactly two — `test: sabre` and
 `e2e: c-programs__verify__ptrace` — cancelled, which was enough to flip `Regular tests (GitHub-managed
 portable)` to `failure`. Re-running `merge-gate-v4` instead produced `Every required leg has a PASSED result.`

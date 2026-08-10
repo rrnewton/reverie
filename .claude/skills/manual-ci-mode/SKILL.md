@@ -1,60 +1,53 @@
 ---
 name: manual-ci-mode
-description: "Hermit exact-head local validation path within the owner-authorized local-or-hosted landing policy."
+description: "Hermit's validate-first landing workflow. Use for any Hermit PR publication or landing: local VALIDATE recorded in the LEDGER is the normal authority; GH Actions is advisory P2 except for a PR modifying scripts/validate.rs."
 ---
 
-# Exact-head local validation mode
+# Validate-first Hermit landing
 
-This skill operates the local half of Hermit's owner-authorized exact-head OR
-policy. A full, counted local receipt dereferenced by `ci-hub validate-status`
-and the versioned registered hosted result dereferenced by `ci-hub
-hosted-status` are interchangeable positives. Missing hosted evidence does not
-block a local green; a genuine product red from either authority does block.
+Parent `AGENTS.md` is authoritative under the owner's 2026-08-10 decision. Use
+its vocabulary exactly: VALIDATE is the admitted local full run; LEDGER is its
+durable authority record; GH ACTIONS are hosted advisory P2 diagnostics; RUNNER
+is the machine. Never use the ambiguous two-letter continuous-integration
+abbreviation for any of those meanings.
 
-**Deployment transition.** Until
-[`hermit-merge-gate-authority-deployment`](../../../ci-hub/landing/README.md#deployment-obligation-hermit-merge-gate-authority-deployment)
-lands in Hermit, its required merge-gate still requires portable+privileged and
-pins the older verifier. Obey that gate and do not report portable-only hosted
-authority as deployed end to end.
+The ordinary inner loop is:
 
-Use `ci-hub/ci-hub quickstart` for the live command sequence. Admit the run
-through ci-hub and launch its full profile by the tracked `systemd-run --user`
-producer in `AGENTS.md`, from the assigned slot. Require a clean tree, anchored
-40-hex commit, full profile and selection, nonzero counted coverage, zero
-failures, and a durable log/ledger row. After any rebase or head change, the old
-receipt is inapplicable and validation must run again.
+1. Work in the assigned slot and publish the reviewed PR at an exact head.
+2. Run full VALIDATE through `ci-hub validate-run`.
+3. Require `ci-hub validate-status --sha <40-hex-head>` to accept a clean,
+   full, nonzero, counted LEDGER receipt.
+4. Let `ci-hub apply-local-label` derive `locally-validated` from that receipt.
+5. Land your own PR with `ci-hub/landing/land-pr.sh`, prove ancestry, and repeat.
 
-Before landing, require all of the following:
+Do not wait for GH Actions, a merge-gate run, or a dedicated landing agent.
+Those signals remain useful diagnostics, but they neither authorize nor veto a
+normal ledger-authorized Hermit landing. If the land breaks `main`, stop the
+drain and re-green it rather than accumulating a backlog.
 
-1. The task authorizes landing and required adversarial review is resolved at
-   the exact current head.
-2. `ci-hub validate-status --sha <40-hex-head>` accepts that head's counted
-   full local receipt, or the canonical lander observes the versioned registered
-   hosted-portable green through `ci-hub hosted-status`.
-3. `ci-hub/landing/land-pr.sh` owns fresh-base preparation, the serialized land
-   lock, merge mode, and post-merge ancestry check.
+Admit VALIDATE through ci-hub and the tracked `systemd-run --user` producer in
+`AGENTS.md`, from the assigned slot. Require a clean anchored 40-hex commit,
+full profile and selection, nonzero counted coverage, zero failures, and a
+durable log/LEDGER row. Any rebase or head change requires a new VALIDATE.
 
 `locally-validated` is only a cache derived from the receipt. Never type it by
-hand or treat its presence, a command exit, a comment, or a copied status as
-authority. Do not use raw worktree operations, direct `./scripts/validate.rs` from an
-agent sandbox, `--admin`, or a primary checkout. The author shepherds a new PR
-through this protocol; a dedicated lander is reserved for backlog recovery.
+hand or treat its presence, a command exit, a comment, or copied status as
+authority. The tracked lander owns final authority recheck, fresh-base handling,
+serialization, merge mode, and ancestry proof. Do not use `--admin`, a primary
+checkout, or direct `./scripts/validate.rs` from an agent sandbox.
 
-## Parent repository evidence is a different authority
+## Sole Hermit producer exception
 
-`rrnewton/dev-hermit` has no Hermit validation producer, so it cannot honestly mint
-a Hermit full-profile local receipt. Do not append synthetic parent rows to the
-Hermit ledger and do not treat that absence as a bypass. A parent commit's
-qualifying authority is instead:
+A PR that modifies the registered producer `scripts/validate.rs` cannot use a
+run produced by its own changed code as authority. Only that narrowly detected
+PR class uses the registered exact-head GH Actions result through `ci-hub
+hosted-status`. Do not extend the exception to adjacent validation files,
+normal PRs, a missing hosted run, or a hosted red on an ordinary head.
 
-```bash
-./ci-hub/ci-hub hosted-status --repo rrnewton/dev-hermit --sha <exact-40-hex-head>
-```
+## Other repositories select their own authority
 
-The registered parent policy requires 4/4 exact-head GitHub jobs: both
-`Dev-hermit operational tooling` shards, the `Portability` path-policy job, and
-the `Demo review gate` job. Missing, cancelled, partial, stale, or malformed
-evidence is `NO_RESULT`; any genuine red remains red. A task-specific positive
-and negative mutation fixture must be wired into one of those deterministic
-shards when it introduces a new authority. A PR-body claim, local command exit,
-label, or an unregistered workflow is not parent landing evidence.
+`rrnewton/dev-hermit` has no Hermit validation producer and must not append
+synthetic rows to the Hermit LEDGER. Its separately versioned policy currently
+uses the registered 4/4 exact-head GH Actions job set. Reverie likewise retains
+its separately versioned hosted policy. Neither exception changes normal
+Hermit's validate-first loop.

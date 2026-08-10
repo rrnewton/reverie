@@ -16,14 +16,10 @@ to that derived count. Never choose a conflict side or copy the dated counts in
 old task notes. Run the focused structural test and then obtain a new full
 exact-head receipt because a rebase changes the SHA.
 
-Landing authority remains the owner-authorized exact-head OR predicate:
-`ci-hub validate-status` for a qualifying local receipt or `ci-hub hosted-status`
-for the registered hosted job set. Do not re-fire historical workflows or infer
-validity from a label. This product fact belongs in Hermit and should migrate
-there when its current implementation is confirmed.
-
-Until
-[`hermit-merge-gate-authority-deployment`](../../../ci-hub/landing/README.md#deployment-obligation-hermit-merge-gate-authority-deployment)
-lands in Hermit, its required merge-gate still requires portable+privileged and
-pins the older verifier. Obey that gate; portable-only hosted authority is not
-operational end to end yet.
+Normal Hermit landing authority remains the exact-head LEDGER receipt accepted
+by `ci-hub validate-status`. Do not re-fire historical GH Actions or infer
+validity from a label. Because this conflict may modify the registered producer
+`scripts/validate.rs`, classify the final diff precisely: only when that file
+changes does the narrow producer exception require registered exact-head GH
+Actions authority. This product fact belongs in Hermit and should migrate there
+when its current implementation is confirmed.

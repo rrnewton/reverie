@@ -22,7 +22,7 @@ DOCS = (
     ROOT / "ci-hub/landing/README.md",
     ROOT / "ci-hub/containers/README.md",
 )
-EXPECTED_COMMANDS = 54
+EXPECTED_COMMANDS = 56
 FENCE = re.compile(r"^```(?P<language>[A-Za-z0-9_-]*)\s*$")
 FATAL_OUTPUT = (
     "gh auth login",
@@ -174,6 +174,10 @@ def _classify(text: str) -> str:
         return "local-read"
     if normalized.startswith("with-proxy gh "):
         return "live-read"
+    if normalized.startswith('git fetch origin "+refs/pull/$PR/head:refs/pr-drain/$PR"'):
+        return "parse"
+    if normalized.startswith('git cherry origin/main "refs/pr-drain/$PR"'):
+        return "parse"
     match = re.match(r"^(?:\./)?scripts/agent-podman\.rs\s+(\S+)", normalized)
     if match:
         return "local-read" if match.group(1) == "quickstart" else "parse"
@@ -286,6 +290,10 @@ def _parse_probe(command: str) -> str:
     # without this one.
     if normalized.startswith("python3 ci-hub/landing/coalesce_guard.py"):
         return "python3 ci-hub/landing/coalesce_guard.py --help"
+    if normalized.startswith('git fetch origin "+refs/pull/$PR/head:refs/pr-drain/$PR"'):
+        return "git fetch --help"
+    if normalized.startswith('git cherry origin/main "refs/pr-drain/$PR"'):
+        return "git cherry --help"
     return command
 
 
@@ -680,7 +688,7 @@ def run(*, root: Path = ROOT, live: bool = False) -> list[str]:
                 _unverifiable(
                     "quickstart tg",
                     "tg is not on PATH (it is a large fbsource binary, absent from "
-                    "ubuntu-latest, so hosted CI can never measure this)",
+                    "ubuntu-latest, so GH Actions can never measure this)",
                 )
             )
         elif not _tg_exposes_quickstart(tg_binary):

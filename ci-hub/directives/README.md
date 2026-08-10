@@ -15,6 +15,9 @@ Run the pure primer before editing the ledger:
 Each record requires:
 
 - the date the directive was asked or first durably recorded;
+- the verbatim instruction and its reason in the durable source record;
+- for a temporary directive, an explicit expiry or review trigger in that source record. Expiry does
+  not erase history; it changes the directive from active policy to a superseded historical record;
 - the GitHub repository, local checkout, and target branch;
 - an accountable TaskGraph task and owner;
 - a full implementing commit SHA or pull request number, or explicit `null`

@@ -44,23 +44,25 @@ is the operational summary of the coordinator role.
 - **Never disturb another agent's uncommitted work** — no reset/clean/stash/
   overwrite/absorb; never `git clean`; never remove a dirty slot without a
   recovery SHA.
-- **Landing:** human-owner review and draft status are not landing blockers;
-  after required adversarial review and the authoritative gate are green, apply
+- **Landing:** human-owner review, draft status, and GH Actions are not normal Hermit landing blockers.
+  After required adversarial review and an exact-head counted LEDGER receipt, apply
   `post-facto-human-review` iff one of the four triggers applies, post a
   role-tagged evidence comment, and land the authorized PR. Routine PRs must not
   receive that label. Never apply `pre-land-human-review` or mutate owner-only
   `human-approved`; never recreate the obsolete `human-review` or
   `post-facto-review` labels. Never force-push shared branches or `main`. Bot
   issues only on `rrnewton` forks, never `facebookexperimental`.
+- **Review routing:** use the owner-set policy quoted verbatim in
+  [post-facto-review](../post-facto-review/SKILL.md). Cross-agent review is preferred for a
+  single-review PR, not mandatory during API outages. Hermit syscall handling, DetCore scheduling,
+  and Reverie API changes use two different review agents. The former Codex-only rate-limit measure
+  expired after 12 hours and is not standing policy.
 - **PR ownership:** the author shepherds each new PR through exact-head review,
-  owner-authorized local-or-hosted authority verification, landing, and ancestry
-  confirmation. A dedicated lander drains an inherited backlog; it is not the
-  steady-state handoff.
-- **Deployment transition:** until
-  [`hermit-merge-gate-authority-deployment`](../../../ci-hub/landing/README.md#deployment-obligation-hermit-merge-gate-authority-deployment)
-  lands in Hermit, its required merge-gate still requires portable+privileged
-  and pins the older verifier. Keep that check required; portable-only hosted
-  authority is not operational end to end yet.
+  VALIDATE, the LEDGER-derived `locally-validated` label, landing, and ancestry
+  confirmation. Do not queue ordinary work behind GH Actions or hand it to a
+  dedicated lander; that role drains inherited backlog. The sole exception is a
+  PR modifying `scripts/validate.rs`, whose registered exact-head GH Actions
+  result replaces self-produced local evidence.
 - **Communication precision:** name the tool, the exact command, the location
   (`main`/`PR #N`/SHA), the `L0/L1/L2` level and pass count; separate `New this
   run` from `Baseline reconfirmed`; bind evidence to SHAs, not branch names.
@@ -125,8 +127,17 @@ gate: [post-facto-review](../post-facto-review/SKILL.md); policy in `AGENTS.md`.
   implementing, and shepherding their own authorized PRs through landing so the
   lane's baseline ratchets forward.
   They do not absorb unrelated work when their immediate queue is empty.
-- Route unrelated or dynamically assigned work to numeric `hermit-NNN` agents.
-  Do not invent additional fixed-role names for one-off assignments.
+- Route unrelated or dynamically assigned work to newly spawned agents with
+  neutral, purpose-free sequential ids (`codex-1`, `codex-2`, `claude-1`,
+  `metamate-1`). Do not invent a task-shaped agent name or another fixed-role
+  name for a one-off assignment. Keep the task purpose in TaskGraph and
+  `ACTIVE.md`.
+- Do not rename an existing live agent, including a misleading historical id.
+  Its current id joins the running process to already-written task notes and
+  commit trailers. Neutral naming is forward-only.
+- New commits retain the final role/agent/machine attribution line and add a
+  repeatable `Task: <stable-task-id>` trailer immediately before it. The agent
+  id identifies the actor; the task trailer identifies the work.
 - `hermit-linux` is not a canonical fixed agent or dispatch target. Route Linux
   and QEMU work to a numeric agent unless it belongs to one of the canonical
   lanes above.
@@ -153,6 +164,6 @@ properly handed-off idle slots. Authoritative index of all worktree state:
 
 - Policy source: `AGENTS.md` / `CLAUDE.md`.
 - [hermit-lander](../hermit-lander/SKILL.md) (dedicated landing/integration),
-  [hermit-ci](../hermit-ci/SKILL.md) (CI health),
+  [hermit-ci](../hermit-ci/SKILL.md) (validation and GH Actions health),
   [post-facto-review](../post-facto-review/SKILL.md),
   [progress-rubric](../progress-rubric/SKILL.md).

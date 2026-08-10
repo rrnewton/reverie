@@ -12,15 +12,10 @@ intrinsically red or green.
 Launch a full run through the `systemd-run --user` producer in `AGENTS.md`, from
 the assigned slot. Require its exact 40-hex SHA, clean/anchored state, full
 profile and selection, counted coverage, zero failures, durable log, and ledger
-row. `ci-hub validate-status --sha <head>` is the local authority verifier; the
-owner-authorized hosted alternative is `ci-hub hosted-status`. The raw exit code
-and `locally-validated` label are not authority.
-
-Until
-[`hermit-merge-gate-authority-deployment`](../../../ci-hub/landing/README.md#deployment-obligation-hermit-merge-gate-authority-deployment)
-lands in Hermit, its required merge-gate still requires portable+privileged and
-pins the older verifier. Obey that gate and do not report portable-only hosted
-authority as deployed end to end.
+row. `ci-hub validate-status --sha <head>` is the normal Hermit authority
+verifier. The raw exit code and `locally-validated` label are not authority; GH
+Actions is advisory P2. Only a PR modifying `scripts/validate.rs` uses the
+registered exact-head GH Actions result because its producer cannot self-vouch.
 
 Some PMU/instruction-sensitive tests can fail on particular hosts. Prove an
 environmental classification with the same focused test on clean current main,

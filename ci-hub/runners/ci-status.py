@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""On-demand CI status report for the Hermit repos (the `runner-health` command).
+"""On-demand runner and GH Actions status report for the Hermit repos.
 
 Non-mutating. Reports, per repo: self-hosted runner health, per-workflow QUEUE
 DEPTH, WAIT TIMES (time-in-queue kept strictly separate from run duration),

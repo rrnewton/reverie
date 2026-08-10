@@ -54,7 +54,7 @@ it does not belong here: ORC is the authority on agents, panes, tasks and
 ownership, so a second observer of the same fact cannot be more right, only
 differently wrong — and its disagreement arrives as an instruction to a
 coordinator mandated to close and respawn agents without asking. If no — GitHub,
-hosted CI queues, runner lanes, merge gates, local disk, local git — reminding
+GH Actions queues, runner lanes, merge gates, local disk, local git — reminding
 the coordinator is the entire point.
 
 Weigh a proposal by what its alarm **causes**, not only by whether it is

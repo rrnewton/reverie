@@ -1,5 +1,11 @@
 # Portable CI and the GitHub-hosted account concurrency ceiling — measured
 
+> **Historical measurement, not landing policy.** Parent `AGENTS.md` and the
+> owner's 2026-08-10 decision supersede this document's references to a
+> "required merge-gate": normal Hermit landing uses exact-head VALIDATE in the
+> LEDGER, while GH Actions is advisory P2 except for a PR modifying
+> `scripts/validate.rs`. The queue measurements below remain historical data.
+
 **Date:** 2026-08-04
 **Agent:** CI-health research (opus-4.8), task `portable_ci_hits_github`
 **Status:** research-only; no code/workflow changes. All numbers measured via `with-proxy gh`.

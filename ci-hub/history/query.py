@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read side of the ci-hub CI history store.
+"""Read side of the ci-hub VALIDATE and GH Actions history store.
 
 Reads only the file-contract stores that ingest.py maintains
 (ignored/ci-hub/gha-runs.csv, downloaded ci-perf step_profiles CSVs, and local
@@ -12,7 +12,7 @@ Commands:
                      distribution and the runs behind it. `--since` works here.
   node-cpu-budgets   per DAG-node CPU-second budgets for the cpu_timeout
                      derivation (round(max_cpu_s * 1.5), n>=5 else thin/UNSET).
-  green-time         % of conclusive authoritative-run wall-clock whose CI
+  green-time         % of conclusive tracked-workflow wall-clock whose GH Actions
                      conclusion was success; NO-RESULT/gap excluded and shown.
   runs               same summary + recent-runs listing (alias of the default).
 
@@ -55,9 +55,9 @@ import validate_rows as canonical_ledger
 
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
-# Authoritative main-branch workflow per repo for the green-time metric.
+# Tracked main-branch workflow per repo for the green-time metric.
 # Override with --workflow (repeatable). These are the current fork gates; the
-# hermit portable CI and the reverie Rust suite.
+# Hermit portable GH Actions and the Reverie Rust suite.
 AUTHORITATIVE = {
     "rrnewton/hermit": ["CI (GitHub-managed portable)"],
     "rrnewton/reverie": ["Rust"],
@@ -885,7 +885,7 @@ def state_timeline(parent: str, repo: str, since: str | None,
                           "reason": None, "sha": sha})
 
     # The unobserved tail is GAP, explicitly, with the horizon named in the
-    # reason so a reader can tell "CI told us nothing" from "ingest stopped".
+    # reason so a reader can tell "GH Actions told us nothing" from "ingest stopped".
     stale_s = max(0.0, now - observed_end)
     if stale_s > 0:
         intervals.append({

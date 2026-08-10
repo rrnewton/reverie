@@ -32,9 +32,9 @@ distinguishable. Otherwise report the mismatch.
 2. Coverage slope: `passed / attempted` per mode and the first lost workload.
 3. Same-app matrix: ptrace strict verify, record/replay, DBT, KVM, SaBRe,
    LiteInst, and e9patch as available. Use identical inputs.
-4. Repository health: focused tests plus the exact-head local and hosted
-   authority states; identify which owner-authorized path supplied green and
-   whether the Hermit deployment transition below still governs landing.
+4. Repository health: focused tests, exact-head VALIDATE/LEDGER authority, and
+   GH Actions diagnostics reported separately. Never present hosted state as a
+   second normal Hermit landing authority.
 5. Gaps and next actions ordered by the first mode that loses parity.
 6. Unlanded footnote, at most three linked items.
 
@@ -51,16 +51,11 @@ Run focused probes directly from the assigned product slot with explicit bounds.
 Launch the full validation profile only through ci-hub's admitted
 `systemd-run --user` producer from `AGENTS.md`. A local green claim requires the
 durable log and `ci-hub validate-status --sha <40-hex>` acceptance for the exact
-clean head, including nonzero counted coverage. Hosted green requires
-`ci-hub hosted-status` to accept the registered exact-head job set. A raw exit,
-label, partial set, interrupted run, or remembered outcome is no result; a
-genuine red from either authority blocks landing.
-
-Until
-[`hermit-merge-gate-authority-deployment`](../../../ci-hub/landing/README.md#deployment-obligation-hermit-merge-gate-authority-deployment)
-lands in Hermit, its required merge-gate still requires portable+privileged and
-pins the older verifier. Report portable-only hosted authority as parent-ready,
-not operational end to end, and obey the required gate.
+clean head, including nonzero counted coverage. GH Actions state is reported
+through `ci-hub hosted-status` as advisory P2 for ordinary Hermit heads. A raw
+exit, label, partial set, interrupted run, or remembered outcome is no result.
+Only a PR modifying `scripts/validate.rs` uses its registered exact-head GH
+Actions result as authority.
 
 Use one denominator for every row in a comparison. Preserve executed, selected,
 filtered, ignored, failed, timeout, and skipped counts separately. Recompute

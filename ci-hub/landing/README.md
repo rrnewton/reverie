@@ -255,11 +255,11 @@ Putting refresh and ancestry proof between merge and registration makes
 "register only after the push" mechanical rather than remembered.
 
 Parent `AGENTS.md` is the publication authority under the owner's 2026-08-10
-decision. Normal Hermit heads require an exact-head counted local ledger PASS;
-hosted CI is P2 and decides nothing. A head changing its registered validation
-producer is the exception: local is intentionally non-authoritative because a
-producer cannot vouch for itself, so registered exact-head hosted authority is
-required. Normal work uses reviewed PRs; Red-Tip and the nine-condition rotation
+decision. Normal Hermit heads require an exact-head counted local LEDGER PASS;
+GH Actions is P2 and decides nothing. A head modifying the registered producer
+`scripts/validate.rs` is the exception: local is intentionally non-authoritative
+because a producer cannot vouch for itself, so registered exact-head GH Actions
+authority is required. Normal work uses reviewed PRs; Red-Tip and the nine-condition rotation
 above are the only named direct-main scopes. Hermit `docs/MERGE_QUEUE.md`
 describes mechanisms; its broad direct-FF sentence grants no permission.
 
@@ -289,32 +289,31 @@ Focused task tests and both sides of a mutation bracket belong in the named
 shards for the mechanism they protect. Text in a PR body or a hand-applied label
 cannot replace this authority.
 
-`land-pr.sh` bakes in the three race-tolerance fixes so a transient CI state
-never wedges a land:
+`land-pr.sh` bakes in the race-tolerance fixes without promoting GH Actions into
+normal landing authority:
 
-1. **Race-tolerant exact-head gate poll** — query the Actions workflow runs for
-   the rebased head and evaluate the latest `pull_request` or
-   `workflow_dispatch` run. The dispatch event matters: the `workflow_run`
-   controller runs on `main`, and its dispatched PR-head success can be absent
-   from `statusCheckRollup`. Ride through transient
-   `FAILURE`/`IN_PROGRESS`/`QUEUED` states to `SUCCESS`; bounded by
-   `--gate-deadline` (default 1080s), then ABANDON with the last event, run ID,
-   URL, and state.
+1. **Selected exact-head authority first** — a normal Hermit head must have a
+   qualifying counted LEDGER receipt. Only a head modifying
+   `scripts/validate.rs` selects the registered exact-head GH Actions result.
 2. **The merge command is the mergeability arbiter** — do not gate on
    `mergeStateStatus` (it sticks at `UNKNOWN`). Attempt `gh pr merge --rebase`
-   once under the freshly evaluated final-boundary verdict. A refusal reruns the
-   gate so mutable-tip evidence cannot age inside a merge retry loop.
+   once under the freshly evaluated final-boundary verdict. A refusal restarts
+   the lander from its authority checks so mutable-tip evidence cannot age
+   inside a merge retry loop.
 3. **Treat the label only as a cache** — for a normal Hermit head,
    `exact-head-validation-authority.sh --local-only` independently queries the
-   counted local receipt. Hosted is P2, not an alternate positive. A head that
-   changes a registered local producer is intentionally ineligible for local
-   authority and instead requires the registered exact-head hosted authority.
-   Missing/partial/stale evidence is NO_RESULT; genuine red blocks. Only
+   counted local receipt. GH Actions is P2, not an alternate positive. A head
+   modifying `scripts/validate.rs` is intentionally ineligible for local
+   authority and instead requires the registered exact-head GH Actions authority.
+   Missing/partial/stale selected-authority evidence is NO_RESULT. Only
    `apply-local-label` may materialize the optional
    local cache label. It requires a nonzero executed-test count, hashes the
    referenced log, and publishes the selected ledger row as an immutable receipt
    on `rrnewton/dev-hermit:validation-receipts` before commenting or labeling.
-4. **Dereference the final authorization** — immediately before merge, query the
+4. **Observe the merge-gate once, without waiting** — record its current GH
+   Actions state as a diagnostic. It does not authorize, veto, dispatch, or
+   delay a normal ledger-authorized landing.
+5. **Dereference the final authorization** — immediately before merge, query the
    same policy-selected authority. A normal local positive additionally
    dereferences the current PR comment through
    `ci-hub/validation/verify_receipt.sh`; a producer-changing candidate must use
@@ -350,7 +349,7 @@ ci-hub/landing/land-pr.sh 1711 fixture/pid-tid-virtualization-identity --no-reba
 ```
 
 `--no-rebase` removes a **mutation**, never a **check**: the land-lock, the
-step-1b and step-4 exact-head authority, the merge-gate poll, the final-boundary
+initial and final exact-head authority, the merge-gate diagnostic observation, the final-boundary
 authority plus receipt dereference, `--match-head-commit`, obligation arming,
 and the post-merge `mergeCommit.oid` ancestry proof all still run. Use it when a
 head already holds a qualifying exact-head green and main has since moved.
@@ -360,19 +359,16 @@ validate, not this flag). Compare `rrnewton/hermit#1812`: an unconditional
 rebase-and-force-push in the union driver amended main's tip onto two PR
 branches and landed #1188/#1209 as semantic no-ops.
 
-### Deployment obligation: `hermit-merge-gate-authority-deployment`
+### Superseded deployment obligation: `hermit-merge-gate-authority-deployment`
 
-The parent policy and lander implement counted-local authority for normal
-Hermit heads. A registered-producer-changing head is intentionally excluded
-from that local path and requires registered exact-head hosted authority. This
-rule is not fully deployed in Hermit until a follow-up Hermit PR lands. Hermit's
-current `main` remains deliberately different: its
-`.github/workflows/merge-gate.yml` GitHub leg requires both portable and
-privileged jobs, and its two verifier-download steps pin an older dev-hermit
-`verify_receipt.sh`. Do not report the parent hierarchy as operational end to
-end in Hermit or bypass the required check during this transition.
+This section records the older transition plan; it is retained rather than
+silently deleted. The owner's 2026-08-10 decision and parent `AGENTS.md`
+supersede its use as landing policy: normal Hermit authority is exact-head
+VALIDATE in the LEDGER, and the existing `.github/workflows/merge-gate.yml`
+result is advisory P2. Its portable+privileged shape and verifier pins may still
+need maintenance, but they do not make a normal author wait to land.
 
-After this parent revision lands, the follow-up Hermit PR must:
+The historical follow-up described here was:
 
 1. update `.github/workflows/merge-gate.yml` so the registered hosted producer
    exception uses its exact policy-bound job set;
@@ -401,12 +397,9 @@ surface across the agent shell's 120-second cap and agent recycling. Use
 
 ### Deadline basis and scope
 
-The gate default is derived from successful `demo-hot-path.yml` pull-request
-runs created from `2026-08-03T23:00:00Z` through measurement on 2026-08-04:
-`n=11`, min `372s`, median `586s`, p90 `646s`, p95/p99/max `864s` (nearest-rank
-percentiles). The `1080s` gate deadline is `ceil(864 * 1.25)`. This is an
-operational baseline for the current runner, not a claim that every future gate
-finishes within it; refresh the dated sample when the runner or workflow changes.
+The legacy `--gate-deadline` name remains a compatibility input used to size the
+default whole-child ceiling. It no longer bounds a GH Actions wait: the lander
+observes merge-gate state once and proceeds from the selected authority.
 
 Every wait in one landing attempt has an explicit scope:
 
@@ -414,17 +407,16 @@ Every wait in one landing attempt has an explicit scope:
 | --- | ---: | --- |
 | lock acquisition | 1800s | FIFO wait before this landing owns the lock |
 | lock lease | 900s, renewed every 300s | dead-holder safety; not a land duration |
-| merge-gate | 1080s by default | exact-head Actions runs; caller may override |
-| whole child | 2160s by default | entire lock-held subtree; `land-pr.sh` derives twice an overridden gate deadline unless explicitly set |
-| merge retry | 12 attempts, 15s sleeps | at most 180s of explicit retry sleep |
-| gate poll | 15s interval | included in the gate deadline |
+| compatibility bound | 1080s by default | sizes the default whole-child deadline; does not wait on GH Actions |
+| whole child | 2160s by default | entire lock-held subtree; `land-pr.sh` derives twice an overridden compatibility bound unless explicitly set |
+| merge attempt | one | a refusal restarts from fresh authority checks |
 | label / ready settling | 4s each | fixed sleeps before polling |
 | termination grace | 5s | SIGTERM-to-SIGKILL interval after child timeout |
 
 Individual `git` and `gh` calls do not have separate per-call timers. They are
 inside the whole-child process-group deadline, so a stalled call cannot hold the
 landing lock beyond that ceiling. The child deadline must be greater than the
-gate deadline; zero is rejected rather than meaning unbounded.
+compatibility bound; zero is rejected rather than meaning unbounded.
 
 ### Quota-degraded drain: local patch identity first
 
@@ -454,10 +446,10 @@ with-proxy gh api \
   --jq 'select(.status == "ahead" or .status == "identical") | "LANDED"'
 ```
 
-**Do not poll `mergeStateStatus` to decide you've landed.** If auto-merge is
-armed (REBASE), the PR merges the instant merge-gate goes green, and
-`mergeStateStatus` then reads `UNKNOWN` for a merged PR — check `state == MERGED`
-and `mergeCommit`, not the merge-state. Also note the merged SHA is the
+**Do not poll `mergeStateStatus` to decide you've landed.** The tracked lander
+attempts the merge after the selected exact-head authority qualifies; it never
+waits for merge-gate green. After merge, `mergeStateStatus` may read `UNKNOWN` —
+check `state == MERGED` and `mergeCommit`, not the merge-state. Also note the merged SHA is the
 **rebased** commit (a fresh 40-hex), not your pre-merge branch head.
 
 ---

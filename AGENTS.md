@@ -48,9 +48,12 @@ and closure; neither skill may weaken it.
 
 ## Conventions
 
-- **Role + team tag:** `[<role>, MODEL] [<team-slug>, <machine>]`; role is `impl agent`, `adversarial-reviewer agent`, `coordinator`, or `Human`, and machine is an exact final machine token matching `devbigNNN` (example: `[coordinator, CODEX] [hermit-coord, devbig030]`). Require it as each commit's final line, PR description opening line, and cross-team GitHub comment prefix. Keep machine comma-delimited, never embedded in the team or replaced by a host alias, so history is queryable. The commit trailer survives rebase merge. Provenance: dereference `GET /repos/<owner>/<repo>/commits/<sha>/pulls`; never infer it from the message. Why: companion doc.
+- **Role + team tag:** `[<role>, MODEL] [<team-slug>, <machine>]`; role is `impl agent`, `adversarial-reviewer agent`, `coordinator`, or `Human`, with an exact final machine token matching `devbigNNN`. Require it as every commit's final line, PR-description opening, and cross-team comment prefix. Keep the machine comma-delimited. Provenance comes from `GET /repos/<owner>/<repo>/commits/<sha>/pulls`, never message inference.
+- **Neutral new agent ids:** newly spawned general agents use purpose-free ids (`codex-1`, `claude-1`, `metamate-1`, …); purpose lives in TaskGraph/`ACTIVE.md`. Do not rename live or fixed-role agents; this is forward-only.
+- **Task trailers:** immediately before the unchanged attribution line, add repeatable `Task: <stable-task-id>` trailers (one normally; several only for an explicitly folded commit). Keep actor and purpose separate.
 - **Mechanism tags:** when a task or PR changes a load-bearing mechanism, apply the same stable `mechanism:<slug>` tag to both (create the label when needed). Before landing, the landing agent runs `ci-hub pr-status` and reports it: a mechanism shared by two open PRs requires coordinator review and appears beside file conflicts in the landing plan (semantic overlap only, not conflicting intent).
-- **Stable descriptive naming:** give every option/wave/workstream/phase/task/semantic unit one persistent lowercase-hyphenated outcome slug (`btrfs-flood-fix`), never a bare ordinal/placeholder; suffix variants (`btrfs-flood-fix/claude-agent`). Existing infra IDs stay valid. Define coined terms once at their owning artifact. User updates lead with observable consequence and decision, then internal names.
+- **Stable descriptive naming:** give every option/wave/workstream/phase/task/semantic unit one persistent lowercase-hyphenated outcome slug (`btrfs-flood-fix`), never a bare ordinal/placeholder; suffix variants (`btrfs-flood-fix/claude-agent`). This semantic naming rule does not apply to agent ids, which are deliberately neutral. Existing infra IDs stay valid. Define coined terms once at their owning artifact. User updates lead with observable consequence and decision, then internal names.
+- **Directive lifetime:** record a directive's issuer/date, verbatim instruction, and reason. When the reason is temporary, also record an explicit expiry or review trigger. Expired directives remain historical evidence but are not standing policy; never silently extend one past the condition that justified it.
 
 ## Primary Checkout Invariant
 
@@ -179,11 +182,17 @@ landing target. Ordinary Hermit work flows from a feature branch to a PR against
 
 ### Hermit landing hierarchy (owner decision, 2026-08-10)
 
-**This parent policy authorizes publication; product docs and rulesets do not.** Normal authority is a counted
-exact-head local ledger validate; hosted CI is P2. A PR changing its registered producer cannot self-vouch and
-requires registered exact-head hosted authority. Normal work uses a reviewed PR; direct `main` is limited to the
-named exceptions below. Remediation uses the same authority: no red authorizes a revert without a durable owner
-decision bound to exact current/candidate SHAs. Decision history: companion doc, *Hermit landing hierarchy*.
+**This parent policy authorizes publication; product docs, GH Actions, and rulesets do not.** Never use the
+ambiguous two-letter abbreviation: **VALIDATE** is the admitted exact-head local authority; **LEDGER** is its durable record; **GH ACTIONS**
+are advisory P2 hosted workflows; **RUNNER** is the machine. Normal loop: **WORK -> reviewed PR -> VALIDATE ->
+LEDGER-derived `locally-validated` -> LAND YOUR OWN PR -> ancestry proof -> REPEAT**. Use `validate-run`,
+`apply-local-label`, and the tracked lander; never wait for GH Actions or a backlog lander. If landing breaks
+`main`, stop the drain, re-green it, and resume.
+
+**Sole Hermit exception:** a PR modifying registered producer `scripts/validate.rs` cannot self-vouch and uses
+the registered exact-head GH Actions result. Do not generalize it. Reverie/parent keep their versioned authority;
+direct `main` stays limited to the named exceptions below. Revert requires a durable owner decision bound to exact
+current/candidate SHAs. Rationale: companion doc, *Hermit landing hierarchy*.
 
 ### Red-Tip Direct Land (owner-authorized exception to Hard Invariant 9)
 
@@ -218,6 +227,14 @@ Before publishing, re-read base/remote, audit diff and tests, and bind evidence 
 never switch shared auth. Hermit follows the hierarchy above; Reverie still requires its versioned hosted jobs.
 Unresolved adversarial review or a bare test-process exit blocks.
 
+The owner-set review policy (2026-08-10) is authoritative verbatim:
+
+> FOR SINGLE-REVIEW PRs CROSS-AGENT REVIEW IS PREFERRED (NOT MANDATORY, PENDING API OUTAGES ETC ETC). FOR CRITICAL CHANGES AS I DEFINED THEM DOUBLE-REVIEW PRs IT'S GOOD TO HAVE TWO DIFFERENT AGENTS (CLAUDE, CODEX, OR METAMATE IF NEEDED).
+
+Here, **critical** means Hermit syscall handling, DetCore scheduling, or a Reverie API change. Reviews bind to
+the exact head. The earlier Codex-only direction was a 12-hour rate-limit response and has expired; it is not
+standing policy and must not be copied into skills or dispatches.
+
 ### Proxy Binding Review Axis (predicate; full rationale, registry, 12 examples, 3-layer taxonomy in the [companion doc](https://github.com/rrnewton/dev-hermit/blob/main/ai_docs/agents-md-policy-rationale.md))
 
 **Proxy Binding** asks: **what observably binds this check to the fact it claims?** Reject correlated labels,
@@ -233,22 +250,14 @@ statuses, markers, flags, hashes, or counts without identity/causal/coverage/pro
 
 ### Post-Facto Human Review
 
-After resolved adversarial review and authoritative green CI, land an authorized change without waiting for
-human-owner review; human review is post-land/fix-forward. Apply `post-facto-human-review` iff triggered by:
-
-1. **New syscall support.** Verify in-code audit tags: `AUTONOMOUS-BOT-IMPLEMENTED` at the new dispatch/classification entry and `TODO-HUMAN-REVIEW(PR-id)` at the implementation/determinization block.
-2. **A Reverie API or core-abstraction change** — the `Tool`, `Guest`, `Backend`, or syscall-interception model.
-3. **A new determinization strategy** (not an implementation of an established one).
-4. **A core DetCore scheduling change** — anything affecting how programs are scheduled, especially race-search (PR #1151 is canonical).
-
-Backend parity alone is not a trigger. Every PR has **Summary**, logical/informal-proof **Determinism**, and
-exact **Validation**; KVM adds **Relationship to gVisor**. A PR carrying `post-facto-human-review` is
-additionally gated by `scripts/core-review-protocol-lint.sh`, which requires all of the above plus
-**Linux Semantics** (the relevant kernel/userspace contract, how the change preserves it, and every
-intentional deviation) and **Human Review Required** naming the numbered trigger — that script exits 0
-(enforces nothing) on a PR that does not carry the label, so this is a label-scoped gate, not a universal
-one. The label never blocks landing. Never apply `pre-land-human-review`, touch owner-only
-`human-approved`, or recreate obsolete labels. Only a human removes syscall audit tags.
+Human review is post-land/fix-forward. Apply `post-facto-human-review` only for: (1) new syscall support, with
+`AUTONOMOUS-BOT-IMPLEMENTED` and `TODO-HUMAN-REVIEW(PR-id)` at the implementation; (2) Reverie API/core
+abstraction; (3) a new determinization strategy; or (4) core DetCore scheduling. Backend parity alone does not
+trigger it. Every PR needs **Summary**, **Determinism**, and exact **Validation**; KVM adds **Relationship to
+gVisor**. Labeled PRs also pass `scripts/core-review-protocol-lint.sh` with **Linux Semantics** and **Human Review
+Required** naming the trigger. The label does not wait for human approval. Never use `pre-land-human-review`,
+owner-only `human-approved`, or obsolete labels; only a human removes syscall audit tags. Trigger 3 is single-review
+unless it also enters one of the three critical domains defined above. Full predicates: `post-facto-review` skill.
 
 ### Landing Authorization
 
@@ -343,7 +352,7 @@ The parent records exact submodule commits for reproducibility. Do not add a `br
 `.gitmodules`; do not use `git submodule update --remote` as a normal update mechanism.
 
 - **When to update a pointer** — only when the target commit is intentional, reviewed, reachable from its reviewed feature branch or target `main`, validated locally at that exact SHA, cross-repo compatible when relevant, and the parent commit message names the reason. Not merely because a primary is ahead, a feature branch exists, or `git status` shows a modified submodule. Do not pin an unpublished private commit unless the task establishes how every consumer can fetch it. **A/B protocol, staging, and initialization mechanics: companion doc.** Use `make single-submodule-bump ARGS='plan ...'` first; never bury a gitlink advance in an unrelated commit.
-- **Agent-utils main peg.** The parent gitlink and canonical `agent-utils/` checkout must equal fetched `rrnewton/agent-utils:main`; `make check-agent-utils-pin` rejects stale/ahead/diverged checkout, gitlink mismatch, or unreachable commits. Generic changes (runner cgroups/CPU budgets, `tick-hub`, PR planning) belong in `rrnewton/agent-utils`: serialize; validate fully; push direct to its `main`; then fetch, update the canonical checkout, run `check-agent-utils-pin`, commit the exact gitlink. A PR is the exception (high-risk or coordinating an in-flight parent change) — at most one in flight. Direct-to-main is not unvalidated-to-main: fix any red required check first.
+- **Agent-utils main peg.** The parent gitlink and canonical `agent-utils/` checkout must equal fetched `rrnewton/agent-utils:main`; `make check-agent-utils-pin` rejects stale/ahead/diverged checkout, gitlink mismatch, or unreachable commits. Generic changes (runner cgroups/CPU budgets, `tick-hub`, PR planning) belong in `rrnewton/agent-utils`: serialize; validate fully; push direct to its `main`; then fetch, update the canonical checkout, run `check-agent-utils-pin`, commit the exact gitlink. A PR is the exception (high-risk or coordinating an in-flight parent change) — at most one in flight. Direct-to-main is not unvalidated-to-main: the full local agent-utils contract must pass before publication.
 - **Self-hosted runner security.** Never run a GitHub Actions runner as root on a Meta dev box/data-center host (it executes arbitrary repo-controlled workflow content — root grants that code elevated privileges on internal infra). Moving work off privileged self-hosted execution is required architecture; the genuine residue is KVM (`/dev/kvm`) + real-PMU counters, each given minimum privilege. `hermit-gate-newton` authorization/ownership/disposition is an open security question.
 
 ## Binary And Large-File Policy
@@ -360,52 +369,28 @@ it with `file`, `du`, and the ignore rules — do not commit first and promise t
 
 ## Validation And Evidence
 
-Product validation commands come from the local submodule guides. Use the narrowest relevant tests during
-development, then the required repository gate before handoff. Cross-repository changes require validation
-against the exact Hermit/Reverie pair proposed for pinning. Evidence binds to commits, not a mutable branch
-name — always report: **Hermit SHA** (40-hex), **Reverie SHA** (40-hex or explicitly-unchanged), exact
-**Command**, **Result** (pass/fail/skipped with material output summarized), **Environment** (host/toolchain/
-hardware constraints when relevant). Hardware-dependent Hermit tests may be impossible on some hosts — report
-that fact and the observed failure; do not weaken, delete, or falsely bless a test to make the local
-environment green. At the final mutation boundary normal heads need a counted local ledger receipt; a head
-changing a registered producer needs registered exact-head hosted authority because its local producer cannot
-attest itself. Missing, partial, or stale evidence is NO_RESULT; genuine red blocks.
+Use product-local commands, focused tests while developing, then required repository validation. Cross-repo work
+validates the exact proposed pair. Evidence binds to commits and reports exact Hermit/Reverie SHAs, command,
+result, and environment/limitations; never weaken a hardware-dependent test. At mutation, normal Hermit heads need
+a counted LEDGER receipt; only a head modifying `scripts/validate.rs` selects registered exact-head GH Actions.
+Missing/partial/stale selected evidence is NO_RESULT; ordinary GH Actions red remains advisory P2.
 
 ### Running validate — `systemd-run --user` Is The Producer Path
 
-**Pre-anchor preflight — run BEFORE claiming ANY Hermit PR for validation.** A PR head not descending from
-hermit `bfb0a9ef` runs its own older validation producer and is a **guaranteed rejection even when fully green** (fix
-by **rebase**, not re-validation):
-
-```
-git -C <checkout> merge-base --is-ancestor bfb0a9ef1c303d1977f5f02903b70cc93e514cb5 <PR-head>
-# rc=1 => PRE-ANCHOR => do NOT claim/validate; flag for rebase onto newest-green.  rc=0 => anchored, proceed.
-# tool form: ci-hub/validate/preflight_anchor.py --head <sha>   (exit 2 = REFUSE)
-```
-
-Re-derive the live pre-anchor set with the loop; do not trust a stale list. HOLD mass-rebase until the
-version-aware counts consumer lands (task `prs-predating-commit-anchoring-can-never-produce-a-qualifying-receipt`).
-
-**An agent sandbox CANNOT run `scripts/validate.rs` directly** (BpfJailer denies creating its own cgroup; the driver
-exits 3 in ~9s having run nothing, tell: `CPU/wall 1.0x`). `ci-hub validate-run` is the sole admission point.
-It launches a transient user unit which enters through `ci-hub validate-lock` before invoking `scripts/validate.rs` —
-still boxed, detached, and with a durable log that outlives recycling (green *evidence*, not a *claim*).
-The live call prints a `validate-*` handle, creates an observer-only tab in the `validate-hermit` Herdr
-workspace, then blocks on the detached unit. If the caller recycles, the run continues and its successor uses
-`ci-hub validate-run --attach <handle>`; never relaunch merely because the waiter disappeared:
+Before claiming validation run `ci-hub/validate/preflight_anchor.py --head <sha>`; exit 2 means rebase, do not
+validate. Re-derive the set; never trust a stale list. An agent sandbox cannot run `scripts/validate.rs` directly.
+The sole producer is detached, boxed `ci-hub validate-run`; if its caller recycles, attach to its handle rather
+than relaunching:
 
 ```
 ./ci-hub/ci-hub validate-run --checkout <worktree> --agent <agent> \
   --target <exact-40-hex-head> --pr <number> -- full
 ```
 
-The Herdr pane is visibility, not the producer: it tails the durable log and reports the actual service
-descendants' `safe-ci-*` cgroup paths. Validation still runs only in the admitted systemd service through
-`validate-lock` → `scripts/validate.rs` → `safe-ci-dag-runner`. Pane creation is fail-closed before service launch.
-
-Let `apply-local-label` add the label FROM the ledger record — never by hand. Derive safe concurrency against
-total cores before fanning out. The Hermit Merge Gate must execute `ci-hub/validation/verify_receipt.sh` from
-an immutable parent commit, never from the PR under test. (Full rationale: companion doc.)
+The Herdr pane only observes; production remains `validate-lock` -> `scripts/validate.rs` ->
+`safe-ci-dag-runner`. Let `apply-local-label` derive the label from the LEDGER. Derive concurrency from total
+cores. Any GH Actions receipt diagnostic uses immutable parent `verify_receipt.sh`, never PR-controlled code, and
+does not become normal authority. Full mechanics/rationale: companion doc.
 
 ## Product Vision (full statement in companion doc)
 
@@ -434,7 +419,7 @@ to commits, not branch names.
 - **Record every measurement immediately.** First check whether the number already exists (`experiments/`, task notes, ci-hub history store). Any measurement — even incidental — goes into a task note immediately with units, context, and **how obtained (a polled aggregate is not a cgroup-recorded peak)**.
 - **Trust authority, not a handed SHA.** `ci-hub newest-green` establishes the normal local frontier. A candidate changing a registered producer is intentionally local-non-authoritative; dereference its registered exact-head hosted job with `ci-hub hosted-status`. Report discrepancies.
 - **Read hosted state from its named job, not the workflow rollup.** Hosted is P2 except for that producer exception; a workflow conclusion is never the job verdict.
-- **Do not manually dispatch hosted CI under `merge-gate-v4`.** Duplicate runs can poison its diagnostic checks. On hosted NO_RESULT rerun the gate; dispatch manually only with no gate in play, after checking live runs, and use exactly one run. This manages hosted diagnostics, not landing authority.
+- **Do not manually dispatch GH Actions under `merge-gate-v4`.** Duplicate runs can poison its diagnostic checks. On hosted NO_RESULT rerun the gate; dispatch manually only with no gate in play, after checking live runs, and use exactly one run. This manages hosted diagnostics, not landing authority.
 - **A land-lock SIGCONT must cover the WHOLE subtree, roots and descendants.** `land-lock status` hangs while its census holds verifiers in `do_signal_stop`; the remedy (SIGCONT, then `reclaim-dead`, never a kill) works only if every stopped member is resumed. Either partial attempt fails silently and looks like a wedged lock — resuming only roots leaves the real worker stopped one level down. Enumerate the subtree recursively from the validator roots, SIGCONT every member whose `stat` starts with `T`, then re-check none remain.
 
 ## Failure, Recovery, And Concurrent Work

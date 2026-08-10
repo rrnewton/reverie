@@ -12,7 +12,7 @@ under `hermit/.llms/skills/`). Verified 2026-08-03 against `worktrees/226v/hermi
 the tool ENFORCES: HEAD-SHA recording into a JSONL run ledger (there is NO
 dirty-tree gate and NO `--run-on-dirty-tree` flag); fail-open-to-FULL
 affected-test selection (`!= 'false'` job gating — default is selective only in
-portable CI, but FULL inside `scripts/validate.rs` itself); wall-clock process-tree gate
+portable GH Actions, but FULL inside `scripts/validate.rs` itself); wall-clock process-tree gate
 timeouts; flaky-is-RED trinary stress classification; history-derived cost
 estimates always-printed on every exit path (EXIT trap); honest count ratchets
 (`RR_COMPAT_EXPECTED=139` etc. guarded against the actual array size); and a
@@ -44,7 +44,7 @@ inheritance; read both.
    and SHA so a replacement can verify completion.
 
 3. **When main is already RED, tight-loop the failing cell without weakening
-   publication gates.** Iterate on the specific failing node (`scripts/validate.rs
+   landing controls.** Iterate on the specific failing node (`scripts/validate.rs
    --only <node>` / `ci/run-node.sh`) rather than rerunning the whole DAG after
    every edit. Before publication or landing, still satisfy the task's review,
    exact-head receipt verification and landing-lock requirements. A

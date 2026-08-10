@@ -1521,7 +1521,7 @@ def _github_repo_from_remote(remote: str) -> str | None:
 
 def resolve_repo_source(repo: str, source: Path | None) -> Path:
     """Resolve a repository-specific donor checkout and prove its origin binding."""
-    # Landing ancestry is a narrower authority than post-land CI policy. Parent
+    # Landing ancestry is a narrower authority than post-land verification policy. Parent
     # tooling and agent-utils both land directly to main and therefore need
     # ancestry verification, but neither has a hosted/local verification
     # obligation policy. Keeping these allowlists separate avoids manufacturing
@@ -2844,7 +2844,7 @@ def _legs_disagree(record: Mapping[str, Any]) -> bool:
 def _local_red_uncorroborated(record: Mapping[str, Any]) -> bool:
     """A local red whose authoritative GitHub leg NEVER reported (no_result).
 
-    Under admission-limited hosted CI, github == "no_result" (never admitted,
+    Under admission-limited GH Actions, github == "no_result" (never admitted,
     cancelled below the concurrency cap, or superseded) is the COMMON case, not a
     rare hole. A local red beside it — even after the whole re-dispatch budget is
     spent, since a load/environment-dependent flake reproduces on the same
@@ -2880,7 +2880,7 @@ def _remediation_ready(record: Mapping[str, Any]) -> bool:
     waited on.)
 
     Hermit's owner-authorized landing authority is the counted local ledger.
-    Hosted red remains remediation-eligible so it stays loud, but it cannot
+    GH Actions red remains remediation-eligible so it stays loud, but it cannot
     authorize an actuator.  Other repositories retain their versioned hosted
     authority.  This predicate names work; ``evaluate_obligation`` separately
     decides whether the signal is authoritative and whether any action is legal.
@@ -3000,7 +3000,7 @@ def evaluate_obligation(
             source = "github"
             summary = _failure_summary(record, source)
             reason = (
-                "hosted CI is advisory for Hermit remediation; prepare a sanctioned, "
+                "GH Actions is advisory for Hermit remediation; prepare a sanctioned, "
                 "reviewed fix-forward, but hosted state cannot authorize a main mutation"
             )
             current_remediation = record.get("remediation") or {}
@@ -3180,7 +3180,7 @@ def evaluate_obligation(
             f"(no_result) for SHA {record['landed_sha']} after the re-dispatch "
             "budget was spent; NOT reverting on a lone local signal — investigate "
             "(genuine local-only regression, or a load/environment artifact the "
-            "hosted leg was never admitted to corroborate under admission-limited CI)"
+            "hosted leg was never admitted to corroborate under admission-limited GH Actions)"
         )
         if record.get("overall_state") != "investigation_required":
             record = obligations.transition(
@@ -3968,10 +3968,10 @@ def _register_local_runner(
 # Deriving a bound from that would either make the gate inert (2.7d) or fire on
 # 89% of real obligations (900s). A contaminated denominator is worse than none.
 #
-# The honest reference is what an obligation actually BLOCKS ON: hosted CI
+# The honest reference is the GH Actions diagnostic leg reaching a verdict.
 # reaching a verdict. Measured 2026-08-08 over the last 80 runs on
 # rrnewton/hermit main (75 completed+success):
-#     CI (GitHub-managed portable)  n=9  median 849s  MAX 1491s   <- the authority
+#     CI (GitHub-managed portable)  n=9  median 849s  MAX 1491s
 #     P0 Demo Gate                  n=4  median 504s  max  610s
 #     CI (privileged)               n=8  median 129s  max  185s
 #     overall p95 1208s, overall MAX 1491s
@@ -5116,7 +5116,7 @@ def print_status(
         if record["overall_state"] == "remediation_required"
     ]
     # An obligation that is merely RUNNING is the normal state for the minutes
-    # after any merge -- local validation in flight, hosted CI not yet reporting.
+    # after any merge -- local validation in flight, GH Actions not yet reporting.
     # Paging on it made this gate fire on every successful land, and a gate that
     # cries wolf on success is how a fleet learns to skim past the one that
     # matters. Only a SUSTAINED-unresolved obligation is a finding; `remediation`

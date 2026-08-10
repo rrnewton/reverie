@@ -1,8 +1,8 @@
-# dev-hermit CI hub
+# dev-hermit validation and GH Actions hub
 
-`ci-hub/` is the single versioned home for dev-hermit CI operations and CI
-knowledge. Treat each subdirectory as an object with one responsibility and a
-stable public entrypoint; do not add new CI scripts under `scripts/`, `ops/`, or
+`ci-hub/` is the stable tool name and the single versioned home for dev-hermit
+VALIDATE, LEDGER, GH Actions, and runner operations. Treat each subdirectory as
+an object with one responsibility and a stable public entrypoint; do not add new automation scripts under `scripts/`, `ops/`, or
 an experiment directory.
 
 ## Public entrypoints
@@ -21,16 +21,16 @@ are:
 # Read the opinionated 5-step agent workflow without touching local state.
 ./ci-hub/ci-hub quickstart
 
-# Pull fresh open-PR CI state from GitHub and classify it.
+# Pull fresh open-PR GH Actions state from GitHub and classify it.
 ./ci-hub/ci-hub fresh
 
 # Summarize current-main plus open-PR health.
 ./ci-hub/ci-hub health
 
 # Parse the canonical landing command without mutating a PR. Real lands use the
-# same entrypoint without CI_HUB_DOCS_PARSE_ONLY; it verifies the final pushed
-# head through the owner-authorized counted-local OR versioned-hosted authority
-# before a head-matched rebase merge.
+# same entrypoint without CI_HUB_DOCS_PARSE_ONLY; for a normal Hermit head it
+# verifies counted exact-head LEDGER authority before a head-matched merge.
+# Only a scripts/validate.rs change uses registered exact-head GH Actions.
 CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
   123 example/feature-branch --foreground
 
@@ -43,7 +43,7 @@ CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
 # Incrementally refresh the local GitHub/local-run history store.
 ./ci-hub/ci-hub refresh-history
 
-# Query the local commit/CI history store.
+# Query the local commit, VALIDATE, and GH Actions history store.
 ./ci-hub/ci-hub history
 
 # Inspect local validate-run history, retained profiles, or runner health.
@@ -219,19 +219,19 @@ policy requires this gateway and forbids raw terminal-status updates.
 
 | Object | Owns | Does not own |
 | --- | --- | --- |
-| `bin/` | Stable wrappers and pinned shared-tool materialization. | CI classification, scheduling, or history logic. |
+| `bin/` | Stable wrappers and pinned shared-tool materialization. | Workflow classification, scheduling, or history logic. |
 | `directives/` | Versioned owner tooling obligations and fresh target-branch ancestry verdicts. | Implementation, review, or treating quoted instructions as completion. |
-| `health/` | Dev-hermit-specific current-main, PR, primary, and agent health adapters plus tick configuration. | Generic cadence or PR-CI classification engines. |
-| `history/` | Incremental/idempotent GitHub Actions and local commit/CI knowledge store, ingestion, and queries. | Current-live status presentation. |
-| `remediation/` | Mandatory post-land dual verification, exact-SHA local execution, watcher, and remediation recommendation. | CI-history ingestion or automatic source-code reverts. |
+| `health/` | Dev-hermit-specific current-main, PR, primary, and agent health adapters plus tick configuration. | Generic cadence or PR/workflow classification engines. |
+| `history/` | Incremental/idempotent GitHub Actions and local VALIDATE knowledge store, ingestion, and queries. | Current-live status presentation. |
+| `remediation/` | Mandatory post-land dual verification, exact-SHA local execution, watcher, and remediation recommendation. | Workflow-history ingestion or automatic source-code reverts. |
 | `validate/` | Local validation ledger aggregation and linkage to retained profiles. | The generic DAG runner/profile format. |
-| `runners/` | Self-hosted runner image, lifecycle, and host status tooling. | Generic CI scheduling. |
+| `runners/` | Self-hosted runner image, lifecycle, and host status tooling. | Generic workflow scheduling. |
 | `landing/` | Shared-file **landing mutex** (`land-lock`) that serializes PR landings touching the shared manifest registries. | The land sequence itself (re-union/push/stamp/merge). |
 | `closure/` | Verification and evidence recording required before TaskGraph closure. | Task implementation or coordinator judgement that a goal is complete. |
 
 Runtime data is untracked under `ignored/ci-hub/`; versioned code and schemas
 live here. Reproducible experiment producers and their frozen outputs remain
-with their experiment, but new reusable CI-history queries belong in
+with their experiment, but new reusable workflow-history queries belong in
 `history/`.
 
 The `history` and `refresh-history` front-door commands fall back to the local
@@ -244,7 +244,7 @@ automatically without changing callers.
 The `agent-utils` gitlink is a hard dependency, not a source to copy. The
 single `bin/agent-tool` adapter materializes the exact pinned commit and runs:
 
-- `pr-landing-planner`: open-PR CI collection/classification. `health/pr_status.py`
+- `pr-landing-planner`: open-PR workflow collection/classification. `health/pr_status.py`
   only combines its JSON for the Hermit and Reverie forks; the retired parent
   classifier is not duplicated here.
 - `tick-hub`: cadence, gates, and stable `HEALTH`/`ACTION`/`NOTE`/`ERROR`
@@ -290,8 +290,8 @@ wake.
 
 The canonical `landing/land-pr.sh` entrypoint prepares the speculative-land
 obligation before its bounded child can merge; raw `gh pr merge` is not the
-protocol. It also dereferences the final pushed head through the owner-authorized
-counted-local OR versioned-hosted authority immediately before a
+protocol. It also dereferences the final pushed head through the repository-selected
+authority immediately before a
 `--match-head-commit` merge. Once GitHub exposes
 the merged SHA it completes the prepared intent and calls `arm-land`. If the
 wrapper dies in that interval, the restartable ORC workflow recovers the intent
@@ -314,7 +314,8 @@ Reverie never inherits Hermit's default. Arming appends that OPEN event to
    validation log.
 
 The supported GitHub bindings are explicit rather than inferred from a global
-default:
+default. Workflow names in this table are quoted external identifiers; the
+legacy two-letter token inside one name is not policy vocabulary:
 
 | Repository | Workflow file | Workflow name | Required job |
 |---|---|---|---|
@@ -329,15 +330,13 @@ retain their frozen two-job policy, but new landing authority does not silently
 add the privileged workflow. A workflow conclusion alone is not authority: the
 consumer dereferences the exact-SHA jobs and refuses a green for a missing,
 skipped, duplicate, truncated, or otherwise vacuous required set. The schema
-does not snapshot the cross-source OR evaluator truth table; a future change to
-those semantics therefore requires its own explicit migration and review.
+does not snapshot authority-selection semantics; a future change to those
+semantics therefore requires its own explicit migration and review.
 
-This parent implementation precedes its Hermit consumer deployment. Until the
-versioned `hermit-merge-gate-authority-deployment` obligation in
-[`landing/README.md`](landing/README.md#deployment-obligation-hermit-merge-gate-authority-deployment)
-lands as a Hermit PR, Hermit's required merge-gate remains stricter
-(portable+privileged) and pins the older receipt verifier. Portable-only hosted
-authority must not be reported as live end to end during that transition.
+The owner's 2026-08-10 decision supersedes older deployment prose that treated
+Hermit's hosted merge-gate as normal landing authority. The workflow may still
+run and report diagnostics, but a normal author proceeds from exact-head
+VALIDATE/LEDGER authority without waiting for it.
 
 The event log is append-only and locked. Every transition retains timestamps,
 verification scope (`total` here), GitHub run IDs, local log path, and failure
@@ -380,7 +379,7 @@ watch arrival between the precheck and the claim still makes re-dispatch yield.
 Parent `AGENTS.md` is authoritative under the owner's 2026-08-10 decision;
 this operational document follows it. Authority is repository-specific and the
 same selection governs landing and remediation. For a normal Hermit head, only a counted exact-head local ledger
-result decides; hosted CI is P2 diagnostic evidence and cannot satisfy, reopen,
+result decides; GH Actions is P2 diagnostic evidence and cannot satisfy, reopen,
 or actuate the obligation. A Hermit head that changes its registered local
 producer is the narrow exception: local is intentionally non-authoritative and
 the registered exact-head hosted job decides because a producer cannot vouch
@@ -435,7 +434,7 @@ remediated result remains exactly as before.
 ## Why this exists
 
 The [2026-08-03 skills audit](../ai_docs/transient/2026-08-03-skills-audit.md#where-are-the-ci-health-skills)
-found CI knowledge fragmented across the coordinator `hermit-ci` charter,
+found validation and GH Actions knowledge fragmented across the coordinator `hermit-ci` charter,
 Hermit's debugging workflow, five dated state skills, standalone scripts, and
 an ORC-only poll registration. Skills now point here for live commands and
 ownership. Skills describe when/how an agent should act; this hub owns the

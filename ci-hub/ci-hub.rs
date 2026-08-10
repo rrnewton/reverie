@@ -1,5 +1,5 @@
 #!/usr/bin/env -S rust-script --force
-//! Typed front door for dev-hermit CI state and operations.
+//! Typed front door for dev-hermit validation, GH Actions, and runner operations.
 //!
 //! `--force` makes rust-script ask Cargo to check the `#[path]` modules below.
 //! Without it, rust-script keys only on this top-level file and can execute a
@@ -73,23 +73,23 @@ const DEFAULT_POLL_SECONDS: u64 = 15;
 const DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECONDS: u64 = 10 * 60;
 const GATE_FLOOR_POLICY: &str = "registry-effective-floor";
 const CANONICAL_VALIDATE_REPO: &str = "rrnewton/hermit";
-const ROOT_HELP: &str = r#"Typed front door for dev-hermit CI state and operations
+const ROOT_HELP: &str = r#"Typed front door for dev-hermit validation, GH Actions, and runner operations
 
 Usage: ci-hub <COMMAND>
 
 START HERE
   Begin with fleet-wide truth and ownership before narrowing the question.
   quickstart              Print the opinionated five-step agent workflow
-  health                  Combine main CI, open PRs, and remediation obligations
+  health                  Combine current-main, open-PR, and remediation diagnostics
   active-work             Reconcile tasks, owners, and live ORC agents
 
 HISTORY & FORENSICS
   Ask what is healthy, which branch commit was last green, and where failure began.
   main-health             Query current main-branch GitHub workflow health
-  newest-green            Find the newest gate-qualified green commit [default: --branch main]
+  newest-green            Find the newest ledger-qualified green commit [default: --branch main]
   first-bad               Find a retained PASS -> FAIL transition for a cell or gate
   validate-status         Check whether one SHA has a clean full-validation receipt
-  hosted-status           Check the registered exact-head GitHub job authority
+  hosted-status           Check the registered exact-head GH Actions result
   receipt-digest          Recompute a HistoryRow's canonical exact-row digest
   validate-run            Launch detached validation through ci-hub admission
   validate-stop           Stop detached validate-* user units and verify termination
@@ -102,7 +102,7 @@ HISTORY & FORENSICS
 
 PR & RUNNER HEALTH
   Inspect live pull-request admission, runner capacity, and host pressure.
-  pr-status               Pull fresh open-PR CI status [alias: fresh]
+  pr-status               Pull fresh open-PR GH Actions status [alias: fresh]
   runner-health           Summarize self-hosted runners and recent workflows
   load-probe              Measure whether the host can safely start sensitive work
   tick                    Run due scheduled operational-health gates
@@ -112,8 +112,8 @@ LANDING & BATCH CONTROL
   land-lock               Acquire, renew, inspect, or release the fleet landing mutex
   validate-lock            Box-exclusive gate: one validate/bench at a time (GRANT/QUEUE/REFUSE)
   apply-local-label       Label PR heads backed by a clean full-validation receipt
-  ci-mode                 Inspect or change constrained CI admission mode
-  batch                   Inspect or edit the named current CI batch
+  ci-mode                 Inspect or change constrained GH Actions admission mode
+  batch                   Inspect or edit the named current GH Actions batch
   ci-timeout              Cancel hosted runs starved waiting to start; reroute to local
 
 POST-LAND REMEDIATION
@@ -137,44 +137,39 @@ Options:
 "#;
 const AGENT_QUICKSTART: &str = r#"ci-hub agent quickstart
 
-FOR: dev-hermit operational CI truth, local validation receipts, landing locks,
-and mandatory post-land remediation. NOT FOR: product test implementation or a
-portable CI engine; those stay in Hermit and pinned agent-utils.
+FOR: the normal Hermit loop: work, exact-head VALIDATE, durable LEDGER receipt,
+derived label, self-landing, ancestry proof, repeat.
 
-1. Start with the composite health signal; never translate pending into green:
+VOCABULARY: VALIDATE is the local authority; LEDGER is its durable record;
+GH ACTIONS is advisory P2; RUNNER is the machine. Do not conflate them.
+
+1. Check current state, then work in the assigned slot and publish the PR:
      ./ci-hub/ci-hub health
-   Nonzero means open remediation, red CI, or unavailable evidence. Read the
-   named component before acting.
-
-2. Inspect the narrower source of truth when triaging:
      ./ci-hub/ci-hub fresh
-     ./ci-hub/ci-hub main-health
-     ./ci-hub/ci-hub runner-health --all
-     ./ci-hub/bin/load-probe
+   A diagnostic red or unavailable GH Actions run does not veto normal landing.
 
-3. Recover local validation evidence after an agent or pane disappears:
+2. Run full VALIDATE at the exact clean head through the sole admission path:
+     ./ci-hub/ci-hub validate-run --checkout WORKTREE --agent AGENT --target SHA --pr PR -- full
+     ./ci-hub/ci-hub validate-status --sha SHA
+   Require a clean, full, counted, nonzero PASS in the LEDGER.
+
+3. Derive the cache label from that row; never type it by hand:
+     ./ci-hub/ci-hub apply-local-label --pr PR --repo rrnewton/hermit
+
+4. Land your own reviewed PR, then prove publication and repeat:
+     ./ci-hub/landing/land-pr.sh PR BRANCH --agent AGENT
+   The tracked lander uses `land-lock run`, rechecks the LEDGER, and proves
+   ancestry. Do not wait for GH Actions or a dedicated lander. Only a PR
+   modifying scripts/validate.rs uses its registered exact-head GH Actions job.
+
+5. Recover and diagnose without changing the authority hierarchy:
      ./ci-hub/ci-hub local-history --since YYYY-MM-DD
      ./ci-hub/ci-hub validate-worktrees --runs 10
      ./ci-hub/ci-hub newest-green
      ./ci-hub/ci-hub first-bad CELL_OR_GATE
-   Receipts live under ignored/ci-hub and identify slot, SHA, profile, dirty
-   state, result, wall seconds, and CPU seconds. Run newest-green immediately
-   before each rebase; it rejects green evidence below the current gate-schema
-   floor. First-bad reports unobserved commit gaps.
-
-4. Treat post-land obligations as durable work, not notification delivery:
      ./ci-hub/ci-hub obligations --actionable
      ./ci-hub/ci-hub inherit-obligations --agent AGENT --session "$HOSTNAME:$$"
-   Do not raw-admin-merge; use the documented land-and-arm path so local and
-   GitHub exact-SHA verification are armed together.
-
-5. Serialize fleet landings through the evidence-based mutex:
-     ./ci-hub/ci-hub land-lock status
-     ./ci-hub/ci-hub land-lock run --agent AGENT --pr PR -- COMMAND...
-   Serialize box-exclusive compute (one validate OR bench, so load cannot forge FAILEDs):
-     ./ci-hub/ci-hub validate-run --checkout WORKTREE --agent A --target SHA --pr N -- full
-   Never force-release another owner. Dead-owner reclamation requires process
-   evidence and is built into the lock.
+   Query runner health for capacity only: ./ci-hub/ci-hub runner-health --all
 
 Run from the dev-hermit root. Networked subcommands apply with-proxy internally.
 Meaningful work prints estimated and actual wall+CPU cost; quickstart itself is
@@ -184,7 +179,7 @@ pure and performs no workspace discovery, filesystem writes, or network calls.
 #[derive(Parser, Debug)]
 #[command(
     name = "ci-hub",
-    about = "Typed front door for dev-hermit CI state and operations",
+    about = "Typed front door for dev-hermit validation, GH Actions, and runner operations",
     version,
     propagate_version = true,
     override_help = ROOT_HELP
@@ -204,7 +199,7 @@ enum HubCommand {
     ActiveWork(ActiveWorkArgs),
     /// Query current-main GitHub workflow health.
     MainHealth(MainHealthArgs),
-    /// Pull fresh open-PR CI status via pinned agent-utils.
+    /// Pull fresh open-PR GH Actions status via pinned agent-utils.
     #[command(visible_alias = "fresh")]
     PrStatus(PrStatusArgs),
     /// Run due operational-health gates.
@@ -228,9 +223,9 @@ enum HubCommand {
     AuthorizeRevert(AuthorizeRevertArgs),
     /// Record a completed fix-forward or revert.
     ResolveObligation(ResolveObligationArgs),
-    /// Incrementally ingest GitHub and local CI history.
+    /// Incrementally ingest GH Actions and local VALIDATE history.
     RefreshHistory(RefreshHistoryArgs),
-    /// Query the local commit/CI history store.
+    /// Query the local commit, VALIDATE, and GH Actions history store.
     History(PassthroughArgs),
     /// Green-time over a linear branch history: sparse signal carried forward,
     /// plus the densification plan that shrinks the estimate's error.
@@ -245,7 +240,7 @@ enum HubCommand {
     LoadProbe(LoadProbeArgs),
     /// Query the local validate ledger for a commit and print the landing/cache verdict.
     ValidateStatus(ValidateStatusArgs),
-    /// Query the registered exact-head hosted job authority.
+    /// Query the registered exact-head GH Actions result.
     HostedStatus(HostedStatusArgs),
     /// Recompute the canonical digest of one HistoryRow read from stdin.
     ReceiptDigest(ReceiptDigestArgs),
@@ -265,11 +260,11 @@ enum HubCommand {
     LandLock(landing_lock::LandLockArgs),
     /// Operate the box-exclusive-compute admission gate (one validate/bench at a time).
     ValidateLock(validate_lock::ValidateLockArgs),
-    /// Inspect or switch the committed CI-constrained mode and its GitHub projection.
+    /// Inspect or switch the committed GH Actions-constrained mode and its GitHub projection.
     CiMode(CiModeArgs),
-    /// Inspect or edit the named current CI batch and its ci-batch PR labels.
+    /// Inspect or edit the named current GH Actions batch and its ci-batch PR labels.
     Batch(BatchArgs),
-    /// Cancel PRs whose hosted CI starved waiting to start and reroute to local validation.
+    /// Cancel PRs whose GH Actions starved waiting to start and reroute to local validation.
     CiTimeout(CiTimeoutArgs),
 }
 
@@ -741,7 +736,7 @@ const CI_MODE_REPOS: [&str; 2] = ["rrnewton/hermit", "rrnewton/reverie"];
 /// Name of the committed source-of-truth batch file, relative to the workspace root.
 const CI_BATCH_STATE_PATH: &str = "ci-hub/health/ci-batch.json";
 /// PR label that projects batch membership where workflows can read it; a PR
-/// carrying this label is exempt from the constrained-mode gate and gets CI.
+/// carrying this label is exempt from the constrained-mode gate and gets GH Actions.
 const CI_BATCH_LABEL: &str = "ci-batch";
 /// Repository assumed for `--pr N` when no `--repo` is given.
 const CI_BATCH_DEFAULT_REPO: &str = "rrnewton/hermit";
@@ -772,7 +767,7 @@ enum CiModeCommand {
     Status(CiModeStatusArgs),
     /// Write the mode, project it to GitHub, and commit the state file to main.
     Set(CiModeSetArgs),
-    /// Dispatch targeted CI for one PR head without auto-arming any fan-out.
+    /// Dispatch targeted GH Actions for one PR head without auto-arming any fan-out.
     Fire(CiModeFireArgs),
 }
 
@@ -785,9 +780,9 @@ struct CiModeStatusArgs {
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum CiModeValue {
-    /// Every PR push auto-fans-out the hosted CI workflows.
+    /// Every PR push auto-fans-out the GH Actions workflows.
     Auto,
-    /// Auto-fan-out is suppressed; hosted CI runs only when explicitly fired.
+    /// Auto-fan-out is suppressed; GH Actions runs only when explicitly fired.
     Constrained,
 }
 
@@ -844,7 +839,7 @@ struct CiModeFireArgs {
     repo: String,
 }
 
-/// Committed source of truth for the CI-constrained mode. Absent file == auto.
+/// Committed source of truth for the GH Actions-constrained mode. Absent file == auto.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct CiModeState {
     mode: String,
@@ -859,7 +854,7 @@ impl CiModeState {
     fn default_auto() -> Self {
         Self {
             mode: "auto".into(),
-            reason: "default: no committed CI-mode state on disk; treated as auto".into(),
+            reason: "default: no committed GH Actions-mode state on disk; treated as auto".into(),
             since: String::new(),
             actor: String::new(),
             evidence: None,
@@ -940,7 +935,7 @@ struct BatchPr {
     number: u64,
 }
 
-/// Committed source of truth for the named current CI batch. Absent file == no
+/// Committed source of truth for the named current GH Actions batch. Absent file == no
 /// batch. Membership is projected to GitHub as the ci-batch label on each PR.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 struct CiBatchState {
@@ -1281,19 +1276,19 @@ enum CiHubError {
     },
     #[error("ci-hub: local-history --json returned an invalid typed history row: {0}")]
     HistoryJson(#[source] serde_json::Error),
-    #[error("ci-hub: cannot read CI-mode state {path}: {source}")]
+    #[error("ci-hub: cannot read GH Actions-mode state {path}: {source}")]
     CiModeRead {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
-    #[error("ci-hub: cannot write CI-mode state {path}: {source}")]
+    #[error("ci-hub: cannot write GH Actions-mode state {path}: {source}")]
     CiModeWrite {
         path: PathBuf,
         #[source]
         source: io::Error,
     },
-    #[error("ci-hub: CI-mode state {path} is not valid JSON: {source}")]
+    #[error("ci-hub: GH Actions-mode state {path} is not valid JSON: {source}")]
     CiModeJson {
         path: PathBuf,
         #[source]
@@ -2068,7 +2063,7 @@ fn ci_mode_status(root: &Path, args: CiModeStatusArgs) -> Result<i32, CiHubError
             .expect("ci-mode status report is serializable")
         );
     } else {
-        println!("CI mode: {}", state.mode.to_uppercase());
+        println!("GH Actions mode: {}", state.mode.to_uppercase());
         println!(
             "  source: {}",
             if present {
@@ -2183,7 +2178,7 @@ fn ci_mode_set(root: &Path, args: CiModeSetArgs) -> Result<i32, CiHubError> {
     }
 
     if failures.is_empty() {
-        println!("CI mode set to {value}.");
+        println!("GH Actions mode set to {value}.");
         Ok(0)
     } else {
         eprintln!(
@@ -2213,7 +2208,7 @@ fn commit_ci_mode_state(root: &Path, value: &str) -> Result<bool, String> {
     if dirty.stdout.is_empty() {
         return Ok(false);
     }
-    let message = format!("ci-hub: set CI mode to {value}");
+    let message = format!("ci-hub: set GH Actions mode to {value}");
     let output = Command::new(root.join("scripts/parent-main-write"))
         .current_dir(root)
         .args(["commit", "-m", &message, "--", CI_MODE_STATE_PATH])
@@ -2348,7 +2343,7 @@ fn ensure_batch_label(root: &Path, repo: &str) -> Result<(), String> {
             "--color",
             "1D76DB",
             "--description",
-            "Current CI batch: exempt from constrained-mode gate; gets CI now.",
+            "Current GH Actions batch: exempt from constrained-mode gate; gets GH Actions now.",
         ],
     )
     .output()
@@ -2417,9 +2412,9 @@ fn commit_batch_state(root: &Path, name: &str) -> Result<bool, String> {
         return Ok(false);
     }
     let message = if name.is_empty() {
-        "ci-hub: clear CI batch".to_string()
+        "ci-hub: clear GH Actions batch".to_string()
     } else {
-        format!("ci-hub: set CI batch to {name}")
+        format!("ci-hub: set GH Actions batch to {name}")
     };
     let output = Command::new(root.join("scripts/parent-main-write"))
         .current_dir(root)
@@ -3071,7 +3066,7 @@ fn append_ci_timeout_audit(
         reason: &'a str,
     }
     let reason = format!(
-        "portable CI waited {}s (> {}m) to start; cancelled and rerouted to local validation",
+        "portable GH Actions waited {}s (> {}m) to start; cancelled and rerouted to local validation",
         entry.wait_seconds, threshold_minutes
     );
     let record = AuditRecord {
@@ -4822,7 +4817,7 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
 }
 
 /// `ci-hub validate-status --sha <SHA> | --pr <N>` — the SHA-queryable local
-/// receipt/cache authority (the landing combiner also queries hosted authority).
+/// receipt/cache authority. Only a scripts/validate.rs change selects GH Actions.
 /// Exit 0 VALIDATED, 3 FAILED (known-bad), 4 for every
 /// re-measurement state (TRUNCATED, NEEDS-RERUN, NO-RESULT, or NOT-VALIDATED).
 fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiHubError> {
@@ -7009,6 +7004,11 @@ mod tests {
         assert!(AGENT_QUICKSTART.contains("first-bad CELL_OR_GATE"));
         assert!(AGENT_QUICKSTART.contains("obligations --actionable"));
         assert!(AGENT_QUICKSTART.contains("land-lock run"));
+        assert!(AGENT_QUICKSTART.contains("validate-run --checkout"));
+        assert!(AGENT_QUICKSTART.contains("apply-local-label --pr"));
+        assert!(AGENT_QUICKSTART.contains("landing/land-pr.sh"));
+        assert!(AGENT_QUICKSTART.contains("Do not wait for GH Actions"));
+        assert!(AGENT_QUICKSTART.contains("modifying scripts/validate.rs"));
         assert!(AGENT_QUICKSTART.lines().count() < 45);
     }
 

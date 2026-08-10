@@ -883,7 +883,7 @@ def banked_failure_tier_commits(repo: str) -> dict[str, str]:
 
     LIMITATION (stated by design): the ledger is machine-local — most PR heads have
     NO local row here, so this can only demote a red where a fail/timeout row
-    exists at the EXACT head SHA. A head red only on hosted CI keeps its GitHub
+    exists at the EXACT head SHA. A head red only on GH Actions keeps its GitHub
     verdict untouched.
     """
     name = repo.rsplit("/", 1)[-1]
