@@ -26,6 +26,16 @@ the transform is identity/provenance bound and applied uniformly, and planted
 positive/negative tests prove that distinguishable executions remain
 distinguishable. Otherwise report the mismatch.
 
+For compatibility-scorecard cells, apply the versioned
+[strict green standard](../../../ai_docs/2026-08-10-strict-standard-for-green.md)
+rather than deriving a verdict from column names. The owner decision (2026-08-10)
+is verbatim: **"GREEN MEANS WE RAN TWICE (DETERMINISM OR PARITY) AND GOT FULL
+RUNS WITH IDENTICAL OUTPUT."** Incomplete, absent, crashed, divergent, or
+errored comparisons are red. `stack_parity` and `heap_parity` are three-valued
+invocation-mode fields, not outcomes; historical blank means unknown mode.
+This routing remains current until the owner changes that scorecard definition
+or the versioned standard is superseded.
+
 ## Required report shape
 
 1. Snapshot: full SHAs and environment.
