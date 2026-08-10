@@ -150,6 +150,60 @@ def test_operational_publish_refuses_the_shared_producer_parent(
         publisher.publish(clone, spool_dir, source_root=clone)
 
 
+def test_split_preserves_remote_bytes_and_adopts_untouched_source_order(
+    tmp_path, remote_and_clone
+):
+    bare, clone = remote_and_clone
+    rel = f"ledger/{TEAM}/{HOST}/2026-08.jsonl"
+    remote_events = [ev("01A"), ev("01B"), ev("01C")]
+    target = clone / rel
+    target.parent.mkdir(parents=True)
+    remote_text = "".join(json.dumps(event, sort_keys=True) + "\n" for event in remote_events)
+    target.write_text(remote_text)
+    git(clone, "add", "--", rel)
+    git(
+        clone,
+        "-c", "user.name=t", "-c", "user.email=t@invalid",
+        "commit", "-q", "-m", "remote order",
+    )
+    git(clone, "push", "-q", "origin", "main")
+
+    source = tmp_path / "source"
+    source_shard = source / rel
+    source_shard.parent.mkdir(parents=True)
+    source_text = "".join(
+        json.dumps(event, sort_keys=True) + "\n"
+        for event in (remote_events[0], remote_events[2])
+    )
+    source_shard.write_text(source_text)
+    report = publisher.split_published_to_match_source(
+        clone,
+        source,
+        [rel],
+        attribution="[impl agent, TEST] [ledger-test, devbig999]",
+    )
+
+    assert report["split"] == 1
+    assert report["source_unchanged"] is True
+    assert report["event_union_preserved"] is True
+    assert source_shard.read_text() == source_text
+    primary = subprocess.run(
+        ["git", "-C", str(bare), "show", f"main:{rel}"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    recovery_rel = report["shards"][0]["recovery"]
+    recovery = subprocess.run(
+        ["git", "-C", str(bare), "show", f"main:{recovery_rel}"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert primary == source_text
+    assert recovery == remote_text
+    union = ledger.union_events(
+        [json.loads(line) for line in (primary + recovery).splitlines()]
+    )
+    assert [event["event_id"] for event in union] == ["01A", "01B", "01C"]
+
+
 def test_spool_survives_a_failed_publish(tmp_path, remote_and_clone):
     """A publish that cannot reach the remote must leave the events recoverable."""
     _, clone = remote_and_clone

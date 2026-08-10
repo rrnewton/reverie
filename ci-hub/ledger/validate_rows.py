@@ -44,8 +44,12 @@ def short_hostname() -> str:
 
 
 def shard_paths(root: Path) -> list[Path]:
-    """Every published team/machine/month shard, in deterministic order."""
-    return sorted(root.glob("ledger/*/*/[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl"))
+    """Every published primary or migration-preservation shard."""
+    primary = root.glob("ledger/*/*/[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl")
+    preserved = root.glob(
+        "ledger-recovery/*/*/[0-9][0-9][0-9][0-9]-[0-9][0-9]/*.jsonl"
+    )
+    return sorted([*primary, *preserved])
 
 
 def live_spool_dir(root: Path) -> Path:

@@ -81,6 +81,27 @@ def test_event_visible_in_spool_and_published_shard_collapses_to_one(tmp_path: P
     assert validate_rows.rows(root=tmp_path) == [source]
 
 
+def test_recovery_shard_is_part_of_the_same_canonical_union(tmp_path: Path):
+    first = row(tmp_path, record_id="primary")
+    second = row(tmp_path, record_id="preserved")
+    primary = tmp_path / "ledger/hermit/hosta/2026-08.jsonl"
+    recovery = tmp_path / "ledger-recovery/hermit/hosta/2026-08/base.jsonl"
+    primary.parent.mkdir(parents=True)
+    recovery.parent.mkdir(parents=True)
+    primary.write_text(json.dumps(validate_rows._event_for_row(first, tmp_path), sort_keys=True) + "\n")
+    recovery.write_text(
+        json.dumps(validate_rows._event_for_row(first, tmp_path), sort_keys=True)
+        + "\n"
+        + json.dumps(validate_rows._event_for_row(second, tmp_path), sort_keys=True)
+        + "\n"
+    )
+
+    assert {event["event_id"] for event in validate_rows.events(root=tmp_path)} == {
+        "primary",
+        "preserved",
+    }
+
+
 def test_ignored_ephemeral_checkout_is_redacted_without_weakening_guard(
     tmp_path: Path,
 ):

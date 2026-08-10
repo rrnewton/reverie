@@ -52,6 +52,16 @@ unions that live spool with every tracked shard. The same event therefore stays
 visible before, during, and after publication; `event_id` deduplication reduces
 the spool and tracked copies to one logical event.
 
+`ledger-recovery/<team>/<host>/<month>/<source-commit>.jsonl` is a narrowly
+scoped migration-preservation shard, read only through that same union. It is
+created only when two already-published append-only replicas have divergent
+line order and therefore cannot become byte-identical by appending. The split
+command copies the previous remote shard there byte-for-byte in the same commit
+that makes the primary match the untouched live source; it refuses unless all
+source events already exist remotely with identical bodies and the event-id
+union is unchanged. Normal producers and publishers never write recovery
+shards.
+
 This is one ledger boundary, not two selectable ledgers. Consumers may not read
 the spool or tracked shards independently, discover another parent, or select a
 receipt path through the environment. The ignored spool is unpublished live
@@ -79,6 +89,15 @@ python3 ci-hub/ledger/publisher.py publish \
   --spool-dir "$PWD/ignored/ci-hub/validate-ledger-spool" \
   --writer "$PWD/scripts/parent-main-write" \
   --attribution '[impl agent, CODEX] [ledger-publisher, devbig014]'
+
+# Migration-only, after normal publication proves the remote contains every
+# source event but line ordering prevents byte identity. The source is read-only.
+python3 ci-hub/ledger/publisher.py split-published-shard \
+  --source-root "$PWD" \
+  --repo /path/to/dedicated/dev-hermit-publisher \
+  --shard ledger/hermit/devbig014/2026-08.jsonl \
+  --writer "$PWD/scripts/parent-main-write" \
+  --attribution '[impl agent, CODEX] [ledger-publisher, devbig014]'
 ```
 
 Three properties, in the order they matter:
@@ -93,8 +112,10 @@ Three properties, in the order they matter:
    with an **append-aware merge** — re-read the remote shard, keep every remote
    line in place, re-append only what is not already there. Never
    `checkout --theirs`, never a whole-file replacement.
-3. **No row is ever rewritten.** `verify_append_only` runs against the remote
-   content before each push; a non-extension is refused rather than forced.
+3. **Normal publication never rewrites a row.** `verify_append_only` runs
+   against the remote content before each push; a non-extension is refused.
+   The migration-only split is distinct: it retains the prior shard bytes
+   verbatim in a recovery shard and proves the logical union is unchanged.
 
 ## Tests
 

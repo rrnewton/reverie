@@ -171,6 +171,142 @@ def merge_shard(remote_text: str, events: Sequence[dict]) -> str:
     return "".join(line + "\n" for line in body)
 
 
+def _events_from_text(text: str, label: str) -> list[dict]:
+    if text and not text.endswith("\n"):
+        raise PublishRefused(f"{label}: final line is truncated")
+    return [parse_line(line) for line in text.splitlines() if line.strip()]
+
+
+def split_published_to_match_source(
+    repo: str | os.PathLike[str],
+    source_root: str | os.PathLike[str],
+    shards: Sequence[str],
+    *,
+    remote: str = DEFAULT_REMOTE,
+    branch: str = DEFAULT_BRANCH,
+    serialized_writer: str | os.PathLike[str] | None = None,
+    attribution: str,
+) -> dict:
+    """Preserve a divergent remote shard, then make its primary match source.
+
+    This is a migration-only escape hatch for two append-only replicas that
+    already diverged in line order. The published bytes are moved verbatim to
+    an immutable ``ledger-recovery`` shard in the SAME commit that makes the
+    primary byte-identical to the untouched source. It refuses unless every
+    source event is already present remotely with the same body, and verifies
+    that the post-split adapter union is exactly the pre-split remote union.
+    """
+    repo = Path(repo).resolve()
+    source_root = Path(source_root).resolve()
+    if repo == source_root:
+        raise PublishRefused(
+            "split checkout is the shared producer parent; use a dedicated clone"
+        )
+    if "\n" in attribution or not attribution:
+        raise PublishRefused("split publication requires one final attribution line")
+    if serialized_writer is not None and (remote != "origin" or branch != "main"):
+        raise PublishRefused("serialized parent publication requires origin/main")
+    if _git(repo, "status", "--porcelain").stdout.strip():
+        raise PublishRefused("split checkout is not clean")
+
+    _git(repo, "fetch", remote, branch)
+    _git(repo, "checkout", "--detach", f"{remote}/{branch}")
+    remote_commit = _git(repo, "rev-parse", f"{remote}/{branch}").stdout.strip()
+    written: list[str] = []
+    evidence: list[dict] = []
+    if not shards:
+        raise PublishRefused("split requires at least one explicit primary shard")
+    for rel in sorted(shards):
+        parts = Path(rel).parts
+        if (
+            len(parts) != 4
+            or parts[0] != "ledger"
+            or len(Path(parts[3]).stem) != 7
+            or Path(parts[3]).suffix != ".jsonl"
+        ):
+            raise PublishRefused(f"not a primary ledger shard: {rel}")
+        source = source_root / rel
+        if not source.is_file():
+            raise PublishRefused(f"source shard does not exist: {rel}")
+        shown = _git(repo, "show", f"{remote}/{branch}:{rel}", check=False)
+        if shown.returncode != 0:
+            raise PublishRefused(f"{rel}: source shard is not published")
+        source_text = source.read_text()
+        remote_text = shown.stdout
+        if source_text == remote_text:
+            continue
+        source_events = _events_from_text(source_text, f"source {rel}")
+        remote_events = _events_from_text(remote_text, f"remote {rel}")
+        source_by_id = {event.get("event_id"): event for event in source_events}
+        remote_by_id = {event.get("event_id"): event for event in remote_events}
+        union_events([*remote_events, *source_events])  # refuses body conflicts
+        missing = sorted(set(source_by_id) - set(remote_by_id))
+        if missing:
+            raise PublishRefused(
+                f"{rel}: {len(missing)} source event(s) are not published; publish first"
+            )
+
+        _, team, host, filename = Path(rel).parts
+        month = Path(filename).stem
+        recovery_rel = (
+            Path("ledger-recovery") / team / host / month / f"{remote_commit}.jsonl"
+        ).as_posix()
+        recovery = repo / recovery_rel
+        recovery.parent.mkdir(parents=True, exist_ok=True)
+        recovery.write_text(remote_text)
+        (repo / rel).write_text(source_text)
+        post_union = union_events([*source_events, *remote_events])
+        if {e["event_id"] for e in post_union} != set(remote_by_id):
+            raise PublishRefused(f"{rel}: split would change the published event-id union")
+        written.extend([rel, recovery_rel])
+        evidence.append(
+            {
+                "primary": rel,
+                "recovery": recovery_rel,
+                "source_events": len(source_by_id),
+                "preserved_events": len(remote_by_id),
+            }
+        )
+
+    if not written:
+        return {"split": 0, "commit": None, "note": "all primary shards already match"}
+    _git(repo, "add", "--", *written)
+    message = (
+        "ledger: preserve divergent history while adopting live shard bytes"
+        f"\n\n{attribution}"
+    )
+    _git(
+        repo,
+        "-c", "user.name=ledger-publisher",
+        "-c", "user.email=ledger-publisher@invalid",
+        "commit", "-q", "-m", message, "--", *written,
+    )
+    commit = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    if serialized_writer is None:
+        pushed = _git(repo, "push", remote, f"HEAD:refs/heads/{branch}", check=False)
+    else:
+        pushed = subprocess.run(
+            [str(serialized_writer), "publish", commit], cwd=repo,
+            capture_output=True, text=True, check=False,
+        )
+    if pushed.returncode != 0:
+        detail = pushed.stderr.strip() or pushed.stdout.strip() or "push failed"
+        raise PublishRefused(f"split commit retained but not published: {detail}")
+    _git(repo, "fetch", remote, branch)
+    ancestry = _git(
+        repo, "merge-base", "--is-ancestor", commit, f"{remote}/{branch}", check=False
+    )
+    if ancestry.returncode != 0:
+        raise PublishRefused("split commit is not an ancestor of freshly fetched main")
+    return {
+        "split": len(evidence),
+        "commit": commit,
+        "source_unchanged": True,
+        "event_union_preserved": True,
+        "shards": evidence,
+    }
+
+
 # --------------------------------------------------------------------------- publish
 
 
@@ -315,11 +451,20 @@ def main(argv: list[str] | None = None) -> int:
     send.add_argument("--writer", type=Path, required=True)
     send.add_argument("--attribution", required=True)
     send.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS)
+    split = commands.add_parser(
+        "split-published-shard",
+        help="preserve divergent remote bytes and make the primary match the source",
+    )
+    split.add_argument("--source-root", type=Path, required=True)
+    split.add_argument("--repo", type=Path, required=True)
+    split.add_argument("--writer", type=Path, required=True)
+    split.add_argument("--attribution", required=True)
+    split.add_argument("--shard", action="append", required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "stage-tracked":
             report = stage_tracked(args.source_root, args.spool_dir)
-        else:
+        elif args.command == "publish":
             report = publish(
                 args.repo,
                 args.spool_dir,
@@ -327,6 +472,14 @@ def main(argv: list[str] | None = None) -> int:
                 serialized_writer=args.writer,
                 attribution=args.attribution,
                 source_root=args.source_root,
+            )
+        else:
+            report = split_published_to_match_source(
+                args.repo,
+                args.source_root,
+                args.shard,
+                serialized_writer=args.writer,
+                attribution=args.attribution,
             )
         print(json.dumps(report, sort_keys=True))
         return 0
