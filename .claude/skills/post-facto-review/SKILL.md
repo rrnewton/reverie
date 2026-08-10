@@ -171,6 +171,46 @@ An immediate pair of reads need not differ when no deterministic progress
 occurred. The invariant is coherent fine-grained evolution across meaningful
 guest work and events, not artificial movement on every read.
 
+## 4a. A timeout gate is defeated by raising the timeout
+
+**REJECT a PR that raises a validate timeout, budget, cap, or parallelism limit
+so that a failing thing fits under it.** The raise makes the symptom vanish and
+leaves the defect. Seven agents refused this trade on 2026-08-09; it is written
+down here so the eighth does not have to rediscover it.
+
+This was caught twice in one night only by a coordinator reading an agent's pane
+mid-edit — once at `timeout-minutes: 22 -> 25` in `ci-privileged.yml`. Pane
+reading is not a control. The rule is.
+
+**The sibling trade, same shape, same answer: REJECT marking a listed failure
+`blocking:false`.** PR #2058 was caught doing exactly this and was refused by
+three reviewers. A gate you can satisfy by editing its own allowlist is not a
+gate. So is a review rule the PR under review may edit — always ask: **can this
+rule be satisfied by editing the thing it guards?**
+
+### The one legitimate exception, and how to tell it apart
+
+A budget may be genuinely MIS-CALIBRATED, and correcting that is not evasion.
+Two known classes:
+
+- calibrated without `-j16` contention, so the number never described the real
+  machine; or
+- a **node budget that exceeds its own job's kill**, which can never fire. Four
+  such mis-orderings exist, including `compatprep.hermit_release` at 3600s
+  inside a 900s job.
+
+**THE DIRECTION TEST SEPARATES THEM. Fix a mis-ordering by LOWERING THE INNER
+BOUND so it nests, never by RAISING THE OUTER ONE.** Exemplar, and the shape to
+copy: `480 < 600 < 660 < 720 < 900`, where the outer bound came DOWN from 1800
+and nothing was raised.
+
+Require the evidence to name **numeric terms and admission conditions** — the
+measured cost, under stated contention, against the bound it must nest inside.
+"It timed out" is not a measurement. And confirm the measurement is of the thing
+being rebudgeted: a 120.03s timeout was pursued as a budget problem across three
+agents until the durable log showed the cause was the **relink race**, and no
+rebudget was needed at all.
+
 ## 5. Labels
 
 - `post-facto-human-review` is the **single** routing label for a PR awaiting
