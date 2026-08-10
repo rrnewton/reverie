@@ -25,10 +25,20 @@
 //!     vs the ptrace reference -- the B-level metric. Blank when the ptrace
 //!     reference could not be established (parity UNMEASURED, never a false 0).
 //!
-//! It emits rows in the EXACT 19-column scorecard schema (bucket = the test's
-//! real corpus bucket, test_mode = `verify`, backend in {dbi, ptrace-ref}) into
-//! `ignored/` so the scorecard owner (hermit-235) folds it with a plain concat;
-//! it never touches the three existing collectors or `scorecard.csv`.
+//! It emits rows in the 20-column scorecard schema (bucket = the test's real
+//! corpus bucket, test_mode = `verify`, backend in {dbi, ptrace-ref}) into the
+//! TRACKED `compat-envelope/dbi-scorecard.csv`, beside the peer collectors'
+//! `e9patch-scorecard.csv` and `reverie-scorecard.csv`; it never touches the
+//! three existing collectors or `scorecard.csv`.
+//!
+//! HISTORY, because the previous two sentences used to be wrong in a way that
+//! mattered. This tool wrote to `ignored/` (gitignored, .gitignore:120) and
+//! claimed the scorecard owner "folds it with a plain concat". Both halves
+//! failed: nothing tracked could read the file at all, so its cells could not be
+//! reported as passing, failing or not-attempted -- they simply did not appear,
+//! and every denominator computed without them was wrong. And the concat could
+//! not have worked anyway, because the row lacked `comparison_tier`, which
+//! render-scorecard.rs requires and refuses a row without.
 //!
 //! Anti-fakery (#152): a DBI cell that is self-consistent (verify passed) but
 //! diverges from ptrace stdout is recorded deterministic=1 parity=0 with the
@@ -40,7 +50,7 @@
 //!       [--csv PATH] [--timeout SECS] [--tests a,b,...] [--buckets x,y]
 //!       [--limit N] [--stdout] [--emit-ptrace-ref]
 //! Defaults: --repo ../hermit  --manifest <invoke cargo>  --timeout 150
-//!           --csv ignored/dbi-corpus-scorecard.csv  --run-id dbi-corpus-verify
+//!           --csv compat-envelope/dbi-scorecard.csv  --run-id dbi-corpus-verify
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -51,7 +61,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,output_hash,duration_ms,max_rss_kb,reason";
+// `comparison_tier` is REQUIRED, not decorative: render-scorecard.rs refuses any
+// row whose tier is empty or unknown ("a raw pass may never default to a strict
+// green"), and it is the field that separates PASS from ATTEMPTED_UNQUALIFIABLE.
+// Without it every row this tool emits is rejected at ingest, which is why the
+// output was unreadable by anything tracked rather than merely untracked.
+const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,output_hash,duration_ms,max_rss_kb,reason,comparison_tier";
 const PINNED_GUEST_ENV_ARGS: &[&str] =
     &["--base-env", "minimal", "-e", "LC_ALL=C", "-e", "TZ=UTC"];
 
@@ -404,6 +419,21 @@ fn push_row(
         Some(false) => "0",
         None => "",
     };
+    // The tier states WHAT WAS COMPARED, never how it turned out -- pass/fail is
+    // `outcome`'s job. `parity` is Some(_) exactly when the golden ptrace stdout
+    // was established and DBI stdout was compared against it byte-for-byte, so
+    // Some(_) is a real CROSS-BACKEND witness and None is no comparison at all.
+    //
+    // Deliberately NOT `unqualified-self-verify-only`: that tier means a backend
+    // verified against itself. This tool compares DBI against ptrace, which is
+    // narrower than full parity but is not self-referential, and recording it as
+    // self-verify would under-claim evidence that actually exists. Under-claiming
+    // corrupts a scorecard as surely as over-claiming and is harder to spot
+    // because it reads as conservative.
+    let comparison_tier = match parity {
+        Some(_) => "unqualified-stdout-only",
+        None => "unqualified-no-comparison",
+    };
     let dur = if duration_ms > 0 { duration_ms.to_string() } else { String::new() };
     let row = [
         run_id.to_string(),
@@ -425,6 +455,7 @@ fn push_row(
         dur,
         String::new(),
         reason.to_string(),
+        comparison_tier.to_string(),
     ];
     let line = row.iter().map(|f| csv_field(f)).collect::<Vec<_>>().join(",");
     out.push_str(&line);
@@ -437,7 +468,12 @@ fn main() {
     let mut repo = PathBuf::from("../worktrees/dbt-compat/hermit");
     let mut manifest: Option<PathBuf> = None;
     let mut run_id = String::from("dbi-corpus-verify");
-    let mut csv = PathBuf::from("ignored/dbi-corpus-scorecard.csv");
+    // TRACKED by default, alongside the peer collectors' e9patch-scorecard.csv and
+    // reverie-scorecard.csv. The old default was `ignored/`, which is gitignored
+    // (.gitignore:120), so nothing tracked could read this tool's output: its cells
+    // could not be reported as passing, failing or not-attempted -- they simply did
+    // not appear, and every denominator computed without them was wrong.
+    let mut csv = PathBuf::from("compat-envelope/dbi-scorecard.csv");
     let mut timeout_s: u64 = 150;
     let mut tests_filter: Option<Vec<String>> = None;
     let mut buckets_filter: Option<Vec<String>> = None;
