@@ -133,6 +133,21 @@ run_local_only_case() {
     last_output=$output
 }
 
+run_hosted_only_case() {
+    local expected=$1 label=$2
+    shift 2
+    local rc=0 output
+    output=$(env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
+        EXACT_HEAD_GH_BIN="$tmp/gh-api" EXPECTED_SHA="$sha" \
+        "$@" "$authority" --hosted-only --repo rrnewton/hermit --sha "$sha") || rc=$?
+    if [[ $rc -ne $expected ]]; then
+        printf 'FAIL: %s expected rc=%s got rc=%s output=%s\n' \
+            "$label" "$expected" "$rc" "$output" >&2
+        exit 1
+    fi
+    last_output=$output
+}
+
 run_case 0 "current Rust schema-5 counted local exact-head positive" env LOCAL_STATE=green HOSTED_STATE=no_result
 [[ $last_output == *"LOCAL_COVERAGE=portable+privileged"* ]] || {
     echo "FAIL: local authority did not name its full coverage" >&2; exit 1;
@@ -208,4 +223,25 @@ env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
     >"$tmp/local-only-unbound" || rc=$?
 [[ $rc -eq 4 ]] || { echo "FAIL: local-only accepted an unbound receipt via hosted fallback" >&2; exit 1; }
 
-echo "PASS: historical local/hosted OR positives=5; local-only positive=1; local-only negatives=3; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"
+# The producer exception is the inverse selector: only registered hosted
+# evidence decides, and candidate-produced local evidence is not consulted.
+run_hosted_only_case 0 "hosted-only admits registered portable green despite local red" \
+    env LOCAL_STATE=red HOSTED_STATE=green
+[[ $last_output == *"AUTHORITY=hosted "* && $last_output == *"LOCAL=not_consulted"* ]] || {
+    echo "FAIL: hosted-only green consulted or selected local authority" >&2; exit 1;
+}
+run_hosted_only_case 4 "hosted-only refuses local-only green" \
+    env LOCAL_STATE=green HOSTED_STATE=no_result
+run_hosted_only_case 3 "hosted-only preserves genuine hosted red" \
+    env LOCAL_STATE=green HOSTED_STATE=red
+run_hosted_only_case 4 "hosted-only refuses partial hosted evidence" \
+    env LOCAL_STATE=green HOSTED_STATE=partial
+
+rc=0
+env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
+    LOCAL_STATE=green HOSTED_STATE=green \
+    "$authority" --local-only --hosted-only --repo rrnewton/hermit --sha "$sha" \
+    >/dev/null 2>&1 || rc=$?
+[[ $rc -eq 2 ]] || { echo "FAIL: mutually exclusive authority selectors were accepted" >&2; exit 1; }
+
+echo "PASS: historical local/hosted OR positives=5; local-only positive=1; local-only negatives=3; hosted-only positive=1; hosted-only negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"

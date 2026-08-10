@@ -326,6 +326,15 @@ ORIG=$(git -C "$WT" rev-parse "origin/$BR" 2>/dev/null) || abandon "cannot resol
 # SELF_AUTHORIZATION_REFUSED with the exact owner/review/blob record.
 branch_base=$(git -C "$WT" merge-base origin/main "$ORIG") \
   || abandon "cannot resolve PR merge-base for self-authorization check" 4
+producer_exception=0
+authority_mode=(--local-only)
+if git -C "$WT" diff --name-only "$branch_base" "$ORIG" -- \
+    scripts/validate.rs | grep -Fxq scripts/validate.rs; then
+  producer_exception=1
+  authority_mode=(--hosted-only)
+  [ "$NO_REBASE" -eq 1 ] || abandon "producer-changing PR requires --no-rebase so exact-head hosted authority survives" 4
+  say "producer exception: selecting registered exact-head hosted authority"
+fi
 if git -C "$WT" diff --name-only "$branch_base" "$ORIG" -- \
     .github/workflows/merge-gate.yml | grep -Fxq .github/workflows/merge-gate.yml; then
   if [ "$GATE_ROTATION" -ne 1 ]; then
@@ -337,7 +346,7 @@ if [ "$GATE_ROTATION" -eq 1 ]; then
   verify_rotation_authority "$ORIG" \
     || abandon "independent gate-rotation authority refused PR head $ORIG" 4
 else
-  VS=$("$SCRIPT_DIR/exact-head-validation-authority.sh" --local-only --repo "$R" --sha "$ORIG" 2>&1); VRC=$?
+  VS=$("$SCRIPT_DIR/exact-head-validation-authority.sh" "${authority_mode[@]}" --repo "$R" --sha "$ORIG" 2>&1); VRC=$?
   say "exact-head validation(head=$ORIG) rc=$VRC: $VS"
   case "$VRC" in
     0) say "landing eligibility: exact-head authority green for $ORIG" ;;
@@ -431,27 +440,31 @@ if [ "$GATE_ROTATION" -eq 1 ]; then
   verify_rotation_authority "$HEAD" \
     || abandon "independent gate-rotation authority refused resolved head $HEAD" 4
 else
-  selected_row_sha256=$("$ROOT/ci-hub/validate/scan-finalize.sh" \
-    --select-candidate-sha256 --sha "$HEAD" --hermit-checkout "$WT" \
-    2>/dev/null) || selected_row_sha256=
-  if [[ $selected_row_sha256 =~ ^[0-9a-f]{64}$ ]]; then
-    "$ROOT/ci-hub/validate/scan-finalize.sh" --hermit-checkout "$WT" \
-      --sha "$HEAD" --selected-row-sha256 "$selected_row_sha256" || true
-  else
-    say "scan-finalize: no unique exact source row selected for $HEAD (best-effort)"
+  if [ "$producer_exception" -ne 1 ]; then
+    selected_row_sha256=$("$ROOT/ci-hub/validate/scan-finalize.sh" \
+      --select-candidate-sha256 --sha "$HEAD" --hermit-checkout "$WT" \
+      2>/dev/null) || selected_row_sha256=
+    if [[ $selected_row_sha256 =~ ^[0-9a-f]{64}$ ]]; then
+      "$ROOT/ci-hub/validate/scan-finalize.sh" --hermit-checkout "$WT" \
+        --sha "$HEAD" --selected-row-sha256 "$selected_row_sha256" || true
+    else
+      say "scan-finalize: no unique exact source row selected for $HEAD (best-effort)"
+    fi
+    # Capture the VERBATIM first_error_line of every surviving red log into the
+    # durable append-only sidecar before the /tmp log is evicted.
+    python3 "$ROOT/ci-hub/validate/attribute_reds.py" --last 0 --persist >/dev/null 2>&1 || true
   fi
-  # Capture the VERBATIM first_error_line of every surviving red log into the
-  # durable append-only sidecar before the /tmp log is evicted.
-  python3 "$ROOT/ci-hub/validate/attribute_reds.py" --last 0 --persist >/dev/null 2>&1 || true
-  VS=$("$SCRIPT_DIR/exact-head-validation-authority.sh" --local-only --repo "$R" --sha "$HEAD" 2>&1); VRC=$?
+  VS=$("$SCRIPT_DIR/exact-head-validation-authority.sh" "${authority_mode[@]}" --repo "$R" --sha "$HEAD" 2>&1); VRC=$?
   say "post-push exact-head validation(head=$HEAD) rc=$VRC: $VS"
   [ "$VRC" -eq 0 ] || abandon "pushed head $HEAD has no accepted exact-head validation authority (rc=$VRC)" 4
-  "$ROOT/ci-hub/ci-hub" apply-local-label --pr "$PR" --repo "$R" \
-    || abandon "ledger-guarded apply-local-label failed" 4
-  sleep 4
-  LB=$(with-proxy gh pr view "$PR" -R "$R" --json labels -q '[.labels[].name]|join(",")')
-  grep -q locally-validated <<<"$LB" || abandon "locally-validated stripped immediately (labels=$LB)" 4
-  say "ledger-derived label present; labels=$LB"
+  if [ "$producer_exception" -ne 1 ]; then
+    "$ROOT/ci-hub/ci-hub" apply-local-label --pr "$PR" --repo "$R" \
+      || abandon "ledger-guarded apply-local-label failed" 4
+    sleep 4
+    LB=$(with-proxy gh pr view "$PR" -R "$R" --json labels -q '[.labels[].name]|join(",")')
+    grep -q locally-validated <<<"$LB" || abandon "locally-validated stripped immediately (labels=$LB)" 4
+    say "ledger-derived label present; labels=$LB"
+  fi
 fi
 
 # 4b. A draft PR cannot be merged. Marking it ready may fire advisory GH Actions, but
@@ -509,7 +522,7 @@ else
     printf '[]\n' >"$receipt_comments"
   fi
   receipt_detail=$("$SCRIPT_DIR/exact-head-validation-authority.sh" \
-    --local-only --repo "$R" --sha "$HEAD" --comments "$receipt_comments" \
+    "${authority_mode[@]}" --repo "$R" --sha "$HEAD" --comments "$receipt_comments" \
     --current-base "$current_base" \
     --current-reverie-base "$current_reverie_base" \
     --repo-checkout "$WT" --reverie-checkout "$ROOT/reverie" 2>&1)

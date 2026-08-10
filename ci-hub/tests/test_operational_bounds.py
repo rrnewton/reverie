@@ -708,7 +708,10 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertNotIn("gh workflow run merge-gate.yml", script)
         self.assertNotIn("merge-gate remained NO_RESULT", script)
         self.assertIn("exact-head-validation-authority.sh", script)
-        self.assertEqual(script.count("--local-only"), 3)
+        self.assertIn("authority_mode=(--local-only)", script)
+        self.assertIn("authority_mode=(--hosted-only)", script)
+        self.assertIn("producer-changing PR requires --no-rebase", script)
+        self.assertIn('scripts/validate.rs | grep -Fxq scripts/validate.rs', script)
         self.assertNotIn("local-validation-eligibility.sh", script)
         self.assertIn("apply-local-label --pr", script)
         self.assertIn('--repo "$R" --sha "$HEAD" --comments "$receipt_comments"', script)
@@ -815,6 +818,8 @@ class OperationalBoundsTest(unittest.TestCase):
             "local-only negatives=3",
             result.stdout,
         )
+        self.assertIn("hosted-only positive=1", result.stdout)
+        self.assertIn("hosted-only negatives=4", result.stdout)
 
     def test_gate_rotation_brackets_sanctioned_composition(self) -> None:
         result = subprocess.run(

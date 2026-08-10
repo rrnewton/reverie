@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Owner-authorized exact-head landing authority: counted local OR versioned
-# hosted, with any genuine red blocking. Labels and copied statuses are never
-# inputs.
+# hosted, with any genuine red blocking. The landing consumer may select one
+# authority explicitly: ordinary Hermit changes use --local-only, while a
+# scripts/validate.rs producer change uses --hosted-only because candidate code
+# cannot vouch for its own receipt. Labels and copied statuses are never inputs.
 set -uo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -12,6 +14,7 @@ repo=rrnewton/hermit
 sha=
 comments=
 local_only=0
+hosted_only=0
 current_base=
 current_reverie_base=
 repo_checkout=
@@ -23,12 +26,13 @@ while [[ $# -gt 0 ]]; do
         --sha) sha=${2:-}; shift 2 ;;
         --comments) comments=${2:-}; shift 2 ;;
         --local-only) local_only=1; shift ;;
+        --hosted-only) hosted_only=1; shift ;;
         --current-base) current_base=${2:-}; shift 2 ;;
         --current-reverie-base) current_reverie_base=${2:-}; shift 2 ;;
         --repo-checkout) repo_checkout=${2:-}; shift 2 ;;
         --reverie-checkout) reverie_checkout=${2:-}; shift 2 ;;
         -h|--help)
-            echo "usage: exact-head-validation-authority.sh --repo OWNER/REPO --sha 40_HEX [--comments FILE] [--local-only]"
+            echo "usage: exact-head-validation-authority.sh --repo OWNER/REPO --sha 40_HEX [--comments FILE] [--local-only|--hosted-only]"
             exit 0
             ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
@@ -44,6 +48,14 @@ if [[ -n $comments && ! -r $comments ]]; then
 fi
 if [[ $local_only -eq 1 && $repo != rrnewton/hermit ]]; then
     echo "exact-head authority --local-only is defined only for rrnewton/hermit" >&2
+    exit 2
+fi
+if [[ $hosted_only -eq 1 && $repo != rrnewton/hermit ]]; then
+    echo "exact-head authority --hosted-only is defined only for rrnewton/hermit" >&2
+    exit 2
+fi
+if [[ $local_only -eq 1 && $hosted_only -eq 1 ]]; then
+    echo "exact-head authority --local-only and --hosted-only are mutually exclusive" >&2
     exit 2
 fi
 boundary_args=()
@@ -157,11 +169,14 @@ cancellation_derived_portable_absence() {
     ' "$aggregate_report" >/dev/null 2>&1
 }
 
-local_rc=0
-"$ci_hub" validate-status --sha "$sha" --repo "$repo" --json \
-    >"$local_report" 2>/dev/null || local_rc=$?
 local_state=no_result
-if [[ $local_rc -eq 0 ]] && jq -e --arg repo "$repo" --arg sha "$sha" '
+if [[ $hosted_only -eq 1 ]]; then
+    local_state=not_consulted
+else
+    local_rc=0
+    "$ci_hub" validate-status --sha "$sha" --repo "$repo" --json \
+        >"$local_report" 2>/dev/null || local_rc=$?
+    if [[ $local_rc -eq 0 ]] && jq -e --arg repo "$repo" --arg sha "$sha" '
     .newest_qualifying as $row
     | $row.coverage as $coverage
     | .repo == $repo and .sha == $sha and .verdict == "VALIDATED"
@@ -180,11 +195,12 @@ if [[ $local_rc -eq 0 ]] && jq -e --arg repo "$repo" --arg sha "$sha" '
     and ($row.executed_tests | type == "number" and . > 0)
     and ($row.filtered_tests | type == "number" and . >= 0)
 ' "$local_report" >/dev/null 2>&1; then
-    local_state=green
-elif [[ $local_rc -eq 3 ]] && jq -e --arg repo "$repo" --arg sha "$sha" '
+        local_state=green
+    elif [[ $local_rc -eq 3 ]] && jq -e --arg repo "$repo" --arg sha "$sha" '
     .repo == $repo and .sha == $sha and .verdict == "FAILED" and .exit_code == 3
 ' "$local_report" >/dev/null 2>&1; then
-    local_state=red
+        local_state=red
+    fi
 fi
 
 # At the final mutation boundary, a local green must additionally dereference
@@ -280,6 +296,26 @@ case "$repo" in
         fi
         ;;
 esac
+
+# A producer-changing candidate must prove the registered hosted job itself.
+# Do not consult, accept, or veto on the candidate-produced local ledger. This
+# is a selector, not a fallback: missing/partial hosted evidence is NO_RESULT.
+if [[ $hosted_only -eq 1 ]]; then
+    case $hosted_state in
+        green)
+            printf 'AUTHORITY=hosted LOCAL=not_consulted HOSTED=green LOCAL_COVERAGE=none HOSTED_COVERAGE=portable REQUIRED_COVERAGE=hosted:portable SHA=%s\n' "$sha"
+            exit 0
+            ;;
+        red)
+            printf 'AUTHORITY=refused LOCAL=not_consulted HOSTED=red LOCAL_COVERAGE=none HOSTED_COVERAGE=none REQUIRED_COVERAGE=hosted:portable SHA=%s\n' "$sha"
+            exit 3
+            ;;
+        *)
+            printf 'AUTHORITY=no_result LOCAL=not_consulted HOSTED=no_result LOCAL_COVERAGE=none HOSTED_COVERAGE=none REQUIRED_COVERAGE=hosted:portable SHA=%s\n' "$sha"
+            exit 4
+            ;;
+    esac
+fi
 
 if [[ $local_state == red || $hosted_state == red ]]; then
     printf 'AUTHORITY=refused LOCAL=%s HOSTED=%s LOCAL_COVERAGE=%s HOSTED_COVERAGE=%s REQUIRED_COVERAGE=%s SHA=%s\n' \
