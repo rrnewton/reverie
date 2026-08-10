@@ -81,6 +81,16 @@ const VALIDATE_LOCK_PATH_ENV: &str = "CI_HUB_VALIDATE_LOCK";
 /// on purpose: a validate must never block a lander and vice versa, so the two
 /// are box-global with respect to their own kind and invisible to each other.
 const VALIDATE_BOX_ANCHOR: &str = "validate-box.lock";
+/// The owner's periodic acceptance watch gets the first free admission boundary
+/// after background work releases the box. This is a yield protocol, never a
+/// preemptor: it neither signals nor reclaims a holder.
+const OWNER_WATCH_AGENT: &str = "owner-checkout-watch";
+/// A background acquirer may proceed after this bounded gap even when the watch
+/// has not produced a durable admission result. Until then it yields without
+/// entering the FIFO or taking the box-global anchor.
+const OWNER_WATCH_YIELD_SECONDS: i64 = 90;
+const OWNER_WATCH_STATE_RELATIVE: &str = ".local/state/hermit-owner-validate";
+const OWNER_WATCH_VERIFIER_RELATIVE: &str = "scripts/owner-checkout-validate-watch.py";
 
 /// Read a TEST-BUILD-ONLY environment override.
 ///
@@ -144,6 +154,9 @@ pub enum ValidateLockCommand {
     Status,
     /// Emit one guarded, machine-readable canonical lock-authority snapshot.
     AuthorityStatus(AuthorityStatusArgs),
+    /// Report whether a background acquirer must yield to the owner's watch.
+    /// Exit 0=ALLOW, 1=YIELD, 2=UNKNOWN (fail closed).
+    YieldStatus(YieldStatusArgs),
     /// Reclaim a lease only when its recorded owner process is proven dead.
     ReclaimDead,
     /// Census an UNCENSUSED payload domain post-hoc, after the supervisor died
@@ -157,6 +170,13 @@ pub enum ValidateLockCommand {
 #[derive(Args, Clone, Debug)]
 pub struct AuthorityStatusArgs {
     /// Emit the stable versioned JSON authority contract.
+    #[arg(long, required = true)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct YieldStatusArgs {
+    /// Emit the stable versioned JSON yield-decision contract.
     #[arg(long, required = true)]
     pub json: bool,
 }
@@ -377,6 +397,101 @@ impl ValidateLockState {
     fn live_at(&self, now: i64) -> bool {
         now < self.expires_at
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ReleaseRecord {
+    schema_version: u32,
+    released_at: i64,
+    released_human: String,
+    released_by: String,
+    kind: String,
+    target: String,
+}
+
+impl ReleaseRecord {
+    fn parse(content: &str) -> Result<Self, ValidateLockError> {
+        let mut schema_version = None;
+        let mut released_at = None;
+        let mut released_human = None;
+        let mut released_by = None;
+        let mut kind = None;
+        let mut target = None;
+        for (line_number, line) in content.lines().enumerate() {
+            let (key, value) = line.split_once('=').ok_or_else(|| {
+                ValidateLockError::InvalidState(format!(
+                    "release line {} is not key=value",
+                    line_number + 1
+                ))
+            })?;
+            match key {
+                "schema_version" => schema_version = Some(parse_integer(key, value)?),
+                "released_at" => released_at = Some(parse_integer(key, value)?),
+                "released_human" => released_human = Some(value.to_string()),
+                "released_by" => released_by = Some(value.to_string()),
+                "kind" => kind = Some(value.to_string()),
+                "target" => target = Some(value.to_string()),
+                unknown => {
+                    return Err(ValidateLockError::InvalidState(format!(
+                        "unknown release field {unknown:?}"
+                    )));
+                }
+            }
+        }
+        let schema_version = required(schema_version, "release schema_version")?;
+        if schema_version != 1 {
+            return Err(ValidateLockError::InvalidState(format!(
+                "unsupported release schema_version={schema_version}"
+            )));
+        }
+        Ok(Self {
+            schema_version: schema_version as u32,
+            released_at: required(released_at, "release released_at")?,
+            released_human: required(released_human, "release released_human")?,
+            released_by: required(released_by, "release released_by")?,
+            kind: required(kind, "release kind")?,
+            target: required(target, "release target")?,
+        })
+    }
+
+    fn render(&self) -> String {
+        format!(
+            "schema_version={}\nreleased_at={}\nreleased_human={}\nreleased_by={}\nkind={}\ntarget={}\n",
+            self.schema_version,
+            self.released_at,
+            self.released_human,
+            self.released_by,
+            self.kind,
+            self.target
+        )
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct OwnerWatchAdmission {
+    state: String,
+    verifier_output: String,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum YieldState {
+    Allow,
+    Yield,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct YieldStatus {
+    schema_version: u32,
+    state: YieldState,
+    admissible: bool,
+    reason_code: String,
+    detail: String,
+    observed_at: i64,
+    remaining_seconds: Option<i64>,
+    release: Option<ReleaseRecord>,
+    owner_watch_admission: Option<OwnerWatchAdmission>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -665,6 +780,14 @@ struct LockPaths {
     queue: PathBuf,
     owner: PathBuf,
     cleanup: PathBuf,
+    /// Durable record of the most recent transition from held to free. Unlike
+    /// `.validate-lock.queue` mtime, this is an explicit admission contract.
+    released: PathBuf,
+    /// Public owner-watch admission verifier and its single durable cursor.
+    /// validate-lock consumes this interface; it does not infer admission by
+    /// re-parsing the watch's per-attempt result directory.
+    owner_watch_verifier: Option<PathBuf>,
+    owner_watch_state_dir: Option<PathBuf>,
     /// The box-global exclusion anchor (see [`BoxExclusionAnchor`]). Carried here
     /// rather than read from a global so it is CONSTRUCTOR-SCOPED: production
     /// builds it from the uid, and each test builds its own beside its own temp
@@ -695,7 +818,12 @@ impl LockPaths {
         let lock = test_only_override(VALIDATE_LOCK_PATH_ENV)
             .map(PathBuf::from)
             .unwrap_or_else(|| repository_lock_root(root).join(".validate-lock"));
-        Self::at(lock)
+        let mut paths = Self::at(lock);
+        paths.owner_watch_verifier =
+            Some(repository_lock_root(root).join(OWNER_WATCH_VERIFIER_RELATIVE));
+        paths.owner_watch_state_dir =
+            env::var_os("HOME").map(|home| PathBuf::from(home).join(OWNER_WATCH_STATE_RELATIVE));
+        paths
     }
 
     /// Resolve the authority query's production lock domain without consulting
@@ -713,6 +841,9 @@ impl LockPaths {
             queue: suffix(&lock, ".queue"),
             owner: suffix(&lock, ".owner"),
             cleanup: suffix(&lock, ".cleanup-required"),
+            released: suffix(&lock, ".released"),
+            owner_watch_verifier: None,
+            owner_watch_state_dir: None,
             anchor: box_exclusion_anchor_at(VALIDATE_BOX_ANCHOR),
             lock,
         }
@@ -727,6 +858,16 @@ struct ValidateLock {
 enum AcquireToken {
     Acquired,
     AcquiredReclaimed(String),
+    /// A recent background release has not yet been followed by a durable
+    /// owner-watch admission. The caller must stay out of both FIFO and anchor.
+    Yield {
+        reason: String,
+        seconds_left: i64,
+    },
+    /// The yield predicate could not be evaluated. Absence is not permission.
+    YieldUnknown {
+        reason: String,
+    },
     /// The box is held by a live owner. `ahead` is how many FIFO waiters precede
     /// this agent (0-based) so callers can print a 1-based position.
     Held {
@@ -751,6 +892,11 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
         ValidateLockCommand::Acquire(args) => {
             reject_bad_max(args.max)?;
             base_admission_check(root, &args.target, args.kind, args.skip_base_check)?;
+            let yield_status =
+                lock.wait_for_owner_watch_yield(&args.agent, args.wait, args.wait == 0)?;
+            if yield_status != 0 {
+                return Ok(yield_status);
+            }
             // `acquire` cannot HOLD the box-global anchor (see `held_by_another`),
             // but it must not hand out a lease while another repository's payload
             // owns the box. `run` is the sanctioned production path
@@ -794,6 +940,10 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
             }
             .print_authority_status()?;
             Ok(0)
+        }
+        ValidateLockCommand::YieldStatus(args) => {
+            debug_assert!(args.json, "clap requires --json");
+            lock.print_yield_status()
         }
         ValidateLockCommand::ReclaimDead => lock.reclaim_dead(),
         ValidateLockCommand::CensusOrphanedDomain(args) => lock.census_orphaned_domain(args),
@@ -1249,6 +1399,28 @@ impl ValidateLock {
                     );
                     return Ok(0);
                 }
+                AcquireToken::Yield {
+                    reason,
+                    seconds_left,
+                } => {
+                    let token = format!("YIELD:{seconds_left}:{reason}");
+                    if token != last {
+                        eprintln!(
+                            "validate-lock: YIELD for owner watch (~{seconds_left}s): {reason}"
+                        );
+                        last = token;
+                    }
+                    if wait == 0 {
+                        eprintln!("REFUSED: owner watch has priority at this free boundary");
+                        return Ok(REFUSED_EXIT_CODE);
+                    }
+                }
+                AcquireToken::YieldUnknown { reason } => {
+                    eprintln!(
+                        "REFUSED: validate yield state UNKNOWN: {reason}; absence is not permission"
+                    );
+                    return Ok(REFUSED_EXIT_CODE);
+                }
                 AcquireToken::Held {
                     agent: holder,
                     kind: holder_kind,
@@ -1334,14 +1506,44 @@ impl ValidateLock {
             });
         }
 
-        if let Some(head) = queue.first() {
-            if head.agent != agent {
-                let head_agent = head.agent.clone();
-                self.write_queue(&queue)?;
-                return Ok(AcquireToken::WaitTurn {
-                    head: head_agent,
-                    ahead: my_index,
-                });
+        // Only an actually free boundary is subject to the owner-watch yield.
+        // A dead holder follows the existing evidence-reclaim path instead of
+        // being laundered into a normal release. Yielders remove themselves from
+        // FIFO so they cannot remain ahead of the watch while claiming to wait.
+        if holder.is_none() {
+            let status = self.yield_status_for_agent(agent, now);
+            match status.state {
+                YieldState::Allow => {}
+                YieldState::Yield => {
+                    queue.retain(|entry| entry.agent != agent);
+                    self.write_queue(&queue)?;
+                    return Ok(AcquireToken::Yield {
+                        reason: status.detail,
+                        seconds_left: status.remaining_seconds.unwrap_or(0),
+                    });
+                }
+                YieldState::Unknown => {
+                    queue.retain(|entry| entry.agent != agent);
+                    self.write_queue(&queue)?;
+                    return Ok(AcquireToken::YieldUnknown {
+                        reason: status.detail,
+                    });
+                }
+            }
+        }
+
+        // The watch is the priority acquirer at a yielded free boundary. This
+        // is queue ordering only — never signalling, reclaiming, or preemption.
+        if agent != OWNER_WATCH_AGENT {
+            if let Some(head) = queue.first() {
+                if head.agent != agent {
+                    let head_agent = head.agent.clone();
+                    self.write_queue(&queue)?;
+                    return Ok(AcquireToken::WaitTurn {
+                        head: head_agent,
+                        ahead: my_index,
+                    });
+                }
             }
         }
 
@@ -1401,6 +1603,10 @@ impl ValidateLock {
                 });
             }
             self.assert_current_process_owner("release")?;
+            // Publish the transition before removing the lease, under the same
+            // guard. If this write fails, the lock stays held: UNKNOWN never
+            // becomes a silently free/admissible boundary.
+            self.write_release_record(&holder.agent, &holder.kind, &holder.target)?;
             remove_if_exists(&self.paths.lock)?;
             remove_if_exists(&self.paths.owner)?;
             self.remove_from_queue(agent)?;
@@ -1432,6 +1638,273 @@ impl ValidateLock {
         })?;
         println!("{json}");
         Ok(())
+    }
+
+    fn print_yield_status(&self) -> Result<i32, ValidateLockError> {
+        let now = epoch_seconds()?;
+        let status = self.with_guard(|| Ok(self.yield_status_guarded(now)))?;
+        let exit = match status.state {
+            YieldState::Allow => 0,
+            YieldState::Yield => 1,
+            YieldState::Unknown => 2,
+        };
+        let json = serde_json::to_string(&status).map_err(|error| {
+            ValidateLockError::InvalidState(format!(
+                "cannot serialize validate-yield status: {error}"
+            ))
+        })?;
+        println!("{json}");
+        Ok(exit)
+    }
+
+    fn yield_status_for_agent(&self, agent: &str, now: i64) -> YieldStatus {
+        if agent == OWNER_WATCH_AGENT {
+            return YieldStatus {
+                schema_version: 1,
+                state: YieldState::Allow,
+                admissible: true,
+                reason_code: "owner-watch-priority".into(),
+                detail: "owner checkout watch is the priority acquirer".into(),
+                observed_at: now,
+                remaining_seconds: None,
+                release: self.read_release_record().ok().flatten(),
+                owner_watch_admission: None,
+            };
+        }
+        self.yield_status_guarded(now)
+    }
+
+    fn yield_status_guarded(&self, now: i64) -> YieldStatus {
+        let release = match self.read_release_record() {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                return YieldStatus {
+                    schema_version: 1,
+                    state: YieldState::Allow,
+                    admissible: true,
+                    reason_code: "bootstrap-no-release-yet".into(),
+                    detail: format!(
+                        "{} is absent: no release boundary has occurred yet, so there is nothing for the owner watch to be starved behind",
+                        self.paths.released.display()
+                    ),
+                    observed_at: now,
+                    remaining_seconds: None,
+                    release: None,
+                    owner_watch_admission: None,
+                };
+            }
+            Err(error) => {
+                return YieldStatus {
+                    schema_version: 1,
+                    state: YieldState::Unknown,
+                    admissible: false,
+                    reason_code: "release-record-unreadable".into(),
+                    detail: error.to_string(),
+                    observed_at: now,
+                    remaining_seconds: None,
+                    release: None,
+                    owner_watch_admission: None,
+                };
+            }
+        };
+
+        if release.released_at > now {
+            return YieldStatus {
+                schema_version: 1,
+                state: YieldState::Unknown,
+                admissible: false,
+                reason_code: "release-clock-in-future".into(),
+                detail: format!(
+                    "release timestamp {} is later than observed time {now}",
+                    release.released_at
+                ),
+                observed_at: now,
+                remaining_seconds: None,
+                release: Some(release),
+                owner_watch_admission: None,
+            };
+        }
+
+        // The lock itself is the strongest possible admission witness: a
+        // release by the exact owner-watch identity means it held this guarded
+        // lease. Do not manufacture a short blind gap while its result writer
+        // finishes the atomic JSON publication immediately after release.
+        if release.released_by == OWNER_WATCH_AGENT {
+            return YieldStatus {
+                schema_version: 1,
+                state: YieldState::Allow,
+                admissible: true,
+                reason_code: "owner-watch-released-last".into(),
+                detail: "the most recent holder was the owner checkout watch".into(),
+                observed_at: now,
+                remaining_seconds: None,
+                release: Some(release),
+                owner_watch_admission: None,
+            };
+        }
+
+        let admission = match self.owner_watch_admission_after(release.released_at) {
+            Ok(admission) => admission,
+            Err(detail) => {
+                return YieldStatus {
+                    schema_version: 1,
+                    state: YieldState::Unknown,
+                    admissible: false,
+                    reason_code: "owner-watch-results-unreadable".into(),
+                    detail,
+                    observed_at: now,
+                    remaining_seconds: None,
+                    release: Some(release),
+                    owner_watch_admission: None,
+                };
+            }
+        };
+        if let Some(admission) = admission {
+            return YieldStatus {
+                schema_version: 1,
+                state: YieldState::Allow,
+                admissible: true,
+                reason_code: "owner-watch-admitted-since-release".into(),
+                detail: "public owner-watch verifier observed an exact validate-lock admission after the release boundary".into(),
+                observed_at: now,
+                remaining_seconds: None,
+                release: Some(release),
+                owner_watch_admission: Some(admission),
+            };
+        }
+
+        let age = now - release.released_at;
+        if age < OWNER_WATCH_YIELD_SECONDS {
+            let remaining = OWNER_WATCH_YIELD_SECONDS - age;
+            YieldStatus {
+                schema_version: 1,
+                state: YieldState::Yield,
+                admissible: false,
+                reason_code: "owner-watch-not-admitted-since-release".into(),
+                detail: format!(
+                    "no durable owner-watch admission since release by {}; yield {remaining}s",
+                    release.released_by
+                ),
+                observed_at: now,
+                remaining_seconds: Some(remaining),
+                release: Some(release),
+                owner_watch_admission: None,
+            }
+        } else {
+            YieldStatus {
+                schema_version: 1,
+                state: YieldState::Allow,
+                admissible: true,
+                reason_code: "yield-window-elapsed".into(),
+                detail: format!(
+                    "no owner-watch admission was observed, but the bounded {}s yield window elapsed",
+                    OWNER_WATCH_YIELD_SECONDS
+                ),
+                observed_at: now,
+                remaining_seconds: Some(0),
+                release: Some(release),
+                owner_watch_admission: None,
+            }
+        }
+    }
+
+    fn owner_watch_admission_after(
+        &self,
+        released_at: i64,
+    ) -> Result<Option<OwnerWatchAdmission>, String> {
+        let verifier = self
+            .paths
+            .owner_watch_verifier
+            .as_ref()
+            .ok_or_else(|| "owner-watch admission verifier path is unavailable".to_string())?;
+        let state_dir = self.paths.owner_watch_state_dir.as_ref().ok_or_else(|| {
+            "HOME is unavailable, so the owner-watch state directory cannot be derived".to_string()
+        })?;
+        let output = Command::new("python3")
+            .arg(verifier)
+            .arg("--state-dir")
+            .arg(state_dir)
+            .arg("--admission-status-since")
+            .arg(released_at.to_string())
+            .output()
+            .map_err(|error| {
+                format!(
+                    "cannot execute owner-watch admission verifier {}: {error}",
+                    verifier.display()
+                )
+            })?;
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let value: serde_json::Value = serde_json::from_str(&stdout).map_err(|error| {
+            format!(
+                "owner-watch admission verifier returned invalid JSON (rc={:?}): {error}; stdout={stdout:?}; stderr={stderr:?}",
+                output.status.code()
+            )
+        })?;
+        let state = value
+            .get("state")
+            .and_then(|field| field.as_str())
+            .ok_or_else(|| "owner-watch admission verifier JSON has no state".to_string())?;
+        match (output.status.code(), state) {
+            (Some(0), "ADMITTED") => Ok(Some(OwnerWatchAdmission {
+                state: state.to_string(),
+                verifier_output: stdout,
+            })),
+            (Some(1), "NOT_ADMITTED") => Ok(None),
+            (Some(2), "UNKNOWN") => Err(format!(
+                "owner-watch admission verifier returned UNKNOWN: {stdout}"
+            )),
+            (code, _) => Err(format!(
+                "owner-watch admission verifier contract mismatch rc={code:?} state={state:?}; stderr={stderr:?}"
+            )),
+        }
+    }
+
+    /// Wait outside the box anchor and outside FIFO. This is what makes the
+    /// priority executable: a yielding background caller consumes no resource
+    /// that the owner watch needs in order to take its natural free boundary.
+    fn wait_for_owner_watch_yield(
+        &self,
+        agent: &str,
+        wait: u64,
+        no_wait: bool,
+    ) -> Result<i32, ValidateLockError> {
+        if agent == OWNER_WATCH_AGENT {
+            return Ok(0);
+        }
+        let started = Instant::now();
+        let mut last_reason = String::new();
+        loop {
+            let now = epoch_seconds()?;
+            let status = self.with_guard(|| Ok(self.yield_status_for_agent(agent, now)))?;
+            match status.state {
+                YieldState::Allow => return Ok(0),
+                YieldState::Unknown => {
+                    eprintln!(
+                        "REFUSED: validate yield state UNKNOWN ({}): {}; absence is not permission",
+                        status.reason_code, status.detail
+                    );
+                    return Ok(REFUSED_EXIT_CODE);
+                }
+                YieldState::Yield => {
+                    if status.reason_code != last_reason {
+                        eprintln!("validate-lock: YIELD for owner watch: {}", status.detail);
+                        last_reason = status.reason_code;
+                    }
+                    if no_wait || wait == 0 {
+                        eprintln!("REFUSED: owner watch has priority at this free boundary");
+                        return Ok(REFUSED_EXIT_CODE);
+                    }
+                    if started.elapsed() >= Duration::from_secs(wait) {
+                        eprintln!(
+                            "validate-lock: TIMEOUT after {wait}s while yielding to owner watch"
+                        );
+                        return Ok(1);
+                    }
+                    thread::sleep(Duration::from_secs(POLL_SECONDS));
+                }
+            }
+        }
     }
 
     /// Return one coherent canonical authority snapshot while the lock-state
@@ -1851,6 +2324,11 @@ impl ValidateLock {
             }
             match self.owner_liveness()? {
                 OwnerLiveness::Dead(reason) => {
+                    self.write_release_record(
+                        &format!("reclaim-dead:{}", holder.agent),
+                        &holder.kind,
+                        &holder.target,
+                    )?;
                     remove_if_exists(&self.paths.lock)?;
                     remove_if_exists(&self.paths.owner)?;
                     remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.anchor)
@@ -2085,6 +2563,14 @@ impl ValidateLock {
             }
         }
 
+        // Yield BEFORE taking the box-global anchor. A background waiter that
+        // holds the anchor while sleeping would block the very watch this rule
+        // exists to prioritize.
+        let yield_status = self.wait_for_owner_watch_yield(&args.agent, args.wait, args.no_wait)?;
+        if yield_status != 0 {
+            return Ok(yield_status);
+        }
+
         // BOX-GLOBAL ANCHOR, TAKEN OUTERMOST AND HELD FOR THE WHOLE RUN.
         //
         // Before this, exclusion was per selected lease file, so two roots admitted
@@ -2121,6 +2607,14 @@ impl ValidateLock {
             _box_anchor.path().display()
         );
 
+        // The anchor wait may have spanned a new background release. Re-check
+        // at the actual acquisition boundary and drop the anchor immediately on
+        // YIELD/UNKNOWN so the owner watch can take it.
+        let yield_status = self.wait_for_owner_watch_yield(&args.agent, 0, true)?;
+        if yield_status != 0 {
+            return Ok(yield_status);
+        }
+
         // Durable half of box exclusion, checked WITH the anchor held so the
         // answer cannot change under us. The anchor proves no LIVE supervisor
         // holds the box; this proves no DEAD supervisor left a live payload
@@ -2149,6 +2643,21 @@ impl ValidateLock {
                     args.kind.as_str(),
                     args.target
                 ),
+                AcquireToken::Yield {
+                    reason,
+                    seconds_left,
+                } => {
+                    eprintln!(
+                        "REFUSED: owner watch has priority at this free boundary (~{seconds_left}s): {reason}"
+                    );
+                    return Ok(REFUSED_EXIT_CODE);
+                }
+                AcquireToken::YieldUnknown { reason } => {
+                    eprintln!(
+                        "REFUSED: validate yield state UNKNOWN: {reason}; absence is not permission"
+                    );
+                    return Ok(REFUSED_EXIT_CODE);
+                }
                 AcquireToken::Held {
                     agent,
                     kind,
@@ -2370,6 +2879,43 @@ impl ValidateLock {
         }
         let content = read_to_string(&self.paths.lock)?;
         Ok(Some(ValidateLockState::parse(&content)?))
+    }
+
+    fn read_release_record(&self) -> Result<Option<ReleaseRecord>, ValidateLockError> {
+        if !self.paths.released.exists() {
+            return Ok(None);
+        }
+        let content = read_to_string(&self.paths.released)?;
+        Ok(Some(ReleaseRecord::parse(&content)?))
+    }
+
+    fn write_release_record(
+        &self,
+        released_by: &str,
+        kind: &str,
+        target: &str,
+    ) -> Result<ReleaseRecord, ValidateLockError> {
+        let released_at = epoch_seconds()?;
+        let released_human = Local
+            .timestamp_opt(released_at, 0)
+            .single()
+            .ok_or_else(|| {
+                ValidateLockError::InvalidState("release timestamp is out of range".into())
+            })?
+            .to_rfc3339();
+        let record = ReleaseRecord {
+            schema_version: 1,
+            released_at,
+            released_human,
+            released_by: released_by.to_string(),
+            kind: kind.to_string(),
+            target: target.to_string(),
+        };
+        let temporary = suffix(&self.paths.released, ".tmp");
+        write_truncated(&temporary, record.render().as_bytes())?;
+        fs::rename(&temporary, &self.paths.released)
+            .map_err(|source| io_error("replace release record", &self.paths.released, source))?;
+        Ok(record)
     }
 
     fn read_authority_holder(
@@ -2951,17 +3497,47 @@ mod tests {
 
     fn paths_at(root: &Path) -> LockPaths {
         let lock = root.join(".validate-lock");
-        LockPaths {
+        let owner_watch_state_dir = root.join("owner-watch-state");
+        fs::create_dir_all(&owner_watch_state_dir).unwrap();
+        let owner_watch_verifier = Path::new(file!())
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .unwrap()
+            .join(OWNER_WATCH_VERIFIER_RELATIVE);
+        assert!(
+            owner_watch_verifier.is_file(),
+            "published owner-watch verifier missing"
+        );
+        let paths = LockPaths {
             guard: suffix(&lock, ".guard"),
             queue: suffix(&lock, ".queue"),
             owner: suffix(&lock, ".owner"),
             cleanup: suffix(&lock, ".cleanup-required"),
+            released: suffix(&lock, ".released"),
+            owner_watch_verifier: Some(owner_watch_verifier),
+            owner_watch_state_dir: Some(owner_watch_state_dir),
             // PER-TEST anchor beside the per-test lease. Every `run`-path test
             // therefore exercises the real anchor CODE while touching neither the
             // live box anchor nor any sibling test's.
             anchor: suffix(&lock, ".box-anchor"),
             lock,
-        }
+        };
+        // Existing lock tests are about lease/cleanup behavior, not bootstrap
+        // UNKNOWN. Seed them with the strongest ALLOW witness: the owner watch
+        // was the previous holder. Dedicated yield tests remove/replace it.
+        let now = epoch_seconds().unwrap();
+        let release = ReleaseRecord {
+            schema_version: 1,
+            released_at: now.saturating_sub(1),
+            released_human: "test-owner-watch-release".into(),
+            released_by: OWNER_WATCH_AGENT.into(),
+            kind: "validate".into(),
+            target: "test-bootstrap".into(),
+        };
+        write_truncated(&paths.released, release.render().as_bytes()).unwrap();
+        seed_owner_watch_cursor(&paths, now - 60, None);
+        paths
     }
 
     fn temp_paths(name: &str) -> LockPaths {
@@ -2972,6 +3548,137 @@ mod tests {
         ));
         fs::create_dir_all(&root).unwrap();
         paths_at(&root)
+    }
+
+    fn seed_background_release(paths: &LockPaths, released_at: i64) {
+        let release = ReleaseRecord {
+            schema_version: 1,
+            released_at,
+            released_human: "test-background-release".into(),
+            released_by: "background-agent".into(),
+            kind: "validate".into(),
+            target: "test-target".into(),
+        };
+        write_truncated(&paths.released, release.render().as_bytes()).unwrap();
+    }
+
+    fn seed_owner_watch_cursor(
+        paths: &LockPaths,
+        observation_started_at: i64,
+        admission_at: Option<i64>,
+    ) {
+        let admission = admission_at.map(|admitted_at| serde_json::json!({
+            "state": "ADMITTED",
+            "agent": OWNER_WATCH_AGENT,
+            "kind": "validate",
+            "target": "0123456789abcdef0123456789abcdef01234567",
+            "attempt_id": "test-owner-watch-admission",
+            "admitted_at": Local.timestamp_opt(admitted_at, 0).single().unwrap().to_rfc3339(),
+            "admitted_at_epoch_ms": admitted_at * 1000,
+            "evidence_line": "validate-lock: ACQUIRED by owner-checkout-watch running validate 0123456789abcdef0123456789abcdef01234567",
+            "result_json": "/test/result.json"
+        }));
+        let cursor = serde_json::json!({
+            "schema_version": 1,
+            "observation_started_at": Local.timestamp_opt(observation_started_at, 0).single().unwrap().to_rfc3339(),
+            "observation_started_at_epoch_ms": observation_started_at * 1000,
+            "last_admission": admission,
+        });
+        let path = paths
+            .owner_watch_state_dir
+            .as_ref()
+            .unwrap()
+            .join("owner-watch-admission.json");
+        write_truncated(&path, cursor.to_string().as_bytes()).unwrap();
+    }
+
+    fn seed_watch_after_latest_release(lock: &ValidateLock) {
+        let released_at = lock
+            .read_release_record()
+            .unwrap()
+            .expect("test operation must publish a release boundary")
+            .released_at;
+        seed_owner_watch_cursor(&lock.paths, released_at - 60, Some(released_at + 1));
+    }
+
+    #[test]
+    fn no_release_marker_bootstraps_to_allow_and_acquires() {
+        let paths = temp_paths("yield-bootstrap");
+        remove_if_exists(&paths.released).unwrap();
+        let lock = ValidateLock { paths };
+        let now = epoch_seconds().unwrap();
+
+        let status = lock.yield_status_guarded(now);
+        assert_eq!(status.state, YieldState::Allow);
+        assert!(status.admissible);
+        assert_eq!(status.reason_code, "bootstrap-no-release-yet");
+
+        let token = lock
+            .with_guard(|| lock.try_acquire("background-agent", Kind::Validate, "head", 60))
+            .unwrap();
+        assert!(matches!(token, AcquireToken::Acquired));
+    }
+
+    #[test]
+    fn recent_background_release_without_watch_admission_yields() {
+        let paths = temp_paths("yield-starved");
+        let now = epoch_seconds().unwrap();
+        seed_background_release(&paths, now - 1);
+        seed_owner_watch_cursor(&paths, now - 60, None);
+        let lock = ValidateLock { paths };
+
+        let status = lock.yield_status_guarded(now);
+        assert_eq!(status.state, YieldState::Yield);
+        assert!(!status.admissible);
+        assert_eq!(status.reason_code, "owner-watch-not-admitted-since-release");
+
+        let token = lock
+            .with_guard(|| lock.try_acquire("next-background-agent", Kind::Validate, "head", 60))
+            .unwrap();
+        assert!(matches!(token, AcquireToken::Yield { .. }));
+    }
+
+    #[test]
+    fn owner_watch_admission_after_release_allows_next_acquirer() {
+        let paths = temp_paths("yield-watch-admitted");
+        let now = epoch_seconds().unwrap();
+        seed_background_release(&paths, now - 10);
+        seed_owner_watch_cursor(&paths, now - 60, Some(now - 5));
+        let lock = ValidateLock { paths };
+
+        let status = lock.yield_status_guarded(now);
+        assert_eq!(status.state, YieldState::Allow);
+        assert!(status.admissible);
+        assert_eq!(status.reason_code, "owner-watch-admitted-since-release");
+
+        let token = lock
+            .with_guard(|| lock.try_acquire("next-background-agent", Kind::Validate, "head", 60))
+            .unwrap();
+        assert!(matches!(token, AcquireToken::Acquired));
+    }
+
+    #[test]
+    fn unreadable_admission_observable_is_unknown_and_refuses_acquisition() {
+        let paths = temp_paths("yield-unknown");
+        let now = epoch_seconds().unwrap();
+        seed_background_release(&paths, now - 1);
+        let cursor = paths
+            .owner_watch_state_dir
+            .as_ref()
+            .unwrap()
+            .join("owner-watch-admission.json");
+        write_truncated(&cursor, b"not-json\n").unwrap();
+        let lock = ValidateLock { paths };
+
+        let status = lock.yield_status_guarded(now);
+        assert_eq!(status.state, YieldState::Unknown);
+        assert!(!status.admissible);
+        assert_eq!(status.reason_code, "owner-watch-results-unreadable");
+
+        let token = lock
+            .with_guard(|| lock.try_acquire("next-background-agent", Kind::Validate, "head", 60))
+            .unwrap();
+        assert!(matches!(token, AcquireToken::YieldUnknown { .. }));
     }
 
     #[test]
@@ -3395,7 +4102,8 @@ mod tests {
         );
     }
 
-    // 2. N=3 sequential box-exclusive jobs all admitted, lock ends FREE.
+    // 2. N=3 sequential jobs with the priority watch admitted at each free
+    // boundary all proceed; lock ends FREE.
     #[test]
     fn positive_non_starvation_three_sequential() {
         let _domain_guard = crate::landing_lock::process_domain_test_guard();
@@ -3426,6 +4134,9 @@ mod tests {
                 lock.read_holder().unwrap().is_none(),
                 "lock must be FREE after validate {i}"
             );
+            if i < 2 {
+                seed_watch_after_latest_release(&lock);
+            }
         }
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
@@ -3519,6 +4230,7 @@ mod tests {
 
         // Release agent1; the queued agent2 (head of FIFO) then acquires.
         lock.release("agent1", false).unwrap();
+        seed_watch_after_latest_release(&lock);
         assert_eq!(
             lock.acquire("agent2", Kind::Validate, "sha2", 0, 60)
                 .unwrap(),
@@ -4167,6 +4879,7 @@ wait
 
         assert_eq!(lock.reclaim_dead().unwrap(), 0);
         assert!(!paths.cleanup.exists());
+        seed_watch_after_latest_release(&lock);
         assert_eq!(
             lock.acquire("replacement-validate", Kind::Validate, "sha-next", 0, 30)
                 .unwrap(),
