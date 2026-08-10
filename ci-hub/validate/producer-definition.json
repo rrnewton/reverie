@@ -22,11 +22,11 @@
   },
   "transition": {
     "id": "rrnewton-hermit-pr-2012",
-    "registered_at": "4d7a3836b9fa6f87a9404f0af99af1361a9053fe",
+    "registered_at": "d50e36352d3b80f180768bc4e1e1640169a248bd",
     "provenance": {
       "repository": "rrnewton/hermit",
       "pull_request": 2012,
-      "head": "4d7a3836b9fa6f87a9404f0af99af1361a9053fe"
+      "head": "d50e36352d3b80f180768bc4e1e1640169a248bd"
     },
     "finalize_after": "2026-08-10T05:42:00Z",
     "expires_at": "2026-08-11T05:42:00Z",
