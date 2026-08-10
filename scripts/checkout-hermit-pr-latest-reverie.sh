@@ -10,7 +10,8 @@ usage() {
   cat <<'EOF'
 Usage:
   checkout-hermit-pr-latest-reverie.sh \
-    --repo <clean-hermit-worktree> [--push] <pr> [<pr> ...]
+    --repo <clean-hermit-worktree> --model <MODEL> --agent <team-slug> \
+    [--push] <pr> [<pr> ...]
 
 The command resolves latest Reverie main itself. Optional
 --target-sha <40-hex> asserts an expected tip and fails if it is stale.
@@ -37,6 +38,8 @@ note() {
 
 repo=
 target=${TARGET_SHA:-}
+model=${LANDER_MODEL:-}
+agent=${DG_AGENT_NAME:-}
 push=false
 foreground=false
 prs=()
@@ -52,6 +55,16 @@ while (($#)); do
     --repo)
       (($# >= 2)) || die "--repo requires a path"
       repo=$2
+      shift 2
+      ;;
+    --model)
+      (($# >= 2)) || die "--model requires a model name"
+      model=$2
+      shift 2
+      ;;
+    --agent)
+      (($# >= 2)) || die "--agent requires a team slug"
+      agent=$2
       shift 2
       ;;
     --push)
@@ -80,9 +93,16 @@ done
 [[ -z $target || $target =~ ^[0-9a-f]{40}$ ]] || \
   die "--target-sha (or TARGET_SHA) must be a full lowercase 40-hex SHA"
 [[ -n $repo ]] || die "--repo is required"
+[[ $model =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || \
+  die "--model (or LANDER_MODEL) is required and must be a tag-safe model name"
+[[ $agent =~ ^[a-z0-9][a-z0-9-]*$ ]] || \
+  die "--agent (or DG_AGENT_NAME) is required and must be a lowercase team slug"
 ((${#prs[@]} > 0)) || die "at least one PR is required"
 repo=$(realpath "$repo")
 [[ -d $repo/.git || -f $repo/.git ]] || die "not a Git worktree: $repo"
+machine=$(hostname -s)
+[[ $machine =~ ^devbig[0-9]+$ ]] || die "unexpected machine name: $machine"
+commit_attribution="[impl agent, $model] [$agent, $machine]"
 
 command -v gh >/dev/null || die "gh is required"
 command -v jq >/dev/null || die "jq is required"
@@ -106,6 +126,7 @@ if ! $foreground; then
   launcher_log="$evidence_dir/$unit.log"
   relaunch=(
     "$0" --foreground --target-sha "$target" --repo "$repo"
+    --model "$model" --agent "$agent"
   )
   $push && relaunch+=(--push)
   relaunch+=("${prs[@]}")
@@ -130,13 +151,15 @@ fi
 note "fetching authoritative tips"
 with-proxy git -C "$repo" fetch origin main
 git -C "$repo" show refs/remotes/origin/main:scripts/check-reverie-pin.rs | \
-  grep -Fq -- '--update-to-latest' || \
+  grep -F -- '--update-to-latest' >/dev/null || \
   die "current Hermit main lacks the authoritative pin updater; land #1591 first"
 
 for pr in "${prs[@]}"; do
   operation_started=$(date +%s)
   short_target=${target:0:12}
-  branch="pin-bump/pr-${pr}-${short_target}"
+  # Branch refs are shared by every worktree in the clone. A preserved failed
+  # attempt must not make all later clean slots falsely report a collision.
+  branch="pin-bump/pr-${pr}-${short_target}-${agent}-$$"
   note "PR #$pr: reading fresh metadata"
 
   metadata=$(with-proxy gh pr view "$pr" -R rrnewton/hermit \
@@ -166,7 +189,9 @@ for pr in "${prs[@]}"; do
 
   git -C "$repo" switch --detach "$old_head"
   git -C "$repo" switch -c "$branch"
-  if ! git -C "$repo" merge --no-ff --no-edit refs/remotes/origin/main; then
+  if ! git -C "$repo" merge --no-ff \
+    -m "Merge current Hermit main into PR #$pr" \
+    -m "$commit_attribution" refs/remotes/origin/main; then
     git -C "$repo" merge --abort || true
     die "PR #$pr does not merge cleanly with current Hermit main"
   fi
@@ -176,7 +201,7 @@ for pr in "${prs[@]}"; do
   # metadata domain and its mutation. A compatibility path with a hand-written
   # file list would recreate the drift this command exists to prevent.
   "$repo/scripts/check-reverie-pin.rs" --help | \
-    grep -Fq -- '--update-to-latest' || \
+    grep -F -- '--update-to-latest' >/dev/null || \
     die "PR #$pr: current Hermit main lacks the authoritative pin updater; land #1591 first"
   note "PR #$pr: deriving and updating every Reverie pin site via the checker"
   (
@@ -211,7 +236,8 @@ for pr in "${prs[@]}"; do
     git -C "$repo" add -- "${pin_paths[@]}"
     git -C "$repo" diff --cached --quiet && \
       die "PR #$pr: pin paths changed but produced no staged update"
-    git -C "$repo" commit -m "build: bump Reverie pin to $short_target"
+    git -C "$repo" commit -m "build: bump Reverie pin to $short_target" \
+      -m "$commit_attribution"
     candidate=$(git -C "$repo" rev-parse HEAD)
   else
     note "PR #$pr: Reverie pin already current at $target; no bump commit needed"
