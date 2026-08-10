@@ -257,6 +257,27 @@ class StartUnitEnvTest(unittest.TestCase):
         self.assertIn("with-proxy make validate", joined)
         self.assertNotIn("./scripts/validate.rs", joined)
 
+    def test_owner_symlink_exception_keeps_literal_make_and_marks_dirty_run(self) -> None:
+        command = su.build_systemd_command(
+            root=self.root,
+            checkout=self.root / "hermit",
+            target=TARGET,
+            agent="owner-checkout-watch",
+            unit="validate-owner.service",
+            log=self.root / "owner.log",
+            pr=None,
+            validate_args=[],
+            wait=1,
+            hold=1,
+            child_deadline=1,
+            environment=dict(self.base_env),
+            make_validate=True,
+            allow_owner_validate_symlink=True,
+        )
+        joined = " ".join(command)
+        self.assertIn("VALIDATE_RUN_ON_DIRTY_TREE=1", joined)
+        self.assertIn("with-proxy make validate", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

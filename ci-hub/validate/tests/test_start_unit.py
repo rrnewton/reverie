@@ -246,6 +246,46 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("checkout is dirty", error)
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
 
+    def test_exact_owner_validate_symlink_is_the_only_dirty_exception(self) -> None:
+        (self.checkout / "validate").symlink_to("scripts/validate.rs")
+        self.fake.dirty = "?? validate\n"
+
+        rc, _output, error = self.invoke(
+            ["--in-place", "--make-validate", "--allow-owner-validate-symlink"]
+        )
+
+        self.assertEqual(0, rc, error)
+        systemd = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        self.assertIn("VALIDATE_RUN_ON_DIRTY_TREE=1", systemd)
+        self.assertEqual(systemd[-3:], ["with-proxy", "make", "validate"])
+
+    def test_owner_symlink_exception_refuses_any_second_dirty_path(self) -> None:
+        (self.checkout / "validate").symlink_to("scripts/validate.rs")
+        self.fake.dirty = "?? validate\n?? other\n"
+
+        rc, _output, error = self.invoke(
+            ["--in-place", "--make-validate", "--allow-owner-validate-symlink"]
+        )
+
+        self.assertEqual(2, rc)
+        self.assertIn("checkout is dirty", error)
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_owner_symlink_exception_refuses_wrong_target(self) -> None:
+        (self.checkout / "validate").symlink_to("other")
+        self.fake.dirty = "?? validate\n"
+
+        rc, _output, error = self.invoke(
+            ["--in-place", "--make-validate", "--allow-owner-validate-symlink"]
+        )
+
+        self.assertEqual(2, rc)
+        self.assertIn("checkout is dirty", error)
+
     def test_real_host_tmp_source_is_refused_without_admission_or_ledger_write(self) -> None:
         """Plant the production hazard: this fixture itself is below real /tmp."""
         start_unit.HOST_TMP_ROOT = Path("/tmp").resolve()

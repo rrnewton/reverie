@@ -37,7 +37,13 @@ def clean_repository(root: Path) -> Path:
     command(repo, "git", "config", "user.name", "Watch Test")
     command(repo, "git", "config", "user.email", "watch@example.invalid")
     (repo / "tracked.txt").write_text("before\n", encoding="utf-8")
-    command(repo, "git", "add", "tracked.txt")
+    (repo / "Makefile").write_text(
+        ".PHONY: validate other\\\n\n"
+        "validate:\n"
+        "\t./scripts/validate.rs $(ARGS)\n",
+        encoding="utf-8",
+    )
+    command(repo, "git", "add", "tracked.txt", "Makefile")
     command(repo, "git", "commit", "-q", "-m", "fixture")
     head = command(repo, "git", "rev-parse", "HEAD").strip()
     command(repo, "git", "update-ref", "refs/remotes/origin/main", head)
@@ -103,6 +109,84 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertIsNone(result["executed_tests"])
             self.assertEqual(result["dirty_paths_after"], [])
             self.assertEqual(result["pre_tree_hash"], result["post_tree_hash"])
+            self.assertFalse(result["known_dirty_exception"]["applied"])
+
+    def test_exact_known_symlink_runs_policy_and_discloses_exception(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            (repo / "validate").symlink_to("scripts/validate.rs")
+            before = watch.tree_state(repo)
+
+            rc = watch.main(
+                [
+                    "--checkout", str(repo),
+                    "--state-dir", str(state),
+                    "--no-fetch",
+                    "--no-notify",
+                    "--dry-run",
+                ]
+            )
+
+            self.assertEqual(rc, watch.NO_RESULT)
+            self.assertEqual(watch.tree_state(repo), before)
+            result = json.loads(
+                next((state / "results").glob("*.json")).read_text()
+            )
+            exception = result["known_dirty_exception"]
+            self.assertTrue(exception["applied"])
+            self.assertEqual(exception["paths"], ["validate"])
+            self.assertEqual(exception["observed_symlink_target"], "scripts/validate.rs")
+            self.assertFalse(exception["could_affect_make_validate"])
+            self.assertEqual(result["dirty_paths_after"], ["?? validate"])
+            self.assertEqual(result["pre_tree_hash"], result["post_tree_hash"])
+
+    def test_modified_tracked_file_refuses_even_with_known_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            (repo / "validate").symlink_to("scripts/validate.rs")
+            (repo / "tracked.txt").write_text("modified\n")
+
+            rc = watch.main(
+                [
+                    "--checkout", str(repo),
+                    "--state-dir", str(state),
+                    "--no-fetch",
+                    "--no-notify",
+                ]
+            )
+
+            self.assertEqual(rc, watch.CANNOT_START)
+            result = json.loads(
+                next((state / "results").glob("*.json")).read_text()
+            )
+            self.assertFalse(result["known_dirty_exception"]["applied"])
+            self.assertIn(" M tracked.txt", result["dirty_paths_before"])
+
+    def test_wrong_branch_refuses_even_when_tree_is_pristine(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            command(repo, "git", "checkout", "-q", "-b", "feature")
+
+            rc = watch.main(
+                [
+                    "--checkout", str(repo),
+                    "--state-dir", str(state),
+                    "--no-fetch",
+                    "--no-notify",
+                ]
+            )
+
+            self.assertEqual(rc, watch.CANNOT_START)
+            result = json.loads(
+                next((state / "results").glob("*.json")).read_text()
+            )
+            self.assertIn("expected 'main'", result["reason"])
 
     def test_notification_failure_is_a_distinct_loud_exit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

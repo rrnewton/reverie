@@ -28,6 +28,8 @@ NO_RESULT = 2
 CANNOT_START = 3
 RESTORE_FAILED = 4
 NOTIFY_FAILED = 5
+KNOWN_EXCEPTION_PATH = "validate"
+KNOWN_EXCEPTION_TARGET = "scripts/validate.rs"
 
 
 def utc_now() -> str:
@@ -63,6 +65,42 @@ def git(checkout: Path, *args: str, check: bool = True) -> str:
 def dirty_paths(checkout: Path) -> list[str]:
     raw = git(checkout, "status", "--porcelain=v1", "--untracked-files=all")
     return [line for line in raw.splitlines() if line]
+
+
+def known_exception_assessment(checkout: Path, status: list[str]) -> dict[str, Any]:
+    """Classify exactly one known owner path without ever calling it clean."""
+    link = checkout / KNOWN_EXCEPTION_PATH
+    observed_target = os.readlink(link) if link.is_symlink() else None
+    exact = (
+        status == [f"?? {KNOWN_EXCEPTION_PATH}"]
+        and link.is_symlink()
+        and observed_target == KNOWN_EXCEPTION_TARGET
+    )
+    makefile = (checkout / "Makefile").read_text(encoding="utf-8", errors="replace")
+    logical_makefile = makefile.replace("\\\n", " ")
+    phony = any(
+        line.startswith(".PHONY:") and KNOWN_EXCEPTION_PATH in line.split()[1:]
+        for line in logical_makefile.splitlines()
+    )
+    direct_recipe = "./scripts/validate.rs $(ARGS)" in makefile
+    return {
+        "policy_path": KNOWN_EXCEPTION_PATH,
+        "matched": exact,
+        "applied": False,
+        "paths": [],
+        "observed_status": status,
+        "object_kind": "symlink" if link.is_symlink() else None,
+        "observed_symlink_target": observed_target,
+        "required_symlink_target": KNOWN_EXCEPTION_TARGET,
+        "could_affect_make_validate": not (phony and direct_recipe),
+        "make_assessment": (
+            "validate is .PHONY and its recipe invokes ./scripts/validate.rs directly; "
+            "the ./validate symlink is not selected"
+            if phony and direct_recipe
+            else "Makefile did not prove both .PHONY membership and the direct recipe; "
+            "the exception may affect make validate"
+        ),
+    }
 
 
 def tree_state(checkout: Path) -> dict[str, Any]:
@@ -231,6 +269,7 @@ def preserve_and_restore(
 
 
 def render_message(result: dict[str, Any]) -> str:
+    exception = result.get("known_dirty_exception") or {}
     lines = [
         "OWNER CHECKOUT PERIODIC VALIDATE: " + str(result["state"]),
         f"checkout: {result['checkout']}",
@@ -238,6 +277,12 @@ def render_message(result: dict[str, Any]) -> str:
         f"attempt: {result['attempt_id']}",
         f"reason: {result.get('reason') or 'none'}",
         f"executed_tests: {result.get('executed_tests')!r}",
+        f"known_dirty_exception_applied: {exception.get('applied')!r}",
+        f"known_dirty_exception_paths: {exception.get('paths')!r}",
+        f"known_dirty_exception_make_assessment: {exception.get('make_assessment')!r}",
+        f"canonical_qualified: {result.get('canonical_qualified')!r}",
+        f"exception_adjusted_qualified: {result.get('exception_adjusted_qualified')!r}",
+        f"landing_authority: {result.get('landing_authority')!r}",
         f"pre_tree_hash: {result.get('pre_tree_hash') or 'unavailable'}",
         f"post_tree_hash: {result.get('post_tree_hash') or 'unavailable'}",
         f"dirty_paths_after: {result.get('dirty_paths_after')!r}",
@@ -306,6 +351,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "reason": "initializing",
         "executed_tests": None,
         "dirty_paths_after": None,
+        "landing_authority": False,
+        "known_dirty_exception": {
+            "policy_path": KNOWN_EXCEPTION_PATH,
+            "applied": False,
+            "paths": [],
+            "observed_status": [],
+        },
     }
     append_jsonl(invocation_ledger, {**result, "event": "attempt-start"})
 
@@ -340,14 +392,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             pre_tree_hash=pre["whole_tree_hash"],
             dirty_paths_before=pre["dirty_paths"],
         )
+        exception = known_exception_assessment(checkout, pre["dirty_paths"])
+        result["known_dirty_exception"] = exception
         if pre["branch"] != "main":
             result["reason"] = f"owner checkout branch is {pre['branch']!r}, expected 'main'"
+            result["post_tree_hash"] = pre["whole_tree_hash"]
+            result["dirty_paths_after"] = pre["dirty_paths"]
             return conclude()
-        if pre["dirty_paths"]:
+        if pre["dirty_paths"] and not exception["matched"]:
             result["reason"] = "owner checkout is dirty before launch"
             result["dirty_paths_after"] = pre["dirty_paths"]
             result["post_tree_hash"] = pre["whole_tree_hash"]
             return conclude()
+        if exception["matched"]:
+            exception["applied"] = True
+            exception["paths"] = [KNOWN_EXCEPTION_PATH]
 
         if not args.no_fetch:
             fetched = run(["with-proxy", "git", "fetch", "origin", "main"], cwd=checkout)
@@ -355,16 +414,20 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result["reason"] = "origin/main fetch failed: " + (
                     fetched.stderr or fetched.stdout or "unknown error"
                 ).strip()
+                result["post_tree_hash"] = pre["whole_tree_hash"]
+                result["dirty_paths_after"] = pre["dirty_paths"]
                 return conclude()
         origin = git(checkout, "rev-parse", "origin/main").strip()
         if origin != pre["head"]:
             result["reason"] = f"owner checkout is stale: HEAD={pre['head']} origin/main={origin}"
+            result["post_tree_hash"] = pre["whole_tree_hash"]
+            result["dirty_paths_after"] = pre["dirty_paths"]
             return conclude()
 
         if args.dry_run:
             result.update(state="NO_RESULT", reason="dry-run: launch deliberately skipped")
             result["post_tree_hash"] = pre["whole_tree_hash"]
-            result["dirty_paths_after"] = []
+            result["dirty_paths_after"] = pre["dirty_paths"]
             return conclude()
 
         launched_at = dt.datetime.now(dt.timezone.utc)
@@ -377,6 +440,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             checkout,
             "--in-place",
             "--make-validate",
+            *(["--allow-owner-validate-symlink"] if exception["applied"] else []),
             "--agent",
             "owner-checkout-watch",
             "--target",
@@ -410,14 +474,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             result["validate_log"] = row.get("log_file") or str(validate_log)
             result["ledger_result"] = row.get("result")
             qualified, reason = qualify_row(parent, checkout, pre["head"], row)
+            result["canonical_qualified"] = qualified
+            result["canonical_qualification_reason"] = reason
+            result["landing_authority"] = qualified
+            exception_qualified = False
+            exception_reason = "not evaluated"
+            if exception["applied"]:
+                adjusted = dict(row)
+                adjusted["tree_dirty"] = False
+                adjusted["commit_anchored"] = True
+                exception_qualified, exception_reason = qualify_row(
+                    parent, checkout, pre["head"], adjusted
+                )
+            result["exception_adjusted_qualified"] = exception_qualified
+            result["exception_adjusted_reason"] = exception_reason
         else:
             qualified, reason = False, "no exact-attempt ledger row"
+            exception_qualified = False
             result["validate_log"] = str(validate_log)
 
         if completed.returncode != 0:
             result.update(
                 state="FAIL",
                 reason=f"make validate exit={completed.returncode}; {reason}",
+            )
+        elif exception["applied"] and (qualified or exception_qualified):
+            result.update(
+                state="PASS_WITH_KNOWN_EXCEPTION",
+                reason=(
+                    "counted full run passed with the disclosed owner-symlink exception; "
+                    + (
+                        "canonical receipt also qualifies"
+                        if qualified
+                        else "canonical receipt remains non-authoritative"
+                    )
+                ),
             )
         elif qualified:
             result.update(state="PASS", reason="authoritative counted full receipt qualifies")
@@ -485,6 +576,7 @@ def finish(
         return NOTIFY_FAILED
     return {
         "PASS": PASS,
+        "PASS_WITH_KNOWN_EXCEPTION": PASS,
         "FAIL": FAIL,
         "NO_RESULT": NO_RESULT,
         "CANNOT_START": CANNOT_START,

@@ -247,7 +247,23 @@ def orphaned_receipt_locations(fresh: Path, *, run: Runner) -> list[str]:
     return sorted(c for c in candidates if c not in known)
 
 
-def validate_checkout(checkout: Path, target: str, *, run: Runner) -> Path:
+def owner_validate_symlink_is_exact(checkout: Path, dirty: str) -> bool:
+    """The one owner-checkout exception; every property is deliberately fixed."""
+    link = checkout / "validate"
+    return (
+        dirty.splitlines() == ["?? validate"]
+        and link.is_symlink()
+        and os.readlink(link) == "scripts/validate.rs"
+    )
+
+
+def validate_checkout(
+    checkout: Path,
+    target: str,
+    *,
+    run: Runner,
+    allow_owner_validate_symlink: bool = False,
+) -> Path:
     checkout = require_guest_visible_root(checkout, role="source checkout")
     if not SHA_RE.fullmatch(target):
         raise ValueError("--target must be an exact lowercase 40-hex commit SHA")
@@ -277,7 +293,10 @@ def validate_checkout(checkout: Path, target: str, *, run: Runner) -> Path:
         run=run,
         purpose="cannot inspect checkout cleanliness",
     )
-    if dirty:
+    if dirty and not (
+        allow_owner_validate_symlink
+        and owner_validate_symlink_is_exact(checkout, dirty)
+    ):
         first = dirty.splitlines()[0]
         raise ValueError(f"checkout is dirty ({first}); refusing unrepeatable validation")
     return checkout
@@ -364,6 +383,7 @@ def build_systemd_command(
     child_deadline: int,
     environment: Mapping[str, str],
     make_validate: bool = False,
+    allow_owner_validate_symlink: bool = False,
 ) -> list[str]:
     home = environment.get("HOME", "")
     path = environment.get("PATH", "")
@@ -373,6 +393,12 @@ def build_systemd_command(
     child = ["/usr/bin/env"]
     if pr is not None:
         child.append(f"PR_NUMBER={pr}")
+    if allow_owner_validate_symlink:
+        # Keep the executed command literally `make validate`. The product
+        # driver already has a typed escape hatch whose receipt stays explicitly
+        # unanchored; the owner watch interprets that distinct evidence rather
+        # than laundering it into a clean canonical receipt.
+        child.append("VALIDATE_RUN_ON_DIRTY_TREE=1")
     if make_validate:
         child.extend(["with-proxy", "make", "validate"])
     else:
@@ -647,6 +673,14 @@ def parser() -> argparse.ArgumentParser:
             "arguments may follow --; this exists for owner-checkout spot checks."
         ),
     )
+    result.add_argument(
+        "--allow-owner-validate-symlink",
+        action="store_true",
+        help=(
+            "narrow owner-watch exception: permit only an untracked `validate` "
+            "symlink whose literal target is scripts/validate.rs"
+        ),
+    )
     result.add_argument("--dry-run", action="store_true")
     result.add_argument("--json", action="store_true")
     result.add_argument(
@@ -710,6 +744,13 @@ def main(
             file=sys.stderr,
         )
         return 2
+    if args.allow_owner_validate_symlink and not (args.in_place and args.make_validate):
+        print(
+            "validate-run: REFUSED: --allow-owner-validate-symlink requires "
+            "--in-place and --make-validate",
+            file=sys.stderr,
+        )
+        return 2
     if args.pr is not None and args.pr <= 0:
         print("validate-run: REFUSED: --pr must be positive", file=sys.stderr)
         return 2
@@ -720,7 +761,12 @@ def main(
     fresh_checkout: Path | None = None
     source_checkout: Path | None = None
     try:
-        source_checkout = validate_checkout(args.checkout, args.target, run=run)
+        source_checkout = validate_checkout(
+            args.checkout,
+            args.target,
+            run=run,
+            allow_owner_validate_symlink=args.allow_owner_validate_symlink,
+        )
         if args.in_place:
             checkout = source_checkout
         else:
@@ -751,6 +797,7 @@ def main(
             child_deadline=args.child_deadline,
             environment=environment or os.environ,
             make_validate=args.make_validate,
+            allow_owner_validate_symlink=args.allow_owner_validate_symlink,
         )
         if args.dry_run:
             pane = None
