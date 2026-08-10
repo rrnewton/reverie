@@ -19,13 +19,15 @@ broken as one that only ever accepts:
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+CI_HUB = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(CI_HUB / "validate"))
+sys.path.insert(0, str(CI_HUB / "ledger"))
 import green_class as gc  # noqa: E402
 import qualified_rows as qr  # noqa: E402
+import validate_rows as canonical_ledger  # noqa: E402
 
 HEAD = "a" * 40
 ANCESTOR = "b" * 40
@@ -263,10 +265,8 @@ def test_wiring_does_not_shrink_the_real_qualified_population() -> None:
     Every row in today's ledger predates the provenance fields, so all of them
     derive HARD and the qualified count must be unchanged by the wiring.
     """
-    ledger = Path(__file__).resolve().parents[2] / "ignored" / "validate-run-ledger.jsonl"
-    if not ledger.exists():  # machine-local artifact; skip where absent
+    rows = canonical_ledger.rows()
+    if not rows:
         return
-    rows = [json.loads(line) for line in ledger.read_text().splitlines() if line.strip()]
-    assert rows, "ledger present but empty"
     non_hard = [r for r in rows if gc.derive_class(r)[0] != gc.HARD]
     assert non_hard == [], f"{len(non_hard)} real rows would be newly refused"
