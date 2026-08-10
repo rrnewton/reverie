@@ -230,6 +230,14 @@ for pr in "${prs[@]}"; do
   [[ -z $bad_pins ]] || die "PR #$pr: stale/mixed Reverie pins remain: $bad_pins"
   (cd "$repo" && with-proxy ./scripts/check-reverie-pin.rs)
 
+  # validate.rs compiles the tracked safe-ci-dag-runner path dependency. New
+  # product slots do not necessarily materialize nested submodules, so prepare
+  # the exact gitlink rather than depending on cache history from an older run.
+  note "PR #$pr: initializing the exact agent-utils validation dependency"
+  with-proxy git -C "$repo" submodule update --init --checkout -- agent-utils
+  [[ -f $repo/agent-utils/rs/safe-ci-dag-runner/Cargo.toml ]] || \
+    die "PR #$pr: safe-ci-dag-runner dependency is not materialized"
+
   mapfile -t pin_paths < <(git -C "$repo" diff --name-only "$pin_base" -- \
     | rg '(^|/)Cargo\.(toml|lock)$')
   if ((${#pin_paths[@]} > 0)); then
