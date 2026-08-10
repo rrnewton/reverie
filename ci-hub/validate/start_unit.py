@@ -18,6 +18,7 @@ from typing import Any
 
 import pane_owner
 import run_registry
+import service_result
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -522,16 +523,26 @@ def service_properties(
             "show",
             f"{unit}.service",
             "--property=ActiveState",
+            "--property=LoadState",
             "--property=SubState",
+            "--property=ExecMainCode",
             "--property=ExecMainStatus",
             "--property=Result",
+            "--property=InvocationID",
             "--no-pager",
         ],
         check=False,
     )
     if result.returncode != 0:
         return None
-    return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    properties = dict(
+        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+    )
+    # `systemctl show` succeeds even after --collect has unloaded the unit.  Its
+    # synthetic not-found object says success/0 and is not execution evidence.
+    if properties.get("LoadState") != "loaded" or not properties.get("InvocationID"):
+        return None
+    return properties
 
 
 def wait_for_unit(
@@ -552,25 +563,28 @@ def wait_for_unit(
                 durable = run_registry.read_record(record)
             except RuntimeError:
                 durable = {}
-            if durable.get("state") == "completed":
+            if service_result.is_evidenced_terminal(durable):
                 return durable
-            if seen or missing >= 50:
-                raise RuntimeError(
-                    f"{unit}.service disappeared before publishing a terminal result; "
-                    f"inspect {record} and the durable log"
-                )
+            raw_log = durable.get("log")
+            log = Path(raw_log) if isinstance(raw_log, str) else Path("/nonexistent")
+            classified = service_result.from_log(log)
+            if classified.get("exit_code") is not None or missing >= (5 if seen else 50):
+                return {
+                    **classified,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                }
             sleep(poll_seconds)
             continue
         seen = True
         if properties.get("ActiveState") in TERMINAL_STATES:
             try:
-                status = int(properties.get("ExecMainStatus", ""))
-            except ValueError:
-                status = None
+                durable = run_registry.read_record(record)
+            except RuntimeError:
+                durable = {}
+            raw_log = durable.get("log")
+            log = Path(raw_log) if isinstance(raw_log, str) else Path("/nonexistent")
             return {
-                "state": "completed",
-                "result": properties.get("Result", "unknown"),
-                "exit_code": status,
+                **service_result.from_log(log, properties=properties),
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             }
         sleep(poll_seconds)
@@ -629,7 +643,7 @@ def attach(
         json_output=json_output,
     )
     status = updated.get("exit_code")
-    return status if isinstance(status, int) and 0 <= status <= 125 else 2
+    return status if isinstance(status, int) and 0 <= status <= 255 else 2
 
 
 def parser() -> argparse.ArgumentParser:
@@ -931,6 +945,12 @@ def main(
             except OSError as scan_error:
                 # Could not look. A NO-RESULT must never authorize deletion.
                 orphans = [f"<scan failed: {scan_error}>"]
+            terminal_status = updated.get("exit_code")
+            propagated = (
+                terminal_status
+                if isinstance(terminal_status, int) and 0 < terminal_status <= 255
+                else 2
+            )
             if orphans:
                 print(
                     "validate-run: ORPHANED-RECEIPT: this run wrote a receipt into "
@@ -939,7 +959,7 @@ def main(
                     "-- it is the only trace that this happened.",
                     file=sys.stderr,
                 )
-                return 2
+                return propagated
             print(
                 "validate-run: NO-RECEIPT-PRODUCED: the run failed before writing a "
                 "receipt anywhere, so the temp checkout holds no evidence; "
@@ -947,7 +967,7 @@ def main(
                 file=sys.stderr,
             )
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
-            return 2
+            return propagated
         if not args.json:
             print(f"RECEIPT-CANONICAL commit={args.target} cwd={fresh_checkout}")
             print(f"  {row[:160]}")
@@ -957,7 +977,7 @@ def main(
         json_output=args.json,
     )
     status = updated.get("exit_code")
-    return status if isinstance(status, int) and 0 <= status <= 125 else 2
+    return status if isinstance(status, int) and 0 <= status <= 255 else 2
 
 
 if __name__ == "__main__":

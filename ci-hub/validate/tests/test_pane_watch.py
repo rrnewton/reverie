@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -13,6 +16,53 @@ import run_registry  # noqa: E402
 
 
 class PaneWatchTest(unittest.TestCase):
+    def test_collected_killed_unit_uses_durable_inner_exit_not_success_placeholder(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "validate.log"
+            record = root / "runs/validate-test.json"
+            log.write_text(
+                "validate-lock: supervisor received signal 15\n"
+                "# ci-hub/validate-lock tool COST ACTUAL wall=50.197s cpu=0.2s "
+                "cpu_user=0.1s cpu_system=0.1s exit=143\n"
+            )
+            run_registry.write_record(
+                record,
+                {
+                    "schema_version": 1,
+                    "state": "running",
+                    "target": "a" * 40,
+                    "log": str(log),
+                },
+            )
+            output = io.StringIO()
+            with mock.patch.object(pane_watch, "service_properties", return_value=None):
+                with contextlib.redirect_stdout(output):
+                    rc = pane_watch.main(
+                        [
+                            "--unit",
+                            "validate-test.service",
+                            "--target",
+                            "a" * 40,
+                            "--checkout",
+                            str(root),
+                            "--log",
+                            str(log),
+                            "--record",
+                            str(record),
+                            "--appearance-seconds",
+                            "0",
+                        ]
+                    )
+
+            self.assertEqual(143, rc)
+            durable = run_registry.read_record(record)
+            self.assertEqual("killed", durable["state"])
+            self.assertEqual("terminated", durable["result"])
+            self.assertEqual(143, durable["exit_code"])
+            self.assertEqual(15, durable["signal"])
+            self.assertIn("state=killed result=terminated exit=143", output.getvalue())
+
     def test_boxing_proof_is_bound_to_descendant_process_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             proc = Path(temporary)

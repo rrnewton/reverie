@@ -43,6 +43,10 @@ class FakeRun:
         # checkout. Planted when the fresh tree is created, because that is the
         # first moment the directory exists.
         self.plant_receipt: str | None = None
+        self.actual_exit = 0
+        self.executed_nodes: int | None = 55
+        self.executed_tests: int | None = 862
+        self.collected_unit = False
 
     def __call__(self, command: list[str], **_kwargs: object):
         self.commands.append(command)
@@ -133,12 +137,39 @@ class FakeRun:
                 return completed(command)
             raise AssertionError(command)
         if command[0] == "systemd-run" and "validate-lock" in command:
+            output = next(
+                value.removeprefix("StandardOutput=append:")
+                for value in command
+                if value.startswith("StandardOutput=append:")
+            )
+            lines: list[str] = []
+            if self.executed_tests is not None:
+                lines.append(f"   {self.executed_tests} test(s) executed, 0 filtered")
+            if self.executed_nodes is not None:
+                lines.append(
+                    f"   nodes: {self.executed_nodes} executed, 0 failed, 0 skipped in 1s at -j 16"
+                )
+            lines.append(
+                "# ci-hub/validate-lock tool COST ACTUAL wall=1.0s cpu=0.1s "
+                f"cpu_user=0.1s cpu_system=0.0s exit={self.actual_exit}"
+            )
+            Path(output).write_text("\n".join(lines) + "\n")
             return completed(command, stdout="Running as unit: validate-test.service\n")
         if command[:3] == ["systemctl", "--user", "show"]:
+            if self.collected_unit:
+                return completed(
+                    command,
+                    stdout=(
+                        "LoadState=not-found\nActiveState=inactive\nSubState=dead\n"
+                        "ExecMainCode=0\nExecMainStatus=0\nResult=success\nInvocationID=\n"
+                    ),
+                )
             return completed(
                 command,
                 stdout=(
-                    "ActiveState=inactive\nSubState=dead\nExecMainStatus=0\nResult=success\n"
+                    "LoadState=loaded\nActiveState=inactive\nSubState=dead\n"
+                    "ExecMainCode=exited\nExecMainStatus=0\nResult=success\n"
+                    "InvocationID=fixture-invocation\n"
                 ),
             )
         raise AssertionError(command)
@@ -225,7 +256,44 @@ class StartUnitTest(unittest.TestCase):
             self.root / "ignored/validate/runs/validate-test.json"
         )
         self.assertEqual("completed", record["state"])
+        self.assertEqual("success", record["result"])
+        self.assertEqual(55, record["executed_nodes"])
         self.assertEqual("observer-only", record["pane_role"])
+
+    def test_collected_sigterm_propagates_143_and_records_named_killed_state(self) -> None:
+        self.fake.actual_exit = 143
+        self.fake.executed_nodes = None
+        self.fake.executed_tests = None
+        self.fake.collected_unit = True
+        self.fake.ledger_rows = []
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(143, rc, error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("killed", record["state"])
+        self.assertEqual("terminated", record["result"])
+        self.assertEqual(143, record["exit_code"])
+        self.assertEqual(15, record["signal"])
+
+    def test_exit_zero_with_zero_nodes_is_no_result(self) -> None:
+        self.fake.actual_exit = 0
+        self.fake.executed_nodes = 0
+        self.fake.executed_tests = 0
+        self.fake.ledger_rows = []
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(2, rc, error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("not-run", record["state"])
+        self.assertEqual("no-result", record["result"])
+        self.assertEqual(0, record["exit_code"])
+        self.assertEqual(0, record["executed_nodes"])
 
     def test_dry_run_is_non_mutating_but_exposes_exact_command(self) -> None:
         rc, output, error = self.invoke(["--dry-run"])

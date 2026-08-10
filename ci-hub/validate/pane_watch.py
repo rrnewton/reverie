@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from run_registry import read_record, update_record
+import service_result
 
 
 TERMINAL_STATES = frozenset(("failed", "inactive"))
@@ -25,9 +26,12 @@ def service_properties(unit: str) -> dict[str, str] | None:
             "show",
             unit,
             "--property=ActiveState",
+            "--property=LoadState",
             "--property=SubState",
+            "--property=ExecMainCode",
             "--property=ExecMainStatus",
             "--property=Result",
+            "--property=InvocationID",
             "--property=MainPID",
             "--no-pager",
         ],
@@ -37,7 +41,12 @@ def service_properties(unit: str) -> dict[str, str] | None:
     )
     if result.returncode != 0:
         return None
-    return dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    properties = dict(
+        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+    )
+    if properties.get("LoadState") != "loaded" or not properties.get("InvocationID"):
+        return None
+    return properties
 
 
 def proc_ppids(proc_root: Path = Path("/proc")) -> dict[int, int]:
@@ -149,33 +158,46 @@ def main(argv: Sequence[str] | None = None) -> int:
         except RuntimeError:
             durable = {}
         if durable.get("state") == "refused":
-            state = "refused"
-            result = str(durable.get("result", "launch-refused"))
-            status = durable.get("exit_code")
+            classified = {
+                "state": "refused",
+                "result": str(durable.get("result", "launch-refused")),
+                "exit_code": durable.get("exit_code"),
+            }
+        elif service_result.is_evidenced_terminal(durable):
+            classified = {
+                key: durable[key]
+                for key in (
+                    "state",
+                    "result",
+                    "exit_code",
+                    "signal",
+                    "executed_nodes",
+                    "executed_tests",
+                    "result_source",
+                    "detail",
+                )
+                if key in durable
+            }
         else:
-            state, result, status = "unknown", "unit-disappeared", None
+            classified = service_result.from_log(args.log)
     else:
-        state = "completed"
-        result = final.get("Result", "unknown")
-        try:
-            status = int(final.get("ExecMainStatus", ""))
-        except ValueError:
-            status = None
+        classified = service_result.from_log(args.log, properties=final)
     update_record(
         args.record,
-        state=state,
-        result=result,
-        exit_code=status,
+        **classified,
         finished_at=finished_at,
         observed_safe_ci_cgroups=sorted(observed_groups),
     )
+    state = classified["state"]
+    result = classified["result"]
+    status = classified.get("exit_code")
     proof = ",".join(sorted(observed_groups)) or "UNOBSERVED"
     print(
         f"\nCI-HUB VALIDATE FINISHED state={state} result={result} "
         f"exit={status} box_cgroup={proof}",
         flush=True,
     )
-    return status if isinstance(status, int) and 0 <= status <= 125 else 1
+    return status if isinstance(status, int) and 0 <= status <= 255 else 1
 
 
 if __name__ == "__main__":
