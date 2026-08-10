@@ -214,7 +214,38 @@ The land sequence itself lives here too, not only in `scratch/`:
 | script | role |
 | --- | --- |
 | `ci-hub/landing/land-pr.sh <PR> <BRANCH> [--union\|--no-rebase]` | detached-by-default full single-PR lander: self-wraps in `land-lock run --child-deadline`, requires Hermit's counted local-full **or** versioned hosted-portable exact-head authority before and after rebase, derives `locally-validated` only for a qualifying local receipt, polls merge-gate, rechecks the same authority at the final mutation boundary, performs a head-matched rebase merge, then verifies ancestry |
+| `ci-hub/landing/gate_definition_rotation.py --pr N --branch B --checkout WT --execute` | narrow self-authorization fallback: verifies an owner-authored exact head/base/blob/path record, dual exact-head reviews, counted receipt, and typed definition-only self-refusal; then composes through `land-pr.sh --gate-rotation --no-rebase` and registers `MERGE_GATE_V4_BLOB` only after mergeCommit ancestry |
 | `ci-hub/landing/union-rebase.sh <hermit-wt> <BRANCH> [--push]` | authoritative additive union-rebase of the shared manifest registries (`*.toml` by `[[test]]` id, `test-files.json` by path, `matrix.tsv` by row); the derived `ci/expected-e2e-plan.json` is regenerated, never hand-unioned |
+
+### Merge-gate definition rotation
+
+The gate definition is intentionally unable to authorize a PR that replaces
+its own registered blob. That typed `SELF_AUTHORIZATION_REFUSED` result is a
+precondition for the narrow independent rotation path, not permission by
+itself. The newest owner-authored PR comment must contain this marker on its own
+line followed by one JSON object:
+
+```text
+GATE-DEFINITION-ROTATION-AUTHORIZED
+{"repo":"rrnewton/hermit","pr":2071,"base":"<40-hex>","head":"<40-hex>","old_blob":"<40-hex>","new_blob":"<40-hex>","allowed_paths":[".github/workflows/merge-gate.yml"],"reason":"...","expires_at":"2026-08-10T17:00:00Z","authorized_by":"rrnewton"}
+```
+
+Trusted current-main code independently re-derives all identities, changed
+paths, both `APPROVED-AT` lanes, absence of a current `REQUEST CHANGES AT`, the
+counted exact-head receipt, and the definition-only gate failure. A base move,
+head move, blob mismatch, extra path, malformed or expired record, stale review,
+current rejection, missing receipt, or non-definition gate failure refuses.
+
+Execution has one merge path: the normal non-admin
+`gh pr merge --rebase --match-head-commit` inside `land-pr.sh`. There is no
+gate-specific raw-FF primitive and no gate-specific `--_inner`. Even a direct
+caller of the lander's rotation mode must prove it is a descendant of the exact
+PID/start-ticks identity recorded by `land-lock run`. After the inner lander
+proves the PR's `mergeCommit.oid` is on `origin/main` and the lock releases, the
+normal lander's outer process verifies that main contains the authorized
+workflow blob and only then updates and re-reads
+`MERGE_GATE_V4_BLOB`. A failed registration leaves the gate fail-closed; retry
+with `--register-only`, never weaken or roll back the gate.
 
 ### Parent changes: hosted exact-head evidence, not a synthetic validate receipt
 

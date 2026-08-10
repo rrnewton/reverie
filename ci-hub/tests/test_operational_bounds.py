@@ -18,11 +18,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CI_HUB = ROOT / "ci-hub/ci-hub"
 WALL_SECONDS = 15
-# This is an end-to-end semantic bracket spanning the full producer-definition
-# lifecycle, not one bounded ci-hub operation.  It currently takes about 31s on
-# the development host, so applying WALL_SECONDS hides its verdict behind a
-# harness timeout.  Keep the ordinary command bound strict and give only this
-# complete bracket enough time to report its real pass/fail result.
+# End-to-end semantic brackets span a complete authority lifecycle rather than
+# one bounded ci-hub operation. The receipt bracket takes about 31s; the gate
+# rotation bracket creates local repositories and drives ten mutation events.
+# Keep ordinary command bounds strict and give only complete brackets enough
+# time to report their real pass/fail result.
 RECEIPT_BRACKET_WALL_SECONDS = 90
 CPU_SECONDS = 5
 
@@ -816,17 +816,25 @@ class OperationalBoundsTest(unittest.TestCase):
             result.stdout,
         )
 
-    def test_direct_main_lander_brackets_ledger_authority(self) -> None:
+    def test_gate_rotation_brackets_sanctioned_composition(self) -> None:
         result = subprocess.run(
-            [str(ROOT / "ci-hub/landing/test-land-direct-main.sh")],
+            [
+                sys.executable,
+                str(ROOT / "ci-hub/landing/test_gate_definition_rotation.py"),
+            ],
             cwd=ROOT,
             check=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=WALL_SECONDS,
+            timeout=RECEIPT_BRACKET_WALL_SECONDS,
         )
-        self.assertIn("positive=1/1 negative=3/3", result.stdout)
+        self.assertIn("nine_classes=9/9", result.stdout)
+        self.assertIn("mutation_refusals=9/9", result.stdout)
+        self.assertIn("public_e2e=1/1", result.stdout)
+        self.assertIn("exact_events=10/10", result.stdout)
+        self.assertIn("direct_inner_refused=2/2", result.stdout)
+        self.assertIn("entry_points=3/3", result.stdout)
 
     def test_skill_denylist_guards_against_local_only_landing_claims(self) -> None:
         denylist = (
