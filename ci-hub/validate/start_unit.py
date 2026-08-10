@@ -363,6 +363,7 @@ def build_systemd_command(
     hold: int,
     child_deadline: int,
     environment: Mapping[str, str],
+    make_validate: bool = False,
 ) -> list[str]:
     home = environment.get("HOME", "")
     path = environment.get("PATH", "")
@@ -372,7 +373,10 @@ def build_systemd_command(
     child = ["/usr/bin/env"]
     if pr is not None:
         child.append(f"PR_NUMBER={pr}")
-    child.extend(["with-proxy", "./scripts/validate.rs", *(validate_args or ["full"])])
+    if make_validate:
+        child.extend(["with-proxy", "make", "validate"])
+    else:
+        child.extend(["with-proxy", "./scripts/validate.rs", *(validate_args or ["full"])])
 
     # libunwind is not installed system-wide on this host class, so
     # `unwind-sys`'s build.rs panics on
@@ -634,6 +638,15 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--wait", type=int, default=7200, help="validate-lock queue wait bound")
     result.add_argument("--hold", type=int, default=1200, help="validate-lock lease seconds")
     result.add_argument("--child-deadline", type=int, default=3600)
+    result.add_argument(
+        "--make-validate",
+        action="store_true",
+        help=(
+            "run the checkout's literal `make validate` target inside the admitted "
+            "unit instead of invoking scripts/validate.rs directly. No validate "
+            "arguments may follow --; this exists for owner-checkout spot checks."
+        ),
+    )
     result.add_argument("--dry-run", action="store_true")
     result.add_argument("--json", action="store_true")
     result.add_argument(
@@ -690,6 +703,13 @@ def main(
     validate_args = list(args.validate_args)
     if validate_args[:1] == ["--"]:
         validate_args.pop(0)
+    if args.make_validate and validate_args:
+        print(
+            "validate-run: REFUSED: --make-validate is the exact no-argument Make "
+            "target; do not pass validate arguments after --",
+            file=sys.stderr,
+        )
+        return 2
     if args.pr is not None and args.pr <= 0:
         print("validate-run: REFUSED: --pr must be positive", file=sys.stderr)
         return 2
@@ -730,6 +750,7 @@ def main(
             hold=args.hold,
             child_deadline=args.child_deadline,
             environment=environment or os.environ,
+            make_validate=args.make_validate,
         )
         if args.dry_run:
             pane = None

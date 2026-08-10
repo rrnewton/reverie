@@ -84,6 +84,10 @@ ALLOWED: dict[str, str] = {
     # validate_status.rs. If the scorecard ever grows a coverage-shaped field,
     # this call site should move to it and leave this list.
     "scripts/release-0.3-acceptance.py": "acceptance gate; floor-only refusal on a scorecard cell",
+    "scripts/owner-checkout-validate-watch.py": (
+        "periodic reporter; delegates green/completeness to authoritative_row_qualification "
+        "and exposes the count only as a diagnostic/null refusal"
+    ),
 }
 
 

@@ -125,6 +125,7 @@ class CoordinatorPane:
     session: str
     window: str
     pane_id: str
+    orc_session_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -189,6 +190,7 @@ class LivePane:
     pane_id: str
     command: str
     orc_db: str | None
+    orc_session_id: str | None
 
     @property
     def is_orc(self) -> bool:
@@ -455,6 +457,22 @@ def orc_db_from_start_command(command: str) -> str | None:
     return None
 
 
+def orc_session_id_from_start_command(command: str) -> str | None:
+    """Read Orc's exact API/session identity from the coordinator command."""
+    if len(command) >= 2 and command[0] == command[-1] == '"':
+        command = command[1:-1]
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    for index, token in enumerate(tokens):
+        if token == "--session-id" and index + 1 < len(tokens):
+            return tokens[index + 1]
+        if token.startswith("--session-id="):
+            return token.removeprefix("--session-id=")
+    return None
+
+
 def parse_live_panes(panes: str, active_sessions: list[str]) -> list[LivePane]:
     """Every live pane in an active orc session, with no coordinator filtering.
 
@@ -478,6 +496,7 @@ def parse_live_panes(panes: str, active_sessions: list[str]) -> list[LivePane]:
                 pane_id=pane_id,
                 command=Path(current_command).name,
                 orc_db=orc_db_from_start_command(start_command),
+                orc_session_id=orc_session_id_from_start_command(start_command),
             )
         )
     return live
@@ -571,6 +590,7 @@ def find_coordinator_pane(
             session=selected.session,
             window=selected.window,
             pane_id=selected.pane_id,
+            orc_session_id=selected.orc_session_id,
         )
 
     # Report the count together with the condition that produced it. Each
@@ -1388,6 +1408,7 @@ def main() -> int:
     session = args.session or "db=unresolved"
     window = args.window or "coordinator"
     submitted = False
+    discovered_coordinator: CoordinatorPane | None = None
     try:
         if args.message_file is not None:
             message = prefix_eastern_time(load_message_file(args.message_file))
@@ -1418,11 +1439,25 @@ def main() -> int:
 
         # ---- supported API path, chosen before any tmux work ----
         if args.transport in ("api", "auto"):
+            api_session_id = os.environ.get("DG_TMUX_SESSION_ID")
+            if (
+                not api_session_id
+                and socket is not None
+                and active_sessions is not None
+            ):
+                discovered_coordinator = find_coordinator_pane(
+                    socket,
+                    active_sessions,
+                    args.orc_db,
+                    session_hint=args.session,
+                    window_hint=args.window,
+                )
+                api_session_id = discovered_coordinator.orc_session_id
             api_socket = resolve_api_socket(
                 args.api_socket,
                 args.orc_command,
                 args.orc_db,
-                os.environ.get("DG_TMUX_SESSION_ID"),
+                api_session_id,
             )
             if api_socket is None:
                 if args.transport == "api":
@@ -1480,7 +1515,7 @@ def main() -> int:
                         file=sys.stderr,
                     )
                     active_sessions = scan_orc_sessions_via_tmux(socket)
-            coordinator = find_coordinator_pane(
+            coordinator = discovered_coordinator or find_coordinator_pane(
                 socket,
                 active_sessions,
                 args.orc_db,

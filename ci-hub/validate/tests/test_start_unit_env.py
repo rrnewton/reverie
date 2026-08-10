@@ -236,6 +236,27 @@ class StartUnitEnvTest(unittest.TestCase):
         env = setenvs(build(self.root, dict(self.base_env)))
         self.assertEqual(env["DEV_HERMIT_PARENT"], str(self.root))
 
+    def test_make_validate_entrypoint_is_literal_and_admitted(self) -> None:
+        command = su.build_systemd_command(
+            root=self.root,
+            checkout=self.root / "hermit",
+            target=TARGET,
+            agent="owner-checkout-watch",
+            unit="validate-owner.service",
+            log=self.root / "owner.log",
+            pr=None,
+            validate_args=[],
+            wait=1,
+            hold=1,
+            child_deadline=1,
+            environment=dict(self.base_env),
+            make_validate=True,
+        )
+        joined = " ".join(command)
+        self.assertIn("validate-lock run", joined)
+        self.assertIn("with-proxy make validate", joined)
+        self.assertNotIn("./scripts/validate.rs", joined)
+
 
 if __name__ == "__main__":
     unittest.main()

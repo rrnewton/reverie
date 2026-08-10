@@ -230,6 +230,13 @@ class TestStartCommandDbParsing(unittest.TestCase):
     def test_unparseable_start_command_is_not_an_exception(self):
         self.assertIsNone(ohm.orc_db_from_start_command('"exec orc --db \'unclosed'))
 
+    def test_parses_exact_orc_session_id_from_live_command(self):
+        command = '"exec /home/test/orc --db hermit2 --session-id abc-123 --tui"'
+        self.assertEqual(ohm.orc_session_id_from_start_command(command), "abc-123")
+
+    def test_missing_session_id_stays_unknown(self):
+        self.assertIsNone(ohm.orc_session_id_from_start_command(ORC_START))
+
 
 class TestDatabaseIdentityDerivation(unittest.TestCase):
     """A successor session must not inherit the predecessor's DB default."""

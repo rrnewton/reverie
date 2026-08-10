@@ -1,0 +1,18 @@
+[Unit]
+Description=Periodic make validate in the owner's canonical Hermit checkout
+Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/owner-checkout-validate-watch.py
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/.cargo/bin:%h/orc-bin:/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=%h/work/dev-hermit
+ExecStart=%h/work/dev-hermit/scripts/owner-checkout-validate-watch.py
+# A full run is expected to stay under ten minutes, but the admitted producer
+# owns a 30-minute child deadline and must have time to prove cleanup.
+TimeoutStartSec=2400
+# Every typed outcome is an observed watch result, not a dead service. Internal
+# crashes/signals remain unit failures and are visible in the journal.
+SuccessExitStatus=0 1 2 3 4 5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Check the owner's canonical Hermit checkout every hour
+Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/owner-checkout-validate-watch.py
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Persistent=true
+AccuracySec=5min
+Unit=hermit-owner-checkout-validate.service
+
+[Install]
+WantedBy=timers.target
