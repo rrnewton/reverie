@@ -99,6 +99,24 @@ class RunPythonSuitesTest(unittest.TestCase):
         self.assertIn("floor=1 discovered=1 executed=1", result.stdout)
         self.assertIn("SUITE PASS", result.stdout)
 
+    def test_validate_default_suite_covers_root_and_nested_failure_evidence(self) -> None:
+        spec = util.spec_from_file_location("run_python_suites_coverage", RUNNER)
+        assert spec is not None and spec.loader is not None
+        module = util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(module)
+
+        validate_root = RUNNER.parents[1] / "validate"
+        suites = {suite.path: suite.floor for suite in module._default_suites()}
+        self.assertEqual(suites.get(validate_root.resolve()), 123)
+
+        root_test = validate_root / "test_failure_evidence_solo_rerun.py"
+        nested_test = validate_root / "tests" / "test_failure_evidence.py"
+        self.assertTrue(root_test.is_file())
+        self.assertTrue(nested_test.is_file())
+        self.assertNotEqual(root_test.name, nested_test.name)
+
 
 if __name__ == "__main__":
     unittest.main()

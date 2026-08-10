@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evidence extraction controls; verdicts remain validate_status's job."""
+"""Solo-rerun evidence controls; verdicts remain validate_status's job."""
 
 from __future__ import annotations
 

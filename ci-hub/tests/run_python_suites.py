@@ -20,7 +20,12 @@ DEFAULT_SUITES = (
     ("ci-hub/lib/tests", 6),
     ("ci-hub/remediation/tests", 87),
     ("ci-hub/runners/tests", 51),
-    ("ci-hub/validate/tests", 123),
+    # Include both the legacy root-level validation tests and the nested suite.
+    # Pointing only at validate/tests left six root modules outside the counted
+    # gate. Preserve the existing conservative execution floor; importlib mode
+    # and the real-path bracket below are what make the expanded surface
+    # load-bearing without treating environment-declared skips as execution.
+    ("ci-hub/validate", 123),
     ("ci-hub/tests", 66),
     # compat-envelope's Python tests had no CI caller of their own: their runner
     # is `compat-envelope/tests/run-all.sh`, reachable only through `make lint`,
