@@ -58,6 +58,7 @@ import re
 import subprocess
 import time
 from collections.abc import Callable, Iterable, Sequence
+from pathlib import Path
 from typing import Any
 
 from ledger import ENVELOPE_VERSION
@@ -87,6 +88,11 @@ _FQDN = re.compile(r"[A-Za-z0-9-]+\.[A-Za-z0-9-]+\.[A-Za-z]")
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
+# Use the same fleet-aware write boundary as interactive ``gh`` calls.  This
+# publisher talks to the comments API directly, so relying only on ORC's PATH
+# would leave daemon/systemd invocations able to impersonate the owner.
+FLEET_GH = str(Path(__file__).resolve().parents[1] / "bin/gh")
+
 
 class GitHubIndexError(RuntimeError):
     """Transport or protocol failure talking to GitHub."""
@@ -115,7 +121,7 @@ def gh_api(method: str, path: str, fields: dict[str, str] | None = None) -> tupl
     recovered from the payload where possible and surfaced so the retry policy
     can tell a retryable condition from a permanent one.
     """
-    cmd = ["with-proxy", "gh", "api", "-X", method, path]
+    cmd = ["with-proxy", FLEET_GH, "api", "-X", method, path]
     for key, value in (fields or {}).items():
         cmd += ["-f", f"{key}={value}"]
     if method == "GET":

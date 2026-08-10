@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Fleet-aware boundary for GitHub CLI comment writes.
+
+Agents intentionally share the repository owner's GitHub credential.  That is
+acceptable for repository access, but an unmarked comment made with that token
+is indistinguishable from the owner's own speech.  When ``DG_AGENT_NAME`` is
+present, this shim prefixes every supported comment/review body with the exact
+agent and session that caused the write.  Human shells (no ``DG_AGENT_NAME``)
+pass through byte-for-byte.
+
+This is deliberately a write-boundary control, not a prose convention.  It
+also refuses comment mutation shapes it cannot safely rewrite rather than
+letting a fleet comment silently impersonate the owner.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+
+PREFIX_RE = re.compile(
+    r"^\[fleet-comment agent=(?P<agent>[A-Za-z0-9_.-]+) "
+    r"session=(?P<session>[A-Za-z0-9_.:/-]+)\]"
+)
+IDENT_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
+
+
+def die(message: str) -> "NoReturn":
+    print(f"fleet-gh: REFUSE: {message}", file=sys.stderr)
+    raise SystemExit(2)
+
+
+def real_gh() -> str:
+    configured = os.environ.get("FLEET_REAL_GH")
+    candidates = [configured] if configured else []
+    candidates += ["/usr/local/bin/gh", "/usr/bin/gh"]
+    here = Path(__file__).resolve()
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            if Path(candidate).resolve() != here:
+                return candidate
+    die("could not locate the real gh binary (set FLEET_REAL_GH)")
+
+
+def fleet_identity() -> tuple[str, str] | None:
+    agent = os.environ.get("DG_AGENT_NAME", "")
+    if not agent:
+        return None
+    session = next(
+        (
+            os.environ.get(name, "")
+            for name in (
+                "AGENT_SESSION_ID",
+                "ORC_AGENT_SESSION_ID",
+                "CODEX_THREAD_ID",
+                "CLAUDE_CODE_PARENT_SESSION_ID",
+                "META_3PAI_INVOCATION_ID",
+            )
+            if os.environ.get(name, "")
+        ),
+        "",
+    )
+    if not IDENT_RE.fullmatch(agent):
+        die(f"DG_AGENT_NAME is not a safe identity token: {agent!r}")
+    if not session:
+        die("DG_AGENT_NAME is set but no fleet session identity is available")
+    if not IDENT_RE.fullmatch(session):
+        die("fleet session identity contains unsupported characters")
+    return agent, session
+
+
+def attributed(body: str, identity: tuple[str, str]) -> str:
+    agent, session = identity
+    wanted = f"[fleet-comment agent={agent} session={session}]"
+    existing = PREFIX_RE.match(body)
+    if existing:
+        if existing.group("agent") != agent or existing.group("session") != session:
+            die("existing fleet-comment prefix names a different agent or session")
+        return body
+    # Keep an existing role/team tag on the first line.  The repository policy
+    # requires those tags there, while this prefix adds the speaker identity
+    # that a shared GitHub account cannot supply.
+    return f"{wanted} {body}" if body else wanted
+
+
+def body_option(args: list[str]) -> tuple[int, int, str] | None:
+    """Return (start, consumed arguments, body), reading body files eagerly."""
+    for index, arg in enumerate(args):
+        if arg in ("--body", "-b"):
+            if index + 1 >= len(args):
+                die(f"{arg} requires a value")
+            return index, 2, args[index + 1]
+        if arg.startswith("--body="):
+            return index, 1, arg.split("=", 1)[1]
+        if arg in ("--body-file", "-F"):
+            if index + 1 >= len(args):
+                die(f"{arg} requires a value")
+            source = args[index + 1]
+            if source == "-":
+                return index, 2, sys.stdin.read()
+            try:
+                return index, 2, Path(source).read_text()
+            except OSError as error:
+                die(f"cannot read comment body file {source!r}: {error}")
+    return None
+
+
+def rewrite_body_option(args: list[str], identity: tuple[str, str], *, required: bool) -> list[str]:
+    found = body_option(args)
+    if found is None:
+        if required:
+            return args + ["--body", attributed("", identity)]
+        die("comment command has no supported --body/--body-file argument")
+    index, consumed, body = found
+    return args[:index] + ["--body", attributed(body, identity)] + args[index + consumed :]
+
+
+def api_method(args: list[str]) -> str:
+    for index, arg in enumerate(args):
+        if arg in ("-X", "--method") and index + 1 < len(args):
+            return args[index + 1].upper()
+        if arg.startswith("--method="):
+            return arg.split("=", 1)[1].upper()
+    if any(arg in ("-f", "-F", "--field", "--raw-field") for arg in args):
+        return "POST"
+    return "GET"
+
+
+def api_endpoint(args: list[str]) -> str:
+    options_with_values = {
+        "-X", "--method", "-H", "--header", "-f", "--raw-field", "-F",
+        "--field", "--input", "--hostname", "--cache", "--jq", "-q",
+        "--template", "-t",
+    }
+    skip = False
+    for arg in args[1:]:
+        if skip:
+            skip = False
+            continue
+        if arg in options_with_values:
+            skip = True
+            continue
+        if arg.startswith("-"):
+            continue
+        return arg
+    return ""
+
+
+def is_comment_endpoint(endpoint: str) -> bool:
+    endpoint = endpoint.split("?", 1)[0].strip("/")
+    return bool(
+        re.fullmatch(r"repos/[^/]+/[^/]+/(issues|pulls)/[^/]+/comments(?:/[^/]+)?", endpoint)
+        or re.fullmatch(r"repos/[^/]+/[^/]+/pulls/[^/]+/reviews(?:/[^/]+)?", endpoint)
+        or re.fullmatch(r"repos/[^/]+/[^/]+/commits/[^/]+/comments", endpoint)
+        or re.fullmatch(r"repos/[^/]+/[^/]+/(issues|pulls)/comments/[^/]+", endpoint)
+        or re.fullmatch(r"repos/[^/]+/[^/]+/comments/[^/]+", endpoint)
+    )
+
+
+def rewrite_api(args: list[str], identity: tuple[str, str]) -> list[str]:
+    if len(args) > 1 and args[1] == "graphql":
+        joined = "\n".join(args[2:])
+        if re.search(
+            r"\b(addComment|addDiscussionComment|addPullRequestReview|"
+            r"updateIssueComment|updatePullRequestReview|"
+            r"updatePullRequestReviewComment)\b",
+            joined,
+        ):
+            die("raw GraphQL comment mutations cannot be attributed safely")
+        return args
+    method = api_method(args)
+    endpoint = api_endpoint(args)
+    if method not in {"POST", "PATCH", "PUT"} or not is_comment_endpoint(endpoint):
+        return args
+    if "--input" in args or any(arg.startswith("--input=") for arg in args):
+        die("raw API comment mutation via --input cannot be attributed safely")
+    for index, arg in enumerate(args):
+        if arg in ("-f", "--raw-field", "-F", "--field") and index + 1 < len(args):
+            if args[index + 1].startswith("body="):
+                body = args[index + 1].split("=", 1)[1]
+                rewritten = list(args)
+                rewritten[index + 1] = f"body={attributed(body, identity)}"
+                return rewritten
+        for prefix in ("--raw-field=body=", "--field=body="):
+            if arg.startswith(prefix):
+                rewritten = list(args)
+                rewritten[index] = f"{prefix}{attributed(arg[len(prefix):], identity)}"
+                return rewritten
+    die(f"raw API comment mutation {method} {endpoint} has no supported body field")
+
+
+def rewrite(args: list[str], identity: tuple[str, str]) -> list[str]:
+    if len(args) >= 2 and args[:2] in (["pr", "comment"], ["issue", "comment"]):
+        return rewrite_body_option(args, identity, required=False)
+    if len(args) >= 2 and args[:2] == ["pr", "review"]:
+        return rewrite_body_option(args, identity, required=True)
+    if args and args[0] == "api":
+        return rewrite_api(args, identity)
+    return args
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    identity = fleet_identity()
+    if identity is not None:
+        args = rewrite(args, identity)
+    return subprocess.run([real_gh(), *args]).returncode
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -37,6 +37,13 @@ set -euo pipefail
 
 readonly DEFAULT_DB="hermit"
 readonly GATED_CODEX_SANDBOX_FLAG="--dangerously-disable-linux-sandbox"
+readonly DEV_HERMIT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Agents share the owner's GitHub credential, so their comments must be marked
+# at the mutation boundary.  Put the versioned gh shim ahead of the system gh
+# for every agent ORC spawns.  Human shells that do not carry DG_AGENT_NAME pass
+# through unchanged; fleet shells get agent+session attribution or fail closed.
+export PATH="$DEV_HERMIT_ROOT/ci-hub/bin:$PATH"
 
 # Directories outside the ORC workspace that Codex agents must be able to write.
 # Override with a colon-separated ORC_CODEX_EXTRA_WRITABLE_DIRS.

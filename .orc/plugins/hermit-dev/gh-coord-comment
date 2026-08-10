@@ -37,7 +37,11 @@ set -euo pipefail
 
 readonly TEAM_TAG="[orc-coord-014]"
 readonly DEFAULT_HTTPS_PROXY="http://fwdproxy:8080"
-readonly GH_COMMAND="${GH_BIN:-gh}"
+readonly PLUGIN_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# GH_BIN remains an offline-test seam. Production always crosses the fleet-aware
+# comment boundary, which adds exact agent+session identity before this team's
+# existing role tag. A shared owner credential must never be the speaker ID.
+readonly GH_COMMAND="${GH_BIN:-$PLUGIN_ROOT/ci-hub/bin/gh}"
 
 repo="${GH_REPO:-}"
 target=""
