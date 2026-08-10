@@ -689,6 +689,93 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(evidence["suspect_count"], 0)
             self.assertEqual(evidence["verdict_effect"], "none-evidence-only")
 
+    def test_relink_retirement_requires_overlap_and_all_consumers_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text(
+                "[e2e.manifest_chaos_c] ▶ START  Portable manifest bucket: chaos-c\n"
+                "[e2e.manifest_debugger_c] ▶ START  Portable manifest bucket: debugger-c\n"
+                "[test.app_strict_verify]    Compiling hermit v0.2.0 (/fixture/hermit-cli)\n"
+                "[e2e.manifest_chaos_c] PASS  portable verify ptrace chaos-c/clock\n"
+                "[e2e.manifest_debugger_c] PASS  portable verify ptrace debugger-c/gdb\n"
+                "[test.app_strict_verify]     Finished `test` profile [unoptimized] target(s) in 5.92s\n"
+                "[e2e.manifest_chaos_c] ✓ PASS   Portable manifest bucket: chaos-c (17s)\n"
+                "[e2e.manifest_debugger_c] ✓ PASS   Portable manifest bucket: debugger-c (18s)\n",
+                encoding="utf-8",
+            )
+
+            evidence = watch.relink_race_retirement_evidence(
+                log, recurrence_triggered=False
+            )
+
+            self.assertTrue(evidence["confirmed"])
+            self.assertEqual(evidence["witnessed_window_count"], 1)
+            self.assertEqual(evidence["started_consumer_count"], 2)
+            self.assertEqual(evidence["terminal_pass_count"], 2)
+            self.assertEqual(
+                evidence["compile_windows"][0]["overlap_consumers"],
+                ["e2e.manifest_chaos_c", "e2e.manifest_debugger_c"],
+            )
+
+    def test_relink_retirement_rejects_quiet_green(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text(
+                "[test.app_strict_verify]    Compiling hermit v0.2.0 (/fixture/hermit-cli)\n"
+                "[test.app_strict_verify]     Finished `test` profile [unoptimized] target(s) in 5.92s\n"
+                "[e2e.manifest_chaos_c] ▶ START  Portable manifest bucket: chaos-c\n"
+                "[e2e.manifest_chaos_c] ✓ PASS   Portable manifest bucket: chaos-c (17s)\n",
+                encoding="utf-8",
+            )
+
+            evidence = watch.relink_race_retirement_evidence(
+                log, recurrence_triggered=False
+            )
+
+            self.assertFalse(evidence["confirmed"])
+            self.assertIn("no e2e per-cell PASS activity", evidence["reason"])
+
+    def test_relink_retirement_rejects_overlap_with_nonpassing_consumer(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text(
+                "[e2e.manifest_chaos_c] ▶ START  Portable manifest bucket: chaos-c\n"
+                "[e2e.manifest_debugger_c] ▶ START  Portable manifest bucket: debugger-c\n"
+                "[test.app_strict_verify]    Compiling hermit v0.2.0 (/fixture/hermit-cli)\n"
+                "[e2e.manifest_chaos_c] PASS  portable verify ptrace chaos-c/clock\n"
+                "[test.app_strict_verify]     Finished `test` profile [unoptimized] target(s) in 5.92s\n"
+                "[e2e.manifest_chaos_c] ✓ PASS   Portable manifest bucket: chaos-c (17s)\n"
+                "[e2e.manifest_debugger_c] ✗ FAIL   Portable manifest bucket: debugger-c (18s, exit 1)\n",
+                encoding="utf-8",
+            )
+
+            evidence = watch.relink_race_retirement_evidence(
+                log, recurrence_triggered=False
+            )
+
+            self.assertFalse(evidence["confirmed"])
+            self.assertEqual(evidence["nonpassing_consumers"][0]["node"], "e2e.manifest_debugger_c")
+            self.assertIn("not every started", evidence["reason"])
+
+    def test_relink_retirement_never_confirms_when_recurrence_triggered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text(
+                "[e2e.manifest_chaos_c] ▶ START  Portable manifest bucket: chaos-c\n"
+                "[test.app_strict_verify]    Compiling hermit v0.2.0 (/fixture/hermit-cli)\n"
+                "[e2e.manifest_chaos_c] PASS  portable verify ptrace chaos-c/clock\n"
+                "[test.app_strict_verify]     Finished `test` profile [unoptimized] target(s) in 5.92s\n"
+                "[e2e.manifest_chaos_c] ✓ PASS   Portable manifest bucket: chaos-c (17s)\n",
+                encoding="utf-8",
+            )
+
+            evidence = watch.relink_race_retirement_evidence(
+                log, recurrence_triggered=True
+            )
+
+            self.assertFalse(evidence["confirmed"])
+            self.assertIn("recurrence signature", evidence["reason"])
+
     def test_exact_ledger_failure_outranks_wrapper_success(self) -> None:
         source = (ROOT / "scripts/owner-checkout-validate-watch.py").read_text()
         ledger_clause = 'row is not None and row.get("result") == "fail"'

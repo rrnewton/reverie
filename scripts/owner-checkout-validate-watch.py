@@ -867,6 +867,146 @@ def relink_race_recurrence_evidence(
     }
 
 
+def relink_race_retirement_evidence(
+    log: Path, *, recurrence_triggered: bool
+) -> dict[str, Any]:
+    """Require real compile/consumer overlap before retiring the relink race.
+
+    A green run with no overlap is deliberately a non-result for this question.
+    The positive witness is line-ordered because the durable DAG log has no
+    per-line wall clock: app_strict_verify must be between its Hermit compile
+    and Finished lines while e2e nodes emit real per-cell PASS activity. Every
+    e2e node that started in the run must later reach terminal PASS.
+    """
+    base: dict[str, Any] = {
+        "confirmed": False,
+        "log": str(log),
+        "verdict_effect": "none-evidence-only",
+        "criterion": (
+            "test.app_strict_verify Hermit compile overlaps e2e cell execution, "
+            "with terminal PASS for every started e2e consumer"
+        ),
+    }
+    if not log.is_file():
+        return {**base, "reason": "durable log missing"}
+
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    started: dict[str, int] = {}
+    terminal: dict[str, dict[str, Any]] = {}
+    parsed: list[tuple[int, str, str]] = []
+    for line_number, line in enumerate(lines, start=1):
+        match = NODE_LINE_PATTERN.match(line)
+        if match is None:
+            continue
+        node, body = match.group("node"), match.group("body")
+        parsed.append((line_number, node, body))
+        if not E2E_NODE_PATTERN.match(node):
+            continue
+        if "▶ START" in body:
+            started[node] = line_number
+        status = (
+            "PASS"
+            if "✓ PASS" in body
+            else "FAIL"
+            if "✗ FAIL" in body
+            else "ABORT"
+            if "⊘ ABORT" in body
+            else None
+        )
+        if status is not None:
+            terminal[node] = {
+                "status": status,
+                "line_number": line_number,
+                "line": line,
+            }
+
+    compile_windows: list[dict[str, Any]] = []
+    compile_start: int | None = None
+    compile_start_line: str | None = None
+    for line_number, node, body in parsed:
+        if node != "test.app_strict_verify":
+            continue
+        if re.search(r"\bCompiling hermit v", body):
+            compile_start = line_number
+            compile_start_line = lines[line_number - 1]
+        elif compile_start is not None and re.search(
+            r"\bFinished `[^`]+` profile", body
+        ):
+            activity = []
+            for event_line, event_node, event_body in parsed:
+                if not (compile_start < event_line < line_number):
+                    continue
+                if not E2E_NODE_PATTERN.match(event_node):
+                    continue
+                if not re.match(r"^PASS\s+", event_body):
+                    continue
+                activity.append(
+                    {
+                        "node": event_node,
+                        "line_number": event_line,
+                        "line": lines[event_line - 1],
+                    }
+                )
+            compile_windows.append(
+                {
+                    "start_line_number": compile_start,
+                    "start_line": compile_start_line,
+                    "finish_line_number": line_number,
+                    "finish_line": lines[line_number - 1],
+                    "e2e_pass_activity": activity,
+                    "overlap_consumers": sorted(
+                        {event["node"] for event in activity}
+                    ),
+                }
+            )
+            compile_start = None
+            compile_start_line = None
+
+    started_nodes = sorted(started)
+    nonpassing = [
+        {
+            "node": node,
+            "start_line_number": started[node],
+            "terminal": terminal.get(node),
+        }
+        for node in started_nodes
+        if terminal.get(node, {}).get("status") != "PASS"
+    ]
+    witnessed = [window for window in compile_windows if window["overlap_consumers"]]
+    confirmed = bool(witnessed) and bool(started_nodes) and not nonpassing
+    if recurrence_triggered:
+        confirmed = False
+        reason = "recurrence signature triggered in the same run"
+    elif not compile_windows:
+        reason = "no complete test.app_strict_verify Hermit compile window"
+    elif not witnessed:
+        reason = "compile occurred, but no e2e per-cell PASS activity overlapped it"
+    elif nonpassing:
+        reason = "overlap occurred, but not every started e2e consumer reached PASS"
+    else:
+        reason = (
+            "positive confirmation: app_strict_verify compiled Hermit while e2e "
+            "consumers executed, and every started e2e consumer reached PASS"
+        )
+    return {
+        **base,
+        "confirmed": confirmed,
+        "reason": reason,
+        "compile_windows": compile_windows,
+        "witnessed_window_count": len(witnessed),
+        "started_consumer_count": len(started_nodes),
+        "started_consumers": started_nodes,
+        "terminal_pass_count": sum(
+            terminal.get(node, {}).get("status") == "PASS" for node in started_nodes
+        ),
+        "nonpassing_consumers": nonpassing,
+        "recurrence_triggered": recurrence_triggered,
+        "timing_basis": (
+            "durable-log line order; per-line wall-clock timestamps unavailable"
+        ),
+    }
+
+
 def first_raw_failure_line(log: Path) -> str | None:
     if not log.is_file():
         return None
@@ -1006,6 +1146,7 @@ def render_message(result: dict[str, Any]) -> str:
         f"lock_holder: {result.get('lock_holder')!r}",
         f"privileged_tests_node: {result.get('privileged_tests_node')!r}",
         f"relink_race_recurrence: {result.get('relink_race_recurrence')!r}",
+        f"relink_race_retirement: {result.get('relink_race_retirement')!r}",
         f"raw_failure_line: {result.get('raw_failure_line')!r}",
         f"pre_tree_hash: {result.get('pre_tree_hash') or 'unavailable'}",
         f"post_tree_hash: {result.get('post_tree_hash') or 'unavailable'}",
@@ -1277,10 +1418,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             raw_failure = first_raw_failure_line(evidence_log)
             if raw_failure is not None:
                 result["raw_failure_line"] = raw_failure
-        result["relink_race_recurrence"] = relink_race_recurrence_evidence(
+        recurrence = relink_race_recurrence_evidence(
             evidence_log,
             checkout,
             launched_at=launched_at,
+        )
+        result["relink_race_recurrence"] = recurrence
+        result["relink_race_retirement"] = relink_race_retirement_evidence(
+            evidence_log,
+            recurrence_triggered=recurrence["triggered"],
         )
 
         if row is None and lock_block is not None:
