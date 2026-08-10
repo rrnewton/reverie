@@ -2928,6 +2928,21 @@ def evaluate_obligation(
                 "hosted CI is advisory for Hermit remediation; prepare a sanctioned, "
                 "reviewed fix-forward, but hosted state cannot authorize a main mutation"
             )
+            current_remediation = record.get("remediation") or {}
+            current_recommendation = record.get("recommendation") or {}
+            if (
+                isinstance(current_remediation, Mapping)
+                and current_remediation.get("state") == "triggered"
+                and current_remediation.get("kind") == "fix-forward"
+                and isinstance(current_recommendation, Mapping)
+                and current_recommendation.get("action") == "fix-forward"
+            ):
+                # A hosted refresh is advisory evidence, not authority to revoke
+                # an already-triggered fix-forward.  Keeping this state stable is
+                # also what makes the explicit resolver's semantic CAS reachable.
+                # A legacy triggered revert still falls through and is tombstoned
+                # below because hosted evidence cannot authorize that mutation.
+                return record
             raised_now = (
                 record.get("overall_state") != "remediation_required"
                 or record.get("failure_summary") != summary
@@ -3159,7 +3174,7 @@ def trigger_remediation(
         f"{record.get('failure_summary') or 'see obligation record'}. "
         "After the repair lands, run resolve-obligation with its full SHA."
     )
-    triggered = obligations.transition(
+    triggered = obligations.transition_if_matches(
         str(record["obligation_id"]),
         "remediation-triggered",
         {
@@ -3186,8 +3201,24 @@ def trigger_remediation(
                 },
             },
         },
+        {
+            "overall_state": "remediation_required",
+            "recommendation": {"action": action},
+            "remediation": {
+                "state": (
+                    remediation.get("state")
+                    if isinstance(remediation, Mapping)
+                    else None
+                ),
+                "kind": action,
+            },
+        },
         store_path,
     )
+    if triggered is None:
+        # Another writer won.  In particular, never re-open a completed
+        # operator resolution from the stale pre-trigger snapshot.
+        return obligations.get_record(str(record["obligation_id"]), store_path)
     print(
         f"REMEDIATION TRIGGERED: obligation={record['obligation_id']} "
         f"action={action} target=hermit-lander",
@@ -5232,8 +5263,7 @@ def resolve_obligation(args: argparse.Namespace) -> int:
         raise ProtocolError(
             f"obligation {args.id!r} is not in remediation_required state"
         )
-    event_id = record.get("event_id")
-    if not isinstance(event_id, str) or not event_id:
+    if not isinstance(record.get("event_id"), str) or not record.get("event_id"):
         raise ProtocolError(f"obligation {args.id!r} has no durable event identity")
     recommendation = record.get("recommendation")
     durable_action = (
@@ -5246,8 +5276,14 @@ def resolve_obligation(args: argparse.Namespace) -> int:
             f"obligation {args.id!r} has no concrete remediation recommendation"
         )
     remediation = record.get("remediation")
-    if not isinstance(remediation, Mapping) or remediation.get("state") != "triggered":
-        raise ProtocolError(f"obligation {args.id!r} remediation is not triggered")
+    if not isinstance(remediation, Mapping) or remediation.get("state") not in {
+        "triggered",
+        "awaiting_local_authority",
+    }:
+        raise ProtocolError(
+            f"obligation {args.id!r} remediation is neither triggered nor awaiting "
+            "local authority"
+        )
     if remediation.get("kind") != durable_action:
         raise ProtocolError(
             f"obligation {args.id!r} durable remediation kind does not match its "
@@ -5341,6 +5377,10 @@ def resolve_obligation(args: argparse.Namespace) -> int:
             }
         )
     now = obligations.utc_now()
+    # Compare the authoritative remediation decision, not the append-only event
+    # identity or advisory delivery substate. A watcher may refresh hosted
+    # evidence or move fix-forward between awaiting/triggered while ancestry is
+    # checked; neither is permission to defeat an unchanged operator action.
     updated = obligations.transition_if_matches(
         args.id,
         "remediated",
@@ -5368,10 +5408,9 @@ def resolve_obligation(args: argparse.Namespace) -> int:
             },
         },
         {
-            "event_id": event_id,
             "overall_state": "remediation_required",
             "recommendation": {"action": durable_action},
-            "remediation": {"state": "triggered", "kind": durable_action},
+            "remediation": {"kind": durable_action},
         },
         store_path,
     )

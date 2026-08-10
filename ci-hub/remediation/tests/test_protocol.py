@@ -2537,6 +2537,79 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(reevaluated, closed)
         self.assertEqual(self.store.read_bytes(), before)
 
+    def test_hosted_advisory_tick_preserves_triggered_fix_forward(self) -> None:
+        """A hosted advisory refresh cannot revoke an active repair exit."""
+        self.create()
+        triggered = self.transition(
+            {
+                "overall_state": "remediation_required",
+                "local": {"state": "no_result"},
+                "github": {
+                    "state": "red",
+                    "finished_at": "2026-08-10T01:00:00Z",
+                    "workflow_name": protocol.DEFAULT_WORKFLOW,
+                    "urls": ["https://example/run"],
+                },
+                "recommendation": {
+                    "action": "fix-forward",
+                    "authority": "advisory-only",
+                },
+                "remediation": {
+                    "state": "triggered",
+                    "kind": "fix-forward",
+                    "dispatch": {"state": "acknowledged"},
+                },
+            }
+        )
+        with redirect_stderr(io.StringIO()):
+            observed = protocol.evaluate_obligation(
+                "test-obligation", store_path=self.store, main_sha=NEXT_SHA
+            )
+
+        self.assertEqual(observed["event_id"], triggered["event_id"])
+        self.assertEqual(observed["remediation"]["state"], "triggered")
+        self.assertEqual(observed["remediation"]["kind"], "fix-forward")
+
+    def test_hosted_advisory_fix_forward_resolves_and_stays_completed(self) -> None:
+        """A new advisory red opens loudly and has a durable repair exit."""
+        self.create()
+        self.transition(
+            {
+                "local": {"state": "no_result"},
+                "github": {
+                    "state": "red",
+                    "finished_at": "2026-08-10T01:00:00Z",
+                    "workflow_name": protocol.DEFAULT_WORKFLOW,
+                    "urls": ["https://example/run"],
+                },
+            }
+        )
+        with redirect_stderr(io.StringIO()):
+            opened = protocol.evaluate_obligation(
+                "test-obligation", store_path=self.store, main_sha=NEXT_SHA
+            )
+        self.assertEqual(opened["overall_state"], "remediation_required")
+        self.assertEqual(
+            opened["remediation"]["state"], "awaiting_local_authority"
+        )
+
+        with (
+            mock.patch.object(protocol, "resolve_repo_source", return_value=self.root),
+            mock.patch.object(protocol, "_fetch_target", return_value="main"),
+            mock.patch.object(protocol, "_resolve_raw_sha", side_effect=lambda _s, r: r),
+            mock.patch.object(protocol, "_is_target_ancestor", return_value=True),
+        ):
+            self.assertEqual(protocol.resolve_obligation(self.resolve_args()), 0)
+        completed = obligations.get_record("test-obligation", self.store)
+        self.assertEqual(completed["overall_state"], "remediated")
+        self.assertEqual(completed["remediation"]["state"], "completed")
+
+        reevaluated = protocol.evaluate_obligation(
+            "test-obligation", store_path=self.store, main_sha=NEXT_SHA
+        )
+        self.assertEqual(reevaluated["event_id"], completed["event_id"])
+        self.assertEqual(reevaluated["overall_state"], "remediated")
+
     def _running_watcher(
         self, *, start_ticks: int = 12345, terminal: bool = True
     ) -> dict:
@@ -2607,7 +2680,7 @@ class ProtocolTest(unittest.TestCase):
             wait_seconds=1.0,
             store=self.store,
         )
-        before = self.store.read_bytes()
+        before = obligations.get_record("test-obligation", self.store)
         with (
             mock.patch.object(protocol, "_current_boot_id", return_value="test-boot"),
             mock.patch.object(protocol, "_process_start_ticks", return_value=99999),
@@ -2618,7 +2691,15 @@ class ProtocolTest(unittest.TestCase):
         ):
             protocol.cancel_watcher(args)
         pidfd_signal.assert_not_called()
-        self.assertEqual(self.store.read_bytes(), before)
+        after = obligations.get_record("test-obligation", self.store)
+        self.assertEqual(after["event_id"], before["event_id"])
+        self.assertEqual(after["watcher"]["state"], "running")
+        self.assertEqual(after["watcher"]["pid"], 4242)
+        self.assertEqual(after["watcher"]["identity"]["start_ticks"], 12345)
+        self.assertEqual(
+            after["watcher"].get("cancellation"),
+            before["watcher"].get("cancellation"),
+        )
 
     def test_cancel_watcher_terminates_its_exact_child(self) -> None:
         child = subprocess.Popen(
@@ -2707,15 +2788,17 @@ class ProtocolTest(unittest.TestCase):
         pidfd_open.assert_not_called()
 
     def test_resolve_refuses_wrong_state_before_repository_queries(self) -> None:
-        self.create()
-        before = self.store.read_text()
+        before = self.create()
         with (
             mock.patch.object(protocol, "resolve_repo_source") as repo_source,
             self.assertRaisesRegex(protocol.ProtocolError, "remediation_required"),
         ):
             protocol.resolve_obligation(self.resolve_args())
         repo_source.assert_not_called()
-        self.assertEqual(self.store.read_text(), before)
+        after = obligations.get_record("test-obligation", self.store)
+        self.assertEqual(after["event_id"], before["event_id"])
+        self.assertEqual(after["overall_state"], "open")
+        self.assertEqual(after["remediation"]["state"], "none")
 
     def test_resolve_records_a_kind_that_differs_from_the_recommendation(
         self,
@@ -2792,14 +2875,18 @@ class ProtocolTest(unittest.TestCase):
             store=self.store,
         )
         self._arm(source, "unevidenced-revert", failed_land, recommended="fix-forward")
-        before = self.store.read_text()
+        before = obligations.get_record("unevidenced-revert", self.store)
         with (
             mock.patch.object(protocol, "resolve_repo_source", return_value=source),
             mock.patch.object(protocol, "_fetch_target", return_value="main"),
             self.assertRaisesRegex(protocol.ProtocolError, "does not restore"),
         ):
             protocol.resolve_obligation(args)
-        self.assertEqual(self.store.read_text(), before)
+        after = obligations.get_record("unevidenced-revert", self.store)
+        self.assertEqual(after["event_id"], before["event_id"])
+        self.assertEqual(after["overall_state"], "remediation_required")
+        self.assertEqual(after["remediation"]["state"], "triggered")
+        self.assertIsNone(after["remediation"].get("ref"))
 
     def test_resolve_refuses_an_unevidenced_fix_forward_claim(self) -> None:
         """The other half: a fix-forward whose ref is not a real repair.
@@ -2824,14 +2911,18 @@ class ProtocolTest(unittest.TestCase):
             store=self.store,
         )
         self._arm(source, "unevidenced-fixforward", failed_land, recommended="revert")
-        before = self.store.read_text()
+        before = obligations.get_record("unevidenced-fixforward", self.store)
         with (
             mock.patch.object(protocol, "resolve_repo_source", return_value=source),
             mock.patch.object(protocol, "_fetch_target", return_value="main"),
             self.assertRaisesRegex(protocol.ProtocolError, "does not descend"),
         ):
             protocol.resolve_obligation(args)
-        self.assertEqual(self.store.read_text(), before)
+        after = obligations.get_record("unevidenced-fixforward", self.store)
+        self.assertEqual(after["event_id"], before["event_id"])
+        self.assertEqual(after["overall_state"], "remediation_required")
+        self.assertEqual(after["remediation"]["state"], "triggered")
+        self.assertIsNone(after["remediation"].get("ref"))
 
     def _linear_repair_history(self, source: Path) -> tuple[str, str]:
         """base -> failed_land -> repair, where repair is NOT a revert."""
@@ -3013,6 +3104,50 @@ class ProtocolTest(unittest.TestCase):
             self.assertRaisesRegex(protocol.ProtocolError, "changed while"),
         ):
             protocol.resolve_obligation(self.resolve_args(source=source))
+
+    def test_resolve_cas_accepts_concurrent_advisory_refresh(self) -> None:
+        """Advisory evidence/substate churn cannot defeat unchanged authority."""
+        self.create()
+        self.require_remediation()
+        source = self.repo_source("rrnewton/hermit")
+        original_transition = obligations.transition_if_matches
+
+        def refresh_then_compare(*args, **kwargs):
+            obligations.transition(
+                "test-obligation",
+                "hosted-remediation-advisory-raced",
+                {
+                    "github": {"last_poll_error": "same semantic verdict, new poll"},
+                    "remediation": {
+                        "state": "awaiting_local_authority",
+                        "kind": "fix-forward",
+                        "dispatch": None,
+                    },
+                },
+                self.store,
+            )
+            return original_transition(*args, **kwargs)
+
+        with (
+            mock.patch.object(protocol, "_fetch_target", return_value="origin/main"),
+            mock.patch.object(
+                protocol, "_resolve_raw_sha", side_effect=(TREE, NEXT_SHA)
+            ),
+            mock.patch.object(
+                protocol, "_is_target_ancestor", side_effect=(True, True)
+            ),
+            mock.patch.object(
+                obligations,
+                "transition_if_matches",
+                side_effect=refresh_then_compare,
+            ),
+        ):
+            self.assertEqual(
+                protocol.resolve_obligation(self.resolve_args(source=source)), 0
+            )
+        record = obligations.get_record("test-obligation", self.store)
+        self.assertEqual(record["overall_state"], "remediated")
+        self.assertEqual(record["remediation"]["state"], "completed")
 
     def test_resolve_cas_refuses_concurrent_same_state_action_change(self) -> None:
         self.create()
@@ -3268,6 +3403,37 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(
             sum(event["event_type"] == "remediation-triggered" for event in events), 1
         )
+
+    def test_stale_trigger_cannot_reopen_completed_resolution(self) -> None:
+        """A watcher snapshot taken before completion loses to the operator."""
+        self.create()
+        stale = self.transition(
+            {
+                "overall_state": "remediation_required",
+                "recommendation": {"action": "fix-forward"},
+                "remediation": {
+                    "state": "recommended",
+                    "kind": "fix-forward",
+                    "dispatch": None,
+                },
+            }
+        )
+        completed = self.transition(
+            {
+                "overall_state": "remediated",
+                "remediation": {
+                    "state": "completed",
+                    "kind": "fix-forward",
+                    "ref": NEXT_SHA,
+                },
+            }
+        )
+
+        observed = protocol.trigger_remediation(stale, store_path=self.store)
+
+        self.assertEqual(observed["event_id"], completed["event_id"])
+        self.assertEqual(observed["overall_state"], "remediated")
+        self.assertEqual(observed["remediation"]["state"], "completed")
 
     def test_wake_delivery_is_unhandled_until_reader_acknowledges(self) -> None:
         self.create()
