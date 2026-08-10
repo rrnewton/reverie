@@ -160,3 +160,65 @@ HERMIT_AGENT_SNAPSHOT_JSON='[]' ./ci-hub/bin/health-tick --flush --no-header
 `agent-utils` uses `update = none`, so ordinary recursive submodule checkout
 does not fetch it. The runner checks out the exact pinned commit on first use
 and fails rather than overwriting a dirty checkout.
+
+## Gate-runner presence (`gate_runner_presence.py`) — certification condition 9
+
+On 2026-08-08 the `hermit-gate-newton` installation and credentials were
+deleted. The user service stayed **enabled** and failed 203/EXEC for roughly two
+days without reporting the deletion, and the missing capacity presented as CI
+saturation: gates parked with every leg finished, Merge Gate repeatedly the
+worst workflow. The runner was later restored and executed gate jobs again —
+**but recovery is not a detector.** Restoring capacity is not the same as being
+able to see capacity disappear.
+
+Four surfaces are checked **separately**, because the incident is invisible to
+any one of them:
+
+| surface | confirmed by | why it is separate |
+| --- | --- | --- |
+| `installation` | `run.sh`, `config.sh`, `bin/`, `externals/` **and** the unit's ExecStart target being executable | `_work` survived the deletion, so "the directory exists" is not installation |
+| `credentials` | `.credentials`, `.credentials_rsaparams`, `.runner` present, non-empty, parseable | `.runner` is UTF-8 **with BOM**; a plain `utf-8` load raises and reads as corruption |
+| `service` | enabled **and** active **and** not failed **and** last exec status 0 | it was `enabled` the entire two days — enabled is necessary and never sufficient |
+| `registration` | the `agentId` in `.runner` is still registered with the repo, and online | local health says nothing about whether GitHub will route work here |
+
+**Absence is `NO_RESULT`, never silence.** Any surface that is absent, degraded,
+or simply could not be evaluated (no network, no `gh`, `--offline`) makes the
+aggregate `NO_RESULT` and exits `2`, so an admission caller fails closed rather
+than proceeding on an unconfirmed runner.
+
+```bash
+# observe (exit 0 = all four confirmed, 2 = NO_RESULT)
+python3 ci-hub/health/gate_runner_presence.py --json
+
+# record on a cadence, then fail closed at admission
+python3 ci-hub/health/gate_runner_presence.py --record .tick-hub/gate-runner-presence.json
+python3 ci-hub/health/gate_runner_presence.py --admission-check \
+    --record .tick-hub/gate-runner-presence.json --max-age 900
+```
+
+A recorded `PRESENT` older than `--max-age` is itself `NO_RESULT`: a monitor
+whose last answer is arbitrarily old cannot discharge "within a defined
+cadence".
+
+### Cadence wiring — NOT YET APPLIED
+
+`ci-hub/ci-hub.rs` loads exactly one tick config (`ci-hub/health/tick-hub.yaml`)
+with no drop-in directory, and that file currently carries another agent's
+uncommitted work, so this block is documented rather than merged in. Add it once
+that file is clean:
+
+```yaml
+  - name: gate_runner_presence
+    every_min: 15
+    check:
+      cmd: python3 ci-hub/health/gate_runner_presence.py --record .tick-hub/gate-runner-presence.json
+```
+
+### Brackets
+
+`tests/test_gate_runner_presence.sh` brackets **by deletion, not by
+inspection**: it builds a scratch installation and a scratch user unit under a
+probe root, measures the untouched hierarchy first, then deletes the
+installation while leaving the unit enabled — reproducing `UnitFileState=enabled`
+with `ExecMainStatus=203`. The live `hermit-gate-runner.service` is never
+touched. 14 assertions, both directions, plus the cadence cases.
