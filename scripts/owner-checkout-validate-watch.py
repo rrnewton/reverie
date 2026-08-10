@@ -40,6 +40,16 @@ ACQUIRED_PATTERN = re.compile(
     r"^validate-lock: ACQUIRED by (?P<agent>\S+) running "
     r"(?P<kind>\S+) (?P<target>[0-9a-f]{40})(?:\s|$)"
 )
+NODE_LINE_PATTERN = re.compile(r"^\[(?P<node>[^]]+)\]\s+(?P<body>.*)$")
+E2E_NODE_PATTERN = re.compile(r"^(?:privileged-)?e2e\.")
+RELINK_DIRECT_SIGNATURES = (
+    (
+        "non-executable",
+        re.compile(r"(?:not executable|non-executable)", re.IGNORECASE),
+    ),
+    ("exec-format-error", re.compile(r"exec format error", re.IGNORECASE)),
+    ("text-file-busy", re.compile(r"text file busy", re.IGNORECASE)),
+)
 
 
 def utc_now() -> str:
@@ -143,6 +153,60 @@ def tree_state(checkout: Path) -> dict[str, Any]:
         "dirty_paths": [line for line in status.splitlines() if line],
         "submodules": submodules.splitlines(),
         "whole_tree_hash": hashlib.sha256(material).hexdigest(),
+    }
+
+
+def checkout_revision_context(
+    checkout: Path, *, head: str, origin_main: str
+) -> dict[str, Any]:
+    """Describe the measured revision without requiring it to equal the tip."""
+    completed = run(
+        ["git", "rev-list", "--left-right", "--count", "HEAD...origin/main"],
+        cwd=checkout,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "unknown error").strip()
+        raise RuntimeError(f"cannot measure checkout distance from origin/main: {detail}")
+    fields = (completed.stdout or "").split()
+    if len(fields) != 2:
+        raise RuntimeError(
+            "cannot measure checkout distance from origin/main: "
+            f"expected two counts, got {(completed.stdout or '').strip()!r}"
+        )
+    try:
+        ahead, behind = (int(field) for field in fields)
+    except ValueError as error:
+        raise RuntimeError(
+            "cannot measure checkout distance from origin/main: "
+            f"non-integer counts {(completed.stdout or '').strip()!r}"
+        ) from error
+
+    if head == origin_main and ahead == 0 and behind == 0:
+        relation = "current"
+    elif behind > 0 and ahead == 0:
+        relation = "stale"
+    elif ahead > 0 and behind == 0:
+        relation = "ahead"
+    else:
+        relation = "diverged"
+    current = relation == "current"
+    qualifier = (
+        f"validate describes current main at SHA {head}"
+        if current
+        else (
+            f"validate describes the owner's checkout at SHA {head}, which is "
+            f"{behind} commit(s) behind and {ahead} commit(s) ahead of "
+            f"origin/main {origin_main}; it does not describe current main"
+        )
+    )
+    return {
+        "head": head,
+        "origin_main": origin_main,
+        "relation": relation,
+        "behind": behind,
+        "ahead": ahead,
+        "current": current,
+        "verdict_qualifier": qualifier,
     }
 
 
@@ -618,6 +682,191 @@ def privileged_tests_evidence(log: Path) -> dict[str, Any] | None:
     return evidence
 
 
+def _binary_snapshot(
+    binary: Path, *, launched_at: dt.datetime, observed_at: dt.datetime
+) -> dict[str, Any]:
+    """Record post-run binary identity without treating its presence as innocence."""
+    evidence: dict[str, Any] = {
+        "path": str(binary),
+        "observed_at": observed_at.isoformat().replace("+00:00", "Z"),
+        "exists_after_run": binary.exists(),
+    }
+    if not binary.exists():
+        return evidence
+    metadata = binary.stat()
+    mtime = dt.datetime.fromtimestamp(metadata.st_mtime, tz=dt.timezone.utc)
+    evidence.update(
+        executable_after_run=os.access(binary, os.X_OK),
+        inode=metadata.st_ino,
+        nlink=metadata.st_nlink,
+        size=metadata.st_size,
+        mode=oct(metadata.st_mode & 0o7777),
+        mtime_ns=metadata.st_mtime_ns,
+        mtime=mtime.isoformat().replace("+00:00", "Z"),
+        mtime_relation_to_observed_run=(
+            "inside-observed-run"
+            if launched_at <= mtime <= observed_at
+            else "before-observed-run"
+            if mtime < launched_at
+            else "after-observation"
+        ),
+        mtime_offset_from_run_start_seconds=(mtime - launched_at).total_seconds(),
+    )
+    return evidence
+
+
+def relink_race_recurrence_evidence(
+    log: Path,
+    checkout: Path,
+    *,
+    launched_at: dt.datetime,
+    observed_at: dt.datetime | None = None,
+) -> dict[str, Any]:
+    """Detect evidence consistent with the intermittent Hermit relink race.
+
+    This is deliberately evidence-only: it neither changes the validate verdict
+    nor calls an ordinary product failure a relink race.  The durable log has no
+    per-line wall clock, so compile overlap is bound by line order and the
+    post-run binary mtime is explicitly scoped to the overall observed run.
+    """
+    observed = observed_at or dt.datetime.now(dt.timezone.utc)
+    base: dict[str, Any] = {
+        "triggered": False,
+        "log": str(log),
+        "suspect_count": 0,
+        "simultaneous_consumer_count": 0,
+        "simultaneity_basis": (
+            "adjacent durable-log emissions; log lines have no wall-clock timestamps"
+        ),
+        "verdict_effect": "none-evidence-only",
+    }
+    if not log.is_file():
+        return {**base, "reason": "durable log missing"}
+
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    binary = checkout / "target/debug/hermit"
+    binary_snapshot = _binary_snapshot(
+        binary, launched_at=launched_at, observed_at=observed
+    )
+
+    details: dict[str, list[str]] = {}
+    detail_node: str | None = None
+    for line in lines:
+        match = NODE_LINE_PATTERN.match(line)
+        if match is None:
+            continue
+        node, body = match.group("node"), match.group("body")
+        if body == "----- detail -----":
+            detail_node = node
+            details[node] = []
+        elif body == "----- end detail -----" and detail_node == node:
+            detail_node = None
+        elif detail_node == node and body.strip():
+            details[node].append(body)
+
+    active_compiles: dict[str, int] = {}
+    node_starts: dict[str, int] = {}
+    suspects: list[dict[str, Any]] = []
+    for line_number, line in enumerate(lines, start=1):
+        match = NODE_LINE_PATTERN.match(line)
+        if match is None:
+            continue
+        node, body = match.group("node"), match.group("body")
+        if E2E_NODE_PATTERN.match(node) and "▶ START" in body:
+            node_starts[node] = line_number
+        if re.search(r"\bCompiling hermit v", body):
+            active_compiles[node] = line_number
+        elif node in active_compiles and re.search(r"\bFinished `[^`]+` profile", body):
+            active_compiles.pop(node, None)
+
+        if not E2E_NODE_PATTERN.match(node):
+            continue
+        signatures = [
+            name
+            for name, pattern in RELINK_DIRECT_SIGNATURES
+            if pattern.search(body)
+        ]
+        lower = body.lower()
+        if (
+            "no such file" in lower
+            and str(binary) in body
+            and binary_snapshot["exists_after_run"]
+        ):
+            signatures.append("no-such-file-path-exists-afterwards")
+        timeout_failure = (
+            "✗ FAIL" in body
+            and bool(
+                re.search(
+                    r"(?:timed? out|timeout|exit\s+124|>\s*\d+(?:\.\d+)?s)",
+                    body,
+                    re.IGNORECASE,
+                )
+            )
+            and not details.get(node)
+        )
+        if timeout_failure:
+            signatures.append("unexplained-empty-detail-timeout")
+        if not signatures:
+            continue
+        suspects.append(
+            {
+                "node": node,
+                "line_number": line_number,
+                "line": line,
+                "signatures": signatures,
+                "node_start_line": node_starts.get(node),
+                "detail_lines": details.get(node, []),
+                "compile_in_flight": bool(active_compiles),
+                "active_hermit_compiles": [
+                    {"node": compile_node, "start_line": start_line}
+                    for compile_node, start_line in active_compiles.items()
+                ],
+                "binary_mtime_relative_to_node_window": (
+                    "unknown-no-per-line-wall-clock; see line-order compile "
+                    "overlap and overall-run mtime"
+                ),
+            }
+        )
+
+    largest: list[dict[str, Any]] = []
+    current: list[dict[str, Any]] = []
+    for suspect in suspects:
+        if current and suspect["line_number"] != current[-1]["line_number"] + 1:
+            if len({item["node"] for item in current}) > len(
+                {item["node"] for item in largest}
+            ):
+                largest = current
+            current = []
+        current.append(suspect)
+    if len({item["node"] for item in current}) > len(
+        {item["node"] for item in largest}
+    ):
+        largest = current
+    simultaneous_nodes = sorted({item["node"] for item in largest})
+    return {
+        **base,
+        "triggered": bool(suspects),
+        "reason": (
+            "one or more e2e consumers matched the relink-race recurrence signature"
+            if suspects
+            else "no e2e consumer matched the relink-race recurrence signature"
+        ),
+        "suspect_count": len(suspects),
+        "suspects": suspects,
+        "compile_in_flight_at_any_suspect": any(
+            item["compile_in_flight"] for item in suspects
+        ),
+        "simultaneous_consumer_count": len(simultaneous_nodes),
+        "simultaneous_consumers": simultaneous_nodes,
+        "simultaneous_line_range": (
+            [largest[0]["line_number"], largest[-1]["line_number"]]
+            if largest
+            else None
+        ),
+        "binary_snapshot": binary_snapshot,
+    }
+
+
 def first_raw_failure_line(log: Path) -> str | None:
     if not log.is_file():
         return None
@@ -737,6 +986,11 @@ def render_message(result: dict[str, Any]) -> str:
         "OWNER CHECKOUT PERIODIC VALIDATE: " + str(result["state"]),
         f"checkout: {result['checkout']}",
         f"sha: {result.get('sha') or 'unresolved'}",
+        f"origin_main_sha: {result.get('origin_main_sha') or 'unresolved'}",
+        f"checkout_relation: {result.get('checkout_relation') or 'unresolved'}",
+        f"checkout_behind: {result.get('checkout_behind')!r}",
+        f"checkout_ahead: {result.get('checkout_ahead')!r}",
+        f"verdict_qualifier: {result.get('verdict_qualifier') or 'unresolved'}",
         f"attempt: {result['attempt_id']}",
         f"reason: {result.get('reason') or 'none'}",
         f"executed_tests: {result.get('executed_tests')!r}",
@@ -746,10 +1000,12 @@ def render_message(result: dict[str, Any]) -> str:
         f"canonical_qualified: {result.get('canonical_qualified')!r}",
         f"exception_adjusted_qualified: {result.get('exception_adjusted_qualified')!r}",
         f"landing_authority: {result.get('landing_authority')!r}",
+        f"landing_authority_reason: {result.get('landing_authority_reason') or 'none'}",
         f"lock_admission: {result.get('lock_admission')!r}",
         f"lock_block_evidence: {result.get('lock_block_evidence')!r}",
         f"lock_holder: {result.get('lock_holder')!r}",
         f"privileged_tests_node: {result.get('privileged_tests_node')!r}",
+        f"relink_race_recurrence: {result.get('relink_race_recurrence')!r}",
         f"raw_failure_line: {result.get('raw_failure_line')!r}",
         f"pre_tree_hash: {result.get('pre_tree_hash') or 'unavailable'}",
         f"post_tree_hash: {result.get('post_tree_hash') or 'unavailable'}",
@@ -900,11 +1156,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 result["dirty_paths_after"] = pre["dirty_paths"]
                 return conclude()
         origin = git(checkout, "rev-parse", "origin/main").strip()
-        if origin != pre["head"]:
-            result["reason"] = f"owner checkout is stale: HEAD={pre['head']} origin/main={origin}"
-            result["post_tree_hash"] = pre["whole_tree_hash"]
-            result["dirty_paths_after"] = pre["dirty_paths"]
-            return conclude()
+        revision = checkout_revision_context(
+            checkout, head=pre["head"], origin_main=origin
+        )
+        result.update(
+            origin_main_sha=origin,
+            checkout_relation=revision["relation"],
+            checkout_behind=revision["behind"],
+            checkout_ahead=revision["ahead"],
+            checkout_is_current=revision["current"],
+            verdict_qualifier=revision["verdict_qualifier"],
+        )
 
         if args.dry_run:
             result.update(state="NO_RESULT", reason="dry-run: launch deliberately skipped")
@@ -979,7 +1241,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             qualified, reason = qualify_row(parent, checkout, pre["head"], row)
             result["canonical_qualified"] = qualified
             result["canonical_qualification_reason"] = reason
-            result["landing_authority"] = qualified
+            result["landing_authority"] = qualified and revision["current"]
+            result["landing_authority_reason"] = (
+                "exact-head canonical receipt qualifies at current origin/main"
+                if result["landing_authority"]
+                else (
+                    "withheld because the owner checkout is not current origin/main"
+                    if not revision["current"]
+                    else reason
+                )
+            )
             exception_qualified = False
             exception_reason = "not evaluated"
             if exception["applied"]:
@@ -1006,6 +1277,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             raw_failure = first_raw_failure_line(evidence_log)
             if raw_failure is not None:
                 result["raw_failure_line"] = raw_failure
+        result["relink_race_recurrence"] = relink_race_recurrence_evidence(
+            evidence_log,
+            checkout,
+            launched_at=launched_at,
+        )
 
         if row is None and lock_block is not None:
             holder = result.get("lock_holder") or {}
@@ -1034,19 +1310,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reason=f"make validate exit={completed.returncode}; {reason}",
             )
         elif exception["applied"] and (qualified or exception_qualified):
+            receipt_scope = (
+                "canonical receipt also qualifies"
+                if qualified and revision["current"]
+                else "receipt is useful only for this exact checkout revision"
+            )
             result.update(
                 state="PASS_WITH_KNOWN_EXCEPTION",
                 reason=(
                     "counted full run passed with the disclosed owner-symlink exception; "
-                    + (
-                        "canonical receipt also qualifies"
-                        if qualified
-                        else "canonical receipt remains non-authoritative"
-                    )
+                    + receipt_scope
+                    + "; "
+                    + revision["verdict_qualifier"]
                 ),
             )
         elif qualified:
-            result.update(state="PASS", reason="authoritative counted full receipt qualifies")
+            result.update(
+                state="PASS",
+                reason=(
+                    (
+                        "authoritative counted full receipt qualifies; "
+                        if revision["current"]
+                        else "counted full receipt qualifies for this exact checkout only; "
+                    )
+                    + revision["verdict_qualifier"]
+                ),
+            )
         else:
             result.update(state="NO_RESULT", reason=reason)
 

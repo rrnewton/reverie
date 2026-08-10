@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import importlib.util
+import datetime as dt
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -48,6 +50,25 @@ def clean_repository(root: Path) -> Path:
     head = command(repo, "git", "rev-parse", "HEAD").strip()
     command(repo, "git", "update-ref", "refs/remotes/origin/main", head)
     return repo
+
+
+def advance_origin_main(repo: Path, count: int) -> str:
+    """Advance only the remote-tracking ref, leaving the checkout untouched."""
+    parent = command(repo, "git", "rev-parse", "refs/remotes/origin/main").strip()
+    tree = command(repo, "git", "rev-parse", f"{parent}^{{tree}}").strip()
+    for index in range(count):
+        parent = command(
+            repo,
+            "git",
+            "commit-tree",
+            tree,
+            "-p",
+            parent,
+            "-m",
+            f"remote fixture {index + 1}",
+        ).strip()
+    command(repo, "git", "update-ref", "refs/remotes/origin/main", parent)
+    return parent
 
 
 class OwnerCheckoutValidateWatchTest(unittest.TestCase):
@@ -110,6 +131,108 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(result["dirty_paths_after"], [])
             self.assertEqual(result["pre_tree_hash"], result["post_tree_hash"])
             self.assertFalse(result["known_dirty_exception"]["applied"])
+            self.assertEqual(result["checkout_relation"], "current")
+            self.assertEqual(result["checkout_behind"], 0)
+            self.assertEqual(result["checkout_ahead"], 0)
+            self.assertIn("current main", result["verdict_qualifier"])
+
+    def test_stale_main_runs_and_discloses_exact_distance_without_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            head = command(repo, "git", "rev-parse", "HEAD").strip()
+            origin = advance_origin_main(repo, 2)
+            before = watch.tree_state(repo)
+            row = {
+                "commit": head,
+                "cwd": str(repo),
+                "result": "pass",
+                "executed_tests": 862,
+                "coverage": {"satisfied": True},
+            }
+
+            with mock.patch.object(
+                watch,
+                "run_validate_observing_admission",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ) as launched, mock.patch.object(
+                watch, "canonical_ledger_rows", return_value=[row]
+            ), mock.patch.object(
+                watch, "latest_attempt_row", return_value=row
+            ), mock.patch.object(
+                watch, "qualify_row", return_value=(True, "fixture qualifies")
+            ):
+                rc = watch.main(
+                    [
+                        "--checkout", str(repo),
+                        "--state-dir", str(state),
+                        "--no-fetch",
+                        "--no-notify",
+                    ]
+                )
+
+            self.assertEqual(rc, watch.PASS)
+            launched.assert_called_once()
+            self.assertEqual(watch.tree_state(repo), before)
+            result = json.loads(
+                next((state / "results").glob("*.json")).read_text()
+            )
+            self.assertEqual(result["state"], "PASS")
+            self.assertEqual(result["sha"], head)
+            self.assertEqual(result["origin_main_sha"], origin)
+            self.assertEqual(result["checkout_relation"], "stale")
+            self.assertEqual(result["checkout_behind"], 2)
+            self.assertEqual(result["checkout_ahead"], 0)
+            self.assertIn("does not describe current main", result["verdict_qualifier"])
+            self.assertIn("2 commit(s) behind", result["reason"])
+            self.assertFalse(result["landing_authority"])
+            self.assertIn("withheld", result["landing_authority_reason"])
+
+    def test_current_main_runs_and_can_carry_exact_head_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            head = command(repo, "git", "rev-parse", "HEAD").strip()
+            row = {
+                "commit": head,
+                "cwd": str(repo),
+                "result": "pass",
+                "executed_tests": 862,
+                "coverage": {"satisfied": True},
+            }
+
+            with mock.patch.object(
+                watch,
+                "run_validate_observing_admission",
+                return_value=subprocess.CompletedProcess([], 0, "", ""),
+            ) as launched, mock.patch.object(
+                watch, "canonical_ledger_rows", return_value=[row]
+            ), mock.patch.object(
+                watch, "latest_attempt_row", return_value=row
+            ), mock.patch.object(
+                watch, "qualify_row", return_value=(True, "fixture qualifies")
+            ):
+                rc = watch.main(
+                    [
+                        "--checkout", str(repo),
+                        "--state-dir", str(state),
+                        "--no-fetch",
+                        "--no-notify",
+                    ]
+                )
+
+            self.assertEqual(rc, watch.PASS)
+            launched.assert_called_once()
+            result = json.loads(
+                next((state / "results").glob("*.json")).read_text()
+            )
+            self.assertEqual(result["checkout_relation"], "current")
+            self.assertEqual(result["checkout_behind"], 0)
+            self.assertEqual(result["checkout_ahead"], 0)
+            self.assertTrue(result["landing_authority"])
+            self.assertIn("current main", result["verdict_qualifier"])
 
     def test_exact_known_symlink_runs_policy_and_discloses_exception(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -473,6 +596,98 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(evidence["status"], "PASS")
             self.assertEqual(evidence["duration"], "17s")
             self.assertNotIn("raw_failure_line", evidence)
+
+    def test_relink_detector_captures_four_simultaneous_consumers_and_compile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            binary = checkout / "target/debug/hermit"
+            binary.parent.mkdir(parents=True)
+            binary.write_text("fixture", encoding="utf-8")
+            binary.chmod(0o755)
+            launched = dt.datetime(2026, 8, 10, 7, 0, tzinfo=dt.timezone.utc)
+            observed = launched + dt.timedelta(minutes=10)
+            os.utime(
+                binary, (launched.timestamp() + 300, launched.timestamp() + 300)
+            )
+            log = checkout / "validate.log"
+            log.write_text(
+                "[test.app_strict_verify]    Compiling hermit v0.2.0 (/fixture/hermit-cli)\n"
+                f"[e2e.manifest_chaos_c] test_harness.sh: Hermit binary is not executable: {binary}\n"
+                f"[e2e.manifest_debugger_c] exec format error: {binary}\n"
+                f"[privileged-e2e.manifest_backend_parity_c] Text file busy: {binary}\n"
+                f"[e2e.manifest_applications] No such file or directory: {binary}\n"
+                "[test.app_strict_verify]     Finished `test` profile [unoptimized] target(s) in 5.92s\n",
+                encoding="utf-8",
+            )
+
+            evidence = watch.relink_race_recurrence_evidence(
+                log, checkout, launched_at=launched, observed_at=observed
+            )
+
+            self.assertTrue(evidence["triggered"])
+            self.assertEqual(evidence["suspect_count"], 4)
+            self.assertEqual(evidence["simultaneous_consumer_count"], 4)
+            self.assertEqual(evidence["simultaneous_line_range"], [2, 5])
+            self.assertTrue(evidence["compile_in_flight_at_any_suspect"])
+            self.assertTrue(
+                all(item["compile_in_flight"] for item in evidence["suspects"])
+            )
+            self.assertTrue(evidence["binary_snapshot"]["exists_after_run"])
+            self.assertTrue(evidence["binary_snapshot"]["executable_after_run"])
+            self.assertEqual(
+                evidence["binary_snapshot"]["mtime_relation_to_observed_run"],
+                "inside-observed-run",
+            )
+            self.assertIn(
+                "no-such-file-path-exists-afterwards",
+                evidence["suspects"][3]["signatures"],
+            )
+
+    def test_relink_detector_captures_empty_detail_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            log = checkout / "validate.log"
+            log.write_text(
+                "[privileged-e2e.manifest_backend_parity_c] ▶ START  Privileged manifest bucket\n"
+                "[privileged-e2e.manifest_backend_parity_c] ✗ FAIL   Privileged manifest bucket (120.03s, exit 124)\n"
+                "[privileged-e2e.manifest_backend_parity_c] ----- detail -----\n"
+                "[privileged-e2e.manifest_backend_parity_c] ----- end detail -----\n",
+                encoding="utf-8",
+            )
+            now = dt.datetime(2026, 8, 10, 7, 0, tzinfo=dt.timezone.utc)
+
+            evidence = watch.relink_race_recurrence_evidence(
+                log, checkout, launched_at=now, observed_at=now
+            )
+
+            self.assertTrue(evidence["triggered"])
+            self.assertEqual(
+                evidence["suspects"][0]["signatures"],
+                ["unexplained-empty-detail-timeout"],
+            )
+            self.assertEqual(evidence["suspects"][0]["detail_lines"], [])
+
+    def test_relink_detector_does_not_launder_detailed_product_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            checkout = Path(temporary)
+            log = checkout / "validate.log"
+            log.write_text(
+                "[e2e.manifest_chaos_c] ✗ FAIL   Portable manifest bucket (17s, exit 1)\n"
+                "[e2e.manifest_chaos_c] ----- detail -----\n"
+                "[e2e.manifest_chaos_c] assertion failed: schedules differ\n"
+                "[e2e.manifest_chaos_c] ----- end detail -----\n"
+                "[test.app_strict_verify]    Compiling hermit v0.2.0 (/fixture/hermit-cli)\n",
+                encoding="utf-8",
+            )
+            now = dt.datetime(2026, 8, 10, 7, 0, tzinfo=dt.timezone.utc)
+
+            evidence = watch.relink_race_recurrence_evidence(
+                log, checkout, launched_at=now, observed_at=now
+            )
+
+            self.assertFalse(evidence["triggered"])
+            self.assertEqual(evidence["suspect_count"], 0)
+            self.assertEqual(evidence["verdict_effect"], "none-evidence-only")
 
     def test_exact_ledger_failure_outranks_wrapper_success(self) -> None:
         source = (ROOT / "scripts/owner-checkout-validate-watch.py").read_text()
