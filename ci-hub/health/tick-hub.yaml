@@ -421,4 +421,83 @@ reminders:
   #       component: memory-skill-sync
   #     title: "memory<->skill sync is {state} (REPORT-ONLY, coordinator reconciles): {summary}"
 
+  # A HEAD THAT NOTHING EVALUATED. Measured 2026-08-10: 6 of the 25 most recently
+  # updated open PRs had ZERO workflow runs at their current head, and every one
+  # was CONFLICTING -- GitHub cannot build refs/pull/N/merge for a conflicting PR,
+  # so no pull_request run is created and the head is never checked.
+  #
+  # The danger is that the absence LOOKS LIKE HEALTH: with no runs there are no
+  # failing checks, so every surface reads clean. "Evaluated and clean" and "never
+  # evaluated" were indistinguishable until this check existed, and only the second
+  # is dangerous. The tool reports three states, never two -- a red head is
+  # EVALUATED_FAIL (someone else's page), and only a total absence of runs fires
+  # here, so a visible failure is never laundered into an invisible one.
+  - name: pr_head_never_evaluated
+    cadence_secs: 1800
+    gate:
+      cmd: python3 ci-hub/health/unevaluated_head.py --repo rrnewton/hermit --limit 40 --gate
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: unevaluated-head
+      title: "open PR head(s) that NO workflow ever evaluated -- not the same as passing: {summary}"
+
+  # AN APPROVAL THAT NO LONGER BINDS TO THE HEAD IT WAS EARNED AGAINST, and the
+  # composed state that makes this pair worth more than its halves: an approval
+  # can survive a head change AND that head may never have been evaluated, so code
+  # can be APPROVED, UNEVALUATED, AND LOOK FULLY GREEN. Observed on #1864.
+  #
+  # The two failures are NOT independent. merge-gate.yml's
+  # invalidate-local-validation job -- which would retire the stale label -- is
+  # itself a pull_request job, so the same conflict that prevents evaluation also
+  # prevents invalidation. One cause disables both guards, which is why they show
+  # up together.
+  #
+  # GATED ON `superseded`, WHICH ALSO COVERS THE COMBINED STATE, deliberately NOT
+  # on `unverifiable`: see the daily entry below for why. Nothing is ever deleted
+  # by this check -- a superseded approval simply stops satisfying the gate and
+  # stays visible as the record of what was reviewed and when.
+  - name: approval_no_longer_binds_to_head
+    cadence_secs: 1800
+    gate:
+      cmd: python3 ci-hub/health/approval_binding.py --repo rrnewton/hermit --gate --gate-on superseded
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: approval-binding
+      title: "approval(s) earned against a different head, or approved-and-unevaluated: {summary}"
+
+  # THE STANDING BLOCKER behind the gate above, surfaced ONCE A DAY so it stays
+  # visible instead of the check being silently inert -- the same treatment
+  # validate_wall_series_readiness gets, and for the same reason.
+  #
+  # Today EVERY approval reads UNDETERMINED, because no reviewer emits a
+  # machine-readable `APPROVED-AT: <lane> <sha>` line and the role tag does not
+  # encode the lane (#1864's codex review is tagged `GPT-5 Codex`, #1727's is
+  # `gpt-5.6-sol` -- neither contains "codex"). So an approval label cannot be
+  # linked to the comment that earned it by any means except a human reading the
+  # thread. That is a fleet-wide convention gap, not a per-PR event: gating a
+  # 30-minute tick on it would fire forever and train everyone to skip the check,
+  # which is the corrosion this file already avoids elsewhere. Daily keeps it
+  # honest without making it noise. It retires itself once reviewers emit the
+  # binding line.
+  - name: approvals_unverifiable_against_head
+    cadence_secs: 86400
+    gate:
+      cmd: python3 ci-hub/health/approval_binding.py --repo rrnewton/hermit --gate --gate-on unverifiable
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: approval-binding-readiness
+      title: "approval(s) cannot be bound to any head; reviewers emit no APPROVED-AT line: {summary}"
+
 health_checks: []

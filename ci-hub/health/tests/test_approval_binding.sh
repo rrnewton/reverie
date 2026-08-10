@@ -92,6 +92,30 @@ grep -qE -- "--method[ =]DELETE|method=[\"']DELETE|\.delete\(" "$tool" \
   && bad "tool contains a label-deleting call; invalidation must not mean deletion" \
   || ok "tool performs NO label mutation -- invalidation without deletion"
 
+
+# --- --gate-on selector: the standing condition must not page every tick ------
+# UNDETERMINED is currently universal (no reviewer emits APPROVED-AT yet), so
+# gating a 30-minute tick on it would fire forever and train people to ignore the
+# check -- the same corrosion tick-hub.yaml already avoids by splitting
+# validate_wall_regression (gates the event) from validate_wall_series_readiness
+# (surfaces the standing blocker daily). These assert the split actually works,
+# in BOTH directions: superseded still pages, unverifiable-only does not.
+out="$(run "$tmp/unbound.json" --gate --gate-on superseded)"; rc=$?
+[[ $rc -eq 0 ]] && ok "--gate-on superseded: an UNDETERMINED-only population does NOT page" \
+  || bad "--gate-on superseded paged on undetermined only (rc=$rc)"
+out="$(run "$tmp/superseded.json" --gate --gate-on superseded)"; rc=$?
+[[ $rc -eq 1 ]] && ok "--gate-on superseded: a genuinely superseded approval STILL pages" \
+  || bad "--gate-on superseded failed to page on superseded (rc=$rc)"
+out="$(run "$tmp/combined.json" --gate --gate-on superseded)"; rc=$?
+[[ $rc -eq 1 ]] && ok "--gate-on superseded: the combined approved+unevaluated state STILL pages" \
+  || bad "--gate-on superseded missed the combined state (rc=$rc)"
+out="$(run "$tmp/unbound.json" --gate --gate-on unverifiable)"; rc=$?
+[[ $rc -eq 1 ]] && ok "--gate-on unverifiable: the standing condition pages on its own daily entry" \
+  || bad "--gate-on unverifiable did not page (rc=$rc)"
+out="$(run "$tmp/unbound.json" --gate)"; rc=$?
+[[ $rc -eq 1 ]] && ok "default --gate is UNCHANGED: still pages on anything not BOUND_CURRENT" \
+  || bad "default gate contract regressed (rc=$rc)"
+
 echo "======================================================================"
 echo "flagged-when-it-should:     3 cases  (superseded, unbound, composed)"
 echo "not-flagged-when-it-should: 1 case   (approval naming the current head)"

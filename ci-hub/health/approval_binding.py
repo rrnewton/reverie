@@ -197,8 +197,28 @@ def main() -> int:
     ap.add_argument("--repo", default="rrnewton/hermit")
     ap.add_argument("--from-json", dest="fixture")
     ap.add_argument("--gate", action="store_true")
+    ap.add_argument(
+        "--gate-on",
+        default="all",
+        choices=["all", "superseded", "unverifiable"],
+        help=(
+            "Which states make --gate exit non-zero. Default 'all' (anything not "
+            "BOUND_CURRENT) is the standalone contract and is unchanged. "
+            "'superseded' gates only on approvals we can prove were earned "
+            "against a different head, plus the combined approved-and-unevaluated "
+            "state -- both per-PR and actionable today. 'unverifiable' gates only "
+            "on UNDETERMINED. The split exists because UNDETERMINED is currently a "
+            "STANDING condition, not an event: no reviewer emits APPROVED-AT yet, "
+            "so every approval reads unverifiable and a per-tick page would be "
+            "pure noise that trains people to ignore the check. tick-hub.yaml "
+            "already draws exactly this distinction for validate_wall_regression "
+            "(gates the event) versus validate_wall_series_readiness (surfaces the "
+            "standing blocker daily so it cannot go silently inert)."
+        ),
+    )
     ap.add_argument("--json", dest="as_json", action="store_true")
     a = ap.parse_args()
+    a.gate_on = getattr(a, "gate_on", "all")
 
     rows = collect_fixture(a.fixture) if a.fixture else collect_live(a.repo)
     bad = [r for r in rows if r["state"] != BOUND_CURRENT]
@@ -222,10 +242,20 @@ def main() -> int:
         if not bad:
             print("  every approval label is bound to the current head")
 
-    if a.gate and bad:
+    if a.gate_on == "superseded":
+        gating = [r for r in rows if r["state"] == SUPERSEDED] + [
+            r for r in combined if r["state"] != SUPERSEDED
+        ]
+    elif a.gate_on == "unverifiable":
+        gating = [r for r in rows if r["state"] == UNDETERMINED]
+    else:
+        gating = bad
+
+    if a.gate and gating:
         print(
-            f"GATE FAIL: {len(bad)} of {len(rows)} approval label(s) do not bind to the current "
-            "head. They are NOT deleted -- they simply must not satisfy the review gate.",
+            f"GATE FAIL ({a.gate_on}): {len(gating)} of {len(rows)} approval label(s) do not bind "
+            "to the current head. They are NOT deleted -- they simply must not satisfy the review "
+            "gate.",
             file=sys.stderr,
         )
         return 1
