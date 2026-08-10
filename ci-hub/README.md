@@ -278,8 +278,13 @@ recovers any write-ahead intent interrupted after merge but before arm, then
 polls every 15 seconds. A failure records durable remediation state and may send
 an advisory wake to the live `hermit-lander` (or coordinator). The wake is
 recorded as `sent_unacknowledged`; only a reader's `inherit-obligations` scan
-changes it to `acknowledged`. The five-minute tick and every fresh lander's
-startup scan recover from a lost wake.
+changes it to `acknowledged`. A bare scan records receipt only. When the reader
+has evaluated the recommendation, it records either `--action-outcome executed`
+or `--action-outcome declined --reason '<durable rationale>'`; a decline without
+a nonblank reason is refused. The resulting `remediation.dispatch.acknowledgement`
+lives on the obligation, so a refusal cannot be mistaken for a click-through.
+The five-minute tick and every fresh lander's startup scan recover from a lost
+wake.
 
 ## Speculative-land obligation contract
 

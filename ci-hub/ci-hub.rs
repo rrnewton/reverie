@@ -403,8 +403,20 @@ struct InheritObligationsArgs {
     agent: String,
     #[arg(long)]
     session: Option<String>,
+    /// Record an evaluated recommendation; omission records receipt only.
+    #[arg(long, value_enum)]
+    action_outcome: Option<AcknowledgementOutcome>,
+    /// Durable refusal rationale; valid only when the action was declined.
+    #[arg(long)]
+    reason: Option<String>,
     #[arg(long)]
     store: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum AcknowledgementOutcome {
+    Executed,
+    Declined,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -1601,6 +1613,16 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             push_option(&mut protocol_args, "--agent", args.agent);
             if let Some(session) = args.session {
                 push_option(&mut protocol_args, "--session", session);
+            }
+            if let Some(outcome) = args.action_outcome {
+                let outcome = match outcome {
+                    AcknowledgementOutcome::Executed => "executed",
+                    AcknowledgementOutcome::Declined => "declined",
+                };
+                push_option(&mut protocol_args, "--action-outcome", outcome);
+            }
+            if let Some(reason) = args.reason {
+                push_option(&mut protocol_args, "--reason", reason);
             }
             if let Some(store) = args.store {
                 push_option(&mut protocol_args, "--store", store);
@@ -6970,6 +6992,29 @@ mod tests {
         .unwrap()
         .command;
         assert!(inherit.cost_spec().is_none());
+        let declined = Cli::try_parse_from([
+            "ci-hub",
+            "inherit-obligations",
+            "--agent",
+            "hermit-lander",
+            "--action-outcome",
+            "declined",
+            "--reason",
+            "owner authorization is absent",
+        ])
+        .unwrap()
+        .command;
+        let HubCommand::InheritObligations(declined) = declined else {
+            panic!("expected inherit-obligations command")
+        };
+        assert!(matches!(
+            declined.action_outcome,
+            Some(AcknowledgementOutcome::Declined)
+        ));
+        assert_eq!(
+            declined.reason.as_deref(),
+            Some("owner authorization is absent")
+        );
         let wake = Cli::try_parse_from([
             "ci-hub",
             "record-obligation-wake",

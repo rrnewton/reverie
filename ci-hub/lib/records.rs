@@ -84,6 +84,23 @@ pub struct DispatchState {
     pub acknowledged_by: Option<String>,
     #[serde(default)]
     pub acknowledged_session: Option<String>,
+    #[serde(default)]
+    pub acknowledgement: Option<DispatchAcknowledgement>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct DispatchAcknowledgement {
+    pub outcome: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub recorded_at: Option<String>,
+    #[serde(default)]
+    pub recorded_by: Option<String>,
+    #[serde(default)]
+    pub recorded_session: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }

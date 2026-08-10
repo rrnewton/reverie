@@ -2917,21 +2917,69 @@ def record_wake_sent(
 
 
 def inherit_actionable(
-    *, store_path: Path, agent: str, session: str
+    *,
+    store_path: Path,
+    agent: str,
+    session: str,
+    action_outcome: str | None = None,
+    reason: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Let a fresh reader discover and acknowledge all inherited remediation."""
+    """Discover inherited remediation and optionally record its disposition.
+
+    A bare acknowledgement means only that the dispatch was received.  An
+    explicit decline is a durable decision and therefore requires a reason in
+    the obligation itself.  Execution may be recorded without a reason because
+    the completed repair is separately proven by ``resolve-obligation``.
+    """
+    if action_outcome not in {None, "executed", "declined"}:
+        raise ProtocolError(
+            "--action-outcome must be either 'executed' or 'declined'"
+        )
+    normalized_reason = reason.strip() if reason is not None else None
+    if action_outcome == "declined" and not normalized_reason:
+        raise ProtocolError(
+            "--reason is required when --action-outcome=declined"
+        )
+    if action_outcome != "declined" and reason is not None:
+        raise ProtocolError(
+            "--reason is only valid with --action-outcome=declined"
+        )
+
     now = obligations.utc_now()
     inherited: list[dict[str, Any]] = []
     for record in actionable_records(store_path):
         remediation = record.get("remediation") or {}
         dispatch = remediation.get("dispatch") or {}
+        acknowledgement = dispatch.get("acknowledgement") or {}
+        same_disposition = action_outcome is None or (
+            acknowledgement.get("outcome") == action_outcome
+            and acknowledgement.get("reason") == normalized_reason
+            and acknowledgement.get("recorded_by") == agent
+            and acknowledgement.get("recorded_session") == session
+        )
         if (
             dispatch.get("state") == "acknowledged"
             and dispatch.get("acknowledged_by") == agent
             and dispatch.get("acknowledged_session") == session
+            and same_disposition
         ):
             inherited.append(record)
             continue
+        dispatch_patch: dict[str, Any] = {
+            "state": "acknowledged",
+            "acknowledged_at": now,
+            "acknowledged_by": agent,
+            "acknowledged_session": session,
+            "acknowledged_wake_id": dispatch.get("wake_id"),
+        }
+        if action_outcome is not None:
+            dispatch_patch["acknowledgement"] = {
+                "outcome": action_outcome,
+                "reason": normalized_reason,
+                "recorded_at": now,
+                "recorded_by": agent,
+                "recorded_session": session,
+            }
         inherited.append(
             obligations.transition(
                 record["obligation_id"],
@@ -2944,13 +2992,7 @@ def inherit_actionable(
                         "handled_session": session,
                     },
                     "remediation": {
-                        "dispatch": {
-                            "state": "acknowledged",
-                            "acknowledged_at": now,
-                            "acknowledged_by": agent,
-                            "acknowledged_session": session,
-                            "acknowledged_wake_id": dispatch.get("wake_id"),
-                        }
+                        "dispatch": dispatch_patch
                     },
                 },
                 store_path,
@@ -5199,6 +5241,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     inherit_parser.add_argument(
         "--store", type=Path, default=obligations.default_store_path()
     )
+    inherit_parser.add_argument(
+        "--action-outcome",
+        choices=("executed", "declined"),
+        help=(
+            "record an evaluated recommendation; declined requires --reason, "
+            "while omission records receipt only"
+        ),
+    )
+    inherit_parser.add_argument(
+        "--reason",
+        help="durable refusal rationale; valid only for a declined action",
+    )
 
     cancel_parser = subparsers.add_parser(
         "cancel-watcher",
@@ -5309,7 +5363,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "inherit":
             inherit_actionable(
-                store_path=args.store, agent=args.agent, session=args.session
+                store_path=args.store,
+                agent=args.agent,
+                session=args.session,
+                action_outcome=args.action_outcome,
+                reason=args.reason,
             )
             return 0
         if args.command == "cancel-watcher":

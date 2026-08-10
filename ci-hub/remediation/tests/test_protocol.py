@@ -3132,10 +3132,88 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(dispatch["state"], "acknowledged")
         self.assertEqual(dispatch["acknowledged_by"], "hermit-lander")
         self.assertEqual(dispatch["acknowledged_session"], "replacement-1")
+        self.assertNotIn("acknowledgement", dispatch)
         events = [json.loads(line) for line in self.store.read_text().splitlines()]
         self.assertEqual(
             sum(event["event_type"] == "remediation-inherited" for event in events), 1
         )
+
+    def test_executed_acknowledgement_succeeds_without_reason(self) -> None:
+        self.create()
+        self.transition({"github": {"state": "red"}})
+        with redirect_stderr(io.StringIO()):
+            protocol.evaluate_obligation(
+                "test-obligation", store_path=self.store, main_sha=SHA
+            )
+        with redirect_stdout(io.StringIO()):
+            protocol.inherit_actionable(
+                store_path=self.store,
+                agent="hermit-lander",
+                session="execution-session",
+                action_outcome="executed",
+            )
+        acknowledgement = obligations.get_record("test-obligation", self.store)[
+            "remediation"
+        ]["dispatch"]["acknowledgement"]
+        self.assertEqual(acknowledgement["outcome"], "executed")
+        self.assertIsNone(acknowledgement["reason"])
+
+    def test_declined_acknowledgement_without_reason_is_refused(self) -> None:
+        self.create()
+        self.transition({"github": {"state": "red"}})
+        with redirect_stderr(io.StringIO()):
+            protocol.evaluate_obligation(
+                "test-obligation", store_path=self.store, main_sha=SHA
+            )
+        with self.assertRaisesRegex(protocol.ProtocolError, "reason is required"):
+            protocol.inherit_actionable(
+                store_path=self.store,
+                agent="hermit-lander",
+                session="refusal-session",
+                action_outcome="declined",
+            )
+        dispatch = obligations.get_record("test-obligation", self.store)[
+            "remediation"
+        ]["dispatch"]
+        self.assertNotEqual(dispatch["state"], "acknowledged")
+        self.assertNotIn("acknowledgement", dispatch)
+
+    def test_declined_acknowledgement_stores_retrievable_reason(self) -> None:
+        self.create()
+        self.transition({"github": {"state": "red"}})
+        with redirect_stderr(io.StringIO()):
+            protocol.evaluate_obligation(
+                "test-obligation", store_path=self.store, main_sha=SHA
+            )
+        reason = "hosted red predates the landed change and would survive revert"
+        with redirect_stdout(io.StringIO()):
+            protocol.inherit_actionable(
+                store_path=self.store,
+                agent="hermit-lander",
+                session="refusal-session",
+                action_outcome="declined",
+                reason=reason,
+            )
+        record = obligations.get_record("test-obligation", self.store)
+        acknowledgement = record["remediation"]["dispatch"]["acknowledgement"]
+        self.assertEqual(acknowledgement["outcome"], "declined")
+        self.assertEqual(acknowledgement["reason"], reason)
+        self.assertEqual(acknowledgement["recorded_by"], "hermit-lander")
+        self.assertEqual(acknowledgement["recorded_session"], "refusal-session")
+        self.assertEqual(record["overall_state"], "remediation_required")
+
+        # A fresh reader's receipt must not erase the earlier refusal rationale.
+        with redirect_stdout(io.StringIO()):
+            protocol.inherit_actionable(
+                store_path=self.store,
+                agent="replacement-lander",
+                session="fresh-session",
+            )
+        acknowledgement = obligations.get_record("test-obligation", self.store)[
+            "remediation"
+        ]["dispatch"]["acknowledgement"]
+        self.assertEqual(acknowledgement["outcome"], "declined")
+        self.assertEqual(acknowledgement["reason"], reason)
 
     def test_new_lander_session_rediscovers_acknowledged_obligation(self) -> None:
         self.create()
