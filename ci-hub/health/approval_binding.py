@@ -125,13 +125,49 @@ def lane_shas(comments: list[dict[str, Any]], lane: str) -> list[str]:
     UNDETERMINED -- flagged, not passed. A gate that guesses is worse than no
     gate, which is exactly what the heuristic version demonstrated.
     """
-    pattern = re.compile(
-        r"^\s*APPROVED-AT:\s*" + re.escape(lane) + r"\s+([0-9a-f]{40})\s*$",
+    # GRAMMAR, converged with the rejection format another reviewer introduced on
+    # #2026 (comment 5235451519), whose line 2 is:
+    #     REQUEST CHANGES AT <40-hex>
+    # so the positive form is its mirror. Both spellings are accepted because
+    # both are already in the wild -- `APPROVED-AT <sha>` (the form the fix was
+    # specified as) and `APPROVED-AT: <lane> <sha>` (used on #1851) -- and one
+    # converged parser beats two competing conventions.
+    #
+    # *** A REJECTION MUST NEVER BIND AS A POSITIVE. *** A comment carrying
+    # `REQUEST CHANGES AT <sha>` contributes NOTHING here, even if it also
+    # contains an APPROVED-AT-shaped string. That is not hypothetical: a comment
+    # DOCUMENTING this convention necessarily contains the literal token, and
+    # twice tonight a check of mine matched prose about a defect as the defect
+    # (a /DELETE/ grep firing on a docstring about deletion, and NOT_EVALUATED
+    # matching inside "NOT_EVALUATED: 0"). Rejection wins over approval within a
+    # comment, which fails closed in the safe direction.
+    reject = re.compile(r"^\s*REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}\s*$", re.IGNORECASE | re.MULTILINE)
+    approve = re.compile(
+        r"^\s*APPROVED[-\s]AT:?\s*(?:(claude|codex)\s+)?([0-9a-f]{40})\s*$",
         re.IGNORECASE | re.MULTILINE,
     )
     found: list[str] = []
     for c in comments:
-        found.extend(pattern.findall(c.get("body") or ""))
+        body = c.get("body") or ""
+        if reject.search(body):
+            continue
+        first_line = (body.split("\n", 1)[0] or "").lower()
+        for explicit_lane, sha in approve.findall(body):
+            if explicit_lane:
+                if explicit_lane.lower() == lane:
+                    found.append(sha)
+                continue
+            # No explicit lane: derive from the role tag, but ONLY from an
+            # unambiguous token. "gpt-5.6-sol" tags a Codex-family reviewer on
+            # #1727 yet says neither "codex" nor "claude", so inferring from it
+            # would be the guessing this tool exists to refuse. Ambiguous tag =>
+            # no binding, which is why the lane-explicit spelling is the one to
+            # standardise on.
+            tagged_claude = "claude" in first_line
+            tagged_codex = "codex" in first_line
+            if tagged_claude ^ tagged_codex:
+                if (lane == "claude") == tagged_claude:
+                    found.append(sha)
     return found
 
 

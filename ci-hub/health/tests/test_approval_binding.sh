@@ -116,6 +116,14 @@ out="$(run "$tmp/unbound.json" --gate)"; rc=$?
 [[ $rc -eq 1 ]] && ok "default --gate is UNCHANGED: still pages on anything not BOUND_CURRENT" \
   || bad "default gate contract regressed (rc=$rc)"
 
+
+# --- the binding GRAMMAR, including the rejection trap -----------------------
+if python3 "$here/test_approval_binding_grammar.py" >"$tmp/grammar.out" 2>&1; then
+  ok "binding grammar suite: $(grep -c '^  PASS' "$tmp/grammar.out") assertions pass"
+else
+  bad "binding grammar suite FAILED"; sed 's/^/        /' "$tmp/grammar.out" | grep FAIL | head -4
+fi
+
 echo "======================================================================"
 echo "flagged-when-it-should:     3 cases  (superseded, unbound, composed)"
 echo "not-flagged-when-it-should: 1 case   (approval naming the current head)"
