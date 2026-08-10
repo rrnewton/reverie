@@ -63,6 +63,7 @@ import json
 import re
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 SHA40 = re.compile(r"\b[0-9a-f]{40}\b")
@@ -176,12 +177,16 @@ def collect_live(repo: str) -> list[dict[str, Any]]:
         ["pr", "list", "--repo", repo, "--state", "open", "--limit", "300",
          "--json", "number,headRefOid,labels,mergeable"]
     ) or []
-    rows = []
-    for pr in prs:
+    # Same concurrency rationale as unevaluated_head.py: the per-PR comment and
+    # run queries are INDEPENDENT and were merely serialised. This skips nothing
+    # -- same PRs, same comments, same run counts -- it only stops waiting one at
+    # a time. A failed query raises rather than being read as "no comments",
+    # because absence of an answer must not read as absence of evidence.
+    def fetch(pr: dict[str, Any]) -> dict[str, Any] | None:
         labels = [l["name"] for l in pr.get("labels", [])]
         approvals = [l for l in labels if l.startswith("passed-review-")]
         if not approvals:
-            continue
+            return None
         head = pr["headRefOid"]
         comments = gh_json(
             ["api", f"repos/{repo}/issues/{pr['number']}/comments?per_page=100", "--paginate"]
@@ -189,6 +194,16 @@ def collect_live(repo: str) -> list[dict[str, Any]]:
         runs = (gh_json(["api", f"repos/{repo}/actions/runs?head_sha={head}"]) or {}).get(
             "workflow_runs", []
         )
+        return {"pr": pr, "approvals": approvals, "head": head,
+                "comments": comments, "runs": runs}
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        fetched = [f for f in pool.map(fetch, prs) if f is not None]
+
+    rows = []
+    for f in sorted(fetched, key=lambda f: f["pr"]["number"], reverse=True):
+        pr, approvals, head = f["pr"], f["approvals"], f["head"]
+        comments, runs = f["comments"], f["runs"]
         for label in approvals:
             lane = label.rsplit("-", 1)[-1]
             shas = lane_shas(comments, lane)
