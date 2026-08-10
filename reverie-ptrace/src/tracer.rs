@@ -1924,7 +1924,12 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     /// expected executable mapping. Distinct markers, exact return sites, and
     /// mapping generations reject accidental collisions; they are not a
     /// security boundary against arbitrary code already running in the tracee.
-    /// Dynamic mode currently fails closed if the tracee forks or adds a thread.
+    /// Dynamic mode follows threads and child processes under the ordinary
+    /// ptrace lifecycle, but hook installation is single-task only: the patch
+    /// helper runs on a process-global stack and the installer is not
+    /// re-entrant across tasks, so the hook set freezes at the first task
+    /// creation. It still fails closed on a vfork child and on an exec after
+    /// start, neither of which can preserve the preload runtime.
     // TODO-HUMAN-REVIEW(PR-270): Review dynamic LiteInst provenance API.
     pub fn liteinst_runtime(
         self,
