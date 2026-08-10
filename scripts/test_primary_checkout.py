@@ -339,6 +339,129 @@ _PrimaryFixture = _ParentWorkspaceFixture
 
 
 class PrimaryCheckoutTests(_ParentWorkspaceFixture):
+    def install_owner_validate_exception(self, *, target: str = "scripts/validate.rs") -> Path:
+        hermit = self.root / "hermit"
+        (hermit / "Makefile").write_text(
+            ".PHONY: validate\n\nvalidate:\n\t./scripts/validate.rs $(ARGS)\n"
+        )
+        git(hermit, "add", "Makefile")
+        git(hermit, "commit", "-m", "add validate recipe")
+        git(hermit, "push", "origin", "main")
+        link = hermit / "validate"
+        link.symlink_to(target)
+        return link
+
+    def test_snapshot_allows_and_discloses_exact_owner_validate_exception(self) -> None:
+        link = self.install_owner_validate_exception()
+        scripts = self.root / "scripts"
+        scripts.mkdir(exist_ok=True)
+        checker = scripts / "check_commit_attribution.py"
+        shutil.copy2(REPO_ROOT / "scripts" / checker.name, checker)
+        checker.chmod(0o755)
+        before = os.readlink(link)
+        out, err = StringIO(), StringIO()
+
+        with patch.dict(os.environ, {"HERMIT_COMMIT_MACHINE": "devbig030"}):
+            result = primary_checkout.checkout_fresh(
+                self.root,
+                publish_parent=True,
+                strict=True,
+                use_proxy=False,
+                out=out,
+                err=err,
+            )
+
+        self.assertEqual(result, 0, err.getvalue())
+        self.assertTrue(link.is_symlink(), "snapshot must preserve the owner path")
+        self.assertEqual(os.readlink(link), before)
+        report = out.getvalue()
+        self.assertIn("KNOWN DIRTY EXCEPTION APPLIED", report)
+        self.assertIn("product=hermit path=validate", report)
+        self.assertIn("dirty-with-known-exception (NOT CLEAN)", report)
+        self.assertIn("known_dirty_exceptions=hermit:validate", report)
+        self.assertNotIn("hermit is clean", report)
+
+    def test_owner_validate_exception_refuses_any_additional_untracked_path(self) -> None:
+        link = self.install_owner_validate_exception()
+        extra = self.root / "hermit" / "other-untracked"
+        extra.write_text("preserve\n")
+        out, err = StringIO(), StringIO()
+
+        result = primary_checkout.checkout_fresh(
+            self.root,
+            publish_parent=True,
+            strict=True,
+            use_proxy=False,
+            out=out,
+            err=err,
+        )
+
+        self.assertEqual(result, primary_checkout.SNAPSHOT_BLOCKED)
+        self.assertIn("hermit is dirty", err.getvalue())
+        self.assertNotIn("KNOWN DIRTY EXCEPTION APPLIED", out.getvalue())
+        self.assertTrue(link.is_symlink())
+        self.assertTrue(extra.exists())
+
+    def test_owner_validate_exception_refuses_tracked_modification(self) -> None:
+        link = self.install_owner_validate_exception()
+        readme = self.root / "hermit" / "README"
+        readme.write_text("modified but preserved\n")
+        out, err = StringIO(), StringIO()
+
+        result = primary_checkout.checkout_fresh(
+            self.root,
+            publish_parent=True,
+            strict=True,
+            use_proxy=False,
+            out=out,
+            err=err,
+        )
+
+        self.assertEqual(result, primary_checkout.SNAPSHOT_BLOCKED)
+        self.assertIn("hermit is dirty", err.getvalue())
+        self.assertNotIn("KNOWN DIRTY EXCEPTION APPLIED", out.getvalue())
+        self.assertEqual(readme.read_text(), "modified but preserved\n")
+        self.assertTrue(link.is_symlink())
+
+    def test_owner_validate_exception_refuses_wrong_branch_without_checkout(self) -> None:
+        link = self.install_owner_validate_exception()
+        hermit = self.root / "hermit"
+        git(hermit, "checkout", "-b", "owner-work")
+        out, err = StringIO(), StringIO()
+
+        result = primary_checkout.checkout_fresh(
+            self.root,
+            publish_parent=True,
+            strict=True,
+            use_proxy=False,
+            out=out,
+            err=err,
+        )
+
+        self.assertEqual(result, primary_checkout.SNAPSHOT_BLOCKED)
+        self.assertIn("branch=owner-work, expected main", err.getvalue())
+        self.assertEqual(git(hermit, "branch", "--show-current"), "owner-work")
+        self.assertTrue(link.is_symlink())
+        self.assertNotIn("KNOWN DIRTY EXCEPTION APPLIED", out.getvalue())
+
+    def test_owner_validate_exception_refuses_wrong_symlink_target(self) -> None:
+        link = self.install_owner_validate_exception(target="README")
+        out, err = StringIO(), StringIO()
+
+        result = primary_checkout.checkout_fresh(
+            self.root,
+            publish_parent=True,
+            strict=True,
+            use_proxy=False,
+            out=out,
+            err=err,
+        )
+
+        self.assertEqual(result, primary_checkout.SNAPSHOT_BLOCKED)
+        self.assertIn("hermit is dirty", err.getvalue())
+        self.assertEqual(os.readlink(link), "README")
+        self.assertNotIn("KNOWN DIRTY EXCEPTION APPLIED", out.getvalue())
+
     def test_fresh_reuses_matching_live_tracking_refs_without_fetch_or_checkout(self) -> None:
         calls: list[tuple[Path, tuple[str, ...]]] = []
         real_run_git = primary_checkout.run_git

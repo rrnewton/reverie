@@ -316,6 +316,25 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertIn("state=blocked", output)
         self.assertIn("summary=dirty Hermit primary", output)
 
+    def test_primary_snapshot_preserves_exception_disclosure_and_later_error(self) -> None:
+        def blocked(*_args: object, **kwargs: object) -> int:
+            kwargs["out"].write(  # type: ignore[attr-defined]
+                "KNOWN DIRTY EXCEPTION APPLIED: product=hermit path=validate; NOT CLEAN\n"
+            )
+            kwargs["err"].write("parent publication refused\n")  # type: ignore[attr-defined]
+            return 1
+
+        with mock.patch.object(
+            operational_health.primary_checkout,
+            "checkout_fresh",
+            side_effect=blocked,
+        ):
+            result, output = self.capture(operational_health.primary_snapshot_gate)
+        self.assertEqual(result, 1)
+        self.assertIn("path=validate", output)
+        self.assertIn("NOT CLEAN", output)
+        self.assertIn("parent publication refused", output)
+
     def test_broken_and_silent_active_agents_are_stuck(self) -> None:
         agents = [
             {"name": "broken", "status": "crashed", "last_activity": 9_999},

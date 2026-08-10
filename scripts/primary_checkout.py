@@ -51,6 +51,8 @@ REVERIE_CACHE_KEY = re.compile(r"liteinst-runtime(?:-build)?-([0-9a-f]{8})")
 # docstring and fixtures; a check must not scan the file that defines it.
 REVERIE_CACHE_SCAN_EXCLUDE = ("scripts/check-reverie-pin.rs",)
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
+KNOWN_OWNER_VALIDATE_PATH = "validate"
+KNOWN_OWNER_VALIDATE_TARGET = "scripts/validate.rs"
 
 # Repo-scoped git environment variables OVERRIDE `git -C <repo>`, and git exports
 # them into every hook child. Measured on this box with a probe pre-commit hook:
@@ -369,6 +371,45 @@ SNAPSHOT_BLOCKED = 1
 SNAPSHOT_DEFERRED = 2
 
 
+def known_owner_validate_exception(
+    product: str, repo: Path, status_lines: list[str]
+) -> str | None:
+    """Return the disclosed exception path, or fail closed with ``None``.
+
+    This deliberately matches the owner-checkout validation watch's predicate:
+    the Hermit primary may contain exactly one untracked ``validate`` symlink,
+    pointing at ``scripts/validate.rs``, only while ``make validate`` is proven
+    to select the phony target's direct ``./scripts/validate.rs`` recipe.  It is
+    an allowed *dirty exception*, never a claim that the checkout is clean.
+    """
+    if product != "hermit" or status_lines != [f"?? {KNOWN_OWNER_VALIDATE_PATH}"]:
+        return None
+    link = repo / KNOWN_OWNER_VALIDATE_PATH
+    if not link.is_symlink() or os.readlink(link) != KNOWN_OWNER_VALIDATE_TARGET:
+        return None
+    try:
+        makefile = (repo / "Makefile").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    logical_makefile = makefile.replace("\\\n", " ")
+    phony = any(
+        line.startswith(".PHONY:")
+        and KNOWN_OWNER_VALIDATE_PATH in line.split()[1:]
+        for line in logical_makefile.splitlines()
+    )
+    direct_recipe = "./scripts/validate.rs $(ARGS)" in makefile
+    return KNOWN_OWNER_VALIDATE_PATH if phony and direct_recipe else None
+
+
+def report_known_dirty_exception(product: str, path: str, out: TextIO) -> None:
+    print(
+        f"KNOWN DIRTY EXCEPTION APPLIED: product={product} path={path}; "
+        "checkout_state=dirty-with-known-exception (NOT CLEAN); validate is "
+        ".PHONY and invokes ./scripts/validate.rs directly; path preserved",
+        file=out,
+    )
+
+
 def publish_parent_snapshot(
     root: Path,
     *,
@@ -409,6 +450,7 @@ def publish_parent_snapshot(
     origin/main, or an inconsistent Reverie pin. Those are not moving references.
     """
     heads: dict[str, str] = {}
+    allowed_dirty: dict[str, str] = {}
     failures: list[str] = []
     for product in PRODUCTS:
         repo = root / product
@@ -416,12 +458,17 @@ def publish_parent_snapshot(
         branch = run_git(repo, "branch", "--show-current")
         head = run_git(repo, "rev-parse", "HEAD")
         remote = run_git(repo, "rev-parse", "origin/main")
-        if status.returncode != 0 or status.stdout.strip():
+        status_lines = status.stdout.rstrip("\n").splitlines()
+        exception = known_owner_validate_exception(product, repo, status_lines)
+        if status.returncode != 0 or (status_lines and exception is None):
             failures.append(f"{product}: primary is dirty; parent snapshot not advanced")
             continue
         if branch.returncode != 0 or branch.stdout.strip() != "main":
             failures.append(f"{product}: primary is not on main")
             continue
+        if exception is not None:
+            allowed_dirty[product] = exception
+            report_known_dirty_exception(product, exception, out)
         head_sha = head.stdout.strip()
         remote_sha = remote.stdout.strip()
         if head.returncode != 0 or remote.returncode != 0 or head_sha != remote_sha:
@@ -587,7 +634,13 @@ def publish_parent_snapshot(
     if changed.returncode == 0:
         print(
             "Parent product snapshot already current: "
-            + ", ".join(f"{name}={heads[name][:12]}" for name in PRODUCTS),
+            + ", ".join(f"{name}={heads[name][:12]}" for name in PRODUCTS)
+            + (
+                "; known_dirty_exceptions="
+                + ",".join(f"{name}:{path}" for name, path in allowed_dirty.items())
+                if allowed_dirty
+                else "; known_dirty_exceptions=none"
+            ),
             file=out,
         )
         return SNAPSHOT_PUBLISHED
@@ -629,7 +682,13 @@ def publish_parent_snapshot(
     snapshot = run_git(root, "rev-parse", "HEAD").stdout.strip()
     print(
         f"Published parent snapshot {snapshot}: "
-        + ", ".join(f"{name}={heads[name]}" for name in PRODUCTS),
+        + ", ".join(f"{name}={heads[name]}" for name in PRODUCTS)
+        + (
+            "; known_dirty_exceptions="
+            + ",".join(f"{name}:{path}" for name, path in allowed_dirty.items())
+            if allowed_dirty
+            else "; known_dirty_exceptions=none"
+        ),
         file=out,
     )
     return SNAPSHOT_PUBLISHED
@@ -659,12 +718,13 @@ def checkout_fresh(
             print_command_output(status, err)
             failures += 1
             continue
-        if status.stdout.strip():
+        dirty_lines = status.stdout.rstrip("\n").splitlines()
+        exception = known_owner_validate_exception(product, repo, dirty_lines)
+        if dirty_lines and exception is None:
             print(
                 f"WARNING: {product} is dirty; preserving it and skipping checkout-fresh:",
                 file=err,
             )
-            dirty_lines = status.stdout.rstrip().splitlines()
             for line in dirty_lines[:20]:
                 print(f"  {line}", file=err)
             if len(dirty_lines) > 20:
@@ -673,6 +733,16 @@ def checkout_fresh(
             continue
 
         branch = run_git(repo, "branch", "--show-current").stdout.strip()
+        if exception is not None and branch != "main":
+            print(
+                f"ERROR: {product} known dirty exception was NOT applied because "
+                f"branch={branch or 'DETACHED'}, expected main; path preserved",
+                file=err,
+            )
+            failures += 1
+            continue
+        if exception is not None:
+            report_known_dirty_exception(product, exception, out)
         head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
         remote = run_git(repo, "rev-parse", "origin/main").stdout.strip()
         live_remote, remote_query = live_main_sha(repo, use_proxy=use_proxy)

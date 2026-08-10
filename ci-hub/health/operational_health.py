@@ -575,7 +575,14 @@ def primary_snapshot_gate(
     )
     path = state_path or SNAPSHOT_DEFERRAL_STATE
     moment = time.time() if now is None else now
-    report = errors.getvalue().strip() or output.getvalue().strip()
+    # A known-dirty exception is part of the snapshot fact, not incidental log
+    # noise.  Preserve both streams so a later refusal cannot hide the earlier
+    # disclosure (the old ``errors or output`` choice silently discarded it).
+    report = "\n".join(
+        part
+        for part in (output.getvalue().strip(), errors.getvalue().strip())
+        if part
+    )
 
     if result == primary_checkout.SNAPSHOT_DEFERRED:
         since = _read_deferral(path)
