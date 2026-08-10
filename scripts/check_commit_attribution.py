@@ -29,8 +29,14 @@ TRAILER_RE = re.compile(
     r"\[(?P<team>[A-Za-z0-9][A-Za-z0-9._/@+-]*), "
     r"(?P<machine>devbig[0-9]+)\]$"
 )
-IDENT_EMAIL_RE = re.compile(r"<(?P<email>[^<>\r\n]+)> [0-9]+ [+-][0-9]{4}$")
+IDENT_RE = re.compile(
+    r"^(?P<name>[^<>\r\n]+) <(?P<email>[^<>\r\n]+)> [0-9]+ [+-][0-9]{4}$"
+)
 ALLOWED_OSS_AUTHOR_EMAILS = frozenset({"rrnewton@gmail.com"})
+RESERVED_FIXTURE_DOMAINS = frozenset(
+    {"example.com", "example.net", "example.org", "example.invalid"}
+)
+OWNER_AUTHOR_NAMES = frozenset({"ryan newton"})
 
 
 class AttributionError(ValueError):
@@ -89,15 +95,19 @@ def validate_message(message: str, expected_machine: str | None = None) -> str:
     return machine
 
 
-def validate_author_email(email: str) -> None:
-    """Refuse a proposed OSS commit whose author identity is fabricated."""
+def validate_author_identity(name: str, email: str) -> None:
+    """Refuse fabricated owner identities while permitting reserved fixtures."""
 
-    if email not in ALLOWED_OSS_AUTHOR_EMAILS:
-        allowed = ",".join(sorted(ALLOWED_OSS_AUTHOR_EMAILS))
-        raise AttributionError(
-            f"author email {email!r} is not owner-approved for these OSS repositories; "
-            f"allowed={allowed}"
-        )
+    if email in ALLOWED_OSS_AUTHOR_EMAILS:
+        return
+    domain = email.rpartition("@")[2].casefold()
+    if domain in RESERVED_FIXTURE_DOMAINS and name.strip().casefold() not in OWNER_AUTHOR_NAMES:
+        return
+    allowed = ",".join(sorted(ALLOWED_OSS_AUTHOR_EMAILS))
+    raise AttributionError(
+        f"author identity {name!r} <{email}> is not owner-approved for these OSS repositories; "
+        f"allowed={allowed}; reserved example addresses are fixture-only and cannot claim the owner name"
+    )
 
 
 def git(repo: Path, *args: str) -> str:
@@ -117,14 +127,14 @@ def messages_from_commits(repo: Path, commits: list[str]) -> list[tuple[str, str
     return [(sha, git(repo, "show", "-s", "--format=%B", sha)) for sha in commits]
 
 
-def proposed_author_email(repo: Path) -> str:
+def proposed_author_identity(repo: Path) -> tuple[str, str]:
     """Return the author Git will use, including --author/GIT_AUTHOR_* overrides."""
 
     ident = git(repo, "var", "GIT_AUTHOR_IDENT").strip()
-    match = IDENT_EMAIL_RE.search(ident)
+    match = IDENT_RE.fullmatch(ident)
     if match is None:
         raise AttributionError(f"cannot parse proposed Git author identity {ident!r}")
-    return match.group("email")
+    return match.group("name"), match.group("email")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -166,13 +176,15 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         records: list[tuple[str, str]]
-        author_records: list[tuple[str, str]]
+        author_records: list[tuple[str, str, str]]
         if args.message_file is not None:
             records = [(str(args.message_file), args.message_file.read_text())]
-            author_records = [("proposed commit", proposed_author_email(args.repo))]
+            name, email = proposed_author_identity(args.repo)
+            author_records = [("proposed commit", name, email)]
         elif args.stdin:
             records = [("stdin", sys.stdin.read())]
-            author_records = [("proposed commit", proposed_author_email(args.repo))]
+            name, email = proposed_author_identity(args.repo)
+            author_records = [("proposed commit", name, email)]
         elif args.commit is not None:
             records = messages_from_commits(args.repo, [args.commit])
             author_records = []
@@ -189,9 +201,9 @@ def main(argv: list[str] | None = None) -> int:
             # every new commit at creation time.
             author_records = []
 
-        for identity, email in author_records:
+        for identity, name, email in author_records:
             try:
-                validate_author_email(email)
+                validate_author_identity(name, email)
             except AttributionError as error:
                 raise AttributionError(f"{identity}: {error}") from error
 

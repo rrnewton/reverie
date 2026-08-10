@@ -148,9 +148,9 @@ class RepositoryRangeTests(unittest.TestCase):
 
 
 class HookAndInstallerTests(unittest.TestCase):
-    def hooked_repo(self, repo: Path, email: str) -> None:
+    def hooked_repo(self, repo: Path, email: str, name: str = "Ryan Newton") -> None:
         run("git", "init", "-q", "-b", "main", cwd=repo)
-        run("git", "config", "user.name", "Ryan Newton", cwd=repo)
+        run("git", "config", "user.name", name, cwd=repo)
         run("git", "config", "user.email", email, cwd=repo)
         link = repo / ".git" / "hooks" / "commit-msg"
         link.symlink_to(DISPATCHER)
@@ -179,13 +179,30 @@ class HookAndInstallerTests(unittest.TestCase):
             author = run("git", "show", "-s", "--format=%ae", cwd=repo)
             self.assertEqual("rrnewton@gmail.com", author.stdout.strip())
 
+    def test_real_commit_accepts_reserved_fixture_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.hooked_repo(repo, "test@example.com", "Test")
+            result = self.real_commit(repo)
+            self.assertEqual(0, result.returncode, result.stderr)
+            author = run("git", "show", "-s", "--format=%an <%ae>", cwd=repo)
+            self.assertEqual("Test <test@example.com>", author.stdout.strip())
+
+    def test_real_commit_refuses_owner_name_with_reserved_fixture_email(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.hooked_repo(repo, "test@example.com")
+            result = self.real_commit(repo)
+            self.assertEqual(1, result.returncode)
+            self.assertIn("reserved example addresses are fixture-only", result.stderr)
+
     def test_real_commit_refuses_fabricated_repo_email(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self.hooked_repo(repo, "rrnewton@meta.com")
             result = self.real_commit(repo)
             self.assertEqual(1, result.returncode)
-            self.assertIn("author email 'rrnewton@meta.com'", result.stderr)
+            self.assertIn("<rrnewton@meta.com>", result.stderr)
             self.assertIn("owner-approved", result.stderr)
 
     def test_real_commit_refuses_fabricated_explicit_author(self) -> None:
@@ -196,7 +213,7 @@ class HookAndInstallerTests(unittest.TestCase):
                 repo, "--author=Ryan Newton <rrnewton@meta.com>"
             )
             self.assertEqual(1, result.returncode)
-            self.assertIn("author email 'rrnewton@meta.com'", result.stderr)
+            self.assertIn("<rrnewton@meta.com>", result.stderr)
 
     def test_dispatcher_refuses_a_wrong_machine_before_repo_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
