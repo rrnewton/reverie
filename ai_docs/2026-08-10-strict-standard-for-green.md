@@ -148,8 +148,8 @@ without changing the artifact.
 
 | Case | Input | Required result |
 | --- | --- | --- |
-| historical blank | line 2, `applications/timed-progress-bar` / `ptrace`: `outcome=pass`, `comparison_tier=legacy-unqualified`, both optional fields blank | not base green; stack unknown; heap unknown; not highest-grade |
-| superseded duplicate | lines 26 and 27, `determinism-stress/order-violation` / `ptrace` | line 27 is current solely because it is physically last; line 26 is superseded even though the two rows are byte-equivalent in the decision fields; count one cell, not two |
+| historical unknown | line 2, `applications/timed-progress-bar` / `ptrace`: `outcome=pass`, `comparison_tier=legacy-unqualified`; the historical schema has neither optional column | not base green; absent historical stack and heap columns both mean unknown; not highest-grade |
+| superseded duplicate | lines 26 (`test_mode=chaos`) and 27 (`test_mode=verify`), `determinism-stress/order-violation` / `ptrace` | line 27 is current solely because it is physically last; line 26 is superseded and is not a current cell; count one cell, not two |
 | base-only positive control | `outcome=pass`, qualifying tier, both optional fields blank | base green; two optional unknowns; not highest-grade |
 | highest-grade positive control | `outcome=pass`, qualifying tier, `stack_parity=true`, `heap_parity=true` | base green and highest-grade green |
 | explicit lower grade | `outcome=pass`, qualifying tier, `stack_parity=false`, `heap_parity=true` | base green; not highest-grade; stack false is not stack unknown |
@@ -158,9 +158,10 @@ without changing the artifact.
 The committed population used to choose the two historical cases contains
 `624/624` stored data rows, `541/624` current `(test_id, backend)` cells, and
 `83/624` superseded rows. The naive stored-row count overstates the current
-cell population by `83/541` (about 15%). All `624/624` historical rows have
-blank stack and heap fields; that is `624/624` unknown historical evidence,
-not `624/624` measured failures and not `624/624` passes.
+cell population by `83/541` (about 15%). The bound historical schema has no
+stack or heap columns, so all `624/624` rows carry unknown historical memory
+evidence. An absent historical column has the same verdict as a blank field:
+unknown, not `624/624` measured failures and not `624/624` passes.
 
 This document is complete only after a reader who did not write it applies the
 table above and reports the same six results.
