@@ -715,6 +715,149 @@ class ReconcileTests(ParentMainWriteTests):
         self.assertEqual(head_before, git(self.repo, "rev-parse", "refs/heads/main").stdout.strip())
         self.assertEqual("moved on\n", (self.repo / "notes.md").read_text())
 
+    # ---- C3: an interrupted update must not report success ------------------
+
+    def interruptible_reconcile(self) -> tuple[str, str, Path]:
+        """Set up a move whose tree update cannot be skipped, and a way to fail it.
+
+        The target both ADDS a path that is not on disk and MODIFIES a clean
+        one, so neither is adoptable residue and both depend on the post-CAS
+        `read-tree`. A thinner fixture hides the defect: if every changed path
+        happens to be residue, the index is already correct and the interrupted
+        state looks clean.
+        """
+        stranded = self.local_commit({"shared.txt": "alpha\nBETA\n"}, "promote beta")
+        self.publish_from_a_second_clone({"shared.txt": "alpha\nBETA\n"}, "promote beta (rebuilt)")
+        target = self.publish_from_a_second_clone(
+            {"remote-only.txt": "only upstream has this\n", "notes.md": "upstream rewrote this\n"},
+            "main moves on",
+        )
+        marker = Path(self.temp.name) / "failed.once"
+        shim_dir = Path(self.temp.name) / "shim.readtree"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        shim.write_text(
+            f'#!/bin/bash\n'
+            f'if [ "$3" = "read-tree" ] && [[ " $* " == *" -u "* ]] && [ ! -e "{marker}" ]; then\n'
+            f'  : > "{marker}"; echo "simulated post-CAS failure" >&2; exit 1\n'
+            f'fi\n'
+            f'exec "{REAL_GIT}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        return stranded, target, shim_dir
+
+    def journal(self) -> Path:
+        # `--git-path` answers relative to the repository, not to this process.
+        path = Path(
+            git(self.repo, "rev-parse", "--git-path", "parent-main-write-reconcile").stdout.strip()
+        )
+        return path if path.is_absolute() else self.repo / path
+
+    def test_negative_a_post_cas_failure_is_resumed_not_reported_as_current(self) -> None:
+        """C3: the retry must REPAIR. `already-current` off the ref alone said
+        success over `M notes.md / D remote-only.txt`."""
+        stranded, target, shim_dir = self.interruptible_reconcile()
+        env = dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}")
+
+        first = run(str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo, env=env)
+
+        self.assertNotEqual(0, first.returncode, first.stdout + first.stderr)
+        combined = first.stdout + first.stderr
+        # The failure must DISCLOSE that main moved, and point at a recovery
+        # that works -- not at a bare read-tree that fails on 'not uptodate'.
+        self.assertIn("main HAS ALREADY MOVED", combined)
+        self.assertIn("INTERRUPTED", combined)
+        self.assertIn("scripts/parent-main-write reconcile", combined)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertTrue(self.journal().exists(), "the journal must record the interruption")
+        self.assertIn("remote-only.txt", git(self.repo, "diff", "--cached", "--name-only").stdout)
+
+        second = self.writer("reconcile")
+
+        self.assertEqual(0, second.returncode, second.stdout + second.stderr)
+        self.assertIn("RESUMING an interrupted update", second.stdout)
+        self.assertIn("resumed=1", second.stdout)
+        self.assertIn("tree-completed=1 journal-cleared=1", second.stdout)
+        self.assertNotIn("already-current", second.stdout)
+        # THE POINT: the retry repaired the tree rather than blessing it.
+        self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout.strip())
+        self.assertEqual(
+            "only upstream has this\n", (self.repo / "remote-only.txt").read_text()
+        )
+        self.assertEqual("upstream rewrote this\n", (self.repo / "notes.md").read_text())
+        self.assertFalse(self.journal().exists(), "a completed resume clears the journal")
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertNotEqual(stranded, target)
+
+    def test_negative_an_interrupted_tree_blocks_sync_and_commit(self) -> None:
+        """Nothing may build on a half-applied tree while the journal stands."""
+        _, _, shim_dir = self.interruptible_reconcile()
+        run(str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo,
+            env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}"))
+        self.assertTrue(self.journal().exists())
+
+        for mode in ("sync", "commit"):
+            args = ["sync"] if mode == "sync" else [
+                "commit", "-m", tagged("should not get this far"), "--", "notes.md"
+            ]
+            # A FRESH lock per invocation: the host mutex is non-reentrant across
+            # invocations (a backgrounded hook inherits the fd and holds the
+            # flock past the writer's exit), which is a property of the harness,
+            # not of the guard under test.
+            result = run(
+                str(self.repo / "scripts/parent-main-write"), *args, cwd=self.repo,
+                env=dict(self.env, HERMIT_PARENT_MAIN_LOCK_PATH=f"{self.lock}.{mode}"),
+            )
+            self.assertNotEqual(0, result.returncode, f"{mode}: {result.stdout}{result.stderr}")
+            self.assertIn("INTERRUPTED here after main had already moved", result.stderr, mode)
+            self.assertIn("scripts/parent-main-write reconcile", result.stderr, mode)
+        # And the interruption is still recorded -- refusing must not clear it.
+        self.assertTrue(self.journal().exists())
+
+    def test_positive_a_clean_run_leaves_no_journal_behind(self) -> None:
+        """The journal must be an exception marker, not a permanent fixture."""
+        self.strand_a_patch_equivalent_commit()
+        result = self.writer("reconcile")
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertFalse(self.journal().exists())
+        self.assertIn("interrupted=0", self.writer_after_success())
+
+    def writer_after_success(self) -> str:
+        # A second, independent invocation would contend on the host mutex, so
+        # read the end state directly instead of shelling out again.
+        return (
+            "interrupted=0"
+            if not self.journal().exists()
+            else f"interrupted journal present at {self.journal()}"
+        )
+
+    def test_negative_a_refused_transaction_leaves_no_journal_behind(self) -> None:
+        """A journal outliving a refusal would wedge sync and commit for everyone."""
+        self.strand_a_patch_equivalent_commit()
+        (self.repo / "notes.md").write_text("moved on\n")
+        shim_dir = self.moving_git_shim("update-ref", self.seed)
+        result = run(
+            str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo,
+            env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}"),
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("the journal has been removed", result.stdout + result.stderr)
+        self.assertFalse(self.journal().exists())
+        self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout.strip())
+
+    def test_negative_a_journal_whose_target_no_longer_matches_needs_a_human(self) -> None:
+        """Resume must not guess when the branch moved under the journal."""
+        self.strand_a_patch_equivalent_commit()
+        self.journal().write_text(f"old={self.seed}\ntarget={'b' * 40}\n")
+        try:
+            result = self.writer("reconcile")
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("something else moved the branch in between", result.stderr)
+            self.assertIn("This needs a human", result.stderr)
+            self.assertIn("Nothing was modified", result.stderr)
+        finally:
+            self.journal().unlink(missing_ok=True)
+
     def test_negative_a_stale_tracking_ref_is_not_a_fresh_target(self) -> None:
         """C2: a tracking ref records what the LAST fetch saw. No rewrite needed.
 

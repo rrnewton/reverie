@@ -733,7 +733,11 @@ published_at_commit() {
 # further apart still, so that its own later gates also run before any mutation.
 RESIDUE_PLAN=''
 classify_published_residue() {
-  local root=$1 target=$2
+  # FROM is the tree the working copy currently corresponds to. Normally HEAD --
+  # but when completing an INTERRUPTED reconcile the ref has already moved, so
+  # HEAD is the target and the only tree that describes the working copy is the
+  # recorded `old`. Passing it explicitly is what makes resume possible.
+  local root=$1 from=$2 target=$3
   local path mode blob gitlinks=0
   local blockers="" plan="" superseded_at=""
   # Scoped deliberately: an unscoped flag would leak into a later call in the
@@ -773,7 +777,7 @@ classify_published_residue() {
     # Absent from the target tree (a deletion): never adopt, let git decide.
     if ! git -C "$root" cat-file -e "$target:$path" 2>/dev/null; then continue; fi
     # Already matching the index: ordinary clean path, nothing to reconcile.
-    if git -C "$root" diff --quiet HEAD -- "$path" 2>/dev/null &&
+    if git -C "$root" diff --quiet "$from" -- "$path" 2>/dev/null &&
        git -C "$root" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
       continue
     fi
@@ -809,7 +813,7 @@ classify_published_residue() {
         blocker_untracked=1
       fi
     fi
-  done < <(git -C "$root" diff --name-only HEAD "$target" -- 2>/dev/null)
+  done < <(git -C "$root" diff --name-only "$from" "$target" -- 2>/dev/null)
 
   if [ -n "$blockers" ]; then
     printf '%s' "$blockers" >&2
@@ -862,8 +866,93 @@ apply_published_residue() {
 }
 
 adopt_published_residue() {
-  classify_published_residue "$1" "$2"
+  classify_published_residue "$1" HEAD "$2"
   apply_published_residue "$1" "$2"
+}
+
+# ---------------------------------------------------------------------------
+# THE RECONCILE JOURNAL, and why the ref moves before the tree.
+#
+# reconcile has two mutations that cannot be made one: the ref transaction, and
+# the index/working-tree update. SOMETHING can fail between them -- an index
+# lock lost to one of the fifteen agents sharing this tree is enough -- so the
+# only real choice is WHICH window to have, and the choice must be defended
+# rather than inherited.
+#
+#   index first (the original) leaves a SILENTLY MUTATED SHARED INDEX under a
+#   refusal that says "Nothing was staged, moved, or modified". Undetectable
+#   from the outside, indistinguishable from a bystander's staging, and the
+#   message actively misleads.
+#
+#   ref first leaves main advanced over a tree that still holds the old
+#   content. Also wrong -- and measured worse at first: `git status` showed
+#   `M  notes.md  D  remote-only.txt`, and the RETRY said `already-current` and
+#   exited 0, because "current" was being read off the ref alone. A tool whose
+#   whole job is making "nothing was modified" trustworthy had a path that
+#   reported success over a half-applied state.
+#
+# ref first is still the right choice, but ONLY with this journal, which is what
+# makes the difference real instead of rhetorical: a moved ref plus a recorded
+# intent is DETECTABLE and REPAIRABLE, while a mutated shared index is neither.
+# The journal is written before the transaction and removed only after the tree
+# update has been verified, so its presence means exactly "an interrupted
+# reconcile happened here, and here are the two commits needed to finish it".
+# This is how git itself survives an interrupted merge or rebase, for the same
+# reason: state that outlives the process must live in the repository.
+#
+# If the journal is deleted by hand, resume is lost -- the same as deleting
+# .git/MERGE_HEAD. That residual is accepted and stated rather than papered over.
+reconcile_journal_path() {
+  local root=$1 path
+  path=$(git -C "$root" rev-parse --git-path parent-main-write-reconcile)
+  case "$path" in /*) printf '%s\n' "$path" ;; *) printf '%s/%s\n' "$root" "$path" ;; esac
+}
+
+# Refuse to build on a half-applied tree.
+#
+# Scoped to the operations that CONSUME working-tree or index state: `commit`
+# takes worktree content for its pathspec, and `sync` merges into this index.
+# `publish` deliberately does NOT check, because it publishes a rev that was
+# built elsewhere and never reads the working tree -- blocking it would also
+# remove the plumbing escape hatch without removing any hazard.
+refuse_if_reconcile_interrupted() {
+  local root=$1 what=$2 journal old target
+  journal=$(reconcile_journal_path "$root")
+  [ -e "$journal" ] || return 0
+  old=$(awk -F= '$1 == "old" { print $2 }' "$journal" 2>/dev/null || true)
+  target=$(awk -F= '$1 == "target" { print $2 }' "$journal" 2>/dev/null || true)
+  die "a reconcile was INTERRUPTED here after main had already moved, so the
+  index and working tree may still hold the old tree. $what would build on that.
+    recorded old:    ${old:-<unreadable>}
+    recorded target: ${target:-<unreadable>}
+    journal:         $journal
+  Finish it first -- \`scripts/parent-main-write reconcile\` detects the journal
+  and completes the interrupted update. Nothing is lost either way."
+}
+
+# Bring the index and working tree from FROM up to TARGET, then drop the
+# journal. Used identically on the first attempt and on a resume, so the resume
+# path is the SAME code the original ran, not a second implementation of it.
+complete_reconcile_tree() {
+  local root=$1 from=$2 target=$3 journal moved behind
+  journal=$(reconcile_journal_path "$root")
+  classify_published_residue "$root" "$from" "$target"
+  apply_published_residue "$root" "$target"
+  git -C "$root" read-tree -m -u "$from" "$target" || die "main HAS ALREADY MOVED to $target; the index and working tree still hold
+  $from, so this checkout is INTERRUPTED, not broken -- no content is lost and
+  \`git status\` shows the difference.
+  Re-run \`scripts/parent-main-write reconcile\`: it reads the journal at
+  $journal and completes exactly this step. Do NOT hand-run read-tree; residue
+  adoption has to happen first, which is why the bare command fails with
+  'not uptodate'."
+  moved=$(git -C "$root" rev-parse refs/heads/main)
+  [ "$moved" = "$target" ] ||
+    die "main is $moved after reconcile, not the fetched target $target"
+  behind=$(git -C "$root" rev-list --count "$target..refs/heads/main")
+  [ "$behind" = 0 ] ||
+    die "main still holds $behind commit(s) that $target does not contain"
+  # LAST, and only now: the work this journal recorded is done and verified.
+  rm -f "$journal"
 }
 
 publish_sha() {
@@ -914,6 +1003,7 @@ case "$command" in
     acquire_lock
     fetch_expected "$root"
     [ "$(git -C "$root" branch --show-current)" = main ] || die "sync requires local main"
+    refuse_if_reconcile_interrupted "$root" "sync"
     head=$(git -C "$root" rev-parse HEAD)
     if [ "$head" = "$HERMIT_PARENT_MAIN_EXPECT" ]; then
       printf 'PARENT_MAIN_WRITE sync already-current=%s\n' "$head"
@@ -938,8 +1028,43 @@ case "$command" in
     [ "$(git -C "$root" branch --show-current)" = main ] || die "reconcile requires local main"
     head=$(git -C "$root" rev-parse HEAD)
     target=$HERMIT_PARENT_MAIN_EXPECT
+    journal=$(reconcile_journal_path "$root")
+
+    # RESUME FIRST, BEFORE ANYTHING ELSE LOOKS AT THE REF.
+    #
+    # An interrupted reconcile has already moved main, so every ref-only test --
+    # "am I current?", "am I diverged?" -- answers as though the work were done.
+    # The journal is the only thing that knows better, so it is consulted first.
+    if [ -e "$journal" ]; then
+      journal_old=$(awk -F= '$1 == "old" { print $2 }' "$journal" 2>/dev/null || true)
+      journal_target=$(awk -F= '$1 == "target" { print $2 }' "$journal" 2>/dev/null || true)
+      [[ "$journal_old" =~ ^[0-9a-f]{40}$ ]] && [[ "$journal_target" =~ ^[0-9a-f]{40}$ ]] ||
+        die "the reconcile journal at $journal is unreadable, so the interrupted
+  update cannot be completed automatically. Nothing was modified. Show it to a
+  human rather than deleting it: it is the only record of what was in flight."
+      [ "$head" = "$journal_target" ] ||
+        die "the journal records an interrupted reconcile to $journal_target,
+  but main is now $head -- something else moved the branch in between.
+  Nothing was modified. This needs a human: the journal is at $journal."
+      printf 'PARENT_MAIN_WRITE reconcile RESUMING an interrupted update old=%s new=%s\n' \
+        "$journal_old" "$journal_target"
+      # The ref is already where it belongs; only the tree is behind. This is
+      # the same completion code the first attempt runs.
+      complete_reconcile_tree "$root" "$journal_old" "$journal_target"
+      printf 'PARENT_MAIN_WRITE reconcile resumed=1 old=%s new=%s tree-completed=1 journal-cleared=1\n' \
+        "$journal_old" "$journal_target"
+      exit 0
+    fi
+
     if [ "$head" = "$target" ]; then
-      printf 'PARENT_MAIN_WRITE reconcile already-current=%s\n' "$head"
+      # "already-current" is a claim about the END STATE, not about the ref. The
+      # ref alone said "current" over a half-applied tree once already; the
+      # journal check above is what makes this line mean what it says, and the
+      # counts keep it from implying a clean tree it never inspected.
+      printf 'PARENT_MAIN_WRITE reconcile already-current=%s interrupted=0 staged=%s dirty=%s\n' \
+        "$head" \
+        "$(git -C "$root" diff --cached --name-only | grep -c . || true)" \
+        "$(git -C "$root" diff --name-only | grep -c . || true)"
       exit 0
     fi
     # ESTABLISH THE PREDICATE BEFORE TOUCHING ANYTHING. The hook re-derives it
@@ -957,7 +1082,7 @@ case "$command" in
     # "Nothing was staged or modified". Classification is read-only, and the
     # rehearsal below applies the adoption plan to a COPY of the index, so every
     # gate has passed before one byte of shared state changes.
-    classify_published_residue "$root" "$target"
+    classify_published_residue "$root" "$head" "$target"
     rehearsal=$(mktemp -u "${TMPDIR:-/tmp}/parent-main-write-rehearsal.XXXXXX")
     cp "$(git -C "$root" rev-parse --git-path index)" "$rehearsal" ||
       die "cannot copy the index for a rehearsal; nothing was modified"
@@ -1018,17 +1143,20 @@ case "$command" in
     # transaction and written back after it would silently revert any `git add`
     # a bystander made in between -- trading a stale-index bug for a lost-work
     # bug, which is the trade this whole file exists to refuse.
-    git -C "$root" update-ref refs/heads/main "$target" "$head"
-    apply_published_residue "$root" "$target"
-    git -C "$root" read-tree -m -u "$head" "$target" ||
-      die "main now points at $target but the working tree was not updated.
-  Nothing is lost; finish with: git -C $root read-tree -m -u $head $target"
-    moved=$(git -C "$root" rev-parse refs/heads/main)
-    [ "$moved" = "$target" ] ||
-      die "main is $moved after reconcile, not the fetched target $target"
-    behind=$(git -C "$root" rev-list --count "$target..refs/heads/main")
-    [ "$behind" = 0 ] ||
-      die "main still holds $behind commit(s) that $target does not contain"
+    #
+    # The window ref-first leaves is REAL, and the journal is what pays for it:
+    # written here, before the transaction, so that a failure between the two
+    # mutations is recoverable rather than merely visible. See its definition.
+    printf 'old=%s\ntarget=%s\npid=%s\nstarted=%s\n' \
+      "$head" "$target" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$journal" ||
+      die "cannot write the reconcile journal at $journal; nothing was modified"
+    git -C "$root" update-ref refs/heads/main "$target" "$head" || {
+      # The transaction refused: it changed nothing, so neither should we.
+      rm -f "$journal"
+      die "the ref transaction was refused; nothing was staged, moved, or
+  modified, and the journal has been removed. The reason is above."
+    }
+    complete_reconcile_tree "$root" "$head" "$target"
     printf 'PARENT_MAIN_WRITE reconcile old=%s new=%s dropped=%s proven-upstream=%s divergence=0\n' \
       "$head" "$target" "$RECONCILE_DROPPED" "$RECONCILE_PROVEN"
     printf 'PARENT_MAIN_WRITE reconcile recovery: the previous tip %s is unreferenced but not gone (reflog + object store)\n' \
@@ -1061,6 +1189,7 @@ case "$command" in
     acquire_lock
     fetch_expected "$root"
     [ "$(git -C "$root" branch --show-current)" = main ] || die "commit requires local main"
+    refuse_if_reconcile_interrupted "$root" "a commit"
     [ "$(git -C "$root" rev-parse HEAD)" = "$HERMIT_PARENT_MAIN_EXPECT" ] ||
       die "local main is not the freshly fetched origin/main"
     commit_args=(commit --only)
