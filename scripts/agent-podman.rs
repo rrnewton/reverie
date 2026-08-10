@@ -345,7 +345,20 @@ fn run(arguments: Vec<String>) -> Result<i32> {
             live_invocations,
             json,
             apply,
-        } => reconcile(&agents_json, live_invocations.as_deref(), json, apply),
+        } => {
+            let result = reconcile(&agents_json, live_invocations.as_deref(), json, apply);
+            if let Err(error) = &result {
+                // tick-hub fires this command on a non-zero exit and captures stdout.
+                // Errors raised before ReconcileReport exists used to reach only stderr,
+                // leaving its required {summary} field unresolved. Preserve the non-zero
+                // result, but make the completed failure actionable to the same parser as
+                // ordinary action-required reports. JSON callers keep an unmixed stream.
+                if !json {
+                    emit_reconcile_error(error);
+                }
+            }
+            result
+        }
         Cli::ReleaseAudit {
             fence_token,
             owners,
@@ -2112,6 +2125,21 @@ fn emit_report(report: &ReconcileReport, json_output: bool) -> Result<()> {
         println!("ERROR: container-lifecycle {error}");
     }
     Ok(())
+}
+
+fn emit_reconcile_error(error: &AppError) {
+    // Captured values are line-oriented and are interpolated before tick-hub
+    // checks for unresolved placeholders. Collapse arbitrary I/O context to one
+    // line and neutralize braces so an error path cannot manufacture a second
+    // template placeholder.
+    let summary = format!("container lifecycle check could not complete: {error}")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('{', "(")
+        .replace('}', ")");
+    println!("state=error");
+    println!("summary={summary}");
 }
 
 fn short_id(id: &str) -> &str {

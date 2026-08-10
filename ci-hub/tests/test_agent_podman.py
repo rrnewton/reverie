@@ -7,6 +7,7 @@ import json
 import fcntl
 import os
 import subprocess
+import sys
 import tempfile
 import textwrap
 import time
@@ -17,6 +18,14 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "scripts" / "agent-podman.rs"
+sys.path.insert(0, str(ROOT / "agent-utils" / "py"))
+
+from tick_hub.engine import (  # noqa: E402
+    UnresolvedPlaceholderError,
+    parse_kv_lines,
+    render_emit,
+)
+from tick_hub.io import config_from_yaml  # noqa: E402
 
 
 FAKE_PODMAN = r"""#!/usr/bin/env python3
@@ -366,6 +375,42 @@ class AgentPodmanTests(unittest.TestCase):
         self.assertEqual(report["reclaimed"], 0)
         self.assertEqual(self.podman_log.read_text(), "")
         self.assertEqual(len(json.loads(self.podman_state.read_text())), 2)
+
+    def test_operational_failure_emits_renderable_tick_summary_and_stays_nonzero(
+        self,
+    ) -> None:
+        """The pre-report error path must feed, not bypass, tick-hub capture."""
+        self.podman_state.write_text("[]")
+        missing_snapshot = self.directory / "missing-agents.json"
+
+        result = self.run_tool(
+            "reconcile", "--agents-json", str(missing_snapshot)
+        )
+
+        self.assertEqual(result.returncode, 1)
+        captured = parse_kv_lines(result.stdout)
+        self.assertEqual(captured["state"], "error")
+        self.assertIn("could not complete", captured["summary"])
+        config = config_from_yaml(
+            (ROOT / "ci-hub" / "health" / "tick-hub.yaml").read_text()
+        )
+        lifecycle = config.by_name()["agent_container_lifecycle"]
+        rendered = render_emit(lifecycle.emit, captured)
+        self.assertIn(captured["summary"], rendered)
+        self.assertNotIn("{summary}", rendered)
+
+    def test_tick_still_refuses_lifecycle_emission_without_summary(self) -> None:
+        """Do not weaken the renderer to hide a future producer regression."""
+        config = config_from_yaml(
+            (ROOT / "ci-hub" / "health" / "tick-hub.yaml").read_text()
+        )
+        lifecycle = config.by_name()["agent_container_lifecycle"]
+
+        with self.assertRaisesRegex(
+            UnresolvedPlaceholderError,
+            r"refusing emission with unresolved placeholder\(s\): \{summary\}",
+        ):
+            render_emit(lifecycle.emit, {"state": "error"})
 
     def test_quickstart_is_pure_without_podman_or_state(self) -> None:
         self.environment["AGENT_PODMAN_BIN"] = str(self.directory / "missing-podman")
