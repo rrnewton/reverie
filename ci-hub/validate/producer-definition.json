@@ -12,13 +12,14 @@
   "_semantics": "EXACT WHOLE-MAP EQUALITY, fail closed. A qualifying receipt MUST carry producer.definition whose key set and blob values equal one complete current/candidate map, or equal a legacy map at one of that record's explicit valid_commits, exactly. A receipt with no producer block, a missing file, an undeclared extra file, a crossed map, a legacy map at another commit, or any differing blob is REFUSED. Candidate keys may exceed primary keys only by the exact explicit transition.added_paths set; no removals or implicit drift are allowed, and maps are never field-unioned. Every verdict carries coverage_status plus the exact paths and any commit bound. An unreadable or malformed registration, legacy record, or transition is a DEPLOY DEFECT (exit 2), never a lenient fallback. Expiry removes only the candidate; the b605 primary remains qualifying only at its explicitly registered commit.",
   "_advancing_this": "Stage a producer change by adding one strictly shaped transition without changing `registered`. Derive every candidate SHA and blob from the selected head; never copy values from a superseded PR. After that exact head lands, freshly prove target-main containment and resolve its producer blobs before promoting the candidate to `registered`, advancing `registered_at`, and deleting `transition`. A timestamp never authorizes promotion. If the candidate does not land before expiry, remove or replace the transition; never extend it implicitly.",
   "_rotation_2026_08_10": "Promoted at hermit main 2b38d8e629ee582db6a59f340b1a3c8980fd85c5. Commits a9262ac2 and 2b38d8e6 add the single apt package `ncat` to three ci-portable matrix jobs, moving that file's blob 34beade4840a -> c0de07a73f14 while scripts/validate.rs and both validate_*.rs stay byte-identical -- nothing about how validation is produced changed. Because the map is whole-map exact and fail-closed, that one-word dependency edit refused EVERY receipt at main, including a genuine full PASS at this exact commit, leaving main with no landing authority. Proved fresh before promoting: 2b38d8e6 is the fetched main tip, b5a4748e is its ancestor, and main resolves all four registered paths to the new map. Any concurrently staged candidate is keyed to its own unlanded head and is preserved untouched; this advances the primary to the LANDED state only.",
-  "registered_at": "2b38d8e629ee582db6a59f340b1a3c8980fd85c5",
+  "_rotation_2026_08_10_newest_tests_misc": "Promoted at hermit main 9d1a73b5677f0dd48f56955c2ae270ba74dde0a9. That commit ('ci: select the newest tests_misc binary instead of requiring exactly one') moves scripts/validate.rs df03defdc9d0 -> 00e56c0d7e0d; the other three registered paths are byte-identical. It landed WITHOUT a staged producer transition, so from that tip onward every local receipt resolved a validate.rs blob present in neither the primary map nor the pending PR-2012 candidate and was refused as unregistered-or-unresolvable -- blocking the entire local-receipt landing path for every PR based on main, not just one. Reviewed before promoting rather than rubber-stamped: the change is a STRENGTHENING. The old node asserted `test \"$count\" -eq 1` over target/debug/deps/tests_misc-*, which cargo never prunes, so it could never pass in a working tree that had accumulated binaries (measured 9 in the owner's checkout vs 1 in a clean slot) -- agents in clean clones saw green while the owner saw a red he had never seen pass. It selects the newest by mtime rather than relaxing to -ge 1, deliberately, because the CPUID node EXECUTES its selection and 'any one of nine' would silently test a stale artifact. It also closes a pre-existing hole where `&&` bound only to an assignment, so the node could pass with target/debug/hermit missing. Zero candidates still fails. Proved fresh before promoting: 9d1a73b5 is the fetched main tip, 2b38d8e6 is its ancestor, and main resolves all four paths to the new map. The PR-2012 candidate is keyed to its own unlanded head and is preserved untouched.",
+  "registered_at": "9d1a73b5677f0dd48f56955c2ae270ba74dde0a9",
   "registered_coverage_status": "complete",
   "registered": {
     ".github/workflows/ci-portable.yml": "c0de07a73f1403c455672a8ef52caedc26676226",
     "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
     "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-    "scripts/validate.rs": "df03defdc9d09fd1eddc3a26b137c7a975c388f9"
+    "scripts/validate.rs": "00e56c0d7e0ddcfaee052c2d088d2934ab4e0632"
   },
   "transition": {
     "id": "rrnewton-hermit-pr-2012",
@@ -100,6 +101,20 @@
       ],
       "definition": {
         ".github/workflows/ci-portable.yml": "34beade4840a0a143937ca2a93f5b5c4932c1370",
+        "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
+        "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+        "scripts/validate.rs": "df03defdc9d09fd1eddc3a26b137c7a975c388f9"
+      }
+    },
+    {
+      "id": "pre-newest-tests-misc-selection",
+      "registered_at": "2b38d8e629ee582db6a59f340b1a3c8980fd85c5",
+      "coverage_status": "complete",
+      "valid_commits": [
+        "2b38d8e629ee582db6a59f340b1a3c8980fd85c5"
+      ],
+      "definition": {
+        ".github/workflows/ci-portable.yml": "c0de07a73f1403c455672a8ef52caedc26676226",
         "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
         "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
         "scripts/validate.rs": "df03defdc9d09fd1eddc3a26b137c7a975c388f9"
