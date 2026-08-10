@@ -188,3 +188,6 @@ experiments/*/pid_tid
 experiments/*/guest_heap
 experiments/*/probe
 experiments/*/pn
+
+# Runtime marker written by ci-hub validate-lock on release; never durable state.
+.validate-lock.released
