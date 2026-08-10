@@ -209,7 +209,47 @@ if [ "$INNER" -eq 0 ]; then
     1) comment_abandon "timed out waiting for the landing lock" ;;
     124) comment_abandon "land subtree exceeded the ${CHILD_DEADLINE}s hard deadline and was killed" ;;
   esac
-  exit "$rc"
+  [ "$rc" -eq 0 ] || exit "$rc"
+
+  # The bounded child has exited and `land-lock run` has proven its cleanup
+  # domain empty before returning. Arm the durable post-land obligation only
+  # NOW, outside that cleanup boundary. Starting the verifier/watchers inside
+  # `_inner` made their deliberately detached process groups descendants of
+  # the lock supervisor: successful landings then froze and quarantined live
+  # post-land work as if it were an escaped payload. We must not weaken the
+  # descendant census instead -- an arbitrary payload can use `setsid` too.
+  if "$ROOT/ci-hub/remediation/land_and_arm.py" complete --repo "$R" --pr "$PR"; then
+    intent_dir="${CI_HUB_LAND_INTENT_DIR:-$ROOT/ignored/ci-hub/land-intents}"
+    intent_path="$intent_dir/${R//\//-}-pr${PR}.json"
+    MC=$(jq -er '.landed_sha | select(test("^[0-9a-f]{40}$"))' "$intent_path" 2>/dev/null) || {
+      say "POST-LAND ARM PENDING: obligation armed, but exact landed SHA was unreadable from $intent_path"
+      exit 8
+    }
+
+    # Wave-level pile reconciliation. The inner ancestry check proves THIS PR
+    # landed; it says nothing about the task pile, which is closed on ancestry
+    # only and therefore grows monotonically until something re-checks it. A
+    # one-off check on 2026-08-06 found 163 of 302 already on main.
+    #
+    # Detached and single-flight: a serial wave lands many PRs, and this must
+    # neither delay a land nor spawn one audit per PR. Wrapped so a defect in
+    # the audit can never fail a landing that already succeeded.
+    if [ "${CI_HUB_POST_LAND_AUDIT:-1}" = 1 ]; then
+      (
+        exec 9>"$ROOT/ignored/.ancestry-audit.lock" 2>/dev/null || exit 0
+        flock -n 9 || exit 0   # an audit is already running; it will see this land too
+        setsid "$ROOT/ci-hub/bin/ancestry-audit" --herdr-agent "${AGENT:-hermit-lander}" \
+          --json "$ROOT/ignored/ancestry/post-land-audit.json" \
+          >"$ROOT/ignored/ancestry/post-land-audit.log" 2>&1
+      ) >/dev/null 2>&1 &
+    fi
+    say "LANDED:$MC"; exit 0
+  fi
+  say "POST-LAND ARM PENDING: merge is landed; durable recovery will retry"
+  with-proxy gh pr comment "$PR" -R "$R" --body \
+    "[coordinator, $MODEL] LANDED, but immediate exact-SHA verification arming failed after the landing lock released. The durable prepared intent remains open and the ORC recovery watcher will retry; this landing is not being reported complete." \
+    >/dev/null 2>&1 || say "WARN: could not post post-land arm warning"
+  exit 8
 fi
 
 # --- inner: we now hold the land-lock ----------------------------------------
@@ -424,31 +464,10 @@ with-proxy git -C "$ROOT/hermit" fetch -q origin main 2>/dev/null \
 MC=$(with-proxy gh pr view "$PR" -R "$R" --json mergeCommit -q .mergeCommit.oid)
 GITDIR="$ROOT/hermit"; git -C "$GITDIR" cat-file -e "$MC" 2>/dev/null || GITDIR="$WT"
 if git -C "$GITDIR" merge-base --is-ancestor "$MC" origin/main 2>/dev/null; then
-  if "$ROOT/ci-hub/remediation/land_and_arm.py" complete --repo "$R" --pr "$PR"; then
-    # Wave-level pile reconciliation. The ancestry-verify above proves THIS PR
-    # landed; it says nothing about the task pile, which is closed on ancestry
-    # only and therefore grows monotonically until something re-checks it. A
-    # one-off check on 2026-08-06 found 163 of 302 already on main.
-    #
-    # Detached and single-flight: a serial wave lands many PRs, and this must
-    # neither delay a land nor spawn one audit per PR. Wrapped so a defect in
-    # the audit can never fail a landing that already succeeded.
-    if [ "${CI_HUB_POST_LAND_AUDIT:-1}" = 1 ]; then
-      (
-        exec 9>"$ROOT/ignored/.ancestry-audit.lock" 2>/dev/null || exit 0
-        flock -n 9 || exit 0   # an audit is already running; it will see this land too
-        setsid "$ROOT/ci-hub/bin/ancestry-audit" --herdr-agent "${AGENT:-hermit-lander}" \
-          --json "$ROOT/ignored/ancestry/post-land-audit.json" \
-          >"$ROOT/ignored/ancestry/post-land-audit.log" 2>&1
-      ) >/dev/null 2>&1 &
-    fi
-    say "LANDED:$MC"; exit 0
-  fi
-  say "POST-LAND ARM PENDING: $MC is landed; durable recovery will retry"
-  with-proxy gh pr comment "$PR" -R "$R" --body \
-    "[coordinator, $MODEL] LANDED at $MC, but immediate exact-SHA verification arming failed. The durable prepared intent remains open and the ORC recovery watcher will retry; this landing is not being reported complete." \
-    >/dev/null 2>&1 || say "WARN: could not post post-land arm warning"
-  exit 8
+  # Return to the outer process. `land-lock run` must finish its descendant
+  # census and release before any durable post-land verifier is launched.
+  say "MERGED UNDER LOCK:$MC; post-land obligation arming deferred until release"
+  exit 0
 else
   abandon "merge reported but $MC is NOT an ancestor of origin/main (verify manually)" 7
 fi
