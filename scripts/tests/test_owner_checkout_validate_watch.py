@@ -368,7 +368,7 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                 "REFUSED: box-exclusive anchor held by pid=123 host=fixture "
                 "anchor=box-exclusive-v1 boot_id=boot-fixture start_ticks=456 "
                 "agent=helper kind=validate target=" + ("d" * 40) + " "
-                f"unit=validate-fixture.service record={record}\n"
+                f"unit=validate-fixture.service record={record}; this box admits one\n"
                 "# ci-hub/validate-lock tool COST ACTUAL exit=3\n"
             )
             evidence = watch.lock_block_evidence(log)
@@ -377,6 +377,7 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(evidence["refusal_pid"], 123)
             self.assertEqual(evidence["anchor_identity"]["start_ticks"], 456)
             self.assertEqual(evidence["anchor_identity"]["boot_id"], "boot-fixture")
+            self.assertEqual(evidence["anchor_identity"]["record"], str(record))
 
     def test_acquired_marker_binds_agent_kind_and_exact_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

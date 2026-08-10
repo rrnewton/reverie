@@ -514,7 +514,10 @@ def lock_block_evidence(log: Path) -> dict[str, Any] | None:
             if match:
                 anchor[key] = int(match.group(1))
         for key in ("boot_id", "agent", "target", "unit", "record"):
-            match = re.search(rf"\b{key}=([^\s]+)", refusal_line)
+            # The refusal is prose after the key/value identity and terminates
+            # record=PATH with ';'.  Treating that delimiter as part of PATH
+            # makes a complete PID/start-ticks/boot-id tuple look unattributed.
+            match = re.search(rf"\b{key}=([^\s;]+)", refusal_line)
             if match:
                 anchor[key] = match.group(1)
         if "pid" in anchor:
