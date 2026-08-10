@@ -92,6 +92,43 @@ class LandAndArmTest(unittest.TestCase):
         arm.assert_not_called()
         self.assertEqual(self.intent()["state"], "land-command-failed")
 
+    def test_rate_limit_is_named_cannot_start_not_pass(self) -> None:
+        args = self.args()
+        with mock.patch.object(
+            land_and_arm, "_run_land_command", return_value=0
+        ), mock.patch.object(
+            land_and_arm,
+            "observe_merged_sha",
+            side_effect=land_and_arm.protocol.ProtocolError(
+                "GraphQL: API rate limit already exceeded"
+            ),
+        ), mock.patch.object(land_and_arm, "arm_sha") as arm:
+            self.assertEqual(land_and_arm.run(args), land_and_arm.CANNOT_START)
+        arm.assert_not_called()
+        intent = self.intent()
+        self.assertEqual(intent["state"], "cannot-start")
+        self.assertEqual(
+            intent["cannot_start_reason"], "github-api-rate-limit-exhausted"
+        )
+
+    def test_pr_state_uses_rest_core_not_graphql(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {"state": "closed", "merged": True, "merge_commit_sha": SHA}
+            ),
+            stderr="",
+        )
+        with mock.patch.object(land_and_arm.protocol, "_run", return_value=result) as run:
+            self.assertEqual(
+                land_and_arm._pr_state("rrnewton/hermit", 1470), ("MERGED", SHA)
+            )
+        command = run.call_args.args[0]
+        self.assertIn("api", command)
+        self.assertIn("repos/rrnewton/hermit/pulls/1470", command)
+        self.assertNotIn("pr", command)
+
     def test_nonzero_merge_command_still_arms_when_pr_actually_merged(self) -> None:
         with mock.patch.object(
             land_and_arm, "_run_land_command", return_value=1
@@ -118,6 +155,20 @@ class LandAndArmTest(unittest.TestCase):
         recovered = self.intent()
         self.assertEqual(recovered["state"], "armed")
         self.assertEqual(recovered["obligation_id"], "obligation-recovered")
+
+    def test_recovery_closes_unmerged_intent_without_inventing_a_watcher(self) -> None:
+        args = self.args()
+        intent = land_and_arm._new_intent(args, ["/bin/true"])
+        path = land_and_arm._intent_path(self.intent_dir, args.repo, args.pr)
+        land_and_arm._atomic_json(path, intent)
+        with mock.patch.object(
+            land_and_arm, "_pr_state", return_value=("CLOSED", None)
+        ), mock.patch.object(land_and_arm, "arm_sha") as arm:
+            self.assertEqual(land_and_arm.recover_intent(path, observe_timeout=1), 0)
+        arm.assert_not_called()
+        recovered = self.intent()
+        self.assertEqual(recovered["state"], "land-command-failed")
+        self.assertIn("no post-land watcher is owed", recovered["error"])
 
     def test_crash_after_open_recovers_one_local_runner_and_one_watcher(self) -> None:
         args = self.args()

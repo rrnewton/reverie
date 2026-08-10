@@ -3,7 +3,7 @@
 
 Two engines:
 
-* ``gh`` (DEFAULT) — one proxied ``gh pr list --json`` call per repo, plus one
+* ``gh`` (DEFAULT) — one proxied ready-non-draft ``gh pr list --json`` call per repo, plus one
   dereference of the registered exact-head hosted authority per ready head, plus
   a bounded exact-job lookup only for a selected failing Actions check.
   ``gh`` returns ``mergeable`` and ``statusCheckRollup`` inline, so there is NO
@@ -94,6 +94,10 @@ CI_HUB_BIN = Path(os.environ.get("CI_HUB_BIN", ROOT / "ci-hub/ci-hub"))
 DEFAULT_REPOS = ("rrnewton/hermit", "rrnewton/reverie")
 DEFAULT_WARN_THRESHOLD = 10
 MAX_FETCH_ATTEMPTS = 3
+DEFAULT_CENSUS_TTL_SECS = float(
+    os.environ.get("CI_HUB_PR_CENSUS_TTL_SECS", str(6 * 60 * 60))
+)
+DEFAULT_CENSUS_CACHE_DIR = ROOT / "ignored/ci-hub/pr-census-cache"
 
 # Timeout basis (derived, not a plausible constant):
 #   planner engine — the binding cost is the FETCH, not the conflict analysis.
@@ -348,6 +352,7 @@ class RepoStatus:
     # from the ready count.
     all_open: int | None = None
     drafts: int | None = None
+    population_error: str = ""
     review_protocol: tuple[ReviewProtocolStatus, ...] = ()
     mechanism_overlaps: tuple[MechanismOverlap, ...] = ()
     undetermined_reds: int = 0
@@ -1113,17 +1118,29 @@ def _classify_gh_prs(
     *,
     setup_only_verifier: SetupOnlyVerifier | None = None,
     hosted_authority: Mapping[str, HostedAuthority] | None = None,
+    all_open_count: int | None = None,
+    draft_count: int | None = None,
+    population_known: bool = True,
+    population_error: str = "",
 ) -> RepoStatus:
     if banked_failure is None:
         banked_failure = {}
     if hosted_authority is None:
         hosted_authority = {}
     prs: list[dict[str, object]] = []
-    all_open = sum(1 for entry in raw if isinstance(entry, dict))
-    drafts = sum(
-        1
-        for entry in raw
-        if isinstance(entry, dict) and entry.get("isDraft") is True
+    all_open = (
+        all_open_count
+        if all_open_count is not None
+        else sum(1 for entry in raw if isinstance(entry, dict))
+    )
+    drafts = (
+        draft_count
+        if draft_count is not None
+        else sum(
+            1
+            for entry in raw
+            if isinstance(entry, dict) and entry.get("isDraft") is True
+        )
     )
     review_protocol: list[ReviewProtocolStatus] = []
     mechanism_overlaps = _mechanism_overlaps(raw)
@@ -1360,8 +1377,9 @@ def _classify_gh_prs(
         hosted_unknown=hosted_unknown,
         outage_suspected=outage,
         prs=tuple(prs),
-        all_open=all_open,
-        drafts=drafts,
+        all_open=all_open if population_known else None,
+        drafts=drafts if population_known else None,
+        population_error=population_error,
         review_protocol=tuple(review_protocol),
         mechanism_overlaps=mechanism_overlaps,
     )
@@ -1400,13 +1418,34 @@ def fetch_repo_status_gh(
     (UNAVAILABLE) instead of silently reporting zero open PRs.
     """
     started = time.monotonic()
-    raw = _fetch_open_prs_gh(
+    # The expensive GraphQL shape carries statusCheckRollup and mergeability.
+    # Drafts are not landing candidates, so ask GitHub for ready heads only.
+    ready = _fetch_open_prs_gh(
         repo,
         fields=GH_FIELDS,
         net_wrapper=net_wrapper,
         gh_cmd=gh_cmd,
         timeout=timeout,
+        search="draft:false",
     )
+    elapsed = time.monotonic() - started
+    census_timeout = None if timeout is None else max(0.0, timeout - elapsed)
+    population_error = ""
+    try:
+        census, _census_age = _cached_open_pr_census(
+            repo,
+            net_wrapper=net_wrapper,
+            gh_cmd=gh_cmd,
+            timeout=census_timeout,
+        )
+    except RepoUnavailable as error:
+        # The rare all-open census is not permission to throw away a successful
+        # ready-head health read. Carry UNKNOWN population separately.
+        census = []
+        population_error = str(error)
+    # The rare census is deliberately lightweight and uses REST. Only its draft
+    # rows are appended: ready rows above carry the richer exact-head fields.
+    raw = ready + [entry for entry in census if entry.get("isDraft") is True]
     if timeout is None:
         authority_deadline = None
     else:
@@ -1437,6 +1476,10 @@ def fetch_repo_status_gh(
         hosted_authority=hosted_authority_states(
             repo, ready_heads, deadline=authority_deadline
         ),
+        all_open_count=len(census),
+        draft_count=sum(entry.get("isDraft") is True for entry in census),
+        population_known=not population_error,
+        population_error=population_error,
     )
 
 
@@ -1447,6 +1490,7 @@ def _fetch_open_prs_gh(
     net_wrapper: Sequence[str],
     gh_cmd: str = "gh",
     timeout: float | None = None,
+    search: str | None = None,
 ) -> list[object]:
     """Fetch open PRs with a caller-selected bounded GraphQL field set."""
     command = [
@@ -1460,9 +1504,10 @@ def _fetch_open_prs_gh(
         "open",
         "--limit",
         "500",
-        "--json",
-        ",".join(fields),
     ]
+    if search:
+        command.extend(("--search", search))
+    command.extend(("--json", ",".join(fields)))
     result: subprocess.CompletedProcess[str] | None = None
     for attempt in range(1, MAX_FETCH_ATTEMPTS + 1):
         if timeout is not None and timeout <= 0:
@@ -1520,6 +1565,115 @@ def _fetch_open_prs_gh(
     if not isinstance(raw, list):
         raise RepoUnavailable(f"{repo}: gh returned an unexpected schema (not a list)")
     return raw
+
+
+def _census_cache_path(repo: str, cache_dir: Path) -> Path:
+    return cache_dir / f"{repo.replace('/', '-')}.json"
+
+
+def _read_census_cache(path: Path, *, now: float, ttl: float) -> tuple[list[dict], float] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    fetched_at = payload.get("fetched_at") if isinstance(payload, dict) else None
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    if not isinstance(fetched_at, (int, float)) or not isinstance(rows, list):
+        return None
+    age = max(0.0, now - float(fetched_at))
+    if age > ttl or not all(isinstance(row, dict) for row in rows):
+        return None
+    return rows, age
+
+
+def _write_census_cache(path: Path, rows: list[dict], *, now: float) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps({"fetched_at": now, "rows": rows}, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
+
+
+def _fetch_open_pr_census_rest(
+    repo: str,
+    *,
+    net_wrapper: Sequence[str],
+    gh_cmd: str,
+    timeout: float | None,
+) -> list[dict]:
+    """Fetch a lightweight all-open census with REST, not GraphQL.
+
+    ``--paginate --slurp`` is one process and at most ceil(open/100) core-REST
+    requests. It carries no status rollups; those are reserved for ready heads.
+    """
+    try:
+        result = subprocess.run(
+            [
+                *net_wrapper,
+                gh_cmd,
+                "api",
+                "--paginate",
+                "--slurp",
+                f"repos/{repo}/pulls?state=open&per_page=100",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RepoUnavailable(f"{repo}: lightweight REST census timed out") from None
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown error"
+        raise RepoUnavailable(f"{repo}: lightweight REST census failed: {detail[:400]}")
+    try:
+        pages = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RepoUnavailable(f"{repo}: REST census returned non-JSON") from error
+    if not isinstance(pages, list) or not all(isinstance(page, list) for page in pages):
+        raise RepoUnavailable(f"{repo}: REST census returned an unexpected schema")
+    rows: list[dict] = []
+    for entry in (item for page in pages for item in page):
+        if not isinstance(entry, dict):
+            continue
+        rows.append(
+            {
+                "number": entry.get("number"),
+                "title": entry.get("title") or "",
+                "isDraft": entry.get("draft") is True,
+                "labels": entry.get("labels") if isinstance(entry.get("labels"), list) else [],
+                "headRefOid": (
+                    entry.get("head", {}).get("sha")
+                    if isinstance(entry.get("head"), dict)
+                    else ""
+                ),
+            }
+        )
+    return rows
+
+
+def _cached_open_pr_census(
+    repo: str,
+    *,
+    net_wrapper: Sequence[str],
+    gh_cmd: str = "gh",
+    timeout: float | None = None,
+    cache_dir: Path = DEFAULT_CENSUS_CACHE_DIR,
+    ttl: float = DEFAULT_CENSUS_TTL_SECS,
+    now: float | None = None,
+) -> tuple[list[dict], float]:
+    moment = time.time() if now is None else now
+    path = _census_cache_path(repo, cache_dir)
+    cached = _read_census_cache(path, now=moment, ttl=ttl)
+    if cached is not None:
+        return cached
+    rows = _fetch_open_pr_census_rest(
+        repo, net_wrapper=net_wrapper, gh_cmd=gh_cmd, timeout=timeout
+    )
+    _write_census_cache(path, rows, now=moment)
+    return rows, 0.0
 
 
 def fetch_mechanism_overlaps_gh(

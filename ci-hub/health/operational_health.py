@@ -419,31 +419,40 @@ def pull_request_gate() -> int:
             "prerequisite_no_result_checks",
         )
     }
-    # The gh engine already fetched ALL open PRs before it filtered drafts out
-    # of the CI-actionable set.  Reuse that population: no extra GitHub call and
-    # no added pressure against tick-hub's unchanged 30s gate bound.
+    # The gh engine polls ready heads at normal cadence and carries the separate
+    # cached all-open census when available. Never promote the ready count into
+    # an all-open count when that rare census is unavailable.
     all_open_by_repo = {
-        repo: (
-            status.all_open
-            if getattr(status, "all_open", None) is not None
-            else status.open
-        )
+        # Legacy/test adapters without the field still carry a complete raw
+        # population. An explicit None from the new gh engine means the rare
+        # census failed and must remain UNKNOWN.
+        repo: getattr(status, "all_open", status.open)
         for repo, status in zip(measured_repos, statuses)
     }
     ready_by_repo = {
         repo: status.open for repo, status in zip(measured_repos, statuses)
     }
-    all_open = sum(all_open_by_repo.values())
+    population_unknown = [
+        repo for repo, count in all_open_by_repo.items() if count is None
+    ]
+    all_open: int | str = (
+        sum(count for count in all_open_by_repo.values() if count is not None)
+        if not population_unknown
+        else "unknown"
+    )
     ready_non_draft = counts["open"]
-    drafts = all_open - ready_non_draft
+    drafts: int | str = (
+        all_open - ready_non_draft if isinstance(all_open, int) else "unknown"
+    )
     repo_scope = "|".join(
-        f"{repo}:all_open={all_open_by_repo[repo]},ready_non_draft={ready_by_repo[repo]}"
+        f"{repo}:all_open={all_open_by_repo[repo] if all_open_by_repo[repo] is not None else 'unknown'},"
+        f"ready_non_draft={ready_by_repo[repo]}"
         for repo in measured_repos
     )
     coverage = f"{len(statuses)}/{len(repos)}"
     outage = any(status.outage_suspected for status in statuses)
     unhealthy = counts["real_reds"] > 0 or outage
-    degraded = bool(unavailable)
+    degraded = bool(unavailable or population_unknown)
     if unhealthy:
         state = "red"
     elif degraded:
@@ -465,7 +474,9 @@ def pull_request_gate() -> int:
     if degraded:
         summary += (
             "; PARTIAL SAMPLE, NOT A FLEET CENSUS; unavailable="
-            + "|".join(repo for repo, _ in unavailable)
+            + ("|".join(repo for repo, _ in unavailable) or "none")
+            + "; population_unknown="
+            + ("|".join(population_unknown) or "none")
         )
     _emit(
         {

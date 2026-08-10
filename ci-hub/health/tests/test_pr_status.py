@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -809,7 +810,10 @@ class GhEngineLoudFailureTests(unittest.TestCase):
                 args=[], returncode=0, stdout="[]", stderr=""
             ),
         ]
-        status = pr_status.fetch_repo_status_gh("rrnewton/hermit", net_wrapper=[])
+        with mock.patch(
+            "pr_status._cached_open_pr_census", return_value=([], 0.0)
+        ):
+            status = pr_status.fetch_repo_status_gh("rrnewton/hermit", net_wrapper=[])
         self.assertEqual(status.open, 0)  # legit empty list == 0 PRs (query OK)
         sleep.assert_called_once()
 
@@ -840,9 +844,12 @@ class GhEngineLoudFailureTests(unittest.TestCase):
                 args=[], returncode=0, stdout=fixture, stderr=""
             ),
         ]
-        status = pr_status.fetch_repo_status_gh(
-            "rrnewton/hermit", net_wrapper=[], timeout=30
-        )
+        with mock.patch(
+            "pr_status._cached_open_pr_census", return_value=(raw, 0.0)
+        ):
+            status = pr_status.fetch_repo_status_gh(
+                "rrnewton/hermit", net_wrapper=[], timeout=30
+            )
         self.assertEqual(status.pending, 1)
         self.assertEqual(status.red, 0)
         self.assertEqual(status.setup_only_no_result_checks, 1)
@@ -880,9 +887,12 @@ class GhEngineLoudFailureTests(unittest.TestCase):
                 args=[], returncode=0, stdout=fixture, stderr=""
             ),
         ]
-        status = pr_status.fetch_repo_status_gh(
-            "rrnewton/hermit", net_wrapper=[], timeout=30
-        )
+        with mock.patch(
+            "pr_status._cached_open_pr_census", return_value=(raw, 0.0)
+        ):
+            status = pr_status.fetch_repo_status_gh(
+                "rrnewton/hermit", net_wrapper=[], timeout=30
+            )
         self.assertEqual(status.pending, 0)
         self.assertEqual(status.red, 1)
         self.assertEqual(status.product_reds, 1)
@@ -1764,7 +1774,9 @@ class HostedAuthorityFanOutTests(unittest.TestCase):
             ),
         ), mock.patch(
             "pr_status.hosted_authority_states", return_value={}
-        ) as states:
+        ) as states, mock.patch(
+            "pr_status._cached_open_pr_census", return_value=(raw, 0.0)
+        ):
             pr_status.fetch_repo_status_gh("rrnewton/hermit", net_wrapper=[])
         states.assert_called_once()
         self.assertEqual(states.call_args.args[1], ["a" * 40])
@@ -1778,6 +1790,93 @@ class HostedAuthorityFanOutTests(unittest.TestCase):
             )
         reader.assert_not_called()
         self.assertEqual(observed, {})
+
+
+class DraftCensusThrottleTests(unittest.TestCase):
+    @mock.patch("pr_status.subprocess.run")
+    def test_expensive_graphql_query_is_ready_non_draft_only(self, run: mock.Mock) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="[]", stderr=""
+        )
+        pr_status._fetch_open_prs_gh(
+            "rrnewton/hermit",
+            fields=pr_status.GH_FIELDS,
+            net_wrapper=[],
+            search="draft:false",
+        )
+        command = run.call_args.args[0]
+        self.assertIn("--search", command)
+        self.assertEqual(command[command.index("--search") + 1], "draft:false")
+
+    def test_lightweight_census_is_cached_for_six_hours(self) -> None:
+        rows = [
+            {"number": 1, "isDraft": False},
+            {"number": 2, "isDraft": True},
+        ]
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            pr_status, "_fetch_open_pr_census_rest", return_value=rows
+        ) as fetch:
+            cache = Path(directory)
+            first, first_age = pr_status._cached_open_pr_census(
+                "rrnewton/hermit", net_wrapper=[], cache_dir=cache, now=100.0
+            )
+            second, second_age = pr_status._cached_open_pr_census(
+                "rrnewton/hermit", net_wrapper=[], cache_dir=cache, now=101.0
+            )
+        self.assertEqual(first, rows)
+        self.assertEqual(second, rows)
+        self.assertEqual(first_age, 0.0)
+        self.assertEqual(second_age, 1.0)
+        fetch.assert_called_once()
+
+    def test_ready_health_and_rare_census_populations_stay_separate(self) -> None:
+        ready = [_pr(1, _rollup(("COMPLETED", "SUCCESS")), head="a" * 40)]
+        census = [
+            {"number": 1, "title": "ready", "isDraft": False, "labels": []},
+            {"number": 2, "title": "draft", "isDraft": True, "labels": []},
+            {"number": 3, "title": "draft", "isDraft": True, "labels": []},
+        ]
+        with mock.patch.object(
+            pr_status, "_fetch_open_prs_gh", return_value=ready
+        ) as graphql, mock.patch.object(
+            pr_status, "_cached_open_pr_census", return_value=(census, 0.0)
+        ), mock.patch.object(
+            pr_status, "banked_green_commits", return_value=frozenset()
+        ), mock.patch.object(
+            pr_status, "banked_failure_tier_commits", return_value={}
+        ), mock.patch.object(
+            pr_status, "hosted_authority_states", return_value={}
+        ):
+            status = pr_status.fetch_repo_status_gh(
+                "rrnewton/hermit", net_wrapper=[]
+            )
+        self.assertEqual(graphql.call_args.kwargs["search"], "draft:false")
+        self.assertEqual(status.open, 1)
+        self.assertEqual(status.all_open, 3)
+        self.assertEqual(status.drafts, 2)
+
+    def test_failed_rare_census_does_not_discard_ready_health(self) -> None:
+        ready = [_pr(1, _rollup(("COMPLETED", "SUCCESS")), head="a" * 40)]
+        with mock.patch.object(
+            pr_status, "_fetch_open_prs_gh", return_value=ready
+        ), mock.patch.object(
+            pr_status,
+            "_cached_open_pr_census",
+            side_effect=pr_status.RepoUnavailable("REST quota unavailable"),
+        ), mock.patch.object(
+            pr_status, "banked_green_commits", return_value=frozenset()
+        ), mock.patch.object(
+            pr_status, "banked_failure_tier_commits", return_value={}
+        ), mock.patch.object(
+            pr_status, "hosted_authority_states", return_value={}
+        ):
+            status = pr_status.fetch_repo_status_gh(
+                "rrnewton/hermit", net_wrapper=[]
+            )
+        self.assertEqual(status.open, 1)
+        self.assertIsNone(status.all_open)
+        self.assertIsNone(status.drafts)
+        self.assertIn("REST quota", status.population_error)
 
 
 if __name__ == "__main__":

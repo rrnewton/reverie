@@ -297,7 +297,7 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertIn("state=degraded", output)
         self.assertIn("degraded=yes", output)
         self.assertIn("unavailable=big/two", output)
-        self.assertIn("open=2", output)  # the reachable repo's data survives
+        self.assertIn("ready_non_draft=2", output)  # reachable data survives
         self.assertNotIn("state=ok", output)
 
     def test_primary_snapshot_failure_is_a_structured_warning(self) -> None:

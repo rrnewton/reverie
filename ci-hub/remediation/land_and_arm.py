@@ -23,6 +23,7 @@ import protocol
 
 DEFAULT_COMMAND_TIMEOUT = 20 * 60
 DEFAULT_OBSERVE_TIMEOUT = 60
+CANNOT_START = 3
 
 
 class LandError(RuntimeError):
@@ -66,17 +67,15 @@ def _run_land_command(command: Sequence[str], timeout: int) -> int:
 
 
 def _pr_state(repo: str, pr: int) -> tuple[str, str | None]:
+    # This is the FINAL merge/close observation, so one REST-core request is
+    # warranted. ``gh pr view`` uses GraphQL and could not start the watcher
+    # when four drainers exhausted that separate quota (0/5000 remaining).
     result = protocol._run(
         (
             "with-proxy",
             "gh",
-            "pr",
-            "view",
-            str(pr),
-            "-R",
-            repo,
-            "--json",
-            "state,mergeCommit",
+            "api",
+            f"repos/{repo}/pulls/{pr}",
         ),
         check=True,
         timeout=protocol.DEFAULT_NETWORK_TIMEOUT,
@@ -84,12 +83,44 @@ def _pr_state(repo: str, pr: int) -> tuple[str, str | None]:
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError as error:
-        raise LandError("gh pr view returned invalid JSON") from error
+        raise LandError("GitHub PR REST response was invalid JSON") from error
     if not isinstance(payload, Mapping):
-        raise LandError("gh pr view returned a non-object")
-    merge_commit = payload.get("mergeCommit")
-    oid = merge_commit.get("oid") if isinstance(merge_commit, Mapping) else None
-    return str(payload.get("state") or "").upper(), str(oid).lower() if oid else None
+        raise LandError("GitHub PR REST response was a non-object")
+    merged = payload.get("merged") is True
+    oid = payload.get("merge_commit_sha")
+    state = "MERGED" if merged else str(payload.get("state") or "").upper()
+    return state, str(oid).lower() if merged and oid else None
+
+
+def _is_rate_limit_error(error: BaseException) -> bool:
+    text = str(error).lower()
+    return "rate limit" in text or "rate_limit" in text or "http 429" in text
+
+
+def _record_cannot_start(
+    path: Path,
+    intent: dict[str, Any],
+    *,
+    stage: str,
+    error: BaseException,
+) -> int:
+    intent.update(
+        state="cannot-start",
+        cannot_start_at=obligations.utc_now(),
+        cannot_start_reason="github-api-rate-limit-exhausted",
+        cannot_start_stage=stage,
+        error=str(error),
+    )
+    _atomic_json(path, intent)
+    print("state=CANNOT_START")
+    print("reason=github-api-rate-limit-exhausted")
+    print(f"stage={stage}")
+    print(
+        "summary=CANNOT_START: GitHub API rate limit was exhausted before the "
+        "post-land watcher could be armed; this is not PASS and the durable "
+        f"intent remains recoverable at {path}"
+    )
+    return CANNOT_START
 
 
 def observe_merged_sha(
@@ -229,7 +260,11 @@ def run(args: argparse.Namespace) -> int:
     if code != 0:
         try:
             state, observed_sha = _pr_state(args.repo, args.pr)
-        except (LandError, protocol.ProtocolError):
+        except (LandError, protocol.ProtocolError) as error:
+            if _is_rate_limit_error(error):
+                return _record_cannot_start(
+                    path, intent, stage="post-land-state-observation", error=error
+                )
             # Leave the durable intent recoverable. A wrapper/process failure
             # must never be allowed to prove that the merge did not happen.
             intent.update(
@@ -249,7 +284,14 @@ def run(args: argparse.Namespace) -> int:
             _atomic_json(path, intent)
             return code
     else:
-        sha = observe_merged_sha(args.repo, args.pr, timeout=args.observe_timeout)
+        try:
+            sha = observe_merged_sha(args.repo, args.pr, timeout=args.observe_timeout)
+        except (LandError, protocol.ProtocolError) as error:
+            if _is_rate_limit_error(error):
+                return _record_cannot_start(
+                    path, intent, stage="post-land-state-observation", error=error
+                )
+            raise
     intent.update(
         state="merged-unarmed", landed_sha=sha, merged_at=obligations.utc_now()
     )
@@ -293,7 +335,14 @@ def complete(args: argparse.Namespace) -> int:
         raise LandError(f"cannot read prepared land intent {path}: {error}") from error
     if not isinstance(intent, dict) or intent.get("state") == "land-command-failed":
         raise LandError(f"land intent is not completable: {path}")
-    sha = observe_merged_sha(args.repo, args.pr, timeout=args.observe_timeout)
+    try:
+        sha = observe_merged_sha(args.repo, args.pr, timeout=args.observe_timeout)
+    except (LandError, protocol.ProtocolError) as error:
+        if _is_rate_limit_error(error):
+            return _record_cannot_start(
+                path, intent, stage="prepared-land-completion", error=error
+            )
+        raise
     intent.update(
         state="merged-unarmed", landed_sha=sha, merged_at=obligations.utc_now()
     )
@@ -343,8 +392,22 @@ def recover_intent(path: Path, *, observe_timeout: int) -> int:
         _atomic_json(path, intent)
     sha = intent.get("landed_sha")
     if not isinstance(sha, str) or not obligations.SHA_RE.fullmatch(sha):
-        state, observed = _pr_state(str(intent["repo"]), int(intent["pr"]))
+        try:
+            state, observed = _pr_state(str(intent["repo"]), int(intent["pr"]))
+        except (LandError, protocol.ProtocolError) as error:
+            if _is_rate_limit_error(error):
+                return _record_cannot_start(
+                    path, intent, stage="recovery-state-observation", error=error
+                )
+            raise
         if state != "MERGED" or observed is None:
+            if state == "CLOSED":
+                intent.update(
+                    state="land-command-failed",
+                    failed_at=obligations.utc_now(),
+                    error="PR is closed without a merge; no post-land watcher is owed",
+                )
+                _atomic_json(path, intent)
             return 0
         sha = observed
         intent.update(

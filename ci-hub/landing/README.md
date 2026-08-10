@@ -369,6 +369,22 @@ inside the whole-child process-group deadline, so a stalled call cannot hold the
 landing lock beyond that ceiling. The child deadline must be greater than the
 gate deadline; zero is rejected rather than meaning unbounded.
 
+### Quota-degraded drain: local patch identity first
+
+When GitHub API quota is exhausted, stop using per-PR `gh pr view` for triage.
+In an assigned slot, fetch the PR ref through Git transport (not the API) and
+compare its patches locally:
+
+```bash
+git fetch origin "+refs/pull/$PR/head:refs/pr-drain/$PR"
+git cherry origin/main "refs/pr-drain/$PR"
+```
+
+`-` means an equivalent patch is already on main; `+` means the patch remains
+unique. Record both the fetched ref SHA and main SHA. This classification costs
+zero GitHub API points. Serialize API ownership and reserve `gh` for the final
+close/merge observation; parallel drainers continue local patch-id work.
+
 ## Verifying your land (before you release)
 
 Release only after the commit is on `origin/main`:
