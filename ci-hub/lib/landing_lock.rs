@@ -108,11 +108,9 @@ pub struct CensusOrphanedDomainArgs {
     /// supervisor-independent authority (unit cgroup absent/empty AND every
     /// cgroup the payload can migrate into empty).
     ///
-    /// NOT required when the record carries a cgroup anchor and the kernel
-    /// already says the domain is empty -- that census is mechanical. This is
-    /// only for records with no anchor, or where the anchor cannot be read.
-    /// Every landing-lock record written before the anchor work is anchorless,
-    /// so today this path is the norm for landing rather than the exception.
+    /// NOT required when the record carries a mechanical cleanup domain and the
+    /// kernel already says it is empty. This remains only for legacy records
+    /// with no domain, or legacy cgroup records whose anchor cannot be read.
     #[arg(long)]
     pub attest_domain_empty: bool,
     /// The exact observations backing `--attest-domain-empty`. Recorded in the
@@ -220,17 +218,23 @@ pub(crate) struct CleanupRecord {
     pub(crate) host: String,
     pub(crate) boot_id: String,
     pub(crate) phase: CleanupPhase,
-    /// Cgroup-v2 path of the published payload, relative to the cgroup mount.
+    /// Exact cleanup boundary published while the start-gated payload is alive.
     ///
-    /// The ONE supervisor-independent anchor in this record. `leader`/`pgid` are
-    /// both useless post-hoc: a ppid walk needs the (now dead) subreaper, and
-    /// pgid membership does not survive `setsid()`. Cgroup membership DOES
-    /// survive both `setsid()` and reparenting, so this is what lets an orphaned
-    /// domain be censused mechanically instead of by operator attestation.
-    ///
-    /// `None` on every record written before this field existed, and on records
-    /// whose payload cgroup could not be read — those keep the attestation path.
-    pub(crate) cgroup: Option<String>,
+    /// A process group is narrow and actionable: it contains the payload, not
+    /// the long-lived agent sandbox that launched the lock. A cgroup remains a
+    /// readable legacy boundary, but new records must not copy an inherited
+    /// supervisor cgroup and mislabel it as payload-owned.
+    pub(crate) domain: CleanupDomain,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CleanupDomain {
+    /// Version-2 records predate an explicit cleanup boundary.
+    LegacyUnproven,
+    /// Version-4 records bind cleanup to the payload's own process group.
+    ProcessGroup,
+    /// Version-3 compatibility for already-published cgroup records.
+    Cgroup(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -269,7 +273,7 @@ impl CleanupRecord {
             host,
             boot_id: read_current_boot_id()?,
             phase,
-            cgroup: None,
+            domain: CleanupDomain::LegacyUnproven,
         })
     }
 
@@ -284,6 +288,7 @@ impl CleanupRecord {
         let mut pgid = None;
         let mut domain_complete = None;
         let mut cgroup = None;
+        let mut domain = None;
         let mut residuals = Vec::new();
         for (line_number, line) in content.lines().enumerate() {
             let (key, value) = line
@@ -317,20 +322,25 @@ impl CleanupRecord {
                 }
                 "residual" => residuals.push(parse_process_identity(value, "residual")?),
                 "cgroup" => set_once(&mut cgroup, value.to_string(), key)?,
+                "domain" => set_once(&mut domain, value.to_string(), key)?,
                 unknown => return Err(format!("unknown cleanup field {unknown:?}")),
             }
         }
-        // v3 == v2 plus an optional `cgroup`. Both are accepted so a record
-        // written by either binary generation stays readable while builds are
-        // mixed on this box; `cgroup` on a v2 record is a malformed record, not
-        // a tolerable extra.
-        match version.as_deref() {
-            Some("2") if cgroup.is_some() => {
-                return Err("cleanup version 2 cannot carry a cgroup field".to_string())
+        let cleanup_domain = match version.as_deref() {
+            Some("2") if cgroup.is_none() && domain.is_none() => CleanupDomain::LegacyUnproven,
+            Some("2") => return Err("cleanup version 2 cannot carry a cleanup domain".to_string()),
+            Some("3") if domain.is_none() => cgroup
+                .map(CleanupDomain::Cgroup)
+                .unwrap_or(CleanupDomain::LegacyUnproven),
+            Some("3") => return Err("cleanup version 3 cannot carry a domain field".to_string()),
+            Some("4") if cgroup.is_none() && domain.as_deref() == Some("process-group") => {
+                CleanupDomain::ProcessGroup
             }
-            Some("2") | Some("3") => {}
+            Some("4") => {
+                return Err("cleanup version 4 requires exactly domain=process-group".to_string())
+            }
             other => return Err(format!("unsupported cleanup version {other:?}")),
-        }
+        };
         residuals.sort();
         residuals.dedup();
         let phase = match phase.as_deref() {
@@ -372,24 +382,24 @@ impl CleanupRecord {
             host: host.ok_or_else(|| "cleanup record has no host".to_string())?,
             boot_id: boot_id.ok_or_else(|| "cleanup record has no boot_id".to_string())?,
             phase,
-            cgroup,
+            domain: cleanup_domain,
         })
     }
 
     pub(crate) fn render(&self) -> String {
-        // Emit v3 ONLY when there is actually a cgroup to carry. A record
-        // without one renders byte-identically to what every prior binary
-        // wrote, so landing-lock records and armed/legacy validate records are
-        // untouched and stay readable by older builds still present on this
-        // box. Only a published validate payload -- the sole consumer of the
-        // mechanical census -- moves to v3.
-        let version = if self.cgroup.is_some() { 3 } else { 2 };
+        let version = match self.domain {
+            CleanupDomain::LegacyUnproven => 2,
+            CleanupDomain::Cgroup(_) => 3,
+            CleanupDomain::ProcessGroup => 4,
+        };
         let mut output = format!(
             "version={version}\nagent={}\noperation={}\nhost={}\nboot_id={}\n",
             self.agent, self.operation, self.host, self.boot_id
         );
-        if let Some(cgroup) = &self.cgroup {
-            output.push_str(&format!("cgroup={cgroup}\n"));
+        match &self.domain {
+            CleanupDomain::LegacyUnproven => {}
+            CleanupDomain::Cgroup(cgroup) => output.push_str(&format!("cgroup={cgroup}\n")),
+            CleanupDomain::ProcessGroup => output.push_str("domain=process-group\n"),
         }
         match &self.phase {
             CleanupPhase::Armed => output.push_str("phase=armed\n"),
@@ -893,7 +903,7 @@ impl LandingLock {
         // `Some(anchor)` records the payload's containment boundary; `None` leaves whatever the
         // record already carried, so the phase transitions that are not the acquire point cannot
         // accidentally erase an anchor written earlier.
-        cgroup: Option<String>,
+        domain: Option<CleanupDomain>,
     ) -> Result<(), LandLockError> {
         self.with_guard(|| {
             let holder = self.read_holder()?.ok_or_else(|| {
@@ -928,8 +938,8 @@ impl LandingLock {
                 )));
             }
             record.phase = next;
-            if let Some(cgroup) = cgroup {
-                record.cgroup = Some(cgroup);
+            if let Some(domain) = domain {
+                record.domain = domain;
             }
             write_cleanup_record(&self.paths.cleanup, &record)
                 .map_err(|source| io_error("write", &self.paths.cleanup, source))
@@ -945,27 +955,10 @@ impl LandingLock {
                 leader: gated.leader.clone(),
                 pgid: gated.pgid,
             },
-            // ACQUIRE TIME, not release: the only party who can read the payload's cgroup is the
-            // payload itself while it is alive, and the whole point is to survive the supervisor
-            // dying. A boundary recorded at release is a boundary that is never recorded in
-            // exactly the case that needs it.
-            //
-            // Best effort BY DESIGN, mirroring validate-lock: if the cgroup cannot be read, or is
-            // shared with unrelated work, the record simply carries no anchor and `reclaim-dead`
-            // keeps its existing attestation path -- the status quo, never a new failure mode.
-            // Anchoring to a SHARED cgroup would be worse than no anchor, because a domain that
-            // is permanently populated by someone else's work could never be censused empty.
-            match payload_cgroup_anchor(gated.leader.pid) {
-                Ok(cgroup) => Some(cgroup),
-                Err(why) => {
-                    eprintln!(
-                        "landing-lock: no cgroup anchor recorded for this run ({why}); if the \
-                         supervisor dies, censusing the orphaned domain will require \
-                         --attest-domain-empty"
-                    );
-                    None
-                }
-            },
+            // Publish the payload-owned boundary before opening the start gate.
+            // The child has its own PGID; unlike its inherited cgroup, that
+            // boundary excludes this supervisor and the long-lived sandbox.
+            Some(CleanupDomain::ProcessGroup),
         )
     }
 
@@ -1462,11 +1455,10 @@ impl LandingLock {
             }
 
             // (5) The domain itself, through the SHARED policy both authorities
-            // use. Landing records are anchorless today, so this normally lands
-            // on the attestation branch; it becomes mechanical for free once
-            // landing `run()` records the anchor.
+            // use. New records carry the payload-owned process group; legacy
+            // anchorless records retain the explicit attestation branch.
             let disposition = census_disposition(
-                census_recorded_domain(record.cgroup.as_deref()),
+                census_cleanup_domain(&record, pgid),
                 args.attest_domain_empty,
                 &args.evidence,
                 &format!(
@@ -2230,10 +2222,9 @@ pub(crate) fn remove_cleanup_record(path: &Path) -> io::Result<()> {
 // cleanup record, read by `verify_cleanup_record` — and it stays exactly where
 // it was on disk. A claim is a POINTER to that record, nothing more, so the two
 // can never disagree about whether the box is quarantined. In particular the
-// claim carries no liveness of its own: `CleanupRecord::cgroup` is the one
-// supervisor-independent anchor (a ppid walk needs the dead subreaper and a pgid
-// does not survive `setsid()`, but cgroup membership survives both), and it
-// already lives in the record.
+// claim carries no liveness of its own: `CleanupRecord::domain` names the exact
+// boundary selected by the record version, and the shared cleanup verifier is
+// the only code allowed to interpret that boundary.
 //
 // WHY A POINTER CANNOT WEDGE THE BOX. The flock's great virtue was that the
 // kernel released it on death, so it could never strand anything; a durable
@@ -2512,6 +2503,7 @@ pub(crate) enum CgroupCensus {
 /// Returns `None` rather than an error: a missing or v1-shaped entry simply
 /// means this record cannot carry the anchor and must keep the attestation
 /// path. `/proc/<pid>/cgroup` on a v2 host has the single line `0::/<path>`.
+#[cfg(test)]
 pub(crate) fn process_cgroup(pid: u32) -> Option<String> {
     let content = fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
     for line in content.lines() {
@@ -2609,27 +2601,6 @@ pub(crate) fn cgroup_population(relative: &str) -> CgroupCensus {
     } else {
         CgroupCensus::Populated(pids)
     }
-}
-
-/// Cgroup anchor for a published payload, or the reason there is none.
-///
-/// Deliberately NOT gated on the cgroup being exclusive to this run. I tried
-/// that and backed it out: every available exclusivity test is a ppid-tree walk,
-/// and ppid trees being unreliable is the PREMISE of this whole mechanism. In a
-/// real transient unit ci-hub re-execs through a cost-measurement wrapper
-/// (`ci-hub -> python3 -> python3.12 -> ci-hub -> payload`) whose intermediates
-/// exit and reparent, so a tree-rooted check reported four "foreign" occupants
-/// for a cgroup that was entirely this run's, and the anchor was never recorded
-/// -- the feature was inert.
-///
-/// Recording an anchor is safe without that gate because a POPULATED domain
-/// never silently discharges: it is refused by default and can only be overidden
-/// by an explicit attestation that is logged with the exact occupant pids. The
-/// value is in the other direction anyway -- an EMPTY or absent cgroup is a
-/// mechanical proof that needs no human at all.
-pub(crate) fn payload_cgroup_anchor(leader_pid: u32) -> Result<String, String> {
-    process_cgroup(leader_pid)
-        .ok_or_else(|| format!("no cgroup-v2 entry for payload pid {leader_pid}"))
 }
 
 /// The one cgroup a payload can legitimately migrate OUT of its unit cgroup
@@ -3332,7 +3303,9 @@ mod cgroup_anchor_tests {
                 },
                 pgid: 42,
             },
-            cgroup: cgroup.map(str::to_string),
+            domain: cgroup
+                .map(|value| CleanupDomain::Cgroup(value.to_string()))
+                .unwrap_or(CleanupDomain::LegacyUnproven),
         }
     }
 
@@ -3348,7 +3321,10 @@ mod cgroup_anchor_tests {
             "expected v2 for an anchorless record, got: {rendered}"
         );
         assert!(!rendered.contains("cgroup="));
-        assert_eq!(CleanupRecord::parse(&rendered).unwrap().cgroup, None);
+        assert_eq!(
+            CleanupRecord::parse(&rendered).unwrap().domain,
+            CleanupDomain::LegacyUnproven
+        );
     }
 
     // A record that HAS an anchor moves to v3 and round-trips.
@@ -3369,12 +3345,26 @@ mod cgroup_anchor_tests {
         let bad = "version=2\nagent=a\noperation=o\nhost=h\nboot_id=b\n\
                    cgroup=/x\nphase=armed\n";
         let error = CleanupRecord::parse(bad).unwrap_err();
-        assert!(error.contains("cannot carry a cgroup"), "got: {error}");
+        assert!(
+            error.contains("cannot carry a cleanup domain"),
+            "got: {error}"
+        );
+    }
+
+    #[test]
+    fn process_group_domain_renders_version_4_and_round_trips() {
+        let mut record = record_with(None);
+        record.domain = CleanupDomain::ProcessGroup;
+        let rendered = record.render();
+        assert!(rendered.starts_with("version=4\n"), "got: {rendered}");
+        assert!(rendered.contains("domain=process-group\n"));
+        assert!(!rendered.contains("cgroup="));
+        assert_eq!(CleanupRecord::parse(&rendered).unwrap(), record);
     }
 
     #[test]
     fn unsupported_versions_are_still_refused() {
-        let bad = "version=4\nagent=a\noperation=o\nhost=h\nboot_id=b\nphase=armed\n";
+        let bad = "version=5\nagent=a\noperation=o\nhost=h\nboot_id=b\nphase=armed\n";
         assert!(CleanupRecord::parse(bad)
             .unwrap_err()
             .contains("unsupported cleanup version"));
@@ -3484,7 +3474,7 @@ pub(crate) enum DomainEvidence {
     Unproven(String),
 }
 
-/// Census the payload domain post-hoc from the recorded cgroup anchor.
+/// Census a legacy version-3 payload domain from its recorded cgroup anchor.
 ///
 /// This is what closes the UNCENSUSED one-way door. `leader`/`pgid` are both
 /// dead ends after the supervisor exits — a ppid walk needs the subreaper that
@@ -3497,9 +3487,7 @@ pub(crate) enum DomainEvidence {
 pub(crate) fn census_recorded_domain(cgroup: Option<&str>) -> DomainEvidence {
     let Some(payload) = cgroup else {
         return DomainEvidence::Unproven(
-            "the cleanup record carries no cgroup anchor (written before cgroup anchoring, or \
-             the payload's cgroup was unreadable at publish time)"
-                .into(),
+            "the legacy cleanup record carries no cleanup domain".into(),
         );
     };
 
@@ -3544,6 +3532,25 @@ pub(crate) fn census_recorded_domain(cgroup: Option<&str>) -> DomainEvidence {
     DomainEvidence::ProvenEmpty(proven.join("; "))
 }
 
+/// Re-census the exact boundary published for this payload.
+///
+/// Version-4 records use the payload's own process group. `kill(-pgid, 0)` is
+/// only a liveness probe here; this path never signals the group. A reused PGID
+/// therefore fails closed as populated. Version-3 cgroup records remain
+/// readable for recovery, and version-2 records retain their attestation path.
+pub(crate) fn census_cleanup_domain(record: &CleanupRecord, pgid: u32) -> DomainEvidence {
+    match &record.domain {
+        CleanupDomain::LegacyUnproven => census_recorded_domain(None),
+        CleanupDomain::ProcessGroup if process_group_exists(pgid) => {
+            DomainEvidence::Populated(format!("payload process group {pgid} is still populated"))
+        }
+        CleanupDomain::ProcessGroup => {
+            DomainEvidence::ProvenEmpty(format!("payload process group {pgid} is absent"))
+        }
+        CleanupDomain::Cgroup(cgroup) => census_recorded_domain(Some(cgroup)),
+    }
+}
+
 /// What discharges this census, if anything.
 ///
 /// Pure on purpose: this is the entire policy change of the cgroup-anchor work,
@@ -3558,27 +3565,13 @@ pub(crate) fn census_disposition(
     match domain {
         // Mechanical. An attestation, if supplied, is simply not needed.
         DomainEvidence::ProvenEmpty(detail) => Ok(format!("empty domain PROVEN: {detail}")),
-        // Refused by default. An override is possible but never silent: the
-        // exact occupant pids are echoed into the transcript and the
-        // disposition is labelled so nobody can later read it as a clean census.
-        DomainEvidence::Populated(detail) => {
-            if !attested {
-                return Err(format!(
-                    "the recorded payload domain is NOT empty: {detail}. Wait for it to drain, \
-                     or kill it by exact identity. Overriding requires an explicit \
-                     --attest-domain-empty --evidence and will be recorded as an override."
-                ));
-            }
-            if evidence.trim().is_empty() {
-                return Err("--evidence must record the observations backing \
-                            --attest-domain-empty; an anonymous attestation is not auditable"
-                    .to_string());
-            }
-            Ok(format!(
-                "empty domain ATTESTED OVER A POPULATED CGROUP -- the kernel disagrees ({detail}): {}",
-                evidence.trim()
-            ))
-        }
+        // A live domain is never overridable. An attestation may fill an
+        // unobservable gap; it cannot contradict a positive kernel census.
+        DomainEvidence::Populated(detail) => Err(format!(
+            "the recorded payload domain is NOT empty: {detail}. Wait for it to drain, or \
+             terminate only the exact recorded identities after rechecking boot_id and \
+             /proc/<pid>/stat field 22. --attest-domain-empty cannot override a live domain."
+        )),
         DomainEvidence::Unproven(why) => {
             if !attested {
                 return Err(format!(
@@ -3733,10 +3726,9 @@ mod tests {
         control.wait().unwrap();
     }
 
-    /// Fabricate the exact wedge shape: a lock held by a dead supervisor whose
-    /// cleanup record is stuck at `published` with no cgroup anchor -- i.e. the
-    /// `mergegate-fix`/`pr:1666` state, and the shape of EVERY landing record,
-    /// since landing `run()` does not yet write an anchor.
+    /// Fabricate the legacy wedge shape: a lock held by a dead supervisor whose
+    /// cleanup record is stuck at `published` with no cleanup domain -- i.e. the
+    /// historical `mergegate-fix`/`pr:1666` state.
     fn anchorless_published_quarantine(name: &str) -> (LandingLock, ProcessIdentity, u32) {
         let paths = temp_paths(name);
         let lock = LandingLock { paths };
@@ -3779,17 +3771,16 @@ mod tests {
                 leader: leader.clone(),
                 pgid,
             },
-            cgroup: None,
+            domain: CleanupDomain::LegacyUnproven,
         };
         write_cleanup_record(&lock.paths.cleanup, &record).unwrap();
         (lock, leader, pgid)
     }
 
-    /// The A2 shape: identical to `anchorless_published_quarantine`, except the record
-    /// CARRIES the payload cgroup anchor that `publish_run` now writes at acquire time.
-    /// `cgroup` is a user-manager-shaped path under a temp root that does not exist, and an
-    /// ABSENT cgroup is positive proof of emptiness (a cgroup can only be removed once it holds
-    /// no processes), so this models a dead owner whose payload is genuinely gone.
+    /// Legacy v3 shape: identical to `anchorless_published_quarantine`, except
+    /// the record carries a cgroup anchor. `cgroup` is a user-manager-shaped
+    /// path under a temp root that does not exist, and an absent cgroup is
+    /// positive proof of emptiness.
     fn anchored_published_quarantine(
         name: &str,
         cgroup: &str,
@@ -3804,7 +3795,7 @@ mod tests {
                 leader: leader.clone(),
                 pgid,
             },
-            cgroup: Some(cgroup.to_string()),
+            domain: CleanupDomain::Cgroup(cgroup.to_string()),
         };
         write_cleanup_record(&lock.paths.cleanup, &record).unwrap();
         (lock, leader, pgid)
@@ -3849,12 +3840,13 @@ mod tests {
             "a populated domain must be refused and name its occupants, got {refused}"
         );
 
-        // Attested but anonymous -> STILL refused. This is the leg that stops "dead owner alone"
-        // from becoming a discharge: an unauditable claim is not evidence.
+        // Attestation cannot contradict positive liveness, with or without
+        // evidence. This is the leg that protects live agent/infrastructure
+        // processes when a stale record points at their broad sandbox.
         let anonymous = census_disposition(occupied(), true, "   ", "dead owner").unwrap_err();
         assert!(
-            anonymous.contains("--evidence"),
-            "an anonymous attestation over a populated domain must be refused, got {anonymous}"
+            anonymous.contains("cannot override a live domain"),
+            "attestation over a populated domain must be refused, got {anonymous}"
         );
 
         // And the positive control, so this is not a check that refuses everything:
@@ -3963,6 +3955,33 @@ mod tests {
             hold: 900,
         })
         .unwrap();
+    }
+
+    /// POSITIVE BRACKET: a genuinely orphaned payload whose published boundary
+    /// is its own PGID is mechanically censusable and reclaimable. No broad
+    /// cgroup and no operator attestation participates in the proof.
+    #[test]
+    fn an_orphaned_process_group_domain_is_censusable_and_reclaimable() {
+        let (lock, leader, pgid) = anchorless_published_quarantine("pgid-census-door");
+        let mut record =
+            CleanupRecord::parse(&fs::read_to_string(&lock.paths.cleanup).unwrap()).unwrap();
+        record.domain = CleanupDomain::ProcessGroup;
+        write_cleanup_record(&lock.paths.cleanup, &record).unwrap();
+
+        assert_eq!(
+            lock.census_orphaned_domain(census_args(&leader, pgid))
+                .unwrap(),
+            0
+        );
+        assert!(matches!(
+            lock.cleanup_verification(lock.read_holder().unwrap().as_ref()),
+            CleanupVerification::Recoverable { .. }
+        ));
+        assert_eq!(lock.reclaim_dead().unwrap(), 0);
+        assert!(matches!(
+            verify_cleanup_record(&lock.paths.cleanup, None),
+            CleanupVerification::None
+        ));
     }
 
     /// The blind-aim guard: every restated field is re-checked, so this cannot

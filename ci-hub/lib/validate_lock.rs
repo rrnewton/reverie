@@ -29,15 +29,17 @@ use thiserror::Error;
 // Reuse the PURE, stateless primitives from landing_lock rather than copy tricky
 // code. None of these carry a LandLockError or print a `landing-lock:` message,
 // so they are safe to share verbatim across both locks.
+#[cfg(test)]
+use crate::landing_lock::census_recorded_domain;
 use crate::landing_lock::{
     box_exclusion_anchor_path as box_exclusion_anchor_at, capture_and_freeze_residuals,
-    census_disposition, census_recorded_domain, current_host, enable_child_subreaper,
+    census_cleanup_domain, census_disposition, current_host, enable_child_subreaper,
     exact_process_liveness, exit_status_code, foreign_box_claim, heartbeat_test_helper_delay,
-    payload_cgroup_anchor, print_cleanup_record, process_group_exists, process_start_ticks,
-    reap_exited_children, register_box_claim, remove_cleanup_record_and_claim,
-    repository_lock_root, signal_group, spawn_gated_child, suffix, verify_cleanup_record,
-    write_cleanup_record, BoxExclusionAnchor, CleanupPhase, CleanupRecord, CleanupVerification,
-    DomainEvidence, GatedChild, ProcessIdentity, ResidualCapture,
+    print_cleanup_record, process_group_exists, process_start_ticks, reap_exited_children,
+    register_box_claim, remove_cleanup_record_and_claim, repository_lock_root, signal_group,
+    spawn_gated_child, suffix, verify_cleanup_record, write_cleanup_record, BoxExclusionAnchor,
+    CleanupDomain, CleanupPhase, CleanupRecord, CleanupVerification, DomainEvidence, GatedChild,
+    ProcessIdentity, ResidualCapture,
 };
 
 const DEFAULT_WAIT_SECONDS: u64 = 1_800;
@@ -203,9 +205,9 @@ pub struct CensusOrphanedDomainArgs {
     /// supervisor-independent authority (unit cgroup absent/empty AND every
     /// cgroup the payload can migrate into empty).
     ///
-    /// NOT required when the record carries a cgroup anchor and the kernel
-    /// already says the domain is empty -- that census is mechanical. This is
-    /// only for records with no anchor, or where the anchor cannot be read.
+    /// NOT required when the record carries a mechanical cleanup domain and the
+    /// kernel already says it is empty. This remains only for legacy records
+    /// with no domain, or legacy cgroup records whose anchor cannot be read.
     #[arg(long)]
     pub attest_domain_empty: bool,
     /// The exact observations backing `--attest-domain-empty`. Recorded in the
@@ -1152,9 +1154,9 @@ impl ValidateLock {
         target: &str,
         expected: fn(&CleanupPhase) -> bool,
         next: CleanupPhase,
-        // `Some` only at publish, the one transition that learns the payload's
-        // cgroup. Every other transition preserves whatever is already there.
-        cgroup: Option<String>,
+        // `Some` only at publish. Every other transition preserves the exact
+        // payload-owned cleanup boundary already recorded there.
+        domain: Option<CleanupDomain>,
     ) -> Result<(), ValidateLockError> {
         self.with_guard(|| {
             let holder = self.read_holder()?.ok_or_else(|| {
@@ -1188,8 +1190,8 @@ impl ValidateLock {
                 )));
             }
             record.phase = next;
-            if cgroup.is_some() {
-                record.cgroup = cgroup.clone();
+            if let Some(domain) = domain {
+                record.domain = domain;
             }
             write_cleanup_record(&self.paths.cleanup, &record)
                 .map_err(|source| io_error("write", &self.paths.cleanup, source))
@@ -1212,27 +1214,10 @@ impl ValidateLock {
                 leader: gated.leader.clone(),
                 pgid: gated.pgid,
             },
-            // Read from the payload itself while it is demonstrably alive, and
-            // ONLY when that cgroup is exclusive to this run. Best effort by
-            // design: if it cannot be read, or is shared with unrelated work,
-            // the record simply carries no anchor and the census keeps its
-            // attestation path -- the status quo, never a new failure. Anchoring
-            // to a shared cgroup would be worse than no anchor at all, since a
-            // permanently populated domain can never be censused.
-            match payload_cgroup_anchor(gated.leader.pid) {
-                Ok(cgroup) => Some(cgroup),
-                Err(why) => {
-                    // Say so rather than silently omitting it: without an anchor
-                    // an orphan census of THIS run will need a human attestation,
-                    // and that is worth knowing at publish time, not at 3am.
-                    eprintln!(
-                        "validate-lock: no cgroup anchor recorded for this run ({why}); if the \
-                         supervisor dies, censusing the orphaned domain will require \
-                         --attest-domain-empty"
-                    );
-                    None
-                }
-            },
+            // The start-gated child has its own PGID. Record that payload-owned
+            // boundary, never the inherited Codex/systemd cgroup that also
+            // contains this supervisor and unrelated infrastructure.
+            Some(CleanupDomain::ProcessGroup),
         )
     }
 
@@ -2209,7 +2194,7 @@ impl ValidateLock {
                     // Say up front whether the kernel can settle this, so the
                     // operator is not told to attest something already provable
                     // -- or told it is mechanical when the domain is still live.
-                    let domain = census_recorded_domain(record.cgroup.as_deref());
+                    let domain = census_cleanup_domain(&record, *pgid);
                     let attestation = match &domain {
                         DomainEvidence::ProvenEmpty(_) => "",
                         _ => " --attest-domain-empty --evidence '<observations>'",
@@ -2221,8 +2206,8 @@ impl ValidateLock {
                     );
                     match domain {
                         DomainEvidence::ProvenEmpty(detail) => println!(
-                            "  recovery_precondition=none; the domain is ALREADY proven empty \
-                             from the recorded cgroup anchor ({detail}), so no attestation is \
+                            "  recovery_precondition=none; the recorded cleanup domain is \
+                             ALREADY proven empty ({detail}), so no attestation is \
                              required. reclaim-dead alone still CANNOT clear this state."
                         ),
                         DomainEvidence::Populated(detail) => println!(
@@ -2367,16 +2352,11 @@ impl ValidateLock {
     /// WHAT IS AND IS NOT ATTESTABLE. Everything the kernel can still answer is
     /// checked mechanically here and REFUSES on failure — the restated identity,
     /// a proven-dead supervisor, the leader's exact pid+start_ticks absence, and
-    /// an absent process group. None of those may be attested away. The single
-    /// residual unknown is whether a descendant ESCAPED the recorded process
-    /// group before dying out of view: `pgid` membership does not survive
-    /// `setsid()`, so an absent pgid is necessary but not sufficient. Cgroup
-    /// membership DOES survive `setsid()` and reparenting, so a
-    /// supervisor-independent census is possible — but the version-2 record
-    /// carries no cgroup anchor to check it against. Until it does (see the
-    /// follow-up that records the payload cgroup at publish time), that one fact
-    /// is supplied by `--attest-domain-empty` with the observations in
-    /// `--evidence`, which are echoed into the transcript.
+    /// the recorded cleanup domain. None may be attested away. Version-4 records
+    /// publish the payload-owned process group, so an absent group is mechanical
+    /// evidence and a reused/live group fails closed as populated. Version-3
+    /// cgroups remain readable; only version-2 records lack a domain and retain
+    /// the explicit, auditable attestation path.
     fn census_orphaned_domain(
         &self,
         args: CensusOrphanedDomainArgs,
@@ -2498,11 +2478,11 @@ impl ValidateLock {
                 )));
             }
 
-            // (5) The domain itself. With a recorded cgroup anchor the kernel
-            // answers this directly and NO attestation is consumed; without one
-            // the operator attestation remains the only available evidence.
+            // (5) The domain itself. A recorded process group or readable legacy
+            // cgroup is mechanical and consumes NO attestation; only a legacy
+            // record without a domain uses operator evidence.
             let disposition = census_disposition(
-                census_recorded_domain(record.cgroup.as_deref()),
+                census_cleanup_domain(&record, pgid),
                 args.attest_domain_empty,
                 &args.evidence,
                 &format!(
@@ -4403,42 +4383,42 @@ wait
         );
     }
 
-    // An override IS possible -- refusing outright would create a NEW
-    // undischargeable state, the very thing this work exists to remove -- but it
-    // can never be silent. The disposition must be unmistakably labelled and
-    // must carry the pids the kernel reported, so it can never later be read as
-    // a clean mechanical census.
+    // A positive live-domain census is stronger than operator attestation. The
+    // exact defect under test recorded the agent sandbox; allowing an override
+    // here would let the cleaner bury live agent/infrastructure processes.
     #[test]
-    fn overriding_a_populated_domain_is_allowed_but_loudly_recorded() {
-        let ok = census_disposition(
+    fn a_populated_domain_cannot_be_overridden_by_attestation() {
+        let refusal = census_disposition(
             DomainEvidence::Populated("payload cgroup /x still holds 2 process(es): 11,22".into()),
             true,
             "operator checked: strays are unrelated",
             CTX,
         )
-        .expect("an explicit, evidenced override must be possible");
+        .expect_err("attestation must not contradict a live-domain census");
         assert!(
-            ok.contains("ATTESTED OVER A POPULATED CGROUP"),
-            "an override must be labelled as one, got: {ok}"
+            refusal.contains("cannot override a live domain"),
+            "the refusal must state the safety rule, got: {refusal}"
         );
-        assert!(ok.contains("11,22"), "must carry the occupants, got: {ok}");
         assert!(
-            !ok.contains("PROVEN"),
-            "must never read as mechanical: {ok}"
+            refusal.contains("11,22"),
+            "must carry the occupants, got: {refusal}"
         );
     }
 
-    // ...and an anonymous override is still refused.
+    // ...and an anonymous override is refused for the same stronger reason.
     #[test]
     fn an_anonymous_override_of_a_populated_domain_is_refused() {
-        assert!(census_disposition(
+        let refusal = census_disposition(
             DomainEvidence::Populated("/x holds 1".into()),
             true,
             "  ",
             CTX,
         )
-        .unwrap_err()
-        .contains("not auditable"));
+        .unwrap_err();
+        assert!(
+            refusal.contains("cannot override a live domain"),
+            "got: {refusal}"
+        );
     }
 
     // Unprovable and unattested: refused, and the refusal must name BOTH why it
@@ -4495,15 +4475,14 @@ wait
         );
     }
 
-    // LEGACY FALLBACK PRESERVED: a record written before cgroup anchoring has
-    // no anchor, so the domain is Unproven and the operator attestation stays
-    // the only route. This is the compatibility guarantee of the version bump.
+    // LEGACY FALLBACK PRESERVED: a version-2 record has no cleanup domain, so
+    // the result is Unproven and operator attestation remains the only route.
     #[test]
-    fn a_record_without_a_cgroup_anchor_is_unprovable_and_keeps_attestation() {
+    fn a_record_without_a_cleanup_domain_is_unprovable_and_keeps_attestation() {
         match census_recorded_domain(None) {
             DomainEvidence::Unproven(why) => assert!(
-                why.contains("no cgroup anchor"),
-                "the reason must name the missing anchor, got: {why}"
+                why.contains("no cleanup domain"),
+                "the reason must name the missing domain, got: {why}"
             ),
             other => panic!("an anchorless record must be Unproven, got {other:?}"),
         }
@@ -5059,7 +5038,14 @@ wait
                 (
                     crate::landing_lock::RunCrashPoint::AfterPublish,
                     CleanupPhase::Published { leader, pgid },
-                ) => Some((leader.clone(), *pgid)),
+                ) => {
+                    assert_eq!(
+                        record.domain,
+                        CleanupDomain::ProcessGroup,
+                        "publish must record the payload-owned PGID, not the supervisor cgroup"
+                    );
+                    Some((leader.clone(), *pgid))
+                }
                 (_, phase) => panic!("crash point {point:?} left unexpected phase {phase:?}"),
             };
 
@@ -5118,10 +5104,23 @@ wait
                     lock.cleanup_verification(lock.read_holder().unwrap().as_ref()),
                     CleanupVerification::Uncensused { .. }
                 ));
+                assert_eq!(
+                    lock.census_orphaned_domain(CensusOrphanedDomainArgs {
+                        agent: "crash-validate".into(),
+                        operation: format!("bench:{target}"),
+                        leader: format!("{}:{}", leader.pid, leader.start_ticks),
+                        pgid,
+                        attest_domain_empty: false,
+                        evidence: String::new(),
+                    })
+                    .unwrap(),
+                    0
+                );
                 assert!(matches!(
-                    lock.reclaim_dead(),
-                    Err(ValidateLockError::ReclaimNotProven(_))
+                    lock.cleanup_verification(lock.read_holder().unwrap().as_ref()),
+                    CleanupVerification::Recoverable { .. }
                 ));
+                assert_eq!(lock.reclaim_dead().unwrap(), 0);
             }
             let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
         }
