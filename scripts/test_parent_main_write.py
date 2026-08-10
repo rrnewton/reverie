@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import fcntl
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 
 
@@ -348,6 +351,132 @@ class PublishedResidueTests(ParentMainWriteTests):
         result = self.writer("sync")
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertIn("already-current=", result.stdout)
+
+
+class LiveLedgerWriterSyncTests(unittest.TestCase):
+    """A parent sync succeeds while the canonical adapter keeps recording."""
+
+    def setUp(self) -> None:
+        ParentMainWriteTests.setUp(self)
+        ledger_dir = self.repo / "ci-hub/ledger"
+        ledger_dir.mkdir(parents=True)
+        for name in ("ledger.py", "publisher.py", "validate_rows.py"):
+            shutil.copy2(SOURCE / "ci-hub/ledger" / name, ledger_dir / name)
+        (self.repo / ".gitignore").write_text("/ignored/\n")
+        git(
+            self.repo,
+            "add",
+            ".gitignore",
+            "ci-hub/ledger/ledger.py",
+            "ci-hub/ledger/publisher.py",
+            "ci-hub/ledger/validate_rows.py",
+        )
+        git(
+            self.repo,
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-m",
+            tagged("install ledger adapter fixture"),
+        )
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "push", "origin", "main")
+
+    def tearDown(self) -> None:
+        ParentMainWriteTests.tearDown(self)
+
+    def writer(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return ParentMainWriteTests.writer(self, *args)
+
+    def test_sync_fast_forwards_while_unique_events_arrive_before_and_after(self) -> None:
+        base = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        other = Path(self.temp.name) / "other-live"
+        git(Path(self.temp.name), "clone", str(self.remote), str(other))
+        git(other, "config", "user.name", "Other")
+        git(other, "config", "user.email", "other@example.invalid")
+        (other / "notes.md").write_text("remote advanced while validates run\n")
+        git(other, "add", "notes.md")
+        git(other, "commit", "-m", tagged("advance remote during live writes"))
+        git(other, "push", "origin", "main")
+        target = git(other, "rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(base, target, "remote main must actually advance")
+
+        ids_path = self.repo / "ignored/writer-event-ids.jsonl"
+        script = r'''
+import json, sys, time
+from pathlib import Path
+root, ids_path = Path(sys.argv[1]), Path(sys.argv[2])
+sys.path.insert(0, str(root / "ci-hub/ledger"))
+import validate_rows
+ids_path.parent.mkdir(parents=True, exist_ok=True)
+for index in range(300):
+    event_id = f"live-sync-{index:04d}"
+    row = {
+        "schema_version": 5,
+        "record_id": event_id,
+        "repo": "hermit",
+        "producer": "parent-main-write-integration",
+        "host": "devbig999",
+        "started_at": "2026-08-09T12:00:00Z",
+        "finished_at": "2026-08-09T12:01:00Z",
+        "result": "pass",
+        "commit": "a" * 40,
+        "cwd": str(root / "worktrees/slot99/hermit"),
+    }
+    validate_rows.record(row, root=root)
+    with ids_path.open("a") as stream:
+        stream.write(json.dumps({"event_id": event_id}) + "\n")
+    time.sleep(0.02)
+'''
+        process = subprocess.Popen(
+            [sys.executable, "-c", script, str(self.repo), str(ids_path)],
+            cwd=self.repo,
+            env=dict(os.environ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if ids_path.is_file() and len(ids_path.read_text().splitlines()) >= 5:
+                    break
+                time.sleep(0.02)
+            before = len(ids_path.read_text().splitlines())
+            self.assertGreaterEqual(before, 5)
+            self.assertIsNone(process.poll(), "writer must be active before sync")
+
+            result = self.writer("sync")
+
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+            self.assertEqual(target, git(self.repo, "rev-parse", "origin/main").stdout.strip())
+            self.assertIsNone(process.poll(), "writer must remain active after sync")
+            stdout, stderr = process.communicate(timeout=15)
+            self.assertEqual(0, process.returncode, stdout + stderr)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+
+        written_ids = [json.loads(line)["event_id"] for line in ids_path.read_text().splitlines()]
+        self.assertGreater(len(written_ids), before, "rows must land after the sync boundary")
+        union = run(
+            sys.executable,
+            "-c",
+            (
+                "import json,sys; from pathlib import Path; "
+                "root=Path(sys.argv[1]); sys.path.insert(0,str(root/'ci-hub/ledger')); "
+                "import validate_rows; "
+                "print(json.dumps([e['event_id'] for e in validate_rows.events(root=root)]))"
+            ),
+            str(self.repo),
+            cwd=self.repo,
+        )
+        self.assertEqual(0, union.returncode, union.stdout + union.stderr)
+        union_ids = json.loads(union.stdout)
+        self.assertEqual(set(written_ids), set(union_ids))
+        self.assertEqual(len(written_ids), len(union_ids), "event-id union must lose nothing")
+        self.assertEqual("", git(self.repo, "status", "--short", "--untracked-files=no").stdout)
 
 if __name__ == "__main__":
     unittest.main()

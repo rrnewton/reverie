@@ -11,8 +11,9 @@ against a ref that is then replaced — so publication is verified by ancestry,
 not by an exit code.
 
 **A concurrent publisher never costs us a row.** Two machines write different
-shards and merge trivially. Two producers on one machine serialise through
-`flock` in `ledger.append_events`. The remaining case is the interesting one: a
+shards and merge trivially. Two producers on one machine write immutable spool
+batches and `ledger.append_events` emits every line with one `O_APPEND` write.
+The remaining case is the interesting one: a
 non-fast-forward push, meaning someone appended to the same shard between our
 read and our push. That is resolved by an APPEND-AWARE merge — re-read the
 remote shard, keep every remote line in place, and re-append only the events
@@ -27,11 +28,14 @@ extension of what is published, the publish is refused rather than forced.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
+import sys
+import uuid
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Sequence
 
 from ledger import (  # noqa: F401 - re-exported for callers
     MalformedEvent,
@@ -64,8 +68,12 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
 # --------------------------------------------------------------------------- spool
 
 
-def spool_file(spool_dir: str | os.PathLike[str], team: str, host: str, when: str) -> Path:
-    return Path(spool_dir) / f"{team}__{host}__{when[:7]}.jsonl"
+def spool_file(
+    spool_dir: str | os.PathLike[str], team: str, host: str, when: str,
+    batch_id: str | None = None,
+) -> Path:
+    identity = batch_id or uuid.uuid4().hex
+    return Path(spool_dir) / f"{team}__{host}__{when[:7]}__{identity}.jsonl"
 
 
 def spool(spool_dir: str | os.PathLike[str], team: str, host: str, events: Sequence[dict]) -> Path:
@@ -73,27 +81,65 @@ def spool(spool_dir: str | os.PathLike[str], team: str, host: str, events: Seque
 
     This is the ordering that makes loss impossible: if everything after this
     call fails, the events are still on disk and the next publish picks them
-    up. Uses the same locked append as the ledger itself, so two producers
-    spooling at once cannot tear a line.
+    up. Each call builds a uniquely named batch outside the publisher's glob,
+    then atomically renames it into view; concurrent producers never share a
+    file and a publisher never observes a half-built batch.
     """
     if not events:
         raise PublishRefused("refusing to spool an empty batch")
     when = str(events[0].get("emitted_at", ""))
     target = spool_file(spool_dir, team, host, when)
-    append_events(target, events)
+    temporary = target.with_suffix(".tmp")
+    append_events(temporary, events)
+    # Publishers ignore .tmp. The completed batch becomes visible all at once,
+    # and is thereafter immutable, so draining a snapshot cannot unlink a row
+    # appended by a producer that stayed active during publication.
+    os.replace(temporary, target)
     return target
+
+
+def _spool_snapshot(
+    spool_dir: str | os.PathLike[str],
+) -> tuple[dict[tuple[str, str, str], list[dict]], list[Path]]:
+    """One immutable batch snapshot and the exact files that comprise it."""
+    pending: dict[tuple[str, str, str], list[dict]] = {}
+    files: list[Path] = []
+    root = Path(spool_dir)
+    if not root.is_dir():
+        return pending, files
+    for path in sorted(root.glob("*.jsonl")):
+        parts = path.stem.split("__")
+        if len(parts) not in {3, 4}:
+            raise PublishRefused(f"unrecognised spool batch name: {path.name}")
+        team, host, month = parts[:3]
+        pending.setdefault((team, host, month), []).extend(read_shard(path))
+        files.append(path)
+    return ({key: union_events(value) for key, value in pending.items()}, files)
 
 
 def spooled(spool_dir: str | os.PathLike[str]) -> dict[tuple[str, str, str], list[dict]]:
     """Every pending event, keyed by (team, host, month)."""
-    pending: dict[tuple[str, str, str], list[dict]] = {}
-    root = Path(spool_dir)
-    if not root.is_dir():
-        return pending
-    for path in sorted(root.glob("*.jsonl")):
-        team, host, month = path.stem.split("__", 2)
-        pending[(team, host, month)] = read_shard(path)
-    return pending
+    return _spool_snapshot(spool_dir)[0]
+
+
+def stage_tracked(
+    source_root: str | os.PathLike[str], spool_dir: str | os.PathLike[str]
+) -> dict:
+    """Copy tracked history into immutable spool batches without changing it."""
+    source_root = Path(source_root).resolve()
+    staged = 0
+    batches: list[str] = []
+    pattern = "ledger/*/*/[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl"
+    for path in sorted(source_root.glob(pattern)):
+        relative = path.relative_to(source_root)
+        team, host = relative.parts[1], relative.parts[2]
+        events = read_shard(path)
+        if not events:
+            continue
+        target = spool(spool_dir, team, host, events)
+        batches.append(str(target))
+        staged += len(events)
+    return {"staged": staged, "batches": batches, "source_unchanged": True}
 
 
 # --------------------------------------------------------------------------- merge
@@ -136,14 +182,29 @@ def publish(
     branch: str = DEFAULT_BRANCH,
     attempts: int = DEFAULT_ATTEMPTS,
     fetch: bool = True,
+    serialized_writer: str | os.PathLike[str] | None = None,
+    attribution: str | None = None,
+    source_root: str | os.PathLike[str] | None = None,
 ) -> dict:
     """Publish everything spooled; drop spool entries only once ancestry proves it.
 
     Returns evidence, not a boolean: the commit written, how many attempts the
     push needed, and the ancestry check that authorised draining the spool.
     """
-    repo = Path(repo)
-    pending = spooled(spool_dir)
+    repo = Path(repo).resolve()
+    if source_root is not None and repo == Path(source_root).resolve():
+        raise PublishRefused(
+            "publisher checkout is the shared producer parent; use a dedicated clone or slot"
+        )
+    if serialized_writer is not None:
+        if remote != "origin" or branch != "main":
+            raise PublishRefused("serialized parent publication requires origin/main")
+        if not attribution or "\n" in attribution:
+            raise PublishRefused("serialized publication requires one final attribution line")
+        status = _git(repo, "status", "--porcelain")
+        if status.stdout.strip():
+            raise PublishRefused("publisher checkout is not clean")
+    pending, snapshot_files = _spool_snapshot(spool_dir)
     if not pending:
         return {"published": 0, "commit": None, "attempts": 0, "shards": []}
 
@@ -186,18 +247,25 @@ def publish(
             written.append(rel)
 
         if not written:
-            _drain(spool_dir, pending)
+            _drain(snapshot_files)
             return {"published": 0, "commit": None, "attempts": attempt,
                     "shards": [], "note": "all events already published"}
 
         _git(repo, "add", "--", *written)
+        subject = f"ledger: append {sum(len(v) for v in pending.values())} event(s)"
+        message = subject if attribution is None else f"{subject}\n\n{attribution}"
         _git(repo, "-c", "user.name=ledger-publisher",
              "-c", "user.email=ledger-publisher@invalid",
-             "commit", "-q", "-m",
-             f"ledger: append {sum(len(v) for v in pending.values())} event(s)", "--", *written)
+             "commit", "-q", "-m", message, "--", *written)
         commit = _git(repo, "rev-parse", "HEAD").stdout.strip()
 
-        pushed = _git(repo, "push", remote, f"HEAD:refs/heads/{branch}", check=False)
+        if serialized_writer is None:
+            pushed = _git(repo, "push", remote, f"HEAD:refs/heads/{branch}", check=False)
+        else:
+            pushed = subprocess.run(
+                [str(serialized_writer), "publish", commit], cwd=repo,
+                capture_output=True, text=True, check=False,
+            )
         if pushed.returncode == 0:
             # Push exit status is not publication. Confirm the commit is an
             # ancestor of the freshly-fetched branch before dropping anything.
@@ -206,10 +274,11 @@ def publish(
             ancestry = _git(repo, "merge-base", "--is-ancestor", commit,
                             f"{remote}/{branch}", check=False)
             if ancestry.returncode == 0:
-                _drain(spool_dir, pending)
+                _drain(snapshot_files)
                 return {"published": sum(len(v) for v in pending.values()),
                         "commit": commit, "attempts": attempt, "shards": written,
-                        "ancestry": f"{commit} is an ancestor of {remote}/{branch}"}
+                        "ancestry": f"{commit} is an ancestor of {remote}/{branch}",
+                        "transport": "parent-main-write" if serialized_writer else "git"}
             last_error = "push reported success but the commit is not an ancestor of the branch"
             continue
 
@@ -223,7 +292,48 @@ def publish(
     )
 
 
-def _drain(spool_dir: str | os.PathLike[str], pending: dict) -> None:
-    """Remove spool files only after publication is proven."""
-    for (team, host, month) in pending:
-        spool_file(spool_dir, team, host, f"{month}-01").unlink(missing_ok=True)
+def _drain(snapshot_files: Sequence[Path]) -> None:
+    """Remove only immutable batches proven published; later batches survive."""
+    for path in snapshot_files:
+        path.unlink(missing_ok=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    stage = commands.add_parser(
+        "stage-tracked", help="copy tracked shards into the spool without changing them"
+    )
+    stage.add_argument("--source-root", type=Path, required=True)
+    stage.add_argument("--spool-dir", type=Path, required=True)
+    send = commands.add_parser(
+        "publish", help="publish a live spool from an isolated checkout"
+    )
+    send.add_argument("--source-root", type=Path, required=True)
+    send.add_argument("--repo", type=Path, required=True)
+    send.add_argument("--spool-dir", type=Path, required=True)
+    send.add_argument("--writer", type=Path, required=True)
+    send.add_argument("--attribution", required=True)
+    send.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "stage-tracked":
+            report = stage_tracked(args.source_root, args.spool_dir)
+        else:
+            report = publish(
+                args.repo,
+                args.spool_dir,
+                attempts=args.attempts,
+                serialized_writer=args.writer,
+                attribution=args.attribution,
+                source_root=args.source_root,
+            )
+        print(json.dumps(report, sort_keys=True))
+        return 0
+    except (OSError, subprocess.SubprocessError, PublishRefused, MalformedEvent) as error:
+        print(f"ledger-publisher: REFUSED: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

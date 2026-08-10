@@ -29,7 +29,11 @@ def test_record_is_immediately_visible_through_canonical_union(tmp_path: Path):
     source = row(tmp_path)
     report = validate_rows.record(source, root=tmp_path)
 
-    assert report["shard"] == "ledger/hermit/hosta/2026-08.jsonl"
+    assert report["spool"].startswith(
+        "ignored/ci-hub/validate-ledger-spool/hermit__hosta__2026-08__"
+    )
+    assert report["published_shard"] == "ledger/hermit/hosta/2026-08.jsonl"
+    assert not (tmp_path / report["published_shard"]).exists()
     assert validate_rows.rows(root=tmp_path) == [source]
 
 
@@ -61,6 +65,20 @@ def test_every_published_machine_is_implicitly_unioned(tmp_path: Path):
         "hosta",
         "hostb",
     }
+
+
+def test_event_visible_in_spool_and_published_shard_collapses_to_one(tmp_path: Path):
+    source = row(tmp_path)
+    validate_rows.record(source, root=tmp_path)
+    event = validate_rows._event_for_row(source, tmp_path)
+    shard = tmp_path / "ledger/hermit/hosta/2026-08.jsonl"
+    shard.parent.mkdir(parents=True)
+    shard.write_text(json.dumps(event, sort_keys=True) + "\n")
+
+    assert [item["event_id"] for item in validate_rows.events(root=tmp_path)] == [
+        source["record_id"]
+    ]
+    assert validate_rows.rows(root=tmp_path) == [source]
 
 
 def test_ignored_ephemeral_checkout_is_redacted_without_weakening_guard(

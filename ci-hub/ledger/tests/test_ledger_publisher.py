@@ -123,6 +123,33 @@ def test_events_are_spooled_before_any_git_work(tmp_path):
     assert [e["event_id"] for e in pending[(TEAM, HOST, "2026-08")]] == ["01A", "01B"]
 
 
+def test_stage_tracked_copies_events_without_changing_source(tmp_path):
+    source = tmp_path / "source"
+    shard = source / f"ledger/{TEAM}/{HOST}/2026-08.jsonl"
+    shard.parent.mkdir(parents=True)
+    original = json.dumps(ev("01A"), sort_keys=True) + "\n"
+    shard.write_text(original)
+    report = publisher.stage_tracked(source, tmp_path / "spool")
+
+    assert report["staged"] == 1
+    assert report["source_unchanged"] is True
+    assert shard.read_text() == original
+    assert publisher.spooled(tmp_path / "spool")[(TEAM, HOST, "2026-08")][0][
+        "event_id"
+    ] == "01A"
+
+
+def test_operational_publish_refuses_the_shared_producer_parent(
+    tmp_path, remote_and_clone
+):
+    _, clone = remote_and_clone
+    spool_dir = tmp_path / "spool"
+    publisher.spool(spool_dir, TEAM, HOST, [ev("01A")])
+
+    with pytest.raises(publisher.PublishRefused, match="shared producer parent"):
+        publisher.publish(clone, spool_dir, source_root=clone)
+
+
 def test_spool_survives_a_failed_publish(tmp_path, remote_and_clone):
     """A publish that cannot reach the remote must leave the events recoverable."""
     _, clone = remote_and_clone
@@ -160,6 +187,31 @@ def test_publish_appends_commits_and_drains_only_after_ancestry(tmp_path, remote
         capture_output=True, text=True, check=True).stdout
     assert [json.loads(l)["event_id"] for l in published.splitlines()] == ["01A", "01B"]
     assert not publisher.spooled(spool_dir), "spool drains only after ancestry confirms it"
+
+
+def test_event_spooled_while_publish_is_active_survives_snapshot_drain(
+    tmp_path, remote_and_clone, monkeypatch
+):
+    _, clone = remote_and_clone
+    spool_dir = tmp_path / "spool"
+    publisher.spool(spool_dir, TEAM, HOST, [ev("01BEFORE")])
+    original_git = publisher._git
+    injected = False
+
+    def injecting_git(repo, *args, **kwargs):
+        nonlocal injected
+        if args and args[0] == "push" and not injected:
+            injected = True
+            publisher.spool(spool_dir, TEAM, HOST, [ev("01AFTER")])
+        return original_git(repo, *args, **kwargs)
+
+    monkeypatch.setattr(publisher, "_git", injecting_git)
+    out = publisher.publish(clone, spool_dir)
+
+    assert out["published"] == 1
+    assert injected
+    remaining = publisher.spooled(spool_dir)[(TEAM, HOST, "2026-08")]
+    assert [event["event_id"] for event in remaining] == ["01AFTER"]
 
 
 def test_concurrent_append_by_another_machine_is_preserved_alongside_ours(tmp_path, remote_and_clone):

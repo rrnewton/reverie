@@ -7,9 +7,10 @@ machine. Schema: `ai_docs/validate-ledger-team-machine-schema_20260807.md`.
 ledger/<team>/<short-host>/<YYYY>-<MM>.jsonl
 ```
 
-Two machines never write the same path, so the usual case merges trivially in
-Git. The only contended file is one host's current month, and local `flock`
-serialises that. The host component is a **short** name: an FQDN is an
+Two machines publish different tracked paths, so the usual case merges
+trivially in Git. Live producers do not write those tracked files; they append
+immutable batches below `ignored/ci-hub/validate-ledger-spool/`. The host
+component is a **short** name: an FQDN is an
 infrastructure detail that does not belong in a tracked file, and since the
 path is also the authority for the event's `host` field, the two cannot
 silently disagree.
@@ -42,35 +43,52 @@ update.
 
 ## Live producer and reader boundary
 
-The tracked shards above are also the live source of truth. Hermit and Reverie
-send each completed HistoryRow to `validate_rows.py record`; it converts the row
-to the versioned event envelope, redacts workspace-local paths, and atomically
-appends one whole line to `ledger/<team>/<host>/<month>.jsonl`. Every ci-hub
-consumer calls `validate_rows.py rows` (directly or through the Rust front
-controller), which unions every shard and exposes the compatibility HistoryRow.
+Hermit and Reverie send each completed HistoryRow to `validate_rows.py record`.
+It converts the row to the versioned event envelope, redacts workspace-local
+paths, and atomically makes one immutable batch visible under
+`ignored/ci-hub/validate-ledger-spool/`. Every ci-hub consumer calls
+`validate_rows.py rows` (directly or through the Rust front controller), which
+unions that live spool with every tracked shard. The same event therefore stays
+visible before, during, and after publication; `event_id` deduplication reduces
+the spool and tracked copies to one logical event.
 
-There is deliberately no checkout-local, ignored, discovered-parent, or
-environment-selected receipt ledger. Test fixtures may inject an isolated file
-only behind their explicit test-mode guard; a real validate has one destination.
+This is one ledger boundary, not two selectable ledgers. Consumers may not read
+the spool or tracked shards independently, discover another parent, or select a
+receipt path through the environment. The ignored spool is unpublished live
+state; the tracked shards are append-only published history; `validate_rows.py`
+is the only readable union. Test fixtures may redirect the parent only behind
+their explicit test-mode guard.
 
-The publisher below remains the serialized Git transport for events created in
-an isolated spool. It is not a second readable validation ledger: production
-receipt consumers read only the tracked shard union.
+Publication must run from a dedicated clean clone or slot. The operational
+driver refuses to use the shared producer parent, creates a commit with the
+required attribution, and delegates the push to `scripts/parent-main-write` so
+it shares the machine-wide serialization and fresh-origin CAS boundary.
 
 ## Publishing
 
-```python
-from publisher import spool, publish
-spool(spool_dir, team, host, events)     # durable locally, before any Git work
-publish(repo, spool_dir)                 # returns commit + ancestry evidence
+```sh
+# One-time/non-destructive migration: copy tracked rows into the same spool.
+python3 ci-hub/ledger/publisher.py stage-tracked \
+  --source-root "$PWD" \
+  --spool-dir "$PWD/ignored/ci-hub/validate-ledger-spool"
+
+# Normal publication. REPO must be a dedicated clean checkout, never $PWD.
+python3 ci-hub/ledger/publisher.py publish \
+  --source-root "$PWD" \
+  --repo /path/to/dedicated/dev-hermit-publisher \
+  --spool-dir "$PWD/ignored/ci-hub/validate-ledger-spool" \
+  --writer "$PWD/scripts/parent-main-write" \
+  --attribution '[impl agent, CODEX] [ledger-publisher, devbig014]'
 ```
 
 Three properties, in the order they matter:
 
-1. **A local event is never lost.** Events hit the spool before any Git
-   operation, and a spool entry is dropped only once its commit is confirmed to
-   be an *ancestor of the freshly-fetched branch*. A push exit code is not that
-   confirmation: a push can succeed against a ref that is then replaced.
+1. **A local event is never lost.** Events hit an immutable spool batch before
+   any Git operation. A publisher snapshots batch filenames and drops only
+   those files once their commit is confirmed to be an *ancestor of the
+   freshly-fetched branch*. A batch created by a producer while publication is
+   active is outside that snapshot and survives for the next pass. A push exit
+   code alone is not confirmation.
 2. **A concurrent publisher never costs a row.** A rejected push is retried
    with an **append-aware merge** — re-read the remote shard, keep every remote
    line in place, re-append only what is not already there. Never

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """The one validation-ledger boundary used by producers and consumers.
 
-The authority is the append-only per-team/per-machine event union under
-``ledger/<team>/<host>/<YYYY>-<MM>.jsonl``. Producers append the schema event
-directly to that machine's shard, and readers union those shards. There is no
-raw shadow ledger, checkout-local fallback, or discovery path.
+The authority is the append-only event union exposed by this module. Producers
+first append to the ignored machine-local spool under
+``ignored/ci-hub/validate-ledger-spool``; the publisher copies those exact
+events into the tracked per-team/per-machine shards under
+``ledger/<team>/<host>/<YYYY>-<MM>.jsonl``. Readers union both locations, so an
+event is visible before publication and collapses to one event after it lands.
 
 No checkout-local or parent-discovered receipt file is consulted here.  Keeping
 path resolution in this module is intentional: a new reader cannot quietly
@@ -23,8 +25,10 @@ from pathlib import Path
 from typing import Iterable
 
 from ledger import read_shard, union_events, validate_event
+from publisher import spool, spooled
 WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
 HOME_TOKEN = "{{HOME}}"
+LIVE_SPOOL_RELATIVE = Path("ignored/ci-hub/validate-ledger-spool")
 
 
 def repository_root() -> Path:
@@ -42,6 +46,11 @@ def short_hostname() -> str:
 def shard_paths(root: Path) -> list[Path]:
     """Every published team/machine/month shard, in deterministic order."""
     return sorted(root.glob("ledger/*/*/[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl"))
+
+
+def live_spool_dir(root: Path) -> Path:
+    """The ignored append-only producer store for this parent checkout."""
+    return root / LIVE_SPOOL_RELATIVE
 
 
 def _replace(value, old: str, new: str):
@@ -127,18 +136,21 @@ def _event_for_row(row: dict, root: Path) -> dict:
 
 
 def record(row: dict, *, root: Path | None = None) -> dict:
-    """Append one observed row to its canonical tracked per-machine shard."""
+    """Append one observed row before any Git operation can block or tear it."""
     root = (root or repository_root()).resolve()
     event = _event_for_row(row, root)
-    relative = Path("ledger") / event["team"] / event["host"] / f"{event['emitted_at'][:7]}.jsonl"
-    target = root / relative
-    from ledger import append_events
-    append_events(target, [event])
+    target = spool(live_spool_dir(root), event["team"], event["host"], [event])
     return {
         "schema": "ci-hub-validate-ledger-record/v1",
         "event_id": event["event_id"],
         "run_id": event["run_id"],
-        "shard": relative.as_posix(),
+        "spool": target.relative_to(root).as_posix(),
+        "published_shard": (
+            Path("ledger")
+            / event["team"]
+            / event["host"]
+            / f"{event['emitted_at'][:7]}.jsonl"
+        ).as_posix(),
     }
 
 
@@ -158,11 +170,13 @@ def _read_rows(path: Path) -> list[dict]:
 
 
 def events(*, root: Path | None = None) -> list[dict]:
-    """The canonical union of every tracked team/machine/month shard."""
+    """Canonical tracked-history plus not-yet-published live-event union."""
     root = (root or repository_root()).resolve()
     gathered: list[dict] = []
     for path in shard_paths(root):
         gathered.extend(read_shard(path))
+    for pending in spooled(live_spool_dir(root)).values():
+        gathered.extend(pending)
     return union_events(gathered)
 
 
