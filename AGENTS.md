@@ -9,8 +9,31 @@ On every hourly status update, call `scripts/status-log.rs` with the workstream�
 # dev-hermit Parent Workspace Guide
 
 Single canonical policy source for the `dev-hermit` parent and every agent launched from it. `CLAUDE.md`
-symlinks here; the `hermit-dev` ORC plugin reads it at activation. `hermit/AGENTS.md` and `reverie/AGENTS.md`
-also apply inside those repos (architecture, build, test, style); the stricter rule wins.
+symlinks here. It has three consumers — a Claude coordinator, a Codex coordinator, and the `hermit-dev` ORC
+plugin, which reads it at activation. `hermit/AGENTS.md` and `reverie/AGENTS.md` also apply inside those repos
+(architecture, build, test, style); the stricter rule wins.
+
+## Coordinator Modes — IDENTIFY YOUR MODE FIRST
+
+Three coordinator kinds drive this workspace through **different substrates**. Much of the fleet machinery
+below is ORC-only. Find your row, read your file, use only your row's mechanisms.
+
+| Mode | Primary workers | Cross-CLI review | Detail |
+|---|---|---|---|
+| **Claude** `claude-coord-*` | native `Agent`-tool teams, in-process | external agents → **Codex** reviewers | [coordinator-claude.md](ai_docs/coordinator-claude.md) |
+| **Codex** `codex-coord-*`, `hermit-*` | native Codex subagents | external agents → **Claude** reviewers | [coordinator-codex.md](ai_docs/coordinator-codex.md) |
+| **ORC** `orc-coord-*` | every agent in tmux ORC owns, via its own mechanisms — **not** the external-subagent scripts | the same tmux mechanism | [coordinator-orc.md](ai_docs/coordinator-orc.md) |
+
+- **You never DISCOVER a native subagent** — you spawned it, so you know. Probing `tmux`/`ps`/`ACTIVE.md`
+  for your own native team finds nothing and misreads "I dispatched nothing" as an outage. External
+  subagents have their own registry; only ORC agents have panes.
+- **ORC-only:** `orc.*`, `orc.registerScript`, `observe_owner_lease()`/`tmux_pane_id`,
+  `scripts/orc-hermit-msg.py`, `ci-hub/health/agent_liveness_probe.py`. A lease-less slot row is normal and
+  permanent for Claude/Codex, not a defect.
+- **"The coordinator has no shell" is ORC-only.** Claude and Codex coordinators have one and must act.
+- **Invariant 13's agent cap counts launched top-level `claude`/`codex` processes**, not native subagents.
+  Slot caps apply to every mode.
+- **`ACTIVE.md` claims a SLOT, never a live worker.** Re-derive branch/HEAD from the checkout.
 
 ## Role Boundary
 
@@ -22,16 +45,6 @@ For landing work, use [`pr-landing-planner`](agent-utils/skills/pr-landing-plann
 advisory conflict/evidence plan, then [`pr-landing-operations`](agent-utils/skills/pr-landing-operations/SKILL.md)
 to execute an authorized drain. This file remains the authority for authorization, review, repository policy,
 and closure; neither skill may weaken it.
-
-Codex coordinators delegate nontrivial tool work, synthesize results instead of pasting raw tool output, and
-rephrase or replace a worker that hits the cybersecurity false-positive filter rather than stalling.
-
-**The ORC coordinator HAS NO SHELL** — its only effects are `orc.*` plus scripts pre-registered via
-`orc.registerScript` (today: `hermitOperationalTick`, `hermitSpeculativeLandObligations`,
-`hermitSpeculativeLandWakeSent`). It cannot run an arbitrary command, so **every coordinator duty in this file
-means "ensure this outcome and require the evidence back", never "personally type this command"** — that gap,
-not disobedience, jammed task closure until 2026-08-08. To make a command routinely coordinator-runnable,
-register it on the plugin surface.
 
 ## Conventions
 
@@ -137,6 +150,9 @@ of `worktree-state.json` and the managed `ACTIVE.md` block; never raw `git workt
 is a detached-only non-registry fallback. Provisioning initializes primaries, then runs
 `scripts/allocate-worktree.rs --agent <agent> --task <id> --product all --purpose "<one-line>"`; the
 coordinator delegates that run and confirms the registered row before dispatching into the slot.
+
+**[ORC-only — Coordinator Modes.]** Native subagents have no pane; a lease-less row is permanent and normal
+for Claude/Codex, and never blocks dispatch.
 
 **A slot allocated before its agent exists is born LEASE-LESS, and that is normal.** `observe_owner_lease()`
 has no live pane to bind, so the allocator warns and proceeds (54% of live slots on 2026-08-08). **Repair by
@@ -248,10 +264,11 @@ task explicitly authorizes them; `worktrees/ACTIVE.md` never participates in com
 ## Task Lifecycle And Closure
 
 **Cross-agent routing:** write `tg note <consumer-task-id> "FROM <producer-task-id>: <deliverable, exact
-SHA/path, evidence, next action>"` on the consumer task. `SendMessage` cannot resolve fleet names or prove
-delivery; notes persist but do not wake. For urgency, note first, then have the coordinator relay through
-`scripts/orc-hermit-msg.py`. Workers implement, adversarial reviewers verify, and the agent that owns a task
-closes it.
+SHA/path, evidence, next action>"` on the consumer task. Notes persist but do not wake. Workers implement,
+adversarial reviewers verify, and the agent that owns a task closes it. WAKING depends on your mode: Claude
+and Codex reach their own native subagents via `SendMessage` (by id/name); ORC relays through
+`scripts/orc-hermit-msg.py`. `SendMessage` cannot resolve a foreign fleet's names and is not delivery
+acknowledgement — note first, then ask that fleet's coordinator to relay.
 
 **Status model:** `open`, `backlog`, and `in_progress` are non-terminal; `closed` is terminal and `resolved` is
 only its alias. `closed` means published + evidenced, NOT landed. **Landing debt rides on the `implemented`
@@ -440,6 +457,9 @@ integration or pinning step; unexpected movement is a reason to reassess, not to
 - If a task is blocked, preserve clean committed work, post the exact blocker and SHAs, and keep the slot active until the coordinator decides to park it.
 
 ## Verify Before You Replace (Hard Invariant 16)
+
+**[ORC-only — Coordinator Modes.]** This probe enumerates tmux-launched agents and cannot see a native
+subagent; Claude/Codex must not run it against their own team.
 
 **An alarm is a TRIGGER TO CHECK, never a WARRANT TO ACT.** The mission mandate removes the need for
 PERMISSION to replace an agent. It does not remove the need for EVIDENCE. Before replacing `<name>`:
