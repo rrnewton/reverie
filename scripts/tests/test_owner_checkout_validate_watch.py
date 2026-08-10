@@ -363,14 +363,20 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
     def test_box_exclusive_anchor_refusal_is_lock_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "validate.log"
+            record = Path(temporary) / "ignored/validate/runs/validate-fixture.json"
             log.write_text(
-                "REFUSED: box-exclusive anchor held by pid=123 host=fixture\n"
+                "REFUSED: box-exclusive anchor held by pid=123 host=fixture "
+                "anchor=box-exclusive-v1 boot_id=boot-fixture start_ticks=456 "
+                "agent=helper kind=validate target=" + ("d" * 40) + " "
+                f"unit=validate-fixture.service record={record}\n"
                 "# ci-hub/validate-lock tool COST ACTUAL exit=3\n"
             )
             evidence = watch.lock_block_evidence(log)
             self.assertIsNotNone(evidence)
             self.assertEqual(evidence["kind"], "validate-lock-refusal")
             self.assertEqual(evidence["refusal_pid"], 123)
+            self.assertEqual(evidence["anchor_identity"]["start_ticks"], 456)
+            self.assertEqual(evidence["anchor_identity"]["boot_id"], "boot-fixture")
 
     def test_acquired_marker_binds_agent_kind_and_exact_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -505,27 +511,23 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             boot_id = "boot-fixture"
             target = "d" * 40
             unit = "validate-helper-fixture.service"
-            (parent / ".validate-lock").write_text(
-                f"agent=helper-validator2\nkind=validate\ntarget={target}\n"
-            )
-            (parent / ".validate-lock.owner").write_text(
-                f"host=fixture\nboot_id={boot_id}\npid={pid}\nstart_ticks={ticks}\n"
-            )
-            (parent / ".validate-lock.cleanup-required").write_text(
-                "version=3\nagent=helper-validator2\n"
-                f"operation=validate:{target}\n"
-                f"cgroup=/fixture/{unit}\nphase=published\n"
-            )
             runs = parent / "ignored/validate/runs"
             runs.mkdir(parents=True)
-            (runs / "run.json").write_text(
+            record_path = runs / "validate-helper-fixture.json"
+            record_path.write_text(
                 json.dumps(
                     {
+                        "schema_version": 1,
                         "agent": "helper-validator2",
                         "target": target,
                         "unit": unit,
                         "pr": 2012,
                         "state": "running",
+                        "process_identity": {
+                            "pid": pid,
+                            "start_ticks": ticks,
+                            "boot_id": boot_id,
+                        },
                     }
                 )
             )
@@ -535,12 +537,26 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             (proc_root / str(pid) / "stat").write_text(
                 f"{pid} (fixture) " + " ".join(fields_after_comm) + "\n"
             )
+            (proc_root / str(pid) / "cgroup").write_text(
+                f"0::/user.slice/fixture.slice/{unit}\n"
+            )
             boot = parent / "boot_id"
             boot.write_text(boot_id + "\n")
 
             holder = watch.lock_holder_attribution(
                 parent,
-                {"refusal_pid": pid},
+                {
+                    "refusal_pid": pid,
+                    "anchor_identity": {
+                        "pid": pid,
+                        "start_ticks": ticks,
+                        "boot_id": boot_id,
+                        "agent": "helper-validator2",
+                        "target": target,
+                        "unit": unit,
+                        "record": str(record_path),
+                    },
+                },
                 proc_root=proc_root,
                 boot_id_path=boot,
             )
@@ -550,13 +566,23 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(holder["contention_class"], "reserved-publication-window")
             self.assertTrue(holder["process_identity"]["live_match"])
 
-            record_path = runs / "run.json"
             ordinary = json.loads(record_path.read_text())
             ordinary["pr"] = 2041
             record_path.write_text(json.dumps(ordinary))
             holder = watch.lock_holder_attribution(
                 parent,
-                {"refusal_pid": pid},
+                {
+                    "refusal_pid": pid,
+                    "anchor_identity": {
+                        "pid": pid,
+                        "start_ticks": ticks,
+                        "boot_id": boot_id,
+                        "agent": "helper-validator2",
+                        "target": target,
+                        "unit": unit,
+                        "record": str(record_path),
+                    },
+                },
                 proc_root=proc_root,
                 boot_id_path=boot,
             )
@@ -569,6 +595,88 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                 Path(temporary), {"refusal_pid": 123}
             )
             self.assertEqual(holder["status"], "unattributed")
+
+    def test_lock_holder_attribution_reports_confirmed_dead_without_guessing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            runs = parent / "ignored/validate/runs"
+            runs.mkdir(parents=True)
+            pid, ticks, boot_id = 321, 654, "boot-fixture"
+            target = "e" * 40
+            unit = "validate-dead-fixture.service"
+            record_path = runs / "validate-dead-fixture.json"
+            record_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "state": "running",
+                        "agent": "dead-agent",
+                        "target": target,
+                        "unit": unit,
+                        "process_identity": {
+                            "pid": pid,
+                            "start_ticks": ticks,
+                            "boot_id": boot_id,
+                        },
+                    }
+                )
+            )
+            boot = parent / "boot_id"
+            boot.write_text(boot_id + "\n")
+            proc_root = parent / "proc"
+            (proc_root / str(pid)).mkdir(parents=True)
+            fields_after_comm = ["S", *(["0"] * 18), str(ticks + 1), "0"]
+            (proc_root / str(pid) / "stat").write_text(
+                f"{pid} (replacement) " + " ".join(fields_after_comm) + "\n"
+            )
+            holder = watch.lock_holder_attribution(
+                parent,
+                {
+                    "anchor_identity": {
+                        "pid": pid,
+                        "start_ticks": ticks,
+                        "boot_id": boot_id,
+                        "agent": "dead-agent",
+                        "target": target,
+                        "unit": unit,
+                        "record": str(record_path),
+                    }
+                },
+                proc_root=proc_root,
+                boot_id_path=boot,
+            )
+            self.assertEqual(holder["status"], "dead")
+            self.assertIn("pid has been reused", holder["reason"])
+            self.assertFalse(holder["process_identity"]["live_match"])
+
+            (proc_root / str(pid) / "stat").unlink()
+            holder = watch.lock_holder_attribution(
+                parent,
+                {
+                    "anchor_identity": {
+                        "pid": pid,
+                        "start_ticks": ticks,
+                        "boot_id": boot_id,
+                        "agent": "dead-agent",
+                        "target": target,
+                        "unit": unit,
+                        "record": str(record_path),
+                    }
+                },
+                proc_root=proc_root,
+                boot_id_path=boot,
+            )
+            self.assertEqual(holder["status"], "dead")
+            self.assertIn("pid is absent", holder["reason"])
+
+    def test_lock_holder_attribution_keeps_partial_tuple_unattributed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            holder = watch.lock_holder_attribution(
+                Path(temporary),
+                {"anchor_identity": {"pid": 123, "start_ticks": 456}},
+            )
+            self.assertEqual(holder["status"], "unattributed")
+            self.assertIn("complete anchor identity", holder["reason"])
 
     def test_privileged_node_records_prior_empty_detail_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

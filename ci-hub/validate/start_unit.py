@@ -376,6 +376,7 @@ def build_systemd_command(
     target: str,
     agent: str,
     unit: str,
+    record: Path,
     log: Path,
     pr: int | None,
     validate_args: Sequence[str],
@@ -390,6 +391,13 @@ def build_systemd_command(
     path = environment.get("PATH", "")
     if not home or not path:
         raise ValueError("HOME and PATH must be set so cargo/rustup resolve inside the user unit")
+    build_budget_env: list[str] = []
+    for key in ("CARGO_BUILD_JOBS", "THIRD_PARTY_BUILD_JOBS"):
+        value = environment.get(key)
+        if value:
+            if not value.isdigit() or int(value) <= 0:
+                raise ValueError(f"{key} must be a positive integer, got {value!r}")
+            build_budget_env.extend(["--setenv", f"{key}={value}"])
 
     child = ["/usr/bin/env"]
     if pr is not None:
@@ -483,6 +491,7 @@ def build_systemd_command(
         f"PATH={path}",
         "--setenv",
         "CI_HUB_VALIDATE_PRODUCER=systemd-user-v1",
+        *build_budget_env,
         # DEV_HERMIT_PARENT remains available to non-ledger helpers. Receipt
         # storage does not use it: validate.rs invokes the fixed parent adapter,
         # which appends the tracked per-machine shard that ci-hub unions.
@@ -502,6 +511,8 @@ def build_systemd_command(
         "validate",
         "--target",
         target,
+        "--run-record",
+        str(record),
         "--wait",
         str(wait),
         "--hold",
@@ -803,6 +814,7 @@ def main(
             target=args.target,
             agent=args.agent,
             unit=unit,
+            record=record_path,
             log=log,
             pr=args.pr,
             validate_args=validate_args,

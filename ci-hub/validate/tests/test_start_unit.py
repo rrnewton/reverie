@@ -672,6 +672,7 @@ class LibunwindEnvTest(unittest.TestCase):
             target="0" * 40,
             agent="a",
             unit="validate-a",
+            record=root / "ignored/validate/runs/validate-a.json",
             log=pathlib.Path("/tmp/x.log"),
             pr=None,
             validate_args=["full"],

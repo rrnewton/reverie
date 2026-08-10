@@ -508,9 +508,19 @@ def lock_block_evidence(log: Path) -> dict[str, Any] | None:
     }
     if refusal_line is not None:
         evidence["refusal_line"] = refusal_line
-        match = re.search(r"\bpid=(\d+)\b", refusal_line)
-        if match:
-            evidence["refusal_pid"] = int(match.group(1))
+        anchor: dict[str, Any] = {}
+        for key in ("pid", "start_ticks"):
+            match = re.search(rf"\b{key}=(\d+)\b", refusal_line)
+            if match:
+                anchor[key] = int(match.group(1))
+        for key in ("boot_id", "agent", "target", "unit", "record"):
+            match = re.search(rf"\b{key}=([^\s]+)", refusal_line)
+            if match:
+                anchor[key] = match.group(1)
+        if "pid" in anchor:
+            evidence["refusal_pid"] = anchor["pid"]
+        if anchor:
+            evidence["anchor_identity"] = anchor
     return evidence
 
 
@@ -534,6 +544,22 @@ def process_start_ticks(proc_root: Path, pid: int) -> int | None:
         return None
 
 
+def process_systemd_unit(proc_root: Path, pid: int) -> str | None:
+    """Return the live process's systemd service unit from cgroup v2."""
+    try:
+        text = (proc_root / str(pid) / "cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        fields = line.split(":", 2)
+        if len(fields) != 3:
+            continue
+        for component in reversed(fields[2].split("/")):
+            if component.endswith(".service"):
+                return component
+    return None
+
+
 def lock_holder_attribution(
     parent: Path,
     evidence: dict[str, Any],
@@ -542,62 +568,130 @@ def lock_holder_attribution(
     boot_id_path: Path = Path("/proc/sys/kernel/random/boot_id"),
 ) -> dict[str, Any]:
     """Bind a refusal to the live lock holder or explicitly decline to guess."""
-    refusal_pid = evidence.get("refusal_pid")
-    if not isinstance(refusal_pid, int):
-        return {"status": "unattributed", "reason": "refusal carried no holder pid"}
-
-    lease = parse_key_value_file(parent / ".validate-lock")
-    owner = parse_key_value_file(parent / ".validate-lock.owner")
-    cleanup = parse_key_value_file(parent / ".validate-lock.cleanup-required")
-    try:
-        owner_pid = int(owner["pid"])
-        owner_ticks = int(owner["start_ticks"])
-        current_boot = boot_id_path.read_text(encoding="utf-8").strip()
-    except (KeyError, OSError, ValueError):
-        return {"status": "unattributed", "reason": "canonical owner identity unavailable"}
-
-    target = lease.get("target")
-    agent = lease.get("agent")
-    operation = cleanup.get("operation")
-    identity_matches = (
-        refusal_pid == owner_pid
-        and owner.get("boot_id") == current_boot
-        and process_start_ticks(proc_root, owner_pid) == owner_ticks
-        and bool(target)
-        and bool(agent)
-        and cleanup.get("agent") == agent
-        and operation == f"validate:{target}"
-    )
-    if not identity_matches:
+    anchor = evidence.get("anchor_identity")
+    required = ("pid", "start_ticks", "boot_id", "agent", "target", "unit", "record")
+    if not isinstance(anchor, dict) or any(key not in anchor for key in required):
         return {
             "status": "unattributed",
-            "reason": "refusal pid did not bind to the live canonical lock identity",
+            "reason": "refusal carried no complete anchor identity",
         }
+    owner_pid = anchor["pid"]
+    owner_ticks = anchor["start_ticks"]
+    if (
+        not isinstance(owner_pid, int)
+        or isinstance(owner_pid, bool)
+        or owner_pid <= 0
+        or not isinstance(owner_ticks, int)
+        or isinstance(owner_ticks, bool)
+        or owner_ticks <= 0
+        or any(not isinstance(anchor[key], str) or not anchor[key] for key in required[2:])
+    ):
+        return {"status": "unattributed", "reason": "anchor identity is malformed"}
 
-    records: list[dict[str, Any]] = []
-    for record_path in sorted((parent / "ignored/validate/runs").glob("*.json")):
-        try:
-            record = json.loads(record_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        unit = str(record.get("unit", ""))
-        cgroup_unit = Path(cleanup.get("cgroup", "")).name
-        if (
-            record.get("target") == target
-            and record.get("agent") == agent
-            and unit
-            and unit == cgroup_unit
-        ):
-            records.append(record)
-    if len(records) != 1:
+    target = anchor["target"]
+    agent = anchor["agent"]
+    unit = anchor["unit"]
+    record_path = Path(anchor["record"])
+    expected_name = f"{unit.removesuffix('.service')}.json"
+    if not record_path.is_absolute() or record_path.name != expected_name:
         return {
             "status": "unattributed",
-            "reason": f"canonical identity matched {len(records)} exact run records, expected 1",
+            "reason": "anchor record path does not bind its recorded systemd unit",
             "agent": agent,
             "target": target,
         }
 
-    record = records[0]
+    expected_identity = {
+        "pid": owner_pid,
+        "start_ticks": owner_ticks,
+        "boot_id": anchor["boot_id"],
+    }
+    matches: list[tuple[Path, dict[str, Any]]] = []
+    for candidate in sorted(record_path.parent.glob("*.json")):
+        try:
+            record = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if (
+            record.get("schema_version") == 1
+            and record.get("state") in {"launching", "running"}
+            and record.get("target") == target
+            and record.get("agent") == agent
+            and record.get("unit") == unit
+            and record.get("process_identity") == expected_identity
+        ):
+            matches.append((candidate.resolve(), record))
+    resolved_record = record_path.resolve()
+    if len(matches) != 1 or matches[0][0] != resolved_record:
+        return {
+            "status": "unattributed",
+            "reason": f"anchor identity matched {len(matches)} exact run records, expected 1",
+            "agent": agent,
+            "target": target,
+        }
+
+    record = matches[0][1]
+    try:
+        current_boot = boot_id_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {
+            "status": "unattributed",
+            "reason": "current boot identity is unreadable",
+            "agent": agent,
+            "target": target,
+        }
+    identity_result = {
+        "pid": owner_pid,
+        "start_ticks": owner_ticks,
+        "boot_id": anchor["boot_id"],
+        "live_match": False,
+    }
+    if current_boot != anchor["boot_id"]:
+        return {
+            "status": "dead",
+            "reason": "recorded anchor belongs to a different boot",
+            "agent": agent,
+            "target": target,
+            "unit": unit,
+            "process_identity": identity_result,
+        }
+    stat_path = proc_root / str(owner_pid) / "stat"
+    live_ticks = process_start_ticks(proc_root, owner_pid)
+    if live_ticks is None:
+        if not stat_path.exists():
+            return {
+                "status": "dead",
+                "reason": "recorded anchor pid is absent",
+                "agent": agent,
+                "target": target,
+                "unit": unit,
+                "process_identity": identity_result,
+            }
+        return {
+            "status": "unattributed",
+            "reason": "live pid start_ticks could not be verified",
+            "agent": agent,
+            "target": target,
+        }
+    if live_ticks != owner_ticks:
+        return {
+            "status": "dead",
+            "reason": "recorded anchor pid has been reused",
+            "agent": agent,
+            "target": target,
+            "unit": unit,
+            "process_identity": identity_result,
+        }
+    live_unit = process_systemd_unit(proc_root, owner_pid)
+    if live_unit != unit:
+        return {
+            "status": "unattributed",
+            "reason": "live process systemd unit does not match the anchor record",
+            "agent": agent,
+            "target": target,
+        }
+
+    identity_result["live_match"] = True
     pr = record.get("pr")
     reserved = pr == 2012
     return {
@@ -605,13 +699,8 @@ def lock_holder_attribution(
         "agent": agent,
         "target": target,
         "pr": pr,
-        "unit": record.get("unit"),
-        "process_identity": {
-            "pid": owner_pid,
-            "start_ticks": owner_ticks,
-            "boot_id": current_boot,
-            "live_match": True,
-        },
+        "unit": unit,
+        "process_identity": identity_result,
         "contention_class": (
             "reserved-publication-window" if reserved else "ordinary-contention"
         ),

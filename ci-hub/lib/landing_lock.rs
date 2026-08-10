@@ -3062,6 +3062,36 @@ impl BoxExclusionAnchor {
     /// Errors are raw `io::Error` so each lock can wrap them in its own type;
     /// this helper deliberately knows nothing about either error enum.
     pub(crate) fn take(path: &Path, wait_seconds: u64) -> io::Result<Option<Self>> {
+        Self::take_with_attribution(path, wait_seconds, None)
+    }
+
+    /// Take the anchor and publish a pre-verified run identity in its diagnostic
+    /// body. The caller must construct `attribution` before acquisition; an
+    /// empty or line-breaking value is refused so a holder can never forge
+    /// additional key/value records in the human-readable body.
+    pub(crate) fn take_attributed(
+        path: &Path,
+        wait_seconds: u64,
+        attribution: &str,
+    ) -> io::Result<Option<Self>> {
+        if attribution.is_empty()
+            || attribution
+                .bytes()
+                .any(|byte| byte == b'\n' || byte == b'\r')
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "box-anchor attribution must be one nonempty line",
+            ));
+        }
+        Self::take_with_attribution(path, wait_seconds, Some(attribution))
+    }
+
+    fn take_with_attribution(
+        path: &Path,
+        wait_seconds: u64,
+        attribution: Option<&str>,
+    ) -> io::Result<Option<Self>> {
         let path = path.to_path_buf();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -3082,11 +3112,15 @@ impl BoxExclusionAnchor {
                     // holder instead of staring at an anonymous block.
                     let mut handle = &file;
                     let _ = handle.set_len(0);
+                    let suffix = attribution
+                        .map(|value| format!(" {value}"))
+                        .unwrap_or_default();
                     let _ = writeln!(
                         handle,
-                        "pid={} host={} anchor=box-exclusive-v1",
+                        "pid={} host={} anchor=box-exclusive-v1{}",
                         std::process::id(),
-                        current_host()
+                        current_host(),
+                        suffix,
                     );
                     return Ok(Some(Self { file, path }));
                 }

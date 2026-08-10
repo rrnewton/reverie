@@ -292,6 +292,11 @@ pub struct RunArgs {
     pub kind: Kind,
     #[arg(long)]
     pub target: String,
+    /// Canonical ci-hub run record created before the systemd service starts.
+    /// Production refuses before taking the box anchor unless this record binds
+    /// the requested agent/target to the service unit that contains this process.
+    #[arg(long)]
+    pub run_record: Option<PathBuf>,
     /// Do not block: if the box is not immediately grantable, print a REFUSED
     /// reason to stderr and exit 3 instead of queueing indefinitely.
     #[arg(long, default_value_t = false)]
@@ -850,6 +855,247 @@ impl LockPaths {
             lock,
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VerifiedRunAttribution {
+    unit: String,
+    record: PathBuf,
+}
+
+fn systemd_service_unit(cgroup: &str) -> Option<String> {
+    cgroup.lines().find_map(|line| {
+        let path = line.splitn(3, ':').nth(2)?;
+        path.rsplit('/')
+            .find(|component| component.ends_with(".service") && !component.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn verify_run_attribution(
+    root: &Path,
+    args: &RunArgs,
+    cgroup: &str,
+) -> Result<VerifiedRunAttribution, ValidateLockError> {
+    let record = args.run_record.as_ref().ok_or_else(|| {
+        ValidateLockError::InvalidState(
+            "run acquisition has no --run-record; use ci-hub validate-run so attribution exists before the box anchor".into(),
+        )
+    })?;
+    let record = fs::canonicalize(record)
+        .map_err(|source| io_error("canonicalize run record", record, source))?;
+    let expected_dir = repository_lock_root(root).join("ignored/validate/runs");
+    let expected_dir = fs::canonicalize(&expected_dir)
+        .map_err(|source| io_error("canonicalize run-record directory", &expected_dir, source))?;
+    if record.parent() != Some(expected_dir.as_path()) {
+        return Err(ValidateLockError::InvalidState(format!(
+            "run record {} is outside canonical directory {}",
+            record.display(),
+            expected_dir.display()
+        )));
+    }
+    let content = fs::read_to_string(&record)
+        .map_err(|source| io_error("read run record", &record, source))?;
+    let value: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
+        ValidateLockError::InvalidState(format!(
+            "run record {} is not valid JSON: {error}",
+            record.display()
+        ))
+    })?;
+    let field = |name: &str| value.get(name).and_then(serde_json::Value::as_str);
+    if value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+        || field("agent") != Some(args.agent.as_str())
+        || field("target") != Some(args.target.as_str())
+        || !matches!(field("state"), Some("launching" | "running"))
+    {
+        return Err(ValidateLockError::InvalidState(format!(
+            "run record {} does not bind schema=1 state=launching|running agent={} target={}",
+            record.display(),
+            args.agent,
+            args.target
+        )));
+    }
+    let unit = field("unit").ok_or_else(|| {
+        ValidateLockError::InvalidState(format!("run record {} has no unit", record.display()))
+    })?;
+    let expected_name = format!("{}.json", unit.strip_suffix(".service").unwrap_or(unit));
+    if record.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
+        return Err(ValidateLockError::InvalidState(format!(
+            "run record filename does not bind unit {unit}: {}",
+            record.display()
+        )));
+    }
+    let live_unit = systemd_service_unit(cgroup).ok_or_else(|| {
+        ValidateLockError::InvalidState(
+            "run acquisition is not inside an attributable systemd service unit".into(),
+        )
+    })?;
+    if live_unit != unit {
+        return Err(ValidateLockError::InvalidState(format!(
+            "live systemd unit {live_unit} differs from recorded unit {unit}"
+        )));
+    }
+    Ok(VerifiedRunAttribution {
+        unit: unit.into(),
+        record,
+    })
+}
+
+fn require_run_attribution(
+    root: &Path,
+    args: &RunArgs,
+) -> Result<VerifiedRunAttribution, ValidateLockError> {
+    #[cfg(test)]
+    if args.run_record.is_none() {
+        // Existing lock-mechanics unit tests do not execute inside a user
+        // service. Dedicated attribution tests below exercise the production
+        // predicate with fixture cgroup text and canonical records.
+        return Ok(VerifiedRunAttribution {
+            unit: "validate-test.service".into(),
+            record: PathBuf::from("test-only-run-record"),
+        });
+    }
+    let cgroup_path = Path::new("/proc/self/cgroup");
+    let cgroup = fs::read_to_string(cgroup_path)
+        .map_err(|source| io_error("read live cgroup identity", cgroup_path, source))?;
+    verify_run_attribution(root, args, &cgroup)
+}
+
+/// Publish the supervisor's complete, reuse-safe identity into the canonical
+/// run record before it can take the box-global anchor.  Use the same lock and
+/// atomic-replace protocol as `validate/run_registry.py`: the observer and the
+/// launcher may update this record concurrently, and a plain read/write here
+/// could erase either their state or this identity.
+fn publish_run_process_identity(
+    record: &Path,
+    owner: &ProcessOwner,
+) -> Result<(), ValidateLockError> {
+    if owner.pid == 0 || owner.start_ticks == 0 || owner.boot_id.trim().is_empty() {
+        return Err(ValidateLockError::InvalidState(
+            "run process_identity requires pid>0, start_ticks>0, and nonempty boot_id".into(),
+        ));
+    }
+    let file_name = record
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            ValidateLockError::InvalidState(format!(
+                "run record has no UTF-8 filename: {}",
+                record.display()
+            ))
+        })?;
+    let parent = record.parent().ok_or_else(|| {
+        ValidateLockError::InvalidState(format!(
+            "run record has no parent directory: {}",
+            record.display()
+        ))
+    })?;
+    let lock_path = parent.join(format!(".{file_name}.lock"));
+    let lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|source| io_error("open run-record lock", &lock_path, source))?;
+    lock.lock_exclusive()
+        .map_err(|source| io_error("lock run record", &lock_path, source))?;
+
+    let result = (|| {
+        let content = fs::read_to_string(record)
+            .map_err(|source| io_error("read run record for identity", record, source))?;
+        let mut value: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
+            ValidateLockError::InvalidState(format!(
+                "run record {} is not valid JSON while publishing identity: {error}",
+                record.display()
+            ))
+        })?;
+        let object = value.as_object_mut().ok_or_else(|| {
+            ValidateLockError::InvalidState(format!(
+                "run record {} is not a JSON object",
+                record.display()
+            ))
+        })?;
+        let identity = serde_json::json!({
+            "pid": owner.pid,
+            "start_ticks": owner.start_ticks,
+            "boot_id": owner.boot_id.as_str(),
+        });
+        if let Some(existing) = object.get("process_identity") {
+            if existing != &identity {
+                return Err(ValidateLockError::InvalidState(format!(
+                    "run record {} already carries a different process_identity",
+                    record.display()
+                )));
+            }
+        }
+        object.insert("process_identity".into(), identity);
+
+        let mut encoded = serde_json::to_vec_pretty(&value).map_err(|error| {
+            ValidateLockError::InvalidState(format!(
+                "cannot encode run record {} with process_identity: {error}",
+                record.display()
+            ))
+        })?;
+        encoded.push(b'\n');
+        let temporary = parent.join(format!(
+            ".{file_name}.identity-{}-{}.tmp",
+            owner.pid, owner.start_ticks
+        ));
+        let write_result = (|| {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)
+                .map_err(|source| {
+                    io_error("create run-record identity temp", &temporary, source)
+                })?;
+            file.write_all(&encoded)
+                .map_err(|source| io_error("write run-record identity temp", &temporary, source))?;
+            file.sync_all()
+                .map_err(|source| io_error("sync run-record identity temp", &temporary, source))?;
+            fs::rename(&temporary, record)
+                .map_err(|source| io_error("publish run-record identity", record, source))?;
+            File::open(parent)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|source| io_error("sync run-record directory", parent, source))
+        })();
+        if write_result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        write_result
+    })();
+
+    let unlock =
+        FileExt::unlock(&lock).map_err(|source| io_error("unlock run record", &lock_path, source));
+    result.and(unlock)
+}
+
+fn publish_required_run_process_identity(
+    _args: &RunArgs,
+    attribution: &VerifiedRunAttribution,
+    owner: &ProcessOwner,
+) -> Result<(), ValidateLockError> {
+    #[cfg(test)]
+    if _args.run_record.is_none() {
+        // Existing lock-mechanics tests execute the production `run` body but
+        // are not systemd services and intentionally have no canonical
+        // producer record.  Dedicated tests above exercise both the real
+        // writer and its refusal paths; production cannot enter this branch.
+        return Ok(());
+    }
+    publish_run_process_identity(&attribution.record, owner)
+}
+
+fn anchor_token(name: &str, value: &str) -> Result<(), ValidateLockError> {
+    if value.is_empty() || value.chars().any(char::is_whitespace) {
+        return Err(ValidateLockError::InvalidState(format!(
+            "box-anchor attribution {name} must be one nonempty token"
+        )));
+    }
+    Ok(())
 }
 
 struct ValidateLock {
@@ -2543,6 +2789,35 @@ impl ValidateLock {
             }
         }
 
+        // Accountability is an admission predicate, not a post-hoc reporting
+        // best effort. The canonical producer writes the run record before it
+        // starts this service; bind that record to our live systemd unit before
+        // we can take the one box-global anchor.
+        let attribution = require_run_attribution(root, &args)?;
+        let owner = current_process_owner()?;
+        publish_required_run_process_identity(&args, &attribution, &owner)?;
+        let record_text = attribution.record.to_string_lossy();
+        for (name, value) in [
+            ("boot_id", owner.boot_id.as_str()),
+            ("agent", args.agent.as_str()),
+            ("kind", args.kind.as_str()),
+            ("target", args.target.as_str()),
+            ("unit", attribution.unit.as_str()),
+            ("record", record_text.as_ref()),
+        ] {
+            anchor_token(name, value)?;
+        }
+        let anchor_attribution = format!(
+            "boot_id={} start_ticks={} agent={} kind={} target={} unit={} record={}",
+            owner.boot_id,
+            owner.start_ticks,
+            args.agent,
+            args.kind.as_str(),
+            args.target,
+            attribution.unit,
+            record_text,
+        );
+
         // Yield BEFORE taking the box-global anchor. A background waiter that
         // holds the anchor while sleeping would block the very watch this rule
         // exists to prioritize.
@@ -2568,8 +2843,12 @@ impl ValidateLock {
         // repositories it is not. Closing that needs a box-global durable record,
         // which is a different change from this one.
         let wait_budget = if args.no_wait { 0 } else { args.wait };
-        let _box_anchor = match BoxExclusionAnchor::take(&self.paths.anchor, wait_budget)
-            .map_err(|source| io_error("take box exclusion anchor", &self.paths.anchor, source))?
+        let _box_anchor = match BoxExclusionAnchor::take_attributed(
+            &self.paths.anchor,
+            wait_budget,
+            &anchor_attribution,
+        )
+        .map_err(|source| io_error("take box exclusion anchor", &self.paths.anchor, source))?
         {
             Some(anchor) => anchor,
             None => {
@@ -3416,6 +3695,196 @@ fn terminate_child_group(child: &mut Child, target: &str, cause: &str) {
 #[cfg(test)]
 mod tests {
 
+    fn attribution_args(record: Option<PathBuf>) -> RunArgs {
+        RunArgs {
+            agent: "attributed-agent".into(),
+            kind: Kind::Validate,
+            target: HEX_SHA.into(),
+            run_record: record,
+            no_wait: true,
+            wait: 0,
+            hold: 30,
+            child_deadline: 30,
+            max: 1,
+            skip_base_check: false,
+            child: vec![OsString::from("/bin/true")],
+        }
+    }
+
+    #[test]
+    fn attributable_run_record_binds_agent_target_and_live_unit() {
+        let root = env::temp_dir().join(format!(
+            "ci-hub-attribution-positive-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        let runs = root.join("ignored/validate/runs");
+        fs::create_dir_all(&runs).unwrap();
+        let record = runs.join("validate-attributed.json");
+        fs::write(
+            &record,
+            format!(
+                "{{\"schema_version\":1,\"state\":\"launching\",\"agent\":\"attributed-agent\",\"target\":\"{HEX_SHA}\",\"unit\":\"validate-attributed.service\"}}\n"
+            ),
+        )
+        .unwrap();
+        let args = attribution_args(Some(record.clone()));
+        let verified = verify_run_attribution(
+            &root,
+            &args,
+            "0::/user.slice/user-1.slice/validate-attributed.service\n",
+        )
+        .expect("exact pre-existing run identity must be attributable");
+        assert_eq!(verified.unit, "validate-attributed.service");
+        assert_eq!(verified.record, fs::canonicalize(record).unwrap());
+        let owner = ProcessOwner {
+            host: "fixture".into(),
+            boot_id: "boot-fixture".into(),
+            pid: 123,
+            start_ticks: 456,
+        };
+        publish_run_process_identity(&verified.record, &owner)
+            .expect("complete identity must be published before anchor acquisition");
+        let published: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&verified.record).unwrap()).unwrap();
+        assert_eq!(
+            published.get("process_identity"),
+            Some(&serde_json::json!({
+                "pid": 123,
+                "start_ticks": 456,
+                "boot_id": "boot-fixture",
+            }))
+        );
+        assert_eq!(
+            published.get("state").and_then(|v| v.as_str()),
+            Some("launching")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unattributable_run_is_refused_before_anchor_inputs_exist() {
+        let root = env::temp_dir().join(format!(
+            "ci-hub-attribution-negative-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        fs::create_dir_all(root.join("ignored/validate/runs")).unwrap();
+        let error = verify_run_attribution(
+            &root,
+            &attribution_args(None),
+            "0::/user.slice/validate-attributed.service\n",
+        )
+        .expect_err("missing run identity must refuse");
+        assert!(error.to_string().contains("no --run-record"), "{error}");
+
+        let record = root.join("ignored/validate/runs/validate-attributed.json");
+        fs::write(
+            &record,
+            format!(
+                "{{\"schema_version\":1,\"state\":\"launching\",\"agent\":\"wrong-agent\",\"target\":\"{HEX_SHA}\",\"unit\":\"validate-attributed.service\"}}\n"
+            ),
+        )
+        .unwrap();
+        let error = verify_run_attribution(
+            &root,
+            &attribution_args(Some(record)),
+            "0::/user.slice/validate-attributed.service\n",
+        )
+        .expect_err("mismatched run identity must refuse");
+        assert!(error.to_string().contains("does not bind"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn conflicting_run_process_identity_is_refused_without_rewrite() {
+        let root = env::temp_dir().join(format!(
+            "ci-hub-attribution-conflict-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        let runs = root.join("ignored/validate/runs");
+        fs::create_dir_all(&runs).unwrap();
+        let record = runs.join("validate-attributed.json");
+        let original = format!(
+            "{{\"schema_version\":1,\"state\":\"launching\",\"agent\":\"attributed-agent\",\"target\":\"{HEX_SHA}\",\"unit\":\"validate-attributed.service\",\"process_identity\":{{\"pid\":1,\"start_ticks\":2,\"boot_id\":\"old-boot\"}}}}\n"
+        );
+        fs::write(&record, &original).unwrap();
+        let owner = ProcessOwner {
+            host: "fixture".into(),
+            boot_id: "new-boot".into(),
+            pid: 3,
+            start_ticks: 4,
+        };
+        let error = publish_run_process_identity(&record, &owner)
+            .expect_err("a pre-existing different identity must fail closed");
+        assert!(
+            error.to_string().contains("different process_identity"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&record).unwrap(), original);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_run_process_identity_is_refused_without_rewrite() {
+        let root = env::temp_dir().join(format!(
+            "ci-hub-attribution-malformed-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        let runs = root.join("ignored/validate/runs");
+        fs::create_dir_all(&runs).unwrap();
+        let record = runs.join("validate-attributed.json");
+        let original = format!(
+            "{{\"schema_version\":1,\"state\":\"launching\",\"agent\":\"attributed-agent\",\"target\":\"{HEX_SHA}\",\"unit\":\"validate-attributed.service\"}}\n"
+        );
+        for (name, owner) in [
+            (
+                "zero-pid",
+                ProcessOwner {
+                    host: "fixture".into(),
+                    boot_id: "boot-fixture".into(),
+                    pid: 0,
+                    start_ticks: 4,
+                },
+            ),
+            (
+                "zero-start-ticks",
+                ProcessOwner {
+                    host: "fixture".into(),
+                    boot_id: "boot-fixture".into(),
+                    pid: 3,
+                    start_ticks: 0,
+                },
+            ),
+            (
+                "empty-boot-id",
+                ProcessOwner {
+                    host: "fixture".into(),
+                    boot_id: "".into(),
+                    pid: 3,
+                    start_ticks: 4,
+                },
+            ),
+        ] {
+            fs::write(&record, &original).unwrap();
+            let error = publish_run_process_identity(&record, &owner)
+                .expect_err("malformed identity must be refused");
+            assert_eq!(
+                error.to_string(),
+                "validate-lock: invalid on-disk state: run process_identity requires pid>0, start_ticks>0, and nonempty boot_id",
+                "{name} must fail for the identity predicate"
+            );
+            assert_eq!(
+                fs::read_to_string(&record).unwrap(),
+                original,
+                "{name} must not rewrite the canonical run record"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
     // ---------------------------------------------------------------------
     // Teardown cause attribution. The bug was NOT that the log was missing --
     // it was that the log CONFIDENTLY NAMED THE WRONG CAUSE, so a postmortem
@@ -4024,6 +4493,7 @@ mod tests {
                     agent: "authority-real-run".into(),
                     kind: Kind::Validate,
                     target: HEX_SHA.into(),
+                    run_record: None,
                     no_wait: false,
                     wait: 0,
                     hold: 30,
@@ -4098,6 +4568,7 @@ mod tests {
                         agent: format!("validate-agent-{i}"),
                         kind: Kind::Bench,
                         target: format!("sha-{i}"),
+                        run_record: None,
                         no_wait: false,
                         wait: 0,
                         hold: 30,
@@ -4137,6 +4608,7 @@ mod tests {
                     agent: "proof-agent".into(),
                     kind: Kind::Bench,
                     target: "proof-sha".into(),
+                    run_record: None,
                     no_wait: false,
                     wait: 0,
                     hold: 30,
@@ -4186,6 +4658,7 @@ mod tests {
                     agent: "agent2".into(),
                     kind: Kind::Bench,
                     target: "sha2".into(),
+                    run_record: None,
                     no_wait: true,
                     wait: 0,
                     hold: 60,
@@ -4237,6 +4710,7 @@ mod tests {
                     agent: "stuck-validate".into(),
                     kind: Kind::Bench,
                     target: "sha-stuck".into(),
+                    run_record: None,
                     no_wait: false,
                     wait: 0,
                     hold: 30,
@@ -4285,6 +4759,7 @@ wait
                     agent: "stubborn-validate".into(),
                     kind: Kind::Bench,
                     target: "sha-stubborn".into(),
+                    run_record: None,
                     no_wait: false,
                     wait: 0,
                     hold: 30,
@@ -4627,6 +5102,7 @@ while :; do sleep 60; done
                 agent: "signalled-validate".into(),
                 kind: Kind::Validate,
                 target: HEX_SHA.into(),
+                run_record: None,
                 no_wait: false,
                 wait: 0,
                 hold: 30,
@@ -4704,6 +5180,7 @@ while :; do sleep 60; done
                 agent: "unsignalled-validate".into(),
                 kind: Kind::Validate,
                 target: HEX_SHA.into(),
+                run_record: None,
                 no_wait: false,
                 wait: 0,
                 hold: 30,
@@ -4761,6 +5238,7 @@ wait
                     agent: "escaped-validate".into(),
                     kind: Kind::Bench,
                     target: "sha-escaped".into(),
+                    run_record: None,
                     no_wait: false,
                     wait: 0,
                     hold: 30,
@@ -4888,6 +5366,7 @@ wait
                 agent: "hard-death-validate".into(),
                 kind: Kind::Bench,
                 target: target.into(),
+                run_record: None,
                 no_wait: false,
                 wait: 0,
                 hold: 30,
@@ -5008,6 +5487,7 @@ wait
                         agent: "crash-validate".into(),
                         kind: Kind::Bench,
                         target: target.clone(),
+                        run_record: None,
                         no_wait: false,
                         wait: 0,
                         hold: 30,
@@ -5151,6 +5631,7 @@ exit 0
                     agent: "normal-exit-validate".into(),
                     kind: Kind::Bench,
                     target: "normal-exit".into(),
+                    run_record: None,
                     no_wait: false,
                     wait: 0,
                     hold: 30,
@@ -5220,6 +5701,7 @@ exit 0
                     agent: "greedy".into(),
                     kind: Kind::Bench,
                     target: "sha-greedy".into(),
+                    run_record: None,
                     no_wait: false,
                     wait: 0,
                     hold: 30,
@@ -5486,6 +5968,43 @@ exit 0
     }
 
     #[test]
+    fn attributed_anchor_publishes_identity_and_releases_on_owner_death() {
+        let dir = env::temp_dir().join(format!(
+            "ci-hub-vlock-attributed-anchor-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let anchor = dir.join("validate-box.lock");
+        let owner = current_process_owner().unwrap();
+        let identity = format!(
+            "boot_id={} start_ticks={} agent=fixture kind=validate target={} unit=validate-fixture.service record=/fixture/validate-fixture.json",
+            owner.boot_id, owner.start_ticks, HEX_SHA
+        );
+        let holder = BoxExclusionAnchor::take_attributed(&anchor, 0, &identity)
+            .unwrap()
+            .expect("attributable holder must acquire");
+        let description = BoxExclusionAnchor::describe_holder(&anchor);
+        assert!(description.contains(&format!("pid={}", std::process::id())));
+        assert!(description.contains(&format!("start_ticks={}", owner.start_ticks)));
+        assert!(description.contains("unit=validate-fixture.service"));
+        assert!(
+            BoxExclusionAnchor::take_attributed(&anchor, 0, &identity)
+                .unwrap()
+                .is_none(),
+            "a live attributable holder must retain exclusion"
+        );
+        drop(holder);
+        assert!(
+            BoxExclusionAnchor::take_attributed(&anchor, 5, &identity)
+                .unwrap()
+                .is_some(),
+            "kernel-confirmed owner death/drop must make the anchor reclaimable without a timeout reaper"
+        );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn box_anchor_path_is_uid_derived_and_not_workspace_derived() {
         let path = box_exclusion_anchor_at(VALIDATE_BOX_ANCHOR);
         let uid = unsafe { libc::getuid() };
@@ -5628,6 +6147,7 @@ exit 0
                     agent: "stale-runner".into(),
                     kind: Kind::Validate,
                     target: HEX_SHA.into(),
+                    run_record: None,
                     no_wait: false,
                     wait: 0,
                     hold: 30,

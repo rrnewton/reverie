@@ -2683,10 +2683,11 @@ fn format_wait_hm(seconds: i64) -> String {
 }
 
 /// Exact admission-gated local-validate enqueue command a follow-on runs; this
-/// command never runs it here (the validate-lock serializes box-exclusive compute).
+/// command never runs it here (`validate-run` creates the durable identity before
+/// the validate-lock serializes box-exclusive compute).
 fn ci_timeout_enqueue_command(head_sha: &str, pr: u64) -> String {
     format!(
-        "ci-hub validate-lock run --kind validate --agent ci-timeout --target {head_sha} -- env PR_NUMBER={pr} ./scripts/validate.rs"
+        "ci-hub validate-run --checkout \"$PWD\" --agent ci-timeout --target {head_sha} --pr {pr} -- full"
     )
 }
 

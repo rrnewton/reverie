@@ -261,16 +261,17 @@ for pr in "${prs[@]}"; do
   note "PR #$pr: full validate at exact head $candidate (log $log)"
   validate_started=$(date +%s)
   set +e
-  "$ci_hub" validate-lock run \
+  CARGO_BUILD_JOBS=2 THIRD_PARTY_BUILD_JOBS=2 "$ci_hub" validate-run \
+    --checkout "$repo" \
     --agent hermit-ptw \
-    --kind validate \
     --target "$candidate" \
+    --pr "$pr" \
+    --in-place \
+    --log "$log" \
     --wait 7200 \
     --hold 1200 \
     --child-deadline 3600 \
-    -- /bin/bash -lc \
-      "cd '$repo' && CARGO_BUILD_JOBS=2 THIRD_PARTY_BUILD_JOBS=2 ./scripts/validate.rs full" \
-    >"$log" 2>&1
+    -- full
   validate_rc=$?
   set -e
   validate_finished=$(date +%s)

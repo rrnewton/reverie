@@ -51,6 +51,7 @@ def build(root: Path, environment: dict[str, str]) -> list[str]:
         target=TARGET,
         agent="test-agent",
         unit="validate-test.service",
+        record=root / "ignored/validate/runs/validate-test.json",
         log=root / "out.log",
         pr=None,
         validate_args=["full"],
@@ -201,6 +202,15 @@ class StartUnitEnvTest(unittest.TestCase):
         self.assertEqual(env["PATH"], "/usr/bin")
         self.assertEqual(env["CI_HUB_VALIDATE_PRODUCER"], "systemd-user-v1")
 
+    def test_canonical_run_record_is_passed_to_validate_lock(self) -> None:
+        self.plant_libunwind()
+        command = build(self.root, dict(self.base_env))
+        index = command.index("--run-record")
+        self.assertEqual(
+            command[index + 1],
+            str(self.root / "ignored/validate/runs/validate-test.json"),
+        )
+
     def test_missing_home_or_path_is_refused(self) -> None:
         for missing in ("HOME", "PATH"):
             env = dict(self.base_env)
@@ -243,6 +253,7 @@ class StartUnitEnvTest(unittest.TestCase):
             target=TARGET,
             agent="owner-checkout-watch",
             unit="validate-owner.service",
+            record=self.root / "ignored/validate/runs/validate-owner.json",
             log=self.root / "owner.log",
             pr=None,
             validate_args=[],
@@ -264,6 +275,7 @@ class StartUnitEnvTest(unittest.TestCase):
             target=TARGET,
             agent="owner-checkout-watch",
             unit="validate-owner.service",
+            record=self.root / "ignored/validate/runs/validate-owner.json",
             log=self.root / "owner.log",
             pr=None,
             validate_args=[],
