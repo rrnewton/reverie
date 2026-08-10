@@ -137,7 +137,7 @@ reminders:
   - name: owner_tooling_directives
     cadence_secs: 3600
     gate:
-      cmd: ./ci-hub/directives/check.py
+      cmd: python3 ci-hub/directives/check.py --deadline-secs 24
       when: failure
       capture: true
     emit:
