@@ -166,6 +166,28 @@ class ReceiptTests(unittest.TestCase):
             self.assertTrue(Path(receipt["durable_log_file"]).is_file())
             self.assertEqual(hashlib.sha256(body).hexdigest(), artifact_digest)
 
+    def test_preserved_log_identity_includes_exact_content(self):
+        """A post-run audit suffix must not collide with an immutable prefix."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            row = self.row(root)
+            evidence = root / "evidence"
+
+            prefix = MODULE.preserve_log(evidence, self.SHA, row)
+            prefix_bytes = Path(row["log_file"]).read_bytes()
+            Path(row["log_file"]).write_bytes(prefix_bytes + b"binding audit suffix\n")
+            complete = MODULE.preserve_log(evidence, self.SHA, row)
+
+            self.assertNotEqual(prefix, complete)
+            self.assertEqual(prefix.read_bytes(), prefix_bytes)
+            self.assertEqual(complete.read_bytes(), prefix_bytes + b"binding audit suffix\n")
+            self.assertIn(hashlib.sha256(prefix_bytes).hexdigest(), prefix.name)
+            self.assertIn(hashlib.sha256(complete.read_bytes()).hexdigest(), complete.name)
+
+            # Re-publishing the same exact bytes is idempotent and reuses the
+            # same immutable local evidence path.
+            self.assertEqual(complete, MODULE.preserve_log(evidence, self.SHA, row))
+
     def test_a_dead_cwd_resolves_from_a_durable_repository(self):
         """THE REGRESSION, and the 58% of the ledger that predates it.
 

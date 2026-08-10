@@ -83,8 +83,15 @@ def preserve_log(evidence_dir: Path, sha: str, row: dict[str, Any]) -> Path:
         fail(f"ledger log is not a readable absolute file: {source}")
     evidence_dir.mkdir(parents=True, exist_ok=True)
     started = "".join(ch for ch in row["started_at"] if ch.isalnum())
-    destination = evidence_dir / f"{sha}-{started}.log"
     content = source.read_bytes()
+    # A run log can legitimately grow after the canonical ledger row is
+    # emitted: post-run receipt binding writes its own audit suffix.  SHA and
+    # start time therefore do not uniquely identify immutable log bytes.  Key
+    # the preserved copy by its content as well, so a later finalization of the
+    # same run can mint a second, exact artifact without overwriting or
+    # conflicting with the already-published prefix.
+    content_digest = hashlib.sha256(content).hexdigest()
+    destination = evidence_dir / f"{sha}-{started}-{content_digest}.log"
     if destination.exists() and destination.read_bytes() != content:
         fail(f"durable log path already contains different content: {destination}")
     if not destination.exists():
