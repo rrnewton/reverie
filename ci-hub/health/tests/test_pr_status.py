@@ -753,6 +753,47 @@ class GhEngineLoudFailureTests(unittest.TestCase):
         self.assertEqual(raw, [{"number": 7, "isDraft": False}])
         self.assertEqual(run.call_count, 2, "the truncated response was not retried")
 
+    @mock.patch("pr_status.subprocess.run")
+    def test_retry_backoff_is_charged_to_the_total_deadline(
+        self, run: mock.Mock
+    ) -> None:
+        """Retries must not escape the caller's wall-clock budget.
+
+        Each subprocess timeout is only one part of the elapsed time.  The
+        retry backoff must consume the same absolute budget; otherwise three
+        individually bounded attempts can outlive the pull-request gate that
+        owns them.
+        """
+        clock = [0.0]
+
+        def monotonic() -> float:
+            return clock[0]
+
+        def sleep(seconds: float) -> None:
+            clock[0] += seconds
+
+        def retryable_failure(*_args: object, **_kwargs: object) -> object:
+            clock[0] += 0.5
+            return subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="connection reset"
+            )
+
+        run.side_effect = retryable_failure
+        with mock.patch("pr_status.time.monotonic", side_effect=monotonic), \
+             mock.patch("pr_status.time.sleep", side_effect=sleep):
+            with self.assertRaisesRegex(
+                pr_status.RepoUnavailable, "time budget exhausted"
+            ):
+                pr_status._fetch_open_prs_gh(
+                    "rrnewton/hermit",
+                    fields=pr_status.GH_FIELDS,
+                    net_wrapper=[],
+                    timeout=2.5,
+                )
+
+        self.assertEqual(run.call_count, 2, "a third attempt began after deadline")
+        self.assertLessEqual(clock[0], 2.5)
+
     @mock.patch("pr_status.time.sleep", lambda _: None)
     @mock.patch("pr_status.subprocess.run")
     def test_truncated_api_response_still_fails_closed_when_it_never_recovers(
@@ -833,6 +874,40 @@ class GhEngineLoudFailureTests(unittest.TestCase):
             status = pr_status.fetch_repo_status_gh("rrnewton/hermit", net_wrapper=[])
         self.assertEqual(status.open, 0)  # legit empty list == 0 PRs (query OK)
         sleep.assert_called_once()
+
+    @mock.patch("pr_status.hosted_authority_states", return_value={})
+    @mock.patch("pr_status.banked_failure_tier_commits", return_value={})
+    @mock.patch("pr_status.banked_green_commits", return_value=frozenset())
+    @mock.patch("pr_status._cached_open_pr_census")
+    @mock.patch("pr_status._fetch_open_prs_gh")
+    def test_repo_deadline_is_shared_with_local_ledger(
+        self,
+        fetch: mock.Mock,
+        census: mock.Mock,
+        green: mock.Mock,
+        _failure: mock.Mock,
+        hosted: mock.Mock,
+    ) -> None:
+        """The ledger subprocess gets only the repo budget still remaining."""
+        clock = [100.0]
+
+        def fetch_ready(*_args: object, **_kwargs: object) -> list[object]:
+            clock[0] += 2.0
+            return []
+
+        def fetch_census(*_args: object, **_kwargs: object) -> tuple[list, float]:
+            clock[0] += 1.0
+            return [], 0.0
+
+        fetch.side_effect = fetch_ready
+        census.side_effect = fetch_census
+        with mock.patch("pr_status.time.monotonic", side_effect=lambda: clock[0]):
+            pr_status.fetch_repo_status_gh(
+                "rrnewton/hermit", net_wrapper=[], timeout=10.0
+            )
+
+        self.assertAlmostEqual(green.call_args.kwargs["timeout"], 7.0)
+        self.assertEqual(hosted.call_args.kwargs["deadline"], 110.0)
 
     # Isolate the exact-job setup-only path: the hosted authority dereference is
     # its own consumer with its own test class, and leaving it live here would

@@ -1431,6 +1431,15 @@ def fetch_repo_status_gh(
     (UNAVAILABLE) instead of silently reporting zero open PRs.
     """
     started = time.monotonic()
+    repo_deadline = (
+        None if timeout is None else started + max(0.0, timeout)
+    )
+
+    def remaining() -> float | None:
+        if repo_deadline is None:
+            return None
+        return max(0.0, repo_deadline - time.monotonic())
+
     # The expensive GraphQL shape carries statusCheckRollup and mergeability.
     # Drafts are not landing candidates, so ask GitHub for ready heads only.
     ready = _fetch_open_prs_gh(
@@ -1438,18 +1447,16 @@ def fetch_repo_status_gh(
         fields=GH_FIELDS,
         net_wrapper=net_wrapper,
         gh_cmd=gh_cmd,
-        timeout=timeout,
+        timeout=remaining(),
         search="draft:false",
     )
-    elapsed = time.monotonic() - started
-    census_timeout = None if timeout is None else max(0.0, timeout - elapsed)
     population_error = ""
     try:
         census, census_age = _cached_open_pr_census(
             repo,
             net_wrapper=net_wrapper,
             gh_cmd=gh_cmd,
-            timeout=census_timeout,
+            timeout=remaining(),
         )
     except RepoUnavailable as error:
         # The rare all-open census is not permission to throw away a successful
@@ -1460,12 +1467,7 @@ def fetch_repo_status_gh(
     # The rare census is deliberately lightweight and uses REST. Only its draft
     # rows are appended: ready rows above carry the richer exact-head fields.
     raw = ready + [entry for entry in census if entry.get("isDraft") is True]
-    if timeout is None:
-        authority_deadline = None
-    else:
-        authority_deadline = time.monotonic() + max(
-            0.0, timeout - (time.monotonic() - started)
-        )
+    authority_deadline = repo_deadline
     setup_only_authority = GitHubActionsJobAuthority(
         repo,
         net_wrapper=net_wrapper,
@@ -1481,11 +1483,30 @@ def fetch_repo_status_gh(
         for entry in raw
         if isinstance(entry, dict) and entry.get("isDraft") is not True
     ]
+    ledger_timeout = remaining()
+    if ledger_timeout is not None and ledger_timeout <= 0:
+        raise RepoUnavailable(
+            f"{repo}: time budget exhausted before local validation ledger"
+        )
+    banked_green = (
+        banked_green_commits(repo)
+        if ledger_timeout is None
+        else banked_green_commits(repo, timeout=ledger_timeout)
+    )
+    if repo_deadline is not None and remaining() <= 0:
+        raise RepoUnavailable(
+            f"{repo}: time budget exhausted during local validation ledger"
+        )
+    banked_failure = banked_failure_tier_commits(repo)
+    if repo_deadline is not None and remaining() <= 0:
+        raise RepoUnavailable(
+            f"{repo}: time budget exhausted during local failure ledger"
+        )
     return _classify_gh_prs(
         repo,
         raw,
-        banked_green_commits(repo),
-        banked_failure_tier_commits(repo),
+        banked_green,
+        banked_failure,
         setup_only_verifier=setup_only_authority,
         hosted_authority=hosted_authority_states(
             repo, ready_heads, deadline=authority_deadline
@@ -1507,7 +1528,12 @@ def _fetch_open_prs_gh(
     timeout: float | None = None,
     search: str | None = None,
 ) -> list[object]:
-    """Fetch open PRs with a caller-selected bounded GraphQL field set."""
+    """Fetch open PRs with a caller-selected bounded GraphQL field set.
+
+    ``timeout`` is one wall-clock deadline for the complete operation,
+    including retry backoff.  It is not a fresh subprocess allowance for each
+    attempt.
+    """
     command = [
         *net_wrapper,
         gh_cmd,
@@ -1523,23 +1549,30 @@ def _fetch_open_prs_gh(
     if search:
         command.extend(("--search", search))
     command.extend(("--json", ",".join(fields)))
+    deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
     result: subprocess.CompletedProcess[str] | None = None
     for attempt in range(1, MAX_FETCH_ATTEMPTS + 1):
-        if timeout is not None and timeout <= 0:
+        attempt_timeout = (
+            None if deadline is None else max(0.0, deadline - time.monotonic())
+        )
+        if attempt_timeout is not None and attempt_timeout <= 0:
             raise RepoUnavailable(
                 f"{repo}: time budget exhausted before gh attempt {attempt}"
             )
-        started = time.monotonic()
         try:
             result = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=timeout,
+                timeout=attempt_timeout,
             )
         except subprocess.TimeoutExpired:
-            budget = "unbounded" if timeout is None else f"{timeout:.0f}s"
+            budget = (
+                "unbounded"
+                if attempt_timeout is None
+                else f"{attempt_timeout:.0f}s remaining"
+            )
             raise RepoUnavailable(
                 f"{repo}: `gh pr list` exceeded {budget} (proxy stall or gh hang)"
             ) from None
@@ -1556,11 +1589,10 @@ def _fetch_open_prs_gh(
         if not retryable or attempt == MAX_FETCH_ATTEMPTS:
             break
         backoff = float(attempt)
-        if timeout is not None:
-            elapsed = time.monotonic() - started
-            timeout = max(0.0, timeout - elapsed)
-            backoff = min(backoff, timeout)
-        time.sleep(backoff)
+        if deadline is not None:
+            backoff = min(backoff, max(0.0, deadline - time.monotonic()))
+        if backoff > 0:
+            time.sleep(backoff)
     assert result is not None
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "unknown error"

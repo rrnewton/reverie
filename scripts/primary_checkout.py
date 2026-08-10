@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
+from contextvars import ContextVar
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 from typing import TextIO
 
@@ -83,6 +85,25 @@ GIT_REPO_SCOPED_ENV = (
 # a pre-commit hook has no business going to the network, and the Hermit primary
 # carries a partial-clone promisor remote for reverie.
 NO_LAZY_FETCH = {"GIT_NO_LAZY_FETCH": "1"}
+_COMMAND_DEADLINE: ContextVar[float | None] = ContextVar(
+    "primary_checkout_command_deadline", default=None
+)
+
+
+def _run_process(
+    command: list[str] | tuple[str, ...], **kwargs: object
+) -> subprocess.CompletedProcess[str]:
+    """Run one owned child inside the active checkout-fresh wall deadline."""
+    deadline = _COMMAND_DEADLINE.get()
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(command, 0)
+        explicit = kwargs.get("timeout")
+        if isinstance(explicit, (int, float)):
+            remaining = min(remaining, float(explicit))
+        kwargs["timeout"] = remaining
+    return subprocess.run(command, **kwargs)  # type: ignore[arg-type]
 
 
 def proxy_disabled(variable: str = "PRIMARY_CHECKOUT_DISABLE_PROXY") -> bool:
@@ -130,7 +151,7 @@ def run_git(
         if proxy:
             command.append(proxy)
     command.extend(("git", "-C", str(repo), *args))
-    return subprocess.run(command, text=True, capture_output=True, check=False, env=env)
+    return _run_process(command, text=True, capture_output=True, check=False, env=env)
 
 
 def print_command_output(result: subprocess.CompletedProcess[str], stream: TextIO) -> None:
@@ -174,7 +195,7 @@ def run_parent_main_write(
     if not use_proxy:
         env["HERMIT_PARENT_MAIN_NO_PROXY"] = "1"
     helper = Path(__file__).with_name("parent-main-write")
-    return subprocess.run(
+    return _run_process(
         (str(helper), *args),
         cwd=root,
         text=True,
@@ -188,7 +209,7 @@ def machine_attributed_snapshot_message(root: Path) -> str:
     """Build the automated snapshot message with this writer's exact machine."""
 
     checker = root / "scripts" / "check_commit_attribution.py"
-    detected = subprocess.run(
+    detected = _run_process(
         (str(checker), "--detect-machine"),
         cwd=root,
         text=True,
@@ -358,7 +379,7 @@ def reverie_cache_derivation_errors(hermit: Path) -> list[str]:
             "not written literally"
         )
 
-    scan = subprocess.run(
+    scan = _run_process(
         [
             "git", "-C", str(hermit), "grep", "-I", "-n", "-E",
             r"liteinst-runtime(-build)?-[0-9a-f]{8}",
@@ -713,7 +734,7 @@ def publish_parent_snapshot(
     return SNAPSHOT_PUBLISHED
 
 
-def checkout_fresh(
+def _checkout_fresh_impl(
     root: Path,
     *,
     publish_parent: bool = False,
@@ -840,6 +861,55 @@ def checkout_fresh(
     # persisted. Folding it into either 0 or 1 loses the only thing that separates
     # a lost race from a stuck snapshot.
     return SNAPSHOT_DEFERRED if deferred else SNAPSHOT_PUBLISHED
+
+
+def checkout_fresh(
+    root: Path,
+    *,
+    publish_parent: bool = False,
+    strict: bool = False,
+    use_proxy: bool = True,
+    deadline_secs: float | None = None,
+    out: TextIO = sys.stdout,
+    err: TextIO = sys.stderr,
+) -> int:
+    """Refresh primary checkouts within one optional wall-clock envelope.
+
+    The operational-health caller sits behind tick-hub's 30-second guillotine.
+    Its smaller inner deadline makes a stalled Git/proxy child a named blocked
+    result rather than letting the outer runner erase the cause.  Standalone
+    callers retain the historical unbounded behavior unless they opt in.
+    """
+    token = None
+    if deadline_secs is not None:
+        token = _COMMAND_DEADLINE.set(
+            time.monotonic() + max(0.0, deadline_secs)
+        )
+    try:
+        return _checkout_fresh_impl(
+            root,
+            publish_parent=publish_parent,
+            strict=strict,
+            use_proxy=use_proxy,
+            out=out,
+            err=err,
+        )
+    except subprocess.TimeoutExpired as error:
+        command = error.cmd
+        rendered = (
+            " ".join(str(part) for part in command)
+            if isinstance(command, (list, tuple))
+            else str(command)
+        )
+        print(
+            "ERROR: primary checkout snapshot inner deadline exhausted while "
+            f"running: {rendered}",
+            file=err,
+        )
+        return SNAPSHOT_BLOCKED
+    finally:
+        if token is not None:
+            _COMMAND_DEADLINE.reset(token)
 
 
 @dataclass(frozen=True)
@@ -1132,7 +1202,7 @@ def check_primary_freshness(
             if not drift.safe_fix or not drift.fix_argv:
                 remaining.append(drift)
                 continue
-            repaired = subprocess.run(
+            repaired = _run_process(
                 list(drift.fix_argv), text=True, capture_output=True, check=False
             )
             if repaired.returncode == 0:

@@ -338,6 +338,40 @@ class _ParentWorkspaceFixture(unittest.TestCase):
 _PrimaryFixture = _ParentWorkspaceFixture
 
 
+class PrimaryCheckoutDeadlineTests(unittest.TestCase):
+    def test_active_deadline_bounds_each_owned_child(self) -> None:
+        completed = subprocess.CompletedProcess(["git"], 0, "", "")
+        token = primary_checkout._COMMAND_DEADLINE.set(110.0)
+        try:
+            with patch.object(
+                primary_checkout.time, "monotonic", return_value=103.0
+            ), patch.object(
+                primary_checkout.subprocess, "run", return_value=completed
+            ) as run:
+                primary_checkout._run_process(["git", "status"], check=False)
+        finally:
+            primary_checkout._COMMAND_DEADLINE.reset(token)
+
+        self.assertEqual(run.call_args.kwargs["timeout"], 7.0)
+
+    def test_checkout_deadline_returns_named_block_instead_of_escaping(self) -> None:
+        out, err = StringIO(), StringIO()
+        command = ["with-proxy", "git", "ls-remote", "origin", "refs/heads/main"]
+        with patch.object(
+            primary_checkout,
+            "_checkout_fresh_impl",
+            side_effect=subprocess.TimeoutExpired(command, 24.0),
+        ):
+            result = primary_checkout.checkout_fresh(
+                Path("/unused"), deadline_secs=24.0, out=out, err=err
+            )
+
+        self.assertEqual(result, primary_checkout.SNAPSHOT_BLOCKED)
+        self.assertIn("inner deadline exhausted", err.getvalue())
+        self.assertIn("with-proxy git ls-remote", err.getvalue())
+        self.assertIsNone(primary_checkout._COMMAND_DEADLINE.get())
+
+
 class PrimaryCheckoutTests(_ParentWorkspaceFixture):
     def install_owner_validate_exception(self, *, target: str = "scripts/validate.rs") -> Path:
         hermit = self.root / "hermit"

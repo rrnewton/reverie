@@ -99,7 +99,10 @@ def pr_gate_repo_budget(
     """
 
     left = total - elapsed
-    return max(floor, left - floor * max(0, repos_remaining_after_this))
+    # The reservation is meaningful only while budget remains.  Re-granting
+    # ``floor`` after the shared envelope is exhausted lets a later repo escape
+    # the inner deadline and reach tick-hub's otherwise-unlabelled 30s kill.
+    return max(0.0, left - floor * max(0, repos_remaining_after_this))
 # Per-gh-call bound for the auto-invoked CI queue-health gate, same rationale as
 # the PR gate above: the gate makes at most two gh calls (run-list + runners API)
 # per repo, so 12s each keeps a single default-repo tick to ~24s worst case,
@@ -533,6 +536,9 @@ def pull_request_gate() -> int:
 # publish for an hour is not.
 SNAPSHOT_DEFERRAL_BUDGET_SECS = 3600
 SNAPSHOT_DEFERRAL_STATE = ROOT / ".tick-hub" / "primary-snapshot-deferral.json"
+PRIMARY_SNAPSHOT_INNER_BUDGET_SECS = float(
+    os.environ.get("CI_HUB_PRIMARY_SNAPSHOT_BUDGET", "24")
+)
 
 
 def _read_deferral(path: Path) -> float | None:
@@ -570,6 +576,7 @@ def primary_snapshot_gate(
         primary_checkout.default_root(),
         publish_parent=True,
         strict=True,
+        deadline_secs=PRIMARY_SNAPSHOT_INNER_BUDGET_SECS,
         out=output,
         err=errors,
     )

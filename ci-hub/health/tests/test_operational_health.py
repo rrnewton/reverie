@@ -276,15 +276,16 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertGreater(first, 12.0)  # strictly better than the old flat value
 
     def test_a_slow_first_repo_cannot_starve_a_later_one(self) -> None:
-        # The floor is the whole reason the envelope is safe to share.
+        # The floor is reserved while the envelope still has time left.
         after_a_greedy_first_repo = operational_health.pr_gate_repo_budget(20.0, 0)
         self.assertEqual(
             operational_health.PR_GATE_MIN_REPO_BUDGET_SECS,
             after_a_greedy_first_repo,
         )
-        # ...and even an overrun cannot drive the grant negative.
+        # Once the shared envelope is gone, no later repo receives a fresh
+        # allowance.  Returning the floor here was the deadline escape.
         self.assertEqual(
-            operational_health.PR_GATE_MIN_REPO_BUDGET_SECS,
+            0.0,
             operational_health.pr_gate_repo_budget(999.0, 0),
         )
 
@@ -302,6 +303,14 @@ class OperationalHealthTest(unittest.TestCase):
                 f"{repo_count} repos overran the shared envelope",
             )
             self.assertLess(elapsed, 30.0)
+
+    def test_exhausted_envelope_does_not_reopen_a_repo_floor(self) -> None:
+        self.assertEqual(
+            0.0,
+            operational_health.pr_gate_repo_budget(
+                operational_health.PR_GATE_TOTAL_BUDGET_SECS, 0
+            ),
+        )
 
     def test_budget_fix_does_not_buy_reachability_by_dropping_the_honesty(self) -> None:
         """A repo that STILL exceeds its (now larger) budget must stay loud.
@@ -955,6 +964,22 @@ class PrimarySnapshotDeferralTest(unittest.TestCase):
             result, output = self.capture(state_path=self.state, now=1000.0)
         self.assertEqual(result, 1)
         self.assertIn("state=blocked", output)
+
+    def test_snapshot_uses_inner_deadline_below_tick_guillotine(self) -> None:
+        with mock.patch.object(
+            operational_health.primary_checkout,
+            "checkout_fresh",
+            return_value=operational_health.primary_checkout.SNAPSHOT_BLOCKED,
+        ) as checkout:
+            result, output = self.capture(state_path=self.state, now=1000.0)
+
+        self.assertEqual(result, 1)
+        self.assertIn("state=blocked", output)
+        self.assertEqual(
+            checkout.call_args.kwargs["deadline_secs"],
+            operational_health.PRIMARY_SNAPSHOT_INNER_BUDGET_SECS,
+        )
+        self.assertLess(operational_health.PRIMARY_SNAPSHOT_INNER_BUDGET_SECS, 30.0)
 
     # ---- the clock must be honest ------------------------------------------
 
