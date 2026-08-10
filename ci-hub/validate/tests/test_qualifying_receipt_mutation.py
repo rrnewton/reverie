@@ -25,7 +25,8 @@ value across scenarios. For each scenario it asserts the whole panel agrees:
   * ZERO-exec negative (live): executed_tests==0 is refused by EVERY consumer.
 
 Consumers driven (seven certifier sites, six panel legs, three languages):
-  - Rust `validate_status.rs`   via `ci-hub validate-status --ledger F --sha S`.
+  - Rust `validate_status.rs`   via `ci-hub validate-status --sha S`, with the
+    canonical ledger adapter pointed at an isolated test root.
   - Rust `history_queries.rs`   routes through the SAME `assess()` ->
     `is_clean_full_pass` -> `row_qualifies` as the leg above; one predicate path,
     so the Rust leg covers both (its own unit tests exercise history_queries).
@@ -54,6 +55,7 @@ LIVE_PREDICATE = CI_HUB / "validate" / "qualifying-receipt.json"
 PRODUCER_REGISTRY = CI_HUB / "validate" / "producer-definition.json"
 PRODUCER_REPO = REPO_ROOT / "hermit"
 CI_HUB_RS = CI_HUB / "ci-hub.rs"
+LEDGER_DIR = CI_HUB / "ledger"
 QUERY_PY = CI_HUB / "history" / "query.py"
 PUBLISH_PY = CI_HUB / "validation" / "publish_receipt.py"
 ANCHOR_PY = CI_HUB / "validate" / "anchor_select.py"
@@ -61,7 +63,9 @@ FINALIZE_PY = CI_HUB / "validate" / "finalize_receipt.py"
 VERIFY_SH = CI_HUB / "validation" / "verify_receipt.sh"
 
 sys.path.insert(0, str(CI_HUB))
+sys.path.insert(0, str(LEDGER_DIR))
 import qualifying_receipt  # noqa: E402
+import validate_rows  # noqa: E402
 
 SHA = json.loads(PRODUCER_REGISTRY.read_text())["registered_at"]
 RECEIPT_COMMIT = "b" * 40  # the parent commit a receipt was committed at
@@ -256,6 +260,25 @@ def _env(predicate: Path | None) -> dict:
     return env
 
 
+def _canonical_ledger_env(root: Path, predicate: Path | None) -> dict:
+    """Point the real canonical adapter at one isolated fixture root.
+
+    Production deliberately has no ``validate-status --ledger`` escape hatch:
+    every consumer reads the canonical shard union.  The adapter's existing
+    test-only root keeps this end-to-end CLI leg on that same code path without
+    making a fixture file a second production authority.
+    """
+    env = _env(predicate)
+    env["HERMIT_VALIDATE_STOP_TEST_MODE"] = "1"
+    env["CI_HUB_VALIDATE_LEDGER_TEST_ROOT"] = str(root)
+    return env
+
+
+def _record_canonical_fixture(root: Path, row: dict) -> None:
+    """Journal one HistoryRow through the canonical event writer."""
+    validate_rows.record(row, root=root)
+
+
 class QualifyingReceiptMutationTest(unittest.TestCase):
     """One test method per scenario; each asserts the full consumer panel."""
 
@@ -284,12 +307,12 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
     def _rust_accepts(self, row: dict, predicate: Path | None) -> bool:
         target_sha = row["commit"]
         with tempfile.TemporaryDirectory() as tmp:
-            ledger = Path(tmp) / "ledger.jsonl"
-            ledger.write_text(json.dumps(row) + "\n")
+            root = Path(tmp)
+            _record_canonical_fixture(root, row)
             proc = subprocess.run(
                 ["rust-script", "--force", str(CI_HUB_RS),
-                 "validate-status", "--ledger", str(ledger), "--sha", target_sha, "--json"],
-                cwd=REPO_ROOT, env=_env(predicate),
+                 "validate-status", "--sha", target_sha, "--json"],
+                cwd=REPO_ROOT, env=_canonical_ledger_env(root, predicate),
                 capture_output=True, text=True, timeout=600,
             )
         self.assertEqual(proc.returncode in (0,) or proc.stdout.strip().startswith("{"), True,
@@ -532,9 +555,16 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                 capture_output=True,
                 text=True,
             )
-            (checkout / "validate.sh").write_text(
-                "#!/usr/bin/env bash\necho unregistered producer\n"
+            # Mutate a path from the LIVE registered whole map.  `validate.sh`
+            # used to be such a path, but the Rust producer cutover removed it;
+            # continuing to edit that retired path made this negative vacuous.
+            registered_paths = sorted(
+                json.loads(PRODUCER_REGISTRY.read_text())["registered"]
             )
+            self.assertTrue(registered_paths, "producer registry has no paths")
+            producer_path = registered_paths[0]
+            with (checkout / producer_path).open("a") as producer:
+                producer.write("\n# unregistered producer mutation\n")
             git_env = {
                 **os.environ,
                 "GIT_AUTHOR_NAME": "producer-mutation-test",
@@ -543,7 +573,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                 "GIT_COMMITTER_EMAIL": "test@example.invalid",
             }
             subprocess.run(
-                ["git", "-C", str(checkout), "add", "validate.sh"],
+                ["git", "-C", str(checkout), "add", producer_path],
                 check=True,
                 env=git_env,
             )

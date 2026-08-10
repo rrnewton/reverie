@@ -380,9 +380,15 @@ class RustEngineParityTest(unittest.TestCase):
         if shutil.which("rust-script") is None:
             raise unittest.SkipTest("rust-script unavailable")
         sys.path.insert(0, str(CI_HUB / "validate" / "tests"))
-        from test_qualifying_receipt_mutation import _green_row
+        from test_qualifying_receipt_mutation import (
+            _canonical_ledger_env,
+            _green_row,
+            _record_canonical_fixture,
+        )
 
         cls._green_row = staticmethod(_green_row)
+        cls._canonical_ledger_env = staticmethod(_canonical_ledger_env)
+        cls._record_canonical_fixture = staticmethod(_record_canonical_fixture)
         cls._subprocess = subprocess
         cls.producer_sha = json.loads(PRODUCER_REGISTRY.read_text())["registered_at"]
         subprocess.run(
@@ -392,22 +398,23 @@ class RustEngineParityTest(unittest.TestCase):
         )
 
     def _ask(self, row: dict, pred: dict) -> str:
-        import os
         import tempfile
 
-        d = Path(tempfile.mkdtemp())
-        (d / "pred.json").write_text(json.dumps(pred))
-        (d / "l.jsonl").write_text(json.dumps(row) + "\n")
-        env = dict(os.environ)
-        env["QUALIFYING_RECEIPT_PREDICATE"] = str(d / "pred.json")
-        proc = self._subprocess.run(
-            [
-                "rust-script", "--force", str(CI_HUB / "ci-hub.rs"),
-                "validate-status", "--ledger", str(d / "l.jsonl"),
-                "--sha", self.producer_sha, "--json",
-            ],
-            capture_output=True, text=True, env=env, timeout=900,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            predicate = root / "pred.json"
+            predicate.write_text(json.dumps(pred))
+            self._record_canonical_fixture(root, row)
+            proc = self._subprocess.run(
+                [
+                    "rust-script", "--force", str(CI_HUB / "ci-hub.rs"),
+                    "validate-status", "--sha", self.producer_sha, "--json",
+                ],
+                capture_output=True,
+                text=True,
+                env=self._canonical_ledger_env(root, predicate),
+                timeout=900,
+            )
         self.assertTrue(proc.stdout, f"no report: {proc.stderr[-600:]}")
         return json.loads(proc.stdout)["verdict"]
 
