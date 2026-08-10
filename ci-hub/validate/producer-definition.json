@@ -26,11 +26,11 @@
   },
   "transition": {
     "id": "rrnewton-hermit-pr-2070",
-    "registered_at": "bf58cb95024262aea3646886712273ec8ae5c54b",
+    "registered_at": "62a2d6441efa092194105e5e92d5eb391bec5283",
     "provenance": {
       "repository": "rrnewton/hermit",
       "pull_request": 2070,
-      "head": "bf58cb95024262aea3646886712273ec8ae5c54b"
+      "head": "62a2d6441efa092194105e5e92d5eb391bec5283"
     },
     "finalize_after": "2026-08-10T07:55:00Z",
     "expires_at": "2026-08-11T07:55:00Z",
@@ -39,11 +39,11 @@
       "scripts/lib/validate_plan.rs"
     ],
     "candidate": {
-      ".github/workflows/ci-portable.yml": "c0de07a73f1403c455672a8ef52caedc26676226",
+      ".github/workflows/ci-portable.yml": "dd56c0cf3bc3895b6fc0fb3a5348574446ddef80",
       "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
       "scripts/lib/validate_plan.rs": "c809ba120b742e4a6f6cfa0ec695cb65a1473c20",
       "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-      "scripts/validate.rs": "06467746d7540d49ef067de40c61b0604135a046"
+      "scripts/validate.rs": "3815c5a0b1a61f1cb14359b47a3b86b3a9ab9014"
     }
   },
   "legacy": [
