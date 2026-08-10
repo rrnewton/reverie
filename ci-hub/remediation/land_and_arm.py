@@ -147,6 +147,37 @@ def _existing_obligation(repo: str, sha: str, store: Path) -> dict[str, Any] | N
     return protocol.recoverable_obligation(repo, sha, store)
 
 
+def _live_launch_owner(intent: Mapping[str, Any], sha: str) -> dict[str, Any] | None:
+    """Return the same-SHA obligation while another live process is arming it."""
+    record = _existing_obligation(
+        str(intent["repo"]), sha, Path(str(intent["store"]))
+    )
+    if record is None:
+        return None
+    launch = record.get("launch")
+    if not isinstance(launch, Mapping) or launch.get("state") != "launching":
+        return None
+    return record if protocol._pid_alive(launch.get("launcher_pid")) else None
+
+
+def _record_arm_in_progress(
+    path: Path, intent: dict[str, Any], record: Mapping[str, Any]
+) -> None:
+    launch = record.get("launch")
+    launch = launch if isinstance(launch, Mapping) else {}
+    intent.update(
+        state="arm-in-progress",
+        obligation_id=str(record["obligation_id"]),
+        error=None,
+    )
+    _atomic_json(path, intent)
+    print(
+        f"LAND ARM IN PROGRESS: {intent['repo']}#{intent['pr']} "
+        f"sha={intent['landed_sha']} obligation={record['obligation_id']} "
+        f"owner_pid={launch.get('launcher_pid')}"
+    )
+
+
 def arm_sha(intent: Mapping[str, Any], sha: str) -> tuple[int, str | None]:
     repo = str(intent["repo"])
     persisted_policy = intent.get("verification_policy")
@@ -416,8 +447,24 @@ def recover_intent(path: Path, *, observe_timeout: int) -> int:
             merged_at=obligations.utc_now(),
         )
         _atomic_json(path, intent)
+    # Recovery runs periodically and can overlap the original completer between
+    # its durable launch claim and final armed transition. That owner is doing
+    # exactly the work recovery exists to preserve. Treat the overlap as
+    # in-progress rather than invoking a duplicate arm, whose LaunchBusy exit 2
+    # would otherwise overwrite the intent with a false arm-failed state and
+    # prevent the watcher poll after `recover && watch-obligations` from running.
+    live_owner = _live_launch_owner(intent, sha)
+    if live_owner is not None:
+        _record_arm_in_progress(path, intent, live_owner)
+        return 0
     code, obligation_id = arm_sha(intent, sha)
     if obligation_id is None:
+        # Close the check-to-claim race: a completer may claim the obligation
+        # after the probe above but before arm_sha tries to claim it.
+        live_owner = _live_launch_owner(intent, sha)
+        if live_owner is not None:
+            _record_arm_in_progress(path, intent, live_owner)
+            return 0
         intent.update(state="arm-failed", error=f"recovery arm exited {code}")
         _atomic_json(path, intent)
         return code or 2

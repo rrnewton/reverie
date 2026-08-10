@@ -170,6 +170,90 @@ class LandAndArmTest(unittest.TestCase):
         self.assertEqual(recovered["state"], "land-command-failed")
         self.assertIn("no post-land watcher is owed", recovered["error"])
 
+    def test_recovery_defers_to_live_launch_owner_without_false_error(self) -> None:
+        args = self.args()
+        intent = land_and_arm._new_intent(args, ["/bin/true"])
+        intent.update(
+            state="merged-unarmed",
+            landed_sha=SHA,
+            merged_at="2026-08-10T08:20:06Z",
+        )
+        path = land_and_arm._intent_path(self.intent_dir, args.repo, args.pr)
+        land_and_arm._atomic_json(path, intent)
+        land_and_arm.obligations.create_obligation(
+            repo=args.repo,
+            landed_sha=SHA,
+            land_mode=args.land_mode,
+            verification_policy=intent["verification_policy"],
+            actor=args.actor,
+            obligation_id="launch-owned",
+            path=self.store,
+        )
+        land_and_arm.obligations.transition(
+            "launch-owned",
+            "launch-claimed",
+            {
+                "launch": {
+                    "state": "launching",
+                    "token": "live-owner",
+                    "launcher_pid": 98765,
+                    "attempt": 1,
+                }
+            },
+            self.store,
+        )
+        with mock.patch.object(
+            land_and_arm.protocol, "_pid_alive", return_value=True
+        ), mock.patch.object(land_and_arm, "arm_sha") as arm:
+            self.assertEqual(land_and_arm.recover_intent(path, observe_timeout=1), 0)
+        arm.assert_not_called()
+        recovered = self.intent()
+        self.assertEqual(recovered["state"], "arm-in-progress")
+        self.assertEqual(recovered["obligation_id"], "launch-owned")
+        self.assertIsNone(recovered["error"])
+
+    def test_recovery_arm_error_without_live_owner_remains_error(self) -> None:
+        args = self.args()
+        intent = land_and_arm._new_intent(args, ["/bin/true"])
+        intent.update(
+            state="merged-unarmed",
+            landed_sha=SHA,
+            merged_at="2026-08-10T08:20:06Z",
+        )
+        path = land_and_arm._intent_path(self.intent_dir, args.repo, args.pr)
+        land_and_arm._atomic_json(path, intent)
+        with mock.patch.object(
+            land_and_arm, "arm_sha", return_value=(2, None)
+        ):
+            self.assertEqual(land_and_arm.recover_intent(path, observe_timeout=1), 2)
+        recovered = self.intent()
+        self.assertEqual(recovered["state"], "arm-failed")
+        self.assertEqual(recovered["error"], "recovery arm exited 2")
+
+    def test_recovery_closes_probe_to_claim_live_owner_race(self) -> None:
+        args = self.args()
+        intent = land_and_arm._new_intent(args, ["/bin/true"])
+        intent.update(
+            state="merged-unarmed",
+            landed_sha=SHA,
+            merged_at="2026-08-10T08:20:06Z",
+        )
+        path = land_and_arm._intent_path(self.intent_dir, args.repo, args.pr)
+        land_and_arm._atomic_json(path, intent)
+        live = {
+            "obligation_id": "late-owner",
+            "launch": {"state": "launching", "launcher_pid": 98765},
+        }
+        with mock.patch.object(
+            land_and_arm, "_live_launch_owner", side_effect=[None, live]
+        ), mock.patch.object(
+            land_and_arm, "arm_sha", return_value=(2, None)
+        ):
+            self.assertEqual(land_and_arm.recover_intent(path, observe_timeout=1), 0)
+        recovered = self.intent()
+        self.assertEqual(recovered["state"], "arm-in-progress")
+        self.assertEqual(recovered["obligation_id"], "late-owner")
+
     def test_crash_after_open_recovers_one_local_runner_and_one_watcher(self) -> None:
         args = self.args()
         intent = land_and_arm._new_intent(args, ["/bin/true"])
