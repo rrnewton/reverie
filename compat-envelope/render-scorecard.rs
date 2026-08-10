@@ -123,6 +123,13 @@ struct Cell {
     /// Cross-backend standard actually met. This is separate from `tier`,
     /// which describes the run1/run2 self-determinism comparator.
     comparison_tier: String,
+    /// Optional stronger invocation modes. None is historical/unknown, false
+    /// means the flag was not passed, and true means it was passed.
+    stack_parity: Option<bool>,
+    heap_parity: Option<bool>,
+    /// A nonempty INFO-log comparison. Tier labels do not certify this; the
+    /// row must carry a comparison that actually examined at least one record.
+    info_comparison_evidenced: bool,
     /// Whether the row carries EVIDENCE that a determinism comparison actually
     /// happened: a non-blank `parity_comparator` or a non-blank
     /// `compared_log_messages`. Hermit refuses a determinism positive whose
@@ -146,6 +153,20 @@ const UNQUALIFIED_COMPARISON_TIERS: &[&str] = &[
 
 fn qualifies_as_green(tier: &str) -> bool {
     matches!(tier, FULL_COMPARISON_TIER | SPOT_CHECK_COMPARISON_TIER)
+}
+
+fn nonempty_comparison(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "-" | "n/a" | "none" | "null" | "0" | "0|0" | "0/0"
+    )
+}
+
+fn cell_is_green(cell: &Cell) -> bool {
+    cell.outcome == "pass"
+        && qualifies_as_green(&cell.comparison_tier)
+        && cell.observable_parity == Some(true)
+        && cell.info_comparison_evidenced
 }
 
 fn known_comparison_tier(tier: &str) -> bool {
@@ -249,17 +270,39 @@ fn main() {
     let csv_path = csv.unwrap_or_else(|| {
         die("--csv is required: choose `compat-envelope/fullcorpus-scorecard.csv` for the full corpus or `compat-envelope/scorecard.csv` for the CI/regression subset")
     });
-    // One semantic verifier owns parity provenance.  The renderer consumes its
-    // verdict before it consumes any cached parity boolean.  --all is explicit
-    // aggregate authority and therefore additionally refuses more than one run.
+    // One semantic verifier owns parity provenance. For the tracked current
+    // view, first prove it is exactly the newest-per-(test_id,backend)
+    // projection of the append-only history, then verify the complete history
+    // run-by-run. The current view is a cache, never its own authority.
     let checker = script_dir().join("check-scorecard-provenance.py");
+    let history = script_dir().join("history/scorecard-observations.csv");
+    let is_current_view = csv_path.file_name().is_some_and(|name| name == "scorecard.csv")
+        && history.exists();
+    let provenance_input = if is_current_view {
+        let projection = Command::new("python3")
+            .arg(script_dir().join("publish-scorecard.py"))
+            .arg("--check")
+            .arg("--current")
+            .arg(&csv_path)
+            .arg("--history")
+            .arg(&history)
+            .stdout(Stdio::null())
+            .status()
+            .unwrap_or_else(|error| die(&format!("cannot verify current projection: {error}")));
+        if !projection.success() {
+            die("current scorecard is not bound to its observation history");
+        }
+        &history
+    } else {
+        &csv_path
+    };
     let mut check = Command::new(&checker);
     check
-        .arg(&csv_path)
+        .arg(provenance_input)
         .arg("--observable")
         .arg(&observable)
         .stdout(Stdio::null());
-    if all {
+    if all && !is_current_view {
         check.arg("--aggregate");
     }
     if let Some(ref selected_run) = run_id {
@@ -361,6 +404,8 @@ fn main() {
     // retroactively acquire evidence it never recorded.
     let i_comparator = header.iter().position(|h| h == "parity_comparator");
     let i_compared = header.iter().position(|h| h == "compared_log_messages");
+    let i_stack_parity = header.iter().position(|h| h == "stack_parity");
+    let i_heap_parity = header.iter().position(|h| h == "heap_parity");
 
     let mut cells: Vec<Cell> = Vec::new();
     for (n, line) in lines.enumerate() {
@@ -399,11 +444,16 @@ fn main() {
             deterministic: parse_bool(&get(i_det)),
             observable_parity: parse_bool(&get(i_par)),
             comparison_tier,
+            stack_parity: i_stack_parity.and_then(|index| parse_bool(&get(index))),
+            heap_parity: i_heap_parity.and_then(|index| parse_bool(&get(index))),
+            info_comparison_evidenced: i_compared
+                .map(&get)
+                .is_some_and(|value| nonempty_comparison(&value)),
             // Absent columns (pre-schema-5 rows) read as blank, i.e. NOT
             // evidenced -- an older row cannot retroactively acquire evidence it
             // never recorded.
             determinism_evidenced: i_comparator.map(&get).is_some_and(|v| !v.trim().is_empty())
-                || i_compared.map(&get).is_some_and(|v| !v.trim().is_empty()),
+                || i_compared.map(&get).is_some_and(|v| nonempty_comparison(&v)),
         });
     }
     if cells.is_empty() {
@@ -425,11 +475,11 @@ fn main() {
     if let Some(r) = &scope_run {
         cells.retain(|c| &c.run_id == r);
     } else {
-        // --all has already been proven single-run by the provenance verifier;
-        // collapse only duplicate writes within that one run identity.
-        let mut newest: BTreeMap<(String, String, String, String), Cell> = BTreeMap::new();
+        // The owner-defined current cell is (program, backend), represented as
+        // (test_id, backend). Last physical observation wins.
+        let mut newest: BTreeMap<(String, String), Cell> = BTreeMap::new();
         for c in cells.drain(..) {
-            let key = (c.bucket.clone(), c.test_id.clone(), c.test_mode.clone(), c.backend.clone());
+            let key = (c.test_id.clone(), c.backend.clone());
             newest
                 .entry(key)
                 .and_modify(|e| {
@@ -448,12 +498,16 @@ fn main() {
     let mut tier_distribution: BTreeMap<String, usize> = BTreeMap::new();
     let mut raw_passes = 0usize;
     let mut qualified_passes = 0usize;
+    let mut highest_grade_passes = 0usize;
     for cell in &cells {
         *tier_distribution.entry(cell.comparison_tier.clone()).or_default() += 1;
         if cell.outcome == "pass" {
             raw_passes += 1;
-            if qualifies_as_green(&cell.comparison_tier) {
+            if cell_is_green(cell) {
                 qualified_passes += 1;
+                if cell.stack_parity == Some(true) && cell.heap_parity == Some(true) {
+                    highest_grade_passes += 1;
+                }
             }
         }
     }
@@ -463,6 +517,11 @@ fn main() {
         cells.len(),
         qualified_passes,
         raw_passes,
+    );
+    eprintln!(
+        "highest-grade green={}/{} qualified green in selected scope",
+        highest_grade_passes,
+        qualified_passes,
     );
 
     // Restrict the determinism denominator to the requested mode.
@@ -488,10 +547,7 @@ fn main() {
     // the denominator mode.
     let mut ptrace_pass: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for c in &denom_cells {
-        if c.backend == "ptrace"
-            && c.outcome == "pass"
-            && qualifies_as_green(&c.comparison_tier)
-        {
+        if c.backend == "ptrace" && cell_is_green(c) {
             ptrace_pass.entry(c.bucket.clone()).or_default().insert(c.test_id.clone());
         }
     }
@@ -523,7 +579,7 @@ fn main() {
         if c.backend == "ptrace" || c.backend == "native" {
             continue;
         }
-        let pass = c.outcome == "pass" && qualifies_as_green(&c.comparison_tier);
+        let pass = cell_is_green(c);
         let ran = c.outcome != "unavailable" && c.outcome != "skip";
         // Determinism (run1 == run2) is independent of parity: a backend can be
         // self-deterministic yet diverge from ptrace. The CSV `deterministic`
@@ -628,9 +684,7 @@ fn main() {
         let usable: BTreeSet<&str> = cells
             .iter()
             .filter(|c| {
-                c.backend == "ptrace"
-                    && c.outcome == "pass"
-                    && qualifies_as_green(&c.comparison_tier)
+                c.backend == "ptrace" && cell_is_green(c)
             })
             .map(|c| c.test_mode.as_str())
             .collect();
@@ -737,6 +791,7 @@ fn main() {
                 "comparison_tier_distribution": tier_distribution,
                 "raw_pass_count": raw_passes,
                 "qualified_green_count": qualified_passes,
+                "highest_grade_green_count": highest_grade_passes,
                 "parity_metric": {
                     "label": parity_label,
                     "observable": observable,
@@ -787,6 +842,7 @@ fn main() {
             );
             println!("Input CSV: {}", csv_path.display());
             println!("Comparison-tier distribution: {:?} ({} rows); qualified green={}/{} raw passes.", tier_distribution, cells.len(), qualified_passes, raw_passes);
+            println!("Highest-grade green={}/{} qualified green in selected scope (requires base green plus --detlog-stack and --detlog-heap modes).", highest_grade_passes, qualified_passes);
             println!("Qualifying tiers: `{FULL_COMPARISON_TIER}` or `{SPOT_CHECK_COMPARISON_TIER}`. Explicit unqualified tiers remain non-green history.");
             println!("Each backend cell is `{parity_label}%, determinism%` of the ptrace count. The two measurements are independent.");
             if observable == "stdout" {

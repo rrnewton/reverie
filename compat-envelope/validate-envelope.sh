@@ -2,8 +2,9 @@
 # validate-envelope.sh — the compat-envelope REGRESSION gate.
 #
 # Runs the known-green cells for both the hermit Detcore envelope and the
-# reverie B1.5 Guest/Tool boundary, asserts they stayed green, and (as a side
-# effect) rewrites the scorecard CSVs recording exactly what was green this run.
+# reverie B1.5 Guest/Tool boundary, asserts they stayed green, and writes an
+# ignored per-run observation. Publishing the current scorecard is a separate
+# reviewed operation through publish-scorecard.py.
 #
 # This is what the outer-repo `validate` entry point and CI call. It is
 # deliberately fast + safe (regression mode only, no expansion sweep). The
@@ -40,8 +41,16 @@ fail=0
 echo "== compat-envelope regression: hermit (lane=${lane}, backends=${backends}) =="
 if ! "${here}/collect-envelope.rs" --mode regression --lane "${lane}" \
       --repo "${repo}" --backends "${backends}" --with-parity \
-      --csv "${here}/scorecard.csv" --assert-green; then
+      --assert-green; then
   echo "validate-envelope: HERMIT envelope regression detected" >&2
+  fail=1
+fi
+
+echo "== compat-envelope: current view must equal its observation-history projection =="
+if ! python3 "${here}/publish-scorecard.py" --check \
+      --current "${here}/scorecard.csv" \
+      --history "${here}/history/scorecard-observations.csv"; then
+  echo "validate-envelope: scorecard.csv is not the bound current projection" >&2
   fail=1
 fi
 
@@ -144,8 +153,9 @@ fi
 # is the same semantic verifier the renderer calls; labels and cached booleans
 # are not a second authority.
 echo "== compat-envelope: parity claims must carry full provenance =="
-if ! "${here}/check-scorecard-provenance.py" "${here}/scorecard.csv"; then
-  echo "validate-envelope: UNBOUND parity claims in scorecard.csv" >&2
+if ! "${here}/check-scorecard-provenance.py" \
+      "${here}/history/scorecard-observations.csv"; then
+  echo "validate-envelope: UNBOUND parity claims in scorecard observation history" >&2
   fail=1
 fi
 if [ "${do_reverie}" -eq 1 ] && [ -f "${here}/reverie-scorecard.csv" ]; then
@@ -167,7 +177,7 @@ if [ "${fail}" -ne 0 ]; then
   exit 1
 fi
 
-echo "== compat-envelope: ALL enabled cells green; CSVs refreshed =="
+echo "== compat-envelope: ALL enabled cells green; per-run observations recorded =="
 echo "   ${here}/scorecard.csv"
 [ "${do_reverie}" -eq 1 ] && echo "   ${here}/reverie-scorecard.csv"
 "${here}/render-scorecard.rs" --csv "${here}/scorecard.csv" --latest || true

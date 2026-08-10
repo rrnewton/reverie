@@ -1,6 +1,6 @@
 #!/usr/bin/env rust-script
 //! Collect the Hermit cross-backend **compatibility envelope** into the
-//! scorecard CSV, as a side effect of running the e2e regression/expansion
+//! per-run observation CSV, as a side effect of running the e2e regression/expansion
 //! suite. This lives in the OUTER dev-hermit repo on purpose: the CSV is
 //! coordination/measurement state and must not add noise to hermit/reverie.
 //!
@@ -62,7 +62,7 @@ Options:
   --buckets LIST    Comma-separated manifest buckets (default: all in the lane).
   --backends LIST   Comma-separated backends to measure (default: all in plan).
   --with-parity     Capture guest stdout per backend and compare to ptrace ref.
-  --csv PATH        Scorecard CSV to append (default: scorecard.csv beside script).
+  --csv PATH        Exact per-run observation path (default: ignored/envelope/).
   --repo PATH       hermit checkout (default: ../hermit relative to this script,
                     else $DEV_HERMIT/hermit).
   --run-id ID       Override the run id (default: unix-seconds).
@@ -72,12 +72,16 @@ Options:
   -h, --help        Show this help.
 "#;
 
+// Machine-readable discovery hint for check_emitter_schema.py. The run id is
+// substituted at runtime; the literal names the output class, not one file.
+const DEFAULT_CSV_TEMPLATE: &str = "ignored/envelope/<run_id>.csv";
+
 fn die(msg: &str) -> ! {
     eprintln!("collect-envelope: {msg}\n\n{USAGE}");
     exit(2);
 }
 
-const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,parity_exercised,backend_engaged,native_output_hash,output_hash,ref_output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier";
+const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,parity_exercised,backend_engaged,native_output_hash,output_hash,ref_output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,stack_parity,heap_parity";
 
 /// Quote a CSV field if it contains a comma, quote, or newline.
 fn csv_field(s: &str) -> String {
@@ -235,7 +239,6 @@ fn main() {
     }
 
     let here = script_dir();
-    let csv_path = csv.unwrap_or_else(|| here.join("scorecard.csv"));
     let repo = repo
         .or_else(|| {
             let candidate = here.join("..").join("hermit");
@@ -252,6 +255,19 @@ fn main() {
         reverie_sha: locked_reverie_sha(&repo).unwrap_or_else(|| "unknown".into()),
         dirty: git(&repo, &["status", "--porcelain"]).map(|s| !s.is_empty()).unwrap_or(false),
     };
+    let explicit_csv = csv.is_some();
+    let csv_path = csv.unwrap_or_else(|| {
+        let _output_class = DEFAULT_CSV_TEMPLATE;
+        here.join("ignored")
+            .join("envelope")
+            .join(format!("{}.csv", meta.run_id))
+    });
+    let canonical = here.join("scorecard.csv");
+    let requested_resolved = fs::canonicalize(&csv_path).unwrap_or_else(|_| csv_path.clone());
+    let canonical_resolved = fs::canonicalize(&canonical).unwrap_or_else(|_| canonical.clone());
+    if requested_resolved == canonical_resolved {
+        die("refusing to append the tracked current scorecard; publish a reviewed per-run artifact through publish-scorecard.py");
+    }
     if with_parity
         && (!exact_sha(&meta.hermit_sha) || !exact_sha(&meta.reverie_sha) || meta.dirty)
     {
@@ -297,6 +313,10 @@ fn main() {
 
     // Ensure the CSV exists with a header.
     if !csv_path.exists() {
+        if let Some(parent) = csv_path.parent() {
+            fs::create_dir_all(parent)
+                .unwrap_or_else(|e| die(&format!("cannot create observation directory: {e}")));
+        }
         fs::write(&csv_path, format!("{HEADER}\n")).unwrap_or_else(|e| die(&format!("cannot create CSV: {e}")));
     }
     // BIND TO THE FILE'S SCHEMA, not to ours.
@@ -467,10 +487,19 @@ fn main() {
                 output_hash,
                 ref_output_hash,
                 backend_engaged,
+                parity_failure,
             ) = if with_parity && pass {
                 capture_parity(&repo, &lane, c, backend)
             } else {
-                (None, None, String::new(), String::new(), String::new(), None)
+                (
+                    None,
+                    None,
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    None,
+                    String::new(),
+                )
             };
             // NOT-EXERCISED is a THIRD bucket, not a downgrade of pass/fail. A cell whose guest
             // produces the same bytes with and without hermit did not exercise the property the
@@ -488,12 +517,16 @@ fn main() {
             // reason, because a libc-only guest legitimately gives a main-ELF patcher
             // nothing to do.
             let engagement_vacuous = backend_engaged == Some(0);
-            let outcome = if parity_exercised == Some(false) || engagement_vacuous {
+            let outcome = if !parity_failure.is_empty() {
+                "fail".to_string()
+            } else if parity_exercised == Some(false) || engagement_vacuous {
                 "not-exercised".to_string()
             } else {
                 outcome
             };
-            let reason = if engagement_vacuous {
+            let reason = if !parity_failure.is_empty() {
+                parity_failure.clone()
+            } else if engagement_vacuous {
                 format!(
                     "{backend} performed no work on this guest ({}=0); excluded from parity \
                      rather than scored, because a backend that does nothing agrees with the \
@@ -503,6 +536,12 @@ fn main() {
             } else {
                 reason
             };
+            if !parity_failure.is_empty() && c.cell_state == "enabled" {
+                regressions.push(format!(
+                    "{bucket}/{}::{} [{backend}] -> fail ({parity_failure})",
+                    c.test, c.mode
+                ));
+            }
             let has_parity_evidence = parity.is_some();
             let parity_comparator = if has_parity_evidence {
                 "stdout-sha256-exact-v1"
@@ -554,6 +593,11 @@ fn main() {
                 // limitation on every row and can never mint either strict
                 // green tier merely because the execution itself passed.
                 "unqualified-stdout-only".to_string(),
+                // This producer did not request the L3 memory flags. New rows
+                // know that fact, so false is correct; only historical rows are
+                // blank/unknown.
+                "0".to_string(),
+                "0".to_string(),
             ];
             pending_rows.push((row, executed, has_parity_evidence));
         }
@@ -600,6 +644,15 @@ fn main() {
         planned_count,
         csv_path.display()
     );
+    if !explicit_csv {
+        eprintln!(
+            "collect-envelope: current scorecard unchanged; after review publish with: python3 {} --observation {} --current {} --history {}",
+            here.join("publish-scorecard.py").display(),
+            csv_path.display(),
+            canonical.display(),
+            here.join("history/scorecard-observations.csv").display(),
+        );
+    }
 
     // Whole-envelope green gate (owner: `validate`/CI asserts every known-green
     // cell stayed green as a side effect of writing the CSV).
@@ -907,9 +960,17 @@ fn capture_parity(
     lane: &str,
     cell: &PlanCell,
     backend: &str,
-) -> (Option<bool>, Option<bool>, String, String, String, Option<i64>) {
+) -> (Option<bool>, Option<bool>, String, String, String, Option<i64>, String) {
     let Some(guest) = guest_command(repo, &cell.test) else {
-        return (None, None, String::new(), String::new(), String::new(), None);
+        return (
+            None,
+            None,
+            String::new(),
+            String::new(),
+            String::new(),
+            None,
+            "stdout comparison could not resolve the guest command".to_string(),
+        );
     };
     let (ref_hash, _) = split_run(run_and_hash(repo, lane, "ptrace", &guest));
     let (this_hash, engaged) = split_run(run_and_hash(repo, lane, backend, &guest));
@@ -924,14 +985,29 @@ fn capture_parity(
     };
     let native = native_hash.unwrap_or_default();
     match (ref_hash.clone(), this_hash.clone()) {
-        (Some(r), Some(t)) => (Some(r == t), exercised, native, t, r, engaged),
+        (Some(r), Some(t)) => (
+            Some(r == t),
+            exercised,
+            native,
+            t,
+            r,
+            engaged,
+            String::new(),
+        ),
         _ => (
             None,
             exercised,
             native,
-            this_hash.unwrap_or_default(),
-            ref_hash.unwrap_or_default(),
+            this_hash.clone().unwrap_or_default(),
+            ref_hash.clone().unwrap_or_default(),
             engaged,
+            match (ref_hash.is_some(), this_hash.is_some()) {
+                (false, false) => "stdout comparison produced neither reference nor candidate operand",
+                (false, true) => "stdout comparison produced no reference operand",
+                (true, false) => "stdout comparison produced no candidate operand",
+                (true, true) => unreachable!(),
+            }
+            .to_string(),
         ),
     }
 }

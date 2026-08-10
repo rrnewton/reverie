@@ -30,8 +30,9 @@ fraction of that ptrace denominator:
 
 - **stdout-parity%** — piped guest stdout has a SHA-256 match with the ptrace
   reference. This is an **upper bound**, not full cross-backend parity: it does
-  not compare the INFO log, stack detlog, or heap detlog required by the
-  four-signal parity standard. TTY behavior is also outside this scorecard.
+  not compare the INFO log, stack detlog, or heap detlog. The optional stack and
+  heap fields record only whether stronger-mode flags were passed, not whether
+  those outputs matched. TTY behavior is also outside this scorecard.
 - **determinism%** — the backend is self-deterministic (run1 == run2), whether or
   not it matches ptrace. Determinism and stdout parity are independent signals;
   neither implies the other.
@@ -42,15 +43,16 @@ A cell a backend never ran counts as `0` in both (honest 0/0, never blank-as-gre
 
 | File | Role |
 | --- | --- |
-| `collect-envelope.rs` | **Hermit** collector. Drives `hermit/ci/test_harness.sh`, consumes its JSONL, and appends rows to `scorecard.csv`. Two modes (below). `--assert-green` turns it into the regression gate. |
+| `collect-envelope.rs` | **Hermit** collector. Drives `hermit/ci/test_harness.sh`, consumes its JSONL, and writes an ignored per-run observation. `publish-scorecard.py` is the explicit history/current-view publication boundary. Two modes (below). `--assert-green` turns it into the regression gate. |
 | `collect-reverie-compat.rs` | **Reverie** collector (owner directive #1, run first). Runs the shared Reverie counter Tool through the ptrace and KVM launchers and records ptrace-vs-kvm parity into `reverie-scorecard.csv`. |
 | `collect-e9patch-compat.rs` | **e9patch** collector. Runs the freestanding raw-syscall corpus through the ptrace backend both un-rewritten (golden) and e9tool-rewritten, and records preprocessing-invariance (golden-vs-e9 parity) with honest L1/L2 levels into `e9patch-scorecard.csv`. e9patch is NOT a Detcore backend (see below), so it lives in its own CSV like reverie. |
-| `hermit/tests/backend-parity/run_matrix.py` | Runs the focused ptrace/DBI/KVM contracts and appends live `backend-parity` rows directly to this outer `scorecard.csv`; no generated matrix is tracked in the inner Hermit repository. |
+| `hermit/tests/backend-parity/run_matrix.py` | Runs the focused ptrace/DBI/KVM contracts and writes an ignored per-run observation; it never dirties the tracked current scorecard as a validation side effect. |
 | `expansion-dag.rs` | Generates the **expansion-mode** safe-ci-dag-runner DAG: one boxed step per cell with per-cell wall-time + memory budgets, plus a dated evidence run dir. |
 | `render-scorecard.rs` | Reads a scorecard CSV and renders the owner's table (`--json` / `--tsv` also). Shared by all collectors. |
 | `render-current-scorecard.sh` | Renders **all four** CSVs in one pass, in the order published in `SCORECARD-CURRENT.md`, plus the provenance block and the `verify_compare` certification-tier distribution. Re-run and diff to detect doc drift. |
 | `SCORECARD-CURRENT.md` | The published, human-readable rendering: current tables + schema + interpretation + provenance + known limitations. Start here. |
-| `scorecard.csv` | Hermit Detcore-envelope results (schema below). |
+| `scorecard.csv` | Current Hermit Detcore-envelope view: newest row per `(test_id, backend)` (schema below). |
+| `history/scorecard-observations.csv` | Append-only Hermit observation history from which the current view is derived. |
 | `reverie-scorecard.csv` | Reverie B1.5 Guest/Tool-boundary results (same schema). |
 | `e9patch-scorecard.csv` | e9patch preprocessing-invariance results over the ptrace backend (same schema). |
 | `pre-tightening-baseline-20260806/` | **Frozen, self-contained HISTORICAL snapshot**, not part of the live pipeline: one `collect-fullcorpus.sh` sweep at Hermit `4c70658e` / Reverie `dd3c178e`, captured as the matched *before* state for an upcoming strictness tightening of the comparison contract. Carries its own `scorecard.csv` (the 19-column schema plus a `verify_compare` tier column), `metadata.json`, `no-results.csv`, `sweep-transcript.txt`, `loadavg.tsv`, and a `generate.py --check` that asserts the README still matches its inputs. Nothing else reads it; do not append to it. |
@@ -87,7 +89,10 @@ make compat-envelope            (Makefile; builds release hermit --features dbi)
           │      (bash+jq runner — NOT nextest; also emits …/junit.xml)
           ├─ reads that JSONL (outcome, duration_ms, reason)
           ├─ --with-parity: re-run guest under ptrace + backend, SHA-256 stdout compare → stdout parity
-          └─ appends schema-bound rows → compat-envelope/scorecard.csv
+          └─ writes per-run rows → compat-envelope/ignored/envelope/
+                                  └─ explicit publish-scorecard.py
+                                      ├─ appends history/scorecard-observations.csv
+                                      └─ replaces scorecard.csv current view
       └─ collect-reverie-compat.rs → reverie-scorecard.csv
       └─ render-scorecard.rs --csv scorecard.csv --latest            → rendered table
 ```
@@ -111,7 +116,7 @@ make validate → compat-envelope-fullcorpus
 | CI DAG JSONL + JUnit | `hermit/ignored/e2e/<lane>/<category>/{results.jsonl,junit.xml}` |
 | Collector JSONL | `hermit/ignored/e2e/compat-envelope/<lane>/<bucket>/<backend>.jsonl` |
 | CSV compat-logs | `compat-envelope/{scorecard,fullcorpus-scorecard,reverie-scorecard}.csv` (this outer repo) |
-| Backend-parity observations | appended directly to `compat-envelope/scorecard.csv` by Hermit's `run_matrix.py` |
+| Backend-parity observations | per-run artifact from Hermit's `run_matrix.py`, then explicit publication through `publish-scorecard.py` |
 | Raw logs / scratch | `compat-envelope/ignored/` (gitignored) |
 
 ## Local full-corpus gate (`collect-fullcorpus.sh`)
@@ -152,7 +157,8 @@ test_id,test_mode,backend,cell_state,outcome,deterministic,<observable>_parity,
 output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,
 compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,
 parity_comparator,parity_tier,profile_flags,population_id,selected_count,
-executed_count,evidence_count,comparison_tier
+executed_count,evidence_count,comparison_tier,exit_code_parity,detlog_parity,
+oracle_verdict,stack_parity,heap_parity
 ```
 
 - `run_mode` — `regression` | `expansion` (hermit) or `reverie`.
@@ -192,8 +198,13 @@ executed_count,evidence_count,comparison_tier
   neither self-consistency nor cross-backend parity. Every `unqualified-*`
   value is non-green. This is deliberately separate from `tier`, which records
   the self-determinism comparator used within one backend.
+- `stack_parity` / `heap_parity` — optional invocation modes, despite the
+  historical names: `1` means `--detlog-stack` / `--detlog-heap` was passed,
+  `0` means it was not, and historical blank means unknown. They are not
+  comparison outcomes. Highest-grade green is existing base green plus both
+  stronger modes true.
 
-The renderer keys logical cells on `(bucket, test_id, test_mode, backend)`.
+The current scorecard keys logical cells on `(test_id, backend)`.
 `--all` is accepted only for a single run identity; mixed-run aggregation is
 refused. Use `--run-id` (or `--latest`) so a table has one code/population state.
 

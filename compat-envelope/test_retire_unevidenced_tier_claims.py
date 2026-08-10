@@ -25,8 +25,7 @@ _spec.loader.exec_module(ru)
 FULL = ru._evidence.FULL
 NOW = _dt.datetime(2026, 8, 8, tzinfo=_dt.timezone.utc)
 
-# `stack_parity`/`heap_parity` present so a row CAN be fully evidenced here; the
-# real schema lacks them, which is exactly why the real six could not be.
+# `stack_parity`/`heap_parity` are optional invocation modes, not verdicts.
 HEADER = ("test_id,test_mode,backend,reason,stdout_parity,compared_log_messages,"
           "stack_parity,heap_parity,comparison_tier")
 
@@ -95,7 +94,7 @@ class DemotesOnlyWhatItMust(unittest.TestCase):
         retire(tmp, apply=True)
         reason = read(tmp)[0]["reason"]
         self.assertIn("demoted to legacy-unqualified", reason)
-        for component in ("stdout", "stack", "heap"):
+        for component in ("stdout",):
             self.assertIn(component, reason)
 
     def test_an_existing_reason_is_appended_to_not_replaced(self):

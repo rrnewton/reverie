@@ -73,7 +73,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 // Shared contract with collect-envelope.rs / render-scorecard.rs. Keep in sync.
 // `absence_reason` is APPENDED at the end: readers resolve columns by header
 // name, so trailing additions are backward compatible with the 19-column form.
-const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,tool_count_parity,output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,absence_reason";
+const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,tool_count_parity,output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,absence_reason,stack_parity,heap_parity";
 const BUCKET: &str = "reverie-examples";
 // Single reverie mode: "run the shared counter Tool". The specific tool
 // (counter1/counter2) is preserved in test_id so it slots into the
@@ -744,5 +744,7 @@ fn row(
         // cross-backend stdout+INFO tiers.  Keep it explicitly non-green.
         "unqualified-tool-count-only".to_string(),
         absence_reason.to_string(),
+        "0".to_string(), // stack_parity: this new run did not request L3
+        "0".to_string(), // heap_parity: this new run did not request L3
     ]
 }

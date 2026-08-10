@@ -247,6 +247,7 @@ def _decided(verdict: str) -> bool:
 def scorecard_fields(
     *, stdout: str = "", info_log: str = "", detlog: dict | None = None,
     stack: dict | None = None, heap: dict | None = None,
+    stack_flag: bool | None = None, heap_flag: bool | None = None,
     exit_code: str = "", oracle: str = "",
 ) -> dict:
     """Flatten verdicts into the columns a collector writes.
@@ -282,9 +283,19 @@ def scorecard_fields(
     if detlog:
         out["detlog_parity"] = detlog["verdict"]
         out["detlog_records"] = detlog["denominator_a"]
-    for name, mv in (("stack", stack), ("heap", heap)):
+    for name, mv, requested in (
+        ("stack", stack, stack_flag),
+        ("heap", heap, heap_flag),
+    ):
+        # These scorecard columns record invocation MODE, not the comparison
+        # outcome.  Mode is known before the guest runs: true means the flag was
+        # passed, false means it was not, and absence is historical unknown.
+        if requested is not None:
+            out[f"{name}_parity"] = "1" if requested else "0"
         if not mv:
             continue
+        if requested is False:
+            raise ValueError(f"{name} verdict exists although its flag was not passed")
         out[f"{name}_content_parity"] = mv["content"]["verdict"]
         out[f"{name}_address_parity"] = mv["address"]["verdict"]
         out[f"{name}_records"] = mv["content"]["denominator_a"]

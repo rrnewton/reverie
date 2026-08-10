@@ -38,6 +38,61 @@
 > the two qualifying tiers. Reproduce the distribution with
 > `compat-envelope/check-scorecard-tier.py`.
 
+> ## Current-view rewrite and optional stronger-mode grade (2026-08-10)
+>
+> `scorecard.csv` is now the **current view**, newest physical observation per
+> `(test_id, backend)`: **541/541 current cells**. Its source ledger is
+> `history/scorecard-observations.csv`, which retains **624/624 historical
+> observations**, including **83 superseded rows**. The change from 624 stored
+> rows to 541 current cells is a **counting correction — neither progress nor
+> regression**. Coverage history was not deleted.
+>
+> All four live scorecards now have optional `stack_parity` and `heap_parity`
+> mode columns: true means the corresponding `--detlog-stack` or
+> `--detlog-heap` flag was passed, false means it was not, and historical blank
+> means unknown. They are inputs, not comparison verdicts.
+> For the selected current CI/regression scope, base green is **0/541 current
+> cells** and the higher-grade query is **0/0 highest-grade greens among
+> qualified greens**. There is no base-green population from which a
+> highest-grade numerator can yet be earned. This does not narrow the existing
+> qualification standard; it adds a queryable stronger-mode grade on top of
+> the existing green verdict.
+
+### Fresh strict-green snapshot for owner review (2026-08-10)
+
+Generated `2026-08-10T15:09:11Z` on `devbig014` from the append-only history,
+using the strict-green decision procedure committed at
+`8ae767cacd23571f2f5c15ff2e283d466f835298`.
+
+- Artifact: `compat-envelope/scorecard.csv`, SHA-256
+  `a49bc29189c992700da4b79f8cc70f6153009036ab9bdc7656911647fd33d0d3`.
+- Selection scope: newest physical observation per `(test_id, backend)` in
+  `compat-envelope/history/scorecard-observations.csv`.
+- Stored/current/superseded: **624/624 stored observations**, **541/624 current
+  cells**, and **83/624 superseded observations**. The 624-to-541 change is the
+  same coverage counted correctly, **neither progress nor regression**.
+- Strict verdict: **0/541 base-green current cells** and **541/541 red current
+  cells**. Green means two complete runs on the declared determinism-or-parity
+  axis with identical output and real comparison evidence; incomplete,
+  absent, crashed, divergent, or errored comparisons are red.
+- Higher grade: **0/0 highest-grade green among base-green cells** (no
+  base-green population). `stack_parity` and `heap_parity` are mode inputs,
+  not outcomes, and both historical modes are unknown on **541/541 current
+  cells**.
+- Evidence blind spots: stdout equality is operand-bound on **0/541 current
+  cells**; nonempty stack digests exist on **6/541 current cells** and nonempty
+  heap digests on **6/541 current cells**; exact clean Hermit+Reverie product
+  provenance exists on **446/541 current cells**; hosted-authority evidence is
+  bound to **0/541 current cells**. All **541/541 current cells** retain the
+  `legacy-unqualified` comparison tier.
+- State separation: product=`RED under the strict-green application standard`;
+  gate/producer=`NO_RESULT in this artifact`; reporting=`NORMAL`.
+
+The separate `run_matrix.py --check` compatibility-contract catalog results
+(ptrace **28/28**, DBT **26/28**, KVM **27/28**) count declared compatibility
+contracts, not strict-green scorecard cells, and do not contribute to either
+scorecard numerator above.
+
 **This file is the clear, human-readable rendering of the four scorecard CSVs
 that sit beside it.** It is the entry point: `README.md` documents the *system*,
 `SCORECARD.md` and `REPORT.md` are older narrative analyses written on 2026-08-04
@@ -385,27 +440,48 @@ the producers project by target header for the same reason.
 
 ### CSV columns (shared contract; see `README.md` for the full system)
 
-| column | meaning |
-| --- | --- |
-| `run_id` | sweep identity; `--all` resolves cells last-writer-wins by this |
-| `run_utc` | `@<epoch-seconds>` when the cell ran |
-| `hermit_sha`, `reverie_sha` | 40-hex product SHAs the cell was measured at (`unknown` where the collector could not resolve one) |
-| `dirty` | whether the product checkout had uncommitted changes |
-| `run_mode` | `regression` \| `expansion` \| `reverie` \| `e9patch` |
-| `lane` | `portable` \| `privileged` |
-| `bucket` | e2e manifest bucket (or `reverie-examples`, `e9patch-corpus`) |
-| `test_id` | manifest test identity within the bucket |
-| `test_mode` | `verify` \| `replay` \| `chaos` \| `naked` \| `custom` \| `strict` (hermit); `counter` (reverie) |
-| `backend` | `ptrace` \| `dbi` \| `kvm` \| `sabre` \| `liteinst` (\| `e9patch` in its own CSVs) |
-| `cell_state` | `enabled` (regression envelope) \| `disabled` (expansion candidate) \| `expansion` |
-| `outcome` | `pass` \| `diverge` \| `fail` \| `timeout` \| `skip` \| `gap` \| `unavailable` |
-| `deterministic` | `1` \| `0` \| blank(unknown) — run1 == run2 **under the stripped comparator** (L1) |
-| `stdout_parity` / `tool_count_parity` | `1` \| `0` \| blank(unknown) — observable matches the ptrace reference. Older rows spell this `parity`; the renderer accepts that only as a legacy fallback for the explicitly-selected `--observable`. |
-| `output_hash` | the compared observable (guest-output SHA-256, or the syscall total) |
-| `duration_ms`, `max_rss_kb` | wall and peak RSS; `max_rss_kb` is blank outside the cgroup-boxed expansion path |
-| `reason` | free text for a non-pass |
-| `verify_compare` | which self-determinism comparator produced `deterministic`; migrated historical rows are `stripped` or blank |
-| `comparison_tier` | per-cell cross-backend standard: full stdout+INFO+stack+heap, stdout+INFO with stack/heap spot-check cadence, or an explicit non-green unqualified value |
+| # | column | class | meaning |
+| ---: | --- | --- | --- |
+| 1 | `run_id` | identity | producing run identifier |
+| 2 | `run_utc` | identity | `@<epoch-seconds>` run timestamp |
+| 3 | `hermit_sha` | identity | exact Hermit revision |
+| 4 | `reverie_sha` | identity | exact Reverie revision |
+| 5 | `dirty` | identity | whether the producing checkout was dirty |
+| 6 | `run_mode` | mode | collector execution mode |
+| 7 | `lane` | mode | portable or privileged lane |
+| 8 | `bucket` | identity | corpus/category identity |
+| 9 | `test_id` | identity | program/test identity |
+| 10 | `test_mode` | mode | requested test operation |
+| 11 | `backend` | mode | selected backend |
+| 12 | `cell_state` | mode | enabled/disabled/expansion state |
+| 13 | `outcome` | outcome | pass/fail/diverge/gap/skip result |
+| 14 | `deterministic` | outcome | repeat-run equality verdict |
+| 15 | `stdout_parity` | outcome | candidate/reference stdout equality verdict |
+| 16 | `output_hash` | outcome/evidence | candidate output SHA-256 |
+| 17 | `duration_ms` | outcome/evidence | measured wall duration |
+| 18 | `max_rss_kb` | outcome/evidence | measured peak RSS |
+| 19 | `reason` | outcome/evidence | result diagnostic |
+| 20 | `verify_compare` | mode | comparison strictness/mode requested |
+| 21 | `bitwise_parity` | outcome | bitwise comparison verdict |
+| 22 | `compared_log_messages` | outcome/evidence | compared-message counts |
+| 23 | `tier` | outcome/evidence | determinism assurance tier earned |
+| 24 | `legacy_parity_unqualified` | outcome/evidence | legacy unqualified parity record |
+| 25 | `ref_output_hash` | outcome/evidence | reference output SHA-256 |
+| 26 | `parity_comparator` | mode | comparator used |
+| 27 | `parity_tier` | outcome/evidence | parity assurance tier earned |
+| 28 | `profile_flags` | mode | exact run/comparison flags |
+| 29 | `population_id` | identity | selected-population identity |
+| 30 | `selected_count` | outcome/evidence | selected cell count |
+| 31 | `executed_count` | outcome/evidence | executed cell count |
+| 32 | `evidence_count` | outcome/evidence | cells carrying parity evidence |
+| 33 | `comparison_tier` | outcome/evidence | cross-backend standard earned |
+| 34 | `stack_hash` | outcome/evidence | recorded stack digest |
+| 35 | `heap_hash` | outcome/evidence | recorded heap digest |
+| 36 | `exit_code_parity` | outcome | exit-code equality verdict |
+| 37 | `detlog_parity` | outcome | DETLOG equality verdict |
+| 38 | `oracle_verdict` | outcome | oracle comparison verdict |
+| 39 | `stack_parity` | mode | whether `--detlog-stack` was passed (`1`/`0`; historical blank unknown) |
+| 40 | `heap_parity` | mode | whether `--detlog-heap` was passed (`1`/`0`; historical blank unknown) |
 
 ### Rendered cell format
 

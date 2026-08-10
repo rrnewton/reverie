@@ -50,7 +50,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Shared comparison/provenance contract plus the e9patch reach tail. Keep the
 // common prefix in sync with the other collectors and the renderer.
-const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,candidate_sites,mapped_sites,reach_state,exit_code_parity,detlog_parity,oracle_verdict";
+const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,candidate_sites,mapped_sites,reach_state,exit_code_parity,detlog_parity,oracle_verdict,stack_parity,heap_parity";
 const RUN_MODE: &str = "e9patch";
 const BUCKET: &str = "e9patch-corpus";
 // Single mode token: "run the freestanding raw-syscall guest under strict verify".
@@ -823,6 +823,8 @@ fn row(
         String::new(), // exit_code_parity
         String::new(), // detlog_parity
         String::new(), // oracle_verdict
+        "0".to_string(), // stack_parity: this new run did not request L3
+        "0".to_string(), // heap_parity: this new run did not request L3
     ]
     .join(",")
 }

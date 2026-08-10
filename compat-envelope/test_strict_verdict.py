@@ -172,20 +172,62 @@ class ScorecardFields(unittest.TestCase):
             detlog=sv.detlog_verdict(raw(DETLOG), raw(DETLOG)),
             stack=sv.memory_verdict(raw(MEM), raw(MEM), "stack"),
             heap=sv.memory_verdict(raw(MEM), raw(MEM), "heap"),
+            stack_flag=True,
+            heap_flag=True,
         )
         self.assertEqual(f["detlog_records"], 3)
         self.assertIn("stack_content_parity", f)
         self.assertIn("stack_address_parity", f)
+        self.assertEqual(f["stack_parity"], "1")
+        self.assertEqual(f["heap_parity"], "1")
         self.assertEqual(f["tier"], "strict")
 
-    def test_absent_memory_keeps_the_tier_out_of_strict(self):
-        f = sv.scorecard_fields(
-            stdout=sv.PASS, info_log=sv.PASS,
+    def test_flagged_but_unmeasured_memory_records_mode_not_an_outcome(self):
+        fields = sv.scorecard_fields(
+            stdout=sv.PASS,
+            info_log=sv.PASS,
             stack=sv.memory_verdict(raw(DETLOG), raw(DETLOG), "stack"),
             heap=sv.memory_verdict(raw(DETLOG), raw(DETLOG), "heap"),
+            stack_flag=True,
+            heap_flag=True,
         )
-        self.assertNotEqual(f["tier"], "strict")
-        self.assertEqual(f["stack_records"], 0)
+        self.assertEqual(fields["stack_parity"], "1")
+        self.assertEqual(fields["heap_parity"], "1")
+        self.assertNotEqual(fields["tier"], "strict")
+
+    def test_memory_parity_is_three_valued(self):
+        historical = sv.scorecard_fields()
+        new_without_flags = sv.scorecard_fields(stack_flag=False, heap_flag=False)
+        matching = sv.scorecard_fields(
+            stack=sv.memory_verdict(raw(MEM), raw(MEM), "stack"),
+            heap=sv.memory_verdict(raw(MEM), raw(MEM), "heap"),
+            stack_flag=True,
+            heap_flag=True,
+        )
+        divergent_mem = [MEM[0], MEM[1].replace("7984d1" * 10, "000000" * 10)]
+        divergent = sv.scorecard_fields(
+            stack=sv.memory_verdict(raw(MEM), raw(divergent_mem), "stack"),
+            stack_flag=True,
+        )
+        self.assertNotIn("stack_parity", historical)
+        self.assertNotIn("heap_parity", historical)
+        self.assertEqual(new_without_flags["stack_parity"], "0")
+        self.assertEqual(new_without_flags["heap_parity"], "0")
+        self.assertEqual(matching["stack_parity"], "1")
+        self.assertEqual(matching["heap_parity"], "1")
+        self.assertEqual(divergent["stack_parity"], "1")
+
+    def test_flagged_memory_without_a_verdict_still_records_the_mode(self):
+        fields = sv.scorecard_fields(stack_flag=True, heap_flag=True)
+        self.assertEqual(fields["stack_parity"], "1")
+        self.assertEqual(fields["heap_parity"], "1")
+
+    def test_a_memory_verdict_with_an_explicitly_disabled_flag_refuses(self):
+        with self.assertRaisesRegex(ValueError, "stack verdict.*flag was not passed"):
+            sv.scorecard_fields(
+                stack=sv.memory_verdict(raw(MEM), raw(MEM), "stack"),
+                stack_flag=False,
+            )
 
     def test_a_DECIDED_stdout_verdict_REACHES_A_COLUMN(self):
         """THE REGRESSION. This function used to accept `stdout`, compose the tier
@@ -230,8 +272,8 @@ class ScorecardFields(unittest.TestCase):
         )["core"]
         f = sv.scorecard_fields(detlog=sv.detlog_verdict(raw(DETLOG), raw(DETLOG)))
         self.assertIn("detlog_parity", f)
-        for col in ("stdout_parity", "detlog_parity", "exit_code_parity",
-                    "oracle_verdict"):
+        for col in ("stdout_parity", "stack_parity", "heap_parity",
+                    "detlog_parity", "exit_code_parity", "oracle_verdict"):
             self.assertIn(col, core, f"{col} emitted/declared but absent from core")
 
 

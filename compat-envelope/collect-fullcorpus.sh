@@ -284,7 +284,7 @@ csv_field() {
 }
 export -f csv_field
 
-HDR="run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,exit_code_parity,detlog_parity,oracle_verdict"
+HDR="run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,exit_code_parity,detlog_parity,oracle_verdict,stack_parity,heap_parity"
 RUN_UTC="@$(date +%s)"
 
 # --- one (backend,cell) measurement ------------------------------------------
@@ -359,7 +359,7 @@ measure() { # $1=backend $2=cell-dir(holds ptv.out ref) $3=lane $4=id ; rest=gue
     fi
     local verify_compare="" det_tier=""
     if [ "$det" = 1 ]; then verify_compare=stripped; det_tier=stripped-uncounted; fi
-    echo "fullcorpus,$RUN_UTC,$HSHA,$RSHA,false,expansion,$lane,$bucket,$id,verify,ptrace,expansion,$outcome,$det,,$ohash,$dur,,$(csv_field "$reason"),$verify_compare,,,$det_tier,,$ohash,,,,,,,,unqualified-stdout-only,,," > "$ROWS/ptrace_${id//\//_}.row"
+    echo "fullcorpus,$RUN_UTC,$HSHA,$RSHA,false,expansion,$lane,$bucket,$id,verify,ptrace,expansion,$outcome,$det,,$ohash,$dur,,$(csv_field "$reason"),$verify_compare,,,$det_tier,,$ohash,,,,,,,,unqualified-stdout-only,,,,0,0" > "$ROWS/ptrace_${id//\//_}.row"
     return
   fi
   # non-ptrace backend: strict (for parity) + strict --verify (for det)
@@ -385,7 +385,7 @@ measure() { # $1=backend $2=cell-dir(holds ptv.out ref) $3=lane $4=id ; rest=gue
   if [ "$det" = 1 ]; then verify_compare=stripped; det_tier=stripped-uncounted; fi
   if [ -n "$parity" ]; then legacy_parity="stdout_parity:$parity"; fi
   if [ -f "$cell/ptv.out" ] && [ ! -f "$cell/ptv.fail" ]; then ref_hash=$(sha256sum "$cell/ptv.out" | cut -c1-64); fi
-  echo "fullcorpus,$RUN_UTC,$HSHA,$RSHA,false,expansion,$lane,$bucket,$id,verify,$backend,expansion,$outcome,$det,,$ohash,$dur,,$(csv_field "$reason"),$verify_compare,,,$det_tier,$legacy_parity,$ref_hash,,,,,,,,unqualified-stdout-only,,," > "$ROWS/${backend}_${id//\//_}.row"
+  echo "fullcorpus,$RUN_UTC,$HSHA,$RSHA,false,expansion,$lane,$bucket,$id,verify,$backend,expansion,$outcome,$det,,$ohash,$dur,,$(csv_field "$reason"),$verify_compare,,,$det_tier,$legacy_parity,$ref_hash,,,,,,,,unqualified-stdout-only,,,,0,0" > "$ROWS/${backend}_${id//\//_}.row"
 }
 export -f build_hermit_argv measure classify_verify_failure
 export BIN ROWS RUN_UTC HSHA RSHA TMO_RUN TMO_VERIFY

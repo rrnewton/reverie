@@ -47,7 +47,9 @@
     "comparison_tier",
     "exit_code_parity",
     "detlog_parity",
-    "oracle_verdict"
+    "oracle_verdict",
+    "stack_parity",
+    "heap_parity"
   ],
   "variants": {
     "scorecard.csv": {
@@ -95,7 +97,9 @@
         "heap_hash",
         "exit_code_parity",
         "detlog_parity",
-        "oracle_verdict"
+        "oracle_verdict",
+        "stack_parity",
+        "heap_parity"
       ],
       "core_prefix_safe": true
     },
@@ -139,7 +143,9 @@
         "comparison_tier",
         "exit_code_parity",
         "detlog_parity",
-        "oracle_verdict"
+        "oracle_verdict",
+        "stack_parity",
+        "heap_parity"
       ],
       "core_prefix_safe": true
     },
@@ -190,7 +196,9 @@
         "reach_state",
         "exit_code_parity",
         "detlog_parity",
-        "oracle_verdict"
+        "oracle_verdict",
+        "stack_parity",
+        "heap_parity"
       ],
       "core_prefix_safe": true
     },
@@ -240,7 +248,9 @@
         "absence_reason",
         "exit_code_parity",
         "detlog_parity",
-        "oracle_verdict"
+        "oracle_verdict",
+        "stack_parity",
+        "heap_parity"
       ],
       "core_prefix_safe": false
     }

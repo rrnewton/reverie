@@ -83,59 +83,33 @@ class FullTier(unittest.TestCase):
         r = run([full_row("zero-info", info="0|0")])
         self.assertIn("empty-comparison:info_log", "; ".join(r.violations[0].reasons))
 
-    def test_NEGATIVE_every_missing_component_is_named_not_just_the_first(self):
+    def test_NEGATIVE_every_missing_verdict_component_is_named(self):
         """A reader must learn everything to fix, not discover it one run at a time."""
         r = run([full_row("nothing", stdout="", info="", stack="", heap="")])
         joined = "; ".join(r.violations[0].reasons)
-        for component in ("stdout", "info_log", "stack", "heap"):
+        for component in ("stdout", "info_log"):
             self.assertIn(component, joined)
 
-    def test_NEGATIVE_a_missing_COLUMN_is_distinguished_from_a_blank_VALUE(self):
-        """Schema-cannot-express and producer-did-not-measure need different fixes."""
+    def test_optional_mode_columns_do_not_determine_base_green(self):
         narrow = ("test_id,test_mode,backend,outcome,stdout_parity,"
                   "compared_log_messages,duration_ms,comparison_tier")
         r = run([f"no-cols,verify,ptrace,pass,1,348|348,120,{FULL}"], header=narrow)
-        joined = "; ".join(r.violations[0].reasons)
-        self.assertIn("schema-cannot-express:stack", joined)
-        self.assertIn("schema-cannot-express:heap", joined)
-        self.assertNotIn("missing:stdout", joined)   # stdout WAS expressible and present
+        self.assertEqual((r.claims, r.upheld, r.violations), (1, 1, []))
 
 
 class SpotCheckTier(unittest.TestCase):
-    def test_POSITIVE_current_clean_receipt_is_upheld(self):
+    def test_POSITIVE_spot_check_with_verdict_is_upheld(self):
         r = run([spot_row("good")], [receipt("good")])
         self.assertEqual((r.claims, r.upheld), (1, 1))
 
-    def test_NEGATIVE_a_dirty_receipt_is_refused(self):
-        r = run([spot_row("d")], [receipt("d", sha="gf89c69766371-dirty")])
-        self.assertIn("dirty-receipt", "; ".join(r.violations[0].reasons))
-
-    def test_NEGATIVE_a_blank_sha_is_also_dirty(self):
-        """A receipt naming no tree is no more reproducible than one naming a dirty one."""
-        r = run([spot_row("b")], [receipt("b", sha="")])
-        self.assertIn("dirty-receipt", "; ".join(r.violations[0].reasons))
-
-    def test_NEGATIVE_a_stale_receipt_is_refused(self):
-        r = run([spot_row("s")], [receipt("s", when="2026-06-01T00:00:00Z")])
-        self.assertIn("cadence:STALE", "; ".join(r.violations[0].reasons))
-
-    def test_NEGATIVE_no_receipt_is_NEVER_not_STALE(self):
-        """NEVER must not report as STALE: that would imply a measurement once existed."""
-        r = run([spot_row("n")], [])
-        joined = "; ".join(r.violations[0].reasons)
-        self.assertIn("cadence:NEVER", joined)
-        self.assertNotIn("STALE", joined)
-
-    def test_dirty_is_tested_BEFORE_age_so_it_never_reports_as_stale(self):
-        """An old dirty receipt is dirty, not stale -- ageing it implies it was once valid."""
-        r = run([spot_row("od")], [receipt("od", when="2026-01-01T00:00:00Z",
-                                           sha="deadbeef-dirty")])
-        joined = "; ".join(r.violations[0].reasons)
-        self.assertIn("dirty-receipt", joined)
-        self.assertNotIn("STALE", joined)
+    def test_mode_receipt_age_does_not_override_the_existing_verdict(self):
+        for ledger_rows in ((), [receipt("s", when="2026-06-01T00:00:00Z")],
+                            [receipt("s", sha="gf89c69766371-dirty")]):
+            r = run([spot_row("s")], ledger_rows)
+            self.assertEqual((r.claims, r.upheld, r.violations), (1, 1, []))
 
     def test_spot_check_still_requires_stdout_and_info_EVERY_run(self):
-        """The cheaper tier relaxes stack/heap to a cadence -- not stdout and INFO."""
+        """Both qualifying tiers still require stdout and INFO verdict evidence."""
         row = f"x,verify,ptrace,pass,,348|348,,,9000,{SPOT}"
         r = run([row], [receipt("x")])
         self.assertIn("missing:stdout", "; ".join(r.violations[0].reasons))

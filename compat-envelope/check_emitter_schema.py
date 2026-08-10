@@ -51,6 +51,7 @@ HEADER_PATTERNS = (
     r'^HEADER="([^"]+)"',                            # shell
 )
 TARGET_PATTERNS = (
+    r'const\s+DEFAULT_CSV_TEMPLATE\s*:\s*&str\s*=\s*"([^"]+)"',
     r'csv\.unwrap_or_else\(\|\|\s*here\.join\("([^"]+)"\)\)',
     r'csv\.unwrap_or_else\(\|\|\s*PathBuf::from\("([^"]+)"\)\)',
     r'let\s+mut\s+csv\s*=\s*PathBuf::from\("([^"]+)"\)',

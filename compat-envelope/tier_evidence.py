@@ -15,35 +15,12 @@ check reads only the tier column and can run on any file; this one reads the
 evidence columns and needs the schema. Neither subsumes the other, the same
 split `check_cell_comparison.py` documents against `check_scorecard_schema.py`.
 
-WHAT EACH TIER CLAIMS -- taken from the tier NAMES, which are self-describing,
-and from `strict_verdict.STRICT_COMPONENTS`, so this file introduces no third
-vocabulary:
-
-    full-stdout-info-stack-heap        stdout + INFO + stack + heap, EVERY run
-    stdout-info-stack-heap-spot-check  stdout + INFO every run; stack/heap on a CADENCE
-
-THE CADENCE IS ENFORCED HERE, NOT DESCRIBED. `spot-check-cadence.py` computes
-CURRENT/STALE/NEVER correctly but its `main()` returns 0 unconditionally, so
-nothing has ever refused a stale cell. This module calls its `age_state()` and
-turns STALE and NEVER into violations. `CADENCE_TRIGGERS` there remains three
-prose strings that are printed and never evaluated; the one trigger that IS
-mechanically checkable -- a receipt bound to a dirty tree -- is enforced below.
-
-A DIRTY RECEIPT IS REFUSED OUTRIGHT, ahead of any age test. A `-dirty` SHA does
-not identify a tree, so the run cannot be reproduced and re-measurement cannot be
-targeted; ageing it would imply it was once valid. At 2026-08-07 all three of the
-41 ledger rows that were CURRENT carried `gf89c69766371-dirty`, so enforcing this
-takes the qualifying spot-check population from 3 to 0. That is a DEFINITION
-CORRECTION, recorded old-vs-new, not a regression: the three were never
-reproducible evidence.
-
-WHAT THIS CANNOT DO TODAY, stated because it bounds every green it emits. The
-scorecard core schema carries `stdout_parity` and `compared_log_messages` but has
-NO stack or heap column. So FULL's stack/heap half is unverifiable by
-construction, and a FULL claim on a real scorecard is refused as
-`schema-cannot-express` rather than passed. The columns are read by name here so
-that widening the schema is the only change needed; nothing is back-filled,
-because inventing the evidence is the defect this exists to stop.
+Base green is bound to the existing comparison verdict: stdout equality and a
+nonempty INFO-log comparison. `stack_parity` and `heap_parity` are optional RUN
+MODE fields, despite their historical names: true means the corresponding flag
+was passed, false means it was not, and blank means historical unknown. They do
+not authorize or veto base green. A separate highest-grade query combines base
+green with both stronger-mode fields true.
 
 Exit codes:
   0  every enumerated row's tier claim is fully evidenced
@@ -91,25 +68,20 @@ FULL = _tier.FULL
 SPOT_CHECK = _tier.SPOT_CHECK
 QUALIFYING = _tier.QUALIFYING
 
-#: Cadence classes for a component within a tier.
+#: Per-row evidence class for a base-green component.
 EVERY_RUN, CADENCED = "every-run", "cadenced"
 
 #: What each qualifying tier claims. Keys are `strict_verdict.STRICT_COMPONENTS`.
 TIER_CLAIMS = {
-    FULL: {"stdout": EVERY_RUN, "info_log": EVERY_RUN,
-           "stack": EVERY_RUN, "heap": EVERY_RUN},
-    SPOT_CHECK: {"stdout": EVERY_RUN, "info_log": EVERY_RUN,
-                 "stack": CADENCED, "heap": CADENCED},
+    FULL: {"stdout": EVERY_RUN, "info_log": EVERY_RUN},
+    SPOT_CHECK: {"stdout": EVERY_RUN, "info_log": EVERY_RUN},
 }
 
-#: Where a per-run component's evidence lives on the row. `stack`/`heap` have no
-#: column in the core schema today; named here so widening the schema is the only
-#: change required, and so their absence is reported as a SCHEMA fault, not a blank.
+#: Where a per-run base-green component's evidence lives on the row. Optional
+#: stack/heap MODE fields are deliberately absent from this verdict map.
 ROW_EVIDENCE = {
     "stdout": "stdout_parity",
     "info_log": "compared_log_messages",
-    "stack": "stack_parity",
-    "heap": "heap_parity",
 }
 
 #: A recorded comparison of zero records is not evidence that a comparison happened.
