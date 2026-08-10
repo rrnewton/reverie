@@ -150,6 +150,114 @@ def test_operational_publish_refuses_the_shared_producer_parent(
         publisher.publish(clone, spool_dir, source_root=clone)
 
 
+def test_publishing_into_a_foreign_repository_is_refused_before_anything_is_written(
+    tmp_path, remote_and_clone
+):
+    """`--repo` naming the wrong checkout must fail closed, not commit into it.
+
+    Measured 2026-08-09: `--repo hermit` resolved, relative to the parent, to
+    the Hermit PRODUCT submodule rather than a dev-hermit clone. The publisher
+    accepted it, detached that primary checkout at its own `origin/main`, and
+    wrote five `ledger: append 1 event(s)` commits into a product repository --
+    one per retry -- before the serialized writer refused for an unrelated
+    reason. A directory name is a LABEL; shared history is IDENTITY, and only
+    the second was ever checked.
+    """
+    _, clone = remote_and_clone
+    foreign = tmp_path / "foreign"  # a wholly separate repository
+    subprocess.run(["git", "init", "-q", "-b", "main", str(foreign)], check=True)
+    (foreign / "PRODUCT").write_text("not the ledger repository\n")
+    git(foreign, "add", "PRODUCT")
+    git(foreign, "-c", "user.name=t", "-c", "user.email=t@invalid",
+        "commit", "-q", "-m", "product seed")
+    before = git(foreign, "rev-parse", "HEAD").stdout.strip()
+
+    spool_dir = tmp_path / "spool"
+    publisher.spool(spool_dir, TEAM, HOST, [ev("01A")])
+    with pytest.raises(publisher.PublishRefused, match="DIFFERENT repository"):
+        publisher.publish(foreign, spool_dir, source_root=clone)
+
+    assert git(foreign, "rev-parse", "HEAD").stdout.strip() == before, (
+        "the foreign repository must not gain a commit"
+    )
+    assert not (foreign / "ledger").exists(), "no shard may be written there"
+    assert git(foreign, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() == "main", (
+        "the foreign checkout must not be detached"
+    )
+    assert publisher.spooled(spool_dir), "a refused batch stays spooled"
+
+
+def test_a_genuine_clone_of_the_source_is_not_refused_by_the_identity_check(
+    tmp_path, remote_and_clone
+):
+    """The positive side: the guard must not be inert, nor fire on the real path.
+
+    A refusal test alone cannot distinguish "refuses foreign checkouts" from
+    "refuses everything". This publishes through a second clone of the same
+    repository the source came from, and counts what landed.
+    """
+    bare, clone = remote_and_clone
+    source = tmp_path / "source-checkout"
+    subprocess.run(["git", "clone", "-q", str(bare), str(source)], check=True)
+    spool_dir = tmp_path / "spool"
+    publisher.spool(spool_dir, TEAM, HOST, [ev("01A")])
+
+    out = publisher.publish(clone, spool_dir, source_root=source)
+
+    assert out["published"] == 1
+    assert out["shards"] == [f"ledger/{TEAM}/{HOST}/2026-08.jsonl"]
+    assert not publisher.spooled(spool_dir)
+
+
+def test_a_writer_refusal_reaches_the_caller_whole_not_as_its_last_line(
+    tmp_path, remote_and_clone
+):
+    """The serialized writer's REASON must survive, not only its final line.
+
+    `scripts/parent-main-write` prints `REFUSED: <reason>` first and may follow
+    it with a multi-line generic banner. Keeping `stderr.splitlines()[-1]` --
+    which this module did -- reported the banner's tail, "nothing was published
+    and nothing was modified", and threw the cause away. Measured 2026-08-09 on
+    the real tool: the discarded first line WAS the entire root cause, and the
+    reported line named nothing at all.
+
+    The fake writer below reproduces that exact four-line shape; the reason is
+    the FIRST line, so a last-line capture cannot pass this test.
+    """
+    _, clone = remote_and_clone
+    writer = tmp_path / "refusing-writer"
+    writer.write_text(
+        "#!/bin/sh\n"
+        "echo 'parent-main-write: REFUSED: machine-attribution checker is missing' >&2\n"
+        "echo 'parent-main-write: ABORTED at line 124 with status 1, and no reason' >&2\n"
+        "echo '  was printed. That is a defect in this tool, not a verdict on your' >&2\n"
+        "echo '  change: nothing was published and nothing was modified.' >&2\n"
+        "exit 1\n"
+    )
+    writer.chmod(0o755)
+    spool_dir = tmp_path / "spool"
+    publisher.spool(spool_dir, TEAM, HOST, [ev("01A")])
+
+    with pytest.raises(publisher.PublishRefused) as exc:
+        publisher.publish(
+            clone,
+            spool_dir,
+            attempts=1,
+            serialized_writer=writer,
+            attribution="[impl agent, OPUS] [hermit-receipt, devbig030]",
+        )
+
+    message = str(exc.value)
+    assert "machine-attribution checker is missing" in message, (
+        "the REFUSED reason must survive; a last-line capture loses exactly this"
+    )
+    assert "nothing was published and nothing was modified" in message, (
+        "the rest of the writer's output must survive too, not be traded for the reason"
+    )
+    assert len(message.splitlines()) >= 4, "all four stderr lines must reach the caller"
+    assert publisher.spooled(spool_dir), "a refused publish keeps its events"
+
+
 def test_split_preserves_remote_bytes_and_adopts_untouched_source_order(
     tmp_path, remote_and_clone
 ):

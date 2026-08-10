@@ -65,6 +65,46 @@ def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
     )
 
 
+def _failure_detail(result: subprocess.CompletedProcess) -> str:
+    """The WHOLE reason a push or a serialized write failed, never its last line.
+
+    `scripts/parent-main-write` prints its explained `REFUSED: <reason>` FIRST
+    and may then print a multi-line generic banner. Keeping
+    `stderr.splitlines()[-1]` — which this module did — therefore reported the
+    banner's tail, "change: nothing was published and nothing was modified",
+    and discarded the cause outright.
+
+    Measured 2026-08-09, publishing the devbig030 receipt for hermit
+    `2b38d8e6`: the whole stderr was
+
+        parent-main-write: REFUSED: machine-attribution checker is missing:
+          /home/newton/work/dev-hermit/hermit/scripts/check_commit_attribution.py
+        parent-main-write: ABORTED at line 124 with status 1, and no reason
+          was printed. ...
+
+    The first line names the entire root cause; the reported last line names
+    nothing. A truncation that keeps the least informative end of a
+    deliberately-explained refusal is worse than no capture at all, because it
+    reads as a complete answer.
+    """
+    detail = result.stderr.strip() or result.stdout.strip()
+    return detail or f"exited {result.returncode} with no output"
+
+
+def _root_commits(repo: Path, *refs: str) -> set[str]:
+    """Root commit ids — the identity a directory name cannot forge.
+
+    Two checkouts are replicas of one repository iff they share a root commit.
+    A path component, a remote URL, or a directory name is a LABEL: it can be
+    edited, and it can be plausible while being wrong.
+    """
+    for ref in refs:
+        found = _git(repo, "rev-list", "--max-parents=0", ref, check=False)
+        if found.returncode == 0 and found.stdout.split():
+            return set(found.stdout.split())
+    return set()
+
+
 # --------------------------------------------------------------------------- spool
 
 
@@ -290,8 +330,9 @@ def split_published_to_match_source(
             capture_output=True, text=True, check=False,
         )
     if pushed.returncode != 0:
-        detail = pushed.stderr.strip() or pushed.stdout.strip() or "push failed"
-        raise PublishRefused(f"split commit retained but not published: {detail}")
+        raise PublishRefused(
+            f"split commit retained but not published: {_failure_detail(pushed)}"
+        )
     _git(repo, "fetch", remote, branch)
     ancestry = _git(
         repo, "merge-base", "--is-ancestor", commit, f"{remote}/{branch}", check=False
@@ -328,10 +369,31 @@ def publish(
     push needed, and the ancestry check that authorised draining the spool.
     """
     repo = Path(repo).resolve()
-    if source_root is not None and repo == Path(source_root).resolve():
-        raise PublishRefused(
-            "publisher checkout is the shared producer parent; use a dedicated clone or slot"
-        )
+    if source_root is not None:
+        source_root = Path(source_root).resolve()
+        if repo == source_root:
+            raise PublishRefused(
+                "publisher checkout is the shared producer parent; use a dedicated clone or slot"
+            )
+        # WHICH REPOSITORY IS THIS? Asked before a single byte is written.
+        #
+        # Measured 2026-08-09: `--repo hermit` resolved, relative to the parent,
+        # to the Hermit PRODUCT submodule. The publisher accepted it, detached
+        # that primary checkout at ITS origin/main, and wrote five
+        # `ledger: append 1 event(s)` commits into a product repository — one
+        # per retry — before the serialized writer, which exists only in the
+        # parent, refused for an unrelated reason. Nothing here asked the one
+        # question that mattered. Identity is shared history, not a name.
+        theirs = _root_commits(repo, f"{remote}/{branch}", "HEAD")
+        ours = _root_commits(source_root, "HEAD", f"{remote}/{branch}")
+        if not ours or not theirs or not (ours & theirs):
+            raise PublishRefused(
+                f"publisher checkout {repo} shares no root commit with the ledger source "
+                f"{source_root}, so it is a DIFFERENT repository: publishing would commit "
+                "ledger/ shards into history that does not own them, and would detach that "
+                "checkout to do it. Pass a dedicated clean clone of the ledger repository "
+                "(ci-hub/ledger/README.md), never a product submodule or a bare directory name."
+            )
     if serialized_writer is not None:
         if remote != "origin" or branch != "main":
             raise PublishRefused("serialized parent publication requires origin/main")
@@ -421,7 +483,9 @@ def publish(
         # Non-fast-forward: someone appended to a shard we are also appending
         # to. Loop; the next pass re-reads the remote shard and re-merges, so
         # their lines are preserved and ours are added once.
-        last_error = pushed.stderr.strip().splitlines()[-1] if pushed.stderr.strip() else "push failed"
+        #
+        # Keep the WHOLE failure, not its last line: see `_failure_detail`.
+        last_error = _failure_detail(pushed)
 
     raise PublishRefused(
         f"gave up after {attempts} attempts; spool retained. last error: {last_error}"
