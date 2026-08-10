@@ -1572,6 +1572,204 @@ fn inspect_process_directory_links(
     }
 }
 
+const NAMED_READ_ONLY_WATCHERS: &[(&str, &str)] = &[("watchman", "/usr/local/bin/watchman")];
+
+fn process_start_ticks(proc_path: &Path) -> Result<u64, String> {
+    let text = fs::read_to_string(proc_path.join("stat"))
+        .map_err(|error| format!("read process stat: {error}"))?;
+    let (_, fields) = text
+        .rsplit_once(") ")
+        .ok_or_else(|| "process stat has no closing command delimiter".to_string())?;
+    fields
+        .split_whitespace()
+        .nth(19)
+        .ok_or_else(|| "process stat omits field 22 start_ticks".to_string())?
+        .parse::<u64>()
+        .map_err(|error| format!("parse process field 22 start_ticks: {error}"))
+}
+
+fn named_read_only_watcher(
+    proc_path: &Path,
+) -> Result<Option<(&'static str, &'static str)>, String> {
+    let executable = match fs::read_link(proc_path.join("exe")) {
+        Ok(executable) => executable,
+        Err(_) => return Ok(None),
+    };
+    let Some((name, expected_executable)) = NAMED_READ_ONLY_WATCHERS
+        .iter()
+        .copied()
+        .find(|(_, expected)| executable == Path::new(expected))
+    else {
+        return Ok(None);
+    };
+    let comm = fs::read_to_string(proc_path.join("comm"))
+        .map_err(|error| format!("read {name} comm: {error}"))?;
+    if comm.trim_end() != name {
+        return Ok(None);
+    }
+    let cmdline = fs::read(proc_path.join("cmdline"))
+        .map_err(|error| format!("read {name} cmdline: {error}"))?;
+    let fields: Vec<&[u8]> = cmdline
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty())
+        .collect();
+    if fields != [expected_executable.as_bytes(), b"--foreground"] {
+        return Ok(None);
+    }
+    let environment = fs::read(proc_path.join("environ"))
+        .map_err(|error| format!("read {name} environment: {error}"))?;
+    if environment
+        .split(|byte| *byte == 0)
+        .any(|field| field.starts_with(b"DG_AGENT_NAME="))
+    {
+        return Ok(None);
+    }
+    Ok(Some((name, expected_executable)))
+}
+
+fn fd_flags(proc_path: &Path, fd: &OsStr) -> Result<(u64, String), String> {
+    let text = fs::read_to_string(proc_path.join("fdinfo").join(fd))
+        .map_err(|error| format!("read fdinfo: {error}"))?;
+    let raw = text
+        .lines()
+        .find_map(|line| line.strip_prefix("flags:").map(str::trim))
+        .ok_or_else(|| "fdinfo omits flags".to_string())?;
+    let flags = u64::from_str_radix(raw, 8)
+        .map_err(|error| format!("parse octal fd flags {raw:?}: {error}"))?;
+    Ok((flags, raw.to_string()))
+}
+
+fn prove_named_watcher_fd(
+    pid: u32,
+    proc_path: &Path,
+    fd: &OsStr,
+    targets: &[PathBuf],
+    watcher_name: &str,
+    executable: &str,
+) -> Result<Option<String>, String> {
+    let fd_path = proc_path.join("fd").join(fd);
+    let mut last_error = "descriptor evidence changed during proof".to_string();
+    for _ in 0..4 {
+        let first_link = match fs::read_link(&fd_path) {
+            Ok(link) if link_inside_target(&link, targets) => link,
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                last_error = format!("read descriptor target: {error}");
+                continue;
+            }
+        };
+        let start_ticks_before = match process_start_ticks(proc_path) {
+            Ok(start_ticks) => start_ticks,
+            Err(error) => {
+                last_error = format!("process identity unverifiable: {error}");
+                continue;
+            }
+        };
+        match named_read_only_watcher(proc_path) {
+            Ok(Some((current_name, current_executable)))
+                if current_name == watcher_name && current_executable == executable => {}
+            Ok(_) => {
+                return Err(format!(
+                    "pid {pid}@{start_ticks_before} fd/{}={} no longer has exact named-watcher identity",
+                    fd.to_string_lossy(),
+                    first_link.display()
+                ));
+            }
+            Err(error) => {
+                last_error = format!("named-watcher identity unverifiable: {error}");
+                continue;
+            }
+        }
+        let (flags, raw_flags) = match fd_flags(proc_path, fd) {
+            Ok(flags) => flags,
+            Err(error) => {
+                last_error = format!("descriptor access unverifiable: {error}");
+                continue;
+            }
+        };
+        let second_link = fs::read_link(&fd_path);
+        let start_ticks_after = process_start_ticks(proc_path);
+        if second_link.ok().as_ref() != Some(&first_link)
+            || start_ticks_after.ok().as_ref() != Some(&start_ticks_before)
+        {
+            last_error = "descriptor or process identity changed during proof".to_string();
+            continue;
+        }
+        let access_mode = flags & libc::O_ACCMODE as u64;
+        let append = flags & libc::O_APPEND as u64 != 0;
+        if access_mode != libc::O_RDONLY as u64 || append {
+            return Err(format!(
+                "pid {pid}@{start_ticks_before} fd/{}={} named watcher {watcher_name} has writable flags=0{raw_flags}",
+                fd.to_string_lossy(),
+                first_link.display()
+            ));
+        }
+        return Ok(Some(format!(
+            "pid {pid}@{start_ticks_before} watcher={watcher_name} exe={executable} fd/{}={} flags=0{raw_flags}; reason=exact named watcher with stable non-writable descriptor",
+            fd.to_string_lossy(),
+            first_link.display()
+        )));
+    }
+
+    match fs::read_link(&fd_path) {
+        Ok(link) if link_inside_target(&link, targets) => Err(format!(
+            "pid {pid} fd/{}={} {watcher_name} remained live but unverifiable after retries: {last_error}",
+            fd.to_string_lossy(),
+            link.display()
+        )),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "pid {pid} fd/{} {watcher_name} final descriptor state unreadable: {error}; prior evidence: {last_error}",
+            fd.to_string_lossy()
+        )),
+    }
+}
+
+fn inspect_process_fd_links(
+    pid: u32,
+    proc_path: &Path,
+    targets: &[PathBuf],
+    users: &mut Vec<String>,
+    tolerated: &mut Vec<String>,
+) {
+    let Ok(entries) = fs::read_dir(proc_path.join("fd")) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let fd = entry.file_name();
+        let first_link = match fs::read_link(entry.path()) {
+            Ok(link) if link_inside_target(&link, targets) => link,
+            _ => continue,
+        };
+        let watcher = match named_read_only_watcher(proc_path) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                users.push(format!(
+                    "pid {pid} fd/{}={} named-watcher identity unverifiable: {error}",
+                    fd.to_string_lossy(),
+                    first_link.display()
+                ));
+                continue;
+            }
+        };
+        let Some((watcher_name, executable)) = watcher else {
+            users.push(format!(
+                "pid {pid} fd/{}={}",
+                fd.to_string_lossy(),
+                first_link.display()
+            ));
+            continue;
+        };
+        match prove_named_watcher_fd(pid, proc_path, &fd, targets, watcher_name, executable) {
+            Ok(Some(reference)) => tolerated.push(reference),
+            Ok(None) => {}
+            Err(error) => users.push(error),
+        }
+    }
+}
+
 fn inspect_process_maps(pid: u32, proc_path: &Path, targets: &[PathBuf], users: &mut Vec<String>) {
     if let Ok(text) = fs::read_to_string(proc_path.join("maps")) {
         for line in text.lines() {
@@ -1653,9 +1851,10 @@ fn container_release_audit(
     Ok(report["container_observation"].clone())
 }
 
-/// Refuse every readable same-UID reference into the target. Unreadable links
-/// from unrelated protected services are not global vetoes: recorded-owner
-/// uncertainty was already resolved fail-closed through ORC/tmux/cgroup above.
+/// Refuse every readable same-UID reference into the target except an explicitly
+/// named watcher whose exact executable/process identity and stable descriptor
+/// flags prove this particular reference non-writable. Every tolerance is
+/// printed; missing or changing evidence remains a refusal.
 fn live_process_users(
     root: &Path,
     proc_root: &Path,
@@ -1671,6 +1870,7 @@ fn live_process_users(
         .map_err(|error| format!("could not inspect /proc/self: {error}"))?
         .uid();
     let mut users = Vec::new();
+    let mut tolerated = Vec::new();
     for entry in fs::read_dir(proc_root)
         .map_err(|error| format!("could not enumerate {}: {error}", proc_root.display()))?
     {
@@ -1707,7 +1907,7 @@ fn live_process_users(
         for kind in ["cwd", "exe", "root"] {
             inspect_process_link(pid, kind, &proc_path.join(kind), targets, &mut users);
         }
-        inspect_process_directory_links(pid, "fd", &proc_path.join("fd"), targets, &mut users);
+        inspect_process_fd_links(pid, &proc_path, targets, &mut users, &mut tolerated);
         inspect_process_maps(pid, &proc_path, targets, &mut users);
         inspect_process_directory_links(
             pid,
@@ -1719,6 +1919,11 @@ fn live_process_users(
     }
     users.sort();
     users.dedup();
+    tolerated.sort();
+    tolerated.dedup();
+    for reference in tolerated {
+        eprintln!("TOLERATED_READ_ONLY_WATCHER: {reference}");
+    }
     Ok((users, container_observation))
 }
 
@@ -5097,7 +5302,9 @@ fn main() {
             }
         }
         if recover_submodules {
-            println!("release recovery scope: slot={slot}; unrelated registry rows are not inspected");
+            println!(
+                "release recovery scope: slot={slot}; unrelated registry rows are not inspected"
+            );
             verify_registry_slot(&root, &slot)
                 .unwrap_or_else(|error| die(&format!("scoped clean preflight failed: {error}")));
         } else {

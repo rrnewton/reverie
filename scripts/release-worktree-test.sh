@@ -342,6 +342,28 @@ JSON
   write_state "$name" "$target_branch" "worktrees/$name/hermit"
 }
 
+plant_named_watchman_fd() {
+  local flags=$1 executable=${2:-/usr/local/bin/watchman}
+  local pid=424242
+  mkdir -p "$fixture_root/proc/$pid/fd" \
+    "$fixture_root/proc/$pid/fdinfo" \
+    "$fixture_root/proc/$pid/map_files"
+  printf 'watchman\n' >"$fixture_root/proc/$pid/comm"
+  printf '/usr/local/bin/watchman\0--foreground\0' \
+    >"$fixture_root/proc/$pid/cmdline"
+  : >"$fixture_root/proc/$pid/environ"
+  printf '%s\n' \
+    '424242 (watchman) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 123456 0' \
+    >"$fixture_root/proc/$pid/stat"
+  ln -s "$executable" "$fixture_root/proc/$pid/exe"
+  ln -s / "$fixture_root/proc/$pid/root"
+  ln -s / "$fixture_root/proc/$pid/cwd"
+  ln -s "$target" "$fixture_root/proc/$pid/fd/7"
+  printf 'pos:\t0\nflags:\t%s\n' "$flags" \
+    >"$fixture_root/proc/$pid/fdinfo/7"
+  : >"$fixture_root/proc/$pid/maps"
+}
+
 deinitialize_fixture_submodules() {
   git -C "$target" submodule deinit -q --all
   test "$(git -C "$target" submodule status --recursive | wc -l)" -eq 1 \
@@ -431,6 +453,65 @@ assert_bad_owners_refused() {
     || fail "release did not expose malformed ownership: $name"
   assert_target_retained "$name"
 }
+
+# NAMED WATCHER POSITIVE: only an exact Watchman foreground process with a
+# stable O_RDONLY descriptor is tolerated. The exception must be disclosed in
+# output rather than rendered as a clean process census.
+make_fixture named-read-only-watchman
+plant_named_watchman_fd 0100000
+if ! run_release named-read-only-watchman; then
+  cat "$output" >&2
+  fail 'exact named Watchman with a read-only descriptor was refused'
+fi
+grep -Fq 'TOLERATED_READ_ONLY_WATCHER: pid 424242@123456 watcher=watchman exe=/usr/local/bin/watchman fd/7=' "$output" \
+  || fail 'named watcher tolerance was not explicitly disclosed'
+grep -Fq 'reason=exact named watcher with stable non-writable descriptor' "$output" \
+  || fail 'named watcher tolerance omitted its reason'
+test ! -e "$target" || fail 'named read-only Watchman prevented clean release'
+assert_unrelated_survives
+
+# NAMED WATCHER NEGATIVE: the same exact identity with an O_WRONLY descriptor
+# is a mutator, not a reader. It must remain a blocker and retain the target.
+make_fixture named-writable-watchman
+plant_named_watchman_fd 0100001
+if run_release named-writable-watchman; then
+  fail 'named Watchman with a writable descriptor authorized release'
+fi
+grep -Fq 'named watcher watchman has writable flags=00100001' "$output" \
+  || fail 'writable named watcher refusal did not identify its descriptor mode'
+if grep -Fq 'TOLERATED_READ_ONLY_WATCHER' "$output"; then
+  fail 'writable named watcher was also reported as tolerated'
+fi
+assert_target_retained named-writable-watchman
+
+# IDENTITY NEGATIVE: a process named watchman but executing another binary is
+# not in the named set, even when its descriptor is O_RDONLY.
+make_fixture spoofed-read-only-watchman
+plant_named_watchman_fd 0100000 /bin/sleep
+if run_release spoofed-read-only-watchman; then
+  fail 'spoofed Watchman comm with another executable authorized release'
+fi
+grep -Fq 'pid 424242 fd/7=' "$output" \
+  || fail 'spoofed Watchman refusal omitted the live descriptor'
+if grep -Fq 'TOLERATED_READ_ONLY_WATCHER' "$output"; then
+  fail 'spoofed Watchman identity was reported as tolerated'
+fi
+assert_target_retained spoofed-read-only-watchman
+
+# EVIDENCE NEGATIVE: an exact named watcher whose descriptor remains live but
+# lacks fdinfo must fail closed rather than being assumed read-only.
+make_fixture unverifiable-read-only-watchman
+plant_named_watchman_fd 0100000
+rm "$fixture_root/proc/424242/fdinfo/7"
+if run_release unverifiable-read-only-watchman; then
+  fail 'named Watchman without descriptor mode evidence authorized release'
+fi
+grep -Fq 'remained live but unverifiable after retries' "$output" \
+  || fail 'unverifiable named watcher did not fail closed with a reason'
+if grep -Fq 'TOLERATED_READ_ONLY_WATCHER' "$output"; then
+  fail 'unverifiable named watcher was reported as tolerated'
+fi
+assert_target_retained unverifiable-read-only-watchman
 
 # POSITIVE: the outer repository plus two recursively initialized levels are
 # clean and exactly published. Production must enumerate and verify all three.
