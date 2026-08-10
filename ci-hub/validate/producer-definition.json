@@ -10,32 +10,13 @@
   "_generalises_the_anchor": "The pre-anchor rule (a PR head must descend from hermit bfb0a9ef, else it runs its own older validate.sh) is a SINGLE-COMMIT ANCHOR: it goes stale every time the producer changes and must be hand-advanced. This registration is its hash-valued generalisation, exactly as #1579 generalised the gate-file case.",
   "_semantics": "EXACT WHOLE-MAP EQUALITY, fail closed. A qualifying receipt MUST carry producer.definition whose key set and blob values equal one complete current/candidate map, or equal a legacy map at one of that record's explicit valid_commits, exactly. A receipt with no producer block, a missing file, an undeclared extra file, a crossed map, a legacy map at another commit, or any differing blob is REFUSED. Candidate keys may exceed primary keys only by the exact explicit transition.added_paths set; no removals or implicit drift are allowed, and maps are never field-unioned. Every verdict carries coverage_status plus the exact paths and any commit bound. An unreadable or malformed registration, legacy record, or transition is a DEPLOY DEFECT (exit 2), never a lenient fallback. Expiry removes only the candidate; the b605 primary remains qualifying only at its explicitly registered commit.",
   "_advancing_this": "Stage a producer change by adding one strictly shaped transition without changing `registered`. Derive every candidate SHA and blob from the selected head; never copy values from a superseded PR. After that exact head lands, freshly prove target-main containment and resolve its producer blobs before promoting the candidate to `registered`, advancing `registered_at`, and deleting `transition`. A timestamp never authorizes promotion. If the candidate does not land before expiry, remove or replace the transition; never extend it implicitly.",
-  "registered_at": "b02e7d229c9e5e18c17ed3d84cab9972e9c57bc1",
+  "registered_at": "b5a4748e87a6bc32bc3d87935ab571c1c57c25ad",
   "registered_coverage_status": "complete",
   "registered": {
     ".github/workflows/ci-portable.yml": "34beade4840a0a143937ca2a93f5b5c4932c1370",
     "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
     "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-    "scripts/validate.rs": "8c5504c037b54f52f89ff2ad16947097c1e008b5"
-  },
-  "transition": {
-    "id": "rrnewton-hermit-pr-2023",
-    "registered_at": "b5a4748e87a6bc32bc3d87935ab571c1c57c25ad",
-    "provenance": {
-      "repository": "rrnewton/hermit",
-      "pull_request": 2023,
-      "head": "b5a4748e87a6bc32bc3d87935ab571c1c57c25ad"
-    },
-    "finalize_after": "2026-08-09T23:05:00Z",
-    "expires_at": "2026-08-10T23:05:00Z",
-    "candidate_coverage_status": "complete",
-    "added_paths": [],
-    "candidate": {
-      ".github/workflows/ci-portable.yml": "34beade4840a0a143937ca2a93f5b5c4932c1370",
-      "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
-      "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-      "scripts/validate.rs": "df03defdc9d09fd1eddc3a26b137c7a975c388f9"
-    }
+    "scripts/validate.rs": "df03defdc9d09fd1eddc3a26b137c7a975c388f9"
   },
   "legacy": [
     {
@@ -73,6 +54,20 @@
       "definition": {
         ".github/workflows/ci-portable.yml": "0fb49d65b8b6571a681b253d076f57a82f2edb55",
         "scripts/validate.rs": "15879c97c0ddcfeafaed18deaab0cba2fab30312"
+      }
+    },
+    {
+      "id": "pre-rrnewton-hermit-pr-2023",
+      "registered_at": "b02e7d229c9e5e18c17ed3d84cab9972e9c57bc1",
+      "coverage_status": "complete",
+      "valid_commits": [
+        "b02e7d229c9e5e18c17ed3d84cab9972e9c57bc1"
+      ],
+      "definition": {
+        ".github/workflows/ci-portable.yml": "34beade4840a0a143937ca2a93f5b5c4932c1370",
+        "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
+        "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+        "scripts/validate.rs": "8c5504c037b54f52f89ff2ad16947097c1e008b5"
       }
     }
   ]
