@@ -1,8 +1,12 @@
+/* A forked child that execs. Exec after start cannot preserve the preload
+   runtime, so the child fails closed -- in a task that has no outer cleanup
+   guard of its own. The root goes on to exit zero, so the session must refuse
+   to report that success: this fixture exists to make a silent green
+   impossible, not to be supported. */
+#include <stdio.h>
 #include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <unistd.h>
 
 int main(int argc, char **argv) {
@@ -22,17 +26,11 @@ int main(int argc, char **argv) {
     return 10;
   }
   if (child == 0) {
-    _exit(0);
+    execl("/bin/true", "true", (char *)NULL);
+    _exit(127);
   }
   int status = 0;
-  if (waitpid(child, &status, 0) != child) {
-    return 11;
-  }
-  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
-    return 12;
-  }
-  /* Printed only after the child has been created, run and reaped, so a run
-     that never forked cannot satisfy the assertion by exiting zero. */
-  puts("fork-followed");
+  (void)waitpid(child, &status, 0);
+  puts("fork-exec-root-finished");
   return 0;
 }
