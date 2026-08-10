@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 import os
@@ -88,6 +89,29 @@ NO_LAZY_FETCH = {"GIT_NO_LAZY_FETCH": "1"}
 _COMMAND_DEADLINE: ContextVar[float | None] = ContextVar(
     "primary_checkout_command_deadline", default=None
 )
+#: Name of the phase currently running a child, so a deadline cut can say WHICH
+#: step it killed rather than only which argv. An inner cut that cannot name its
+#: phase is the outer kill with extra steps.
+_COMMAND_PHASE: ContextVar[str | None] = ContextVar(
+    "primary_checkout_command_phase", default=None
+)
+
+#: The serialized parent-main commit is the LAST step of a run whose deadline is
+#: CUMULATIVE, so it inherits only what the preamble left -- with no floor. It is
+#: also not a cheap write: its own pre-commit hook re-enters this module
+#: (`primary_checkout.py check` and `check-pins`), so the envelope has to cover
+#: the freshness+pin verification TWICE while it was sized for once.
+#:
+#: Measured 2026-08-10 on devbig014: the whole outer pass 2.42s, and
+#: `parent-main-write commit -- hermit reverie liteinst2` 7.08s. This floor gives
+#: that phase a named 20s of its own instead of a leftover.
+#:
+#: NOTHING IS RAISED. It is clamped to the existing envelope, so the 24s inner
+#: budget and the 30s outer kill are untouched: 2.42 + 20 = 22.4 < 24 < 30. A
+#: pathologically slow preamble can still squeeze this phase, and that is
+#: deliberate -- widening the outer bound to fit the work is the trade this
+#: whole line of work exists to refuse.
+PARENT_MAIN_WRITE_PHASE_BUDGET_SECS = 20.0
 
 
 def _run_process(
@@ -95,15 +119,49 @@ def _run_process(
 ) -> subprocess.CompletedProcess[str]:
     """Run one owned child inside the active checkout-fresh wall deadline."""
     deadline = _COMMAND_DEADLINE.get()
-    if deadline is not None:
-        remaining = deadline - time.monotonic()
+    if deadline is None:
+        return subprocess.run(command, **kwargs)  # type: ignore[arg-type]
+    remaining = deadline - time.monotonic()
+    # BIND THE PHASE TO THE EXCEPTION AT THE RAISE SITE, not at the handler.
+    # `_phase` resets its ContextVar in a `finally`, which runs BEFORE the
+    # exception reaches the caller -- so a handler reading the ContextVar always
+    # saw None and the cut could not name what it killed. Measured while
+    # bracketing this change.
+    try:
         if remaining <= 0:
             raise subprocess.TimeoutExpired(command, 0)
         explicit = kwargs.get("timeout")
         if isinstance(explicit, (int, float)):
             remaining = min(remaining, float(explicit))
         kwargs["timeout"] = remaining
-    return subprocess.run(command, **kwargs)  # type: ignore[arg-type]
+        return subprocess.run(command, **kwargs)  # type: ignore[arg-type]
+    except subprocess.TimeoutExpired as error:
+        error.primary_checkout_phase = _COMMAND_PHASE.get()  # type: ignore[attr-defined]
+        raise
+
+
+@contextmanager
+def _phase(name: str, budget_secs: float | None = None):
+    """Name the active phase, optionally giving it its own bounded allowance.
+
+    The allowance is a FLOOR clamped to the surrounding envelope: a phase never
+    extends the run past the deadline it was given, so this cannot widen the
+    outer bound. It only stops one step from silently inheriting a remainder.
+    """
+    phase_token = _COMMAND_PHASE.set(name)
+    deadline_token = None
+    if budget_secs is not None:
+        outer = _COMMAND_DEADLINE.get()
+        proposed = time.monotonic() + budget_secs
+        if outer is not None:
+            proposed = min(proposed, outer)
+        deadline_token = _COMMAND_DEADLINE.set(proposed)
+    try:
+        yield
+    finally:
+        if deadline_token is not None:
+            _COMMAND_DEADLINE.reset(deadline_token)
+        _COMMAND_PHASE.reset(phase_token)
 
 
 def proxy_disabled(variable: str = "PRIMARY_CHECKOUT_DISABLE_PROXY") -> bool:
@@ -694,17 +752,21 @@ def publish_parent_snapshot(
         print(f"ERROR: {error}", file=err)
         return SNAPSHOT_BLOCKED
 
-    publish = run_parent_main_write(
-        root,
-        "commit",
-        "-m",
-        snapshot_message,
-        "--audit-reason",
-        SNAPSHOT_AUDIT_REASON,
-        "--",
-        *PRODUCTS,
-        use_proxy=use_proxy,
-    )
+    with _phase(
+        "serialized parent-main snapshot commit",
+        PARENT_MAIN_WRITE_PHASE_BUDGET_SECS,
+    ):
+        publish = run_parent_main_write(
+            root,
+            "commit",
+            "-m",
+            snapshot_message,
+            "--audit-reason",
+            SNAPSHOT_AUDIT_REASON,
+            "--",
+            *PRODUCTS,
+            use_proxy=use_proxy,
+        )
     print_command_output(publish, out if publish.returncode == 0 else err)
     if publish.returncode != 0:
         # parent-main-write is the single verifier of currency, and it refuses for
@@ -901,11 +963,27 @@ def checkout_fresh(
             if isinstance(command, (list, tuple))
             else str(command)
         )
+        phase = getattr(error, "primary_checkout_phase", None) or _COMMAND_PHASE.get()
         print(
-            "ERROR: primary checkout snapshot inner deadline exhausted while "
-            f"running: {rendered}",
+            "ERROR: primary checkout snapshot inner deadline exhausted"
+            + (f" in phase [{phase}]" if phase else "")
+            + f" while running: {rendered}",
             file=err,
         )
+        # PRESERVE WHAT THE KILLED CHILD MANAGED TO SAY. `capture_output=True`
+        # means its stdout/stderr exist on the exception and are otherwise
+        # discarded, so the cut would destroy the only account of how far the
+        # step got -- which is the outer kill's defect, reproduced one layer in.
+        # strict_compat was undiagnosable for hours for exactly this reason.
+        for label, stream in (("stdout", error.stdout), ("stderr", error.stderr)):
+            if not stream:
+                continue
+            text = stream.decode("utf-8", "replace") if isinstance(stream, bytes) else stream
+            text = text.strip()
+            if not text:
+                continue
+            print(f"--- killed child {label} (preserved) ---", file=err)
+            print(text, file=err)
         return SNAPSHOT_BLOCKED
     finally:
         if token is not None:
