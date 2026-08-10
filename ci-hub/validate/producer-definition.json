@@ -6,6 +6,7 @@
   "_rotation_2026_08_09": "Owner-authorized Rust production cutover landed as rrnewton/hermit 92aaed5d09dd44ae4fb330a99c7adf28c1fc0cae (PR #1996). The selected paths bound the direct Rust driver, its temporary exec-only shim, and the portable workflow at that exact commit. PR #1998 then removed the shim at main commit 93575493f406fb6115134b95d54d4a4650214a07; the current definition binds only the sole Rust driver and portable workflow. Coverage remains legacy-selected-paths rather than falsely claiming those two files cover every transitive Rust module, manifest, and corpus.",
   "_rotation_2026_08_09_receipt_authority": "The stale PR #2008 transition named historical head d21bce4e even though that open PR moved on; it was replaced rather than promoted. PR #2016 restores canonical ledger publication and binds both changed Rust implementation modules in addition to the driver and portable workflow, so an unchanged front file cannot conceal receipt/history producer drift.",
   "_rotation_2026_08_09_validate_runtime": "PR #2023 (linear successor to stale-base #2021) changes the Rust driver's full-plan scheduling while preserving the complete node denominator: portable and privileged lanes fuse, byte-identical manifest/pin authorities alias to observed preflight gates, and privileged checks fan out from asserted fat-build artifacts. The candidate binds that exact driver blob before its performance receipt can qualify.",
+  "_rotation_2026_08_10_canonical_ledger": "PR #2012 removes the Rust driver's discovered, environment-selected, and checkout-local ledger paths. The exact candidate binds the canonical writer and history reader before a row produced by that new single-source implementation may authorize landing.",
   "_transition_protocol": "A candidate is accepted only as one exact whole map before expires_at; consumers never union fields across primary/candidate. finalize_after is an earliest lifecycle-review time, not merge evidence or landing authority. Promotion requires fresh proof of the PR's dereferenced merge commit on fetched Hermit main and that main resolves to the candidate map; rebase merge does not preserve PR-head ancestry. At every promotion the outgoing primary becomes legacy. A complete primary that was unbounded while current is narrowed to its registered_at replay when superseded, so the same old map cannot authorize a later commit; this keeps complete-to-complete rotations repeatable and fail-closed.",
   "_generalises_the_anchor": "The pre-anchor rule (a PR head must descend from hermit bfb0a9ef, else it runs its own older validate.sh) is a SINGLE-COMMIT ANCHOR: it goes stale every time the producer changes and must be hand-advanced. This registration is its hash-valued generalisation, exactly as #1579 generalised the gate-file case.",
   "_semantics": "EXACT WHOLE-MAP EQUALITY, fail closed. A qualifying receipt MUST carry producer.definition whose key set and blob values equal one complete current/candidate map, or equal a legacy map at one of that record's explicit valid_commits, exactly. A receipt with no producer block, a missing file, an undeclared extra file, a crossed map, a legacy map at another commit, or any differing blob is REFUSED. Candidate keys may exceed primary keys only by the exact explicit transition.added_paths set; no removals or implicit drift are allowed, and maps are never field-unioned. Every verdict carries coverage_status plus the exact paths and any commit bound. An unreadable or malformed registration, legacy record, or transition is a DEPLOY DEFECT (exit 2), never a lenient fallback. Expiry removes only the candidate; the b605 primary remains qualifying only at its explicitly registered commit.",
@@ -17,6 +18,25 @@
     "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
     "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
     "scripts/validate.rs": "df03defdc9d09fd1eddc3a26b137c7a975c388f9"
+  },
+  "transition": {
+    "id": "rrnewton-hermit-pr-2012",
+    "registered_at": "4d7a3836b9fa6f87a9404f0af99af1361a9053fe",
+    "provenance": {
+      "repository": "rrnewton/hermit",
+      "pull_request": 2012,
+      "head": "4d7a3836b9fa6f87a9404f0af99af1361a9053fe"
+    },
+    "finalize_after": "2026-08-10T05:42:00Z",
+    "expires_at": "2026-08-11T05:42:00Z",
+    "candidate_coverage_status": "complete",
+    "added_paths": [],
+    "candidate": {
+      ".github/workflows/ci-portable.yml": "c0de07a73f1403c455672a8ef52caedc26676226",
+      "scripts/lib/validate_history.rs": "6b28ad0d674019e7f33205750e6ec1d2d6647887",
+      "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+      "scripts/validate.rs": "6173ac0f7b361019e31dfc85fba8eb902e51cd29"
+    }
   },
   "legacy": [
     {
