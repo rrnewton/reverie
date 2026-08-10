@@ -33,14 +33,20 @@ that produced no product result, so it is pending—not red and never green.
 
 The only transitive form is the registered `merge-gate-v4` contract. Its exact
 job may also become `NO_RESULT` when an independently verified setup-only
-`reverie-pin-is-latest-main` job is present in the same selected run, completed
+Reverie-pin job is present in the same selected run, completed
 before the gate was created, and the gate's complete identity-bound seven-step
 receipt shows the prerequisite requirement as its sole failure while the
 product-validation requirement was skipped. Input order is irrelevant because
 the authority dereferences the complete failed-check set before following this
 link. It separately binds the exact run path and exact-head workflow contents to
-the reviewed v4 Git blob that declares `merge-gate.needs: [..., reverie-pin]`
-and reads `needs.reverie-pin.result`; a successful step name alone is not proof.
+one reviewed name/blob/step contract that declares
+`merge-gate.needs: [..., reverie-pin]` and reads `needs.reverie-pin.result`; a
+successful step name alone is not proof. The current owner-approved rule is
+ancestry plus monotonicity, not equality: the candidate pin must be a
+`reverie/main` ancestor without regressing from the landing-base pin. The
+transition accepts the historical `reverie-pin-is-latest-main` name and the
+accurate `reverie-pin-ancestry-and-monotonicity` name only in their respective
+reviewed contracts.
 A generic failed gate step, a missing source, another workflow/version/blob,
 another run, or any changed/executed product step remains red.
 

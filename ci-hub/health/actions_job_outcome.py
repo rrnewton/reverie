@@ -71,16 +71,12 @@ class _VerifiedJob:
     completed_at: datetime
 
 
-_PREREQUISITE_SOURCE_NAME = "reverie-pin-is-latest-main"
+_PREREQUISITE_SOURCE_NAME = "reverie-pin-ancestry-and-monotonicity"
+_PREREQUISITE_LEGACY_SOURCE_NAME = "reverie-pin-is-latest-main"
 _PREREQUISITE_GATE_NAME = "merge-gate-v4"
 _PREREQUISITE_WORKFLOW_NAME = "Merge Gate"
 _PREREQUISITE_WORKFLOW_PATH = ".github/workflows/merge-gate.yml"
-# Trust root for the v4 contract whose YAML declares
-# ``merge-gate.needs: [..., reverie-pin]`` and binds the failed step directly to
-# ``needs.reverie-pin.result``. A later gate revision fails closed until this
-# classifier is reviewed and updated alongside its new contract.
-_PREREQUISITE_WORKFLOW_BLOB = "579f5e7816c7e2844eadfd7018d95ee37c8d8640"
-_PREREQUISITE_GATE_STEPS: tuple[tuple[str, int, str, str], ...] = (
+_PREREQUISITE_LEGACY_GATE_STEPS: tuple[tuple[str, int, str, str], ...] = (
     ("Set up job", 1, "completed", "success"),
     ("Require the registered v4 gate definition", 2, "completed", "success"),
     ("Fetch the trusted receipt verifier", 3, "completed", "success"),
@@ -88,6 +84,54 @@ _PREREQUISITE_GATE_STEPS: tuple[tuple[str, int, str, str], ...] = (
     ("Require the latest-Reverie pin gate", 5, "completed", "failure"),
     ("Require successful CI or local validation", 6, "completed", "skipped"),
     ("Complete job", 7, "completed", "success"),
+)
+_PREREQUISITE_GATE_STEPS: tuple[tuple[str, int, str, str], ...] = (
+    *_PREREQUISITE_LEGACY_GATE_STEPS[:4],
+    (
+        "Require the Reverie-pin ancestry-and-monotonicity gate",
+        5,
+        "completed",
+        "failure",
+    ),
+    *_PREREQUISITE_LEGACY_GATE_STEPS[5:],
+)
+
+
+@dataclass(frozen=True)
+class _PrerequisiteContract:
+    """One reviewed, inseparable source-name/workflow/receipt identity."""
+
+    source_name: str
+    workflow_blob: str
+    gate_steps: tuple[tuple[str, int, str, str], ...]
+
+
+# These are paired contracts, not independent allowlists.  The first is the
+# historical reviewed gate, the second records the currently deployed old-name
+# gate, and the third is the owner-approved ancestry+monotonicity rename.  A
+# crossed name/blob or name/receipt combination must fail closed.
+_PREREQUISITE_CONTRACTS = (
+    _PrerequisiteContract(
+        _PREREQUISITE_LEGACY_SOURCE_NAME,
+        "579f5e7816c7e2844eadfd7018d95ee37c8d8640",
+        _PREREQUISITE_LEGACY_GATE_STEPS,
+    ),
+    _PrerequisiteContract(
+        _PREREQUISITE_LEGACY_SOURCE_NAME,
+        "1502659be5e773f9bdfa9d6e6bb7346d77f03ad9",
+        _PREREQUISITE_LEGACY_GATE_STEPS,
+    ),
+    _PrerequisiteContract(
+        _PREREQUISITE_SOURCE_NAME,
+        "8aa4c71066d1575d6d3714827be02dd4f7c8b623",
+        _PREREQUISITE_GATE_STEPS,
+    ),
+)
+_PREREQUISITE_SOURCE_NAMES = frozenset(
+    contract.source_name for contract in _PREREQUISITE_CONTRACTS
+)
+_PREREQUISITE_WORKFLOW_BLOBS = frozenset(
+    contract.workflow_blob for contract in _PREREQUISITE_CONTRACTS
 )
 
 
@@ -316,7 +360,6 @@ def verify_registered_workflow_payloads(
         ("type", "file"),
         ("name", "merge-gate.yml"),
         ("path", _PREREQUISITE_WORKFLOW_PATH),
-        ("sha", _PREREQUISITE_WORKFLOW_BLOB),
     )
     for field, expected in exact_content_fields:
         observed = contents_payload.get(field)
@@ -324,13 +367,16 @@ def verify_registered_workflow_payloads(
             return None, (
                 f"workflow contents {field} mismatch: {observed!r} != {expected!r}"
             )
+    blob_sha = contents_payload.get("sha")
+    if blob_sha not in _PREREQUISITE_WORKFLOW_BLOBS:
+        return None, f"workflow contents sha mismatch: {blob_sha!r} is not reviewed"
     return (
         RegisteredWorkflowBinding(
             repo=repo,
             run_id=run_id,
             head_sha=head_sha,
             path=_PREREQUISITE_WORKFLOW_PATH,
-            blob_sha=_PREREQUISITE_WORKFLOW_BLOB,
+            blob_sha=str(blob_sha),
         ),
         "",
     )
@@ -421,7 +467,7 @@ def verify_prerequisite_no_result_job_payload(
             job.reference,
         )
     if (
-        source_check.get("name") != _PREREQUISITE_SOURCE_NAME
+        source_check.get("name") not in _PREREQUISITE_SOURCE_NAMES
         or source_check.get("workflowName") != _PREREQUISITE_WORKFLOW_NAME
     ):
         return _reject(
@@ -441,12 +487,26 @@ def verify_prerequisite_no_result_job_payload(
             "prerequisite source and consequence do not share an exact run",
             job.reference,
         )
+    contract = next(
+        (
+            candidate
+            for candidate in _PREREQUISITE_CONTRACTS
+            if candidate.source_name == source_check.get("name")
+            and candidate.workflow_blob == workflow.blob_sha
+        ),
+        None,
+    )
+    if contract is None:
+        return _reject(
+            "prerequisite source name and workflow blob are not one reviewed contract",
+            job.reference,
+        )
     expected_workflow = RegisteredWorkflowBinding(
         repo=repo,
         run_id=job.reference.run_id,
         head_sha=head_sha,
         path=_PREREQUISITE_WORKFLOW_PATH,
-        blob_sha=_PREREQUISITE_WORKFLOW_BLOB,
+        blob_sha=contract.workflow_blob,
     )
     if workflow != expected_workflow:
         return _reject(
@@ -463,14 +523,14 @@ def verify_prerequisite_no_result_job_payload(
             "prerequisite source did not complete before consequence creation",
             job.reference,
         )
-    if len(job.steps) != len(_PREREQUISITE_GATE_STEPS):
+    if len(job.steps) != len(contract.gate_steps):
         return _reject(
             "registered merge-gate-v4 must contain exactly "
-            f"{len(_PREREQUISITE_GATE_STEPS)} steps, observed {len(job.steps)}",
+            f"{len(contract.gate_steps)} steps, observed {len(job.steps)}",
             job.reference,
         )
     previous_completed: datetime | None = None
-    for step, expected in zip(job.steps, _PREREQUISITE_GATE_STEPS, strict=True):
+    for step, expected in zip(job.steps, contract.gate_steps, strict=True):
         expected_name, expected_number, expected_status, expected_conclusion = expected
         observed = (
             step.get("name"),
@@ -589,7 +649,7 @@ class GitHubActionsJobAuthority:
                 verification.accepted
                 and verification.kind == "setup-only"
                 and verification.run_id is not None
-                and check.get("name") == _PREREQUISITE_SOURCE_NAME
+                and check.get("name") in _PREREQUISITE_SOURCE_NAMES
                 and check.get("workflowName") == _PREREQUISITE_WORKFLOW_NAME
             ):
                 sources_by_run.setdefault(verification.run_id, []).append(

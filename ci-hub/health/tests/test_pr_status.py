@@ -164,6 +164,7 @@ class GhEngineClassificationTests(unittest.TestCase):
     def test_pin_freshness_red_alone_is_gate(self) -> None:
         for name in (
             "reverie-pin-is-latest-main",
+            "reverie-pin-ancestry-and-monotonicity",
             "liteinst2-pin-is-latest-main",
             "Pin Is Latest Main",
         ):
@@ -173,6 +174,21 @@ class GhEngineClassificationTests(unittest.TestCase):
                 status = pr_status._classify_gh_prs("rrnewton/hermit", raw)
                 self.assertEqual(status.gate_reds, 1)
                 self.assertEqual(status.product_reds, 0)
+
+    def test_pin_gate_substrings_do_not_swallow_product_failures(self) -> None:
+        for name in (
+            "prefix-reverie-pin-ancestry-and-monotonicity",
+            "reverie-pin-ancestry-and-monotonicity-summary",
+            "failure summary: reverie-pin-is-latest-main",
+            "liteinst2-pin-is-latest-main diagnostic",
+            "Pin Is Latest Main summary",
+        ):
+            with self.subTest(check=name):
+                raw = [_pr(1712, [{"name": name, "status": "COMPLETED",
+                                   "conclusion": "FAILURE"}])]
+                status = pr_status._classify_gh_prs("rrnewton/hermit", raw)
+                self.assertEqual(status.gate_reds, 0)
+                self.assertEqual(status.product_reds, 1)
 
     def test_pin_gate_does_not_swallow_a_real_product_failure(self) -> None:
         """The fix must not become a way to hide breakage: a pin red ALONGSIDE a

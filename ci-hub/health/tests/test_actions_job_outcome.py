@@ -21,13 +21,20 @@ import actions_job_outcome as outcome  # noqa: E402
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 POSITIVE_HEAD = "d282a85726a5e0101cad069c2f3d6e2e23b9d6cd"
 NEGATIVE_HEAD = "d93d512826c522dff89a27a1aa2d4eda0377796b"
+OLD_PIN_JOB = "reverie-pin-is-latest-main"
+NEW_PIN_JOB = "reverie-pin-ancestry-and-monotonicity"
+LEGACY_WORKFLOW_BLOB = "579f5e7816c7e2844eadfd7018d95ee37c8d8640"
+CURRENT_OLD_WORKFLOW_BLOB = "1502659be5e773f9bdfa9d6e6bb7346d77f03ad9"
+NEW_WORKFLOW_BLOB = "8aa4c71066d1575d6d3714827be02dd4f7c8b623"
+OLD_GATE_STEP = "Require the latest-Reverie pin gate"
+NEW_GATE_STEP = "Require the Reverie-pin ancestry-and-monotonicity gate"
 
 
 def _fixture(job_id: int) -> dict[str, object]:
     return json.loads((FIXTURES / f"actions_job_{job_id}.json").read_text())
 
 
-def _positive_check() -> dict[str, object]:
+def _positive_check(name: str = OLD_PIN_JOB) -> dict[str, object]:
     return {
         "__typename": "CheckRun",
         "completedAt": "2026-08-06T15:46:01Z",
@@ -36,7 +43,7 @@ def _positive_check() -> dict[str, object]:
             "https://github.com/rrnewton/hermit/actions/runs/31114544049/"
             "job/92660569815"
         ),
-        "name": "reverie-pin-is-latest-main",
+        "name": name,
         "startedAt": "2026-08-06T15:40:35Z",
         "status": "COMPLETED",
         "workflowName": "Merge Gate",
@@ -91,25 +98,43 @@ def _run_payload() -> dict[str, object]:
     }
 
 
-def _workflow_contents_payload() -> dict[str, object]:
+def _workflow_contents_payload(
+    blob: str = LEGACY_WORKFLOW_BLOB,
+) -> dict[str, object]:
     return {
         "type": "file",
         "name": "merge-gate.yml",
         "path": ".github/workflows/merge-gate.yml",
-        "sha": "579f5e7816c7e2844eadfd7018d95ee37c8d8640",
+        "sha": blob,
     }
 
 
-def _workflow_binding() -> outcome.RegisteredWorkflowBinding:
+def _workflow_binding(
+    blob: str = LEGACY_WORKFLOW_BLOB,
+) -> outcome.RegisteredWorkflowBinding:
     binding, error = outcome.verify_registered_workflow_payloads(
         repo="rrnewton/hermit",
         run_id=31114544049,
         head_sha=POSITIVE_HEAD,
         run_payload=_run_payload(),
-        contents_payload=_workflow_contents_payload(),
+        contents_payload=_workflow_contents_payload(blob),
     )
     assert not error and binding is not None
     return binding
+
+
+def _source_payload(name: str = OLD_PIN_JOB) -> dict[str, object]:
+    payload = _fixture(92660569815)
+    payload["name"] = name
+    return payload
+
+
+def _downstream_payload(step_name: str = OLD_GATE_STEP) -> dict[str, object]:
+    payload = _fixture(92670128104)
+    steps = payload["steps"]
+    assert isinstance(steps, list)
+    steps[4]["name"] = step_name
+    return payload
 
 
 class PayloadVerifierTests(unittest.TestCase):
@@ -145,6 +170,52 @@ class PayloadVerifierTests(unittest.TestCase):
         self.assertEqual(result.kind, "prerequisite-no-result")
         self.assertEqual(result.job_id, 92670128104)
         self.assertEqual(result.source_job_id, 92660569815)
+
+    def test_all_three_reviewed_name_blob_step_contracts_are_accepted(self) -> None:
+        contracts = (
+            (OLD_PIN_JOB, LEGACY_WORKFLOW_BLOB, OLD_GATE_STEP),
+            (OLD_PIN_JOB, CURRENT_OLD_WORKFLOW_BLOB, OLD_GATE_STEP),
+            (NEW_PIN_JOB, NEW_WORKFLOW_BLOB, NEW_GATE_STEP),
+        )
+        for name, blob, step_name in contracts:
+            with self.subTest(name=name, blob=blob):
+                source_check = _positive_check(name)
+                source = self.verify(
+                    source_check, POSITIVE_HEAD, _source_payload(name)
+                )
+                result = outcome.verify_prerequisite_no_result_job_payload(
+                    repo="rrnewton/hermit",
+                    check=_downstream_check(),
+                    head_sha=POSITIVE_HEAD,
+                    payload=_downstream_payload(step_name),
+                    source_check=source_check,
+                    source=source,
+                    workflow=_workflow_binding(blob),
+                )
+                self.assertTrue(result.accepted, result.reason)
+
+    def test_crossed_name_blob_or_receipt_contracts_are_refused(self) -> None:
+        crossed = (
+            (NEW_PIN_JOB, LEGACY_WORKFLOW_BLOB, NEW_GATE_STEP),
+            (OLD_PIN_JOB, NEW_WORKFLOW_BLOB, OLD_GATE_STEP),
+            (NEW_PIN_JOB, NEW_WORKFLOW_BLOB, OLD_GATE_STEP),
+        )
+        for name, blob, step_name in crossed:
+            with self.subTest(name=name, blob=blob, step=step_name):
+                source_check = _positive_check(name)
+                source = self.verify(
+                    source_check, POSITIVE_HEAD, _source_payload(name)
+                )
+                result = outcome.verify_prerequisite_no_result_job_payload(
+                    repo="rrnewton/hermit",
+                    check=_downstream_check(),
+                    head_sha=POSITIVE_HEAD,
+                    payload=_downstream_payload(step_name),
+                    source_check=source_check,
+                    source=source,
+                    workflow=_workflow_binding(blob),
+                )
+                self.assertFalse(result.accepted)
 
     def test_downstream_contract_tampering_never_becomes_no_result(self) -> None:
         source = self.verify(_positive_check(), POSITIVE_HEAD, _fixture(92660569815))
@@ -383,6 +454,46 @@ class BoundedDereferenceTests(unittest.TestCase):
                     by_kind["prerequisite-no-result"].source_job_id,
                     92660569815,
                 )
+
+    @mock.patch("actions_job_outcome.subprocess.run")
+    def test_batch_recognizes_new_name_contract_without_weakening_source(
+        self, run: mock.Mock
+    ) -> None:
+        source_check = _positive_check(NEW_PIN_JOB)
+        payloads = {
+            "92660569815": _source_payload(NEW_PIN_JOB),
+            "92670128104": _downstream_payload(NEW_GATE_STEP),
+        }
+
+        def response(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess:
+            endpoint = command[-1]
+            if "/actions/jobs/" in endpoint:
+                payload = payloads[endpoint.rsplit("/", 1)[-1]]
+            elif endpoint.endswith("/actions/runs/31114544049"):
+                payload = _run_payload()
+            elif "/contents/.github/workflows/merge-gate.yml?ref=" in endpoint:
+                payload = _workflow_contents_payload(NEW_WORKFLOW_BLOB)
+            else:
+                raise AssertionError(f"unexpected endpoint: {endpoint}")
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=0,
+                stdout=json.dumps(payload),
+                stderr="",
+            )
+
+        run.side_effect = response
+        results = self.authority().verify_failures(
+            "rrnewton/hermit",
+            (source_check, _downstream_check()),
+            POSITIVE_HEAD,
+        )
+        self.assertEqual(
+            {result.kind for result in results},
+            {"setup-only", "prerequisite-no-result"},
+        )
 
     @mock.patch("actions_job_outcome.subprocess.run")
     def test_downstream_without_dereferenced_source_stays_failed(

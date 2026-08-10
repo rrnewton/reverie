@@ -80,12 +80,18 @@ failure, and the complete step list. Only a job whose sole step is failed
 `Set up job` becomes typed `NO_RESULT`; it is reported as pending and never as
 green. One versioned downstream contract is also recognized: the exact
 `merge-gate-v4` job may become typed `NO_RESULT` only when the same selected
-rollup/run contains an independently verified setup-only
-`reverie-pin-is-latest-main` source and the complete seven-step gate receipt
+rollup/run contains an independently verified setup-only Reverie-pin source and
+the complete seven-step gate receipt
 shows only the prerequisite requirement failing while product validation stayed
-skipped. The authority also dereferences the exact workflow run and exact-head
-workflow contents, requiring the reviewed v4 blob whose YAML declares the
-`needs.reverie-pin.result` link. This is not a generic gate-failure carve-out.
+skipped. The owner-approved rule is ancestry plus monotonicity: a candidate must
+pin a `reverie/main` ancestor and must not regress from the landing base; tip
+equality is explicitly not required. During the coordinated rename, the
+authority accepts the historical `reverie-pin-is-latest-main` identity and the
+accurate `reverie-pin-ancestry-and-monotonicity` identity only as exact reviewed
+name/workflow-blob/step-receipt contracts. The authority also dereferences the
+exact workflow run and exact-head workflow contents, requiring a reviewed v4
+blob whose YAML declares the `needs.reverie-pin.result` link. This is not a
+generic gate-failure carve-out.
 Missing/malformed API
 data, identity mismatches, later workflow steps, source/run mismatches, timeouts,
 and lookup-budget exhaustion preserve the red verdict. JSON output exposes

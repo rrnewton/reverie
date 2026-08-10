@@ -407,11 +407,11 @@ def test_partial_data_never_writes_a_baseline():
 # ---------------------------------------------------------------------------
 
 
-def _due_head(pin_conclusion, rid=901):
+def _due_head(pin_conclusion, rid=901, pin_job=gr.PIN_JOB):
     """A head whose gate is parked with every leg finished, plus a pin verdict."""
     runs = [run(gr.GATE_WORKFLOW, conclusion="cancelled", rid=rid)]
     runs += [run(w) for w in gr.LEG_WORKFLOWS[:2]]
-    jobs = {"jobs": [{"name": gr.PIN_JOB, "status": "completed",
+    jobs = {"jobs": [{"name": pin_job, "status": "completed",
                       "conclusion": pin_conclusion}]} if pin_conclusion else None
     return runs, jobs
 
@@ -432,6 +432,25 @@ def test_the_refirable_set_is_provably_refirable():
     assert v == "success"
     state, _gid, _c, _l = gr.classify_head(runs)
     assert state == gr.REFIRE_DUE
+
+
+def test_pin_verdict_accepts_only_both_exact_transition_names():
+    """Old in-flight runs and new runs work; substrings never impersonate either."""
+    from unittest import mock
+
+    for name in (gr.PIN_JOB, "reverie-pin-is-latest-main"):
+        _runs, jobs = _due_head("failure", pin_job=name)
+        with mock.patch.object(gr, "gh_json", return_value=jobs):
+            assert gr.pin_verdict("r/x", 901, 10) == "failure"
+
+    for near_miss in (
+        f"prefix-{gr.PIN_JOB}",
+        f"{gr.PIN_JOB}-summary",
+        f"failure summary: {gr.PIN_JOB}",
+    ):
+        _runs, jobs = _due_head("failure", pin_job=near_miss)
+        with mock.patch.object(gr, "gh_json", return_value=jobs):
+            assert gr.pin_verdict("r/x", 901, 10) is None
 
 
 def test_a_pin_blocked_head_reports_FUTILE_not_DUE():

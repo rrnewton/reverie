@@ -629,14 +629,18 @@ def _rollup_ci_state(rollup: object, *, head_sha: str = "") -> str:
 # check names. Matched tolerantly so a version bump (`merge-gate-v3`) or the
 # planner's spaced form ("Merge Gate") still classifies as a gate check.
 #
-# PIN FRESHNESS IS A GATE, AND MISCLASSIFYING IT IS EXPENSIVE BECAUSE IT IS
-# FLEET-WIDE. Measured 2026-08-07: hermit #1711 failed `reverie-pin-is-latest-main`
+# REVERIE PIN POLICY IS A GATE, AND MISCLASSIFYING IT IS EXPENSIVE BECAUSE IT IS
+# FLEET-WIDE. Measured 2026-08-07: hermit #1711 failed the historical
+# `reverie-pin-is-latest-main`
 # + `merge-gate-v4` at unchanged head 2d4866a0 and was reported as
 # `real_reds=1 (product=1)` -- "a genuine break at a ready PR head". It was not.
 # #1711 pinned reverie dd3c178e, IDENTICAL to hermit main; the check asserts the
-# pin equals REVERIE's latest main, which had advanced to 0ae0c01b. So every
-# hermit PR at that pin fails it at once, main included, and ONE shared bump
-# (PR #1840) clears them all. A single unrecognised check name defeated the
+# pin equalled REVERIE's latest main, which had advanced to 0ae0c01b. That was
+# the policy then. The owner changed the rule on 2026-08-08 to ancestry plus
+# monotonicity: the candidate pin must be on reverie/main history and must not
+# regress from the landing-base pin; tip equality is explicitly not required.
+# The new identity `reverie-pin-ancestry-and-monotonicity` encodes that decision.
+# A single unrecognised check name defeated the
 # `all(...)` test below and turned shared pin drift into a phantom product break.
 #
 # BUT "one bump clears them all" HOLDS ONLY FOR THE SPECIAL CASE ABOVE, where the
@@ -654,7 +658,12 @@ _GATE_META_CHECK_NAMES = frozenset(
         "merge gate",
         "core-review-protocol",
         "reverie-pin-is-latest-main",
+        "reverie-pin-ancestry-and-monotonicity",
     }
+)
+_LEGACY_PIN_GATE_NAME = re.compile(
+    r"(?:(?:[a-z0-9][a-z0-9._-]*)-)?pin-is-latest-main"
+    r"|(?:(?:[a-z0-9][a-z0-9._ -]*) )?pin is latest main"
 )
 
 
@@ -666,9 +675,10 @@ def _is_gate_meta_check(name: str) -> bool:
         return True
     if "review-protocol" in normalized:
         return True
-    # Pin-freshness gates: `<dep>-pin-is-latest-main` and the spaced planner
-    # form. These assert a DEPENDENCY PIN is current, never that the product works.
-    return "pin-is-latest" in normalized or "pin is latest" in normalized
+    # Deliberately supported historical pin-gate grammar.  Full-match is
+    # load-bearing: a product summary that merely contains one of these tokens
+    # is still a product failure, never a gate-meta check.
+    return _LEGACY_PIN_GATE_NAME.fullmatch(normalized) is not None
 
 
 def _label_names(entry: dict[str, object]) -> set[str]:

@@ -123,7 +123,8 @@ def gh_json(args: Sequence[str], timeout: int):
 
 # The merge gate's own trusted pin checker, run on the gate runner from main's
 # code. Its verdict is what we READ; we do not recompute the comparison here.
-PIN_JOB = "reverie-pin-is-latest-main"
+PIN_JOB = "reverie-pin-ancestry-and-monotonicity"
+PIN_JOBS = frozenset({PIN_JOB, "reverie-pin-is-latest-main"})
 
 
 def pin_verdict(repo: str, run_id: int, call_timeout: int):
@@ -131,8 +132,8 @@ def pin_verdict(repo: str, run_id: int, call_timeout: int):
 
     Returns "failure", "success", or None when it cannot be read.
 
-    WHY READ IT RATHER THAN COMPUTE IT. The comparison "does this head pin the
-    latest Reverie main" is already made by `ci/run-reverie-pin-check.sh`,
+    WHY READ IT RATHER THAN COMPUTE IT. The ancestry-and-monotonicity decision
+    for this head's Reverie pin is already made by `ci/run-reverie-pin-check.sh`,
     checked out from main and executed on the gate runner precisely so that
     PR-controlled code never decides it. Re-deriving it here would create a
     second verifier of one authority -- the defect this repo has spent the
@@ -147,7 +148,7 @@ def pin_verdict(repo: str, run_id: int, call_timeout: int):
     if not data:
         return None
     for job in data.get("jobs") or []:
-        if job.get("name") == PIN_JOB and job.get("status") == "completed":
+        if job.get("name") in PIN_JOBS and job.get("status") == "completed":
             return job.get("conclusion")
     return None
 
@@ -319,9 +320,10 @@ def survey(repo: str, limit: int, deadline_secs: float, call_timeout: int,
             if gid is not None and pin_verdict(repo, gid, call_timeout) == "failure":
                 v.state = state = REFIRE_FUTILE
                 v.reason = (
-                    f"gate CANCELLED and every leg completed, BUT {PIN_JOB} already "
+                    "gate CANCELLED and every leg completed, BUT the Reverie-pin "
+                    "ancestry-and-monotonicity gate already "
                     "FAILED for this head -> refiring re-runs the same check against a "
-                    "reverie/main that has only moved further ahead. Re-pin or rebase."
+                    "the same head. Re-pin or rebase."
                 )
             else:
                 v.reason = "gate CANCELLED and every leg completed -> refire is safe"
@@ -523,9 +525,10 @@ def gate_report(s: "Survey", repo: str, elapsed: float, state_path, dry_run: boo
         # rigorous-looking instruction that could not work.
         summary += (
             f" SEPARATELY, {len(futile)} parked gate(s) are NOT refirable "
-            f"({','.join(str(n) for n in sorted(futile))}): {PIN_JOB} has already "
-            "failed for those heads, so refiring only re-checks a reverie/main that "
-            "keeps moving. Remedy is a RE-PIN or rebase onto latest Reverie, not a refire."
+            f"({','.join(str(n) for n in sorted(futile))}): the Reverie-pin "
+            "ancestry-and-monotonicity gate has already failed for those heads, "
+            "so refiring only re-checks the same head. Remedy is a RE-PIN or rebase, "
+            "not a refire."
         )
 
     fields = {
