@@ -353,6 +353,7 @@ class RepoStatus:
     all_open: int | None = None
     drafts: int | None = None
     population_error: str = ""
+    population_age_secs: float | None = None
     review_protocol: tuple[ReviewProtocolStatus, ...] = ()
     mechanism_overlaps: tuple[MechanismOverlap, ...] = ()
     undetermined_reds: int = 0
@@ -1122,6 +1123,7 @@ def _classify_gh_prs(
     draft_count: int | None = None,
     population_known: bool = True,
     population_error: str = "",
+    population_age_secs: float | None = None,
 ) -> RepoStatus:
     if banked_failure is None:
         banked_failure = {}
@@ -1380,6 +1382,7 @@ def _classify_gh_prs(
         all_open=all_open if population_known else None,
         drafts=drafts if population_known else None,
         population_error=population_error,
+        population_age_secs=population_age_secs,
         review_protocol=tuple(review_protocol),
         mechanism_overlaps=mechanism_overlaps,
     )
@@ -1432,7 +1435,7 @@ def fetch_repo_status_gh(
     census_timeout = None if timeout is None else max(0.0, timeout - elapsed)
     population_error = ""
     try:
-        census, _census_age = _cached_open_pr_census(
+        census, census_age = _cached_open_pr_census(
             repo,
             net_wrapper=net_wrapper,
             gh_cmd=gh_cmd,
@@ -1442,6 +1445,7 @@ def fetch_repo_status_gh(
         # The rare all-open census is not permission to throw away a successful
         # ready-head health read. Carry UNKNOWN population separately.
         census = []
+        census_age = None
         population_error = str(error)
     # The rare census is deliberately lightweight and uses REST. Only its draft
     # rows are appended: ready rows above carry the richer exact-head fields.
@@ -1480,6 +1484,7 @@ def fetch_repo_status_gh(
         draft_count=sum(entry.get("isDraft") is True for entry in census),
         population_known=not population_error,
         population_error=population_error,
+        population_age_secs=census_age,
     )
 
 

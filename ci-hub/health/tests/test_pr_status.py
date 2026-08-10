@@ -68,6 +68,7 @@ class GhEngineClassificationTests(unittest.TestCase):
         status = pr_status._classify_gh_prs("rrnewton/hermit", raw)
         self.assertEqual(status.all_open, 3)
         self.assertEqual(status.drafts, 2)
+        self.assertIsNone(status.population_age_secs)
         self.assertEqual(status.open, 1)
 
     def test_cancelled_check_is_pending_not_red(self) -> None:
@@ -1854,6 +1855,7 @@ class DraftCensusThrottleTests(unittest.TestCase):
         self.assertEqual(status.open, 1)
         self.assertEqual(status.all_open, 3)
         self.assertEqual(status.drafts, 2)
+        self.assertEqual(status.population_age_secs, 0.0)
 
     def test_failed_rare_census_does_not_discard_ready_health(self) -> None:
         ready = [_pr(1, _rollup(("COMPLETED", "SUCCESS")), head="a" * 40)]

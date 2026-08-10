@@ -432,6 +432,10 @@ def pull_request_gate() -> int:
     ready_by_repo = {
         repo: status.open for repo, status in zip(measured_repos, statuses)
     }
+    census_age_by_repo = {
+        repo: getattr(status, "population_age_secs", 0.0)
+        for repo, status in zip(measured_repos, statuses)
+    }
     population_unknown = [
         repo for repo, count in all_open_by_repo.items() if count is None
     ]
@@ -450,6 +454,10 @@ def pull_request_gate() -> int:
         for repo in measured_repos
     )
     coverage = f"{len(statuses)}/{len(repos)}"
+    known_census_ages = [
+        age for age in census_age_by_repo.values() if isinstance(age, (int, float))
+    ]
+    census_max_age = round(max(known_census_ages), 1) if known_census_ages else "unknown"
     outage = any(status.outage_suspected for status in statuses)
     unhealthy = counts["real_reds"] > 0 or outage
     degraded = bool(unavailable or population_unknown)
@@ -464,6 +472,7 @@ def pull_request_gate() -> int:
         state = "ok"
     summary = (
         f"all_open={all_open} across {coverage} configured repos ({repo_scope}); "
+        f"all-open census max_age_s={census_max_age},ttl_s={pr_status.DEFAULT_CENSUS_TTL_SECS:.0f}; "
         f"ready_non_draft={ready_non_draft}, with ready-head CI "
         f"red={counts['red']},pending={counts['pending']},green={counts['green']},"
         f"real_reds={counts['real_reds']},"
@@ -482,7 +491,9 @@ def pull_request_gate() -> int:
         {
             "state": state,
             "total": all_open,
-            "total_scope": f"all-open-prs-across-{coverage}-configured-repos",
+            "total_scope": f"cached-all-open-prs-across-{coverage}-configured-repos",
+            "census_max_age_secs": census_max_age,
+            "census_ttl_secs": round(pr_status.DEFAULT_CENSUS_TTL_SECS),
             "repo_coverage": coverage,
             "configured_repos": "|".join(repos),
             "measured_repos": "|".join(measured_repos),
