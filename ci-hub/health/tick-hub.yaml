@@ -501,7 +501,7 @@ reminders:
       title: "approval(s) cannot be bound to any head; reviewers emit no APPROVED-AT line: {summary}"
 
   # THE GATE RUNNER WAS GONE FOR TWO DAYS AND NOTHING SAID SO. On 2026-08-08 the
-  # `hermit-gate-newton` installation and credentials were deleted; the user
+  # The gate-runner installation and credentials were deleted; the user
   # service stayed ENABLED and failed 203/EXEC for ~two days, and the missing
   # capacity presented as CI saturation -- gates parked with every leg finished,
   # Merge Gate repeatedly the worst workflow. It was later restored, but
