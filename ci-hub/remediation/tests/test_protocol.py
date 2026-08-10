@@ -12,6 +12,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -343,6 +344,43 @@ class ProtocolTest(unittest.TestCase):
             obligation_id="test-obligation",
             path=self.store,
         )
+
+    def revert_snapshot(
+        self,
+        *,
+        candidate_sha: str = NEXT_SHA,
+        main_sha: str = SHA,
+        issuer: str = protocol.REVERT_AUTHORIZATION_OWNER,
+        association: str = "OWNER",
+        expires_at: str = "2099-01-01T00:00:00Z",
+        nonce: str = "test-revert-nonce-0001",
+    ) -> dict:
+        return {
+            "authorization": {
+                "repo": "rrnewton/hermit",
+                "obligation_id": "test-obligation",
+                "failed_land_sha": SHA,
+                "main_sha": main_sha,
+                "candidate_sha": candidate_sha,
+                "nonce": nonce,
+                "expires_at": expires_at,
+                "authorized_by": protocol.REVERT_AUTHORIZATION_OWNER,
+                "reason": "owner reviewed the exact revert candidate",
+            },
+            "issuer": {
+                "login": issuer,
+                "author_association": association,
+                "comment_id": 42,
+                "html_url": "https://example.invalid/comment/42",
+            },
+            "observed": {
+                "main_sha": SHA,
+                "candidate_sha": NEXT_SHA,
+                "candidate_parent_sha": SHA,
+                "candidate_tree_sha": TREE,
+                "failed_parent_tree_sha": TREE,
+            },
+        }
 
     def resolve_args(self, *, source: Path | None = None) -> argparse.Namespace:
         return argparse.Namespace(
@@ -1984,18 +2022,10 @@ class ProtocolTest(unittest.TestCase):
             )
         self.assertNotEqual(record["overall_state"], "remediation_required")
 
-    def test_budget_spent_local_red_with_no_hosted_answer_investigates_not_reverts(
+    def test_ledger_red_at_tip_awaits_owner_without_dispatch(
         self,
     ) -> None:
-        # NEGATIVE bracket (task obligation_revert_path_lone): a local red whose
-        # authoritative GitHub leg NEVER reported (no_result: never admitted /
-        # cancelled below the concurrency cap / superseded -- the COMMON case under
-        # admission-limited hosted CI) must NOT auto-revert a HEALTHY tip, EVEN
-        # after the whole re-dispatch budget is spent. A load/environment flake
-        # reproduces across cold re-dispatches, so budget-spent is not corroboration
-        # -- only an authoritative github=="red" is. Three such lone-red revert
-        # recommendations fired 2026-08-04 (e8a0d8d3, 0f891e43 x2), all caught by
-        # humans. The tip here (main_sha == SHA == landed_sha) is HEALTHY.
+        # C: even the authoritative ledger red cannot mutate main by itself.
         self.create()
         self.transition(
             {
@@ -2014,14 +2044,108 @@ class ProtocolTest(unittest.TestCase):
             record = protocol.evaluate_obligation(
                 "test-obligation", store_path=self.store, main_sha=SHA
             )
-        # No revert of the healthy tip: no remediation, no recommendation, no
-        # triggered dispatch. Surfaced for a human instead.
-        self.assertNotEqual(record["overall_state"], "remediation_required")
-        self.assertEqual(record["overall_state"], "investigation_required")
-        self.assertIsNone(record.get("recommendation"))
-        self.assertEqual(record["remediation"]["state"], "not_required")
-        self.assertIn("UNCORROBORATED local", stderr.getvalue())
+        self.assertEqual(record["overall_state"], "remediation_required")
+        self.assertEqual(record["recommendation"]["action"], "revert")
+        self.assertEqual(record["remediation"]["state"], "awaiting_owner")
+        self.assertIsNone(record["remediation"].get("dispatch"))
+        self.assertIn("AWAITING OWNER", stderr.getvalue())
         self.assertNotIn("REMEDIATION TRIGGERED", stderr.getvalue())
+
+    def test_owner_revert_authorization_is_consumed_by_cas(self) -> None:
+        self.create()
+        self.transition(
+            {
+                "local": {
+                    "state": "red",
+                    "finished_at": "2026-08-10T01:00:00Z",
+                    "exit_code": 1,
+                    "log_path": "/tmp/local.log",
+                },
+                "github": {"state": "no_result"},
+            }
+        )
+        with redirect_stderr(io.StringIO()):
+            awaiting = protocol.evaluate_obligation(
+                "test-obligation", store_path=self.store, main_sha=SHA
+            )
+            accepted = protocol.authorize_revert(
+                awaiting,
+                self.revert_snapshot(),
+                store_path=self.store,
+                now=datetime(2026, 8, 10, tzinfo=timezone.utc),
+            )
+        self.assertEqual(accepted["remediation"]["state"], "triggered")
+        authorization = accepted["remediation"]["authorization"]
+        self.assertEqual(authorization["state"], "consumed")
+        self.assertEqual(authorization["main_sha"], SHA)
+        self.assertEqual(authorization["candidate_sha"], NEXT_SHA)
+        self.assertEqual(
+            accepted["remediation"]["dispatch"]["state"], "pending"
+        )
+        with self.assertRaisesRegex(protocol.ProtocolError, "already consumed"):
+            protocol.authorize_revert(
+                awaiting,
+                self.revert_snapshot(),
+                store_path=self.store,
+                now=datetime(2026, 8, 10, tzinfo=timezone.utc),
+            )
+
+    def test_revert_authorization_refuses_all_five_mutations(self) -> None:
+        self.create()
+        record = obligations.get_record("test-obligation", self.store)
+        now = datetime(2026, 8, 10, tzinfo=timezone.utc)
+        cases = {
+            "wrong-candidate": self.revert_snapshot(candidate_sha="d" * 40),
+            "wrong-main": self.revert_snapshot(main_sha="e" * 40),
+            "non-owner": self.revert_snapshot(
+                issuer="not-owner", association="MEMBER"
+            ),
+            "expired": self.revert_snapshot(expires_at="2026-08-09T00:00:00Z"),
+            "reused-nonce": self.revert_snapshot(),
+        }
+        for name, snapshot in cases.items():
+            used = (
+                {"test-revert-nonce-0001"} if name == "reused-nonce" else set()
+            )
+            accepted, refusals = protocol.assess_revert_authorization(
+                record, snapshot, used_nonces=used, now=now
+            )
+            self.assertFalse(accepted, name)
+            self.assertGreaterEqual(len(refusals), 1, name)
+        self.assertEqual(len(cases), 5)
+
+    def test_main_identity_unavailable_warns_without_action(self) -> None:
+        self.create()
+        self.transition(
+            {
+                "local": {
+                    "state": "red",
+                    "finished_at": "2026-08-10T01:00:00Z",
+                    "exit_code": 1,
+                    "log_path": "/tmp/local.log",
+                },
+                "github": {"state": "no_result"},
+            }
+        )
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(
+                protocol,
+                "github_main_sha",
+                side_effect=protocol.ProtocolError("API unavailable"),
+            ),
+            redirect_stderr(stderr),
+        ):
+            record = protocol.evaluate_obligation(
+                "test-obligation", store_path=self.store
+            )
+        self.assertEqual(record["overall_state"], "remediation_required")
+        self.assertEqual(
+            record["remediation"]["state"], "awaiting_main_identity"
+        )
+        self.assertIsNone(record["recommendation"])
+        self.assertIsNone(record["remediation"].get("dispatch"))
+        self.assertIn("NO ACTION DISPATCHED", stderr.getvalue())
 
     def test_spent_local_red_waits_while_github_still_running(self) -> None:
         # SEQUENCING regression (task cancellation_taxonomy_distinguish_self,
@@ -2091,9 +2215,11 @@ class ProtocolTest(unittest.TestCase):
             actuator.assert_not_called()
             self.assertNotEqual(record["overall_state"], "remediation_required")
 
-    def test_green_red_disagreement_is_symmetric_and_never_actuates(self) -> None:
-        # Count both orientations: neither exact-SHA authority may overrule a
-        # contradictory green by reaching the remediation actuator first.
+    def test_hermit_ledger_red_precedes_hosted_green_but_never_auto_reverts(
+        self,
+    ) -> None:
+        # Hermit's two orientations are intentionally asymmetric: ledger red is
+        # authoritative but owner-gated; ledger green satisfies despite hosted red.
         cases = (("red", "green", "local"), ("green", "red", "github"))
         self.assertEqual(len(cases), 2)
         for index, (local_state, github_state, failed_source) in enumerate(cases):
@@ -2132,11 +2258,14 @@ class ProtocolTest(unittest.TestCase):
                     obligation_id, store_path=store, main_sha=SHA
                 )
             actuator.assert_not_called()
-            self.assertEqual(record["overall_state"], "investigation_required")
-            self.assertEqual(record["failure_source"], failed_source)
-            self.assertIsNone(record.get("recommendation"))
-            self.assertEqual(record["remediation"]["state"], "not_required")
-            self.assertIn("DISAGREE", stderr.getvalue())
+            if local_state == "red":
+                self.assertEqual(record["overall_state"], "remediation_required")
+                self.assertEqual(record["failure_source"], failed_source)
+                self.assertEqual(record["remediation"]["state"], "awaiting_owner")
+                self.assertIn("AWAITING OWNER", stderr.getvalue())
+            else:
+                self.assertEqual(record["overall_state"], "satisfied")
+                self.assertEqual(record["remediation"]["state"], "not_required")
 
     def test_poll_observes_late_red_after_nonblocking_satisfaction(self) -> None:
         self.create()
@@ -2165,10 +2294,8 @@ class ProtocolTest(unittest.TestCase):
         reopened = obligations.get_record("test-obligation", self.store)
         runs.assert_called_once()
         actuator.assert_not_called()
-        self.assertEqual(reopened["overall_state"], "investigation_required")
+        self.assertEqual(reopened["overall_state"], "satisfied")
         self.assertEqual(reopened["remediation"]["state"], "not_required")
-        self.assertEqual(reopened["alert"]["severity"], "P0")
-        self.assertEqual(reopened["alert"]["action"], "investigate")
         self.assertTrue(protocol._watch_complete(reopened))
 
     def test_global_watch_clears_fake_pending_when_no_producer_exists(self) -> None:
@@ -2204,19 +2331,15 @@ class ProtocolTest(unittest.TestCase):
         self.assertFalse(protocol._verification_in_flight(record))
         self.assertTrue(protocol._watch_complete(record))
 
-    def test_authoritative_github_red_still_reverts_after_lone_local_guard(
+    def test_hosted_red_stays_loud_but_cannot_dispatch_remediation(
         self,
     ) -> None:
-        # POSITIVE, COUNTED bracket (task obligation_revert_path_lone): the guard
-        # against a lone local red must NOT make the actuator inert. Every
-        # AUTHORITATIVE hosted red -- N == 4 distinct red-producing conclusions
-        # (failure, timed_out, error, startup_failure), which _github_state maps to the
-        # taxonomy "red" -- STILL arms an immediate revert of a still-at-tip land.
-        # A path that never recommends is disabled, not fixed.
+        # A/B: every hosted failure class remains a loud remediation obligation,
+        # but Hermit's demoted hosted leg cannot authorize a mutation of main.
         red_conclusions = ("failure", "timed_out", "error", "startup_failure")
-        self.assertEqual(len(red_conclusions), 4)  # N stated: N == 4
+        self.assertEqual(len(red_conclusions), 4)
         self.assertEqual(set(red_conclusions), set(protocol._RED_CONCLUSIONS))
-        reverted = 0
+        warned_without_dispatch = 0
         for index, conclusion in enumerate(red_conclusions):
             store = self.root / f"positive-{index}.jsonl"
             obligation_id = f"positive-{index}"
@@ -2256,11 +2379,45 @@ class ProtocolTest(unittest.TestCase):
                     obligation_id, store_path=store, main_sha=SHA
                 )
             self.assertEqual(record["overall_state"], "remediation_required", conclusion)
-            self.assertEqual(record["recommendation"]["action"], "revert", conclusion)
-            self.assertEqual(record["remediation"]["state"], "triggered", conclusion)
-            reverted += 1
-        # All N genuine hosted failures still revert.
-        self.assertEqual(reverted, 4)
+            self.assertEqual(record["recommendation"]["action"], "fix-forward", conclusion)
+            self.assertEqual(
+                record["recommendation"]["authority"], "advisory-only", conclusion
+            )
+            self.assertEqual(
+                record["remediation"]["state"], "awaiting_local_authority", conclusion
+            )
+            self.assertIsNone(record["remediation"].get("dispatch"), conclusion)
+            warned_without_dispatch += 1
+        self.assertEqual(warned_without_dispatch, 4)
+
+    def test_hosted_advisory_tombstones_a_legacy_revert_dispatch(self) -> None:
+        self.create()
+        self.transition(
+            {
+                "overall_state": "remediation_required",
+                "local": {"state": "no_result"},
+                "github": {"state": "red"},
+                "failure_summary": "legacy hosted red",
+                "recommendation": {"action": "revert"},
+                "remediation": {
+                    "state": "triggered",
+                    "kind": "revert",
+                    "dispatch": {
+                        "state": "pending",
+                        "instruction": "legacy unsafe revert instruction",
+                    },
+                },
+            }
+        )
+        with redirect_stderr(io.StringIO()):
+            migrated = protocol.evaluate_obligation(
+                "test-obligation", store_path=self.store, main_sha=SHA
+            )
+        self.assertEqual(
+            migrated["remediation"]["state"], "awaiting_local_authority"
+        )
+        self.assertIsNone(migrated["remediation"]["dispatch"])
+        self.assertEqual(migrated["recommendation"]["action"], "fix-forward")
 
     def test_no_result_is_distinct_from_both_pass_and_fail_for_a_local_red(
         self,
@@ -2270,12 +2427,11 @@ class ProtocolTest(unittest.TestCase):
         # different outcomes -- no_result must never be folded into either pass or
         # fail. This is the rc=2 UNVERIFIABLE vs rc=1 NOT-LANDED discipline applied
         # to verification legs.
-        #   github green      -> investigation_required (DISAGREEMENT, no revert)
-        #   github no_result  -> investigation_required (UNCORROBORATED, no revert)
-        #   github red        -> remediation_required   (authoritative revert)
+        # The local ledger red is authoritative in all three cases. A hosted
+        # answer changes neither that verdict nor the owner-only revert boundary.
         cases = {
-            "green": ("investigation_required", None),
-            "no_result": ("investigation_required", None),
+            "green": ("remediation_required", "revert"),
+            "no_result": ("remediation_required", "revert"),
             "red": ("remediation_required", "revert"),
         }
         outcomes = {}
@@ -2315,17 +2471,23 @@ class ProtocolTest(unittest.TestCase):
             self.assertEqual(record["overall_state"], expected_overall, github_state)
             action = (record.get("recommendation") or {}).get("action")
             self.assertEqual(action, expected_action, github_state)
+            self.assertEqual(record["remediation"]["state"], "awaiting_owner")
+            self.assertIsNone(record["remediation"].get("dispatch"))
             outcomes[github_state] = (record["overall_state"], action)
-        # no_result is the same as neither the pass-side (green) recommendation nor
-        # the fail-side (red) recommendation: it never reverts (like green) yet is
-        # reached by its OWN path (uncorroborated), distinct from the disagreement.
-        self.assertIsNone(outcomes["no_result"][1])
-        self.assertNotEqual(outcomes["no_result"][1], outcomes["red"][1])
+        self.assertEqual(len(outcomes), 3)
 
     def test_failure_recommends_fix_forward_after_main_advances(self) -> None:
         self.create()
         self.transition(
-            {"github": {"state": "red", "finished_at": "2026-08-03T01:00:00Z"}}
+            {
+                "local": {
+                    "state": "red",
+                    "finished_at": "2026-08-03T01:00:00Z",
+                    "exit_code": 1,
+                    "log_path": "/tmp/local.log",
+                },
+                "github": {"state": "no_result"},
+            }
         )
         with redirect_stderr(io.StringIO()):
             record = protocol.evaluate_obligation(
@@ -2338,7 +2500,15 @@ class ProtocolTest(unittest.TestCase):
         """Historical red producers cannot resurrect a discharged obligation."""
         self.create()
         self.transition(
-            {"github": {"state": "red", "finished_at": "2026-08-03T01:00:00Z"}}
+            {
+                "local": {
+                    "state": "red",
+                    "finished_at": "2026-08-03T01:00:00Z",
+                    "exit_code": 1,
+                    "log_path": "/tmp/local.log",
+                },
+                "github": {"state": "no_result"},
+            }
         )
         with redirect_stderr(io.StringIO()):
             failed = protocol.evaluate_obligation(
@@ -3085,15 +3255,13 @@ class ProtocolTest(unittest.TestCase):
 
     def test_remediation_trigger_is_idempotent(self) -> None:
         self.create()
-        # A corroborated GitHub red is remediation-ready without re-dispatch; a
-        # lone local red is provisional (see the redispatch tests).
-        self.transition({"github": {"state": "red"}})
+        self.transition({"local": {"state": "red"}, "github": {"state": "no_result"}})
         with redirect_stderr(io.StringIO()):
             first = protocol.evaluate_obligation(
-                "test-obligation", store_path=self.store, main_sha=SHA
+                "test-obligation", store_path=self.store, main_sha=NEXT_SHA
             )
             second = protocol.evaluate_obligation(
-                "test-obligation", store_path=self.store, main_sha=SHA
+                "test-obligation", store_path=self.store, main_sha=NEXT_SHA
             )
         self.assertEqual(first["event_id"], second["event_id"])
         events = [json.loads(line) for line in self.store.read_text().splitlines()]
@@ -3103,10 +3271,10 @@ class ProtocolTest(unittest.TestCase):
 
     def test_wake_delivery_is_unhandled_until_reader_acknowledges(self) -> None:
         self.create()
-        self.transition({"github": {"state": "red"}})
+        self.transition({"local": {"state": "red"}, "github": {"state": "no_result"}})
         with redirect_stderr(io.StringIO()):
             protocol.evaluate_obligation(
-                "test-obligation", store_path=self.store, main_sha=SHA
+                "test-obligation", store_path=self.store, main_sha=NEXT_SHA
             )
         with redirect_stdout(io.StringIO()):
             protocol.record_wake_sent(
@@ -3140,10 +3308,10 @@ class ProtocolTest(unittest.TestCase):
 
     def test_executed_acknowledgement_succeeds_without_reason(self) -> None:
         self.create()
-        self.transition({"github": {"state": "red"}})
+        self.transition({"local": {"state": "red"}, "github": {"state": "no_result"}})
         with redirect_stderr(io.StringIO()):
             protocol.evaluate_obligation(
-                "test-obligation", store_path=self.store, main_sha=SHA
+                "test-obligation", store_path=self.store, main_sha=NEXT_SHA
             )
         with redirect_stdout(io.StringIO()):
             protocol.inherit_actionable(
@@ -3160,10 +3328,10 @@ class ProtocolTest(unittest.TestCase):
 
     def test_declined_acknowledgement_without_reason_is_refused(self) -> None:
         self.create()
-        self.transition({"github": {"state": "red"}})
+        self.transition({"local": {"state": "red"}, "github": {"state": "no_result"}})
         with redirect_stderr(io.StringIO()):
             protocol.evaluate_obligation(
-                "test-obligation", store_path=self.store, main_sha=SHA
+                "test-obligation", store_path=self.store, main_sha=NEXT_SHA
             )
         with self.assertRaisesRegex(protocol.ProtocolError, "reason is required"):
             protocol.inherit_actionable(
@@ -3180,10 +3348,10 @@ class ProtocolTest(unittest.TestCase):
 
     def test_declined_acknowledgement_stores_retrievable_reason(self) -> None:
         self.create()
-        self.transition({"github": {"state": "red"}})
+        self.transition({"local": {"state": "red"}, "github": {"state": "no_result"}})
         with redirect_stderr(io.StringIO()):
             protocol.evaluate_obligation(
-                "test-obligation", store_path=self.store, main_sha=SHA
+                "test-obligation", store_path=self.store, main_sha=NEXT_SHA
             )
         reason = "hosted red predates the landed change and would survive revert"
         with redirect_stdout(io.StringIO()):
@@ -3217,7 +3385,7 @@ class ProtocolTest(unittest.TestCase):
 
     def test_new_lander_session_rediscovers_acknowledged_obligation(self) -> None:
         self.create()
-        self.transition({"github": {"state": "red"}})
+        self.transition({"local": {"state": "red"}, "github": {"state": "no_result"}})
         with redirect_stderr(io.StringIO()):
             protocol.evaluate_obligation(
                 "test-obligation", store_path=self.store, main_sha=NEXT_SHA
@@ -4643,11 +4811,8 @@ class LocalRedispatchTest(unittest.TestCase):
 
     def test_spent_budget_red_does_not_re_dispatch(self) -> None:
         # A budget-spent local red no longer re-dispatches (spawn not called). With
-        # the hosted leg having given no answer (no_result) it is UNCORROBORATED, so
-        # it is surfaced for investigation -- NOT an auto-revert of the tip (task
-        # obligation_revert_path_lone). (github="no_result" not "running": a running
-        # hosted leg must be WAITED for -- see
-        # test_spent_budget_red_with_github_running_waits.)
+        # the hosted leg having given no answer (no_result), the ledger red is
+        # authoritative but still cannot auto-revert: it waits for exact owner auth.
         self._seed(
             {
                 "local": {
@@ -4666,13 +4831,14 @@ class LocalRedispatchTest(unittest.TestCase):
             with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 record = protocol.poll_obligation("ob", self.store)
         spawn.assert_not_called()
-        self.assertEqual(record["overall_state"], "investigation_required")
-        self.assertNotEqual(record["overall_state"], "remediation_required")
+        self.assertEqual(record["overall_state"], "remediation_required")
+        self.assertEqual(record["recommendation"]["action"], "fix-forward")
+        self.assertEqual(record["remediation"]["state"], "triggered")
 
     def test_spent_budget_red_with_github_running_waits(self) -> None:
         # SEQUENCING guard end-to-end through poll: budget-spent local red while the
-        # GitHub leg is still running neither re-dispatches nor arms -- it waits for
-        # the in-flight hosted verdict (obligation 20260804-025419-0f891e43).
+        # GitHub polling resolves this fixture to no_result; the ledger verdict is
+        # then loud but remains owner-gated and never dispatches a revert.
         self._seed(
             {
                 "local": {
@@ -4691,7 +4857,9 @@ class LocalRedispatchTest(unittest.TestCase):
             with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 record = protocol.poll_obligation("ob", self.store)
         spawn.assert_not_called()
-        self.assertNotEqual(record["overall_state"], "remediation_required")
+        self.assertEqual(record["overall_state"], "remediation_required")
+        self.assertEqual(record["recommendation"]["action"], "fix-forward")
+        self.assertEqual(record["remediation"]["state"], "triggered")
 
 
 if __name__ == "__main__":

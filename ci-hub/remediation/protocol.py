@@ -36,6 +36,9 @@ from nonzero_result import is_zero_test_green
 import validate_rows as canonical_ledger
 
 DEFAULT_REPO = "rrnewton/hermit"
+REVERT_AUTHORIZATION_MARKER = "REMEDIATION-REVERT-AUTHORIZED"
+REVERT_AUTHORIZATION_OWNER = "rrnewton"
+REVERT_AUTHORIZATION_NONCE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 DEFAULT_DECISION_WAITS_PATH = ROOT / "ci-hub/remediation/decision-waits.json"
 DECISION_WAIT_STATE = "AWAITING-DECISION"
 PARENT_REPO = "rrnewton/dev-hermit"
@@ -2139,6 +2142,228 @@ def github_main_sha(repo: str) -> str:
     return sha
 
 
+def _github_json(endpoint: str) -> Any:
+    result = _run(
+        ("with-proxy", "gh", "api", endpoint),
+        check=True,
+        timeout=DEFAULT_NETWORK_TIMEOUT,
+    )
+    try:
+        return json.loads(result.stdout or "null")
+    except json.JSONDecodeError as error:
+        raise ProtocolError(
+            f"GitHub returned malformed JSON for {endpoint!r}: {error}"
+        ) from error
+
+
+def _github_json_pages(endpoint: str) -> list[dict[str, Any]]:
+    result = _run(
+        ("with-proxy", "gh", "api", endpoint, "--paginate", "--slurp"),
+        check=True,
+        timeout=DEFAULT_NETWORK_TIMEOUT,
+    )
+    try:
+        pages = json.loads(result.stdout or "null")
+    except json.JSONDecodeError as error:
+        raise ProtocolError(
+            f"GitHub returned malformed paginated JSON for {endpoint!r}: {error}"
+        ) from error
+    if not isinstance(pages, list) or any(
+        not isinstance(page, list) for page in pages
+    ):
+        raise ProtocolError(
+            f"GitHub returned malformed paginated response for {endpoint!r}"
+        )
+    comments: list[dict[str, Any]] = []
+    for page in pages:
+        for item in page:
+            if not isinstance(item, dict):
+                raise ProtocolError(
+                    f"GitHub returned a non-object item for {endpoint!r}"
+                )
+            comments.append(item)
+    return comments
+
+
+def _parse_utc_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _latest_revert_authorization_comment(
+    comments: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Return the newest marker-bearing comment as an independently bound record.
+
+    Malformed or non-owner marker comments are returned, not skipped.  Otherwise
+    an older valid authorization could silently outrank a newer revocation or
+    malformed replacement.
+    """
+    candidates = [
+        comment
+        for comment in comments
+        if REVERT_AUTHORIZATION_MARKER in str(comment.get("body") or "")
+    ]
+    if not candidates:
+        return {"authorization": None, "issuer": None}
+    comment = candidates[-1]
+    lines = str(comment.get("body") or "").splitlines()
+    payload: Any = None
+    try:
+        marker_index = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip() == REVERT_AUTHORIZATION_MARKER
+        )
+        payload = json.loads("\n".join(lines[marker_index + 1 :]).strip())
+    except (StopIteration, json.JSONDecodeError):
+        payload = None
+    return {
+        "authorization": payload,
+        "issuer": {
+            "login": (comment.get("user") or {}).get("login"),
+            "author_association": comment.get("author_association"),
+            "comment_id": comment.get("id"),
+            "html_url": comment.get("html_url"),
+        },
+    }
+
+
+def _used_revert_nonces(store_path: Path) -> set[str]:
+    used: set[str] = set()
+    for existing in obligations.latest_records(store_path).values():
+        remediation = existing.get("remediation") or {}
+        authorization = remediation.get("authorization") or {}
+        if authorization.get("state") == "consumed" and isinstance(
+            authorization.get("nonce"), str
+        ):
+            used.add(authorization["nonce"])
+    return used
+
+
+def assess_revert_authorization(
+    record: Mapping[str, Any],
+    snapshot: Mapping[str, Any],
+    *,
+    used_nonces: set[str],
+    now: datetime | None = None,
+) -> tuple[bool, tuple[str, ...]]:
+    """Fail closed over an owner authorization and its live GitHub bindings."""
+    now = now or datetime.now(timezone.utc)
+    authorization = snapshot.get("authorization")
+    issuer = snapshot.get("issuer")
+    observed = snapshot.get("observed")
+    authorization = authorization if isinstance(authorization, Mapping) else {}
+    issuer = issuer if isinstance(issuer, Mapping) else {}
+    observed = observed if isinstance(observed, Mapping) else {}
+    refusals: list[str] = []
+
+    if (
+        issuer.get("author_association") != "OWNER"
+        or issuer.get("login") != REVERT_AUTHORIZATION_OWNER
+        or authorization.get("authorized_by") != REVERT_AUTHORIZATION_OWNER
+    ):
+        refusals.append("issuer is not the repository owner")
+    expires_at = _parse_utc_timestamp(authorization.get("expires_at"))
+    if expires_at is None or expires_at <= now:
+        refusals.append("authorization is expired or has no valid expiry")
+    nonce = authorization.get("nonce")
+    if (
+        not isinstance(nonce, str)
+        or REVERT_AUTHORIZATION_NONCE_RE.fullmatch(nonce) is None
+    ):
+        refusals.append("authorization nonce is missing or malformed")
+    elif nonce in used_nonces:
+        refusals.append("authorization nonce was already consumed")
+    if (
+        authorization.get("repo") != record.get("repo")
+        or authorization.get("obligation_id") != record.get("obligation_id")
+        or authorization.get("failed_land_sha") != record.get("landed_sha")
+        or not isinstance(authorization.get("reason"), str)
+        or not authorization.get("reason", "").strip()
+    ):
+        refusals.append("authorization identity or reason does not match the obligation")
+
+    authorized_main = authorization.get("main_sha")
+    observed_main = observed.get("main_sha")
+    if (
+        not isinstance(authorized_main, str)
+        or obligations.SHA_RE.fullmatch(authorized_main) is None
+        or authorized_main != record.get("landed_sha")
+        or observed_main != authorized_main
+    ):
+        refusals.append("authorized main SHA is not the live failed tip")
+
+    authorized_candidate = authorization.get("candidate_sha")
+    if (
+        not isinstance(authorized_candidate, str)
+        or obligations.SHA_RE.fullmatch(authorized_candidate) is None
+        or observed.get("candidate_sha") != authorized_candidate
+        or observed.get("candidate_parent_sha") != authorized_main
+        or observed.get("candidate_tree_sha") != observed.get("failed_parent_tree_sha")
+    ):
+        refusals.append("candidate SHA is not the exact revert of the authorized main")
+    return not refusals, tuple(refusals)
+
+
+def collect_revert_authorization(
+    record: Mapping[str, Any], main_sha: str
+) -> dict[str, Any]:
+    """Collect an owner comment plus exact candidate/main GitHub identities."""
+    repo = str(record["repo"])
+    comments = _github_json_pages(
+        f"repos/{repo}/commits/{main_sha}/comments?per_page=100"
+    )
+    snapshot = _latest_revert_authorization_comment(comments)
+    authorization = snapshot.get("authorization")
+    candidate_sha = (
+        authorization.get("candidate_sha")
+        if isinstance(authorization, Mapping)
+        else None
+    )
+    candidate: Mapping[str, Any] = {}
+    if isinstance(candidate_sha, str) and obligations.SHA_RE.fullmatch(candidate_sha):
+        raw_candidate = _github_json(f"repos/{repo}/commits/{candidate_sha}")
+        if isinstance(raw_candidate, Mapping):
+            candidate = raw_candidate
+    raw_failed = _github_json(f"repos/{repo}/commits/{record['landed_sha']}")
+    failed = raw_failed if isinstance(raw_failed, Mapping) else {}
+    candidate_parents = candidate.get("parents") or []
+    failed_parents = failed.get("parents") or []
+    failed_parent: Mapping[str, Any] = {}
+    if isinstance(failed_parents, list) and failed_parents:
+        failed_parent_sha = (failed_parents[0] or {}).get("sha")
+        if isinstance(failed_parent_sha, str) and obligations.SHA_RE.fullmatch(
+            failed_parent_sha
+        ):
+            raw_parent = _github_json(f"repos/{repo}/commits/{failed_parent_sha}")
+            if isinstance(raw_parent, Mapping):
+                failed_parent = raw_parent
+    snapshot["observed"] = {
+        "main_sha": main_sha,
+        "candidate_sha": candidate.get("sha"),
+        "candidate_parent_sha": (
+            (candidate_parents[0] or {}).get("sha")
+            if isinstance(candidate_parents, list) and candidate_parents
+            else None
+        ),
+        "candidate_tree_sha": ((candidate.get("commit") or {}).get("tree") or {}).get(
+            "sha"
+        ),
+        "failed_parent_tree_sha": (
+            ((failed_parent.get("commit") or {}).get("tree") or {}).get("sha")
+        ),
+    }
+    return snapshot
+
+
 def _github_state(run: Mapping[str, Any]) -> str:
     status = str(run.get("status") or "").lower()
     if status in {"requested", "waiting", "queued", "pending"}:
@@ -2466,6 +2691,25 @@ def ensure_github_verification(
     return evaluate_obligation(obligation_id, store_path=store_path)
 
 
+def _failure_summary(record: Mapping[str, Any], source: str) -> str:
+    verification = record[source]
+    if source == "local":
+        return (
+            f"local validate state={verification.get('state')} "
+            f"exit={verification.get('exit_code')} log={verification.get('log_path')}"
+        )
+    expected_workflow = ", ".join(
+        workflow_name
+        for _, workflow_name in _required_workflows(
+            _verification_policy_from_record(record)
+        )
+    )
+    return (
+        f"GitHub {verification.get('workflow_name') or expected_workflow} "
+        f"state={verification.get('state')} urls={','.join(verification.get('urls') or [])}"
+    )
+
+
 def _failure_details(record: Mapping[str, Any]) -> tuple[str, str]:
     failed: list[tuple[str, Mapping[str, Any]]] = []
     for source in ("local", "github"):
@@ -2475,37 +2719,28 @@ def _failure_details(record: Mapping[str, Any]) -> tuple[str, str]:
     if not failed:
         raise ProtocolError("failure details requested for a non-failing obligation")
     failed.sort(key=lambda pair: str(pair[1].get("finished_at") or ""))
-    source, verification = failed[0]
-    if source == "local":
-        summary = (
-            f"local validate state={verification.get('state')} "
-            f"exit={verification.get('exit_code')} log={verification.get('log_path')}"
-        )
-    else:
-        expected_workflow = ", ".join(
-            workflow_name
-            for _, workflow_name in _required_workflows(
-                _verification_policy_from_record(record)
-            )
-        )
-        summary = (
-            f"GitHub {verification.get('workflow_name') or expected_workflow} "
-            f"state={verification.get('state')} urls={','.join(verification.get('urls') or [])}"
-        )
-    return source, summary
+    source, _ = failed[0]
+    return source, _failure_summary(record, source)
 
 
 def remediation_recommendation(
     record: Mapping[str, Any], main_sha: str | None
 ) -> dict[str, str]:
-    if main_sha == record["landed_sha"] or main_sha is None:
+    if main_sha is None:
+        return {
+            "action": "await-main-identity",
+            "reason": (
+                "main-tip identity is unavailable; no remediation action can be "
+                "bound to an exact current main"
+            ),
+        }
+    if main_sha == record["landed_sha"]:
         return {
             "action": "revert",
             "reason": (
                 "the failing speculative land is still the main tip; revert immediately to "
-                "restore the last green base, then fix forward on a reviewed branch"
-                if main_sha is not None
-                else "main-tip identity is unavailable; conservatively prepare an immediate revert"
+                "restore the last green base, then fix forward on a reviewed branch; "
+                "execution requires owner authorization bound to this main and candidate"
             ),
         }
     return {
@@ -2558,7 +2793,7 @@ def _local_red_uncorroborated(record: Mapping[str, Any]) -> bool:
 
 
 def _remediation_ready(record: Mapping[str, Any]) -> bool:
-    """Whether a failing answer is CONFIRMED enough to revert a landed tip.
+    """Whether a reported failure must enter the loud remediation state.
 
     Sequencing comes first: never arm a revert while EITHER verifier is still
     ``starting`` or ``running``. A leg in flight may be the tool's OWN exoneration arriving — the
@@ -2569,37 +2804,19 @@ def _remediation_ready(record: Mapping[str, Any]) -> bool:
     is the intended safe revert; only an active ``starting``/``running`` answer is
     waited on.)
 
-    Once both legs have reported, ONLY an authoritative GitHub red arms a revert —
-    hosted CI does not flake the way a loaded local box does, and cancelled/absent
-    is already no_result — so it remediates at once. A local red is only
-    PROVISIONAL and NEVER reverts alone: a single (or even re-dispatch-reproduced)
-    local validate that failed on a loaded/cold box is a candidate flake, not an
-    authoritative regression. Beside a GREEN hosted leg it is a DISAGREEMENT
-    (see ``_legs_disagree``); beside a NO_RESULT hosted leg — the COMMON case
-    under admission-limited hosted CI, where the authoritative run was never
-    admitted / cancelled below the concurrency cap / superseded — it is an
-    UNCORROBORATED local signal (see ``_local_red_uncorroborated``). Either way it
-    is surfaced for a human to investigate, never an auto-revert of a landed tip.
-
-    History: reverting a healthy tip on a lone local red is the exact hazard this
-    guard forecloses — three such recommendations fired 2026-08-04 (e8a0d8d3,
-    0f891e43 x2), all caught by humans reading evidence, not by the actuator. The
-    classifiers (_classify_local, _github_state) were already conservative; this is
-    the ACTUATOR refusing to act on a lone local signal at all. This is the
-    post-mortem's own remedy — a local box cannot overrule the authoritative
-    verifier — made mechanical.
+    Hermit's owner-authorized landing authority is the counted local ledger.
+    Hosted red remains remediation-eligible so it stays loud, but it cannot
+    authorize an actuator.  Other repositories retain their versioned hosted
+    authority.  This predicate names work; ``evaluate_obligation`` separately
+    decides whether the signal is authoritative and whether any action is legal.
     """
     local = record["local"]["state"]
     github = record["github"]["state"]
     if {local, github}.intersection({"starting", "running"}):
         return False
-    if github == "red":
-        return True
-    # A local red is never sufficient to revert on its own. github == "green" is
-    # a disagreement (_legs_disagree); github == "no_result" is uncorroborated
-    # (_local_red_uncorroborated). Both route to investigation_required in
-    # evaluate_obligation; neither arms an automated revert.
-    return False
+    if record.get("repo") == DEFAULT_REPO:
+        return local == "red" or github == "red"
+    return github == "red"
 
 
 def evaluate_obligation(
@@ -2640,7 +2857,8 @@ def evaluate_obligation(
     ):
         first_terminal_at = now
 
-    if _legs_disagree(record):
+    hermit_local_authority = record.get("repo") == DEFAULT_REPO
+    if not hermit_local_authority and _legs_disagree(record):
         failed_source = "local" if record["local"]["state"] == "red" else "github"
         passed_source = "github" if failed_source == "local" else "local"
         summary = (
@@ -2675,11 +2893,14 @@ def evaluate_obligation(
             )
         return record
 
-    # One exact-SHA green is authoritative. The other source may still be
-    # pending, running, absent/no_result, or independently green; none is a
-    # failing answer, so waiting for it would turn a supplemental source into an
-    # AND gate. A known red was handled as DISAGREEMENT above.
-    if "green" in states:
+    # Keep the existing versioned positive-authority semantics: one exact-SHA
+    # green can satisfy.  Failure-to-mutation authority is narrower: a Hermit
+    # hosted red is advisory, while a counted local red enters the owner-gated
+    # remediation path below.
+    authority_green = "green" in states and not (
+        hermit_local_authority and record["local"]["state"] == "red"
+    )
+    if authority_green:
         if record.get("overall_state") != "satisfied":
             record = obligations.transition(
                 obligation_id,
@@ -2695,16 +2916,130 @@ def evaluate_obligation(
         return record
 
     if _remediation_ready(record):
-        source, summary = _failure_details(record)
+        hosted_advisory_only = (
+            hermit_local_authority
+            and record["github"]["state"] == "red"
+            and record["local"]["state"] != "red"
+        )
+        if hosted_advisory_only:
+            source = "github"
+            summary = _failure_summary(record, source)
+            reason = (
+                "hosted CI is advisory for Hermit remediation; prepare a sanctioned, "
+                "reviewed fix-forward, but hosted state cannot authorize a main mutation"
+            )
+            raised_now = (
+                record.get("overall_state") != "remediation_required"
+                or record.get("failure_summary") != summary
+                or (record.get("remediation") or {}).get("state")
+                != "awaiting_local_authority"
+            )
+            if raised_now:
+                record = obligations.transition(
+                    obligation_id,
+                    "hosted-remediation-advisory",
+                    {
+                        "overall_state": "remediation_required",
+                        "first_terminal_at": first_terminal_at,
+                        "failure_source": source,
+                        "failure_summary": summary,
+                        "recommendation": {
+                            "action": "fix-forward",
+                            "reason": reason,
+                            "authority": "advisory-only",
+                        },
+                        "alert": {
+                            "state": "raised",
+                            "raised_at": now,
+                            "severity": "P0",
+                            "action": "review-fix-forward",
+                        },
+                        "remediation": {
+                            "state": "awaiting_local_authority",
+                            "kind": "fix-forward",
+                            "dispatch": None,
+                        },
+                    },
+                    store_path,
+                )
+                print(
+                    f"HARD WARNING: obligation {obligation_id} hosted red: {summary}; "
+                    f"{reason}; NO ACTION DISPATCHED",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return record
+
+        if hermit_local_authority and record["local"]["state"] == "red":
+            source = "local"
+            summary = _failure_summary(record, source)
+        else:
+            source, summary = _failure_details(record)
         if main_sha is None:
             try:
                 main_sha = github_main_sha(record["repo"])
-            except ProtocolError:
+            except ProtocolError as error:
                 main_sha = None
+                main_error = str(error)
+            else:
+                main_error = None
+        else:
+            main_error = None
+        if main_sha is None:
+            reason = (
+                "main-tip identity is unavailable; remediation remains loud but "
+                "no action can be bound to an exact current main"
+            )
+            raised_now = (
+                record.get("overall_state") != "remediation_required"
+                or record.get("failure_summary") != summary
+                or (record.get("remediation") or {}).get("state")
+                != "awaiting_main_identity"
+            )
+            if raised_now:
+                record = obligations.transition(
+                    obligation_id,
+                    "remediation-main-identity-unavailable",
+                    {
+                        "overall_state": "remediation_required",
+                        "first_terminal_at": first_terminal_at,
+                        "failure_source": source,
+                        "failure_summary": summary,
+                        "recommendation": None,
+                        "alert": {
+                            "state": "raised",
+                            "raised_at": now,
+                            "severity": "P0",
+                            "action": "restore-main-identity",
+                        },
+                        "remediation": {
+                            "state": "awaiting_main_identity",
+                            "kind": None,
+                            "main_identity_error": main_error,
+                            "dispatch": None,
+                        },
+                    },
+                    store_path,
+                )
+                print(
+                    f"HARD WARNING: obligation {obligation_id} failed: {summary}; "
+                    f"{reason}; NO ACTION DISPATCHED",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return record
         recommendation = remediation_recommendation(record, main_sha)
         raised_now = (
             record.get("overall_state") != "remediation_required"
             or record.get("failure_summary") != summary
+            or (record.get("recommendation") or {}).get("action")
+            != recommendation["action"]
+            or (record.get("remediation") or {}).get("state")
+            != (
+                "awaiting_owner"
+                if recommendation["action"] == "revert"
+                else "triggered"
+            )
         )
         if raised_now:
             record = obligations.transition(
@@ -2718,8 +3053,14 @@ def evaluate_obligation(
                     "recommendation": recommendation,
                     "alert": {"state": "raised", "raised_at": now},
                     "remediation": {
-                        "state": "recommended",
+                        "state": (
+                            "awaiting_owner"
+                            if recommendation["action"] == "revert"
+                            else "recommended"
+                        ),
                         "kind": recommendation["action"],
+                        "main_sha": main_sha,
+                        "dispatch": None,
                     },
                 },
                 store_path,
@@ -2731,9 +3072,19 @@ def evaluate_obligation(
                 file=sys.stderr,
                 flush=True,
             )
+        if recommendation["action"] == "revert":
+            if raised_now:
+                print(
+                    f"AWAITING OWNER: obligation={obligation_id} action=revert "
+                    f"main={main_sha}; exact-SHA owner authorization required; "
+                    "NO ACTION DISPATCHED",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            return record
         return trigger_remediation(record, store_path=store_path)
 
-    if _local_red_uncorroborated(record):
+    if not hermit_local_authority and _local_red_uncorroborated(record):
         summary = (
             "local validate red but the authoritative GitHub leg never reported "
             f"(no_result) for SHA {record['landed_sha']} after the re-dispatch "
@@ -2785,16 +3136,20 @@ def trigger_remediation(
     """
     if record.get("overall_state") != "remediation_required":
         return dict(record)
+    recommendation = record.get("recommendation")
+    action = (
+        recommendation.get("action") if isinstance(recommendation, Mapping) else None
+    )
+    if action == "revert":
+        raise ProtocolError(
+            "revert dispatch requires a consumed owner authorization; use authorize-revert"
+        )
     remediation = record.get("remediation")
     if isinstance(remediation, Mapping) and remediation.get("state") in {
         "triggered",
         "completed",
     }:
         return dict(record)
-    recommendation = record.get("recommendation")
-    action = (
-        recommendation.get("action") if isinstance(recommendation, Mapping) else None
-    )
     if action not in {"fix-forward", "revert"}:
         raise ProtocolError("cannot trigger remediation without a concrete action")
     now = obligations.utc_now()
@@ -2840,6 +3195,130 @@ def trigger_remediation(
         flush=True,
     )
     return triggered
+
+
+def authorize_revert(
+    record: Mapping[str, Any],
+    snapshot: Mapping[str, Any],
+    *,
+    store_path: Path,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Consume one owner authorization and atomically create its exact dispatch."""
+    latest = obligations.get_record(str(record["obligation_id"]), store_path)
+    used_nonces = _used_revert_nonces(store_path)
+    accepted, refusals = assess_revert_authorization(
+        latest, snapshot, used_nonces=used_nonces, now=now
+    )
+    if not accepted:
+        raise ProtocolError("revert authorization refused: " + "; ".join(refusals))
+    remediation = latest.get("remediation") or {}
+    recommendation = latest.get("recommendation") or {}
+    if (
+        latest.get("overall_state") != "remediation_required"
+        or remediation.get("state") != "awaiting_owner"
+        or remediation.get("kind") != "revert"
+        or recommendation.get("action") != "revert"
+    ):
+        raise ProtocolError(
+            "revert authorization refused: obligation is not awaiting owner authorization"
+        )
+    authorization = snapshot["authorization"]
+    issuer = snapshot["issuer"]
+    recorded_at = obligations.utc_now()
+    candidate_sha = authorization["candidate_sha"]
+    instruction = (
+        f"Owner-authorized exact revert for obligation {latest['obligation_id']}: "
+        f"publish candidate {candidate_sha} to {latest['repo']} main only while main "
+        f"is exactly {authorization['main_sha']}. Re-check both identities immediately "
+        "before publication; after publication run resolve-obligation with the full SHA."
+    )
+    transitioned = obligations.transition_if_matches(
+        str(latest["obligation_id"]),
+        "owner-revert-authorized",
+        {
+            "alert": {
+                "state": "pending",
+                "raised_at": recorded_at,
+                "target": "hermit-lander",
+            },
+            "remediation": {
+                "state": "triggered",
+                "kind": "revert",
+                "started_at": recorded_at,
+                "authorization": {
+                    "state": "consumed",
+                    "authorized_by": authorization["authorized_by"],
+                    "issuer_login": issuer["login"],
+                    "comment_id": issuer.get("comment_id"),
+                    "comment_url": issuer.get("html_url"),
+                    "obligation_id": authorization["obligation_id"],
+                    "failed_land_sha": authorization["failed_land_sha"],
+                    "main_sha": authorization["main_sha"],
+                    "candidate_sha": candidate_sha,
+                    "nonce": authorization["nonce"],
+                    "expires_at": authorization["expires_at"],
+                    "reason": authorization["reason"].strip(),
+                    "consumed_at": recorded_at,
+                },
+                "dispatch": {
+                    "state": "pending",
+                    "target": "hermit-lander",
+                    "requested_at": recorded_at,
+                    "instruction": instruction,
+                    "wake_attempt": 0,
+                    "wake_id": None,
+                    "wake_sent_at": None,
+                    "acknowledged_at": None,
+                    "acknowledged_by": None,
+                    "acknowledged_session": None,
+                },
+            },
+        },
+        {
+            "event_id": latest.get("event_id"),
+            "overall_state": "remediation_required",
+            "remediation": {
+                "state": "awaiting_owner",
+                "kind": "revert",
+                "main_sha": authorization["main_sha"],
+            },
+        },
+        store_path,
+    )
+    if transitioned is None:
+        raise ProtocolError(
+            "revert authorization refused: obligation or main binding changed before CAS"
+        )
+    print(
+        f"OWNER REVERT AUTHORIZED: obligation={latest['obligation_id']} "
+        f"main={authorization['main_sha']} candidate={candidate_sha} "
+        f"nonce={authorization['nonce']}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return transitioned
+
+
+def authorize_revert_command(args: argparse.Namespace) -> int:
+    store_path = args.store.expanduser().resolve()
+    record = obligations.get_record(args.id, store_path)
+    try:
+        main_sha = github_main_sha(str(record["repo"]))
+    except ProtocolError as error:
+        raise ProtocolError(
+            f"revert authorization refused: current main identity unavailable: {error}"
+        ) from error
+    snapshot = collect_revert_authorization(record, main_sha)
+    # Close the collection window before the CAS.  The publisher must check
+    # again at its own mutation boundary, but even the durable dispatch is
+    # refused if main moved while comments/candidate identities were fetched.
+    confirmed_main_sha = github_main_sha(str(record["repo"]))
+    observed = snapshot.get("observed")
+    if isinstance(observed, dict):
+        observed["main_sha"] = confirmed_main_sha
+    authorize_revert(record, snapshot, store_path=store_path)
+    return 0
 
 
 def actionable_records(store_path: Path) -> list[dict[str, Any]]:
@@ -5289,6 +5768,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--store", type=Path, default=obligations.default_store_path()
     )
 
+    authorize_revert_parser = subparsers.add_parser(
+        "authorize-revert",
+        help=(
+            "consume a repository-owner commit comment bound to the exact failed "
+            "main and exact revert candidate"
+        ),
+        description=(
+            "Consume the newest owner-authored commit comment on the exact current "
+            "main whose first line is REMEDIATION-REVERT-AUTHORIZED and whose "
+            "remaining body is one JSON object carrying repo, obligation_id, "
+            "failed_land_sha, main_sha, candidate_sha, nonce, expires_at, "
+            "authorized_by, and reason."
+        ),
+    )
+    authorize_revert_parser.add_argument("id")
+    authorize_revert_parser.add_argument(
+        "--store", type=Path, default=obligations.default_store_path()
+    )
+
     local_parser = subparsers.add_parser("_local-run", help=argparse.SUPPRESS)
     local_parser.add_argument("id")
     local_parser.add_argument("--launch-token", help=argparse.SUPPRESS)
@@ -5374,6 +5872,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return cancel_watcher(args)
         if args.command == "resolve":
             return resolve_obligation(args)
+        if args.command == "authorize-revert":
+            return authorize_revert_command(args)
         if args.command == "_local-run":
             return _local_run(
                 args.id,

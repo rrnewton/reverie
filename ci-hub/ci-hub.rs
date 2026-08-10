@@ -124,6 +124,7 @@ POST-LAND REMEDIATION
   inherit-obligations     Let a fresh lander claim obligations from a recycled agent
   watch-obligations       Poll verifier state and trigger failure remediation
   cancel-watcher          Safely terminate one exact, durably identified watcher
+  authorize-revert        Consume an exact-SHA repository-owner revert authorization
   record-obligation-wake  Record an ORC wake-delivery attempt
   resolve-obligation      Record a completed fix-forward or revert
 
@@ -223,6 +224,8 @@ enum HubCommand {
     WatchObligations(WatchObligationsArgs),
     /// Pidfd-cancel one exact watcher without changing obligation truth.
     CancelWatcher(CancelWatcherArgs),
+    /// Consume one owner authorization for an exact main and revert candidate.
+    AuthorizeRevert(AuthorizeRevertArgs),
     /// Record a completed fix-forward or revert.
     ResolveObligation(ResolveObligationArgs),
     /// Incrementally ingest GitHub and local CI history.
@@ -482,6 +485,13 @@ struct ResolveObligationArgs {
     started_at: Option<String>,
     #[arg(long)]
     source: Option<PathBuf>,
+    #[arg(long)]
+    store: Option<PathBuf>,
+}
+
+#[derive(Args, Clone, Debug)]
+struct AuthorizeRevertArgs {
+    id: String,
     #[arg(long)]
     store: Option<PathBuf>,
 }
@@ -1143,6 +1153,11 @@ impl HubCommand {
                 basis: "not measured: one repository-bound main fetch plus exact repair-object and ancestry checks"
                     .into(),
             },
+            Self::AuthorizeRevert(_) => CostSpec {
+                tool: "ci-hub/authorize-revert",
+                basis: "not measured: two main-identity queries plus owner-comment and exact candidate-tree checks"
+                    .into(),
+            },
             Self::WatchObligations(args) => CostSpec {
                 tool: "ci-hub/watch-obligations",
                 basis: if args.once {
@@ -1672,6 +1687,16 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
                 "--wait-seconds",
                 args.wait_seconds.to_string(),
             );
+            if let Some(store) = args.store {
+                push_option(&mut protocol_args, "--store", store);
+            }
+            run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
+        }
+        HubCommand::AuthorizeRevert(args) => {
+            let mut protocol_args = vec![
+                OsString::from("authorize-revert"),
+                OsString::from(args.id),
+            ];
             if let Some(store) = args.store {
                 push_option(&mut protocol_args, "--store", store);
             }
