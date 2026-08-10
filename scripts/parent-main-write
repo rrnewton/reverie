@@ -372,6 +372,9 @@ refuse_unauthored_reverts() {
 adopt_published_residue() {
   local root=$1 target=$2
   local path mode blob adopted=0 blockers="" plan=""
+  # Scoped deliberately: an unscoped flag would leak into a later call in the
+  # same process and attach the wrong remedy to a clean classification.
+  local blocker_modified="" blocker_untracked=""
   # TWO PASSES, DELIBERATELY. A single pass that stages as it goes leaves the
   # index half-adopted when it later hits a blocker -- which is the very class of
   # residue this function exists to remove, created by the thing removing it, on
@@ -396,15 +399,41 @@ adopt_published_residue() {
       [ -n "$mode" ] || mode=100644
       plan+="$mode,$blob,$path"$'\n'
     else
-      blockers+="  $path"$'\n'
+      # CLASSIFY THE BLOCKER; the remedy differs and the wrong one is costly.
+      # A path tracked at HEAD and differing from both ends is genuinely
+      # uncommitted work: land it or park it. A path NOT tracked here but
+      # present in the target is a file the target ADDED, with some other copy
+      # sitting on disk -- almost always a stale leftover, whose remedy is to
+      # replace it from the target, NOT to park it. Both still block; only the
+      # advice differs. Saying "uncommitted work" for the second case sends the
+      # next agent to park work that never needed parking.
+      if git -C "$root" ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+        blockers+="  $path  [MODIFIED here — differs from HEAD and $target]"$'\n'
+        blocker_modified=1
+      else
+        blockers+="  $path  [UNTRACKED here — $target adds this path; on-disk copy is probably stale]"$'\n'
+        blocker_untracked=1
+      fi
     fi
   done < <(git -C "$root" diff --name-only HEAD "$target" -- 2>/dev/null)
 
   if [ -n "$blockers" ]; then
     printf '%s' "$blockers" >&2
-    die "the paths above differ from BOTH your HEAD and $target, so they are real
-  uncommitted work, not published residue. Nothing was staged or modified.
-  Land them, or move them aside, then re-run sync."
+    local advice=""
+    if [ -n "${blocker_modified:-}" ]; then
+      advice+="
+  MODIFIED paths are genuinely uncommitted work: LAND them, or PARK them by
+  committing to a branch (never checkout/reset --hard/stash-and-drop)."
+    fi
+    if [ -n "${blocker_untracked:-}" ]; then
+      advice+="
+  UNTRACKED paths are added by $target and are usually a STALE LEFTOVER, not
+  work: diff the on-disk copy against $target and, if it carries nothing new,
+  the remedy is to PULL/replace it -- parking it preserves nothing."
+    fi
+    die "the paths above differ from BOTH your HEAD and $target, so this sync
+  cannot classify them as published residue. Nothing was staged or modified.$advice
+  Then re-run sync."
   fi
 
   while IFS= read -r entry; do
