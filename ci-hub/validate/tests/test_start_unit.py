@@ -40,6 +40,7 @@ class FakeRun:
         self.validate_status_calls = 0
         self.canonical_verdict = "VALIDATED"
         self.canonical_status_rc = 0
+        self.canonical_selected_row_index = -1
         self.removed: list[str] = []
         # What `git ls-files` reports as TRACKED inside the fresh checkout.
         # Empty is the real-world case: hermit tracks zero .jsonl files.
@@ -52,6 +53,33 @@ class FakeRun:
         self.executed_nodes: int | None = 55
         self.executed_tests: int | None = 862
         self.collected_unit = False
+
+    def default_ledger_row(self) -> dict[str, object]:
+        return {
+            "commit": SHA,
+            "cwd": str(self.fresh if self.fresh is not None else self.checkout),
+            "started_at": "2099-01-01T00:00:01Z",
+            "finished_at": "2099-01-01T00:00:02Z",
+            "tree": "b" * 40,
+            "host": "test-host",
+            "slot": "test-slot",
+            "log_file": "/tmp/test-validate.log",
+        }
+
+    @staticmethod
+    def selected_receipt(row: dict[str, object]) -> dict[str, object]:
+        return {
+            "receipt_identity": {
+                "tuple": {
+                    "sha": row.get("commit"),
+                    "tree": row.get("tree"),
+                    "finished_at": row.get("finished_at"),
+                    "host": row.get("host"),
+                    "slot": row.get("slot"),
+                    "log_file": row.get("log_file"),
+                }
+            }
+        }
 
     def __call__(self, command: list[str], **_kwargs: object):
         self.commands.append(command)
@@ -110,13 +138,20 @@ class FakeRun:
                 status_rc = self.canonical_status_rc
             rows = self.ledger_rows
             if rows is None:
-                rows = [f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}']
+                rows = [json.dumps(self.default_ledger_row())]
             qualifying = len(rows) if verdict == "VALIDATED" else 0
+            parsed_rows = [json.loads(row) for row in rows]
             report = {
                 "sha": SHA,
                 "verdict": verdict,
+                "exit_code": status_rc,
                 "qualifying_count": qualifying,
                 "disqualified_count": len(rows) - qualifying,
+                "newest_qualifying": (
+                    self.selected_receipt(parsed_rows[self.canonical_selected_row_index])
+                    if qualifying
+                    else None
+                ),
             }
             return completed(
                 command,
@@ -126,7 +161,7 @@ class FakeRun:
         if len(command) >= 3 and command[-2].endswith("validate_rows.py") and command[-1] == "rows":
             rows = self.ledger_rows
             if rows is None:
-                rows = [f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}']
+                rows = [json.dumps(self.default_ledger_row())]
             return completed(command, stdout="\n".join(rows) + ("\n" if rows else ""))
         if command[:4] == ["git", "-C", str(self.checkout), "rev-parse"]:
             if command[-1] == "--show-toplevel":
@@ -308,7 +343,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(55, record["executed_nodes"])
         self.assertEqual("observer-only", record["pane_role"])
 
-    def test_collected_sigterm_propagates_143_and_records_named_killed_state(self) -> None:
+    def test_collected_sigterm_records_143_but_wrapper_reports_no_authority(self) -> None:
         self.fake.actual_exit = 143
         self.fake.executed_nodes = None
         self.fake.executed_tests = None
@@ -317,7 +352,8 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(143, rc, error)
+        self.assertEqual(2, rc, error)
+        self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
         record = start_unit.run_registry.read_record(
             self.root / "ignored/validate/runs/validate-test.json"
         )
@@ -551,6 +587,7 @@ class StartUnitTest(unittest.TestCase):
         )
 
     def test_attach_waits_on_existing_handle_without_relaunching(self) -> None:
+        self.fake.validate_status_calls = 1
         record = self.root / "ignored/validate/runs/validate-test.json"
         start_unit.run_registry.write_record(
             record,
@@ -561,6 +598,7 @@ class StartUnitTest(unittest.TestCase):
                 "target": SHA,
                 "checkout": str(self.checkout),
                 "log": str(self.root / "run.log"),
+                "started_at": "2026-01-01T00:00:00Z",
                 "workspace_id": "wV",
                 "tab_id": "wV:t2",
                 "pane_id": "wV:p2",
@@ -581,6 +619,117 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("ATTACHED", out.getvalue())
         self.assertIn("FINISHED", out.getvalue())
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_attach_returns_canonical_nonpass_not_child_zero(self) -> None:
+        self.fake.validate_status_calls = 1
+        self.fake.canonical_verdict = "NOT-VALIDATED"
+        self.fake.canonical_status_rc = 4
+        record = self.root / "ignored/validate/runs/validate-test.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "state": "running",
+                "unit": "validate-test.service",
+                "target": SHA,
+                "checkout": str(self.checkout),
+                "log": str(self.root / "run.log"),
+                "started_at": "2026-01-01T00:00:00Z",
+                "workspace_id": "wV",
+                "tab_id": "wV:t2",
+                "pane_id": "wV:p2",
+            },
+        )
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--attach", "validate-test"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(4, rc, err.getvalue())
+        self.assertIn("verdict=NOT-VALIDATED exit=4", out.getvalue())
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_attach_cannot_inherit_older_green_from_same_checkout(self) -> None:
+        """The exact review plant: no current row must not inherit an old pass."""
+        self.fake.validate_status_calls = 1
+        old_row = self.fake.default_ledger_row()
+        old_row["started_at"] = "2000-01-01T00:00:01Z"
+        old_row["finished_at"] = "2000-01-01T00:00:02Z"
+        self.fake.ledger_rows = [json.dumps(old_row)]
+        record = self.root / "ignored/validate/runs/validate-test.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "state": "running",
+                "unit": "validate-test.service",
+                "target": SHA,
+                "checkout": str(self.checkout),
+                "log": str(self.root / "missing-current-run.log"),
+                "started_at": "2099-01-01T00:00:00Z",
+                "workspace_id": "wV",
+                "tab_id": "wV:t2",
+                "pane_id": "wV:p2",
+            },
+        )
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--attach", "validate-test"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(2, rc, err.getvalue())
+        self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", err.getvalue())
+        self.assertIn("an older row cannot bind this run", err.getvalue())
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_attach_current_row_must_be_the_selected_canonical_green(self) -> None:
+        self.fake.validate_status_calls = 1
+        current = self.fake.default_ledger_row()
+        old = dict(current)
+        old["started_at"] = "2000-01-01T00:00:01Z"
+        old["finished_at"] = "2000-01-01T00:00:02Z"
+        old["log_file"] = "/tmp/old-validate.log"
+        self.fake.ledger_rows = [json.dumps(current), json.dumps(old)]
+        self.fake.canonical_selected_row_index = 1
+        record = self.root / "ignored/validate/runs/validate-test.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "state": "running",
+                "unit": "validate-test.service",
+                "target": SHA,
+                "checkout": str(self.checkout),
+                "log": str(self.root / "run.log"),
+                "started_at": "2099-01-01T00:00:00Z",
+            },
+        )
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--attach", "validate-test"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(2, rc, err.getvalue())
+        self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", err.getvalue())
+        self.assertIn("refusing to inherit another run's green", err.getvalue())
 
     # ---- fresh temp-dir checkout is the DEFAULT (owner directive #3) --------
 
@@ -667,8 +816,8 @@ class StartUnitTest(unittest.TestCase):
         """A nonpass is not landing authority, but it is still a receipt.
 
         The old passing-only lookup made every such row look absent. The
-        wrapper must report the canonical NEEDS-RERUN without softening its
-        process exit or entering the orphan-recovery path.
+        wrapper must report and return the canonical NEEDS-RERUN rather than
+        its child's exit or entering the orphan-recovery path.
         """
         self.fake.actual_exit = 1
         self.fake.canonical_verdict = "NEEDS-RERUN"
@@ -676,12 +825,40 @@ class StartUnitTest(unittest.TestCase):
 
         rc, output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(1, rc)
+        self.assertEqual(4, rc)
         self.assertIn("RECEIPT-CANONICAL", output)
         self.assertIn("verdict=NEEDS-RERUN", output)
         self.assertNotIn("RECEIPT-NOT-CANONICAL", error)
         self.assertNotIn("ORPHANED-RECEIPT", error)
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+
+    def test_child_exit_zero_cannot_override_canonical_not_validated(self) -> None:
+        """Live #2087 regression: 57/57 nodes passed but authority refused it."""
+        self.fake.actual_exit = 0
+        self.fake.canonical_verdict = "NOT-VALIDATED"
+        self.fake.canonical_status_rc = 4
+
+        rc, output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(4, rc)
+        self.assertIn("verdict=NOT-VALIDATED exit=4", output)
+        self.assertNotIn("CANONICAL-VERDICT-UNAVAILABLE", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual(0, record["exit_code"], "child exit remains diagnostic evidence")
+        self.assertEqual("NOT-VALIDATED", record["canonical_verdict"])
+        self.assertEqual(4, record["wrapper_exit_code"])
+
+    def test_unreadable_canonical_status_never_falls_back_to_child_zero(self) -> None:
+        self.fake.actual_exit = 0
+        self.fake.canonical_verdict = "NOT-VALIDATED"
+        self.fake.canonical_status_rc = 2
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(2, rc)
+        self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
 
     def test_uncanonical_receipt_refuses_and_RETAINS_the_temp_checkout(self) -> None:
         """The negative that matters: an invisible green must be impossible.
@@ -703,7 +880,7 @@ class StartUnitTest(unittest.TestCase):
         rc, _output, error = self.invoke(["--", "full"])
 
         self.assertEqual(2, rc)
-        self.assertIn("RECEIPT-NOT-CANONICAL", error)
+        self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
         self.assertIn("ORPHANED-RECEIPT", error)
         self.assertEqual([], self.fake.removed, "evidence must not be destroyed")
 
@@ -804,7 +981,7 @@ class StartUnitTest(unittest.TestCase):
         rc, _output, error = self.invoke(["--", "full"])
 
         self.assertEqual(2, rc)
-        self.assertIn("RECEIPT-NOT-CANONICAL", error)
+        self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
         # The property under test is IDENTITY BINDING -- a foreign row must not
         # satisfy the check. Retention is a separate question: this run left no
         # receipt in its own tree, so there is nothing to preserve and the tree

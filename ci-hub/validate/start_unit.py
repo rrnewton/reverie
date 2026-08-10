@@ -33,6 +33,53 @@ CANONICAL_REMEASUREMENT_VERDICTS = frozenset(
 )
 
 
+def canonical_verdict_exit_code(verdict: str) -> int | None:
+    terminal = CANONICAL_TERMINAL_VERDICTS.get(verdict)
+    if terminal is not None:
+        return terminal
+    if verdict in CANONICAL_REMEASUREMENT_VERDICTS:
+        return 4
+    return None
+
+
+def parse_utc_timestamp(value: object, *, role: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"{role} has no usable timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise RuntimeError(f"{role} has malformed timestamp {value!r}") from error
+    if parsed.tzinfo is None:
+        raise RuntimeError(f"{role} timestamp has no timezone: {value!r}")
+    return parsed.astimezone(timezone.utc)
+
+
+def row_is_selected_qualifying_receipt(
+    row: Mapping[str, Any], newest_qualifying: object
+) -> bool:
+    """Bind a canonical VALIDATED verdict to the exact qualifying row."""
+    if not isinstance(newest_qualifying, dict):
+        return False
+    identity = newest_qualifying.get("receipt_identity")
+    if not isinstance(identity, dict):
+        return False
+    selected = identity.get("tuple")
+    if not isinstance(selected, dict):
+        return False
+    fields = {
+        "sha": "commit",
+        "tree": "tree",
+        "finished_at": "finished_at",
+        "host": "host",
+        "slot": "slot",
+        "log_file": "log_file",
+    }
+    return all(
+        selected_key in selected and selected[selected_key] == row.get(row_key)
+        for selected_key, row_key in fields.items()
+    )
+
+
 def require_guest_visible_root(path: Path, *, role: str) -> Path:
     """Refuse a program root hidden by Hermit's isolated guest ``/tmp``.
 
@@ -166,12 +213,12 @@ def remove_fresh_checkout(source: Path, fresh: Path, *, run: Runner) -> None:
 
 
 def assert_row_readable_from_canonical_ledger(
-    root: Path, target: str, cwd: Path, *, run: Runner
-) -> tuple[str, str]:
+    root: Path, target: str, cwd: Path, run_started_at: str, *, run: Runner
+) -> tuple[str, str, int]:
     """REQUIREMENT (a). Fail unless this run's exact row is readable canonically.
 
-    A temp-dir validate that writes its receipt into the temp checkout's own
-    ledger and then deletes the directory MANUFACTURES INVISIBLE GREENS, and
+    A validate that writes its receipt into a checkout-local ledger and then
+    loses that directory MANUFACTURES INVISIBLE GREENS, and
     would be strictly worse than validating the slot in place. This is not a
     hypothetical failure mode — it is the measured one. The admission audit
     (`ci-hub-admission-control-audit`) reproduced exactly 111 `validate.rs`
@@ -181,12 +228,15 @@ def assert_row_readable_from_canonical_ledger(
     shard. A field recorded only where it does not survive the checkout is not
     recorded at all.
 
-    So the row is re-read THROUGH THE CANONICAL READER, BEFORE the temp
-    directory is removed, and the binding is by IDENTITY rather than by a
-    correlated proxy: the row must carry this exact 40-hex commit AND the `cwd`
-    of this exact temp checkout. A row matching on commit alone could be some
-    other run of the same SHA.
+    So the row is re-read THROUGH THE CANONICAL READER before the wrapper
+    reports a verdict. The binding is by IDENTITY rather than by a correlated
+    proxy: the row must carry this exact 40-hex commit AND the `cwd` of this
+    exact run checkout AND start no earlier than this handle. A row matching on
+    commit and checkout alone could be an older run of the same SHA. A
+    VALIDATED verdict additionally has to select that exact row as its newest
+    canonical qualifying receipt; an older green cannot bless a new empty run.
     """
+    handle_start = parse_utc_timestamp(run_started_at, role="validate-run handle")
     status = run(
         [
             str(root / "ci-hub/ci-hub"),
@@ -202,6 +252,8 @@ def assert_row_readable_from_canonical_ledger(
         report = json.loads(status.stdout)
         verdict = str(report["verdict"])
         reported_sha = str(report["sha"])
+        reported_exit = int(report["exit_code"])
+        newest_qualifying = report.get("newest_qualifying")
         receipt_count = int(report["qualifying_count"]) + int(
             report["disqualified_count"]
         )
@@ -212,13 +264,22 @@ def assert_row_readable_from_canonical_ledger(
             or f"exit {status.returncode}"
         )
         raise RuntimeError(f"canonical validate-status unreadable ({detail}; {error})") from error
-    if status.returncode not in {0, 3, 4} or reported_sha != target:
+    expected_exit = canonical_verdict_exit_code(verdict)
+    if (
+        expected_exit is None
+        or status.returncode != expected_exit
+        or reported_exit != expected_exit
+        or reported_sha != target
+    ):
         detail = status.stderr.strip() or f"exit {status.returncode}, sha {reported_sha}"
-        raise RuntimeError(f"canonical validate-status refused ({detail})")
+        raise RuntimeError(
+            "canonical validate-status refused or was internally inconsistent "
+            f"({detail}; verdict={verdict}, reported_exit={reported_exit}, "
+            f"expected_exit={expected_exit})"
+        )
     if receipt_count == 0:
         raise RuntimeError(
-            f"canonical validate-status reports no receipt for commit {target}; temp "
-            "checkout RETAINED for inspection"
+            f"canonical validate-status reports no receipt for commit {target}"
         )
 
     # `validate-status` is the verdict authority. Its JSON intentionally
@@ -234,21 +295,38 @@ def assert_row_readable_from_canonical_ledger(
     if rows.returncode != 0:
         detail = rows.stderr.strip() or rows.stdout.strip() or f"exit {rows.returncode}"
         raise RuntimeError(f"canonical ledger union unreadable ({detail})")
-    matched: list[str] = []
+    matched: list[tuple[str, Mapping[str, Any]]] = []
     for line in rows.stdout.splitlines():
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if row.get("commit") == target and row.get("cwd") == str(cwd):
-            matched.append(line)
+        if not isinstance(row, dict):
+            continue
+        if row.get("commit") != target or row.get("cwd") != str(cwd):
+            continue
+        row_start = parse_utc_timestamp(row.get("started_at"), role="canonical ledger row")
+        if row_start >= handle_start:
+            matched.append((line, row))
     if not matched:
         raise RuntimeError(
-            f"no row for commit {target} with cwd {cwd} is readable from the canonical "
-            "ledger; the receipt exists nowhere a consumer will look. Temp checkout "
-            "RETAINED for inspection"
+            f"no row for commit {target} with cwd {cwd} at or after {run_started_at} "
+            "is readable from the canonical ledger; an older row cannot bind this run"
         )
-    return matched[0], verdict
+    if verdict == "VALIDATED":
+        selected = [
+            candidate
+            for candidate in matched
+            if row_is_selected_qualifying_receipt(candidate[1], newest_qualifying)
+        ]
+        if not selected:
+            raise RuntimeError(
+                "canonical VALIDATED verdict selects no qualifying receipt belonging "
+                "to this run; refusing to inherit another run's green"
+            )
+        matched = selected
+    matched.sort(key=lambda candidate: str(candidate[1].get("finished_at") or ""))
+    return matched[-1][0], verdict, expected_exit
 
 
 # Directories a receipt is never written into and that are expensive to walk.
@@ -784,12 +862,32 @@ def attach(
         sleep=sleep,
     )
     updated = run_registry.update_record(record_path, **final)
+    try:
+        target = str(record["target"])
+        checkout = Path(str(record["checkout"]))
+        run_started_at = str(record["started_at"])
+        row, canonical_verdict, canonical_exit = assert_row_readable_from_canonical_ledger(
+            root, target, checkout, run_started_at, run=run
+        )
+    except (KeyError, RuntimeError, ValueError) as error:
+        print(f"validate-run: CANONICAL-VERDICT-UNAVAILABLE: {error}", file=sys.stderr)
+        return 2
+    updated = run_registry.update_record(
+        record_path,
+        canonical_verdict=canonical_verdict,
+        wrapper_exit_code=canonical_exit,
+    )
+    if not json_output:
+        print(
+            f"RECEIPT-CANONICAL commit={target} cwd={checkout} "
+            f"verdict={canonical_verdict} exit={canonical_exit}"
+        )
+        print(f"  {row[:160]}")
     emit_report(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=json_output,
     )
-    status = updated.get("exit_code")
-    return status if isinstance(status, int) and 0 <= status <= 255 else 2
+    return canonical_exit
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1078,13 +1176,13 @@ def main(
     # first and checking afterwards would still find the row when it landed
     # canonically, and would find nothing to say when it did not — which is the
     # invisible-green failure this gate exists to make impossible.
-    if fresh_checkout is not None and source_checkout is not None:
-        try:
-            row, canonical_verdict = assert_row_readable_from_canonical_ledger(
-                root.resolve(), args.target, fresh_checkout, run=run
-            )
-        except RuntimeError as error:
-            print(f"validate-run: RECEIPT-NOT-CANONICAL: {error}", file=sys.stderr)
+    try:
+        row, canonical_verdict, canonical_exit = assert_row_readable_from_canonical_ledger(
+            root.resolve(), args.target, checkout, started_at, run=run
+        )
+    except RuntimeError as error:
+        print(f"validate-run: CANONICAL-VERDICT-UNAVAILABLE: {error}", file=sys.stderr)
+        if fresh_checkout is not None and source_checkout is not None:
             # Retention is for EVIDENCE, not for every failure. Retaining
             # unconditionally cost 26 MB per failed validate, and because
             # The Rust validation driver is fail-fast; that is most of them.
@@ -1093,12 +1191,6 @@ def main(
             except OSError as scan_error:
                 # Could not look. A NO-RESULT must never authorize deletion.
                 orphans = [f"<scan failed: {scan_error}>"]
-            terminal_status = updated.get("exit_code")
-            propagated = (
-                terminal_status
-                if isinstance(terminal_status, int) and 0 < terminal_status <= 255
-                else 2
-            )
             if orphans:
                 print(
                     "validate-run: ORPHANED-RECEIPT: this run wrote a receipt into "
@@ -1107,7 +1199,7 @@ def main(
                     "-- it is the only trace that this happened.",
                     file=sys.stderr,
                 )
-                return propagated
+                return 2
             print(
                 "validate-run: NO-RECEIPT-PRODUCED: the run failed before writing a "
                 "receipt anywhere, so the temp checkout holds no evidence; "
@@ -1115,20 +1207,25 @@ def main(
                 file=sys.stderr,
             )
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
-            return propagated
-        if not args.json:
-            print(
-                f"RECEIPT-CANONICAL commit={args.target} cwd={fresh_checkout} "
-                f"verdict={canonical_verdict}"
-            )
-            print(f"  {row[:160]}")
+        return 2
+    updated = run_registry.update_record(
+        record_path,
+        canonical_verdict=canonical_verdict,
+        wrapper_exit_code=canonical_exit,
+    )
+    if not args.json:
+        print(
+            f"RECEIPT-CANONICAL commit={args.target} cwd={checkout} "
+            f"verdict={canonical_verdict} exit={canonical_exit}"
+        )
+        print(f"  {row[:160]}")
+    if fresh_checkout is not None and source_checkout is not None:
         remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
     emit_report(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=args.json,
     )
-    status = updated.get("exit_code")
-    return status if isinstance(status, int) and 0 <= status <= 255 else 2
+    return canonical_exit
 
 
 if __name__ == "__main__":
