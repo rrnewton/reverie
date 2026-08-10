@@ -211,17 +211,12 @@ stale pin is a hard validation failure, so do not substitute raw `gh pr checkout
 Before publishing, confirm current intended base, no unrelated commits, full diff/evidence, required tests,
 tested tip SHA, mandatory PR sections, and freshly reread remote state. Use `with-proxy` for networked
 `git`/`gh`; never mutate shared auth with `gh auth switch`.
-Require an owner-authorized authority green at the exact PR head. For Hermit the two positive paths are
-interchangeable: (1) `ci-hub validate-status` dereferences a clean, counted local receipt, or (2) `ci-hub
-hosted-status` dereferences the registered `CI (GitHub-managed portable)` / `Regular tests (GitHub-managed
-portable)` job. Hermit's privileged workflow is not an additional required positive unless the owner explicitly
-changes the versioned policy. Reverie's hosted authority remains both `Regular tests` and `Host-dependent tests`.
-A skipped/missing/queued/partial/stale/cancelled authority is NO_RESULT, not green; one genuine product red blocks
-even when the peer is green. Do not merge with unresolved adversarial-review findings or a bare test-process exit.
-This policy is versioned in the parent before its Hermit consumer deployment: until the
-`hermit-merge-gate-authority-deployment` obligation in `ci-hub/landing/README.md` lands, Hermit's required
-merge-gate still enforces portable+privileged and pins the older receipt verifier. Do not claim portable-only
-hosted authority is operational end to end, and do not bypass that required check during the transition.
+Require exact-head owner-authorized green. **For Hermit, LOCAL VALIDATE PLUS THE LEDGER ARE THE LANDING
+AUTHORITY. HOSTED CI IS NOT.** `ci-hub validate-status` must dereference a counted receipt; missing, partial,
+stale, cancelled, zero-execution, or failed local evidence blocks. Hosted green does not authorize landing;
+hosted red, including red hosted `main`, does not block a ledger-authorized landing and is not by itself a P0.
+Reverie's hosted authority remains `Regular tests` plus `Host-dependent tests`. Never merge with unresolved
+adversarial-review findings or a bare test-process exit.
 
 ### Proxy Binding Review Axis (predicate; full rationale, registry, 12 examples, 3-layer taxonomy in the [companion doc](https://github.com/rrnewton/dev-hermit/blob/main/ai_docs/agents-md-policy-rationale.md))
 
@@ -371,12 +366,9 @@ name — always report: **Hermit SHA** (40-hex), **Reverie SHA** (40-hex or expl
 **Command**, **Result** (pass/fail/skipped with material output summarized), **Environment** (host/toolchain/
 hardware constraints when relevant). Hardware-dependent Hermit tests may be impossible on some hosts — report
 that fact and the observed failure; do not weaken, delete, or falsely bless a test to make the local
-environment green. When landing is authorized, the landing agent dereferences the owner-authorized exact-head
-authority at the Hermit PR head and final mutation boundary and reports it verbatim; the coordinator requires
-that evidence before authorizing the merge. A qualifying counted local receipt or the versioned
-hosted job policy is a green positive; missing/partial/stale evidence is NO_RESULT and a genuine red from either
-path blocks. Local feature-branch validation does not prove a hosted job is green, and a hosted job does not prove
-locally executed backend coverage beyond the job's declared scope.
+environment green. At the final mutation boundary, report Hermit's exact-head counted local ledger receipt;
+missing/partial/stale evidence is NO_RESULT and local red blocks. Hosted CI is diagnostic only and proves no
+local backend coverage.
 
 ### Running validate — `systemd-run --user` Is The Producer Path
 
@@ -440,8 +432,8 @@ to commits, not branch names.
 - **Verify a mechanism by the running thing, not its config.** A flag can be a deprecated no-op; an exit code can come from a different wrapper. Find the running thing and ask what holds it — e.g. for cgroup boxing, walk `/sys/fs/cgroup/...` for the live PID's `cgroup.procs`, not a flag/exit code.
 - **Record every measurement immediately.** First check whether the number already exists (`experiments/`, task notes, ci-hub history store). Any measurement — even incidental — goes into a task note immediately with units, context, and **how obtained (a polled aggregate is not a cgroup-recorded peak)**.
 - **Trust the ledger, not a handed SHA.** A handed SHA — or a "latest green"/"known-good" commit — is a claim, not evidence. Establish the validated frontier yourself: `ci-hub newest-green` (default `--branch main`; `--json`; `--no-fetch` offline) returns the newest commit whose latest LOCAL validation passed. If the handed SHA and the ledger disagree, the ledger wins — report the discrepancy.
-- **A run's conclusion is not the registered job's conclusion.** `gh run view <id> --json conclusion` describes a *workflow run*; the exact-head authority is the named *job*, read through `ci-hub hosted-status`. They disagree, and the authority wins. Observed 2026-08-07: a run reporting `completed/success` sat at a head whose authority read `HOSTED RED … positive=0/1`.
-- **DO NOT MANUALLY DISPATCH HOSTED CI FOR A PR UNDER `merge-gate-v4`** — the gate dispatches for you and a manual run races it. Two runs at one SHA contend for admission-limited runners; starved jobs are cancelled, and **a cancelled job writes a `failure` check under the authority job's name**, so `hosted-status` reports RED for a genuinely green head. The gate also needs BOTH `ci-portable.yml` and `ci-privileged.yml`. **On a NO_RESULT, re-run `merge-gate-v4` and let it drive.** Dispatch by hand only with no gate in play (e.g. re-deriving authority for a landed commit), checking `gh run list` first; repair a poisoned SHA with exactly ONE clean dispatch. Measurements: companion doc.
+- **Read hosted state from its named job, not the workflow rollup.** `ci-hub hosted-status` wins only for hosted diagnostics, never over Hermit's local ledger authority.
+- **Do not manually dispatch hosted CI under `merge-gate-v4`.** Duplicate runs can poison its diagnostic checks. On hosted NO_RESULT rerun the gate; dispatch manually only with no gate in play, after checking live runs, and use exactly one run. This manages hosted diagnostics, not landing authority.
 - **A land-lock SIGCONT must cover the WHOLE subtree, roots and descendants.** `land-lock status` hangs while its census holds verifiers in `do_signal_stop`; the remedy (SIGCONT, then `reclaim-dead`, never a kill) works only if every stopped member is resumed. Either partial attempt fails silently and looks like a wedged lock — resuming only roots leaves the real worker stopped one level down. Enumerate the subtree recursively from the validator roots, SIGCONT every member whose `stat` starts with `T`, then re-check none remain.
 
 ## Failure, Recovery, And Concurrent Work

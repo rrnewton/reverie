@@ -58,6 +58,17 @@ class GhEngineClassificationTests(unittest.TestCase):
         self.assertEqual(status.pending, 2)
         self.assertEqual(status.real_reds, 1)
 
+    def test_all_open_population_is_not_collapsed_to_ready_non_draft(self) -> None:
+        raw = [
+            _pr(1, _rollup(("COMPLETED", "SUCCESS"))),
+            _pr(2, [], draft=True),
+            _pr(3, [], draft=True),
+        ]
+        status = pr_status._classify_gh_prs("rrnewton/hermit", raw)
+        self.assertEqual(status.all_open, 3)
+        self.assertEqual(status.drafts, 2)
+        self.assertEqual(status.open, 1)
+
     def test_cancelled_check_is_pending_not_red(self) -> None:
         # Regression (task cancelled-run-classified-as-red): a cancelled check is a
         # hole to re-run, not a product failure. It must reduce to pending.

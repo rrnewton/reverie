@@ -348,6 +348,16 @@ def main() -> int:
              or (r["state"] == PENDING and r.get("stale"))]
     unevaluated = holes
 
+    # tick-hub capture consumes key=value fields. Keep the human table below,
+    # but also give the scheduled emitter a fully rendered one-line summary so
+    # a finding can never degrade into a literal ``{summary}`` placeholder.
+    hole_prs = ",".join(f"#{r['number']}" for r in holes[:8]) or "none"
+    tick_summary = (
+        f"{len(holes)}/{len(rows)} inspected open PR heads carry NO VERDICT; "
+        f"affected={hole_prs}; this is a hole, not green; remedy: dispatch the "
+        "authority at each current head and resolve base conflicts where named"
+    )
+
     if a.as_json:
         print(json.dumps({"inspected": len(rows), "not_evaluated": len(unevaluated),
                           "rows": rows}, indent=2))
@@ -367,6 +377,12 @@ def main() -> int:
                 )
         if not holes:
             print("  every inspected head carries a verdict")
+
+        if a.gate:
+            print(f"state={'hole' if holes else 'ok'}")
+            print(f"inspected={len(rows)}")
+            print(f"not_evaluated={len(holes)}")
+            print(f"summary={tick_summary}")
 
     if a.gate and unevaluated:
         print(

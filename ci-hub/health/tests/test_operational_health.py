@@ -11,6 +11,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import operational_health
 
@@ -28,6 +30,19 @@ class OperationalHealthTest(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             result = function(*args, **kwargs)  # type: ignore[operator]
         return int(result), output.getvalue()
+
+    def test_hosted_diagnostics_still_run_but_emit_notes(self) -> None:
+        config = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "tick-hub.yaml").read_text()
+        )
+        reminders = {row["name"]: row for row in config["reminders"]}
+        for name in ("github_main_health", "pull_request_health", "ci_queue_health"):
+            row = reminders[name]
+            self.assertEqual(row["cadence_secs"], 900)
+            self.assertEqual(row["gate"]["when"], "failure")
+            self.assertTrue(row["gate"]["capture"])
+            self.assertEqual(row["emit"]["kind"], "note")
+            self.assertNotIn("skill", row["emit"])
 
     def test_github_main_red_is_a_warning(self) -> None:
         repos = [SimpleNamespace(repo="example/project", state="red", available=True)]
@@ -65,6 +80,8 @@ class OperationalHealthTest(unittest.TestCase):
     def test_pull_request_red_count_is_a_warning(self) -> None:
         statuses = [
             SimpleNamespace(
+                repo="a/one",
+                all_open=103,
                 open=3,
                 red=1,
                 green=1,
@@ -73,6 +90,8 @@ class OperationalHealthTest(unittest.TestCase):
                 outage_suspected=False,
             ),
             SimpleNamespace(
+                repo="b/two",
+                all_open=7,
                 open=0,
                 red=0,
                 green=0,
@@ -88,7 +107,11 @@ class OperationalHealthTest(unittest.TestCase):
         ):
             result, output = self.capture(operational_health.pull_request_gate)
         self.assertEqual(result, 1)
-        self.assertIn("total=3", output)
+        self.assertIn("total=110", output)
+        self.assertIn("total_scope=all-open-prs-across-2/2-configured-repos", output)
+        self.assertIn("ready_non_draft=3", output)
+        self.assertIn("rrnewton/hermit:all_open=103,ready_non_draft=3", output)
+        self.assertIn("rrnewton/reverie:all_open=7,ready_non_draft=0", output)
         self.assertIn("red=1", output)
         self.assertIn("pending=1", output)
 
@@ -142,7 +165,8 @@ class OperationalHealthTest(unittest.TestCase):
         # A slow/blocked repo must not discard the other repo's real data: the
         # answer is DEGRADED (partial), distinct from "PRs are red".
         healthy = SimpleNamespace(
-            open=2, red=0, green=2, pending=0, real_reds=0, outage_suspected=False
+            all_open=12, open=2, red=0, green=2, pending=0,
+            real_reds=0, outage_suspected=False
         )
         with mock.patch.object(
             operational_health.pr_status, "DEFAULT_REPOS", ["a/one", "b/two"]
@@ -155,7 +179,9 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("state=degraded", output)
         self.assertIn("degraded=yes", output)
-        self.assertIn("open=2", output)  # the healthy repo survived
+        self.assertIn("total=12", output)  # the healthy repo survived
+        self.assertIn("repo_coverage=1/2", output)
+        self.assertIn("PARTIAL SAMPLE, NOT A FLEET CENSUS", output)
         self.assertIn("unavailable=b/two", output)
 
     def test_pull_request_all_repos_unavailable_is_not_zero_prs(self) -> None:

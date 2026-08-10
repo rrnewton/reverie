@@ -45,6 +45,9 @@ out="$(run "$tmp/superseded.json" --gate)"; rc=$?
 [[ $rc -eq 1 ]] && ok "superseded approval: gate FAILS (rc=1)" || bad "superseded: expected rc=1, got $rc"
 grep -q "SUPERSEDED    PR 1864" <<<"$out" && ok "superseded names the PR, the label and both SHAs" \
   || bad "superseded not named: $out"
+grep -q "^summary=1/1 approval labels fail the all binding check; affected=#1864;" <<<"$out" \
+  && ok "gate emits a concrete scheduled-tick summary" \
+  || bad "scheduled-tick summary missing or unrendered: $out"
 
 # --- POSITIVE 2: a label with no SHA anywhere is UNDETERMINED, not assumed good ---
 cat >"$tmp/unbound.json" <<JSON

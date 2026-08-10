@@ -333,6 +333,26 @@ def main() -> int:
     else:
         gating = bad
 
+    if a.gate and not a.as_json:
+        affected = ",".join(f"#{r['number']}" for r in gating[:8]) or "none"
+        if malformed:
+            state = "malformed"
+            summary = (
+                f"{len(malformed)} malformed approval bindings across {len(rows)} "
+                "approval labels; authority cannot be established; remedy: emit "
+                "APPROVED-AT: <lane> <40-hex-head>"
+            )
+        else:
+            state = "unbound" if gating else "ok"
+            summary = (
+                f"{len(gating)}/{len(rows)} approval labels fail the "
+                f"{a.gate_on} binding check; affected={affected}; they do not bind "
+                "the current head and are not deleted; remedy: re-review the exact "
+                "head and emit APPROVED-AT: <lane> <40-hex-head>"
+            )
+        print(f"state={state}")
+        print(f"summary={summary}")
+
     if a.gate and malformed:
         print(
             f"GATE FAIL: {len(malformed)} line(s) look like a verdict binding but match no known "

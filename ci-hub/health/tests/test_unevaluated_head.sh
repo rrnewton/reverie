@@ -45,6 +45,9 @@ grep -qE "^  NEVER_RAN +PR 1864" <<<"$out" && ok "zero-run head is named with it
   || bad "zero-run head not named: $out"
 grep -q "cannot build refs/pull" <<<"$out" && ok "states the known cause (conflict) rather than shrugging" \
   || bad "no cause given for the conflicting case"
+grep -q "^summary=1/1 inspected open PR heads carry NO VERDICT; affected=#1864;" <<<"$out" \
+  && ok "gate emits a concrete scheduled-tick summary" \
+  || bad "scheduled-tick summary missing or unrendered: $out"
 
 # --- NEGATIVE 1: a genuinely passing head MUST NOT be flagged ----------------
 cat >"$tmp/pass.json" <<'JSON'

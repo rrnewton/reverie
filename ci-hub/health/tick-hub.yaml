@@ -264,8 +264,10 @@ reminders:
       when: failure
       capture: true
     emit:
-      kind: action
-      skill: hard-warn-coordinator
+      # Hosted state is useful diagnostic evidence, not Hermit's landing
+      # authority. Keep measuring and reporting failures, but do not page at
+      # the same severity as ledger or unpushed-work failures.
+      kind: note
       fields:
         component: github-main
       title: "GitHub main health is {state}: {summary}"
@@ -295,8 +297,9 @@ reminders:
       when: failure
       capture: true
     emit:
-      kind: action
-      skill: hard-warn-coordinator
+      # This remains a real gate and a real report; NOTE is a severity demotion,
+      # not silence. Hermit landing authority is local validate + the ledger.
+      kind: note
       fields:
         component: pull-requests
       title: "open PR health is {state}: {summary}"
@@ -308,8 +311,9 @@ reminders:
       when: failure
       capture: true
     emit:
-      kind: action
-      skill: hard-warn-coordinator
+      # Queue health is operational telemetry. A hosted queue problem is not a
+      # Hermit landing veto and is not by itself a P0.
+      kind: note
       fields:
         component: ci-queue-health
       title: "CI queue health is {state}: {summary}"

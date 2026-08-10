@@ -341,6 +341,13 @@ class RepoStatus:
     real_reds: int
     outage_suspected: bool
     prs: tuple[dict[str, object], ...]
+    # `open` is intentionally the CI-actionable population: READY NON-DRAFT
+    # heads only.  Keep the full GitHub open-PR population beside it so a
+    # consumer cannot relabel the smaller number as "all open PRs".  `None`
+    # marks engines that do not carry this population; it is never inferred
+    # from the ready count.
+    all_open: int | None = None
+    drafts: int | None = None
     review_protocol: tuple[ReviewProtocolStatus, ...] = ()
     mechanism_overlaps: tuple[MechanismOverlap, ...] = ()
     undetermined_reds: int = 0
@@ -1112,6 +1119,12 @@ def _classify_gh_prs(
     if hosted_authority is None:
         hosted_authority = {}
     prs: list[dict[str, object]] = []
+    all_open = sum(1 for entry in raw if isinstance(entry, dict))
+    drafts = sum(
+        1
+        for entry in raw
+        if isinstance(entry, dict) and entry.get("isDraft") is True
+    )
     review_protocol: list[ReviewProtocolStatus] = []
     mechanism_overlaps = _mechanism_overlaps(raw)
     green = red = pending = real_reds = undetermined_reds = 0
@@ -1347,6 +1360,8 @@ def _classify_gh_prs(
         hosted_unknown=hosted_unknown,
         outage_suspected=outage,
         prs=tuple(prs),
+        all_open=all_open,
+        drafts=drafts,
         review_protocol=tuple(review_protocol),
         mechanism_overlaps=mechanism_overlaps,
     )

@@ -362,6 +362,7 @@ def pull_request_gate() -> int:
     # running deadline rather than being flat per repo -- see
     # PR_GATE_TOTAL_BUDGET_SECS for why a flat number starves the large repo.
     statuses: list[pr_status.RepoStatus] = []
+    measured_repos: list[str] = []
     unavailable: list[tuple[str, str]] = []
     repos = list(pr_status.DEFAULT_REPOS)
     started = time.monotonic()
@@ -371,6 +372,7 @@ def pull_request_gate() -> int:
         )
         try:
             statuses.append(pr_status.fetch_repo_status(repo, timeout=budget))
+            measured_repos.append(repo)
         except RuntimeError as error:
             unavailable.append((repo, _field(error)))
 
@@ -381,16 +383,26 @@ def pull_request_gate() -> int:
         _emit(
             {
                 "state": "unavailable",
-                "total": 0,
-                "red": 0,
-                "pending": 0,
-                "green": 0,
-                "real_reds": 0,
+                # UNKNOWN, not zero: no repo returned a population to count.
+                "total": "unknown",
+                "total_scope": f"all-open-prs-across-0/{len(repos)}-configured-repos",
+                "ready_non_draft": "unknown",
+                "ci_count_scope": "ready-non-draft-heads",
+                "repo_coverage": f"0/{len(repos)}",
+                "configured_repos": "|".join(repos),
+                "red": "unknown",
+                "pending": "unknown",
+                "green": "unknown",
+                "real_reds": "unknown",
                 "setup_only_no_result_checks": 0,
                 "prerequisite_no_result_checks": 0,
                 "outage": "no",
                 "degraded": "yes",
-                "summary": f"all repos unavailable ({reasons})",
+                "summary": (
+                    f"PR population and CI health UNAVAILABLE across 0/{len(repos)} "
+                    f"configured repos ({'|'.join(repos)}); this is not zero open PRs. "
+                    f"Reasons: {reasons}"
+                ),
             }
         )
         return 1
@@ -407,6 +419,28 @@ def pull_request_gate() -> int:
             "prerequisite_no_result_checks",
         )
     }
+    # The gh engine already fetched ALL open PRs before it filtered drafts out
+    # of the CI-actionable set.  Reuse that population: no extra GitHub call and
+    # no added pressure against tick-hub's unchanged 30s gate bound.
+    all_open_by_repo = {
+        repo: (
+            status.all_open
+            if getattr(status, "all_open", None) is not None
+            else status.open
+        )
+        for repo, status in zip(measured_repos, statuses)
+    }
+    ready_by_repo = {
+        repo: status.open for repo, status in zip(measured_repos, statuses)
+    }
+    all_open = sum(all_open_by_repo.values())
+    ready_non_draft = counts["open"]
+    drafts = all_open - ready_non_draft
+    repo_scope = "|".join(
+        f"{repo}:all_open={all_open_by_repo[repo]},ready_non_draft={ready_by_repo[repo]}"
+        for repo in measured_repos
+    )
+    coverage = f"{len(statuses)}/{len(repos)}"
     outage = any(status.outage_suspected for status in statuses)
     unhealthy = counts["real_reds"] > 0 or outage
     degraded = bool(unavailable)
@@ -420,18 +454,31 @@ def pull_request_gate() -> int:
     else:
         state = "ok"
     summary = (
-        f"open={counts['open']},red={counts['red']},"
-        f"pending={counts['pending']},real={counts['real_reds']},"
+        f"all_open={all_open} across {coverage} configured repos ({repo_scope}); "
+        f"ready_non_draft={ready_non_draft}, with ready-head CI "
+        f"red={counts['red']},pending={counts['pending']},green={counts['green']},"
+        f"real_reds={counts['real_reds']},"
         f"setup_only_no_result={counts['setup_only_no_result_checks']},"
         f"prerequisite_no_result={counts['prerequisite_no_result_checks']},"
         f"outage={'yes' if outage else 'no'}"
     )
     if degraded:
-        summary += ",unavailable=" + "|".join(repo for repo, _ in unavailable)
+        summary += (
+            "; PARTIAL SAMPLE, NOT A FLEET CENSUS; unavailable="
+            + "|".join(repo for repo, _ in unavailable)
+        )
     _emit(
         {
             "state": state,
-            "total": counts["open"],
+            "total": all_open,
+            "total_scope": f"all-open-prs-across-{coverage}-configured-repos",
+            "repo_coverage": coverage,
+            "configured_repos": "|".join(repos),
+            "measured_repos": "|".join(measured_repos),
+            "repo_scope": repo_scope,
+            "ready_non_draft": ready_non_draft,
+            "draft": drafts,
+            "ci_count_scope": "ready-non-draft-heads",
             "red": counts["red"],
             "pending": counts["pending"],
             "green": counts["green"],
