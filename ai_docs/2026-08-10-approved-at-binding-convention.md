@@ -17,6 +17,41 @@ A stale approval is at least *retirable*: a push moves the head past it and it c
 as superseded. An **unbound** approval can be neither honoured nor retired, because there is
 nothing to compare a head against. It is inert authority.
 
+## PINNED GRAMMAR — three accepted shapes, and a warning for the skill
+
+**Update 2026-08-10, after a third variant appeared within hours.** All three of
+these are legitimate exact-head verdicts and the parser accepts all three:
+
+```
+APPROVED-AT: <lane> <40-hex>        # #1851, both lanes
+APPROVED-AT <40-hex>                # bare; lane derived from an unambiguous role tag
+**APPROVED-AT <40-hex>**            # #1864 — MARKDOWN EMPHASIS
+```
+
+Surrounding markdown decoration (`*`, `_`, backticks) is stripped before
+matching. Rejections mirror the same shapes and always win within a comment.
+
+**⚠ DO NOT NARROW THE SPEC TO THE LANE-EXPLICIT FORM ALONE.** A draft of
+`.claude/skills/post-facto-review/SKILL.md` (uncommitted at the time of writing,
+another agent's) mandates only `APPROVED-AT: <lane> <sha>` and states that "a
+verdict without this line is not an approval." **Applied literally that retires
+#1864's approval**, which is a legitimate exact-head verdict in the bare,
+bold-wrapped form. Under-counting here destroys real authorisation — the exact
+inverse of the defect the convention exists to prevent.
+
+If the fleet wants the lane-explicit form as the *going-forward* standard, that
+is reasonable and it is the one that always works (the role tag does not reliably
+encode the lane — see below). But it must be written as a forward requirement
+with the other shapes explicitly honoured, never as a retroactive validity test.
+**Recommend the wording: "Emit `APPROVED-AT: <lane> <40-hex>`. Verdicts using the
+bare or emphasised forms remain valid; consumers accept all three."**
+
+**The parser now fails loudly on anything else.** A line carrying a verdict
+keyword and a 40-hex that matches no known grammar is reported as
+`MALFORMED-BINDING` and fails the gate. Silently skipping an unrecognised variant
+is exactly how variant three went unnoticed: an approval that exists but is not
+seen reads as no approval.
+
 ## The convention
 
 One line in every reviewer verdict, at column 0:
