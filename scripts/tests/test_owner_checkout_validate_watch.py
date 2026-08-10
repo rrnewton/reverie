@@ -247,6 +247,7 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             evidence = watch.lock_block_evidence(log)
             self.assertIsNotNone(evidence)
             self.assertEqual(evidence["kind"], "validate-lock-refusal")
+            self.assertEqual(evidence["refusal_pid"], 123)
 
     def test_launcher_capture_cannot_overwrite_concurrent_lock_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -263,6 +264,106 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertTrue(text.startswith("REFUSED: box-exclusive anchor held"))
             self.assertIn("validate-run: FINISHED", text)
             self.assertIsNotNone(watch.lock_block_evidence(log))
+
+    def test_lock_holder_attribution_binds_live_identity_and_reserved_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            pid = 123
+            ticks = 456
+            boot_id = "boot-fixture"
+            target = "d" * 40
+            unit = "validate-helper-fixture.service"
+            (parent / ".validate-lock").write_text(
+                f"agent=helper-validator2\nkind=validate\ntarget={target}\n"
+            )
+            (parent / ".validate-lock.owner").write_text(
+                f"host=fixture\nboot_id={boot_id}\npid={pid}\nstart_ticks={ticks}\n"
+            )
+            (parent / ".validate-lock.cleanup-required").write_text(
+                "version=3\nagent=helper-validator2\n"
+                f"operation=validate:{target}\n"
+                f"cgroup=/fixture/{unit}\nphase=published\n"
+            )
+            runs = parent / "ignored/validate/runs"
+            runs.mkdir(parents=True)
+            (runs / "run.json").write_text(
+                json.dumps(
+                    {
+                        "agent": "helper-validator2",
+                        "target": target,
+                        "unit": unit,
+                        "pr": 2012,
+                        "state": "running",
+                    }
+                )
+            )
+            proc_root = parent / "proc"
+            (proc_root / str(pid)).mkdir(parents=True)
+            fields_after_comm = ["S", *(["0"] * 18), str(ticks), "0"]
+            (proc_root / str(pid) / "stat").write_text(
+                f"{pid} (fixture) " + " ".join(fields_after_comm) + "\n"
+            )
+            boot = parent / "boot_id"
+            boot.write_text(boot_id + "\n")
+
+            holder = watch.lock_holder_attribution(
+                parent,
+                {"refusal_pid": pid},
+                proc_root=proc_root,
+                boot_id_path=boot,
+            )
+
+            self.assertEqual(holder["status"], "attributed")
+            self.assertEqual(holder["pr"], 2012)
+            self.assertEqual(holder["contention_class"], "reserved-publication-window")
+            self.assertTrue(holder["process_identity"]["live_match"])
+
+            record_path = runs / "run.json"
+            ordinary = json.loads(record_path.read_text())
+            ordinary["pr"] = 2041
+            record_path.write_text(json.dumps(ordinary))
+            holder = watch.lock_holder_attribution(
+                parent,
+                {"refusal_pid": pid},
+                proc_root=proc_root,
+                boot_id_path=boot,
+            )
+            self.assertEqual(holder["contention_class"], "ordinary-contention")
+            self.assertIn("not the reserved", holder["interpretation"])
+
+    def test_lock_holder_attribution_refuses_pid_only_guess(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            holder = watch.lock_holder_attribution(
+                Path(temporary), {"refusal_pid": 123}
+            )
+            self.assertEqual(holder["status"], "unattributed")
+
+    def test_privileged_node_records_prior_empty_detail_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text(
+                "[privileged-build.privileged_tests] ✗ FAIL   Build focused binaries (0s, exit 1)\n"
+                "[privileged-build.privileged_tests] ----- detail -----\n"
+                "[privileged-build.privileged_tests] ----- end detail -----\n"
+            )
+            evidence = watch.privileged_tests_evidence(log)
+            self.assertEqual(evidence["status"], "FAIL")
+            self.assertEqual(evidence["duration"], "0s")
+            self.assertEqual(evidence["exit_code"], 1)
+            self.assertTrue(evidence["detail_empty"])
+            self.assertTrue(evidence["prior_refusal_signature"])
+            self.assertIn("✗ FAIL", evidence["raw_failure_line"])
+
+    def test_privileged_node_pass_carries_duration_and_no_failure_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text(
+                "[privileged-build.privileged_tests] ✓ PASS   Build focused binaries (17s)\n"
+            )
+            evidence = watch.privileged_tests_evidence(log)
+            self.assertEqual(evidence["status"], "PASS")
+            self.assertEqual(evidence["duration"], "17s")
+            self.assertNotIn("raw_failure_line", evidence)
 
     def test_exact_ledger_failure_outranks_wrapper_success(self) -> None:
         source = (ROOT / "scripts/owner-checkout-validate-watch.py").read_text()

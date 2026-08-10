@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -228,28 +229,220 @@ def lock_block_evidence(log: Path) -> dict[str, Any] | None:
     if not log.is_file():
         return None
     text = log.read_text(encoding="utf-8", errors="replace")
+    refusal_line = next(
+        (
+            line
+            for line in text.splitlines()
+            if "REFUSED: box-exclusive anchor held" in line
+        ),
+        None,
+    )
     markers = [
         marker
-        for marker in (
-            "quarantine: ACTIVE",
-            "QUARANTINED",
-            "REFUSED: box-exclusive anchor held",
-        )
+        for marker in ("quarantine: ACTIVE", "QUARANTINED")
         if marker in text
     ]
+    if refusal_line is not None:
+        markers.append("REFUSED: box-exclusive anchor held")
     exit_three = any(
         "validate-lock" in line and "exit=3" in line
         for line in text.splitlines()
     )
     if not (markers and exit_three):
         return None
-    return {
+    evidence: dict[str, Any] = {
         "kind": "validate-lock-refusal",
         "refusal_markers": markers,
         "validate_lock_exit": 3,
         "log": str(log),
         "interpretation": "validation was refused before product work executed",
     }
+    if refusal_line is not None:
+        evidence["refusal_line"] = refusal_line
+        match = re.search(r"\bpid=(\d+)\b", refusal_line)
+        if match:
+            evidence["refusal_pid"] = int(match.group(1))
+    return evidence
+
+
+def parse_key_value_file(path: Path) -> dict[str, str]:
+    if not path.is_file():
+        return {}
+    fields: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            fields[key] = value
+    return fields
+
+
+def process_start_ticks(proc_root: Path, pid: int) -> int | None:
+    try:
+        text = (proc_root / str(pid) / "stat").read_text(encoding="utf-8")
+        # Fields after the final ") " begin with field 3; starttime is field 22.
+        return int(text.rsplit(") ", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def lock_holder_attribution(
+    parent: Path,
+    evidence: dict[str, Any],
+    *,
+    proc_root: Path = Path("/proc"),
+    boot_id_path: Path = Path("/proc/sys/kernel/random/boot_id"),
+) -> dict[str, Any]:
+    """Bind a refusal to the live lock holder or explicitly decline to guess."""
+    refusal_pid = evidence.get("refusal_pid")
+    if not isinstance(refusal_pid, int):
+        return {"status": "unattributed", "reason": "refusal carried no holder pid"}
+
+    lease = parse_key_value_file(parent / ".validate-lock")
+    owner = parse_key_value_file(parent / ".validate-lock.owner")
+    cleanup = parse_key_value_file(parent / ".validate-lock.cleanup-required")
+    try:
+        owner_pid = int(owner["pid"])
+        owner_ticks = int(owner["start_ticks"])
+        current_boot = boot_id_path.read_text(encoding="utf-8").strip()
+    except (KeyError, OSError, ValueError):
+        return {"status": "unattributed", "reason": "canonical owner identity unavailable"}
+
+    target = lease.get("target")
+    agent = lease.get("agent")
+    operation = cleanup.get("operation")
+    identity_matches = (
+        refusal_pid == owner_pid
+        and owner.get("boot_id") == current_boot
+        and process_start_ticks(proc_root, owner_pid) == owner_ticks
+        and bool(target)
+        and bool(agent)
+        and cleanup.get("agent") == agent
+        and operation == f"validate:{target}"
+    )
+    if not identity_matches:
+        return {
+            "status": "unattributed",
+            "reason": "refusal pid did not bind to the live canonical lock identity",
+        }
+
+    records: list[dict[str, Any]] = []
+    for record_path in sorted((parent / "ignored/validate/runs").glob("*.json")):
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        unit = str(record.get("unit", ""))
+        cgroup_unit = Path(cleanup.get("cgroup", "")).name
+        if (
+            record.get("target") == target
+            and record.get("agent") == agent
+            and unit
+            and unit == cgroup_unit
+        ):
+            records.append(record)
+    if len(records) != 1:
+        return {
+            "status": "unattributed",
+            "reason": f"canonical identity matched {len(records)} exact run records, expected 1",
+            "agent": agent,
+            "target": target,
+        }
+
+    record = records[0]
+    pr = record.get("pr")
+    reserved = pr == 2012
+    return {
+        "status": "attributed",
+        "agent": agent,
+        "target": target,
+        "pr": pr,
+        "unit": record.get("unit"),
+        "process_identity": {
+            "pid": owner_pid,
+            "start_ticks": owner_ticks,
+            "boot_id": current_boot,
+            "live_match": True,
+        },
+        "contention_class": (
+            "reserved-publication-window" if reserved else "ordinary-contention"
+        ),
+        "interpretation": (
+            "reserved #2012 publication window"
+            if reserved
+            else "identified holder is not the reserved #2012 publication window"
+        ),
+    }
+
+
+def privileged_tests_evidence(log: Path) -> dict[str, Any] | None:
+    """Extract the decisive privileged-tests node verdict and raw failure detail."""
+    if not log.is_file():
+        return None
+    lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    prefix = "[privileged-build.privileged_tests]"
+    terminal = next(
+        (
+            line
+            for line in reversed(lines)
+            if line.startswith(prefix)
+            and any(token in line for token in ("✓ PASS", "✗ FAIL", "⊘ ABORT"))
+        ),
+        None,
+    )
+    if terminal is None:
+        return None
+    status = (
+        "PASS"
+        if "✓ PASS" in terminal
+        else "FAIL"
+        if "✗ FAIL" in terminal
+        else "ABORT"
+    )
+    timing = re.search(r"\(([^()]*)\)\s*$", terminal)
+    timing_text = timing.group(1) if timing else None
+    duration = timing_text.split(",", 1)[0].strip() if timing_text else None
+    exit_match = re.search(r"\bexit\s+(\d+)\b", timing_text or "")
+
+    detail: list[str] = []
+    detail_start = f"{prefix} ----- detail -----"
+    detail_end = f"{prefix} ----- end detail -----"
+    try:
+        start = lines.index(detail_start) + 1
+        end = lines.index(detail_end, start)
+        detail = [line for line in lines[start:end] if line.strip()]
+    except ValueError:
+        pass
+    evidence: dict[str, Any] = {
+        "status": status,
+        "duration": duration,
+        "timing": timing_text,
+        "exit_code": int(exit_match.group(1)) if exit_match else None,
+        "terminal_line": terminal,
+        "detail_lines": detail,
+        "detail_empty": not detail,
+        "log": str(log),
+    }
+    if status != "PASS":
+        evidence["raw_failure_line"] = detail[0] if detail else terminal
+    evidence["prior_refusal_signature"] = (
+        status == "FAIL"
+        and duration == "0s"
+        and evidence["exit_code"] == 1
+        and not detail
+    )
+    return evidence
+
+
+def first_raw_failure_line(log: Path) -> str | None:
+    if not log.is_file():
+        return None
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        if any(
+            marker in line
+            for marker in ("✗ FAIL", "🚫 validate REFUSED", "❌ validate FAIL")
+        ):
+            return line
+    return None
 
 
 def append_launcher_output(log: Path):
@@ -325,6 +518,9 @@ def render_message(result: dict[str, Any]) -> str:
         f"exception_adjusted_qualified: {result.get('exception_adjusted_qualified')!r}",
         f"landing_authority: {result.get('landing_authority')!r}",
         f"lock_block_evidence: {result.get('lock_block_evidence')!r}",
+        f"lock_holder: {result.get('lock_holder')!r}",
+        f"privileged_tests_node: {result.get('privileged_tests_node')!r}",
+        f"raw_failure_line: {result.get('raw_failure_line')!r}",
         f"pre_tree_hash: {result.get('pre_tree_hash') or 'unavailable'}",
         f"post_tree_hash: {result.get('post_tree_hash') or 'unavailable'}",
         f"dirty_paths_after: {result.get('dirty_paths_after')!r}",
@@ -505,6 +701,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         lock_block = lock_block_evidence(validate_log)
         if lock_block is not None:
             result["lock_block_evidence"] = lock_block
+            holder = lock_holder_attribution(parent, lock_block)
+            result["lock_holder"] = holder
 
         row = latest_attempt_row(
             canonical_ledger_rows(parent),
@@ -538,12 +736,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             exception_qualified = False
             result["validate_log"] = str(validate_log)
 
+        evidence_log = Path(str(result["validate_log"]))
+        node_evidence = privileged_tests_evidence(evidence_log)
+        if node_evidence is not None:
+            result["privileged_tests_node"] = node_evidence
+            if node_evidence.get("raw_failure_line"):
+                result["raw_failure_line"] = node_evidence["raw_failure_line"]
+        if "raw_failure_line" not in result:
+            raw_failure = first_raw_failure_line(evidence_log)
+            if raw_failure is not None:
+                result["raw_failure_line"] = raw_failure
+
         if row is None and lock_block is not None:
+            holder = result.get("lock_holder") or {}
+            holder_interpretation = holder.get("interpretation")
+            holder_context = (
+                f": {holder_interpretation}" if holder_interpretation else ""
+            )
             result.update(
                 state="BLOCKED_ON_LOCK",
                 reason=(
-                    "validate-lock refused admission before product work; "
-                    "no exact-attempt ledger row"
+                    "validate-lock refused admission before product work"
+                    f"{holder_context}; no exact-attempt ledger row"
                 ),
             )
         elif row is not None and row.get("result") == "fail":
