@@ -65,6 +65,12 @@ ALLOWED: dict[str, str] = {
     "ci-hub/validate/mutation_suite.py": "mutation harness over the predicate",
     "ci-hub/landing/preflight.py": "landing preflight",
     "ci-hub/landing/test-local-validation-eligibility.sh": "eligibility harness",
+    "ci-hub/landing/exact-head-validation-authority.sh": (
+        "landing authority; nonzero floor after complete coverage and all-pass gates"
+    ),
+    "ci-hub/landing/test-exact-head-validation-authority.sh": (
+        "landing-authority fixture producer; carries the nonzero-floor field"
+    ),
     "ci-hub/validation/verify_receipt.sh": "receipt verifier",
     "ci-hub/remediation/nonzero_result.py": "remediation classification",
     "ci-hub/remediation/protocol.py": "remediation protocol",
