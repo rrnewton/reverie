@@ -4039,6 +4039,21 @@ def _maybe_redispatch_local(
     source = local.get("source")
     if not source or not Path(source).is_dir():
         return dict(record)  # cannot re-run without the donor checkout
+    admitted, admission_detail = _redispatch_watch_admission()
+    if not admitted:
+        # Do not consume a retry or even start the clone/submodule preparation.
+        # That preparation took 28s in the live 069b532f redispatch and aged the
+        # shared lock's bounded yield window past 90s before validate-run reached
+        # the box chokepoint.  The downstream validate-lock check remains the
+        # race-safe authority; this early check makes automation obey the same
+        # free-boundary priority at its actual dispatch decision.
+        print(
+            f"LOCAL RE-DISPATCH YIELD: obligation={obligation_id} "
+            f"reason={admission_detail}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return dict(record)
     log_path = Path(
         local.get("log_path")
         or ROOT / "ignored/ci-hub/obligations" / obligation_id / "local-validate.log"
@@ -4092,6 +4107,69 @@ def _maybe_redispatch_local(
         launch_token,
         store_path,
     )
+
+
+def _redispatch_watch_admission(
+    *,
+    release_path: Path | None = None,
+    verifier: Path | None = None,
+) -> tuple[bool, str]:
+    """Ask the public owner-watch predicate before automatic redispatch.
+
+    This does not duplicate admission semantics.  It only obtains the latest
+    release boundary and calls ``owner-checkout-validate-watch.py``'s public
+    three-state interface.  Missing release state is the documented bootstrap
+    case; malformed/unreadable state and an UNKNOWN verifier answer fail closed.
+    ``validate-lock run`` asks the same predicate again at the anchor boundary.
+    """
+    release_path = release_path or ROOT / ".validate-lock.released"
+    verifier = verifier or ROOT / "scripts/owner-checkout-validate-watch.py"
+    try:
+        release_text = release_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return True, "bootstrap-no-release-yet"
+    except OSError as error:
+        return False, f"release-record-unreadable:{error}"
+    try:
+        release = dict(
+            line.split("=", 1)
+            for line in release_text.splitlines()
+            if line.strip()
+        )
+        released_at = release["released_at"]
+        if not released_at.isdigit() or int(released_at) < 0:
+            raise ValueError("released_at is not a non-negative epoch")
+        released_by = release["released_by"]
+        if not released_by:
+            raise ValueError("released_by is empty")
+    except (KeyError, ValueError) as error:
+        return False, f"release-record-malformed:{error}"
+
+    # A release by the priority watcher is itself the strongest possible proof
+    # that it was admitted.  Its public cursor records acquisition before this
+    # later release boundary, so querying strictly after the release would
+    # otherwise manufacture starvation immediately after the watch got its turn.
+    if released_by == "owner-checkout-watch":
+        return True, "owner-watch-released-last"
+
+    try:
+        result = _run(
+            (str(verifier), "--admission-status-since", released_at),
+            check=False,
+            timeout=5,
+        )
+        payload = json.loads(result.stdout)
+    except (OSError, ProtocolError, json.JSONDecodeError) as error:
+        return False, f"owner-watch-admission-unknown:{error}"
+    state = payload.get("state") if isinstance(payload, Mapping) else None
+    contract = (result.returncode, state)
+    if contract == (0, "ADMITTED"):
+        return True, "owner-watch-admitted-since-release"
+    if contract == (1, "NOT_ADMITTED"):
+        return False, "owner-watch-not-admitted-since-release"
+    if contract == (2, "UNKNOWN"):
+        return False, "owner-watch-admission-unknown"
+    return False, f"owner-watch-admission-contract-mismatch:{contract!r}"
 
 
 def _watch_complete(record: Mapping[str, Any]) -> bool:

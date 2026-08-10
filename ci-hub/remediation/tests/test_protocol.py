@@ -4436,7 +4436,11 @@ class LocalRedispatchTest(unittest.TestCase):
         )
         with mock.patch.object(
             protocol, "_spawn_detached", side_effect=self._spawn_and_register
-        ) as spawn, mock.patch.object(protocol, "github_runs", return_value=[]):
+        ) as spawn, mock.patch.object(
+            protocol,
+            "_redispatch_watch_admission",
+            return_value=(True, "owner-watch-admitted-since-release"),
+        ), mock.patch.object(protocol, "github_runs", return_value=[]):
             with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 record = protocol.poll_obligation("ob", self.store)
         spawn.assert_called_once()
@@ -4459,12 +4463,105 @@ class LocalRedispatchTest(unittest.TestCase):
         )
         with mock.patch.object(
             protocol, "_spawn_detached", side_effect=self._spawn_and_register
-        ) as spawn, mock.patch.object(protocol, "github_runs", return_value=[]):
+        ) as spawn, mock.patch.object(
+            protocol,
+            "_redispatch_watch_admission",
+            return_value=(True, "owner-watch-admitted-since-release"),
+        ), mock.patch.object(protocol, "github_runs", return_value=[]):
             with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
                 record = protocol.poll_obligation("ob", self.store)
         spawn.assert_called_once()
         self.assertEqual(record["local"]["state"], "running")
         self.assertNotEqual(record["overall_state"], "remediation_required")
+
+    def test_watch_starved_redispatch_yields_without_spawning_or_spending(self) -> None:
+        self._seed(
+            {
+                "local": {
+                    "state": "red",
+                    "exit_code": 1,
+                    "source": str(self.source),
+                    "redispatch_count": 0,
+                    "pid": None,
+                },
+                "github": {"state": "running"},
+            }
+        )
+        record = obligations.get_record("ob", self.store)
+        with mock.patch.object(
+            protocol,
+            "_redispatch_watch_admission",
+            return_value=(False, "owner-watch-not-admitted-since-release"),
+        ), mock.patch.object(protocol, "_spawn_detached") as spawn, redirect_stderr(
+            io.StringIO()
+        ) as error:
+            result = protocol._maybe_redispatch_local("ob", record, self.store)
+        spawn.assert_not_called()
+        self.assertEqual(result["local"]["state"], "red")
+        self.assertEqual(result["local"]["redispatch_count"], 0)
+        self.assertIn("LOCAL RE-DISPATCH YIELD", error.getvalue())
+
+    def test_unknown_watch_admission_also_yields(self) -> None:
+        self._seed(
+            {
+                "local": {
+                    "state": "no_result",
+                    "exit_code": 137,
+                    "source": str(self.source),
+                    "redispatch_count": 0,
+                    "pid": None,
+                },
+                "github": {"state": "running"},
+            }
+        )
+        record = obligations.get_record("ob", self.store)
+        with mock.patch.object(
+            protocol,
+            "_redispatch_watch_admission",
+            return_value=(False, "owner-watch-admission-unknown"),
+        ), mock.patch.object(protocol, "_spawn_detached") as spawn:
+            result = protocol._maybe_redispatch_local("ob", record, self.store)
+        spawn.assert_not_called()
+        self.assertEqual(result["local"]["state"], "no_result")
+        self.assertEqual(result["local"]["redispatch_count"], 0)
+
+    def test_public_watch_predicate_preserves_three_state_contract(self) -> None:
+        release = self.root / ".validate-lock.released"
+        verifier = self.root / "owner-watch.py"
+
+        admitted, detail = protocol._redispatch_watch_admission(
+            release_path=release, verifier=verifier
+        )
+        self.assertTrue(admitted)
+        self.assertEqual(detail, "bootstrap-no-release-yet")
+
+        release.write_text(
+            "schema_version=1\nreleased_at=123\nreleased_by=background\n",
+            encoding="utf-8",
+        )
+        cases = (
+            (0, "ADMITTED", True, "owner-watch-admitted-since-release"),
+            (1, "NOT_ADMITTED", False, "owner-watch-not-admitted-since-release"),
+            (2, "UNKNOWN", False, "owner-watch-admission-unknown"),
+        )
+        for rc, state, expected, reason in cases:
+            with self.subTest(state=state), mock.patch.object(
+                protocol,
+                "_run",
+                return_value=subprocess.CompletedProcess(
+                    [str(verifier)], rc, json.dumps({"state": state}), ""
+                ),
+            ) as run:
+                admitted, detail = protocol._redispatch_watch_admission(
+                    release_path=release, verifier=verifier
+                )
+            self.assertEqual(admitted, expected)
+            self.assertEqual(detail, reason)
+            run.assert_called_once_with(
+                (str(verifier), "--admission-status-since", "123"),
+                check=False,
+                timeout=5,
+            )
 
     def test_spent_budget_red_does_not_re_dispatch(self) -> None:
         # A budget-spent local red no longer re-dispatches (spawn not called). With

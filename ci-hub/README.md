@@ -364,6 +364,14 @@ its retained local evidence is not repository-bound; that leg remains
 conservatively `no_result`, while its exact hosted 2/2 job set can satisfy the OR
 policy.
 
+Automatic local re-dispatch consults the owner-watch admission predicate before
+claiming the obligation or spawning clone/submodule setup. A missing release
+record admits the bootstrap case; a starved or indeterminate watch yields without
+spending the retry; a recently admitted watch preserves the positive re-dispatch
+path. This early check is deliberately not the acquisition authority:
+`validate-lock run` repeats the same predicate at the box-anchor boundary, so a
+watch arrival between the precheck and the claim still makes re-dispatch yield.
+
 Either exact-SHA green satisfies the obligation immediately; a pending,
 running, absent, or cancelled/no-result peer is supplemental and never becomes
 an AND gate. `pending` and `running` are reserved for dereferenced queued or
