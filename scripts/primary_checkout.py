@@ -56,6 +56,7 @@ REVERIE_CACHE_SCAN_EXCLUDE = ("scripts/check-reverie-pin.rs",)
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
 KNOWN_OWNER_VALIDATE_PATH = "validate"
 KNOWN_OWNER_VALIDATE_TARGET = "scripts/validate.rs"
+HERMIT_AGENT_UTILS_PATH = "agent-utils"
 
 # Repo-scoped git environment variables OVERRIDE `git -C <repo>`, and git exports
 # them into every hook child. Measured on this box with a probe pre-commit hook:
@@ -241,6 +242,176 @@ def live_main_sha(
     if not FULL_SHA.fullmatch(sha):
         sha = ""
     return sha, result
+
+
+def _sync_clean_hermit_agent_utils(
+    repo: Path,
+    dirty_lines: list[str],
+    *,
+    use_proxy: bool,
+    out: TextIO,
+    err: TextIO,
+) -> tuple[list[str], bool]:
+    """Follow Hermit's recorded agent-utils gitlink without losing local work.
+
+    A superproject fast-forward does not update an initialized submodule's
+    working tree.  The next checkout-fresh pass therefore sees `` M
+    agent-utils`` and correctly preserves it as dirt, even when the nested
+    checkout is merely an older, clean ancestor of the newly recorded gitlink.
+
+    Repair only that exact safe shape.  Nested edits, an ahead/diverged nested
+    HEAD, another dirty superproject path, or an unreadable expected commit are
+    refusals.  In particular, "clean" alone is not permission to move a commit:
+    an unpublished clean commit is work too.
+    """
+
+    agent_lines = [
+        line
+        for line in dirty_lines
+        if len(line) >= 4 and line[3:].split(" -> ")[-1] == HERMIT_AGENT_UTILS_PATH
+    ]
+    if not agent_lines:
+        return dirty_lines, False
+
+    nested = repo / HERMIT_AGENT_UTILS_PATH
+    nested_status = run_git(
+        nested, "status", "--porcelain=v1", "--untracked-files=all"
+    )
+    if nested_status.returncode != 0:
+        print(
+            "ERROR: hermit/agent-utils gitlink changed, but the nested checkout "
+            "could not be inspected; preserving it.",
+            file=err,
+        )
+        print_command_output(nested_status, err)
+        return dirty_lines, True
+    nested_dirty = nested_status.stdout.rstrip("\n").splitlines()
+    if nested_dirty:
+        print(
+            "ERROR: hermit/agent-utils contains real working-tree changes; "
+            "refusing automatic gitlink synchronization and preserving them:",
+            file=err,
+        )
+        for line in nested_dirty[:20]:
+            print(f"  {line}", file=err)
+        if len(nested_dirty) > 20:
+            print(f"  ... {len(nested_dirty) - 20} more path(s)", file=err)
+        return dirty_lines, True
+
+    # Anything beyond the one unstaged gitlink mismatch means the enclosing
+    # checkout also carries work.  Preserve the whole checkout rather than
+    # partially mutating one path and making the remaining state harder to
+    # attribute.
+    if dirty_lines != [f" M {HERMIT_AGENT_UTILS_PATH}"]:
+        print(
+            "ERROR: hermit/agent-utils is not the sole clean gitlink mismatch; "
+            "preserving the primary checkout unchanged.",
+            file=err,
+        )
+        return dirty_lines, True
+
+    expected_result = run_git(repo, "rev-parse", f"HEAD:{HERMIT_AGENT_UTILS_PATH}")
+    actual_result = run_git(nested, "rev-parse", "HEAD")
+    expected = expected_result.stdout.strip()
+    actual = actual_result.stdout.strip()
+    if (
+        expected_result.returncode != 0
+        or actual_result.returncode != 0
+        or not FULL_SHA.fullmatch(expected)
+        or not FULL_SHA.fullmatch(actual)
+    ):
+        print(
+            "ERROR: could not bind hermit/agent-utils working HEAD to the "
+            "committed gitlink; preserving it.",
+            file=err,
+        )
+        return dirty_lines, True
+
+    expected_exists = run_git(nested, "cat-file", "-e", f"{expected}^{{commit}}")
+    if expected_exists.returncode != 0:
+        fetch = run_git(
+            nested,
+            "fetch",
+            "origin",
+            "main",
+            network=True,
+            use_proxy=use_proxy,
+        )
+        print_command_output(fetch, out if fetch.returncode == 0 else err)
+        if fetch.returncode != 0:
+            print(
+                "ERROR: could not fetch the committed agent-utils gitlink; "
+                "preserving the nested checkout.",
+                file=err,
+            )
+            return dirty_lines, True
+        expected_exists = run_git(
+            nested, "cat-file", "-e", f"{expected}^{{commit}}"
+        )
+    if expected_exists.returncode != 0:
+        print(
+            f"ERROR: committed agent-utils gitlink {expected} is unavailable "
+            "after fetch; preserving the nested checkout.",
+            file=err,
+        )
+        return dirty_lines, True
+
+    ancestry = run_git(nested, "merge-base", "--is-ancestor", actual, expected)
+    if ancestry.returncode != 0:
+        print(
+            "ERROR: hermit/agent-utils has a clean but unpublished, ahead, or "
+            f"divergent HEAD {actual}; it is not an ancestor of committed "
+            f"gitlink {expected}. Preserving it.",
+            file=err,
+        )
+        return dirty_lines, True
+
+    update = run_git(
+        repo,
+        "-c",
+        "submodule.agent-utils.update=checkout",
+        "submodule",
+        "update",
+        "--init",
+        "--checkout",
+        "--",
+        HERMIT_AGENT_UTILS_PATH,
+        network=True,
+        use_proxy=use_proxy,
+    )
+    print_command_output(update, out if update.returncode == 0 else err)
+    if update.returncode != 0:
+        print(
+            "ERROR: safe agent-utils gitlink synchronization failed; the "
+            "checkout was not forced or reset.",
+            file=err,
+        )
+        return dirty_lines, True
+
+    final_nested = run_git(nested, "status", "--porcelain=v1", "--untracked-files=all")
+    final_head = run_git(nested, "rev-parse", "HEAD").stdout.strip()
+    final_super = run_git(repo, "status", "--porcelain=v1", "--untracked-files=all")
+    final_lines = final_super.stdout.rstrip("\n").splitlines()
+    if (
+        final_nested.returncode != 0
+        or final_nested.stdout.strip()
+        or final_head != expected
+        or final_super.returncode != 0
+        or final_lines
+    ):
+        print(
+            "ERROR: agent-utils update did not produce the exact clean committed "
+            "gitlink; refusing to call the primary fresh.",
+            file=err,
+        )
+        return final_lines or dirty_lines, True
+
+    print(
+        f"hermit/agent-utils: advanced clean nested checkout {actual} -> {expected} "
+        "to match the committed gitlink",
+        file=out,
+    )
+    return [], False
 
 
 def run_parent_main_write(
@@ -821,6 +992,17 @@ def _checkout_fresh_impl(
             failures += 1
             continue
         dirty_lines = status.stdout.rstrip("\n").splitlines()
+        if product == "hermit":
+            dirty_lines, nested_refused = _sync_clean_hermit_agent_utils(
+                repo,
+                dirty_lines,
+                use_proxy=use_proxy,
+                out=out,
+                err=err,
+            )
+            if nested_refused:
+                failures += 1
+                continue
         exception = known_owner_validate_exception(product, repo, dirty_lines)
         if dirty_lines and exception is None:
             print(
@@ -889,6 +1071,41 @@ def _checkout_fresh_impl(
         )
         if fast_forward.returncode != 0:
             print(f"ERROR: {product} could not fast-forward main.", file=err)
+            failures += 1
+            continue
+
+        # `git merge --ff-only` advances a superproject gitlink but deliberately
+        # does not move an initialized submodule working tree.  Reconcile the
+        # one proven-safe nested case before the checkout can be reported clean
+        # or used for a parent snapshot.
+        post_status = run_git(
+            repo, "status", "--porcelain=v1", "--untracked-files=all"
+        )
+        if post_status.returncode != 0:
+            print(f"ERROR: could not inspect {product} after fast-forward:", file=err)
+            print_command_output(post_status, err)
+            failures += 1
+            continue
+        post_dirty = post_status.stdout.rstrip("\n").splitlines()
+        if product == "hermit":
+            post_dirty, nested_refused = _sync_clean_hermit_agent_utils(
+                repo,
+                post_dirty,
+                use_proxy=use_proxy,
+                out=out,
+                err=err,
+            )
+            if nested_refused:
+                failures += 1
+                continue
+        post_exception = known_owner_validate_exception(product, repo, post_dirty)
+        if post_dirty and post_exception is None:
+            print(
+                f"ERROR: {product} became dirty during checkout-fresh; preserving it:",
+                file=err,
+            )
+            for line in post_dirty[:20]:
+                print(f"  {line}", file=err)
             failures += 1
             continue
 

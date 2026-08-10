@@ -285,6 +285,73 @@ class _ParentWorkspaceFixture(unittest.TestCase):
         git(seed, "push", "origin", "main")
         return git(seed, "rev-parse", "HEAD")
 
+    def install_agent_utils_submodule(self) -> Path:
+        """Install a real nested submodule in the Hermit fixture."""
+        remote = Path(self.temp.name) / "agent-utils.git"
+        seed = Path(self.temp.name) / "agent-utils-seed"
+        subprocess.run(
+            ("git", "init", "--bare", "--initial-branch=main", str(remote)),
+            check=True,
+            capture_output=True,
+        )
+        subprocess.run(
+            ("git", "init", "--initial-branch=main", str(seed)),
+            check=True,
+            capture_output=True,
+        )
+        (seed / "README").write_text("agent-utils initial\n")
+        git(seed, "add", "README")
+        git(seed, "commit", "-m", "agent-utils initial")
+        git(seed, "remote", "add", "origin", str(remote))
+        git(seed, "push", "origin", "main")
+
+        hermit_seed = self.seeds["hermit"]
+        git(
+            hermit_seed,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            str(remote),
+            primary_checkout.HERMIT_AGENT_UTILS_PATH,
+        )
+        git(hermit_seed, "add", ".gitmodules", primary_checkout.HERMIT_AGENT_UTILS_PATH)
+        git(hermit_seed, "commit", "-m", "add agent-utils submodule")
+        git(hermit_seed, "push", "origin", "main")
+
+        hermit = self.root / "hermit"
+        git(hermit, "pull", "--ff-only", "origin", "main")
+        git(
+            hermit,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "update",
+            "--init",
+            "--checkout",
+            "--",
+            primary_checkout.HERMIT_AGENT_UTILS_PATH,
+        )
+        return seed
+
+    def advance_agent_utils_gitlink(self, seed: Path) -> str:
+        """Advance both agent-utils main and Hermit's recorded gitlink."""
+        with (seed / "README").open("a") as readme:
+            readme.write("agent-utils next\n")
+        git(seed, "add", "README")
+        git(seed, "commit", "-m", "agent-utils next")
+        git(seed, "push", "origin", "main")
+        target = git(seed, "rev-parse", "HEAD")
+
+        hermit_seed = self.seeds["hermit"]
+        nested = hermit_seed / primary_checkout.HERMIT_AGENT_UTILS_PATH
+        git(nested, "fetch", "origin", "main")
+        git(nested, "checkout", "--detach", target)
+        git(hermit_seed, "add", primary_checkout.HERMIT_AGENT_UTILS_PATH)
+        git(hermit_seed, "commit", "-m", "advance agent-utils gitlink")
+        git(hermit_seed, "push", "origin", "main")
+        return target
+
     def dirty_hermit_worktree(self) -> None:
         """Leave someone else's uncommitted work under hermit/, pin files included.
 
@@ -546,6 +613,88 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
         self.assertEqual(hermit_commands.count("merge"), 1, hermit_commands)
         self.assertNotIn("pull", hermit_commands)
         self.assertEqual(git(self.root / "hermit", "rev-parse", "HEAD"), hermit_remote)
+
+    def test_fresh_syncs_clean_agent_utils_to_advanced_committed_gitlink(self) -> None:
+        seed = self.install_agent_utils_submodule()
+        hermit = self.root / "hermit"
+        nested = hermit / primary_checkout.HERMIT_AGENT_UTILS_PATH
+        previous = git(nested, "rev-parse", "HEAD")
+        expected = self.advance_agent_utils_gitlink(seed)
+        self.assertNotEqual(previous, expected)
+        out, err = StringIO(), StringIO()
+
+        result = primary_checkout.checkout_fresh(
+            self.root,
+            strict=True,
+            use_proxy=False,
+            out=out,
+            err=err,
+        )
+
+        self.assertEqual(result, 0, err.getvalue())
+        self.assertEqual(git(nested, "rev-parse", "HEAD"), expected)
+        self.assertEqual(git(nested, "status", "--porcelain=v1"), "")
+        self.assertEqual(git(hermit, "status", "--porcelain=v1"), "")
+        self.assertIn(
+            f"advanced clean nested checkout {previous} -> {expected}",
+            out.getvalue(),
+        )
+
+    def test_fresh_refuses_agent_utils_with_uncommitted_work(self) -> None:
+        seed = self.install_agent_utils_submodule()
+        hermit = self.root / "hermit"
+        nested = hermit / primary_checkout.HERMIT_AGENT_UTILS_PATH
+        hermit_before = git(hermit, "rev-parse", "HEAD")
+        nested_before = git(nested, "rev-parse", "HEAD")
+        local = nested / "local-unpublished.txt"
+        local.write_text("preserve me\n")
+        self.advance_agent_utils_gitlink(seed)
+        out, err = StringIO(), StringIO()
+
+        result = primary_checkout.checkout_fresh(
+            self.root,
+            strict=True,
+            use_proxy=False,
+            out=out,
+            err=err,
+        )
+
+        self.assertEqual(result, primary_checkout.SNAPSHOT_BLOCKED)
+        self.assertEqual(git(hermit, "rev-parse", "HEAD"), hermit_before)
+        self.assertEqual(git(nested, "rev-parse", "HEAD"), nested_before)
+        self.assertEqual(local.read_text(), "preserve me\n")
+        self.assertIn("contains real working-tree changes", err.getvalue())
+        self.assertIn("?? local-unpublished.txt", err.getvalue())
+
+    def test_fresh_refuses_clean_unpublished_agent_utils_commit(self) -> None:
+        seed = self.install_agent_utils_submodule()
+        hermit = self.root / "hermit"
+        nested = hermit / primary_checkout.HERMIT_AGENT_UTILS_PATH
+        unpublished = nested / "local-commit.txt"
+        unpublished.write_text("preserve committed work\n")
+        git(nested, "add", unpublished.name)
+        git(nested, "commit", "-m", "local unpublished work")
+        local_head = git(nested, "rev-parse", "HEAD")
+        hermit_before = git(hermit, "rev-parse", "HEAD")
+        self.advance_agent_utils_gitlink(seed)
+        out, err = StringIO(), StringIO()
+
+        result = primary_checkout.checkout_fresh(
+            self.root,
+            strict=True,
+            use_proxy=False,
+            out=out,
+            err=err,
+        )
+
+        self.assertEqual(result, primary_checkout.SNAPSHOT_BLOCKED)
+        self.assertEqual(git(hermit, "rev-parse", "HEAD"), hermit_before)
+        self.assertEqual(git(nested, "rev-parse", "HEAD"), local_head)
+        self.assertEqual(unpublished.read_text(), "preserve committed work\n")
+        self.assertIn(
+            "clean but unpublished, ahead, or divergent HEAD",
+            err.getvalue(),
+        )
 
     def test_current_parent_snapshot_reuses_live_tracking_ref(self) -> None:
         calls: list[tuple[Path, tuple[str, ...]]] = []
