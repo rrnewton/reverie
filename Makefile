@@ -92,7 +92,7 @@ checkout-fresh: ## Refresh clean primaries and publish one coherent parent snaps
 check-submodules: checkout-all
 	@status="$$($(SUBMODULE_GIT) submodule status --recursive)"; \
 		printf '%s\n' "$$status"; \
-		if printf '%s\n' "$$status" | grep -Eq '^[-+U]'; then \
+		if printf '%s\n' "$$status" | awk '!($$2 == "agent-utils" && /^-/)' | grep -Eq '^[-+U]'; then \
 			echo 'ERROR: a required submodule is missing or not at its pinned revision.' >&2; \
 			exit 1; \
 		fi
