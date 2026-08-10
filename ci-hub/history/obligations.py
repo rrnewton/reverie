@@ -11,19 +11,34 @@ from __future__ import annotations
 
 import copy
 import fcntl
+import hashlib
 import json
 import os
 import re
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, TextIO
+from typing import Any, BinaryIO, Mapping, TextIO
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_VERSION = 1
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CLOSED_STATES = frozenset(("satisfied", "remediated"))
+CHECKPOINT_SCHEMA_VERSION = 1
+CHECKPOINT_FINGERPRINT_BYTES = 4096
+CHECKPOINT_EVENT_TYPE = "projection-checkpoint"
+CHECKPOINT_OBLIGATION_ID = "__ci_hub_projection_checkpoint__"
+
+# Process-local reuse removes the second read performed by `watch --once --gate`.
+# The durable sidecar removes the prefix read on later tick processes.  Both are
+# performance hints: the append-only JSONL remains the authority, and every
+# checkpoint is bound to its inode, byte offset, and the bytes immediately before
+# that offset before it can seed an incremental tail scan.
+_MEMORY_CHECKPOINTS: dict[
+    Path, tuple[tuple[int, int, int, int, int], dict[str, dict[str, Any]]]
+] = {}
 
 
 class StoreError(RuntimeError):
@@ -57,38 +72,349 @@ def _validate_identity(repo: str, landed_sha: str) -> None:
         raise StoreError(f"invalid landed SHA {landed_sha!r}; expected 40 lowercase hex digits")
 
 
+def _apply_event(
+    latest: dict[str, dict[str, Any]], event: Any, line_number: int
+) -> None:
+    if not isinstance(event, dict):
+        raise StoreError(f"event at line {line_number} is not an object")
+    obligation_id = event.get("obligation_id")
+    if not isinstance(obligation_id, str) or not obligation_id:
+        raise StoreError(f"event at line {line_number} has no obligation_id")
+    if event.get("schema_version") != SCHEMA_VERSION:
+        raise StoreError(
+            f"event at line {line_number} uses unsupported schema "
+            f"{event.get('schema_version')!r}"
+        )
+    latest[obligation_id] = event
+
+
+def _is_checkpoint_event(event: Any) -> bool:
+    return isinstance(event, dict) and event.get("event_type") == CHECKPOINT_EVENT_TYPE
+
+
+def _validate_checkpoint_event(
+    event: Any,
+    latest: Mapping[str, Mapping[str, Any]],
+    *,
+    line_number: int,
+    line_offset: int | None = None,
+    expected_checkpoint_id: str | None = None,
+    expected_projection_sha256: str | None = None,
+) -> None:
+    if not _is_checkpoint_event(event):
+        raise StoreError(f"event at line {line_number} is not a projection checkpoint")
+    projection_sha256 = _projection_fingerprint(latest)
+    if (
+        event.get("schema_version") != SCHEMA_VERSION
+        or event.get("checkpoint_schema_version") != CHECKPOINT_SCHEMA_VERSION
+        or event.get("covers_through_line_count") != line_number - 1
+        or event.get("latest_sha256") != projection_sha256
+        or (
+            line_offset is not None
+            and event.get("covers_through_offset") != line_offset
+        )
+        or (
+            expected_checkpoint_id is not None
+            and event.get("checkpoint_id") != expected_checkpoint_id
+        )
+        or (
+            expected_projection_sha256 is not None
+            and projection_sha256 != expected_projection_sha256
+        )
+    ):
+        raise StoreError(f"projection checkpoint at line {line_number} is inconsistent")
+
+
 def _latest_from_handle(handle: TextIO) -> dict[str, dict[str, Any]]:
     handle.seek(0)
     latest: dict[str, dict[str, Any]] = {}
-    for line_number, line in enumerate(handle, 1):
+    line_number = 0
+    while True:
+        line_offset = handle.tell()
+        line = handle.readline()
+        if not line:
+            break
+        line_number += 1
         if not line.strip():
             continue
         try:
             event = json.loads(line)
         except json.JSONDecodeError as error:
             raise StoreError(f"invalid JSONL event at line {line_number}: {error}") from error
-        if not isinstance(event, dict):
-            raise StoreError(f"event at line {line_number} is not an object")
-        obligation_id = event.get("obligation_id")
-        if not isinstance(obligation_id, str) or not obligation_id:
-            raise StoreError(f"event at line {line_number} has no obligation_id")
-        if event.get("schema_version") != SCHEMA_VERSION:
-            raise StoreError(
-                f"event at line {line_number} uses unsupported schema "
-                f"{event.get('schema_version')!r}"
+        if _is_checkpoint_event(event):
+            _validate_checkpoint_event(
+                event,
+                latest,
+                line_number=line_number,
+                line_offset=line_offset,
             )
-        latest[obligation_id] = event
+        else:
+            _apply_event(latest, event, line_number)
     return latest
+
+
+def _checkpoint_path(store: Path) -> Path:
+    return store.with_name(f".{store.name}.latest-checkpoint.json")
+
+
+def _prefix_fingerprint(handle: BinaryIO, offset: int) -> str:
+    start = max(0, offset - CHECKPOINT_FINGERPRINT_BYTES)
+    handle.seek(start)
+    return hashlib.sha256(handle.read(offset - start)).hexdigest()
+
+
+def _projection_fingerprint(latest: Mapping[str, Mapping[str, Any]]) -> str:
+    encoded = json.dumps(latest, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _checkpoint_seed(
+    handle: BinaryIO, store: Path, stat: os.stat_result
+) -> tuple[int, int, dict[str, dict[str, Any]]] | None:
+    try:
+        checkpoint = json.loads(_checkpoint_path(store).read_text(encoding="utf-8"))
+        offset = checkpoint["store_offset"]
+        commit_offset = checkpoint["commit_offset"]
+        checkpoint_id = checkpoint["checkpoint_id"]
+        line_count = checkpoint["line_count"]
+        latest = checkpoint["latest"]
+        if (
+            checkpoint.get("checkpoint_schema_version") != CHECKPOINT_SCHEMA_VERSION
+            or checkpoint.get("store_dev") != stat.st_dev
+            or checkpoint.get("store_ino") != stat.st_ino
+            or not isinstance(offset, int)
+            or offset < 0
+            or offset > stat.st_size
+            or not isinstance(commit_offset, int)
+            or commit_offset < 0
+            or commit_offset >= offset
+            or not isinstance(checkpoint_id, str)
+            or not checkpoint_id
+            or not isinstance(line_count, int)
+            or line_count < 0
+            or not isinstance(latest, dict)
+            or checkpoint.get("latest_sha256") != _projection_fingerprint(latest)
+            or checkpoint.get("prefix_sha256")
+            != _prefix_fingerprint(handle, offset)
+            or (
+                stat.st_size == offset
+                and (
+                    checkpoint.get("store_mtime_ns") != stat.st_mtime_ns
+                    or checkpoint.get("store_ctime_ns") != stat.st_ctime_ns
+                )
+            )
+        ):
+            return None
+        seeded: dict[str, dict[str, Any]] = {}
+        for record in latest.values():
+            _apply_event(seeded, record, line_count)
+        projection_sha256 = _projection_fingerprint(seeded)
+        handle.seek(commit_offset)
+        raw_commit = handle.readline()
+        if handle.tell() != offset:
+            return None
+        try:
+            commit = json.loads(raw_commit)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        _validate_checkpoint_event(
+            commit,
+            seeded,
+            line_number=line_count,
+            line_offset=commit_offset,
+            expected_checkpoint_id=checkpoint_id,
+            expected_projection_sha256=projection_sha256,
+        )
+        return offset, line_count, seeded
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError, StoreError):
+        return None
+
+
+def _scan_binary_tail(
+    handle: BinaryIO,
+    *,
+    offset: int,
+    line_count: int,
+    latest: dict[str, dict[str, Any]],
+) -> tuple[int, int, dict[str, dict[str, Any]]]:
+    handle.seek(offset)
+    while True:
+        line_offset = handle.tell()
+        raw_line = handle.readline()
+        if not raw_line:
+            break
+        line_count += 1
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise StoreError(f"invalid JSONL event at line {line_count}: {error}") from error
+        if _is_checkpoint_event(event):
+            _validate_checkpoint_event(
+                event,
+                latest,
+                line_number=line_count,
+                line_offset=line_offset,
+            )
+        else:
+            _apply_event(latest, event, line_count)
+    return handle.tell(), line_count, latest
+
+
+def _append_checkpoint_commit(
+    handle: BinaryIO,
+    *,
+    offset: int,
+    line_count: int,
+    latest: Mapping[str, Mapping[str, Any]],
+) -> tuple[int, int, int, str]:
+    checkpoint_id = uuid.uuid4().hex
+    commit_offset = offset
+    recorded_at = utc_now()
+    event = {
+        "schema_version": SCHEMA_VERSION,
+        # Compatibility envelope: older readers require every JSONL line to be
+        # an obligation projection.  They see one harmless CLOSED synthetic
+        # record instead of crashing during the rolling deployment; new readers
+        # recognize event_type first and never expose it as an obligation.
+        "obligation_id": CHECKPOINT_OBLIGATION_ID,
+        "event_id": checkpoint_id,
+        "event_type": CHECKPOINT_EVENT_TYPE,
+        "repo": "rrnewton/dev-hermit",
+        "landed_sha": "0" * 40,
+        "overall_state": "satisfied",
+        "opened_at": recorded_at,
+        "updated_at": recorded_at,
+        "local": {"state": "checkpoint"},
+        "github": {"state": "checkpoint"},
+        "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "checkpoint_id": checkpoint_id,
+        "recorded_at": recorded_at,
+        "covers_through_offset": commit_offset,
+        "covers_through_line_count": line_count,
+        "latest_sha256": _projection_fingerprint(latest),
+    }
+    encoded = json.dumps(event, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() != commit_offset:
+        raise StoreError("obligation store changed while checkpoint was prepared")
+    handle.write(encoded)
+    handle.flush()
+    os.fsync(handle.fileno())
+    return handle.tell(), line_count + 1, commit_offset, checkpoint_id
+
+
+def _write_checkpoint(
+    handle: BinaryIO,
+    store: Path,
+    stat: os.stat_result,
+    offset: int,
+    line_count: int,
+    latest: Mapping[str, Mapping[str, Any]],
+    commit_offset: int,
+    checkpoint_id: str,
+) -> None:
+    checkpoint = {
+        "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "store_dev": stat.st_dev,
+        "store_ino": stat.st_ino,
+        "store_offset": offset,
+        "store_mtime_ns": stat.st_mtime_ns,
+        "store_ctime_ns": stat.st_ctime_ns,
+        "commit_offset": commit_offset,
+        "checkpoint_id": checkpoint_id,
+        "line_count": line_count,
+        "prefix_sha256": _prefix_fingerprint(handle, offset),
+        "latest_sha256": _projection_fingerprint(latest),
+        "latest": latest,
+    }
+    path = _checkpoint_path(store)
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+        ) as temporary:
+            temporary_name = temporary.name
+            json.dump(checkpoint, temporary, sort_keys=True, separators=(",", ":"))
+            temporary.write("\n")
+        os.replace(temporary_name, path)
+    except OSError:
+        # The sidecar is only an optimization. A read-only directory or a lost
+        # cache race must never turn a valid authoritative store into NO-RESULT.
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
 
 
 def latest_records(path: Path | None = None) -> dict[str, dict[str, Any]]:
     store = path or default_store_path()
     if not store.exists():
         return {}
-    with store.open("r", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+    store = store.resolve()
+    with store.open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
-            return _latest_from_handle(handle)
+            stat = os.fstat(handle.fileno())
+            identity = (
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            )
+            memory = _MEMORY_CHECKPOINTS.get(store)
+            if memory is not None and memory[0] == identity:
+                return copy.deepcopy(memory[1])
+
+            seed = _checkpoint_seed(handle, store, stat)
+            if seed is None:
+                offset, line_count, latest = 0, 0, {}
+            else:
+                offset, line_count, latest = seed
+            checkpointed_offset = offset
+            offset, line_count, latest = _scan_binary_tail(
+                handle,
+                offset=offset,
+                line_count=line_count,
+                latest=latest,
+            )
+            # The sidecar is accepted only when its projection hash is committed
+            # by an event in the authoritative JSONL.  The exclusive lock makes
+            # appending that small commitment and publishing the sidecar one
+            # serial operation; a crash between them merely leaves an unused
+            # commitment and forces a safe full scan next time.
+            if seed is None or offset != checkpointed_offset:
+                offset, line_count, commit_offset, checkpoint_id = (
+                    _append_checkpoint_commit(
+                        handle,
+                        offset=offset,
+                        line_count=line_count,
+                        latest=latest,
+                    )
+                )
+                stat = os.fstat(handle.fileno())
+                _write_checkpoint(
+                    handle,
+                    store,
+                    stat,
+                    offset,
+                    line_count,
+                    latest,
+                    commit_offset,
+                    checkpoint_id,
+                )
+            identity = (
+                stat.st_dev,
+                stat.st_ino,
+                stat.st_size,
+                stat.st_mtime_ns,
+                stat.st_ctime_ns,
+            )
+            _MEMORY_CHECKPOINTS[store] = (identity, copy.deepcopy(latest))
+            return latest
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
@@ -148,6 +474,8 @@ def create_obligation(
         f"{opened_at.replace('-', '').replace(':', '').replace('T', '-')[:-1]}-"
         f"{landed_sha[:12]}-{uuid.uuid4().hex[:6]}"
     )
+    if obligation_id == CHECKPOINT_OBLIGATION_ID:
+        raise StoreError(f"obligation_id {obligation_id!r} is reserved")
     store = path or default_store_path()
     store.parent.mkdir(parents=True, exist_ok=True)
     with store.open("a+", encoding="utf-8") as handle:

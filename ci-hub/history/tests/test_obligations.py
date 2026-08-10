@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from unittest import mock
 import sys
 import tempfile
 import unittest
@@ -39,6 +40,7 @@ class ObligationStoreTest(unittest.TestCase):
         self.store = Path(self.temporary.name) / "obligations.jsonl"
 
     def tearDown(self) -> None:
+        obligations._MEMORY_CHECKPOINTS.clear()
         self.temporary.cleanup()
 
     def create(self) -> dict:
@@ -108,6 +110,16 @@ class ObligationStoreTest(unittest.TestCase):
             )
         self.assertEqual(context.exception.record["obligation_id"], record["obligation_id"])
 
+    def test_checkpoint_obligation_id_is_reserved(self) -> None:
+        with self.assertRaisesRegex(obligations.StoreError, "reserved"):
+            obligations.create_obligation(
+                repo="rrnewton/hermit",
+                landed_sha=SHA,
+                land_mode="admin",
+                obligation_id=obligations.CHECKPOINT_OBLIGATION_ID,
+                path=self.store,
+            )
+
     def test_closed_sha_can_open_a_new_obligation(self) -> None:
         self.create()
         obligations.transition(
@@ -173,6 +185,144 @@ class ObligationStoreTest(unittest.TestCase):
                 {"verification_policy": {**POLICY, "schema_version": 3}},
                 self.store,
             )
+
+    def test_latest_records_reuses_checkpoint_without_rescanning_prefix(self) -> None:
+        created = self.create()
+        self.assertEqual(obligations.latest_records(self.store)["test-obligation"], created)
+        checkpoint = obligations._checkpoint_path(self.store.resolve())
+        self.assertTrue(checkpoint.exists())
+        checkpoint_mtime = checkpoint.stat().st_mtime_ns
+
+        obligations._MEMORY_CHECKPOINTS.clear()
+        with mock.patch.object(
+            obligations, "_scan_binary_tail", wraps=obligations._scan_binary_tail
+        ) as scan:
+            reread = obligations.latest_records(self.store)
+        self.assertEqual(reread["test-obligation"], created)
+        self.assertEqual(scan.call_args.kwargs["offset"], self.store.stat().st_size)
+        self.assertEqual(checkpoint.stat().st_mtime_ns, checkpoint_mtime)
+
+    def test_checkpoint_commit_is_a_closed_record_for_legacy_readers(self) -> None:
+        self.create()
+        obligations.latest_records(self.store)
+        commit = json.loads(self.store.read_text().splitlines()[-1])
+        legacy_latest = {}
+        obligations._apply_event(legacy_latest, commit, 2)
+        legacy_record = legacy_latest[obligations.CHECKPOINT_OBLIGATION_ID]
+        self.assertIn(legacy_record["overall_state"], obligations.CLOSED_STATES)
+        self.assertEqual(legacy_record["local"]["state"], "checkpoint")
+        self.assertEqual(legacy_record["github"]["state"], "checkpoint")
+
+    def test_latest_records_reads_only_events_appended_after_checkpoint(self) -> None:
+        self.create()
+        obligations.latest_records(self.store)
+        checkpointed_size = self.store.stat().st_size
+        updated = obligations.transition(
+            "test-obligation", "github-observed", {"github": {"state": "running"}}, self.store
+        )
+
+        obligations._MEMORY_CHECKPOINTS.clear()
+        with mock.patch.object(
+            obligations, "_scan_binary_tail", wraps=obligations._scan_binary_tail
+        ) as scan:
+            reread = obligations.latest_records(self.store)
+        self.assertEqual(scan.call_args.kwargs["offset"], checkpointed_size)
+        self.assertEqual(reread["test-obligation"], updated)
+
+    def test_invalid_checkpoint_falls_back_to_full_authoritative_scan(self) -> None:
+        created = self.create()
+        obligations.latest_records(self.store)
+        obligations._checkpoint_path(self.store.resolve()).write_text("not-json\n")
+        obligations._MEMORY_CHECKPOINTS.clear()
+        with mock.patch.object(
+            obligations, "_scan_binary_tail", wraps=obligations._scan_binary_tail
+        ) as scan:
+            reread = obligations.latest_records(self.store)
+        self.assertEqual(scan.call_args.kwargs["offset"], 0)
+        self.assertEqual(reread["test-obligation"], created)
+
+    def test_well_formed_but_tampered_projection_falls_back_to_full_scan(self) -> None:
+        created = self.create()
+        obligations.latest_records(self.store)
+        checkpoint = obligations._checkpoint_path(self.store.resolve())
+        document = json.loads(checkpoint.read_text())
+        document["latest"] = {}
+        checkpoint.write_text(json.dumps(document) + "\n")
+        obligations._MEMORY_CHECKPOINTS.clear()
+        with mock.patch.object(
+            obligations, "_scan_binary_tail", wraps=obligations._scan_binary_tail
+        ) as scan:
+            reread = obligations.latest_records(self.store)
+        self.assertEqual(scan.call_args.kwargs["offset"], 0)
+        self.assertEqual(reread["test-obligation"], created)
+
+    def test_forged_projection_with_recomputed_self_hash_is_rejected(self) -> None:
+        created = self.create()
+        obligations.latest_records(self.store)
+        checkpoint = obligations._checkpoint_path(self.store.resolve())
+        document = json.loads(checkpoint.read_text())
+        document["latest"]["test-obligation"]["actor"] = "forged"
+        document["latest_sha256"] = obligations._projection_fingerprint(
+            document["latest"]
+        )
+        checkpoint.write_text(json.dumps(document) + "\n")
+        obligations._MEMORY_CHECKPOINTS.clear()
+        with mock.patch.object(
+            obligations, "_scan_binary_tail", wraps=obligations._scan_binary_tail
+        ) as scan:
+            reread = obligations.latest_records(self.store)
+        self.assertEqual(scan.call_args.kwargs["offset"], 0)
+        self.assertEqual(reread["test-obligation"], created)
+
+    def test_same_size_prefix_rewrite_fails_closed(self) -> None:
+        self.create()
+        for index in range(4):
+            obligations.create_obligation(
+                repo="rrnewton/hermit",
+                landed_sha=f"{index + 1:040x}",
+                land_mode="admin",
+                actor="filler",
+                obligation_id=f"filler-{index}",
+                path=self.store,
+            )
+        obligations.latest_records(self.store)
+        raw = self.store.read_bytes()
+        old = b'"actor":"test"'
+        new = b'"actor":"evil"'
+        position = raw.index(old)
+        self.assertLess(
+            position,
+            len(raw) - obligations.CHECKPOINT_FINGERPRINT_BYTES,
+        )
+        with self.store.open("r+b") as handle:
+            handle.seek(position)
+            handle.write(new)
+        obligations._MEMORY_CHECKPOINTS.clear()
+        with self.assertRaisesRegex(obligations.StoreError, "checkpoint.*inconsistent"):
+            obligations.latest_records(self.store)
+
+    def test_replaced_store_cannot_reuse_old_checkpoint(self) -> None:
+        self.create()
+        obligations.latest_records(self.store)
+        checkpoint = obligations._checkpoint_path(self.store.resolve())
+        old_checkpoint = checkpoint.read_text()
+        self.store.unlink()
+        second = obligations.create_obligation(
+            repo="rrnewton/hermit",
+            landed_sha="b" * 40,
+            land_mode="admin",
+            actor="test",
+            obligation_id="replacement",
+            path=self.store,
+        )
+        checkpoint.write_text(old_checkpoint)
+        obligations._MEMORY_CHECKPOINTS.clear()
+        with mock.patch.object(
+            obligations, "_scan_binary_tail", wraps=obligations._scan_binary_tail
+        ) as scan:
+            reread = obligations.latest_records(self.store)
+        self.assertEqual(scan.call_args.kwargs["offset"], 0)
+        self.assertEqual(reread, {"replacement": second})
 
 
 if __name__ == "__main__":
