@@ -3378,14 +3378,14 @@ fn load_ledger_rows(path: &Path) -> Result<Vec<HistoryRow>, CiHubError> {
         })?
     } else {
         match std::fs::read_to_string(path) {
-        Ok(buf) => buf,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
-        Err(source) => {
-            return Err(CiHubError::LedgerRead {
-                path: path.to_path_buf(),
-                source,
-            })
-        }
+            Ok(buf) => buf,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
+            Err(source) => {
+                return Err(CiHubError::LedgerRead {
+                    path: path.to_path_buf(),
+                    source,
+                })
+            }
         }
     };
     let (rows, skipped) = validate_status::parse_ledger(&buf);
@@ -6557,8 +6557,7 @@ mod tests {
 
     #[test]
     fn parses_qualified_ledger_rows_command() {
-        let cli = Cli::try_parse_from(["ci-hub", "ledger", "qualified-rows"])
-        .unwrap();
+        let cli = Cli::try_parse_from(["ci-hub", "ledger", "qualified-rows"]).unwrap();
         let HubCommand::Ledger(args) = cli.command else {
             panic!("wrong command variant")
         };
