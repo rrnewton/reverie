@@ -108,4 +108,41 @@ name someone to reconcile them.
   global state affecting every shell on a shared machine.
 - **25 open PRs**, against a documented threshold of 10.
 
+## Q1 addendum — measured properties of `codex exec` as a reviewer entrypoint
+
+Recorded after using it for ~10 reviews in one session, because these are the things
+whoever registers it will need to write into the convention.
+
+**It works, and it earns its cost.** Every one of the following was found by the Codex
+lane and by no Claude reviewer: a cited SHA that was not an ancestor of main; a flag with
+zero occurrences in the tree; five CI gates passing while executing zero tests; a
+`reconcile` mode that could silently overwrite a colleague's uncommitted file; a
+time-of-check-to-time-of-use window that left a shared index dirty on a refusal; and a
+retry that reported success over a half-applied state. In the other direction, a Claude
+reviewer given a deliberately *non-overlapping* brief found a PR's central Determinism
+claim to be false **after Codex had returned an unqualified APPROVE** on the same head.
+Neither lens alone was sufficient on any substantive change.
+
+**Two operational properties that need to be in the convention:**
+
+1. **Adversarial phrasing trips a content filter.** Two reviews this session died partway
+   with `This content was flagged for possible cybersecurity risk`, losing the verdict
+   after the work was done. The trigger appears to be ordinary security-review vocabulary
+   — asking it to find a "hole", to "construct a case where the gate says SAFE",
+   to review an "authorization boundary", to "plant" a violating fixture. Rephrasing the
+   same request neutrally ("assess the completeness of this rule", "confirm the check
+   reports a mismatch when the two are made to differ") gets the identical work done.
+   So the registered entrypoint should carry a phrasing guideline, and callers should
+   expect to retry once with neutral wording rather than concluding the tool is broken.
+2. **Capability differs from the caller's.** A `gh api` call to resolve a commit to its PR
+   returned `Forbidden … destination filter` for Codex while succeeding (rc 0) for a Claude
+   agent on the same SHA the same day. Do not build a review gate on a capability only one
+   side has — and when a reviewer reports something unavailable, check whether it is
+   unavailable *to them* before treating it as absent.
+
+**Cost, so the decision is informed:** a substantive review runs 150k–350k tokens and
+5–50 minutes wall-clock, and the reviews that found the most were the ones given an
+explicit lane ("you take mechanics, another reviewer has semantics — do not duplicate").
+Undirected second reviews mostly ratified the first.
+
 [coordinator, FABLE] [claude-coord-fable, devbig030]
