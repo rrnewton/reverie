@@ -14,13 +14,14 @@
   "_advancing_this": "Stage a producer change by adding one strictly shaped transition without changing `registered`. Derive every candidate SHA and blob from the selected head; never copy values from a superseded PR. After that exact head lands, freshly prove target-main containment and resolve its producer blobs before promoting the candidate to `registered`, advancing `registered_at`, and deleting `transition`. A timestamp never authorizes promotion. If the candidate does not land before expiry, remove or replace the transition; never extend it implicitly.",
   "_rotation_2026_08_10": "Promoted at hermit main 2b38d8e629ee582db6a59f340b1a3c8980fd85c5. Commits a9262ac2 and 2b38d8e6 add the single apt package `ncat` to three ci-portable matrix jobs, moving that file's blob 34beade4840a -> c0de07a73f14 while scripts/validate.rs and both validate_*.rs stay byte-identical -- nothing about how validation is produced changed. Because the map is whole-map exact and fail-closed, that one-word dependency edit refused EVERY receipt at main, including a genuine full PASS at this exact commit, leaving main with no landing authority. Proved fresh before promoting: 2b38d8e6 is the fetched main tip, b5a4748e is its ancestor, and main resolves all four registered paths to the new map. Any concurrently staged candidate is keyed to its own unlanded head and is preserved untouched; this advances the primary to the LANDED state only.",
   "_rotation_2026_08_10_newest_tests_misc": "Promoted at hermit main 9d1a73b5677f0dd48f56955c2ae270ba74dde0a9. That commit ('ci: select the newest tests_misc binary instead of requiring exactly one') moves scripts/validate.rs df03defdc9d0 -> 00e56c0d7e0d; the other three registered paths are byte-identical. It landed WITHOUT a staged producer transition, so from that tip onward every local receipt resolved a validate.rs blob present in neither the primary map nor the pending PR-2012 candidate and was refused as unregistered-or-unresolvable -- blocking the entire local-receipt landing path for every PR based on main, not just one. Reviewed before promoting rather than rubber-stamped: the change is a STRENGTHENING. The old node asserted `test \"$count\" -eq 1` over target/debug/deps/tests_misc-*, which cargo never prunes, so it could never pass in a working tree that had accumulated binaries (measured 9 in the owner's checkout vs 1 in a clean slot) -- agents in clean clones saw green while the owner saw a red he had never seen pass. It selects the newest by mtime rather than relaxing to -ge 1, deliberately, because the CPUID node EXECUTES its selection and 'any one of nine' would silently test a stale artifact. It also closes a pre-existing hole where `&&` bound only to an assignment, so the node could pass with target/debug/hermit missing. Zero candidates still fails. Proved fresh before promoting: 9d1a73b5 is the fetched main tip, 2b38d8e6 is its ancestor, and main resolves all four paths to the new map. The PR-2012 candidate is keyed to its own unlanded head and is preserved untouched.",
-  "registered_at": "9d1a73b5677f0dd48f56955c2ae270ba74dde0a9",
+  "_rotation_2026_08_10_immutable_artifact_and_deadline": "Promoted at hermit main f4c85fa24d10f4e58c254fcd74294d306d230138 after exact-map review. PR #2080 changed scripts/validate.rs to preserve the scheduler-owned deadline and retain per-node timeout evidence; PR #2073 changed ci-portable.yml to consume the dependency-produced immutable Hermit binary. The subsequent f4c85fa24 commit only adds the owner's tracked validate.sh entrypoint and leaves all four registered blobs byte-identical to merge commit 6cbed206e9b5823e8af629619c62a4a82ae2d517. The 10:36 owner run at 6cbed206 completed 56/56 gates, all 19 planned test nodes, and 873 tests with zero failures, skips, absent nodes, or zero-execution nodes, but the exception-adjusted authority correctly refused its exact unregistered map. This rotation registers only the four resolved blobs; it does not weaken qualification or pattern-match future producers. Proved before promotion: the canonical Hermit checkout and origin/main both resolve to f4c85fa24, the exact four-file map below resolves there, and the independent PR-2070 candidate is preserved unchanged.",
+  "registered_at": "f4c85fa24d10f4e58c254fcd74294d306d230138",
   "registered_coverage_status": "complete",
   "registered": {
-    ".github/workflows/ci-portable.yml": "c0de07a73f1403c455672a8ef52caedc26676226",
+    ".github/workflows/ci-portable.yml": "dd56c0cf3bc3895b6fc0fb3a5348574446ddef80",
     "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
     "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-    "scripts/validate.rs": "00e56c0d7e0ddcfaee052c2d088d2934ab4e0632"
+    "scripts/validate.rs": "f5f3c5a3b941299e4ae611f5a7362ff40bc0fd03"
   },
   "transition": {
     "id": "rrnewton-hermit-pr-2070",
@@ -45,6 +46,20 @@
     }
   },
   "legacy": [
+    {
+      "id": "pre-immutable-artifact-and-deadline",
+      "registered_at": "9d1a73b5677f0dd48f56955c2ae270ba74dde0a9",
+      "coverage_status": "complete",
+      "valid_commits": [
+        "9d1a73b5677f0dd48f56955c2ae270ba74dde0a9"
+      ],
+      "definition": {
+        ".github/workflows/ci-portable.yml": "c0de07a73f1403c455672a8ef52caedc26676226",
+        "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
+        "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+        "scripts/validate.rs": "00e56c0d7e0ddcfaee052c2d088d2934ab4e0632"
+      }
+    },
     {
       "id": "rust-validate-cutover-with-shell-shim",
       "registered_at": "92aaed5d09dd44ae4fb330a99c7adf28c1fc0cae",
