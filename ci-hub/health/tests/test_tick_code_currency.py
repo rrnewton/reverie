@@ -68,6 +68,8 @@ class Repo:
 
         # The fix lands on origin/main; local main deliberately stays behind.
         self.tool.write_text("# v2 -- the FIX\n")
+        self.new_tool = self.root / "ci-hub" / "health" / "new_tool.py"
+        self.new_tool.write_text("# newly landed tool\n")
         self._commit("v2 the fix")
         git("push", "-q", "origin", "main", cwd=self.root)
         git("reset", "-q", "--hard", "HEAD~1", cwd=self.root)
@@ -87,6 +89,14 @@ class Repo:
             if v.path.endswith(name):
                 return v.state
         raise AssertionError(f"{name} not policed; got {[v.path for v in self.verdicts(ref)]}")
+
+    def state_of_path(self, path: Path, ref: str = "origin/main") -> str:
+        relative = str(path.relative_to(self.root))
+        return self.compare_paths([relative], ref)[0].state
+
+    def compare_paths(self, paths: list[str], ref: str = "origin/main"):
+        tcc.ROOT = self.root
+        return tcc.compare(paths, ref)
 
 
 class TickCodeCurrency(unittest.TestCase):
@@ -135,6 +145,33 @@ class TickCodeCurrency(unittest.TestCase):
         code, text = tcc.render(self.repo.verdicts())
         self.assertEqual(tcc.CURRENT, code)
         self.assertIn("match", text)
+
+    def test_untracked_landed_bytes_are_current(self) -> None:
+        """A new file absent from stale HEAD is current when its bytes match the
+        file that landed. Git's index does not represent this case."""
+        self.assertFalse(self.repo.new_tool.exists())
+        self.repo.new_tool.write_text("# newly landed tool\n")
+        self.assertTrue(
+            git("status", "--short", "--", "ci-hub/health/new_tool.py",
+                cwd=self.repo.root).startswith("??"),
+            "precondition: the freshly landed file is untracked by stale HEAD",
+        )
+        self.assertEqual("current", self.repo.state_of_path(self.repo.new_tool))
+
+    def test_untracked_different_bytes_remain_stale(self) -> None:
+        """Fixing the false alarm must not silence genuine untracked drift."""
+        self.assertFalse(self.repo.new_tool.exists())
+        self.repo.new_tool.write_text("# local bytes differ from landed tool\n")
+        self.assertTrue(
+            git("status", "--short", "--", "ci-hub/health/new_tool.py",
+                cwd=self.repo.root).startswith("??"),
+            "precondition: stale HEAD still does not track the path",
+        )
+        verdicts = self.repo.compare_paths(["ci-hub/health/new_tool.py"])
+        self.assertEqual("stale", verdicts[0].state)
+        code, text = tcc.render(verdicts)
+        self.assertEqual(tcc.DRIFTED, code)
+        self.assertIn("ci-hub/health/new_tool.py", text)
 
     def test_unresolvable_ref_is_unknown_never_current(self) -> None:
         """Fail closed: 'I could not check' must not read as 'it matches'."""

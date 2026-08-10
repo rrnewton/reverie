@@ -82,10 +82,12 @@ class Verdict:
 # clean-but-behind, the exact silent-reversion signature; meanwhile agents edit
 # gate tools constantly, and paging on that would train everyone to ignore this.
 #
-#   stale     working tree == HEAD's content, and HEAD's content != origin/main
-#             -> a landed version is NOT the one executing. The incident. PAGE.
-#   modified  differs from HEAD too -> somebody's live work-in-progress. Report,
-#             do not page: it is expected, and it is already visible as dirt.
+#   stale     working bytes != origin/main, with no tracked worktree difference
+#             from HEAD -> a landed version is NOT the one executing. This also
+#             covers a genuinely different untracked path absent from stale HEAD.
+#             The incident. PAGE.
+#   modified  differs from HEAD too -> somebody's tracked live work-in-progress.
+#             Report, do not page: it is expected, and already visible as dirt.
 #
 # The discriminator is deliberately content-based, not status-based: after a
 # `git restore` the file is CLEAN by `git status`, which is precisely why the
@@ -128,24 +130,36 @@ def compare(paths: Sequence[str], ref: str = TARGET_REF) -> list[Verdict]:
         ]
     out: list[Verdict] = []
     for path in paths:
-        # `git diff --quiet <ref> -- <path>` exits 0 when identical, 1 when it
-        # differs, and >1 on error. The error case must not be read as either.
-        diff = _git("diff", "--quiet", ref, "--", path)
-        if diff.returncode == 0:
+        # Compare the bytes that actually execute with the blob that landed.
+        # `git diff <ref>` cannot do this for a path absent from stale HEAD's
+        # index: Git ignores the untracked working file and reports the target
+        # blob as deleted, even when the on-disk bytes are identical.
+        target = _git("rev-parse", "--verify", f"{ref}:{path}")
+        if target.returncode != 0 or not target.stdout.strip():
+            out.append(Verdict(
+                path, "unknown",
+                (target.stderr or f"cannot resolve {path} at {ref}").strip()[:80],
+            ))
+            continue
+        working = _git("hash-object", "--no-filters", "--", path)
+        if working.returncode != 0 or not working.stdout.strip():
+            out.append(Verdict(
+                path, "unknown",
+                (working.stderr or "cannot hash working file").strip()[:80],
+            ))
+            continue
+        if working.stdout.strip() == target.stdout.strip():
             out.append(Verdict(path, "current"))
             continue
-        if diff.returncode != 1:
-            out.append(
-                Verdict(path, "unknown", (diff.stderr or "git diff failed").strip()[:80])
-            )
-            continue
-        # Differs from the target. Split the dangerous case from the ordinary one.
+        # Working bytes differ from the target. Split the dangerous case from
+        # ordinary tracked work-in-progress. For an untracked path absent from
+        # stale HEAD, local returns 0; a genuine mismatch must remain STALE.
         local = _git("diff", "--quiet", "HEAD", "--", path)
         if local.returncode == 0:
             out.append(Verdict(
                 path, "stale",
-                f"clean at local HEAD but {ref} has moved -- the landed version is "
-                f"not the one executing",
+                f"working bytes differ from {ref} with no tracked local edit -- "
+                f"the landed version is not the one executing",
             ))
         elif local.returncode == 1:
             out.append(Verdict(path, "modified", "uncommitted local edits (work in progress)"))
@@ -173,8 +187,8 @@ def render(verdicts: Sequence[Verdict], ref: str = TARGET_REF) -> tuple[int, str
         residue = f" (+{len(stale) - 3} more)" if len(stale) > 3 else ""
         summary = (
             f"{len(stale)} of {len(verdicts)} tick tool(s) are STALE against {ref} -- "
-            f"the tick is executing a version older than what landed, and `git status` "
-            f"shows them clean: {subjects}{residue}. Sync the parent."
+            f"the tick is executing bytes that differ from what landed: "
+            f"{subjects}{residue}. Reconcile the parent."
         )
         code = DRIFTED
     elif unknown:
