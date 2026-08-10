@@ -249,6 +249,7 @@ where
     G: Guest<T>,
     T: Tool,
 {
+    eprintln!("VDSO_TRACE: vdso_patch ENTER pid={}", guest.pid());
     if let Some(vdso) = procfs::process::Process::new(guest.pid().as_raw())
         .map_or_else(
             |_| Vec::new(),
@@ -260,6 +261,12 @@ where
         .iter()
         .find(|e| e.pathname == procfs::process::MMapPath::Vdso)
     {
+        eprintln!(
+            "VDSO_TRACE: found [vdso] pid={} range={:x}..{:x}",
+            guest.pid(),
+            vdso.address.0,
+            vdso.address.1
+        );
         let mut memory = guest.memory();
 
         // Allow write access to the vdso memory page.
@@ -284,6 +291,13 @@ where
                 let fill: Vec<u8> = std::iter::repeat_n(0x90u8, size - bytes.len()).collect();
                 memory.write_exact(unsafe { rptr.add(bytes.len()) }, &fill)?;
             }
+            eprintln!(
+                "VDSO_TRACE: wrote stub pid={} {} @{:x} ({} bytes)",
+                guest.pid(),
+                name,
+                start,
+                bytes.len()
+            );
             debug!("{} patched {}@{:x}", guest.pid(), name, start);
         }
 
@@ -295,6 +309,9 @@ where
                     .with_protection(ProtFlags::PROT_READ | ProtFlags::PROT_EXEC),
             )
             .await?;
+        eprintln!("VDSO_TRACE: vdso_patch DONE pid={}", guest.pid());
+    } else {
+        eprintln!("VDSO_TRACE: NO [vdso] mapping found pid={}", guest.pid());
     }
     Ok(())
 }

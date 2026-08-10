@@ -1754,6 +1754,11 @@ impl<L: Tool + 'static> TracedTask<L> {
         // Restore registers after adding our temporary injection state.
         remove_injection_state(&mut task, regs, prev_state)?;
 
+        eprintln!(
+            "VDSO_TRACE: tracee_preinit calling vdso_patch pid={} liteinst_runtime={}",
+            self.tid(),
+            self.global_state.liteinst_runtime.is_some()
+        );
         vdso::vdso_patch(self).await.expect("unable to patch vdso");
         #[cfg(test)]
         pause_preinit(&pause_preinit_step, 2, &task).await;
