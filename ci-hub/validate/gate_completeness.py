@@ -52,6 +52,51 @@ DECLARED = "declared"    # the receipt recorded its own contract -- evidence
 INFERRED = "inferred"    # substituted from the hardcode -- a guess, not evidence
 ABSENT = "absent"        # no contract available at all
 
+# The ledger is an authority boundary, so this is deliberately a closed
+# vocabulary. Adding a scheduler reason does not make it qualification-safe;
+# this consumer must opt in separately after reviewing the reason's semantics.
+ALLOWED_INTENTIONAL_SKIP_REASONS = frozenset({"empty-manifest-bucket"})
+INTENTIONAL_SKIP_FIELD = "intentional_skipped_nodes"
+
+
+def intentional_skips(
+    record: Mapping[str, Any],
+) -> tuple[Optional[list[tuple[str, str]]], Optional[str]]:
+    """Parse qualification-safe intentional skips, refusing ambiguous shapes.
+
+    A typed skip is accounting evidence, never an executed gate or PASS. The
+    return value is separate from ``gates_run`` by construction.
+    """
+    raw = record.get(INTENTIONAL_SKIP_FIELD, [])
+    if not isinstance(raw, list):
+        return None, f"{INTENTIONAL_SKIP_FIELD} is not an array"
+    parsed: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            return None, f"{INTENTIONAL_SKIP_FIELD} contains a non-object"
+        name = item.get("name")
+        reason = item.get("reason")
+        if not isinstance(name, str) or not name.strip():
+            return None, "intentional skip has no node identity"
+        if reason not in ALLOWED_INTENTIONAL_SKIP_REASONS:
+            return None, f"intentional skip {name!r} has unknown reason {reason!r}"
+        if name in seen:
+            return None, f"intentional skip {name!r} is duplicated"
+        seen.add(name)
+        parsed.append((name, reason))
+    return parsed, None
+
+
+def _empty_node_list(record: Mapping[str, Any], field: str) -> tuple[bool, str]:
+    """Require an explicitly empty typed node list for a skipped full run."""
+    value = record.get(field)
+    if not isinstance(value, list):
+        return False, f"{field} is missing or not an array"
+    if value:
+        return False, f"{field} is nonempty"
+    return True, ""
+
 
 def expectation_source(record: Mapping[str, Any]) -> str:
     """Where did `expected` come from? The whole fix turns on this distinction."""
@@ -83,6 +128,38 @@ def gates_complete(record: Mapping[str, Any]) -> tuple[bool, str]:
         return False, "no gate contract available"
     if expected <= 0:
         return False, f"vacuous contract (gates_expected={expected})"
+
+    skips, skip_error = intentional_skips(record)
+    if skip_error is not None or skips is None:
+        return False, skip_error or "intentional skip evidence is invalid"
+
+    # Once a producer declares an intentional omission, every other planned
+    # node must be accounted for explicitly. A dependency skip or unaccounted
+    # node cannot hide behind the one allowed empty-bucket omission.
+    if skips:
+        for field in ("dependency_skipped_nodes", "unaccounted_nodes"):
+            ok, why = _empty_node_list(record, field)
+            if not ok:
+                return False, why
+        total_skipped = record.get("skipped_nodes")
+        if (
+            not isinstance(total_skipped, int)
+            or isinstance(total_skipped, bool)
+            or total_skipped != len(skips)
+        ):
+            return False, (
+                f"skipped_nodes must equal the {len(skips)} typed intentional skip(s)"
+            )
+        accounted = ran + len(skips)
+        if accounted != expected:
+            return False, (
+                "planned-node accounting mismatch: "
+                f"executed={ran} intentional_skipped={len(skips)} expected={expected}"
+            )
+        return True, (
+            f"{ran} executed + {len(skips)} intentionally skipped = "
+            f"{expected} planned gates ({source}); skips are not PASS"
+        )
 
     # THE FIX. A count-capable receipt that did not declare its contract has an
     # INFERRED denominator, and `ran >= inferred` is not proof of anything: the

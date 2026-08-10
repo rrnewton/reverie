@@ -46,12 +46,32 @@ def test_missing_conditions_fail_closed() -> None:
     assert qr.qualified_rows([missing_counts, missing_time]) == []
 
 
-def test_current_full_schema_derives_five_gate_contract() -> None:
+def test_current_full_schema_requires_declared_gate_contract() -> None:
     current = _row("current", "2026-08-04T10:00:00Z", schema_version=5)
     current["profile"] = "full"
     current["checks"] = current.pop("gates_run")
     current.pop("gates_expected")
+    assert qr.qualified_rows([current]) == []
+
+
+def test_typed_empty_bucket_qualifies_without_counting_as_a_pass() -> None:
+    current = _row(
+        "typed-skip",
+        "2026-08-04T10:00:00Z",
+        gates_run=4,
+        gates_expected=5,
+        skipped_nodes=1,
+        intentional_skipped_nodes=[
+            {
+                "name": "privileged-e2e.manifest_applications",
+                "reason": "empty-manifest-bucket",
+            }
+        ],
+        dependency_skipped_nodes=[],
+        unaccounted_nodes=[],
+    )
     assert qr.qualified_rows([current]) == [current]
+    assert current["gates_run"] == 4
 
 
 def test_over_run_pass_still_qualifies() -> None:

@@ -77,6 +77,80 @@ class PositiveControlTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("short run", why)
 
+    def test_typed_empty_bucket_accounts_without_becoming_pass(self) -> None:
+        receipt = row(
+            gates_run=5,
+            gates_expected=6,
+            skipped_nodes=1,
+            intentional_skipped_nodes=[
+                {
+                    "name": "privileged-e2e.manifest_applications",
+                    "reason": "empty-manifest-bucket",
+                }
+            ],
+            dependency_skipped_nodes=[],
+            unaccounted_nodes=[],
+            gates=[{"name": f"g{i}", "result": "pass"} for i in range(5)],
+        )
+        ok, why = G.gates_complete(receipt)
+        self.assertTrue(ok, why)
+        self.assertIn("skips are not PASS", why)
+        self.assertEqual(receipt["gates_run"], 5)
+        self.assertEqual(len(receipt["gates"]), 5)
+
+    def test_nonempty_peer_still_requires_execution(self) -> None:
+        ok, why = G.gates_complete(row(gates_run=5, gates_expected=6))
+        self.assertFalse(ok)
+        self.assertIn("short run", why)
+
+
+class IntentionalSkipRefusalTest(unittest.TestCase):
+    def typed(self, **overrides):
+        value = row(
+            gates_run=5,
+            gates_expected=6,
+            skipped_nodes=1,
+            intentional_skipped_nodes=[
+                {
+                    "name": "privileged-e2e.manifest_applications",
+                    "reason": "empty-manifest-bucket",
+                }
+            ],
+            dependency_skipped_nodes=[],
+            unaccounted_nodes=[],
+        )
+        value.update(overrides)
+        return value
+
+    def test_unknown_reason_refused(self) -> None:
+        value = self.typed()
+        value["intentional_skipped_nodes"][0]["reason"] = "looks-empty"
+        ok, why = G.gates_complete(value)
+        self.assertFalse(ok)
+        self.assertIn("unknown reason", why)
+
+    def test_dependency_skip_refused(self) -> None:
+        ok, why = G.gates_complete(
+            self.typed(dependency_skipped_nodes=["downstream.node"])
+        )
+        self.assertFalse(ok)
+        self.assertIn("dependency_skipped_nodes is nonempty", why)
+
+    def test_unaccounted_node_refused(self) -> None:
+        ok, why = G.gates_complete(self.typed(unaccounted_nodes=["lost.node"]))
+        self.assertFalse(ok)
+        self.assertIn("unaccounted_nodes is nonempty", why)
+
+    def test_mismatched_accounting_refused(self) -> None:
+        ok, why = G.gates_complete(self.typed(gates_expected=7))
+        self.assertFalse(ok)
+        self.assertIn("accounting mismatch", why)
+
+    def test_skip_count_cannot_be_hidden(self) -> None:
+        ok, why = G.gates_complete(self.typed(skipped_nodes=0))
+        self.assertFalse(ok)
+        self.assertIn("skipped_nodes must equal", why)
+
 
 class DegenerateInputTest(unittest.TestCase):
     def test_missing_counts_refused(self) -> None:

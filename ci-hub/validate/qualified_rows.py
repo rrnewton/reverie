@@ -7,9 +7,9 @@ This is the guard for ad-hoc derived views. Two invariants are non-negotiable:
 2. Drop incomplete, aborted, and zero-executed rows before bucketing or timing.
 
 A row qualifies only when it records ``result == "pass"``, a positive executed
-test count, a parseable completion time, and a satisfied positive gate contract
-``gates_run >= gates_expected`` (an over-run against the possibly-stale hardcoded
-expectation is still complete). Missing evidence fails closed. Callers needing
+test count, a parseable completion time, and a satisfied positive gate contract.
+A typed ``empty-manifest-bucket`` skip may account for a planned gate, but is
+never an executed gate or PASS. Missing evidence fails closed. Callers needing
 failure taxonomy must use ``flake_class.effective_result``; this accessor is the
 canonical population for green timing/concurrency analysis only.
 """
@@ -28,7 +28,7 @@ import validate_rows as canonical_ledger  # noqa: E402
 
 DEFAULT_LEDGER = Path(__file__).resolve().parents[2] / "ledger"
 
-from flake_class import gate_counts
+from gate_completeness import gates_complete
 from green_class import HARD
 from green_class import derive_class
 
@@ -48,10 +48,6 @@ def event_time(row: Mapping[str, object]) -> dt.datetime | None:
 
 def is_qualified(row: Mapping[str, object]) -> bool:
     """Return whether ``row`` is a complete, nonempty PASS measurement."""
-    # Use the same schema-aware resolver as the failure taxonomy. Current
-    # schema-3+ full rows record `checks` but not yet `gates_expected`; their
-    # five-gate contract is known. Older/ambiguous rows remain unqualified.
-    ran, expected = gate_counts(dict(row))
     executed = row.get("executed_tests")
     # A SOFT (inherited) green is not a measurement AT THIS HEAD: validation ran
     # on an ancestor and is being speculatively trusted here. This view is the
@@ -68,10 +64,7 @@ def is_qualified(row: Mapping[str, object]) -> bool:
         and isinstance(executed, int)
         and not isinstance(executed, bool)
         and executed > 0
-        and isinstance(ran, int)
-        and isinstance(expected, int)
-        and expected > 0
-        and ran >= expected
+        and gates_complete(row)[0]
         and event_time(row) is not None
     )
 

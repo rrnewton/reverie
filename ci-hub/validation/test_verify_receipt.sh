@@ -189,7 +189,7 @@ write_comments() {
 # normalized. So the anchor compares CANONICAL CONTENT (`jq -S -c`), which is
 # what "the mutation changed the receipt" actually means.
 mutation_anchor_failures=0
-mutation_anchors_total=25
+mutation_anchors_total=28
 assert_mutated() { # assert_mutated <base> <mutant> <label>
     local a b
     a=$(jq -S -c . "$1" 2>/dev/null) || a="<unparseable:$1>"
@@ -834,6 +834,43 @@ if ! "$verifier" --sha "$sha" --comments "$tmp/comments.json" \
     echo "FAIL: strong-row -> artifact-digest -> marker chain was refused" >&2
     exit 1
 fi
+
+# A typed empty-manifest omission accounts for one planned node without adding
+# an executed gate or a PASS. Unknown reasons and dependency skips remain red.
+jq '
+  .ledger_record.gates_expected = 3
+  | .ledger_record.skipped_nodes = 1
+  | .ledger_record.intentional_skipped_nodes = [{
+      name: "privileged-e2e.manifest_applications",
+      reason: "empty-manifest-bucket"
+    }]
+  | .ledger_record.dependency_skipped_nodes = []
+  | .ledger_record.unaccounted_nodes = []
+' "$tmp/strong-artifact.json" >"$tmp/typed-skip-raw.json"
+refresh_selected_identity "$tmp/typed-skip-raw.json" "$tmp/typed-skip.json"
+assert_mutated "$tmp/strong-artifact.json" "$tmp/typed-skip.json" \
+    "typed intentional skip accounting"
+verify_file "$tmp/typed-skip.json" pass \
+    "typed empty-manifest skip accounts without becoming PASS" \
+    '[coordinator, gpt-5.6-sol]'
+
+jq '.ledger_record.intentional_skipped_nodes[0].reason = "looks-empty"' \
+    "$tmp/typed-skip.json" >"$tmp/typed-skip-unknown-raw.json"
+refresh_selected_identity "$tmp/typed-skip-unknown-raw.json" \
+    "$tmp/typed-skip-unknown.json"
+assert_mutated "$tmp/typed-skip.json" "$tmp/typed-skip-unknown.json" \
+    "unknown intentional skip reason"
+verify_file "$tmp/typed-skip-unknown.json" fail \
+    "unknown intentional skip reason refused" '[coordinator, gpt-5.6-sol]'
+
+jq '.ledger_record.dependency_skipped_nodes = ["downstream.node"]' \
+    "$tmp/typed-skip.json" >"$tmp/typed-skip-dependent-raw.json"
+refresh_selected_identity "$tmp/typed-skip-dependent-raw.json" \
+    "$tmp/typed-skip-dependent.json"
+assert_mutated "$tmp/typed-skip.json" "$tmp/typed-skip-dependent.json" \
+    "dependency skip cannot hide behind intentional skip"
+verify_file "$tmp/typed-skip-dependent.json" fail \
+    "dependency skip remains non-qualifying" '[coordinator, gpt-5.6-sol]'
 
 # Count-capable receipts additionally bind the per-node coverage obligation.
 # Use a second exact head so the two positive controls represent two distinct

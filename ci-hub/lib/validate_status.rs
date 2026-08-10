@@ -337,15 +337,21 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
     // Completeness is structural. Even when a fail-fast row carries a real red
     // gate, it did not execute the full validation contract and cannot become a
     // durable FAILED verdict. A genuine red control SATISFIES its gate contract
-    // (`ran >= expected`, matching the `complete` check below): only an UNDER-run
-    // (`ran < expected`) is a truncation. An OVER-run (`ran > expected`, e.g. six
+    // (`executed + exact intentional skips == expected`, matching the shared
+    // accounting check below): only an under-accounted run is a truncation. An OVER-run (`ran > expected`, e.g. six
     // live gates against a hardcoded five-gate expectation) is complete, not short,
     // and must fall through to the failure logic — a stale expected count must not
     // launder a genuine over-run failure into a non-verdict.
     let has_real_failure = row.failures.is_some_and(|f| f >= 1) || !failed_gates.is_empty();
-    if gates_expected
-        .zip(gates_run)
-        .is_some_and(|(expected, ran)| expected > 0 && ran < expected)
+    let gates_accounted = if row.gates_expected.is_some() {
+        crate::qualifying_receipt::gate_accounting_complete(row)
+    } else {
+        gates_expected
+            .zip(gates_run)
+            .is_some_and(|(expected, ran)| expected > 0 && ran >= expected)
+    };
+    if gates_expected.is_some_and(|expected| expected > 0)
+        && !gates_accounted
         || (!has_real_failure
             && (row.exit_code == Some(130) || (row.failures == Some(0) && failed_gates.is_empty())))
     {
@@ -369,9 +375,13 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
     // Missing completeness or execution conditions cannot prove a defect. Old
     // reds therefore become re-measurement requests instead of permanent
     // condemnations when the schema tightens.
-    let complete = gates_expected
-        .zip(gates_run)
-        .is_some_and(|(expected, ran)| expected > 0 && ran >= expected);
+    let complete = if row.gates_expected.is_some() {
+        crate::qualifying_receipt::gate_accounting_complete(row)
+    } else {
+        gates_expected
+            .zip(gates_run)
+            .is_some_and(|(expected, ran)| expected > 0 && ran >= expected)
+    };
     let conditions_present = row.dag_jobs.is_some()
         && row.concurrent_validates.is_some()
         && row.known_flaky_failure.is_some();
@@ -910,6 +920,27 @@ mod tests {
         r.checks = Some(6);
         r.gates_run = Some(6);
         r.gates_expected = Some(5);
+        let a = assess(&[r], PASS_SHA);
+        assert_eq!(a.verdict, Verdict::FailedOnRecord);
+        assert_eq!(a.verdict.exit_code(), 3);
+    }
+
+    #[test]
+    fn typed_empty_bucket_does_not_make_complete_failure_look_truncated() {
+        let mut r = complete_failure(PASS_SHA);
+        r.gates_expected = Some(6);
+        r.extra.insert("skipped_nodes".into(), serde_json::json!(1));
+        r.extra.insert(
+            "intentional_skipped_nodes".into(),
+            serde_json::json!([{
+                "name": "privileged-e2e.manifest_applications",
+                "reason": "empty-manifest-bucket"
+            }]),
+        );
+        r.extra
+            .insert("dependency_skipped_nodes".into(), serde_json::json!([]));
+        r.extra
+            .insert("unaccounted_nodes".into(), serde_json::json!([]));
         let a = assess(&[r], PASS_SHA);
         assert_eq!(a.verdict, Verdict::FailedOnRecord);
         assert_eq!(a.verdict.exit_code(), 3);

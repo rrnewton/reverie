@@ -47,6 +47,7 @@
 
 use crate::records::{CoverageRow, HistoryRow};
 use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -596,6 +597,63 @@ fn shared_evidence_accepts(row: &HistoryRow, pred: &QualifyingPredicate) -> bool
 ///     (NotValidated / re-dispatch), never treated as green.
 pub fn row_qualifies(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate) -> bool {
     row_qualification(row, sha, pred).accepted()
+}
+
+/// Planned-gate accounting, kept separate from the executed PASS list.
+///
+/// Only the statically proven empty-manifest case is safe to count toward a
+/// complete plan. The node remains absent from `gates`/`gates_run`, so this
+/// never manufactures a passing gate. Unknown reasons and every dependency or
+/// unaccounted skip fail closed.
+pub fn intentional_skip_count(row: &HistoryRow) -> Option<u64> {
+    let Some(value) = row.extra.get("intentional_skipped_nodes") else {
+        return Some(0);
+    };
+    let skips = value.as_array()?;
+    if skips.is_empty() {
+        return Some(0);
+    }
+    let mut names = BTreeSet::new();
+    for skip in skips {
+        let object = skip.as_object()?;
+        let name = object.get("name")?.as_str()?.trim();
+        if name.is_empty()
+            || object.get("reason")?.as_str()? != "empty-manifest-bucket"
+            || !names.insert(name)
+        {
+            return None;
+        }
+    }
+    for field in ["dependency_skipped_nodes", "unaccounted_nodes"] {
+        if !row
+            .extra
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(Vec::is_empty)
+        {
+            return None;
+        }
+    }
+    let count = u64::try_from(skips.len()).ok()?;
+    (row.extra.get("skipped_nodes")?.as_u64()? == count).then_some(count)
+}
+
+pub fn gate_accounting_complete(row: &HistoryRow) -> bool {
+    let (Some(run), Some(expected), Some(intentional)) = (
+        row.gates_run,
+        row.gates_expected,
+        intentional_skip_count(row),
+    ) else {
+        return false;
+    };
+    if expected == 0 {
+        return false;
+    }
+    if intentional == 0 {
+        run >= expected
+    } else {
+        run.checked_add(intentional) == Some(expected)
+    }
 }
 
 /// The typed form of [`row_qualifies`]. Same decisions, but the outcome carries

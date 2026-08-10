@@ -696,6 +696,26 @@ for candidate in "${candidates[@]}"; do
           .digest_algorithm == "sha256"
           and .canonicalization == "serde_json::to_vec(HistoryRow)-v1"
           and (.digest | test("^[0-9a-f]{64}$"));
+        # An intentional omission may account for a planned node, but it never
+        # enters gates/checks and is never a PASS. Keep the vocabulary closed at
+        # this authority boundary; unknown future reasons fail closed.
+        def gate_accounting_valid:
+          . as $row
+          | ($row.intentional_skipped_nodes // []) as $intentional
+          | ($intentional | type == "array")
+          and if ($intentional | length) == 0 then
+            ($row.gates_run | integer and . >= $row.gates_expected)
+          else
+            all($intentional[];
+              (.name | nonempty_string)
+              and .reason == "empty-manifest-bucket"
+            )
+            and ([$intentional[].name] | length == (unique | length))
+            and ($row.dependency_skipped_nodes | type == "array" and length == 0)
+            and ($row.unaccounted_nodes | type == "array" and length == 0)
+            and ($row.skipped_nodes | integer and . == ($intentional | length))
+            and (($row.gates_run + ($intentional | length)) == $row.gates_expected)
+          end;
         def current_structural_row($sha; $repo):
           .ledger_record as $row
           | $repo == "rrnewton/hermit"
@@ -710,8 +730,8 @@ for candidate in "${candidates[@]}"; do
           and $row.raw_result == "pass"
           and $row.exit_code == 0
           and ($row.checks | integer and . > 0)
-          and ($row.gates_run | integer and . >= $row.gates_expected)
           and ($row.gates_expected | integer and . > 0)
+          and ($row | gate_accounting_valid)
           and $row.checks == $row.gates_run
           and ($row.gates | type == "array" and length == $row.gates_run)
           and all($row.gates[];

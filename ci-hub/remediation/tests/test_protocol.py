@@ -314,6 +314,56 @@ class ProtocolTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def typed_skip_report(self) -> dict:
+        report = counted_receipt_report()
+        row = report["newest_qualifying"]
+        row["gates_expected"] = 3
+        row["skipped_nodes"] = 1
+        row["intentional_skipped_nodes"] = [
+            {
+                "name": "privileged-e2e.manifest_applications",
+                "reason": "empty-manifest-bucket",
+            }
+        ]
+        row["dependency_skipped_nodes"] = []
+        row["unaccounted_nodes"] = []
+        report["qualifying_receipts"] = [json.loads(json.dumps(row))]
+        return report
+
+    def test_typed_empty_bucket_is_accounted_but_not_an_executed_gate(self) -> None:
+        report = self.typed_skip_report()
+        problem = protocol._local_receipt_problem(
+            report, repo="rrnewton/hermit", sha=SHA, returncode=0
+        )
+        self.assertIsNone(problem)
+        row = report["newest_qualifying"]
+        self.assertEqual(row["gates_run"], 2)
+        self.assertEqual(len(row["gates"]), 2)
+
+    def test_unknown_intentional_skip_reason_is_refused(self) -> None:
+        report = self.typed_skip_report()
+        report["newest_qualifying"]["intentional_skipped_nodes"][0][
+            "reason"
+        ] = "looks-empty"
+        report["qualifying_receipts"] = [
+            json.loads(json.dumps(report["newest_qualifying"]))
+        ]
+        problem = protocol._local_receipt_problem(
+            report, repo="rrnewton/hermit", sha=SHA, returncode=0
+        )
+        self.assertEqual(problem, "qualifying receipt has inconsistent gate coverage")
+
+    def test_dependency_skip_cannot_hide_behind_intentional_skip(self) -> None:
+        report = self.typed_skip_report()
+        report["newest_qualifying"]["dependency_skipped_nodes"] = ["lost.node"]
+        report["qualifying_receipts"] = [
+            json.loads(json.dumps(report["newest_qualifying"]))
+        ]
+        problem = protocol._local_receipt_problem(
+            report, repo="rrnewton/hermit", sha=SHA, returncode=0
+        )
+        self.assertEqual(problem, "qualifying receipt has inconsistent gate coverage")
+
     def repo_source(self, repo: str, name: str = "source-repo") -> Path:
         source = self.root / name
         if not source.exists():

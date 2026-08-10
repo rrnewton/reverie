@@ -3700,7 +3700,7 @@ fn qualify_canonical_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRe
     let gates_run = row.gates_run?;
     let gates_expected = row.gates_expected?;
     if gates_expected == 0
-        || gates_run < gates_expected
+        || !crate::qualifying_receipt::gate_accounting_complete(row)
         || checks != gates_run
         || usize::try_from(gates_run).ok()? != row.gates.len()
         || row.gates.iter().any(|gate| {
@@ -3960,6 +3960,12 @@ fn describe_receipt(receipt: &QualifyingReceipt) -> serde_json::Value {
         "failures": row.failures,
         "gates_run": row.gates_run,
         "gates_expected": row.gates_expected,
+        // Intentional skips are PLANNED-NODE accounting only. They remain
+        // outside the executed gate list and therefore can never become PASS.
+        "skipped_nodes": row.extra.get("skipped_nodes").cloned().unwrap_or_else(|| serde_json::json!(0)),
+        "intentional_skipped_nodes": row.extra.get("intentional_skipped_nodes").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "dependency_skipped_nodes": row.extra.get("dependency_skipped_nodes").cloned().unwrap_or_else(|| serde_json::json!([])),
+        "unaccounted_nodes": row.extra.get("unaccounted_nodes").cloned().unwrap_or_else(|| serde_json::json!([])),
         "gates": row.gates,
         "executed_tests": row.executed_tests,
         "filtered_tests": row.filtered_tests,
@@ -6166,6 +6172,53 @@ mod tests {
         assert_eq!(report["coverage_status"], "grandfathered-unknown");
         assert_eq!(report["receipt_identity"]["digest_algorithm"], "sha256");
         assert_eq!(report["receipt_identity"]["tuple"]["sha"], RECEIPT_SHA);
+    }
+
+    #[test]
+    fn canonical_receipt_accounts_typed_empty_bucket_without_passing_it() {
+        let mut value = schema4_receipt_value();
+        value["gates_expected"] = serde_json::json!(3);
+        value["skipped_nodes"] = serde_json::json!(1);
+        value["intentional_skipped_nodes"] = serde_json::json!([{
+            "name": "privileged-e2e.manifest_applications",
+            "reason": "empty-manifest-bucket"
+        }]);
+        value["dependency_skipped_nodes"] = serde_json::json!([]);
+        value["unaccounted_nodes"] = serde_json::json!([]);
+        let receipt = qualify_canonical_receipt(&history_row(value), RECEIPT_SHA)
+            .expect("exact typed empty bucket should preserve completeness");
+        let report = describe_receipt(&receipt);
+        assert_eq!(report["gates_run"], 2);
+        assert_eq!(report["gates"].as_array().unwrap().len(), 2);
+        assert_eq!(report["intentional_skipped_nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(report["intentional_skipped_nodes"][0]["reason"], "empty-manifest-bucket");
+    }
+
+    #[test]
+    fn canonical_receipt_refuses_malformed_or_nonintentional_skips() {
+        let typed = || {
+            let mut value = schema4_receipt_value();
+            value["gates_expected"] = serde_json::json!(3);
+            value["skipped_nodes"] = serde_json::json!(1);
+            value["intentional_skipped_nodes"] = serde_json::json!([{
+                "name": "privileged-e2e.manifest_applications",
+                "reason": "empty-manifest-bucket"
+            }]);
+            value["dependency_skipped_nodes"] = serde_json::json!([]);
+            value["unaccounted_nodes"] = serde_json::json!([]);
+            value
+        };
+        let mut unknown = typed();
+        unknown["intentional_skipped_nodes"][0]["reason"] = serde_json::json!("looks-empty");
+        assert!(qualify_canonical_receipt(&history_row(unknown), RECEIPT_SHA).is_none());
+
+        let mut dependency = typed();
+        dependency["dependency_skipped_nodes"] = serde_json::json!(["lost.node"]);
+        assert!(qualify_canonical_receipt(&history_row(dependency), RECEIPT_SHA).is_none());
+
+        let mut mismatched = typed();
+        mismatched["skipped_nodes"] = serde_json::json!(0);
+        assert!(qualify_canonical_receipt(&history_row(mismatched), RECEIPT_SHA).is_none());
     }
 
     #[test]

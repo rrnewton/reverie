@@ -27,11 +27,13 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci-hub"))
 sys.path.insert(0, str(ROOT / "ci-hub/history"))
 sys.path.insert(0, str(ROOT / "ci-hub/ledger"))
+sys.path.insert(0, str(ROOT / "ci-hub/validate"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import obligations
 from check_outcome import CheckOutcome, classify_check, select_latest_workflow_attempts
 from check_outcome import FAIL_CONCLUSIONS as _RED_CONCLUSIONS
+from gate_completeness import gates_complete
 from nonzero_result import is_zero_test_green
 import validate_rows as canonical_ledger
 
@@ -616,14 +618,12 @@ def _local_receipt_problem(
 
     checks = newest.get("checks")
     gates_run = newest.get("gates_run")
-    gates_expected = newest.get("gates_expected")
     gates = newest.get("gates")
+    gate_contract_complete, _gate_contract_reason = gates_complete(newest)
     if (
         type(checks) is not int
         or type(gates_run) is not int
-        or type(gates_expected) is not int
-        or gates_expected <= 0
-        or gates_run < gates_expected
+        or not gate_contract_complete
         or checks != gates_run
         or not isinstance(gates, list)
         or gates_run != len(gates)
