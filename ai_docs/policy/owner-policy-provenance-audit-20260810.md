@@ -1,7 +1,9 @@
 # Owner-policy provenance audit — 2026-08-10
 
-**Task:** `audit-invented-policy-attributed-to-the-owner`  
-**Snapshot:** `rrnewton/dev-hermit` main `2fbf74848f4ec68bba8dae3683e6fd25e57c43c8`  
+**Task:** `audit-invented-policy-attributed-to-the-owner`
+
+**Snapshot:** `rrnewton/dev-hermit` main `2fbf74848f4ec68bba8dae3683e6fd25e57c43c8`
+
 **Scope:** parent `AGENTS.md`, 40 versioned coordinator skills, 24 ci-hub text
 documents plus their named executable consumers, 21 directive-ledger records,
 497 TaskGraph tasks, and observed coordinator practice.
