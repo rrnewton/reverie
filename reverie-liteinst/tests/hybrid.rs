@@ -803,22 +803,33 @@ async fn first_discovery_event_can_inject_more_than_once() {
     assert!(output.status.success(), "{output:?}");
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn hybrid_fails_closed_when_the_guest_forks() {
-    let (_directory, guest) = compile_fixture("hybrid_fork.c");
-    let marker = format!("li{:x}", std::process::id());
+/// Runs a multi-task fixture that is expected to complete, and requires the
+/// guest's own end-of-run marker.
+///
+/// Exit status alone is not enough: every fixture here prints its marker only
+/// after the task it creates has been created, run and reaped, so a regression
+/// that skips the task cannot satisfy the assertion by exiting zero.
+async fn run_multi_task_fixture<T>(fixture: &str, marker_line: &str)
+where
+    T: Tool<GlobalState = EventCounter, ThreadState = ()> + 'static,
+{
+    let (_directory, guest) = compile_fixture(fixture);
+    let name = format!("li{:x}", std::process::id());
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("root.pid");
     let mut command = Command::new(guest);
-    command.arg(&marker).arg(&pid_file);
-    let result = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
-        command,
-        (),
-        preload_path(),
-    )
-    .await;
+    command.arg(&name).arg(&pid_file);
+    let (output, _global) =
+        LiteinstBackend::run_host_with_output_and_preload::<T>(command, (), preload_path())
+            .await
+            .unwrap_or_else(|error| panic!("hybrid refused to follow {fixture}: {error}"));
 
-    let _error = result.expect_err("hybrid unexpectedly followed a child");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        marker_line.as_bytes(),
+        "guest did not reach the end of {fixture}: {output:?}"
+    );
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
@@ -826,7 +837,108 @@ async fn hybrid_fails_closed_when_the_guest_forks() {
         .unwrap();
     assert_pid_reaped(root_pid);
     assert!(
-        processes_named(&marker).is_empty(),
+        processes_named(&name).is_empty(),
+        "LiteInst root/child remains stopped or as a zombie"
+    );
+}
+
+/// The hybrid follows a forked child instead of refusing at the clone boundary.
+///
+/// REGRESSION COVERAGE: reverting the root-TID identity fix makes the forked
+/// child -- its own thread-group leader -- take the root's shared root-stop
+/// lease, and every transition then fails `EINVAL`. Reverting the root-stop
+/// lease re-arm after the nested parent step leaves the slot empty and both
+/// tracees wedge in `ptrace_stop`.
+#[tokio::test(flavor = "current_thread")]
+async fn hybrid_follows_a_forked_child() {
+    run_multi_task_fixture::<PassthroughGetpid>("hybrid_fork.c", "fork-followed\n").await;
+}
+
+/// The hybrid follows a second thread created with `clone3(CLONE_THREAD)`.
+///
+/// REGRESSION COVERAGE: patching a task-creating syscall site makes the new
+/// thread resume at an address that is no longer an instruction boundary.
+#[tokio::test(flavor = "current_thread")]
+async fn hybrid_follows_a_created_thread() {
+    run_multi_task_fixture::<PassthroughGetpid>("hybrid_thread.c", "thread-followed\n").await;
+}
+
+/// KNOWN GAP, committed as a reproducer rather than described: two generations
+/// of children do not reliably complete under this harness.
+///
+/// The grandchild's new-task event belongs to a NON-root parent, which is the
+/// case the cleanup guard's newborn registration has to cover -- scoping that
+/// registration to the root leaves the grandchild unregistered and
+/// `handle_new_task` aborts on `stored child event ownership must remain
+/// registered`. That much is fixed and this fixture does reach
+/// `fork-tree-followed`: it passed once here, and Hermit's
+/// `determinism-stress-c/fork-tree` reaches canonical L2 under the real Detcore
+/// tool, which sequentializes the guest.
+///
+/// It is `ignore`d because it is NOT reliable here: after that single pass it
+/// wedged with no forward progress on three consecutive runs, under both this
+/// tool and a variant that also subscribes to the task-creating syscalls. A
+/// flaky hang is worse than no test, so it does not run by default. Do not
+/// treat the fix it covers as verified until this is diagnosed and the `ignore`
+/// removed.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "known gap: second-generation fork does not reliably complete in this harness"]
+async fn hybrid_follows_a_grandchild() {
+    run_multi_task_fixture::<PassthroughGetpid>("hybrid_fork_tree.c", "fork-tree-followed\n").await;
+}
+
+/// A child that execs fails the whole session; the root must not report the
+/// success it would otherwise reach.
+///
+/// Exec after start cannot preserve the preload runtime, and that refusal now
+/// happens in a task with no outer cleanup guard of its own. Two distinct
+/// regressions are covered, and they fail in different ways:
+///
+/// * without the session-wide failure record the root reaches its own clean
+///   exit and this run returns `Ok` -- a SILENT GREEN over a child that was
+///   released untraced, which is strictly worse than the refusal it replaced;
+/// * without releasing the failed non-root task from the tool, the
+///   deterministic scheduler waits forever for a thread whose tracee the error
+///   path already detached, and this test hangs rather than fails.
+#[tokio::test(flavor = "current_thread")]
+async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
+    let (_directory, guest) = compile_fixture("hybrid_fork_exec.c");
+    let name = format!("li{:x}", std::process::id());
+    let pid_directory = tempfile::tempdir().unwrap();
+    let pid_file = pid_directory.path().join("root.pid");
+    let mut command = Command::new(guest);
+    command.arg(&name).arg(&pid_file);
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+            command,
+            (),
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("a failed non-root task was never released from the tool: the session hung");
+
+    let error = match result {
+        Ok((output, _global)) => panic!(
+            "SILENT GREEN: the session reported success over a child that could not be \
+             followed through exec: {output:?}"
+        ),
+        Err(error) => error,
+    };
+    let text = error.to_string();
+    assert!(
+        text.contains("exec") || text.contains("ENOTSUPP"),
+        "session failure did not name the unsupported exec: {text}"
+    );
+    let root_pid: u32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_pid_reaped(root_pid);
+    assert!(
+        processes_named(&name).is_empty(),
         "failed LiteInst root/child remains stopped or as a zombie"
     );
 }
