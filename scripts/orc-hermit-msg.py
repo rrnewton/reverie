@@ -48,6 +48,8 @@ UID = os.getuid()
 DEFAULT_RUNTIME_DIR = Path(f"/run/user/{UID}")
 DEFAULT_SOCKET = Path(f"/run/user/{UID}/orc-tmux/tmux-{UID}/default")
 DEFAULT_ORC_COMMAND = Path.home() / "orc-bin/orc"
+# Compatibility fallback only. Live successors are derived from TG_DB_PATH or
+# the selected/live Orc session instead of remaining pinned to this name.
 DEFAULT_ORC_DB = "hermit"
 DEFAULT_LOG_FILE = Path.home() / ".local/state/orc-hermit-msg.log"
 TMUX_TIMEOUT_SECONDS = 5
@@ -199,6 +201,66 @@ class LivePane:
 def fail(message: str) -> NoReturn:
     print(f"orc-hermit-msg: error: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def orc_db_from_tg_path(value: str | None) -> str | None:
+    """Return the TaskGraph database name carried by ``TG_DB_PATH``."""
+    if not value:
+        return None
+    name = Path(value).name
+    if name.endswith(".db"):
+        name = name[:-3]
+    return name or None
+
+
+def orc_db_from_session_name(session: str | None) -> str | None:
+    """Map the fleet's ``orc-<db>`` session identity back to its database."""
+    if not session or not session.startswith("orc-"):
+        return None
+    name = session.removeprefix("orc-")
+    return name or None
+
+
+def configured_orc_db(
+    explicit: str | None,
+    tg_db_path: str | None,
+    session_hint: str | None,
+) -> tuple[str, str] | None:
+    """Resolve caller-carried identity, preserving the explicit override."""
+    if explicit is not None:
+        return explicit, "explicit --orc-db"
+    if derived := orc_db_from_tg_path(tg_db_path):
+        return derived, "TG_DB_PATH"
+    if derived := orc_db_from_session_name(session_hint):
+        return derived, "--session"
+    return None
+
+
+def orc_db_from_active_sessions(active_sessions: list[str]) -> tuple[str, str]:
+    """Derive this Hermit relay's DB from live Orc session metadata.
+
+    Other products may have coordinators on the same tmux socket. Selecting
+    one merely because it is the only coordinator would misdeliver Hermit
+    status to it, so only the ``orc-hermit*`` family is eligible. Ambiguity is
+    refused rather than guessed.
+    """
+    candidates = sorted(
+        {
+            derived
+            for session in active_sessions
+            if (derived := orc_db_from_session_name(session)) is not None
+            and derived.startswith(DEFAULT_ORC_DB)
+        }
+    )
+    if len(candidates) == 1:
+        return candidates[0], "live Orc session metadata"
+    if len(candidates) > 1:
+        raise OrcMessageError(
+            "cannot derive one Hermit database from live Orc sessions: "
+            + ", ".join(f"orc-{candidate}" for candidate in candidates)
+            + "; pass --orc-db or --session explicitly"
+        )
+    return DEFAULT_ORC_DB, "legacy fallback"
 
 
 def run_tmux(
@@ -915,8 +977,19 @@ def _api_ack_id(body: str) -> str | None:
     return None
 
 
-def resolve_api_socket(explicit: Path | None, orc_command: Path, orc_db: str) -> Path | None:
-    """Locate the coordinator's session socket, or None when there is none."""
+def resolve_api_socket(
+    explicit: Path | None,
+    orc_command: Path,
+    orc_db: str,
+    session_id: str | None = None,
+) -> Path | None:
+    """Locate the coordinator's exact session socket, or None when absent.
+
+    Current Orc identifies sessions by UUID and exposes ``uds_socket_path``;
+    older builds used the database name plus ``uds_socket``. Prefer the exact
+    parent-session identity carried by ``DG_TMUX_SESSION_ID`` and retain the
+    old schema only as a compatibility fallback.
+    """
     if explicit is not None:
         return explicit
     try:
@@ -934,12 +1007,34 @@ def resolve_api_socket(explicit: Path | None, orc_command: Path, orc_db: str) ->
         return None
     if not isinstance(entries, list):
         return None
+    if session_id:
+        matching = [
+            entry
+            for entry in entries
+            if isinstance(entry, dict) and entry.get("session_id") == session_id
+        ]
+        if len(matching) == 1:
+            candidate = (
+                matching[0].get("uds_socket_path")
+                or matching[0].get("uds_socket")
+                or matching[0].get("UDS_SOCKET")
+            )
+            return Path(candidate) if candidate else None
+        # A current-schema registry that knows session identities must never
+        # guess another session. An old registry with no such field may still
+        # use the database-name compatibility path below.
+        if any(isinstance(entry, dict) and "session_id" in entry for entry in entries):
+            return None
     for entry in entries:
         if not isinstance(entry, dict):
             continue
         if orc_db and entry.get("name") not in (orc_db, None):
             continue
-        candidate = entry.get("uds_socket") or entry.get("UDS_SOCKET")
+        candidate = (
+            entry.get("uds_socket_path")
+            or entry.get("uds_socket")
+            or entry.get("UDS_SOCKET")
+        )
         if candidate:
             return Path(candidate)
     return None
@@ -1009,6 +1104,53 @@ def load_message_file(path: Path) -> str:
     return strip_html_comments(contents).strip()
 
 
+def persist_recoverable_message(log_path: Path, message: str) -> Path:
+    """Persist the exact attempted body before any delivery side effect.
+
+    The relay log used to retain only a SHA-256 for direct messages. Once the
+    caller transcript disappeared, that proved a refusal happened but could
+    not recover what was refused. Every real dispatch now has a content-
+    addressed, mode-0600 body beside the log; both success and failure records
+    point at it.
+    """
+    encoded = message.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    directory = log_path.parent / f"{log_path.name}.messages"
+    target = directory / f"{digest}.txt"
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if target.exists():
+            if target.read_bytes() != encoded:
+                raise OrcMessageError(
+                    f"recoverable message hash collision or corrupt file: {target}"
+                )
+            return target
+
+        temporary = directory / f".{digest}.{os.getpid()}.{secrets.token_hex(6)}.tmp"
+        try:
+            with temporary.open("xb") as output:
+                os.fchmod(output.fileno(), 0o600)
+                output.write(encoded)
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, target)
+            directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                temporary.unlink()
+    except OrcMessageError:
+        raise
+    except OSError as exc:
+        raise OrcMessageError(
+            f"could not persist recoverable message before dispatch: {exc}"
+        ) from exc
+    return target
+
+
 def prefix_eastern_time(message: str, now: datetime.datetime | None = None) -> str:
     current = now or datetime.datetime.now(tz=EASTERN_TIME_ZONE)
     eastern = current.astimezone(EASTERN_TIME_ZONE)
@@ -1029,6 +1171,9 @@ def log_delivery(
     pane_id: str | None,
     message: str | None,
     message_file: Path | None,
+    recoverable_message_file: Path | None = None,
+    database: str | None = None,
+    database_source: str | None = None,
     error: str | None = None,
     ack: DeliveryAck | None = None,
     transport: str = "tmux",
@@ -1063,6 +1208,12 @@ def log_delivery(
         record["pane"] = pane_id
     if message_file is not None:
         record["message_file"] = str(message_file)
+    if recoverable_message_file is not None:
+        record["recoverable_message_file"] = str(recoverable_message_file)
+    if database is not None:
+        record["database"] = database
+    if database_source is not None:
+        record["database_source"] = database_source
     if message is not None:
         encoded = message.encode("utf-8")
         record["message_bytes"] = len(encoded)
@@ -1140,7 +1291,7 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_LOG_FILE,
         help=f"append delivery results as JSON lines (default: {DEFAULT_LOG_FILE})",
     )
-    parser.add_argument("--orc-db", default=DEFAULT_ORC_DB, help=argparse.SUPPRESS)
+    parser.add_argument("--orc-db", default=None, help=argparse.SUPPRESS)
     # Disambiguators for the rare multi-coordinator case only. They select
     # among panes that are already running `orc`; they cannot address an agent
     # pane, and pointing them at one is the documented way to get a confusing
@@ -1229,8 +1380,12 @@ def self_test_destination_refusal(socket: "Path | None") -> str | None:
 def main() -> int:
     args = parse_args()
     message: str | None = None
+    recoverable_message_file: Path | None = None
     pane_id: str | None = None
-    session = args.session or f"db={args.orc_db}"
+    database_source: str | None = None
+    active_sessions: list[str] | None = None
+    socket: Path | None = None
+    session = args.session or "db=unresolved"
     window = args.window or "coordinator"
     submitted = False
     try:
@@ -1239,13 +1394,39 @@ def main() -> int:
         else:
             message = args.message
         if message is not None:
+            if not args.dry_run:
+                recoverable_message_file = persist_recoverable_message(
+                    args.log_file, message
+                )
             validate_message(message)
+
+        selection = configured_orc_db(
+            args.orc_db, os.environ.get("TG_DB_PATH"), args.session
+        )
+        if selection is None:
+            # Scheduled user services do not inherit an agent's TG_DB_PATH.
+            # Read the live socket directly instead of spending up to 90s on
+            # `orc tmux ls` retries before reaching this same census.
+            socket = resolve_socket(
+                args.socket if args.socket is not None else DEFAULT_SOCKET,
+                allow_fallback=args.socket is None,
+            )
+            active_sessions = scan_orc_sessions_via_tmux(socket)
+            selection = orc_db_from_active_sessions(active_sessions)
+        args.orc_db, database_source = selection
+        session = args.session or f"db={args.orc_db}"
+
         # ---- supported API path, chosen before any tmux work ----
         if args.transport in ("api", "auto"):
-            api_socket = resolve_api_socket(args.api_socket, args.orc_command, args.orc_db)
+            api_socket = resolve_api_socket(
+                args.api_socket,
+                args.orc_command,
+                args.orc_db,
+                os.environ.get("DG_TMUX_SESSION_ID"),
+            )
             if api_socket is None:
                 if args.transport == "api":
-                    fail(
+                    raise OrcMessageError(
                         "no Orc session socket resolved and --transport api was requested; "
                         "nothing was delivered. Pass --api-socket, or use --transport auto "
                         "to fall back to the tmux composer."
@@ -1258,7 +1439,7 @@ def main() -> int:
                     )
                     return 0
                 if message is None:
-                    fail("no message to deliver")
+                    raise OrcMessageError("no message to deliver")
                 ack = deliver_via_api(api_socket, message)
                 log_delivery(
                     args.log_file,
@@ -1268,6 +1449,9 @@ def main() -> int:
                     pane_id=None,
                     message=message,
                     message_file=args.message_file,
+                    recoverable_message_file=recoverable_message_file,
+                    database=args.orc_db,
+                    database_source=database_source,
                     transport="api",
                     api_ack=ack,
                 )
@@ -1277,23 +1461,25 @@ def main() -> int:
                 )
                 return 0
 
-        socket = resolve_socket(
-            args.socket if args.socket is not None else DEFAULT_SOCKET,
-            allow_fallback=args.socket is None,
-        )
+        if socket is None:
+            socket = resolve_socket(
+                args.socket if args.socket is not None else DEFAULT_SOCKET,
+                allow_fallback=args.socket is None,
+            )
         lock_path = socket.parent / f".{args.orc_db}-msg.lock"
         with locked(lock_path):
-            try:
-                active_sessions = list_active_orc_sessions(args.orc_command)
-            except OrcMessageError as discovery_error:
-                # Do not drop the tick when the orc CLI is merely slow: locate
-                # the coordinator directly on the tmux socket instead.
-                print(
-                    f"orc-hermit-msg: warning: {discovery_error}; "
-                    "falling back to direct tmux scan",
-                    file=sys.stderr,
-                )
-                active_sessions = scan_orc_sessions_via_tmux(socket)
+            if active_sessions is None:
+                try:
+                    active_sessions = list_active_orc_sessions(args.orc_command)
+                except OrcMessageError as discovery_error:
+                    # Do not drop the tick when the orc CLI is merely slow: locate
+                    # the coordinator directly on the tmux socket instead.
+                    print(
+                        f"orc-hermit-msg: warning: {discovery_error}; "
+                        "falling back to direct tmux scan",
+                        file=sys.stderr,
+                    )
+                    active_sessions = scan_orc_sessions_via_tmux(socket)
             coordinator = find_coordinator_pane(
                 socket,
                 active_sessions,
@@ -1317,6 +1503,8 @@ def main() -> int:
                     pane_id=pane_id,
                     message=None,
                     message_file=None,
+                    database=args.orc_db,
+                    database_source=database_source,
                 )
                 print(
                     f"orc-hermit-msg: dry-run OK: {session}:{window} ({pane_id}) "
@@ -1337,6 +1525,9 @@ def main() -> int:
                 pane_id=pane_id,
                 message=message,
                 message_file=args.message_file,
+                recoverable_message_file=recoverable_message_file,
+                database=args.orc_db,
+                database_source=database_source,
                 ack=ack,
             )
     except (OrcMessageError, OSError) as exc:
@@ -1350,9 +1541,17 @@ def main() -> int:
                     pane_id=pane_id,
                     message=message,
                     message_file=args.message_file,
+                    recoverable_message_file=recoverable_message_file,
+                    database=args.orc_db,
+                    database_source=database_source,
                     error=str(exc),
                 )
-        fail(str(exc))
+        recovery = (
+            f"; recoverable message: {recoverable_message_file}"
+            if recoverable_message_file is not None
+            else ""
+        )
+        fail(f"{exc}{recovery}")
 
     print(
         f"orc-hermit-msg: sent to {session}:{window} ({pane_id}) "

@@ -17,6 +17,8 @@ message that names *which* condition refused it.
 from __future__ import annotations
 
 import contextlib
+import hashlib
+import io
 import os
 import socket
 import threading
@@ -227,6 +229,61 @@ class TestStartCommandDbParsing(unittest.TestCase):
 
     def test_unparseable_start_command_is_not_an_exception(self):
         self.assertIsNone(ohm.orc_db_from_start_command('"exec orc --db \'unclosed'))
+
+
+class TestDatabaseIdentityDerivation(unittest.TestCase):
+    """A successor session must not inherit the predecessor's DB default."""
+
+    def test_tg_db_path_names_the_successor_database(self):
+        self.assertEqual(
+            ohm.configured_orc_db(None, "/home/test/.tg/hermit2.db", None),
+            ("hermit2", "TG_DB_PATH"),
+        )
+
+    def test_explicit_override_wins_over_environment_and_session(self):
+        self.assertEqual(
+            ohm.configured_orc_db(
+                "chosen", "/home/test/.tg/hermit2.db", "orc-hermit3"
+            ),
+            ("chosen", "explicit --orc-db"),
+        )
+
+    def test_session_hint_is_a_fallback_when_tg_path_is_absent(self):
+        self.assertEqual(
+            ohm.configured_orc_db(None, None, "orc-hermit2"),
+            ("hermit2", "--session"),
+        )
+
+    def test_live_session_metadata_ignores_an_unrelated_coordinator(self):
+        self.assertEqual(
+            ohm.orc_db_from_active_sessions(["orc-hatch2", "orc-hermit2"]),
+            ("hermit2", "live Orc session metadata"),
+        )
+
+    def test_two_live_hermit_sessions_are_refused_not_guessed(self):
+        with self.assertRaises(ohm.OrcMessageError) as caught:
+            ohm.orc_db_from_active_sessions(["orc-hermit", "orc-hermit2"])
+        self.assertIn("cannot derive one Hermit database", str(caught.exception))
+
+
+class TestRecoverableMessagePersistence(unittest.TestCase):
+    def test_exact_body_is_content_addressed_and_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = "the exact wake body\nincluding its second line"
+            path = ohm.persist_recoverable_message(Path(tmp) / "relay.log", body)
+            self.assertEqual(path.read_text(encoding="utf-8"), body)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(
+                path.name,
+                f"{hashlib.sha256(body.encode()).hexdigest()}.txt",
+            )
+
+    def test_repeating_the_same_body_reuses_the_verified_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "relay.log"
+            first = ohm.persist_recoverable_message(log, "same body")
+            second = ohm.persist_recoverable_message(log, "same body")
+            self.assertEqual(first, second)
 
 
 class TestLivePaneParsing(unittest.TestCase):
@@ -714,6 +771,8 @@ class TestExitStatusAndLog(DeliveryTestCase):
         argv = [
             "orc-hermit-msg",
             self.MESSAGE,
+            "--orc-db",
+            "hermit",
             "--socket",
             str(tmp_path / "fake.sock"),
             "--log-file",
@@ -735,17 +794,25 @@ class TestExitStatusAndLog(DeliveryTestCase):
     def test_a_successful_relay_exits_zero_and_logs_sent(self):
         with tempfile.TemporaryDirectory() as tmp:
             code, records = self.run_main(FakeOrcPane(), Path(tmp))
+            recovery_text = Path(
+                records[0]["recoverable_message_file"]
+            ).read_text(encoding="utf-8")
         self.assertEqual(code, 0)
         self.assertEqual([record["status"] for record in records], ["sent"])
         self.assertEqual(records[0]["ack"], "composer-drained+echo")
         self.assertEqual(records[0]["composer_state"], "idle")
+        self.assertEqual(recovery_text, self.MESSAGE)
 
     def test_a_pane_that_ignores_keystrokes_exits_nonzero_and_logs_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
             code, records = self.run_main(FakeOrcPane(accepts_input=False), Path(tmp))
+            recovery_text = Path(
+                records[0]["recoverable_message_file"]
+            ).read_text(encoding="utf-8")
         self.assertNotEqual(code, 0)
         self.assertEqual([record["status"] for record in records], ["failed"])
         self.assertIn("did not reach the Orc composer", records[0]["error"])
+        self.assertEqual(recovery_text, self.MESSAGE)
 
     def test_a_composer_that_never_drains_exits_nonzero_and_logs_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -764,6 +831,35 @@ class TestExitStatusAndLog(DeliveryTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             code, records = self.run_main(FakeOrcPane(), Path(tmp))
         self.assertEqual(len(records), 1)
+
+    def test_missing_api_receiver_fails_loudly_with_recoverable_body(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_file = root / "delivery.log"
+            argv = [
+                "orc-hermit-msg",
+                self.MESSAGE,
+                "--transport",
+                "api",
+                "--orc-db",
+                "hermit",
+                "--log-file",
+                str(log_file),
+            ]
+            with mock.patch.object(sys, "argv", argv), \
+                 mock.patch.object(ohm, "resolve_api_socket", return_value=None), \
+                 contextlib.redirect_stderr(io.StringIO()) as stderr:
+                with self.assertRaises(SystemExit) as caught:
+                    ohm.main()
+            records = [
+                json.loads(line)
+                for line in log_file.read_text(encoding="utf-8").splitlines()
+            ]
+            recovery = Path(records[0]["recoverable_message_file"])
+            self.assertEqual(recovery.read_text(encoding="utf-8"), self.MESSAGE)
+        self.assertNotEqual(caught.exception.code, 0)
+        self.assertEqual([record["status"] for record in records], ["failed"])
+        self.assertIn("recoverable message:", stderr.getvalue())
 
 
 
@@ -1035,6 +1131,53 @@ class ApiDeliveryTests(unittest.TestCase):
             ('["a","list"]', None),
         ):
             self.assertEqual(ohm._api_ack_id(body), expected, body)
+
+
+class ApiSocketResolutionTests(unittest.TestCase):
+    def test_current_schema_binds_to_exact_parent_session(self):
+        entries = [
+            {
+                "session_id": "current-session",
+                "name": "1b176094",
+                "uds_socket_path": "/run/user/1/orc/current.sock",
+            },
+            {
+                "session_id": "predecessor-session",
+                "name": "d0f81544",
+                "uds_socket_path": "/run/user/1/orc/predecessor.sock",
+            },
+        ]
+        completed = mock.Mock(returncode=0, stdout=json.dumps(entries))
+        with mock.patch.object(ohm.subprocess, "run", return_value=completed):
+            resolved = ohm.resolve_api_socket(
+                None, Path("/inert/orc"), "hermit2", "current-session"
+            )
+        self.assertEqual(resolved, Path("/run/user/1/orc/current.sock"))
+
+    def test_unknown_parent_session_refuses_instead_of_guessing(self):
+        entries = [
+            {
+                "session_id": "some-other-session",
+                "uds_socket_path": "/run/user/1/orc/other.sock",
+            }
+        ]
+        completed = mock.Mock(returncode=0, stdout=json.dumps(entries))
+        with mock.patch.object(ohm.subprocess, "run", return_value=completed):
+            resolved = ohm.resolve_api_socket(
+                None, Path("/inert/orc"), "hermit2", "missing-session"
+            )
+        self.assertIsNone(resolved)
+
+    def test_old_schema_without_session_ids_keeps_database_fallback(self):
+        entries = [
+            {"name": "hermit2", "uds_socket": "/run/user/1/orc/legacy.sock"}
+        ]
+        completed = mock.Mock(returncode=0, stdout=json.dumps(entries))
+        with mock.patch.object(ohm.subprocess, "run", return_value=completed):
+            resolved = ohm.resolve_api_socket(
+                None, Path("/inert/orc"), "hermit2", "current-session"
+            )
+        self.assertEqual(resolved, Path("/run/user/1/orc/legacy.sock"))
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

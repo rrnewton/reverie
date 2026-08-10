@@ -124,6 +124,22 @@ class InertPaneTestCase(unittest.TestCase):
             text=True,
         )
 
+    def relay_with_tg_db(self, *args: str) -> subprocess.CompletedProcess:
+        environment = os.environ.copy()
+        environment["TG_DB_PATH"] = str(self.tmp / f"{self.DB}.db")
+        return subprocess.run(
+            [
+                sys.executable, str(RELAY),
+                "--socket", str(self.socket),
+                "--orc-command", str(self.tmp / "no-such-orc"),
+                "--log-file", str(self.log),
+                *args,
+            ],
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
     def delivered(self) -> list[str]:
         if not self.record.exists():
             return []
@@ -144,6 +160,15 @@ class InertPaneTestCase(unittest.TestCase):
 
 
 class TestInertDeliveryPositiveBracket(InertPaneTestCase):
+    def test_tg_db_successor_identity_delivers_to_the_live_coordinator(self):
+        self.start_pane()
+        result = self.relay_with_tg_db("derived successor delivery")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.delivered(), ["derived successor delivery"])
+        record = self.log_records()[0]
+        self.assertEqual(record["database"], self.DB)
+        self.assertEqual(record["database_source"], "TG_DB_PATH")
+
     def test_a_message_is_delivered_once_and_reported_sent(self):
         self.start_pane()
         result = self.relay("hello inert coordinator")
@@ -290,9 +315,15 @@ class TestExplicitSocketNeverRetargets(InertPaneTestCase):
 
     def test_a_missing_explicit_socket_is_refused_not_substituted(self):
         missing = self.tmp / "definitely-absent.sock"
-        result = self.relay_to(missing, "must never be redirected")
+        message = "must never be redirected"
+        result = self.relay_to(missing, message)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Refusing to look for another socket", result.stderr)
+        self.assertIn("recoverable message:", result.stderr)
+        records = self.log_records()
+        self.assertEqual([record["status"] for record in records], ["failed"])
+        recovery = Path(records[0]["recoverable_message_file"])
+        self.assertEqual(recovery.read_text(encoding="utf-8"), message)
 
     def test_a_missing_explicit_socket_does_not_reach_a_live_pane(self):
         # A real inert pane exists on self.socket. Aiming at a different,
