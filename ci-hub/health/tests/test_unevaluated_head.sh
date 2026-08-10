@@ -7,9 +7,16 @@
 # never fires looks exactly like a check with nothing to report. So this suite
 # asserts the POSITIVE half as hard as the negative:
 #
-#   FLAGGED     a head with zero runs                      -> NOT_EVALUATED, gate rc=1
+#   FLAGGED     a head with zero runs                      -> NEVER_RAN, gate rc=1
 #   NOT FLAGGED a head whose runs all succeeded            -> EVALUATED_PASS,  gate rc=0
 #   NOT FLAGGED a head with a FAILING run                  -> EVALUATED_FAIL,  gate rc=0
+#
+# STATE NAMES CHANGED 2026-08-10 when three states became five: NOT_EVALUATED
+# split into NEVER_RAN / SUPERSEDED / stale PENDING, because a pending run was
+# reading as EVALUATED_PASS and a supersession was reading as a failure. These
+# assertions match the NEW row labels and are deliberately still line-anchored
+# and exact -- do not relax them to a substring. The five-state classifier
+# itself is bracketed in tests/test_unevaluated_head_states.py.
 #
 # That third case is the distinction the whole tool exists for. A failing gate is
 # a RESULT; no gate at all is not. If a red head were reported as NOT_EVALUATED
@@ -34,7 +41,7 @@ cat >"$tmp/zero.json" <<'JSON'
 JSON
 out="$(python3 "$tool" --from-json "$tmp/zero.json" --gate 2>&1)"; rc=$?
 if [[ $rc -eq 1 ]]; then ok "zero-run head: gate FAILS (rc=1)"; else bad "zero-run head: expected rc=1, got $rc"; fi
-grep -q "NOT_EVALUATED  PR 1864" <<<"$out" && ok "zero-run head is named with its PR and state" \
+grep -qE "^  NEVER_RAN +PR 1864" <<<"$out" && ok "zero-run head is named with its PR and state" \
   || bad "zero-run head not named: $out"
 grep -q "cannot build refs/pull" <<<"$out" && ok "states the known cause (conflict) rather than shrugging" \
   || bad "no cause given for the conflicting case"
@@ -50,7 +57,7 @@ if [[ $rc -eq 0 ]]; then ok "passing head: gate PASSES (rc=0)"; else bad "passin
 # Match the per-ROW marker, not the bare token: the summary line legitimately
 # contains "NOT_EVALUATED: 0", and a looser grep here fails on correct output.
 # (It did, on the first run of this suite.)
-grep -qE "^  NOT_EVALUATED  PR" <<<"$out" && bad "passing head wrongly reported NOT_EVALUATED" \
+grep -qE "^  (NEVER_RAN|SUPERSEDED|PENDING)" <<<"$out" && bad "passing head wrongly reported NOT_EVALUATED" \
   || ok "passing head is not reported as unevaluated"
 
 # --- NEGATIVE 2: a FAILING head is evaluated, not unevaluated ----------------
@@ -73,7 +80,7 @@ cat >"$tmp/mixed.json" <<'JSON'
  {"number": 3, "head": "cccccccccccccccccccccccccccccccccccccccc", "mergeable": "MERGEABLE",   "runs": [{"conclusion": "failure"}]}]
 JSON
 out="$(python3 "$tool" --from-json "$tmp/mixed.json" 2>&1)"
-grep -q "inspected 3 open PR head(s); NOT_EVALUATED: 1" <<<"$out" \
+grep -q "inspected 3 open PR head(s); NO VERDICT: 1" <<<"$out" \
   && ok "reports BOTH terms (1 of 3), not a bare count" \
   || bad "did not report both terms: $out"
 
@@ -82,7 +89,7 @@ cat >"$tmp/unknown.json" <<'JSON'
 [{"number": 9, "head": "dddddddddddddddddddddddddddddddddddddddd", "mergeable": "MERGEABLE", "runs": []}]
 JSON
 out="$(python3 "$tool" --from-json "$tmp/unknown.json" 2>&1)"
-grep -q "cause not established" <<<"$out" \
+grep -q "cause is NOT established" <<<"$out" \
   && ok "mergeable-but-unevaluated says the cause is NOT established rather than blaming conflict" \
   || bad "invented a cause for a non-conflicting unevaluated head: $out"
 

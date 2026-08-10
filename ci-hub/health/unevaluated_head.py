@@ -48,45 +48,131 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import time
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from typing import Any
 
-NOT_EVALUATED = "NOT_EVALUATED"
+# FIVE STATES, AND ONLY ONE IS GOOD NEWS. Three was not enough, and the two it
+# was missing were both being reported as the good one or as the wrong bad one:
+#
+#   NEVER_RAN       no run object exists at all -- the head was never evaluated
+#   SUPERSEDED      a run was created and cancelled BEFORE ANY JOB STARTED,
+#                   i.e. a newer push took the concurrency group. A HOLE, not a
+#                   verdict. Superseding an obsolete run is CORRECT behaviour;
+#                   only rendering it as an absent verdict was wrong.
+#   PENDING         a run exists and has not concluded. Carries `stale` once it
+#                   outlives the fresh window.
+#   EVALUATED_FAIL  a real bad answer, including a cancel that killed RUNNING
+#                   jobs (a hang or an external kill is a result, not a hole)
+#   EVALUATED_PASS  every run at this head concluded successfully
+#
+# MEASURED DEFECT THIS REPLACES, in this very file: a run that was still QUEUED
+# or IN PROGRESS has no failing conclusion, so the old three-state classifier
+# fell through and returned EVALUATED_PASS. The detector built to stop "absence
+# reads as success" was reporting an unfinished run as passed. And every
+# `cancelled` was bucketed as EVALUATED_FAIL, which conflated supersession (a
+# hole) with a genuine failure.
+#
+# THE cancelled SPLIT IS EVIDENCE-BASED, not a guess. Measured 2026-08-10:
+#   dev-hermit 31349210392  cancelled, total_jobs=0   -> superseded; the newer
+#                           push that took the group is visible one second
+#                           before the cancellation
+#   hermit     31352719284  cancelled, total_jobs=36 with jobs started and
+#                           succeeded -> NOT supersession; its workflow is
+#                           cancel-in-progress:false, so this was an external
+#                           kill of an in-progress run
+# So: cancelled with zero jobs is a hole; cancelled with jobs is a bad answer.
+#
+# The fresh/stale split follows github_main_health.classify_current_runs and is
+# deliberate: alarming on every pending run fires after every push and is an
+# alarm no coordinator can satisfy -- the anti-pattern already removed from
+# other gates. A fresh pending is silent; only one that outlives the window is
+# a finding.
+NEVER_RAN = "NEVER_RAN"
+NOT_EVALUATED = NEVER_RAN  # backward-compatible alias for existing consumers
+SUPERSEDED = "SUPERSEDED"
+PENDING = "PENDING"
 EVALUATED_PASS = "EVALUATED_PASS"
 EVALUATED_FAIL = "EVALUATED_FAIL"
 
-# Conclusions that mean the run produced a negative verdict. `cancelled` counts
-# as evaluated-but-failed rather than unevaluated: something ran and did not
-# finish clean, which is a result. Only the total ABSENCE of runs is
-# NOT_EVALUATED.
-FAILING = {"failure", "cancelled", "timed_out", "startup_failure", "action_required"}
+DEFAULT_PENDING_STALE_SECS = 900
+
+# Conclusions that are a genuine negative VERDICT. `cancelled` is deliberately
+# NOT here: it is split by whether any job ran (see above).
+FAILING = {"failure", "timed_out", "startup_failure", "action_required"}
 
 
-def classify(runs: list[dict[str, Any]]) -> str:
-    """Pure classifier: the seam the bracket drives.
+def _age_secs(run: dict[str, Any], now: float | None) -> float | None:
+    created = (run.get("created_at") or "").replace("Z", "+00:00")
+    if not created or now is None:
+        return None
+    try:
+        return now - datetime.fromisoformat(created).timestamp()
+    except ValueError:
+        return None
 
-    `runs` are the workflow runs recorded AT THE EXACT HEAD SHA. Empty means no
-    workflow was ever created for this commit.
+
+def classify(
+    runs: list[dict[str, Any]],
+    now: float | None = None,
+    jobs_of=None,
+    stale_after: int = DEFAULT_PENDING_STALE_SECS,
+) -> tuple[str, bool]:
+    """Pure classifier: the seam the bracket drives. Returns (state, stale).
+
+    `jobs_of(run) -> int` resolves how many jobs a run created; it is only
+    consulted for `cancelled` runs, so the cost is bounded and rare. When it is
+    unavailable the cancel is treated as SUPERSEDED-unknown rather than silently
+    promoted to a verdict -- refusing to answer beats guessing a good answer.
     """
     if not runs:
-        return NOT_EVALUATED
+        return NEVER_RAN, False
+
     for run in runs:
         if (run.get("conclusion") or "").strip() in FAILING:
-            return EVALUATED_FAIL
-    return EVALUATED_PASS
+            return EVALUATED_FAIL, False
+
+    pending = [r for r in runs if not (r.get("conclusion") or "").strip()]
+    if pending:
+        oldest = max((_age_secs(r, now) or 0.0) for r in pending)
+        return PENDING, oldest > stale_after
+
+    for run in runs:
+        if (run.get("conclusion") or "").strip() == "cancelled":
+            jobs = None
+            if jobs_of is not None:
+                try:
+                    jobs = jobs_of(run)
+                except Exception:
+                    jobs = None
+            if jobs is None or jobs == 0:
+                return SUPERSEDED, False
+            return EVALUATED_FAIL, False
+
+    return EVALUATED_PASS, False
 
 
-def likely_reason(pr: dict[str, Any], state: str) -> str:
-    """Why a head went unevaluated, when we can say. Never guessed silently."""
-    if state != NOT_EVALUATED:
-        return ""
-    if (pr.get("mergeable") or "").upper() == "CONFLICTING":
-        return (
-            "PR conflicts with its base, so GitHub cannot build refs/pull/N/merge "
-            "and creates no pull_request run"
-        )
-    return "cause not established for this PR; conflict is the known cause but does not apply here"
+def likely_reason(pr: dict[str, Any], state: str, stale: bool) -> str:
+    """Named state -> likely cause -> stated remedy. Shape copied from
+    github_main_health's `stale-pending` emitter, deliberately not reinvented."""
+    if state == NEVER_RAN:
+        if (pr.get("mergeable") or "").upper() == "CONFLICTING":
+            return ("no run was ever created; the PR conflicts with its base so GitHub cannot "
+                    "build refs/pull/N/merge. REMEDY: resolve the conflict; a dispatch also works")
+        return ("no run was ever created and the cause is NOT established for a mergeable PR. "
+                "REMEDY: dispatch the gate at this head -- proven to work on #1918 -- and report "
+                "that triggering, not the workflow, is what failed")
+    if state == SUPERSEDED:
+        return ("THIS IS A HOLE, NOT A GREEN: a run was created and cancelled before any job "
+                "started, i.e. superseded by a newer push under queue-depth-1 concurrency. "
+                "Superseding an obsolete run is CORRECT. REMEDY: re-dispatch the authority for "
+                "the current head")
+    if state == PENDING and stale:
+        return ("THIS IS A HOLE, NOT A GREEN: a run has not resolved within the stale window. "
+                "REMEDY: re-dispatch the authority for the current head")
+    return ""
 
 
 def gh_json(args: list[str]) -> Any:
@@ -126,15 +212,22 @@ def collect_live(repo: str, limit: int) -> list[dict[str, Any]]:
         runs = (
             gh_json(["api", f"repos/{repo}/actions/runs?head_sha={head}"]) or {}
         ).get("workflow_runs", [])
+
+        def jobs_of(run: dict[str, Any]) -> int:
+            # Only ever called for a `cancelled` run, so this stays rare.
+            return int((gh_json(["api",
+                f"repos/{repo}/actions/runs/{run['id']}/jobs"]) or {}).get("total_count", 0))
+
         row = {
             "number": pr["number"],
             "head": head,
             "mergeable": pr.get("mergeable"),
             "draft": pr.get("isDraft"),
             "run_count": len(runs),
-            "state": classify(runs),
         }
-        row["reason"] = likely_reason(pr, row["state"])
+        st, stale = classify(runs, now=time.time(), jobs_of=jobs_of)
+        row["state"], row["stale"] = st, stale
+        row["reason"] = likely_reason(pr, st, stale)
         return row
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -156,9 +249,10 @@ def collect_fixture(path: str) -> list[dict[str, Any]]:
             "mergeable": pr.get("mergeable"),
             "draft": pr.get("draft", False),
             "run_count": len(runs),
-            "state": classify(runs),
         }
-        row["reason"] = likely_reason(pr, row["state"])
+        st, stale = classify(runs, now=pr.get("now"), jobs_of=pr.get("jobs_of"))
+        row["state"], row["stale"] = st, stale
+        row["reason"] = likely_reason(pr, st, stale)
         rows.append(row)
     return rows
 
@@ -173,7 +267,14 @@ def main() -> int:
     a = ap.parse_args()
 
     rows = collect_fixture(a.fixture) if a.fixture else collect_live(a.repo, a.limit)
-    unevaluated = [r for r in rows if r["state"] == NOT_EVALUATED]
+    # HOLES: no verdict exists. A fresh PENDING is deliberately NOT a hole --
+    # alarming on it fires after every push and is an alarm no coordinator can
+    # satisfy. EVALUATED_FAIL is deliberately not here either: a red gate is a
+    # RESULT and another check's job.
+    holes = [r for r in rows
+             if r["state"] in (NEVER_RAN, SUPERSEDED)
+             or (r["state"] == PENDING and r.get("stale"))]
+    unevaluated = holes
 
     if a.as_json:
         print(json.dumps({"inspected": len(rows), "not_evaluated": len(unevaluated),
@@ -181,20 +282,25 @@ def main() -> int:
     else:
         # Both terms, always: a bare count of unevaluated heads is not a
         # measurement without the population it came from.
-        print(f"inspected {len(rows)} open PR head(s); NOT_EVALUATED: {len(unevaluated)}")
+        import collections as _c
+        tally = _c.Counter(r["state"] for r in rows)
+        print(f"inspected {len(rows)} open PR head(s); NO VERDICT: {len(holes)}  "
+              + "  ".join(f"{k}={v}" for k, v in sorted(tally.items())))
         for r in rows:
-            if r["state"] == NOT_EVALUATED:
+            if r in holes:
+                label = r["state"] + ("(stale)" if r.get("stale") else "")
                 print(
-                    f"  NOT_EVALUATED  PR {r['number']}  head {r['head'][:12]}  "
-                    f"runs=0  mergeable={r['mergeable']}  -- {r['reason']}"
+                    f"  {label:<16} PR {r['number']}  head {r['head'][:12]}  "
+                    f"runs={r['run_count']}  mergeable={r['mergeable']}  -- {r['reason']}"
                 )
-        if not unevaluated:
-            print("  every inspected head has at least one run recorded against it")
+        if not holes:
+            print("  every inspected head carries a verdict")
 
     if a.gate and unevaluated:
         print(
-            f"GATE FAIL: {len(unevaluated)} of {len(rows)} open PR head(s) were never "
-            "evaluated. This is NOT the same as passing, and nothing else reports it.",
+            f"GATE FAIL: {len(holes)} of {len(rows)} open PR head(s) carry NO VERDICT "
+            "(never ran, superseded, or pending past the stale window). None of these is "
+            "passing, and only one of the five states is good news.",
             file=sys.stderr,
         )
         return 1
