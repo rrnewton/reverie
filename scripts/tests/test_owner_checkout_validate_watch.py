@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -161,7 +162,6 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             root = Path(temporary)
             repo = clean_repository(root)
             sha = command(repo, "git", "rev-parse", "HEAD").strip()
-            ledger = root / "ledger.jsonl"
             rows = [
                 {
                     "commit": sha,
@@ -189,16 +189,28 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                     "executed_tests": None,
                 },
             ]
-            ledger.write_text("".join(json.dumps(row) + "\n" for row in rows))
             launched = watch.parse_time("2026-08-09T03:00:00Z")
             assert launched is not None
 
             selected = watch.latest_attempt_row(
-                ledger, checkout=repo, sha=sha, launched_at=launched
+                rows, checkout=repo, sha=sha, launched_at=launched
             )
 
             self.assertIsNotNone(selected)
             self.assertIsNone(selected["executed_tests"])
+
+    def test_canonical_rows_come_from_the_single_adapter(self) -> None:
+        parent = Path("/fixture/dev-hermit")
+        rows = [{"commit": "1" * 40}, {"commit": "2" * 40}]
+        completed = subprocess.CompletedProcess(
+            [], 0, stdout="".join(json.dumps(row) + "\n" for row in rows), stderr=""
+        )
+        with mock.patch.object(watch, "run", return_value=completed) as invoked:
+            self.assertEqual(watch.canonical_ledger_rows(parent), rows)
+        invoked.assert_called_once_with(
+            [sys.executable, parent / "ci-hub/ledger/validate_rows.py", "rows"],
+            cwd=parent,
+        )
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-from typing import Any, Sequence
+from typing import Any, Iterable, Sequence
 
 
 PASS = 0
@@ -125,32 +125,41 @@ def parse_time(value: Any) -> dt.datetime | None:
     return parsed.astimezone(dt.timezone.utc)
 
 
+def canonical_ledger_rows(parent: Path) -> list[dict[str, Any]]:
+    adapter = parent / "ci-hub/ledger/validate_rows.py"
+    completed = run([sys.executable, adapter, "rows"], cwd=parent)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise RuntimeError(f"canonical ledger reader refused: {detail}")
+    rows: list[dict[str, Any]] = []
+    for line in (completed.stdout or "").splitlines():
+        try:
+            row = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
 def latest_attempt_row(
-    ledger: Path,
+    candidates: Iterable[dict[str, Any]],
     *,
     checkout: Path,
     sha: str,
     launched_at: dt.datetime,
 ) -> dict[str, Any] | None:
-    if not ledger.is_file():
-        return None
     rows: list[dict[str, Any]] = []
-    with ledger.open(encoding="utf-8", errors="replace") as source:
-        fcntl.flock(source.fileno(), fcntl.LOCK_SH)
-        for line in source:
-            try:
-                row = json.loads(line)
-            except (ValueError, TypeError):
-                continue
-            if not isinstance(row, dict) or row.get("commit") != sha:
-                continue
-            cwd = row.get("cwd")
-            if not isinstance(cwd, str) or Path(cwd).resolve() != checkout.resolve():
-                continue
-            started = parse_time(row.get("started_at"))
-            if started is None or started < launched_at - dt.timedelta(seconds=2):
-                continue
-            rows.append(row)
+    for row in candidates:
+        if row.get("commit") != sha:
+            continue
+        cwd = row.get("cwd")
+        if not isinstance(cwd, str) or Path(cwd).resolve() != checkout.resolve():
+            continue
+        started = parse_time(row.get("started_at"))
+        if started is None or started < launched_at - dt.timedelta(seconds=2):
+            continue
+        rows.append(row)
     if not rows:
         return None
     return max(
@@ -389,7 +398,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["validate_run_rc"] = completed.returncode
 
         row = latest_attempt_row(
-            parent / "ignored/validate-run-ledger.jsonl",
+            canonical_ledger_rows(parent),
             checkout=checkout,
             sha=pre["head"],
             launched_at=launched_at,
