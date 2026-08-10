@@ -29,6 +29,8 @@ TRAILER_RE = re.compile(
     r"\[(?P<team>[A-Za-z0-9][A-Za-z0-9._/@+-]*), "
     r"(?P<machine>devbig[0-9]+)\]$"
 )
+IDENT_EMAIL_RE = re.compile(r"<(?P<email>[^<>\r\n]+)> [0-9]+ [+-][0-9]{4}$")
+ALLOWED_OSS_AUTHOR_EMAILS = frozenset({"rrnewton@gmail.com"})
 
 
 class AttributionError(ValueError):
@@ -87,6 +89,17 @@ def validate_message(message: str, expected_machine: str | None = None) -> str:
     return machine
 
 
+def validate_author_email(email: str) -> None:
+    """Refuse a proposed OSS commit whose author identity is fabricated."""
+
+    if email not in ALLOWED_OSS_AUTHOR_EMAILS:
+        allowed = ",".join(sorted(ALLOWED_OSS_AUTHOR_EMAILS))
+        raise AttributionError(
+            f"author email {email!r} is not owner-approved for these OSS repositories; "
+            f"allowed={allowed}"
+        )
+
+
 def git(repo: Path, *args: str) -> str:
     completed = subprocess.run(
         ("git", "-C", str(repo), *args),
@@ -102,6 +115,16 @@ def git(repo: Path, *args: str) -> str:
 
 def messages_from_commits(repo: Path, commits: list[str]) -> list[tuple[str, str]]:
     return [(sha, git(repo, "show", "-s", "--format=%B", sha)) for sha in commits]
+
+
+def proposed_author_email(repo: Path) -> str:
+    """Return the author Git will use, including --author/GIT_AUTHOR_* overrides."""
+
+    ident = git(repo, "var", "GIT_AUTHOR_IDENT").strip()
+    match = IDENT_EMAIL_RE.search(ident)
+    if match is None:
+        raise AttributionError(f"cannot parse proposed Git author identity {ident!r}")
+    return match.group("email")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -143,12 +166,16 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         records: list[tuple[str, str]]
+        author_records: list[tuple[str, str]]
         if args.message_file is not None:
             records = [(str(args.message_file), args.message_file.read_text())]
+            author_records = [("proposed commit", proposed_author_email(args.repo))]
         elif args.stdin:
             records = [("stdin", sys.stdin.read())]
+            author_records = [("proposed commit", proposed_author_email(args.repo))]
         elif args.commit is not None:
             records = messages_from_commits(args.repo, [args.commit])
+            author_records = []
         else:
             commits = [
                 line
@@ -156,6 +183,17 @@ def main(argv: list[str] | None = None) -> int:
                 if line
             ]
             records = messages_from_commits(args.repo, commits)
+            # Historical commits are immutable evidence, not proposed writes.  Do
+            # not retroactively reject legitimate collaborators while checking
+            # their machine-bearing trailers; the commit-msg path below guards
+            # every new commit at creation time.
+            author_records = []
+
+        for identity, email in author_records:
+            try:
+                validate_author_email(email)
+            except AttributionError as error:
+                raise AttributionError(f"{identity}: {error}") from error
 
         machines: set[str] = set()
         for identity, message in records:

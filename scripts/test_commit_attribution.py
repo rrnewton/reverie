@@ -117,6 +117,19 @@ class RepositoryRangeTests(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("bad", run("git", "log", "-1", "--format=%s", cwd=self.repo).stdout)
 
+    def test_range_does_not_retroactively_reject_a_historical_author(self) -> None:
+        base = self.commit("base", TRAILER_014)
+        self.commit("collaborator", TRAILER_030)
+        result = run(
+            sys.executable,
+            str(CHECKER),
+            "--repo",
+            str(self.repo),
+            "--range",
+            f"{base}..HEAD",
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
     def test_git_query_separates_devbig030_from_devbig014(self) -> None:
         sha_014 = self.commit("other-team", TRAILER_014)
         sha_030 = self.commit("our-team", TRAILER_030)
@@ -135,6 +148,56 @@ class RepositoryRangeTests(unittest.TestCase):
 
 
 class HookAndInstallerTests(unittest.TestCase):
+    def hooked_repo(self, repo: Path, email: str) -> None:
+        run("git", "init", "-q", "-b", "main", cwd=repo)
+        run("git", "config", "user.name", "Ryan Newton", cwd=repo)
+        run("git", "config", "user.email", email, cwd=repo)
+        link = repo / ".git" / "hooks" / "commit-msg"
+        link.symlink_to(DISPATCHER)
+
+    def real_commit(self, repo: Path, *extra: str):
+        path = repo / "tracked"
+        path.write_text("content\n")
+        run("git", "add", "--", path.name, cwd=repo)
+        return run(
+            "git",
+            "commit",
+            "-q",
+            *extra,
+            "-m",
+            tagged("identity bracket"),
+            cwd=repo,
+            env={"HERMIT_COMMIT_MACHINE": "devbig030"},
+        )
+
+    def test_real_commit_accepts_owner_approved_oss_email(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.hooked_repo(repo, "rrnewton@gmail.com")
+            result = self.real_commit(repo)
+            self.assertEqual(0, result.returncode, result.stderr)
+            author = run("git", "show", "-s", "--format=%ae", cwd=repo)
+            self.assertEqual("rrnewton@gmail.com", author.stdout.strip())
+
+    def test_real_commit_refuses_fabricated_repo_email(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.hooked_repo(repo, "rrnewton@meta.com")
+            result = self.real_commit(repo)
+            self.assertEqual(1, result.returncode)
+            self.assertIn("author email 'rrnewton@meta.com'", result.stderr)
+            self.assertIn("owner-approved", result.stderr)
+
+    def test_real_commit_refuses_fabricated_explicit_author(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.hooked_repo(repo, "rrnewton@gmail.com")
+            result = self.real_commit(
+                repo, "--author=Ryan Newton <rrnewton@meta.com>"
+            )
+            self.assertEqual(1, result.returncode)
+            self.assertIn("author email 'rrnewton@meta.com'", result.stderr)
+
     def test_dispatcher_refuses_a_wrong_machine_before_repo_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
