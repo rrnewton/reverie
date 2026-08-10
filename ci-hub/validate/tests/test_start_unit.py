@@ -35,6 +35,8 @@ class FakeRun:
         self.fresh: Path | None = None
         self.fresh_complete = True
         self.ledger_rows: list[str] | None = None
+        self.canonical_verdict = "VALIDATED"
+        self.canonical_status_rc = 0
         self.removed: list[str] = []
         # What `git ls-files` reports as TRACKED inside the fresh checkout.
         # Empty is the real-world case: hermit tracks zero .jsonl files.
@@ -64,6 +66,17 @@ class FakeRun:
                 receipt.parent.mkdir(parents=True, exist_ok=True)
                 receipt.write_text(f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}\n')
             return completed(command, stdout=f"{self.fresh}\n")
+        if (
+            self.fresh is not None
+            and command[:1] == ["git"]
+            and len(command) >= 5
+            and command[1] == "-C"
+            and command[3:] == ["rev-parse", "--show-toplevel"]
+        ):
+            location = Path(command[2])
+            nested = self.fresh / "agent-utils"
+            owner = nested if location == nested or nested in location.parents else self.fresh
+            return completed(command, stdout=f"{owner}\n")
         if self.fresh is not None and command[:4] == ["git", "-C", str(self.fresh), "rev-parse"]:
             return completed(command, stdout=f"{SHA}\n")
         if command[:3] == ["git", "-C", str(self.checkout)] and command[3] in {"worktree", "submodule"}:
@@ -72,10 +85,35 @@ class FakeRun:
             return completed(command)
         if self.fresh is not None and command[:4] == ["git", "-C", str(self.fresh), "submodule"]:
             return completed(command)
-        if self.fresh is not None and command[:4] == ["git", "-C", str(self.fresh), "ls-files"]:
-            # A planted receipt is untracked by construction, so git lists nothing.
-            return completed(command, stdout=self.fresh_tracked_jsonl)
-        if command[0].endswith("ci-hub") and command[1:3] == ["ledger", "qualified-rows"]:
+        if (
+            self.fresh is not None
+            and command[:1] == ["git"]
+            and len(command) >= 7
+            and command[1] == "-C"
+            and command[3:5] == ["ls-files", "--error-unmatch"]
+        ):
+            owner = Path(command[2])
+            candidate = owner / command[-1]
+            relative = str(candidate.relative_to(self.fresh))
+            tracked = set(self.fresh_tracked_jsonl.splitlines())
+            return completed(command, rc=0 if relative in tracked else 1)
+        if command[0].endswith("ci-hub") and command[1:3] == ["validate-status", "--sha"]:
+            rows = self.ledger_rows
+            if rows is None:
+                rows = [f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}']
+            qualifying = len(rows) if self.canonical_verdict == "VALIDATED" else 0
+            report = {
+                "sha": SHA,
+                "verdict": self.canonical_verdict,
+                "qualifying_count": qualifying,
+                "disqualified_count": len(rows) - qualifying,
+            }
+            return completed(
+                command,
+                rc=self.canonical_status_rc,
+                stdout=json.dumps(report),
+            )
+        if len(command) >= 3 and command[-2].endswith("validate_rows.py") and command[-1] == "rows":
             rows = self.ledger_rows
             if rows is None:
                 rows = [f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}']
@@ -540,12 +578,39 @@ class StartUnitTest(unittest.TestCase):
         # The read must happen BEFORE the removal, or a missing row would be
         # indistinguishable from a deleted one.
         kinds = [
-            "read" if command[1:3] == ["ledger", "qualified-rows"] else "remove"
+            (
+                "status"
+                if command[1:3] == ["validate-status", "--sha"]
+                else "identity"
+                if len(command) >= 2 and command[-2].endswith("validate_rows.py")
+                else "remove"
+            )
             for command in self.fake.commands
-            if command[1:3] == ["ledger", "qualified-rows"]
+            if command[1:3] == ["validate-status", "--sha"]
+            or (len(command) >= 2 and command[-2].endswith("validate_rows.py"))
             or command[3:5] == ["worktree", "remove"]
         ]
-        self.assertEqual(["read", "remove"], kinds)
+        self.assertEqual(["status", "identity", "remove"], kinds)
+        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+
+    def test_canonical_nonpass_is_a_real_receipt_not_an_orphan(self) -> None:
+        """A nonpass is not landing authority, but it is still a receipt.
+
+        The old passing-only lookup made every such row look absent. The
+        wrapper must report the canonical NEEDS-RERUN without softening its
+        process exit or entering the orphan-recovery path.
+        """
+        self.fake.actual_exit = 1
+        self.fake.canonical_verdict = "NEEDS-RERUN"
+        self.fake.canonical_status_rc = 4
+
+        rc, output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(1, rc)
+        self.assertIn("RECEIPT-CANONICAL", output)
+        self.assertIn("verdict=NEEDS-RERUN", output)
+        self.assertNotIn("RECEIPT-NOT-CANONICAL", error)
+        self.assertNotIn("ORPHANED-RECEIPT", error)
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
     def test_uncanonical_receipt_refuses_and_RETAINS_the_temp_checkout(self) -> None:
@@ -617,6 +682,25 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(2, rc)
         self.assertIn("NO-RECEIPT-PRODUCED", error)
+        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+
+    def test_a_TRACKED_jsonl_in_a_submodule_is_not_an_orphan(self) -> None:
+        """Trackedness belongs to the nested repository, not its parent.
+
+        The outer Hermit index contains only the agent-utils gitlink, so asking
+        it about an agent-utils fixture falsely classified the fixture as a
+        run-produced orphan.
+        """
+        self.fake.ledger_rows = []
+        relative = "agent-utils/fixtures/committed.jsonl"
+        self.plant_orphan_receipt(relative)
+        self.fake.fresh_tracked_jsonl = f"{relative}\n"
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(2, rc)
+        self.assertIn("NO-RECEIPT-PRODUCED", error)
+        self.assertNotIn("ORPHANED-RECEIPT", error)
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
     def test_a_scan_that_cannot_look_retains_rather_than_reclaims(self) -> None:

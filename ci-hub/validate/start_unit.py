@@ -163,7 +163,7 @@ def remove_fresh_checkout(source: Path, fresh: Path, *, run: Runner) -> None:
 
 def assert_row_readable_from_canonical_ledger(
     root: Path, target: str, cwd: Path, *, run: Runner
-) -> str:
+) -> tuple[str, str]:
     """REQUIREMENT (a). Fail unless this run's exact row is readable canonically.
 
     A temp-dir validate that writes its receipt into the temp checkout's own
@@ -183,26 +183,64 @@ def assert_row_readable_from_canonical_ledger(
     of this exact temp checkout. A row matching on commit alone could be some
     other run of the same SHA.
     """
-    result = run(
-        [str(root / "ci-hub/ci-hub"), "ledger", "qualified-rows"],
+    status = run(
+        [
+            str(root / "ci-hub/ci-hub"),
+            "validate-status",
+            "--sha",
+            target,
+            "--json",
+        ],
         cwd=root,
         check=False,
     )
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
-        raise RuntimeError(f"canonical ledger unreadable ({detail})")
-    matched = [
-        line
-        for line in result.stdout.splitlines()
-        if target in line and str(cwd) in line
-    ]
+    try:
+        report = json.loads(status.stdout)
+        verdict = str(report["verdict"])
+        reported_sha = str(report["sha"])
+        receipt_count = int(report["qualifying_count"]) + int(
+            report["disqualified_count"]
+        )
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        detail = status.stderr.strip() or status.stdout.strip() or f"exit {status.returncode}"
+        raise RuntimeError(f"canonical validate-status unreadable ({detail}; {error})") from error
+    if status.returncode not in {0, 3, 4} or reported_sha != target:
+        detail = status.stderr.strip() or f"exit {status.returncode}, sha {reported_sha}"
+        raise RuntimeError(f"canonical validate-status refused ({detail})")
+    if receipt_count == 0:
+        raise RuntimeError(
+            f"canonical validate-status reports no receipt for commit {target}; temp "
+            "checkout RETAINED for inspection"
+        )
+
+    # `validate-status` is the verdict authority. Its JSON intentionally
+    # summarizes a SHA, while this producer must additionally prove that the
+    # receipt belongs to THIS run rather than an older run of the same SHA.
+    # Re-read identity through the exact canonical-union adapter used by
+    # validate-status; do not reconstruct a second pass/fail predicate here.
+    rows = run(
+        [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "rows"],
+        cwd=root,
+        check=False,
+    )
+    if rows.returncode != 0:
+        detail = rows.stderr.strip() or rows.stdout.strip() or f"exit {rows.returncode}"
+        raise RuntimeError(f"canonical ledger union unreadable ({detail})")
+    matched: list[str] = []
+    for line in rows.stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("commit") == target and row.get("cwd") == str(cwd):
+            matched.append(line)
     if not matched:
         raise RuntimeError(
             f"no row for commit {target} with cwd {cwd} is readable from the canonical "
             "ledger; the receipt exists nowhere a consumer will look. Temp checkout "
             "RETAINED for inspection"
         )
-    return matched[0]
+    return matched[0], verdict
 
 
 # Directories a receipt is never written into and that are expensive to walk.
@@ -243,9 +281,40 @@ def orphaned_receipt_locations(fresh: Path, *, run: Runner) -> list[str]:
                 candidates.append(str(Path(current, name).relative_to(fresh)))
     if not candidates:
         return []
-    tracked = run(["git", "-C", str(fresh), "ls-files", "--", *candidates], check=False)
-    known = set(tracked.stdout.split()) if tracked.returncode == 0 else set()
-    return sorted(c for c in candidates if c not in known)
+    orphaned: list[str] = []
+    for relative in candidates:
+        candidate = fresh / relative
+        owner_result = run(
+            ["git", "-C", str(candidate.parent), "rev-parse", "--show-toplevel"],
+            check=False,
+        )
+        if owner_result.returncode != 0:
+            orphaned.append(relative)
+            continue
+        owner = Path(owner_result.stdout.strip())
+        try:
+            owner.relative_to(fresh)
+            owner_relative = candidate.relative_to(owner)
+        except ValueError:
+            # A repository outside the disposable checkout cannot establish
+            # that a file inside it was present at checkout time.
+            orphaned.append(relative)
+            continue
+        tracked = run(
+            [
+                "git",
+                "-C",
+                str(owner),
+                "ls-files",
+                "--error-unmatch",
+                "--",
+                str(owner_relative),
+            ],
+            check=False,
+        )
+        if tracked.returncode != 0:
+            orphaned.append(relative)
+    return sorted(orphaned)
 
 
 def owner_validate_symlink_is_exact(checkout: Path, dirty: str) -> bool:
@@ -944,7 +1013,7 @@ def main(
     # invisible-green failure this gate exists to make impossible.
     if fresh_checkout is not None and source_checkout is not None:
         try:
-            row = assert_row_readable_from_canonical_ledger(
+            row, canonical_verdict = assert_row_readable_from_canonical_ledger(
                 root.resolve(), args.target, fresh_checkout, run=run
             )
         except RuntimeError as error:
@@ -981,7 +1050,10 @@ def main(
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
             return propagated
         if not args.json:
-            print(f"RECEIPT-CANONICAL commit={args.target} cwd={fresh_checkout}")
+            print(
+                f"RECEIPT-CANONICAL commit={args.target} cwd={fresh_checkout} "
+                f"verdict={canonical_verdict}"
+            )
             print(f"  {row[:160]}")
         remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
     emit_report(
