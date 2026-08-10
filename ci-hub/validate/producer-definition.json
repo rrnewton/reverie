@@ -20,11 +20,11 @@
   },
   "transition": {
     "id": "rrnewton-hermit-pr-2023",
-    "registered_at": "788c99f0cc309f4fa0228c8714e7c43acea70f56",
+    "registered_at": "b5a4748e87a6bc32bc3d87935ab571c1c57c25ad",
     "provenance": {
       "repository": "rrnewton/hermit",
       "pull_request": 2023,
-      "head": "788c99f0cc309f4fa0228c8714e7c43acea70f56"
+      "head": "b5a4748e87a6bc32bc3d87935ab571c1c57c25ad"
     },
     "finalize_after": "2026-08-09T23:05:00Z",
     "expires_at": "2026-08-10T23:05:00Z",
@@ -34,7 +34,7 @@
       ".github/workflows/ci-portable.yml": "34beade4840a0a143937ca2a93f5b5c4932c1370",
       "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
       "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-      "scripts/validate.rs": "4137d14344367bb1f8a85d7acb1d5d12ecbe45ac"
+      "scripts/validate.rs": "df03defdc9d09fd1eddc3a26b137c7a975c388f9"
     }
   },
   "legacy": [
