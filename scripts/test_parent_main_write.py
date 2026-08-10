@@ -75,8 +75,22 @@ class ParentMainWriteTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def writer(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return run(str(self.repo / "scripts/parent-main-write"), *args, cwd=self.repo, env=self.env)
+    def writer(self, *args: str, lock: str | Path | None = None) -> subprocess.CompletedProcess[str]:
+        """Run the writer with a FRESH host-mutex lock per invocation by default.
+
+        The mutex is deliberately non-reentrant, and a hook can inherit the lock
+        file descriptor and hold the flock past the writer's own exit -- so a
+        second invocation in the same test may or may not contend depending on
+        timing. That made multi-invocation tests pass in suite order and fail in
+        isolation, which misleads whoever runs one by name. Isolation is the
+        default; the one test that is ABOUT contention asks for the shared lock
+        explicitly.
+        """
+        if lock is None:
+            self._lock_seq = getattr(self, "_lock_seq", 0) + 1
+            lock = f"{self.lock}.w{self._lock_seq}"
+        env = dict(self.env, HERMIT_PARENT_MAIN_LOCK_PATH=str(lock))
+        return run(str(self.repo / "scripts/parent-main-write"), *args, cwd=self.repo, env=env)
 
     def change(self, path: str = "notes.md", text: str = "changed\n") -> None:
         target = self.repo / path
@@ -129,7 +143,8 @@ class ParentMainWriteTests(unittest.TestCase):
     def test_second_writer_is_refused_by_host_mutex(self) -> None:
         with self.lock.open("w") as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            result = self.writer("sync")
+            # THE one test about contention: it must use the shared lock.
+            result = self.writer("sync", lock=self.lock)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("another parent-main writer owns", result.stderr)
 
@@ -701,8 +716,9 @@ class ReconcileTests(ParentMainWriteTests):
         head_before = git(self.repo, "rev-parse", "refs/heads/main").stdout.strip()
 
         result = run(
-            str(self.repo / "scripts/parent-main-write"), "reconcile",
-            cwd=self.repo, env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}"),
+            str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo,
+            env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}",
+                     HERMIT_PARENT_MAIN_LOCK_PATH=f"{self.lock}.shim"),
         )
 
         combined = result.stdout + result.stderr
@@ -759,7 +775,8 @@ class ReconcileTests(ParentMainWriteTests):
         stranded, target, shim_dir = self.interruptible_reconcile()
         env = dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}")
 
-        first = run(str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo, env=env)
+        first = run(str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo,
+                    env=dict(env, HERMIT_PARENT_MAIN_LOCK_PATH=f"{self.lock}.first"))
 
         self.assertNotEqual(0, first.returncode, first.stdout + first.stderr)
         combined = first.stdout + first.stderr
@@ -789,11 +806,194 @@ class ReconcileTests(ParentMainWriteTests):
         self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
         self.assertNotEqual(stranded, target)
 
+    def test_neutral_already_current_counts_untracked_it_cannot_see_with_diff(self) -> None:
+        """C5: a field must not claim more than the command behind it measures.
+
+        `dirty=` was fed by `git diff`, which does not see untracked files, so
+        it printed `dirty=0` with `?? untracked.txt` on disk. Each count is now
+        named for exactly one command.
+        """
+        (self.repo / "untracked.txt").write_text("nobody has committed this\n")
+        (self.repo / "notes.md").write_text("an unstaged tracked edit\n")
+        (self.repo / "staged.txt").write_text("staged by a bystander\n")
+        git(self.repo, "add", "staged.txt")
+
+        # Bind each field to the command it claims to report, rather than to a
+        # number the fixture happens to produce.
+        untracked = len(
+            git(self.repo, "ls-files", "--others", "--exclude-standard").stdout.split()
+        )
+        self.assertGreater(untracked, 0)
+
+        result = self.writer("reconcile")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn(f"already-current={self.seed}", result.stdout)
+        self.assertIn("interrupted=0", result.stdout)
+        self.assertIn("staged=1", result.stdout)
+        self.assertIn("unstaged-tracked=1", result.stdout)
+        self.assertIn(f"untracked={untracked}", result.stdout)
+        # The field that over-claimed is gone, not merely supplemented.
+        self.assertNotIn("dirty=", result.stdout)
+
+    def test_positive_a_crash_before_the_cas_clears_the_journal_and_retries(self) -> None:
+        """C4: the journal must survive a crash on EITHER side of the CAS.
+
+        Only the after-case was implemented, so killing the process between the
+        journal write and the ref transaction left `head_is_old=True
+        journal=True` and every later run refused with "this needs a human" --
+        wedging reconcile, sync AND commit until the file was deleted by hand.
+        That is the fleet wedge the journal exists to prevent, produced by the
+        journal itself.
+        """
+        stranded, target = self.strand_a_patch_equivalent_commit()
+        shim_dir = Path(self.temp.name) / "shim.kill"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        shim.write_text(
+            f'#!/bin/bash\n'
+            f'if [ "$3" = "update-ref" ] && [[ " $* " == *" refs/heads/main "* ]]; then\n'
+            f'  kill -9 $PPID 2>/dev/null; exit 97\n'
+            f'fi\n'
+            f'exec "{REAL_GIT}" "$@"\n'
+        )
+        shim.chmod(0o755)
+
+        run(str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo,
+            env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}",
+                     HERMIT_PARENT_MAIN_LOCK_PATH=f"{self.lock}.killed"))
+
+        # Precondition: the CAS did not happen, and the journal is stranded.
+        self.assertEqual(stranded, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertTrue(self.journal().exists())
+
+        result = self.writer("reconcile")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("stale-journal-cleared=1", result.stdout)
+        self.assertIn("reason=ref-never-moved", result.stdout)
+        # It did not merely clear the record: it went on and did the work.
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn("dropped=1 proven-upstream=1", result.stdout)
+        self.assertFalse(self.journal().exists())
+
+    def test_positive_a_cleared_stale_journal_unblocks_sync_and_commit(self) -> None:
+        """The wedge is only fixed if the OTHER modes come back too."""
+        self.strand_a_patch_equivalent_commit()
+        shim_dir = Path(self.temp.name) / "shim.kill2"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        shim.write_text(
+            f'#!/bin/bash\n'
+            f'if [ "$3" = "update-ref" ] && [[ " $* " == *" refs/heads/main "* ]]; then\n'
+            f'  kill -9 $PPID 2>/dev/null; exit 97\n'
+            f'fi\n'
+            f'exec "{REAL_GIT}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        run(str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo,
+            env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}",
+                     HERMIT_PARENT_MAIN_LOCK_PATH=f"{self.lock}.killed2"))
+        # A PRE-CAS journal must NOT block sync: main never moved, so nothing is
+        # half-applied. sync still refuses -- but for the ordinary reason that
+        # local main diverges -- and it says the journal is there.
+        during = self.writer("sync")
+        self.assertIn("stale reconcile journal is present", during.stderr)
+        self.assertNotIn("a reconcile was INTERRUPTED here", during.stderr)
+        self.assertIn("diverges from fetched origin", during.stderr)
+
+        self.assertEqual(0, self.writer("reconcile").returncode)
+
+        recovered = self.writer("sync")
+        self.assertEqual(0, recovered.returncode, recovered.stdout + recovered.stderr)
+        self.assertIn("already-current", recovered.stdout)
+        self.assertFalse(self.journal().exists())
+
+    def test_positive_a_stale_pre_cas_journal_does_not_block_sync_or_commit(self) -> None:
+        """Found while re-reading the C4 fix, not reported by review.
+
+        Once a pre-CAS crash became recoverable, the sync/commit guard was left
+        asserting "INTERRUPTED here after main had already moved" for a case
+        where main had NOT moved -- and blocking every agent over a tree that is
+        untouched by construction (everything before the CAS is read-only). A
+        false claim plus an unjustified fleet block, which is the pair this file
+        exists to refuse.
+        """
+        self.strand_a_patch_equivalent_commit()
+        head_before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        # Exactly what a run that died before its transaction leaves behind.
+        self.journal().write_text(f"old={head_before}\ntarget={'c' * 40}\n")
+        try:
+            (self.repo / "notes.md").write_text("a real edit by somebody else\n")
+            result = self.writer(
+                "commit", "-m", tagged("ordinary work during a stale journal"),
+                "--", "notes.md",
+            )
+            combined = result.stdout + result.stderr
+            # It must SAY the journal is there -- silence would be its own defect.
+            self.assertIn("stale reconcile journal is present", combined)
+            self.assertIn("main never moved", combined)
+            self.assertNotIn("INTERRUPTED here", combined)
+            # And it must not have blocked on it.
+            self.assertNotIn("would build on that", combined)
+        finally:
+            self.journal().unlink(missing_ok=True)
+
+    def test_negative_a_journal_at_neither_end_still_needs_a_human(self) -> None:
+        """The third case must stay a refusal: clearing it would be guessing."""
+        self.strand_a_patch_equivalent_commit()
+        self.journal().write_text(f"old={'a' * 40}\ntarget={'b' * 40}\n")
+        try:
+            result = self.writer("reconcile")
+            self.assertNotEqual(0, result.returncode)
+            self.assertIn("neither end", result.stderr)
+            self.assertIn("This needs a human", result.stderr)
+            self.assertTrue(self.journal().exists(), "a refusal must not destroy the record")
+        finally:
+            self.journal().unlink(missing_ok=True)
+
+    def test_positive_the_journal_is_installed_atomically(self) -> None:
+        """A half-written journal lands in the unreadable branch: worst of both.
+
+        Observed through the rename: the temporary never occupies the journal's
+        own name, so a concurrent reader sees either no journal or a complete
+        one -- never a prefix.
+        """
+        self.strand_a_patch_equivalent_commit()
+        shim_dir = Path(self.temp.name) / "shim.capture"
+        shim_dir.mkdir()
+        seen = Path(self.temp.name) / "seen-journal"
+        shim = shim_dir / "git"
+        # At the CAS the journal must already be complete and durable on disk.
+        shim.write_text(
+            f'#!/bin/bash\n'
+            f'if [ "$3" = "update-ref" ] && [[ " $* " == *" refs/heads/main "* ]]; then\n'
+            f'  cp "$2/.git/parent-main-write-reconcile" "{seen}" 2>/dev/null\n'
+            f'  ls "$2/.git/" | grep -c "parent-main-write-reconcile\\." > "{seen}.partials" || true\n'
+            f'fi\n'
+            f'exec "{REAL_GIT}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        result = run(str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo,
+                     env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}",
+                              HERMIT_PARENT_MAIN_LOCK_PATH=f"{self.lock}.atomic"))
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        body = seen.read_text()
+        lines = body.strip().splitlines()
+        self.assertEqual(4, len(lines), body)
+        self.assertRegex(lines[0], r"^old=[0-9a-f]{40}$")
+        self.assertRegex(lines[1], r"^target=[0-9a-f]{40}$")
+        # No temporary left under the journal's directory once the run is done.
+        self.assertEqual(
+            [], list(Path(self.repo / ".git").glob("parent-main-write-reconcile.*"))
+        )
+
     def test_negative_an_interrupted_tree_blocks_sync_and_commit(self) -> None:
         """Nothing may build on a half-applied tree while the journal stands."""
         _, _, shim_dir = self.interruptible_reconcile()
         run(str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo,
-            env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}"))
+            env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}",
+                     HERMIT_PARENT_MAIN_LOCK_PATH=f"{self.lock}.setup"))
         self.assertTrue(self.journal().exists())
 
         for mode in ("sync", "commit"):
@@ -809,7 +1009,8 @@ class ReconcileTests(ParentMainWriteTests):
                 env=dict(self.env, HERMIT_PARENT_MAIN_LOCK_PATH=f"{self.lock}.{mode}"),
             )
             self.assertNotEqual(0, result.returncode, f"{mode}: {result.stdout}{result.stderr}")
-            self.assertIn("INTERRUPTED here after main had already moved", result.stderr, mode)
+            self.assertIn("a reconcile was INTERRUPTED here", result.stderr, mode)
+            self.assertIn("main HAS already moved to", result.stderr, mode)
             self.assertIn("scripts/parent-main-write reconcile", result.stderr, mode)
         # And the interruption is still recorded -- refusing must not clear it.
         self.assertTrue(self.journal().exists())
@@ -838,25 +1039,13 @@ class ReconcileTests(ParentMainWriteTests):
         shim_dir = self.moving_git_shim("update-ref", self.seed)
         result = run(
             str(self.repo / "scripts/parent-main-write"), "reconcile", cwd=self.repo,
-            env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}"),
+            env=dict(self.env, PATH=f"{shim_dir}:{os.environ['PATH']}",
+                     HERMIT_PARENT_MAIN_LOCK_PATH=f"{self.lock}.refused"),
         )
         self.assertNotEqual(0, result.returncode)
         self.assertIn("the journal has been removed", result.stdout + result.stderr)
         self.assertFalse(self.journal().exists())
         self.assertEqual("", git(self.repo, "diff", "--cached", "--name-only").stdout.strip())
-
-    def test_negative_a_journal_whose_target_no_longer_matches_needs_a_human(self) -> None:
-        """Resume must not guess when the branch moved under the journal."""
-        self.strand_a_patch_equivalent_commit()
-        self.journal().write_text(f"old={self.seed}\ntarget={'b' * 40}\n")
-        try:
-            result = self.writer("reconcile")
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("something else moved the branch in between", result.stderr)
-            self.assertIn("This needs a human", result.stderr)
-            self.assertIn("Nothing was modified", result.stderr)
-        finally:
-            self.journal().unlink(missing_ok=True)
 
     def test_negative_a_stale_tracking_ref_is_not_a_fresh_target(self) -> None:
         """C2: a tracking ref records what the LAST fetch saw. No rewrite needed.
@@ -1306,8 +1495,8 @@ class LiveLedgerWriterSyncTests(unittest.TestCase):
     def tearDown(self) -> None:
         ParentMainWriteTests.tearDown(self)
 
-    def writer(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return ParentMainWriteTests.writer(self, *args)
+    def writer(self, *args: str, **kwargs) -> subprocess.CompletedProcess[str]:
+        return ParentMainWriteTests.writer(self, *args, **kwargs)
 
     def test_sync_fast_forwards_while_unique_events_arrive_before_and_after(self) -> None:
         base = git(self.repo, "rev-parse", "HEAD").stdout.strip()

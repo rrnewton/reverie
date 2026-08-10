@@ -915,14 +915,46 @@ reconcile_journal_path() {
 # `publish` deliberately does NOT check, because it publishes a rev that was
 # built elsewhere and never reads the working tree -- blocking it would also
 # remove the plumbing escape hatch without removing any hazard.
-refuse_if_reconcile_interrupted() {
-  local root=$1 what=$2 journal old target
+guard_reconcile_journal() {
+  local root=$1 what=$2 journal old target head
   journal=$(reconcile_journal_path "$root")
   [ -e "$journal" ] || return 0
   old=$(awk -F= '$1 == "old" { print $2 }' "$journal" 2>/dev/null || true)
   target=$(awk -F= '$1 == "target" { print $2 }' "$journal" 2>/dev/null || true)
-  die "a reconcile was INTERRUPTED here after main had already moved, so the
-  index and working tree may still hold the old tree. $what would build on that.
+  head=$(git -C "$root" rev-parse HEAD 2>/dev/null || true)
+
+  # A JOURNAL IS NOT AUTOMATICALLY A HAZARD, and this used to say it was.
+  #
+  # The first version refused for any journal with "a reconcile was INTERRUPTED
+  # here after main had already moved". After the pre-CAS crash was made
+  # recoverable, that sentence became FALSE for exactly the case it was most
+  # likely to meet -- a run that died before its transaction, where main never
+  # moved at all -- and it blocked every agent's `commit` over a tree that was
+  # provably untouched. A claim not bound to the fact it asserts, plus an
+  # unjustified fleet block: the two failure shapes this file exists to refuse.
+  #
+  # The pre-CAS case is SAFE BY CONSTRUCTION, not by inspection: everything
+  # reconcile does before `update-ref` is read-only -- classification reads,
+  # the rehearsal writes only to a copy of the index, and the journal lives in
+  # $GIT_DIR. The first shared-state write is the residue adoption that happens
+  # AFTER the transaction. So `HEAD == recorded old` means nothing was staged
+  # and nothing was written, and there is nothing to protect anyone from.
+  if [ -n "$head" ] && [ "$head" = "$old" ] && [ "$old" != "$target" ]; then
+    echo "parent-main-write: note: a stale reconcile journal is present at $journal" >&2
+    echo "  (recorded ${old:0:12} -> ${target:0:12}; main never moved, so nothing is" >&2
+    echo "  half-applied and $what is unaffected). Clear it with:" >&2
+    echo "      scripts/parent-main-write reconcile" >&2
+    return 0
+  fi
+
+  local state
+  if [ "$head" = "$target" ]; then
+    state="main HAS already moved to $target, so the index and working tree may
+  still hold $old"
+  else
+    state="main is at ${head:-<unknown>}, which is neither recorded end"
+  fi
+  die "a reconcile was INTERRUPTED here: $state. $what would build on that.
     recorded old:    ${old:-<unreadable>}
     recorded target: ${target:-<unreadable>}
     journal:         $journal
@@ -1003,7 +1035,7 @@ case "$command" in
     acquire_lock
     fetch_expected "$root"
     [ "$(git -C "$root" branch --show-current)" = main ] || die "sync requires local main"
-    refuse_if_reconcile_interrupted "$root" "sync"
+    guard_reconcile_journal "$root" "sync"
     head=$(git -C "$root" rev-parse HEAD)
     if [ "$head" = "$HERMIT_PARENT_MAIN_EXPECT" ]; then
       printf 'PARENT_MAIN_WRITE sync already-current=%s\n' "$head"
@@ -1035,6 +1067,15 @@ case "$command" in
     # An interrupted reconcile has already moved main, so every ref-only test --
     # "am I current?", "am I diverged?" -- answers as though the work were done.
     # The journal is the only thing that knows better, so it is consulted first.
+    #
+    # THREE CASES, NOT TWO. A journal is written before the transaction, so the
+    # process can die on EITHER side of it, and the two sides need opposite
+    # treatment. An earlier version implemented only the after case and routed
+    # the before case into "this needs a human": killing the process between the
+    # journal write and the CAS left `first_rc=97 head_is_old=True journal=True`,
+    # and from then on reconcile, sync AND commit all refused until somebody
+    # deleted the file by hand. That is the fleet wedge the journal exists to
+    # prevent, produced by the journal itself.
     if [ -e "$journal" ]; then
       journal_old=$(awk -F= '$1 == "old" { print $2 }' "$journal" 2>/dev/null || true)
       journal_target=$(awk -F= '$1 == "target" { print $2 }' "$journal" 2>/dev/null || true)
@@ -1042,18 +1083,37 @@ case "$command" in
         die "the reconcile journal at $journal is unreadable, so the interrupted
   update cannot be completed automatically. Nothing was modified. Show it to a
   human rather than deleting it: it is the only record of what was in flight."
-      [ "$head" = "$journal_target" ] ||
-        die "the journal records an interrupted reconcile to $journal_target,
-  but main is now $head -- something else moved the branch in between.
-  Nothing was modified. This needs a human: the journal is at $journal."
-      printf 'PARENT_MAIN_WRITE reconcile RESUMING an interrupted update old=%s new=%s\n' \
-        "$journal_old" "$journal_target"
-      # The ref is already where it belongs; only the tree is behind. This is
-      # the same completion code the first attempt runs.
-      complete_reconcile_tree "$root" "$journal_old" "$journal_target"
-      printf 'PARENT_MAIN_WRITE reconcile resumed=1 old=%s new=%s tree-completed=1 journal-cleared=1\n' \
-        "$journal_old" "$journal_target"
-      exit 0
+      if [ "$head" = "$journal_target" ]; then
+        # AFTER the CAS: the ref is already where it belongs and only the tree
+        # is behind. Complete it with the same code the first attempt runs.
+        printf 'PARENT_MAIN_WRITE reconcile RESUMING an interrupted update old=%s new=%s\n' \
+          "$journal_old" "$journal_target"
+        complete_reconcile_tree "$root" "$journal_old" "$journal_target"
+        printf 'PARENT_MAIN_WRITE reconcile resumed=1 old=%s new=%s tree-completed=1 journal-cleared=1\n' \
+          "$journal_old" "$journal_target"
+        exit 0
+      elif [ "$head" = "$journal_old" ]; then
+        # BEFORE the CAS: main never moved, so nothing was staged and nothing
+        # was written -- the ref transaction is all-or-nothing and it did not
+        # happen. There is no work to complete, only a stale record to clear,
+        # and then a fresh attempt that revalidates EVERYTHING from a new fetch
+        # (the recorded target may itself be stale by now).
+        #
+        # Reading "the CAS never happened" off HEAD == old is sound because the
+        # only way back from target to old is a rewind of a shared branch, and
+        # the reference-transaction hook refuses those. If one somehow occurred,
+        # falling through is still safe: re-classification finds the adopted
+        # entries again by byte equality and re-adopts them idempotently.
+        printf 'PARENT_MAIN_WRITE reconcile stale-journal-cleared=1 recorded-old=%s recorded-target=%s reason=ref-never-moved\n' \
+          "$journal_old" "$journal_target"
+        rm -f "$journal"
+        # ... and fall through to a completely fresh, fully revalidated attempt.
+      else
+        die "the journal records an interrupted reconcile from $journal_old to
+  $journal_target, but main is now $head -- neither end. Something else moved
+  the branch in between. Nothing was modified. This needs a human: the journal
+  is at $journal."
+      fi
     fi
 
     if [ "$head" = "$target" ]; then
@@ -1061,10 +1121,17 @@ case "$command" in
       # ref alone said "current" over a half-applied tree once already; the
       # journal check above is what makes this line mean what it says, and the
       # counts keep it from implying a clean tree it never inspected.
-      printf 'PARENT_MAIN_WRITE reconcile already-current=%s interrupted=0 staged=%s dirty=%s\n' \
+      #
+      # THE COUNTS ARE NAMED FOR WHAT THEY COUNT. A single `dirty=` field fed by
+      # `git diff` printed `dirty=0` with `?? untracked.txt` sitting on disk,
+      # because `git diff` does not see untracked files -- a field claiming more
+      # than it measured, which is the exact defect this file keeps finding
+      # elsewhere. Three fields, each bound to one command.
+      printf 'PARENT_MAIN_WRITE reconcile already-current=%s interrupted=0 staged=%s unstaged-tracked=%s untracked=%s\n' \
         "$head" \
         "$(git -C "$root" diff --cached --name-only | grep -c . || true)" \
-        "$(git -C "$root" diff --name-only | grep -c . || true)"
+        "$(git -C "$root" diff --name-only | grep -c . || true)" \
+        "$(git -C "$root" ls-files --others --exclude-standard | grep -c . || true)"
       exit 0
     fi
     # ESTABLISH THE PREDICATE BEFORE TOUCHING ANYTHING. The hook re-derives it
@@ -1147,9 +1214,28 @@ case "$command" in
     # The window ref-first leaves is REAL, and the journal is what pays for it:
     # written here, before the transaction, so that a failure between the two
     # mutations is recoverable rather than merely visible. See its definition.
+    # ATOMIC, AND DURABLE BEFORE THE TRANSACTION IT GUARDS.
+    #
+    # Plain redirection can leave a half-written record, and a half-written
+    # journal lands in the "unreadable, needs a human" branch -- the worst of
+    # both, since it neither resumes nor clears. Write to a temporary, force it
+    # out, then rename: a reader sees either no journal or a complete one, and
+    # the record reaches the disk BEFORE the ref it is supposed to explain.
+    journal_tmp="$journal.$$"
     printf 'old=%s\ntarget=%s\npid=%s\nstarted=%s\n' \
-      "$head" "$target" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$journal" ||
+      "$head" "$target" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$journal_tmp" || {
+      rm -f "$journal_tmp"
       die "cannot write the reconcile journal at $journal; nothing was modified"
+    }
+    sync -- "$journal_tmp" 2>/dev/null || sync 2>/dev/null || true
+    mv -f "$journal_tmp" "$journal" || {
+      rm -f "$journal_tmp"
+      die "cannot install the reconcile journal at $journal; nothing was modified"
+    }
+    # The rename itself has to be durable, or a crash can lose the record while
+    # keeping the ref move it guards. Directory fsync; best effort by design --
+    # a filesystem that refuses it must not block the operation.
+    sync -- "${journal%/*}" 2>/dev/null || true
     git -C "$root" update-ref refs/heads/main "$target" "$head" || {
       # The transaction refused: it changed nothing, so neither should we.
       rm -f "$journal"
@@ -1189,7 +1275,7 @@ case "$command" in
     acquire_lock
     fetch_expected "$root"
     [ "$(git -C "$root" branch --show-current)" = main ] || die "commit requires local main"
-    refuse_if_reconcile_interrupted "$root" "a commit"
+    guard_reconcile_journal "$root" "a commit"
     [ "$(git -C "$root" rev-parse HEAD)" = "$HERMIT_PARENT_MAIN_EXPECT" ] ||
       die "local main is not the freshly fetched origin/main"
     commit_args=(commit --only)
