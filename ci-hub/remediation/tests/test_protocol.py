@@ -4693,3 +4693,145 @@ def test_the_bound_clears_the_slowest_observed_authority_run():
     main. If someone lowers the bound below measured reality the gate starts
     paging on healthy post-merge windows again, which is the defect."""
     assert protocol.OBLIGATION_STALE_AFTER_SECS > 1491.0
+
+
+def _report_record(*, state="open", remediation_state="none"):
+    return {
+        "obligation_id": "decision-obligation",
+        "overall_state": state,
+        "repo": "rrnewton/hermit",
+        "landed_sha": SHA,
+        "opened_at": "2026-08-01T00:00:00Z",
+        "local": {"state": "no_result"},
+        "github": {"state": "no_result"},
+        "recommendation": (
+            {"action": "fix-forward"} if state == "remediation_required" else None
+        ),
+        "remediation": {
+            "state": remediation_state,
+            "kind": "fix-forward" if remediation_state != "none" else None,
+        },
+    }
+
+
+def _decision_wait_registry(path):
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "obligations": {
+                    "decision-obligation": {
+                        "state": "AWAITING-DECISION",
+                        "repo": "rrnewton/hermit",
+                        "landed_sha": SHA,
+                        "blocker": "PR #2059 awaits the owner's review-policy decision",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_named_decision_wait_deescalates_hard_gate_but_remains_visible(tmp_path):
+    """A human-blocked stale record is NOTE-worthy, not an executable page."""
+    registry = tmp_path / "decision-waits.json"
+    _decision_wait_registry(registry)
+    record = _report_record()
+    output = io.StringIO()
+    with mock.patch.object(
+        obligations, "latest_records", return_value={record["obligation_id"]: record}
+    ), redirect_stdout(output):
+        rc = protocol.print_status(
+            tmp_path / "unused.jsonl",
+            include_closed=False,
+            json_output=False,
+            gate=True,
+            decision_waits_path=registry,
+        )
+    rendered = output.getvalue()
+    assert rc == 0
+    assert "state=awaiting-decision" in rendered
+    assert "awaiting_decision_count=1" in rendered
+    assert "remediation=AWAITING-DECISION" in rendered
+    assert "PR #2059 awaits the owner's review-policy decision" in rendered
+
+    output = io.StringIO()
+    with mock.patch.object(
+        obligations, "latest_records", return_value={record["obligation_id"]: record}
+    ), redirect_stdout(output):
+        note_rc = protocol.print_status(
+            tmp_path / "unused.jsonl",
+            include_closed=False,
+            json_output=False,
+            gate=True,
+            awaiting_decision_only=True,
+            decision_waits_path=registry,
+        )
+    assert note_rc == 1
+    assert "remediation=AWAITING-DECISION" in output.getvalue()
+
+
+def test_concrete_remediation_overrides_decision_wait_and_still_hard_escalates(tmp_path):
+    """A stale annotation can never hide a genuine fix-forward/revert result."""
+    registry = tmp_path / "decision-waits.json"
+    _decision_wait_registry(registry)
+    record = _report_record(
+        state="remediation_required", remediation_state="triggered"
+    )
+    output = io.StringIO()
+    with mock.patch.object(
+        obligations, "latest_records", return_value={record["obligation_id"]: record}
+    ), redirect_stdout(output):
+        rc = protocol.print_status(
+            tmp_path / "unused.jsonl",
+            include_closed=False,
+            json_output=False,
+            gate=True,
+            decision_waits_path=registry,
+        )
+    rendered = output.getvalue()
+    assert rc == 2
+    assert "state=remediation-required" in rendered
+    assert "recommendation=fix-forward" in rendered
+    assert "remediation=triggered" in rendered
+    assert "AWAITING-DECISION" not in rendered
+
+
+def test_unclassified_stale_obligation_still_hard_escalates(tmp_path):
+    """Removing the annotation restores the original fail-closed stale page."""
+    empty_registry = tmp_path / "decision-waits.json"
+    empty_registry.write_text(
+        '{"schema_version": 1, "obligations": {}}', encoding="utf-8"
+    )
+    record = _report_record()
+    with mock.patch.object(
+        obligations, "latest_records", return_value={record["obligation_id"]: record}
+    ), redirect_stdout(io.StringIO()):
+        rc = protocol.print_status(
+            tmp_path / "unused.jsonl",
+            include_closed=False,
+            json_output=False,
+            gate=True,
+            decision_waits_path=empty_registry,
+        )
+    assert rc == 1
+
+
+def test_tick_routes_decision_waits_to_note_without_repolling():
+    config = (REMEDIATION.parents[0] / "health" / "tick-hub.yaml").read_text(
+        encoding="utf-8"
+    )
+    decision_block = config.split(
+        "- name: speculative_land_obligation_decision_waits", 1
+    )[1].split("- name:", 1)[0]
+    assert "protocol.py status --gate --awaiting-decision" in decision_block
+    assert "kind: note" in decision_block
+    assert "watch-obligations" not in decision_block
+
+    action_block = config.split("- name: speculative_land_obligations", 1)[1].split(
+        "- name:", 1
+    )[0]
+    assert "watch-obligations --once --gate" in action_block
+    assert "kind: action" in action_block
+    assert "skill: hard-warn-coordinator" in action_block

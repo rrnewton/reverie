@@ -218,6 +218,24 @@ reminders:
         component: speculative-land-obligation
       title: "speculative land requires immediate attention: {summary}"
 
+  # A stale obligation with a named human decision blocker remains visible, but
+  # it is not an executable coordinator action. The watcher above performs the
+  # sole poll/redispatch pass and returns success when every stale record is in
+  # this class; this read-only view reports the blocker without polling twice.
+  # Concrete remediation_required and unclassified stale records still fire the
+  # hard warning above, so this is a severity distinction rather than muting.
+  - name: speculative_land_obligation_decision_waits
+    cadence_secs: 300
+    gate:
+      cmd: python3 ci-hub/remediation/protocol.py status --gate --awaiting-decision
+      when: failure
+      capture: true
+    emit:
+      kind: note
+      fields:
+        component: speculative-land-obligation-decision-wait
+      title: "speculative land is awaiting an external decision: {summary}"
+
   # SECOND ADMISSION TEST, added 2026-08-08 after this gate and the validate
   # admission gate were both found bound to a moving reference:
   #

@@ -36,6 +36,8 @@ from nonzero_result import is_zero_test_green
 import validate_rows as canonical_ledger
 
 DEFAULT_REPO = "rrnewton/hermit"
+DEFAULT_DECISION_WAITS_PATH = ROOT / "ci-hub/remediation/decision-waits.json"
+DECISION_WAIT_STATE = "AWAITING-DECISION"
 PARENT_REPO = "rrnewton/dev-hermit"
 PARENT_TOOLING_WORKFLOW = "Dev-hermit operational tooling"
 PARENT_TOOLING_WORKFLOW_FILE = ".github/workflows/dev-hermit-ci.yml"
@@ -4328,7 +4330,87 @@ def watch(
         time.sleep(poll_seconds)
 
 
-def _summary_line(record: Mapping[str, Any]) -> str:
+def _load_decision_waits(path: Path) -> dict[str, dict[str, str]]:
+    """Load reporting-only human-decision blockers, bound to obligation identity.
+
+    These annotations do not transition or discharge an obligation.  They only
+    let the reporting layer distinguish "nothing is known" from "progress is
+    waiting on this named decision".  Missing configuration means no
+    de-escalation; malformed configuration refuses rather than hiding a page.
+    """
+    if not path.exists():
+        return {}
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ProtocolError(
+            f"cannot read decision-wait registry {path}: {error}"
+        ) from error
+    if not isinstance(document, Mapping) or document.get("schema_version") != 1:
+        raise ProtocolError(f"decision-wait registry {path} must use schema_version=1")
+    entries = document.get("obligations")
+    if not isinstance(entries, Mapping):
+        raise ProtocolError(f"decision-wait registry {path} has no obligations object")
+
+    waits: dict[str, dict[str, str]] = {}
+    for obligation_id, entry in entries.items():
+        if not isinstance(obligation_id, str) or not obligation_id:
+            raise ProtocolError(
+                f"decision-wait registry {path} has an invalid obligation id"
+            )
+        if not isinstance(entry, Mapping):
+            raise ProtocolError(
+                f"decision-wait registry {path} entry {obligation_id!r} is not an object"
+            )
+        repo = entry.get("repo")
+        landed_sha = entry.get("landed_sha")
+        blocker = entry.get("blocker")
+        if (
+            entry.get("state") != DECISION_WAIT_STATE
+            or not isinstance(repo, str)
+            or not obligations.REPO_RE.fullmatch(repo)
+            or not isinstance(landed_sha, str)
+            or not obligations.SHA_RE.fullmatch(landed_sha)
+            or not isinstance(blocker, str)
+            or not blocker.strip()
+            or "\n" in blocker
+            or "\r" in blocker
+        ):
+            raise ProtocolError(
+                f"decision-wait registry {path} entry {obligation_id!r} must bind "
+                "state=AWAITING-DECISION, repo, landed_sha, and a one-line blocker"
+            )
+        waits[obligation_id] = {
+            "state": DECISION_WAIT_STATE,
+            "repo": repo,
+            "landed_sha": landed_sha,
+            "blocker": blocker.strip(),
+        }
+    return waits
+
+
+def _bound_decision_wait(
+    record: Mapping[str, Any], waits: Mapping[str, Mapping[str, str]]
+) -> Mapping[str, str] | None:
+    entry = waits.get(str(record.get("obligation_id", "")))
+    if entry is None:
+        return None
+    if (
+        entry.get("repo") != record.get("repo")
+        or entry.get("landed_sha") != record.get("landed_sha")
+    ):
+        raise ProtocolError(
+            "decision-wait identity mismatch for obligation "
+            f"{record.get('obligation_id', '-')}: registry binds "
+            f"{entry.get('repo')}@{entry.get('landed_sha')}, record is "
+            f"{record.get('repo')}@{record.get('landed_sha')}"
+        )
+    return entry
+
+
+def _summary_line(
+    record: Mapping[str, Any], decision_wait: Mapping[str, str] | None = None
+) -> str:
     recommendation = record.get("recommendation") or {}
     action = (
         recommendation.get("action", "-")
@@ -4337,17 +4419,26 @@ def _summary_line(record: Mapping[str, Any]) -> str:
     )
     remediation = record.get("remediation") or {}
     remediation_state = (
-        remediation.get("state", "-") if isinstance(remediation, Mapping) else "-"
+        DECISION_WAIT_STATE
+        if decision_wait is not None
+        else remediation.get("state", "-")
+        if isinstance(remediation, Mapping)
+        else "-"
     )
     dispatch = remediation.get("dispatch") if isinstance(remediation, Mapping) else None
     dispatch_state = (
         dispatch.get("state", "-") if isinstance(dispatch, Mapping) else "-"
     )
+    blocker = (
+        f" blocker={json.dumps(decision_wait['blocker'])}"
+        if decision_wait is not None
+        else ""
+    )
     return (
         f"{record['obligation_id']} {record['repo']}@{record['landed_sha'][:12]} "
         f"overall={record['overall_state']} local={record['local']['state']} "
         f"github={record['github']['state']} recommendation={action} "
-        f"remediation={remediation_state} dispatch={dispatch_state}"
+        f"remediation={remediation_state} dispatch={dispatch_state}{blocker}"
     )
 
 
@@ -4358,7 +4449,12 @@ def print_status(
     json_output: bool,
     gate: bool,
     actionable_only: bool = False,
+    awaiting_decision_only: bool = False,
+    decision_waits_path: Path = DEFAULT_DECISION_WAITS_PATH,
 ) -> int:
+    if actionable_only and awaiting_decision_only:
+        raise ProtocolError("--actionable and --awaiting-decision are mutually exclusive")
+    decision_wait_registry = _load_decision_waits(decision_waits_path)
     records = list(obligations.latest_records(store_path).values())
     if actionable_only:
         records = [
@@ -4391,6 +4487,26 @@ def print_status(
     # above is unaffected and still pages at any age, because a failure is a
     # finding the moment it exists.
     stale = _stale_obligations(unresolved)
+    decision_waits: dict[str, Mapping[str, str]] = {}
+    for record in stale:
+        # A real remediation result always wins over a reporting annotation.
+        # The annotation describes why an otherwise-unclassified OPEN record is
+        # waiting; it must never suppress a concrete fix-forward/revert action.
+        if record.get("overall_state") != "remediation_required":
+            wait = _bound_decision_wait(record, decision_wait_registry)
+            if wait is not None:
+                decision_waits[record["obligation_id"]] = wait
+    stale_actionable = [
+        record for record in stale if record["obligation_id"] not in decision_waits
+    ]
+    if awaiting_decision_only:
+        records = [
+            record for record in records if record["obligation_id"] in decision_waits
+        ]
+        unresolved = records
+        remediation = []
+        stale = records
+        stale_actionable = []
     triggered = [
         record
         for record in remediation
@@ -4415,7 +4531,9 @@ def print_status(
             "remediation-required"
             if remediation
             else "stale-open"
-            if stale
+            if stale_actionable
+            else "awaiting-decision"
+            if decision_waits
             else "running"
             if unresolved
             else "clear"
@@ -4424,6 +4542,7 @@ def print_status(
         print(f"count={len(unresolved)}")
         print(f"remediation_count={len(remediation)}")
         print(f"stale_count={len(stale)}")
+        print(f"awaiting_decision_count={len(decision_waits)}")
         print(f"stale_after_secs={int(OBLIGATION_STALE_AFTER_SECS)}")
         print(f"triggered_count={len(triggered)}")
         print(f"sent_unacknowledged_count={len(sent_unacknowledged)}")
@@ -4435,7 +4554,10 @@ def print_status(
         print(
             "summary="
             + (
-                ";".join(_summary_line(record) for record in unresolved)
+                ";".join(
+                    _summary_line(record, decision_waits.get(record["obligation_id"]))
+                    for record in unresolved
+                )
                 if unresolved
                 else "no-open-speculative-land-obligations"
             )
@@ -4452,12 +4574,21 @@ def print_status(
         )
         print(heading)
         for record in records:
-            print("  " + _summary_line(record))
+            print(
+                "  "
+                + _summary_line(
+                    record, decision_waits.get(record["obligation_id"])
+                )
+            )
             if record.get("failure_summary"):
                 print(f"    failure: {record['failure_summary']}")
-    # rc 2 remediation-required (any age) | rc 1 unresolved BEYOND the bound
-    # | rc 0 clear, or unresolved and still inside its normal window.
-    return 2 if remediation else 1 if stale else 0
+    # Primary view: rc 2 remediation-required (any age) | rc 1 unclassified
+    # unresolved BEYOND the bound | rc 0 clear, fresh, or a named decision wait.
+    # Decision-only view deliberately inverts the last class to rc 1 so tick-hub
+    # emits the lower-severity NOTE without polling/redispatching a second time.
+    if awaiting_decision_only:
+        return 1 if decision_waits else 0
+    return 2 if remediation else 1 if stale_actionable else 0
 
 
 def recoverable_obligation(
@@ -5032,8 +5163,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     status_parser.add_argument(
         "--actionable", action="store_true", help="show only remediation still owed"
     )
+    status_parser.add_argument(
+        "--awaiting-decision",
+        action="store_true",
+        help="show only stale obligations with a named external decision blocker",
+    )
     status_parser.add_argument("--json", action="store_true")
     status_parser.add_argument("--gate", action="store_true")
+    status_parser.add_argument(
+        "--decision-waits-file",
+        type=Path,
+        default=DEFAULT_DECISION_WAITS_PATH,
+        help=argparse.SUPPRESS,
+    )
     status_parser.add_argument(
         "--store", type=Path, default=obligations.default_store_path()
     )
@@ -5157,6 +5299,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json_output=args.json,
                 gate=args.gate,
                 actionable_only=args.actionable,
+                awaiting_decision_only=args.awaiting_decision,
+                decision_waits_path=args.decision_waits_file,
             )
         if args.command == "wake-sent":
             record_wake_sent(
