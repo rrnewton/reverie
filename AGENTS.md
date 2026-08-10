@@ -112,7 +112,7 @@ primary-nested scratch layouts. The companion carries the full tree.
 6. Do not run `git clean` anywhere in the parent, submodules, or slots.
 7. Do not use a branch name as a worktree directory name.
 8. Do not share writable build directories between worktrees.
-9. Publish Hermit product work through a feature PR to `rrnewton/hermit:main`; do not land it by mutating the primary checkout. Sole exception: **Red-Tip Direct Land**.
+9. Publish Hermit product work through a feature PR to `rrnewton/hermit:main`; do not land it by mutating the primary checkout. Direct-main publication exists only through the named, scoped exceptions below: **Red-Tip Direct Land** and **Gate-Definition Rotation**.
 10. Never force-push shared branches or `main`.
 11. Never commit binaries or generated build artifacts to any repository.
 12. A handoff is incomplete without exact SHAs and validation results.
@@ -177,21 +177,27 @@ published/merged. Reuse never authorizes discarding or resetting. Follow compani
 Primary Hermit repo is `rrnewton/hermit`; public `facebookexperimental/hermit` is reference, not the default
 landing target. Ordinary Hermit work flows from a feature branch to a PR against current `rrnewton/hermit:main`.
 
+### Hermit landing hierarchy (owner decision, 2026-08-10)
+
+**This parent policy authorizes publication; product docs and rulesets do not.** Normal authority is a counted
+exact-head local ledger validate; hosted CI is P2. A PR changing its registered producer cannot self-vouch and
+requires registered exact-head hosted authority. Normal work uses a reviewed PR; direct `main` is limited to the
+named exceptions below. Remediation uses the same authority: no red authorizes a revert without a durable owner
+decision bound to exact current/candidate SHAs. Decision history: companion doc, *Hermit landing hierarchy*.
+
 ### Red-Tip Direct Land (owner-authorized exception to Hard Invariant 9)
 
-**When the tip of `main` is RED, push the fix for that red DIRECTLY to `main`. No PR, no extra ceremony**
-(owner, 2026-08-08). Waiting is unsafe: while red, rebasing onto newest-green hits admission containment,
-so the PR drain stops.
+When exact `main` is proven red, directly land only its fix (owner, 2026-08-08); premise-refuted stops. Retain
+exact-head local evidence, explicit-path staging, trailer, and no-force rules. The exception ends when `main`
+is green. Worked evidence and rationale: companion doc, *Red-Tip Direct Land*.
 
-- **Establish the red yourself first.** A dispatch asserting a red tip is a claim, not evidence: dereference
-  the authority at that exact tip SHA before invoking. "Premise refuted" is a valid outcome (companion doc,
-  *Red-Tip Direct Land — worked example*).
-- **Covers:** the fix for the observed red, nothing bundled. Unrelated work still takes a PR.
-- **Who:** any agent holding the shell, naming in the commit body the red it repairs.
-- **Does NOT relax:** local validation evidence at the exact SHA; explicit-path staging (never `git add -A`);
-  the role/team commit trailer; and **Hard Invariant 10 — never force-push.** This waives the PR, not history
-  safety or evidence.
-- **Ends** the moment the tip is green; the next change goes back through a feature PR.
+### Gate-Definition Rotation (owner-scoped direct-land exception)
+
+Prefer versioned overlap. Irreducible same-file rotation uses only
+`gate_definition_rotation.py --execute`: nine-class authorization composed through normal non-admin
+`land-pr.sh --gate-rotation --no-rebase`. No second mutation entry or raw main refspec exists. After merge it
+refreshes `main` and proves ancestry/blob identity before registration; failure stays visible and fail-closed.
+Full ordering and refusal contract: companion doc.
 
 ### Feature Branch Rules — **ALWAYS COMMIT ON FEATURE BRANCHES**
 
@@ -208,15 +214,9 @@ stale pin is a hard validation failure, so do not substitute raw `gh pr checkout
 
 ### Publishing And Review
 
-Before publishing, confirm current intended base, no unrelated commits, full diff/evidence, required tests,
-tested tip SHA, mandatory PR sections, and freshly reread remote state. Use `with-proxy` for networked
-`git`/`gh`; never mutate shared auth with `gh auth switch`.
-Require exact-head owner-authorized green. **For Hermit, LOCAL VALIDATE PLUS THE LEDGER ARE THE LANDING
-AUTHORITY. HOSTED CI IS NOT.** `ci-hub validate-status` must dereference a counted receipt; missing, partial,
-stale, cancelled, zero-execution, or failed local evidence blocks. Hosted green does not authorize landing;
-hosted red, including red hosted `main`, does not block a ledger-authorized landing and is not by itself a P0.
-Reverie's hosted authority remains `Regular tests` plus `Host-dependent tests`. Never merge with unresolved
-adversarial-review findings or a bare test-process exit.
+Before publishing, re-read base/remote, audit diff and tests, and bind evidence to the tip. Use `with-proxy`;
+never switch shared auth. Hermit follows the hierarchy above; Reverie still requires its versioned hosted jobs.
+Unresolved adversarial review or a bare test-process exit blocks.
 
 ### Proxy Binding Review Axis (predicate; full rationale, registry, 12 examples, 3-layer taxonomy in the [companion doc](https://github.com/rrnewton/dev-hermit/blob/main/ai_docs/agents-md-policy-rationale.md))
 
@@ -252,13 +252,10 @@ one. The label never blocks landing. Never apply `pre-land-human-review`, touch 
 
 ### Landing Authorization
 
-On startup or replacement, `hermit-lander` must run `ci-hub/ci-hub inherit-obligations` to discover durable
-inherited remediation before taking new queue work (wake messages are advisory, lost during recycling; startup
-mechanics + obligation lifecycle: companion doc). Merge only when the task explicitly authorizes landing,
-adversarial review is resolved, and authoritative checks are green at the current head SHA. Human-owner review
-is post-facto and does not block landing. Outside **Red-Tip Direct Land**, never push directly to Hermit
-`main`, force-push shared branches (never, no exception), or use a local primary to bypass PR controls. Parent-only policy/gitlink changes go to shared `main` only when a
-task explicitly authorizes them; `worktrees/ACTIVE.md` never participates in commits or merges.
+On startup/replacement, `hermit-lander` runs `ci-hub/ci-hub inherit-obligations`. Landing needs task authority,
+resolved review, and exact-head authority; human review remains post-facto. Outside the named exceptions, never
+push Hermit `main`; never force-push or bypass through a primary. Parent policy/gitlink writes require an owning
+task; `worktrees/ACTIVE.md` never enters commits. Mechanics and obligation lifecycle: companion doc.
 
 ## Task Lifecycle And Closure
 
@@ -370,9 +367,9 @@ name — always report: **Hermit SHA** (40-hex), **Reverie SHA** (40-hex or expl
 **Command**, **Result** (pass/fail/skipped with material output summarized), **Environment** (host/toolchain/
 hardware constraints when relevant). Hardware-dependent Hermit tests may be impossible on some hosts — report
 that fact and the observed failure; do not weaken, delete, or falsely bless a test to make the local
-environment green. At the final mutation boundary, report Hermit's exact-head counted local ledger receipt;
-missing/partial/stale evidence is NO_RESULT and local red blocks. Hosted CI is diagnostic only and proves no
-local backend coverage.
+environment green. At the final mutation boundary normal heads need a counted local ledger receipt; a head
+changing a registered producer needs registered exact-head hosted authority because its local producer cannot
+attest itself. Missing, partial, or stale evidence is NO_RESULT; genuine red blocks.
 
 ### Running validate — `systemd-run --user` Is The Producer Path
 
@@ -435,8 +432,8 @@ to commits, not branch names.
 - **Establish what you have before acting.** A **note** is one agent's unverified belief — do not launder "X appears to be Y" into "X is Y, fix it." When a premise comes from a note or second-hand observation, attribute it to its source, mark it **UNVERIFIED**, and make "verify the premise" the explicit first step ("premise refuted" is a valid outcome). A **number** is unqualified until you state **what it measures** (the decision's quantity, or a proxy?), its **unit** (a count is not a rate; a load average is not a utilisation), and its **denominator** — interrogate a surprising ratio's denominator first.
 - **Verify a mechanism by the running thing, not its config.** A flag can be a deprecated no-op; an exit code can come from a different wrapper. Find the running thing and ask what holds it — e.g. for cgroup boxing, walk `/sys/fs/cgroup/...` for the live PID's `cgroup.procs`, not a flag/exit code.
 - **Record every measurement immediately.** First check whether the number already exists (`experiments/`, task notes, ci-hub history store). Any measurement — even incidental — goes into a task note immediately with units, context, and **how obtained (a polled aggregate is not a cgroup-recorded peak)**.
-- **Trust the ledger, not a handed SHA.** A handed SHA — or a "latest green"/"known-good" commit — is a claim, not evidence. Establish the validated frontier yourself: `ci-hub newest-green` (default `--branch main`; `--json`; `--no-fetch` offline) returns the newest commit whose latest LOCAL validation passed. If the handed SHA and the ledger disagree, the ledger wins — report the discrepancy.
-- **Read hosted state from its named job, not the workflow rollup.** `ci-hub hosted-status` wins only for hosted diagnostics, never over Hermit's local ledger authority.
+- **Trust authority, not a handed SHA.** `ci-hub newest-green` establishes the normal local frontier. A candidate changing a registered producer is intentionally local-non-authoritative; dereference its registered exact-head hosted job with `ci-hub hosted-status`. Report discrepancies.
+- **Read hosted state from its named job, not the workflow rollup.** Hosted is P2 except for that producer exception; a workflow conclusion is never the job verdict.
 - **Do not manually dispatch hosted CI under `merge-gate-v4`.** Duplicate runs can poison its diagnostic checks. On hosted NO_RESULT rerun the gate; dispatch manually only with no gate in play, after checking live runs, and use exactly one run. This manages hosted diagnostics, not landing authority.
 - **A land-lock SIGCONT must cover the WHOLE subtree, roots and descendants.** `land-lock status` hangs while its census holds verifiers in `do_signal_stop`; the remedy (SIGCONT, then `reclaim-dead`, never a kill) works only if every stopped member is resumed. Either partial attempt fails silently and looks like a wedged lock — resuming only roots leaves the real worker stopped one level down. Enumerate the subtree recursively from the validator roots, SIGCONT every member whose `stat` starts with `T`, then re-check none remain.
 

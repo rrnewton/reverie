@@ -213,7 +213,7 @@ The land sequence itself lives here too, not only in `scratch/`:
 
 | script | role |
 | --- | --- |
-| `ci-hub/landing/land-pr.sh <PR> <BRANCH> [--union\|--no-rebase]` | detached-by-default full single-PR lander: self-wraps in `land-lock run --child-deadline`, requires Hermit's counted local-full **or** versioned hosted-portable exact-head authority before and after rebase, derives `locally-validated` only for a qualifying local receipt, polls merge-gate, rechecks the same authority at the final mutation boundary, performs a head-matched rebase merge, then verifies ancestry |
+| `ci-hub/landing/land-pr.sh <PR> <BRANCH> [--union\|--no-rebase]` | detached-by-default full single-PR lander: self-wraps in `land-lock run --child-deadline`, requires Hermit's counted local-full exact-head authority before and after rebase, derives `locally-validated` only from that receipt, treats merge-gate as diagnostic, rechecks authority at the final mutation boundary, performs a head-matched rebase merge, then verifies ancestry. A registered-producer-changing PR is intentionally ineligible for this local-only path. |
 | `ci-hub/landing/gate_definition_rotation.py --pr N --branch B --checkout WT --execute` | narrow self-authorization fallback: verifies an owner-authored exact head/base/blob/path record, dual exact-head reviews, counted receipt, and typed definition-only self-refusal; then composes through `land-pr.sh --gate-rotation --no-rebase` and registers `MERGE_GATE_V4_BLOB` only after mergeCommit ancestry |
 | `ci-hub/landing/union-rebase.sh <hermit-wt> <BRANCH> [--push]` | authoritative additive union-rebase of the shared manifest registries (`*.toml` by `[[test]]` id, `test-files.json` by path, `matrix.tsv` by row); the derived `ci/expected-e2e-plan.json` is regenerated, never hand-unioned |
 
@@ -238,7 +238,7 @@ current rejection, missing receipt, or non-definition gate failure refuses.
 
 Execution has one merge path: the normal non-admin
 `gh pr merge --rebase --match-head-commit` inside `land-pr.sh`. There is no
-gate-specific raw-FF primitive and no gate-specific `--_inner`. Even a direct
+second mutation entry point, gate-specific raw-FF primitive, or raw main refspec. Even a direct
 caller of the lander's rotation mode must prove it is a descendant of the exact
 PID/start-ticks identity recorded by `land-lock run`. After the inner lander
 proves the PR's `mergeCommit.oid` is on `origin/main` and the lock releases, the
@@ -246,6 +246,28 @@ normal lander's outer process verifies that main contains the authorized
 workflow blob and only then updates and re-reads
 `MERGE_GATE_V4_BLOB`. A failed registration leaves the gate fail-closed; retry
 with `--register-only`, never weaken or roll back the gate.
+
+The normative event order is exact:
+
+`collect_outer -> verify_outer -> enter_land_lock -> verify_final -> normal_non_admin_merge -> refresh_main -> prove_ancestry -> read_main_gate_blob -> patch_registration -> verify_registration`
+
+Putting refresh and ancestry proof between merge and registration makes
+"register only after the push" mechanical rather than remembered.
+
+Parent `AGENTS.md` is the publication authority under the owner's 2026-08-10
+decision. Normal Hermit heads require an exact-head counted local ledger PASS;
+hosted CI is P2 and decides nothing. A head changing its registered validation
+producer is the exception: local is intentionally non-authoritative because a
+producer cannot vouch for itself, so registered exact-head hosted authority is
+required. Normal work uses reviewed PRs; Red-Tip and the nine-condition rotation
+above are the only named direct-main scopes. Hermit `docs/MERGE_QUEUE.md`
+describes mechanisms; its broad direct-FF sentence grants no permission.
+
+Remediation follows the same authority. An ordinary Hermit hosted red cannot
+recommend or dispatch a `main` mutation; a ledger red is actionable but does not
+itself authorize a revert. A producer-exception hosted red rejects that
+candidate, not `main`. Any revert needs a durable owner record bound to the exact
+candidate revert, current-main, and failed-land identities.
 
 ### Parent changes: hosted exact-head evidence, not a synthetic validate receipt
 
@@ -282,18 +304,21 @@ never wedges a land:
    `mergeStateStatus` (it sticks at `UNKNOWN`). Attempt `gh pr merge --rebase`
    once under the freshly evaluated final-boundary verdict. A refusal reruns the
    gate so mutable-tip evidence cannot age inside a merge retry loop.
-3. **Treat the label only as a cache** —
-   `exact-head-validation-authority.sh` independently queries the counted local
-   receipt and the versioned hosted job set. Either qualifying exact-head green
-   is sufficient; missing/partial/stale evidence is NO_RESULT, and a genuine red
-   from either path blocks. Only `apply-local-label` may materialize the optional
+3. **Treat the label only as a cache** — for a normal Hermit head,
+   `exact-head-validation-authority.sh --local-only` independently queries the
+   counted local receipt. Hosted is P2, not an alternate positive. A head that
+   changes a registered local producer is intentionally ineligible for local
+   authority and instead requires the registered exact-head hosted authority.
+   Missing/partial/stale evidence is NO_RESULT; genuine red blocks. Only
+   `apply-local-label` may materialize the optional
    local cache label. It requires a nonzero executed-test count, hashes the
    referenced log, and publishes the selected ledger row as an immutable receipt
    on `rrnewton/dev-hermit:validation-receipts` before commenting or labeling.
 4. **Dereference the final authorization** — immediately before merge, query the
-   same exact-head combiner. A local positive additionally dereferences the
-   current PR comment through `ci-hub/validation/verify_receipt.sh`; a hosted
-   positive remains independently sufficient. Missing, forged, stale, tampered,
+   same policy-selected authority. A normal local positive additionally
+   dereferences the current PR comment through
+   `ci-hub/validation/verify_receipt.sh`; a producer-changing candidate must use
+   the registered hosted result, never its own local receipt. Missing, forged, stale, tampered,
    zero-executed, partial, or contradictory evidence refuses the landing before
    any merge call. The merge itself uses `--match-head-commit` so a concurrent
    push cannot inherit that authorization. A failed merge call does not reuse
@@ -337,24 +362,25 @@ branches and landed #1188/#1209 as semantic no-ops.
 
 ### Deployment obligation: `hermit-merge-gate-authority-deployment`
 
-The parent policy and lander implement portable-hosted OR counted-local
-authority, but that rule is not fully deployed in Hermit until a follow-up
-Hermit PR lands. Hermit's current `main` remains deliberately stricter: its
+The parent policy and lander implement counted-local authority for normal
+Hermit heads. A registered-producer-changing head is intentionally excluded
+from that local path and requires registered exact-head hosted authority. This
+rule is not fully deployed in Hermit until a follow-up Hermit PR lands. Hermit's
+current `main` remains deliberately different: its
 `.github/workflows/merge-gate.yml` GitHub leg requires both portable and
 privileged jobs, and its two verifier-download steps pin an older dev-hermit
-`verify_receipt.sh`. Therefore a portable-only hosted positive can still be
-blocked by merge-gate; do not report the portable-only rule as operational in
-Hermit or bypass the required check during this transition.
+`verify_receipt.sh`. Do not report the parent hierarchy as operational end to
+end in Hermit or bypass the required check during this transition.
 
 After this parent revision lands, the follow-up Hermit PR must:
 
-1. update `.github/workflows/merge-gate.yml` so its GitHub positive uses the
-   exact portable job set without requiring `ci-privileged.yml`;
+1. update `.github/workflows/merge-gate.yml` so the registered hosted producer
+   exception uses its exact policy-bound job set;
 2. advance both immutable dev-hermit `verify_receipt.sh?ref=...` downloads and
    their SHA-256 checks to this landed parent commit; and
-3. update `docs/MERGE_QUEUE.md` to name the same one-job hosted authority and
-   new verifier pin, then bracket portable-only positive, incomplete/no-result,
-   genuine-red, and counted-local-positive paths before landing.
+3. update `docs/MERGE_QUEUE.md` to point to the parent hierarchy and new verifier
+   pin, then bracket normal counted-local positive, producer-changing hosted
+   positive, incomplete/no-result, and genuine-red paths before landing.
 
 Every terminal bail emits a visible ABANDON signal — stderr **and** a role-tagged
 PR comment — so an abandoned PR never silently languishes (the #244 pattern).

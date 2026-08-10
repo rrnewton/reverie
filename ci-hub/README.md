@@ -377,21 +377,28 @@ path. This early check is deliberately not the acquisition authority:
 `validate-lock run` repeats the same predicate at the box-anchor boundary, so a
 watch arrival between the precheck and the claim still makes re-dispatch yield.
 
-Either exact-SHA green satisfies the obligation immediately; a pending,
-running, absent, or cancelled/no-result peer is supplemental and never becomes
-an AND gate. `pending` and `running` are reserved for dereferenced queued or
-executing producers: a missing workflow/run/job has no producer and is recorded
-as `no_result`. The global watcher reconciles stale producer-looking states and
-includes satisfied records with a real in-flight producer, so a watcher restart
-cannot preserve a fake pending state or lose the peer's eventual result.
-A simultaneously known green/red pair is a symmetric, P0
-`investigation_required` disagreement and never reaches the remediation
-actuator. If an already-started peer later reports red, evaluation reopens the
-satisfied record as that same non-actuating disagreement; satisfaction never
-waits for it. With no green, an authoritative GitHub red changes the obligation to
-`remediation_required` and appends `remediation.state=triggered`: revert is
-recommended when the bad land is still the main tip; fix-forward is recommended
-after main has advanced. Outstanding work is enumerable from state alone with
+Parent `AGENTS.md` is authoritative under the owner's 2026-08-10 decision;
+this operational document follows it. Authority is repository-specific and the
+same selection governs landing and remediation. For a normal Hermit head, only a counted exact-head local ledger
+result decides; hosted CI is P2 diagnostic evidence and cannot satisfy, reopen,
+or actuate the obligation. A Hermit head that changes its registered local
+producer is the narrow exception: local is intentionally non-authoritative and
+the registered exact-head hosted job decides because a producer cannot vouch
+for itself. Reverie's versioned hosted authority remains unchanged.
+
+A green from the selected authority satisfies the obligation. `pending` and
+`running` are reserved for dereferenced queued or executing producers; a missing
+workflow/run/job is `no_result`. Results outside the selected authority remain
+visible diagnostics, never an AND gate or mutation trigger. An authoritative
+red remains loud and changes the obligation to `remediation_required`, but a red
+is a verdict, not permission to rewrite `main`: no automatic revert is
+recommended or dispatched. A revert requires a durable owner-authored record
+bound to the exact candidate revert SHA, current-main SHA, and failed-land
+identity; otherwise the obligation is explicitly awaiting that decision.
+The owner record is an exact-main commit comment headed
+`REMEDIATION-REVERT-AUTHORIZED`; consume it once with
+`ci-hub/ci-hub authorize-revert OBLIGATION_ID` before any revert dispatch.
+Outstanding work is enumerable from state alone with
 `obligations --actionable`. A replacement lander acknowledges inherited work at
 startup with `inherit-obligations`; no notification delivery is required. The
 obligation remains visible and unhealthy even after acknowledgment, until the

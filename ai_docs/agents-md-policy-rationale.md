@@ -41,7 +41,7 @@ row only from exact code and tests, never from a PR description.
 | **Adversarial/human review:** reviewer lane, verdict, PR number, and exact reviewed head in a durable receipt produced by that lane. | **None.** `scripts/core-review-protocol-lint.sh` checks cache labels only. | **MISSING.** Push-time label invalidation narrows staleness but does not prove who reviewed what; `passed-review-*`, numbered review labels, and `human-approved` are assertions until a lane-specific exact-head receipt is dereferenced. |
 | **Landing authorization:** a durable coordinator/owner decision names the exact repository, PR, and head allowed to land, with no unresolved hold. | **None.** `land-pr.sh` accepts command-line PR/branch arguments and does not dereference a task authorization record. | **MISSING.** Agent assignment, a ready label, or invoking the lander is not authorization. A future verifier must consume an exact-head authorization receipt; keep this human/coordinator gate explicit until then. |
 | **Landed PR identity and task closure:** GitHub's `mergeCommit.oid` is reachable from a freshly fetched target branch. | `ci-hub verify-landing`; `ci-hub/closure/verified_close.py` calls it. | **PARTIAL.** `ci-hub/landing/land-pr.sh` reimplements the proof, and `ci-hub/remediation/land_and_arm.py` can arm from `state == MERGED` plus a shaped `mergeCommit.oid` without proving ancestry. Route both through `verify-landing`; never substitute PR-head ancestry, `MERGED`, or `mergeStateStatus`. |
-| **Hosted CI result:** an authoritative workflow/job run for the exact head, with terminal success distinct from failure and `NO_RESULT`. | Exact-head GitHub API run/job lookup plus the canonical result classifier in `ci-hub/check_outcome.py`. | **PARTIAL.** The lander, remediation, health, and history paths call the classifier, but other consumers still hand-roll lookup/classification; `hermit/scripts/pr_status.py` maintains separate conclusion sets and #1593 adds another implementation. Cancelled/skipped/missing/queued/stale are `NO_RESULT`, not red or green. |
+| **Hosted CI result:** a registered workflow/job result for the exact head, with terminal success distinct from failure and `NO_RESULT`; landing authority only for a registered-producer-changing Hermit PR (and repositories whose policy explicitly selects hosted). | Exact-head GitHub API run/job lookup plus the canonical result classifier in `ci-hub/check_outcome.py`. | **PARTIAL.** The producer exception, remediation, health, and history paths call the classifier, but other consumers still hand-roll lookup/classification. Cancelled/skipped/missing/queued/stale are `NO_RESULT`, not red or green. |
 | **Workflow-policy version:** the required context was emitted by the trusted current workflow definition, not an older PR-branch YAML with weaker rules. | Hermit #1579's versioned context/blob check and ruleset reconciler. | **MISSING on main.** Until the versioned gate lands and every required-context consumer switches, stale branch YAML can emit a current-looking green. |
 | **Live dependency currency:** every tracked manifest and lockfile pin equals the freshly resolved canonical remote ref. | `scripts/check-reverie-pin.rs` from Hermit #1591: live `git ls-remote`, tracked `Cargo.toml` + `Cargo.lock` scan, exact equality. | **PARTIAL until #1591 lands and all paths call it.** The reviewed verifier has an exact-tip positive and real ancestor-behind negative; local validate, both DAGs, hosted aggregate, merge gate, and receipt production are the required consumers. |
 | **Workspace ownership:** `worktree-state.json`, the managed `ACTIVE.md` row, registered worktrees, and actual checked-out branches/detached SHAs agree. | `scripts/check-worktree-registry.rs`; its fixture accepts 2/2 correct rows and refuses planted content drift while preserving a 1/1 correct control. | **PARTIAL.** `allocate-worktree.rs --check-only` calls it, but normal allocation, `release-worktree.rs`, and `worktree-gc.sh` do not all run the verifier before acting. They must call it rather than trusting or independently parsing one surface. |
@@ -146,6 +146,68 @@ correct yet measure the wrong thing; the trap is reaching for the first availabl
 **unit** (a count is not a rate; an aggregate is not a per-unit; a load average is not a utilisation; a
 source tree is not a shipping artifact), and its **denominator/comparison base**. When a ratio looks
 surprising, interrogate the denominator before filing work against the numerator.
+
+### Hermit landing hierarchy — evidence, authorization, enforcement
+
+The owner settled the hierarchy repeatedly on 2026-08-10: **"we land based on local validate recorded in
+the ledger"** and **"we have largely given up on hosted CI for now."** Most-recent owner direction wins over
+older prose. Parent `AGENTS.md` is the fleet publication authority because it owns checkout, review, landing,
+and direct-main permissions. Hermit product docs describe the mechanism. GitHub rulesets enforce deletion,
+non-fast-forward, and linear-history safety. A mechanism that can push and a server that accepts a push do not
+authorize an agent to make it.
+
+This is the same most-recent-wins rule that already reversed the DBT rename deferral, lifted the temporary
+do-not-merge default, and replaced Reverie-pin tip equality with ancestry plus monotonicity. Keeping an older
+sentence because it is versioned would reintroduce policies the owner explicitly superseded.
+
+The resulting distinctions are load-bearing:
+
+- A counted full local validate at the exact head in the canonical ledger is Hermit's normal landing
+  **evidence**. Missing, stale, partial, killed, zero-execution, or failed evidence is not green.
+- Hosted CI is distant P2 diagnostic information and ordinarily decides nothing. The narrow exception is a PR
+  modifying a registered local-validation producer: candidate-produced evidence cannot vouch for that producer,
+  so local is intentionally non-authoritative and registered exact-head hosted authority is required. #2073's
+  local 56/56 therefore did not authorize its producer-definition change.
+- Reverie's separately versioned hosted policy is unchanged.
+- Normal Hermit publication remains a reviewed feature PR through the tracked lander. Local green is necessary
+  evidence, not a free-standing permission to push `main`.
+- Direct-main authority exists only in named scopes: Red-Tip Direct Land and Gate-Definition Rotation. The live
+  ruleset's advisory gate neither creates a third exception nor weakens either scope.
+
+Remediation consumes that same repository-specific authority; it cannot promote a diagnostic into a landing
+verdict. For Hermit, an ordinary hosted red remains P2 and cannot recommend or dispatch a `main` mutation. A
+local-ledger red is loud and actionable but likewise does not authorize an automatic revert. Even when hosted
+is authoritative for a registered-producer-changing candidate, its red is a verdict on that candidate, not
+permission to rewrite `main`. A revert requires a durable owner-authored authorization bound to the exact
+candidate revert SHA, current-main SHA, and failed-land identity. Parent `AGENTS.md` is authoritative because it
+owns fleet publication and remediation permission under the owner's most-recent 2026-08-10 decisions. The older
+hosted-red remediation prose in `ci-hub/README.md` remained nonconforming after
+`ci-hub/remediation/protocol.py` was corrected at `53c2bedec401`; this revision reconciles the prose rather than
+deleting its history.
+
+For gate changes, prefer **versioned overlap**: add a new immutable workflow/context while the registered old
+version remains byte-identical, let the old version judge the bootstrap PR, register and observe the new version
+from `main`, then retire the old version later. Same-file direct rotation is the narrow fallback. Its consumer
+refuses nine classes: (1) absent/malformed/expired owner record; (2) repo/PR mismatch; (3) moved base or non-FF
+head; (4) stale PR/checkout head; (5) old/new workflow-blob mismatch; (6) changed-path mismatch; (7) missing,
+stale, or malformed dual approval or a current rejection; (8) absent exact-head counted local PASS; and (9)
+anything other than the expected registered-definition-only self-refusal. The owner record binds repo, PR,
+base, head, old/new blobs, complete paths, reason, expiry, and signer. The consumer re-reads under `land-lock`,
+then composes through independently verifying normal non-admin
+`land-pr.sh --gate-rotation --no-rebase`, whose mutation remains
+`gh pr merge --rebase --match-head-commit`. There is no second mutation entry point or raw main refspec. The
+load-bearing sequence is exactly `collect_outer -> verify_outer -> enter_land_lock -> verify_final ->
+normal_non_admin_merge -> refresh_main -> prove_ancestry -> read_main_gate_blob -> patch_registration ->
+verify_registration`. Refresh and ancestry proof between merge and registration make "register only after the
+push" mechanical rather than remembered. Registration failure is visible and leaves the old gate fail-closed;
+register-only recovery repeats authorization, ancestry, and main-blob checks without merging again. This is the
+single supported client composition, not server-side enforcement: live rulesets still admit raw fast-forwards,
+so discipline outside it remains convention unless the owner adds a repository-boundary control.
+
+The Hermit `docs/MERGE_QUEUE.md` sentence saying an exact-head green branch may direct-fast-forward remains
+mechanism history but is explicitly superseded as authorization. It creates neither generic direct-main
+permission nor an exception to producer self-attestation. The document is retained rather than deleted; parent
+policy governs until a product-doc follow-up points back here.
 
 ### Red-Tip Direct Land — worked example
 
@@ -330,7 +392,7 @@ coordinator has no shell (AGENTS.md **Role Boundary**), so each bullet is an out
 for — the agent holding the shell runs the commands and reports.
 
 - **Before dispatch:** reconcile `ACTIVE.md` + both Git worktree lists + physical slot children; check parent/primaries/candidate slot for unexpected changes; confirm ≤ 12 active worktrees and ≤ 15 agents; record exclusive ownership or every sharing agent + disjoint path; confirm base SHA + publication target per repo, verifying a handed SHA against `ci-hub newest-green`; register the slot before work; apply *Establish what you have* when a premise came from a note/number.
-- **Before Hermit publication or landing:** re-read concurrent local state, remote `main`, and the exact PR head; verify the handoff SHA, diff, evidence, cleanliness; push/open only when authorized; require both hosted and self-hosted checks green at the exact head SHA; merge only when authorized; record the resulting `main` SHA + CI.
+- **Before Hermit publication or landing:** re-read concurrent local state, remote `main`, and the exact PR head; verify handoff SHA, diff, evidence, and cleanliness; push/open only when authorized; require counted exact-head local authority, except require registered exact-head hosted authority for a registered-producer change; merge only when authorized; record the resulting `main` SHA and evidence.
 - **Before parent pinning:** submodule commits clean, reviewed, tested, fetchable; inspect `git diff --submodule=log` before staging; stage only intended gitlinks + parent-owned files; validate a coordinated Hermit/Reverie pair when both move; commit parent changes to `main` only when the task authorizes it.
 - **Before closeout:** each changed repo has a clean committed feature branch; record exact SHAs + validation in the task and `ARCHIVED.md`; detach slot children at their parent-pinned gitlinks; remove/update the slot row; keep ≤ 5 parked; leave unrelated concurrent work exactly as found.
 - **Before closing a task (the OWNING AGENT closes it — superseded 2026-08-08):** the coordinator-only closure gate is GONE. An agent closes its own task with plain `tg update <id> --status closed` once it has posted the PR/artifact URL, exact SHA, and validation evidence and tagged `implemented`. `./ci-hub/bin/close-task` is retained but optional; it is still the only writer of the `CLOSURE-VERIFIED` note that discharges landing debt, so use it once the change is on `main`. See AGENTS.md **Task Lifecycle And Closure**.
