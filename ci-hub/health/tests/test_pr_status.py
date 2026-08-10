@@ -1830,6 +1830,31 @@ class DraftCensusThrottleTests(unittest.TestCase):
         self.assertEqual(second_age, 1.0)
         fetch.assert_called_once()
 
+    def test_expired_census_is_never_returned_when_refresh_is_unavailable(self) -> None:
+        stale_rows = [
+            {"number": 1, "isDraft": False},
+            {"number": 2, "isDraft": True},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            path = pr_status._census_cache_path("rrnewton/hermit", cache)
+            pr_status._write_census_cache(path, stale_rows, now=100.0)
+            with mock.patch.object(
+                pr_status,
+                "_fetch_open_pr_census_rest",
+                side_effect=pr_status.RepoUnavailable("REST refresh unavailable"),
+            ) as fetch:
+                with self.assertRaisesRegex(
+                    pr_status.RepoUnavailable, "REST refresh unavailable"
+                ):
+                    pr_status._cached_open_pr_census(
+                        "rrnewton/hermit",
+                        net_wrapper=[],
+                        cache_dir=cache,
+                        now=100.0 + pr_status.DEFAULT_CENSUS_TTL_SECS + 1.0,
+                    )
+        fetch.assert_called_once()
+
     def test_ready_health_and_rare_census_populations_stay_separate(self) -> None:
         ready = [_pr(1, _rollup(("COMPLETED", "SUCCESS")), head="a" * 40)]
         census = [

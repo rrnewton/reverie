@@ -185,6 +185,35 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertIn("PARTIAL SAMPLE, NOT A FLEET CENSUS", output)
         self.assertIn("unavailable=b/two", output)
 
+    def test_expired_census_refresh_failure_is_unavailable_not_last_value(self) -> None:
+        status = SimpleNamespace(
+            repo="a/one",
+            all_open=None,
+            open=2,
+            red=0,
+            green=2,
+            pending=0,
+            real_reds=0,
+            outage_suspected=False,
+            population_age_secs=None,
+            population_error="expired census could not refresh",
+        )
+        with mock.patch.object(
+            operational_health.pr_status, "DEFAULT_REPOS", ["a/one"]
+        ), mock.patch.object(
+            operational_health.pr_status,
+            "fetch_repo_status",
+            return_value=status,
+        ):
+            result, output = self.capture(operational_health.pull_request_gate)
+        self.assertEqual(result, 1)
+        self.assertIn("state=degraded", output)
+        self.assertIn("total=unknown", output)
+        self.assertIn("a/one:all_open=unknown,ready_non_draft=2", output)
+        self.assertIn("census_max_age_secs=unknown", output)
+        self.assertIn("population_unknown=a/one", output)
+        self.assertNotIn("all_open=177", output)
+
     def test_pull_request_all_repos_unavailable_is_not_zero_prs(self) -> None:
         # Every repo failing is "ci-hub/GitHub unavailable", never "no open PRs".
         with mock.patch.object(
