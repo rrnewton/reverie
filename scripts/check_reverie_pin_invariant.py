@@ -64,13 +64,31 @@ GIT_REPO_SCOPED_ENV = (
 )
 
 
+def proxy_disabled(variable: str = "PIN_INVARIANT_DISABLE_PROXY") -> bool:
+    """Has the caller explicitly disabled the proxy?
+
+    Intended semantics, stated here because the name has already misled once:
+    the exact string ``"1"`` disables the proxy; ``"0"``, empty, and unset all
+    leave it ENABLED.
+
+    This is a VALUE check, not a presence check, and the distinction is load
+    bearing. ``os.environ.get(name)`` used as a boolean is true for ``"0"`` --
+    ``"0"`` is a non-empty string, and non-empty strings are truthy in Python.
+    So the presence form fired for ``DISABLE_PROXY=0``, which is the natural way
+    to write "do not disable", and silently turned the proxy OFF. Matches the
+    ``env_flag(name, "1")`` contract used elsewhere in the tree; any other value,
+    ``"true"`` included, leaves the proxy enabled rather than guessing.
+    """
+    return os.environ.get(variable) == "1"
+
+
 def git(repo: Path, *args: str, network: bool = False, inherit_repo_env: bool = False):
     env = dict(os.environ)
     if not inherit_repo_env:
         for name in GIT_REPO_SCOPED_ENV:
             env.pop(name, None)
     command: list[str] = []
-    if network and not os.environ.get("PIN_INVARIANT_DISABLE_PROXY"):
+    if network and not proxy_disabled():
         proxy = shutil.which(os.environ.get("WITH_PROXY", "with-proxy"))
         if proxy:
             command.append(proxy)

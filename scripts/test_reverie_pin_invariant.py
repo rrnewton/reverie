@@ -16,9 +16,11 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
+import os
 import subprocess
 import tempfile
 import unittest
+import unittest.mock
 
 from scripts import check_reverie_pin_invariant as inv
 
@@ -193,6 +195,64 @@ class ExitCodeTests(PinInvariantFixture):
         # Without this, --strict returning 1 proves nothing.
         self.assertEqual(inv.main(["--root", str(self.root), "--offline", "--strict"],
                                   out=StringIO()), 0)
+
+
+class ProxyDisableFlagTests(unittest.TestCase):
+    """PIN_INVARIANT_DISABLE_PROXY is VALUE-checked, not presence-checked.
+
+    Bracketed four ways because three of them were broken: the presence form
+    `os.environ.get(name)` is truthy for "0", so `DISABLE_PROXY=0` -- the
+    natural way to write "do not disable" -- silently switched the proxy OFF.
+    The inverse case matters just as much: a seam that never engages is as
+    broken as one that always does, so "1" must really suppress the proxy.
+    """
+
+    def _command(self, value: str | None) -> list[str]:
+        """The argv the networked git path would actually build."""
+        captured: list[list[str]] = []
+
+        def fake_run(command, **kwargs):
+            captured.append(list(command))
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        env = dict(os.environ)
+        env.pop("PIN_INVARIANT_DISABLE_PROXY", None)
+        if value is not None:
+            env["PIN_INVARIANT_DISABLE_PROXY"] = value
+        with unittest.mock.patch.dict(os.environ, env, clear=True), \
+             unittest.mock.patch.object(inv.shutil, "which", return_value="/usr/bin/with-proxy"), \
+             unittest.mock.patch.object(inv.subprocess, "run", fake_run):
+            inv.git(Path("/tmp"), "ls-remote", network=True)
+        return captured[0]
+
+    def test_unset_keeps_the_proxy(self) -> None:
+        self.assertIn("/usr/bin/with-proxy", self._command(None))
+
+    def test_zero_keeps_the_proxy(self) -> None:
+        # THE REGRESSION. "0" is a non-empty string and therefore truthy, so
+        # the old presence check disabled the proxy here.
+        self.assertIn("/usr/bin/with-proxy", self._command("0"))
+
+    def test_empty_keeps_the_proxy(self) -> None:
+        self.assertIn("/usr/bin/with-proxy", self._command(""))
+
+    def test_arbitrary_value_keeps_the_proxy(self) -> None:
+        # Only the exact "1" disables; we do not guess at "true".
+        self.assertIn("/usr/bin/with-proxy", self._command("true"))
+
+    def test_one_actually_disables_the_proxy(self) -> None:
+        # INVERSE CONTROL: the seam must still work when correctly set.
+        self.assertNotIn("/usr/bin/with-proxy", self._command("1"))
+
+    def test_predicate_directly(self) -> None:
+        for value, want in ((None, False), ("", False), ("0", False), ("true", False), ("1", True)):
+            env = dict(os.environ)
+            env.pop("PIN_INVARIANT_DISABLE_PROXY", None)
+            if value is not None:
+                env["PIN_INVARIANT_DISABLE_PROXY"] = value
+            with unittest.mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(inv.proxy_disabled(), want, f"value={value!r}")
+
 
 
 def inv_summary(root: Path) -> str:
