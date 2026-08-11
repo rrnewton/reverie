@@ -6,6 +6,13 @@ held by a dead owner only when both independent facts agree: no registered
 owner is in the live ORC fleet *and* no same-user process has a cwd below the
 slot.  That second condition prevents a live delegated worker without a tmux
 window from being mistaken for residue.
+
+The tick-hub slot-cap gate uses the narrower ``guarded_dead_owner_slots``
+interface below.  It does not consult the ORC fleet at all: it accepts only the
+canonical, flock-guarded ``validate-lock authority-status --json`` contract,
+whose owner identity is PID + boot_id + start_ticks.  Only the typed
+``dead`` owner verdict is proof of absence; alive, unknown, malformed, or
+unrelated owners produce no dead-owner finding.
 """
 
 from __future__ import annotations
@@ -285,6 +292,182 @@ def classify_slots(
             )
         )
     return residues
+
+
+def read_guarded_owner_authority(
+    root: Path = ROOT, fixture: Path | None = None
+) -> dict[str, object]:
+    """Read the one guarded process-identity authority, or fail closed.
+
+    A fixture file is accepted only as an explicit function argument so tests
+    can bracket the consumer without forging the production authority.  The
+    production path has no environment override and asks validate-lock for one
+    coherent snapshot taken while its guard is held.
+    """
+
+    if fixture is not None:
+        try:
+            raw = fixture.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SweepUnavailable(
+                f"cannot read owner-authority fixture {fixture}: {exc}"
+            ) from exc
+    else:
+        command = root / "ci-hub" / "ci-hub"
+        try:
+            result = subprocess.run(
+                (str(command), "validate-lock", "authority-status", "--json"),
+                cwd=root,
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SweepUnavailable(f"guarded owner authority unavailable: {exc}") from exc
+        if result.returncode != 0:
+            detail = " ".join((result.stdout + result.stderr).split())
+            raise SweepUnavailable(
+                f"guarded owner authority rc={result.returncode}: {detail}"
+            )
+        raw = result.stdout
+
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SweepUnavailable(
+            f"guarded owner authority returned invalid JSON: {exc}"
+        ) from exc
+    if not isinstance(value, dict) or value.get("schema_version") != 1:
+        raise SweepUnavailable("guarded owner authority has unsupported schema")
+    return value
+
+
+def guarded_dead_owner_slots(
+    registry: dict[str, object],
+    authority: dict[str, object],
+    occupied_slots: set[str],
+) -> list[Residue]:
+    """Return slots bound to the one owner that is *proven* dead.
+
+    This deliberately does not turn absence from a name census into death.
+    validate-lock already did the PID-reuse and reboot checks under its guard;
+    this consumer verifies the typed shape and then only joins its holder agent
+    to registered active/held slots.  A live process using the slot still wins:
+    dead registration ownership is immediate evidence, but never permission to
+    describe a busy directory as reclaimable.
+    """
+
+    raw_slots = registry.get("slots")
+    if not isinstance(raw_slots, dict):
+        raise SweepUnavailable("worktree-state.json slots is not an object")
+
+    holder = authority.get("holder")
+    owner = authority.get("owner")
+    if not isinstance(holder, dict) or not isinstance(owner, dict):
+        return []
+    if owner.get("liveness") != "dead":
+        return []
+
+    agent = holder.get("agent")
+    boot_id = owner.get("boot_id")
+    pid = owner.get("pid")
+    start_ticks = owner.get("start_ticks")
+    if (
+        not isinstance(agent, str)
+        or not agent
+        or not isinstance(boot_id, str)
+        or not boot_id
+        or type(pid) is not int
+        or pid <= 0
+        or type(start_ticks) is not int
+        or start_ticks <= 0
+    ):
+        raise SweepUnavailable("dead owner authority omitted its guarded process identity")
+
+    residues: list[Residue] = []
+    for slot, raw in sorted(raw_slots.items()):
+        if not isinstance(raw, dict) or raw.get("status") not in {"active", "held"}:
+            continue
+        if slot in occupied_slots:
+            continue
+        raw_agents = raw.get("agents")
+        if not isinstance(raw_agents, list):
+            continue
+        matching = [
+            entry for entry in raw_agents
+            if isinstance(entry, dict) and entry.get("name") == agent
+        ]
+        if not matching:
+            continue
+        tasks = sorted(
+            str(entry.get("task")) for entry in matching if entry.get("task")
+        )
+        residues.append(
+            Residue(
+                kind="held-slot-dead-owner",
+                key=str(slot),
+                evidence=(
+                    f"owner={agent} tasks={','.join(tasks) or 'none'} "
+                    f"owner_identity={pid}@{start_ticks} boot_id={boot_id} "
+                    f"authority=validate-lock-guarded authority_state="
+                    f"{authority.get('state')} owner_liveness=dead "
+                    "live_processes_under_slot=0"
+                ),
+                route_task=TASK_ID,
+                route_authority="coordinator-slot-lifecycle",
+            )
+        )
+    return residues
+
+
+def guarded_live_owner_slots(
+    registry: dict[str, object], authority: dict[str, object]
+) -> set[str]:
+    """Slots whose registered owner is the exact guarded live process.
+
+    Positive liveness wins over an idle clock.  This is the other half of the
+    dead-owner predicate: the tick must not recommend reclaiming a slot merely
+    because its live owner has not touched files there recently.
+    """
+
+    raw_slots = registry.get("slots")
+    if not isinstance(raw_slots, dict):
+        raise SweepUnavailable("worktree-state.json slots is not an object")
+    holder = authority.get("holder")
+    owner = authority.get("owner")
+    if not isinstance(holder, dict) or not isinstance(owner, dict):
+        return set()
+    if owner.get("liveness") != "alive":
+        return set()
+
+    agent = holder.get("agent")
+    boot_id = owner.get("boot_id")
+    pid = owner.get("pid")
+    start_ticks = owner.get("start_ticks")
+    if (
+        not isinstance(agent, str)
+        or not agent
+        or not isinstance(boot_id, str)
+        or not boot_id
+        or type(pid) is not int
+        or pid <= 0
+        or type(start_ticks) is not int
+        or start_ticks <= 0
+    ):
+        raise SweepUnavailable("live owner authority omitted its guarded process identity")
+
+    return {
+        str(slot)
+        for slot, raw in raw_slots.items()
+        if isinstance(raw, dict)
+        and raw.get("status") in {"active", "held"}
+        and isinstance(raw.get("agents"), list)
+        and any(
+            isinstance(entry, dict) and entry.get("name") == agent
+            for entry in raw["agents"]
+        )
+    }
 
 
 def read_registry() -> dict[str, object]:

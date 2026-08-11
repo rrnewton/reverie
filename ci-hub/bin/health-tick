@@ -17,6 +17,13 @@ if [[ -n ${HERMIT_AGENT_SNAPSHOT_JSON:-} ]]; then
 fi
 cd "$ROOT"
 
+# Hard Invariant 13 is an aggregate COUNT, not an idleness threshold.  The
+# worktree_disk_residue reminder inherits this explicit policy value and fails
+# whenever the active registry count exceeds it, even if every individual slot
+# is fresh.  Keep the default in slot_disk_residue.py for direct invocations;
+# spelling it here binds the running tick to the policy instead of ambient state.
+export DEV_HERMIT_ACTIVE_SLOT_CAP=12
+
 # Carry the provenance verdict INTO the report rather than leaving it on stderr.
 #
 # "agent-utils is dirty" and "health could not be determined" are different

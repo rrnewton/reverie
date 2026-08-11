@@ -1,32 +1,27 @@
 #!/usr/bin/env python3
-"""Ask the DISK question about worktree slots, never the AGENT question.
+"""Measure worktree slot capacity, identity-bound ownership, and disk residue.
 
-WHY THIS EXISTS, AND WHY IT REPLACES A LIVENESS CHECK. Huge worktree slots hang
-around under `worktrees/` long after anything was working in them, and nothing
-reclaims them. That is a real disk problem and it must keep being detected.
+THREE DIFFERENT QUANTITIES.  The active-slot cap is an aggregate registry count
+against Hard Invariant 13.  A dead-owner finding is an exact process-identity
+verdict from validate-lock's guarded sidecar.  Disk residue is a per-directory
+size/occupancy/idleness measurement.  None substitutes for another: ninety-two
+fresh slots violate a cap of twelve even though no individual slot is old.
 
-Its predecessor (`scripts/worktree_liveness.py --fail-on-new-dead`, wired as the
-`worktree_new_dead_owner` tick-hub gate) detected it by asking *"is the agent that
-owns this slot dead?"* -- and that is the wrong question asked of the wrong
-authority. ORC owns the fleet and answers agent liveness definitively; a second
-observer guessing at it from a registry file only manufactures disagreement. On
-2026-08-08 that disagreement produced a false "agent died" alarm naming the agent
-holding the *freshest* activity timestamp on the box. Under the coordinator's
-autonomous-replacement mandate, acting on it would have destroyed a live agent
-mid-P0.
+WHAT THIS STILL REFUSES.  Its predecessor guessed agent death from a registry
+name missing in an ORC fleet snapshot.  On 2026-08-08 that disagreement falsely
+named the agent with the freshest activity timestamp as dead.  This gate never
+uses that census or `agent_liveness_probe.py`.  It accepts a dead owner only when
+the canonical guarded authority says the recorded PID + boot_id + start_ticks is
+dead; `alive` suppresses disk-idleness reclaim for the matching registered slot,
+and unknown is never converted to dead.
 
-The blast radii are not symmetric. A wrong answer to "is this directory idle?"
-costs a directory being listed for a human to look at. A wrong answer to "is this
-agent alive?" costs an agent. So this tool asks only the first, and its finding
-authorizes nothing:
+The blast radii are not symmetric.  Every finding therefore authorizes nothing:
 
-    a slot is a RECLAIM CANDIDATE iff it exists on disk, consumes real space, and
-    no live process has been using it for a sustained period.
+* cap breach: active registry rows exceed the hard count, independent of age;
+* dead owner: exact guarded identity is dead and no live process uses the slot;
+* disk candidate: it consumes space and has sustained process-free idleness.
 
-No agent names. No ORC fleet census. No TaskGraph owner. No registry `status`
-field. Those are all somebody else's authority, and none of them is the question.
-
-DETECT ONLY. Nothing here removes, releases, resets, cleans, or prunes anything.
+DETECT ONLY.  Nothing here removes, releases, resets, cleans, or prunes anything.
 A flagged slot is very often holding the only copy of somebody's uncommitted work
 -- reclaiming is a coordinator decision made with a recovery SHA in hand, and this
 tool deliberately gives the coordinator no mechanism to skip that step.
@@ -54,11 +49,11 @@ THREE MEASUREMENT HONESTIES, because a number without them is not evidence:
    references to the same extents. The number is an upper bound on what reclaim
    yields, and `summary=` says so rather than implying a clean total.
 
-PAGES ON THE DELTA, REPORTS THE STANDING SET. `--gate` exits 1 only when a slot
-NEWLY becomes reclaimable, because a gate that fires every tick forever gets muted
-within a day -- a failure this repo has already had. The standing backlog is
-carried in the captured fields of every tick instead, so it stays visible without
-being a page.
+DISK PAGES ON THE DELTA; SAFETY BREACHES STAY FAILED.  A disk-idleness candidate
+pages only when newly reclaimable, because a permanent disk page gets muted.  A
+cap breach or proven dead owner is different: `--gate` remains failed while the
+condition holds and always carries the count/cap or guarded identity in captured
+fields.
 """
 
 from __future__ import annotations
@@ -68,9 +63,11 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+import residue_sweep
 
 WORKTREES_DIR = "worktrees"
 DEFAULT_STATE = Path(".tick-hub") / "slot-disk-residue-state.json"
@@ -82,6 +79,7 @@ DEFAULT_MIN_GIB = 1.0
 DEFAULT_REFRESH_HOURS = 12.0
 DEFAULT_DU_TIMEOUT = 120
 DEFAULT_MAX_MEASURE = 60
+DEFAULT_ACTIVE_SLOT_CAP = 12
 
 GIB = 1024.0 ** 3
 
@@ -115,6 +113,27 @@ def slots_on_disk(root: Path) -> set[str]:
         return {p.name for p in wt.iterdir() if p.is_dir() and not p.is_symlink()}
     except OSError as exc:
         raise ResidueUnavailable(f"cannot enumerate {wt}: {exc}") from exc
+
+
+def read_registry(path: Path) -> dict[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ResidueUnavailable(f"cannot read slot registry {path}: {exc}") from exc
+    if not isinstance(value, dict) or not isinstance(value.get("slots"), dict):
+        raise ResidueUnavailable(f"slot registry {path} has no slots object")
+    return value
+
+
+def active_slot_names(registry: dict[str, object]) -> set[str]:
+    raw_slots = registry.get("slots")
+    if not isinstance(raw_slots, dict):
+        raise ResidueUnavailable("slot registry slots is not an object")
+    return {
+        str(name)
+        for name, raw in raw_slots.items()
+        if isinstance(raw, dict) and raw.get("status") == "active"
+    }
 
 
 @dataclass
@@ -471,13 +490,42 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-measure", action="store_true",
                    help="skip du entirely and use only cached sizes")
     p.add_argument("--state", default=None, help=f"state file (default {DEFAULT_STATE})")
+    p.add_argument("--registry", default=None,
+                   help="slot registry (default <root>/worktree-state.json)")
+    p.add_argument(
+        "--active-slot-cap", type=int,
+        default=int(os.environ.get("DEV_HERMIT_ACTIVE_SLOT_CAP", DEFAULT_ACTIVE_SLOT_CAP)),
+        help=f"hard active-slot cap (default {DEFAULT_ACTIVE_SLOT_CAP})",
+    )
+    p.add_argument(
+        "--test-owner-authority-json", default=None,
+        help="test-only fixture for guarded validate-lock authority JSON",
+    )
     p.add_argument("--dry-run", action="store_true",
                    help="do not persist state (idle clocks and baseline stay unchanged)")
     args = p.parse_args(argv)
 
+    if args.active_slot_cap < 0:
+        p.error("--active-slot-cap must be non-negative")
+
     try:
         root = repo_root(Path(args.root) if args.root else None)
         state_path = Path(args.state) if args.state else root / DEFAULT_STATE
+        registry_path = Path(args.registry) if args.registry else root / "worktree-state.json"
+        # ``--root`` is the existing disposable-fixture interface used by the
+        # disk-only tests.  Such a fixture has neither the parent registry nor
+        # ci-hub; preserve that intentionally narrow mode.  Production has the
+        # canonical executable and therefore refuses a missing registry.
+        disk_only_fixture = bool(args.root) and not (root / "ci-hub" / "ci-hub").is_file()
+        if args.test_owner_authority_json and not disk_only_fixture:
+            raise ResidueUnavailable(
+                "--test-owner-authority-json is restricted to a disposable --root fixture"
+            )
+        if disk_only_fixture and args.registry is None and not registry_path.exists():
+            registry: dict[str, object] = {"slots": {}}
+        else:
+            registry = read_registry(registry_path)
+        active_slots = active_slot_names(registry)
         prior = read_state(state_path)
         now = datetime.now(timezone.utc)
         results, next_state, occ = evaluate(
@@ -486,11 +534,42 @@ def main(argv: list[str] | None = None) -> int:
             refresh_hours=args.refresh_hours, max_measure=args.max_measure,
             du_timeout=args.du_timeout, measure=not args.no_measure,
         )
+        try:
+            if disk_only_fixture and args.test_owner_authority_json is None:
+                authority: dict[str, object] = {
+                    "schema_version": 1,
+                    "state": "free",
+                    "holder": None,
+                    "owner": None,
+                }
+            else:
+                authority = residue_sweep.read_guarded_owner_authority(
+                    root,
+                    Path(args.test_owner_authority_json)
+                    if args.test_owner_authority_json
+                    else None,
+                )
+            dead_owner = residue_sweep.guarded_dead_owner_slots(
+                registry, authority, set(occ.counts)
+            )
+            live_owner_slots = residue_sweep.guarded_live_owner_slots(
+                registry, authority
+            )
+        except residue_sweep.SweepUnavailable as exc:
+            raise ResidueUnavailable(str(exc)) from exc
     except ResidueUnavailable as exc:
         # Never silent: an unreadable input is `unknown`, which is not `ok`.
         print(f"state={UNKNOWN}")
         print(f"summary=slot disk residue unavailable: {exc}")
         return 2
+
+    for result in results:
+        if result.slot in live_owner_slots:
+            result.reclaimable = False
+            result.reason = (
+                "validate-lock-guarded registered owner is alive; "
+                "idle time cannot qualify this slot"
+            )
 
     current = {r.slot for r in results if r.reclaimable}
     reported = prior.get("reported")
@@ -510,10 +589,36 @@ def main(argv: list[str] | None = None) -> int:
 
     state, summary, fields = summarize(results, occ, fresh, args.min_gib)
 
+    active_count = len(active_slots)
+    active_excess = max(0, active_count - args.active_slot_cap)
+    fields.update({
+        "active_slots": active_count,
+        "active_slot_cap": args.active_slot_cap,
+        "active_slot_excess": active_excess,
+        "dead_owner_slots": len(dead_owner),
+        "guarded_live_owner_slots": len(live_owner_slots),
+    })
+    findings: list[str] = []
+    if active_excess:
+        findings.append(
+            f"ACTIVE SLOT CAP BREACH: {active_count} active slot(s) against cap "
+            f"{args.active_slot_cap} (excess {active_excess})"
+        )
+    if dead_owner:
+        findings.append(
+            f"{len(dead_owner)} slot(s) have a validate-lock-guarded owner proven dead "
+            f"and no live process using the slot: "
+            + ", ".join(item.key for item in dead_owner)
+        )
+    if findings:
+        state = "actionable"
+        summary = "; ".join([*findings, summary])
+
     if args.json:
         print(json.dumps({
             "state": state, "summary": summary, **fields,
             "new_reclaimable": sorted(fresh),
+            "dead_owner": [asdict(item) for item in dead_owner],
             "slots": [r.to_dict() for r in results],
         }, indent=2, sort_keys=True))
     else:
@@ -526,8 +631,10 @@ def main(argv: list[str] | None = None) -> int:
                 mark = "RECLAIMABLE" if r.reclaimable else "idle       "
                 new = " NEW" if r.slot in fresh else ""
                 print(f"slot={r.slot} {mark}{new} {r.reason}")
+        for item in dead_owner:
+            print(f"slot={item.key} DEAD_OWNER {item.evidence}")
 
-    return 1 if (args.gate and fresh) else 0
+    return 1 if (args.gate and (fresh or active_excess or dead_owner)) else 0
 
 
 if __name__ == "__main__":
