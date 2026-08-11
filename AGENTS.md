@@ -451,19 +451,14 @@ below are mandatory for every implementation and review agent.
 
    The PR link and the exact tested SHA are required, not optional. A branch
    name alone is not evidence.
-3. **Adversarial review confirms the work exists in the PR, and it comes BEFORE
-   the close.** A reviewer checks the claimed diff and exact-SHA validation. A
+3. **Adversarial review confirms the work exists in the PR, and it precedes the
+   close.** A reviewer checks the claimed diff and exact-SHA validation. A
    Reverie-only change is floored at L0 and does not establish a determinism
-   guarantee on its own. The ordering is the point: an approval issued after a
-   task is closed is a *record*, not a *check*, and a sequence that normalizes
-   it stops approval meaning anything. If the published artifact is missing,
-   superseded, or does not contain the claim, the task does not proceed to
-   rule 4.
-
-   Reopening stays available for the case where review lands late anyway —
-   strip the `implemented` tag and reopen — but that is the exception, not the
-   normal path. Do not read the availability of a remedy as permission to skip
-   the step it remedies.
+   guarantee on its own. If the published artifact is missing, superseded, or
+   does not contain the claim, strip the `implemented` tag and reopen the task.
+   The parent orders these steps and its own rule 3 opens with "**Then** the
+   owning agent closes its own task", so review is a precondition of rule 4
+   below rather than a step that follows it.
 4. **Then the owning agent closes its own task** — `tg update <task> --status
    closed`. No coordinator, no gateway. Close once rule 1 is satisfied and the
    PR is published; do **not** hold it open waiting for the merge. Work that is
@@ -493,10 +488,19 @@ the lower status and say why in a task note.
 
 **`closed` + `implemented` (the owning agent closes, once evidenced):**
 
-- Branch pushed, PR open, adversarial review satisfied, exact-head validation
-  green, awaiting **only** the merge. "Do not hold it open waiting for the
-  merge" means exactly that and nothing broader: waiting for a merge is not a
-  blocker, so it is not grounds to stay open.
+- Branch pushed, PR open, exact-head validation green, awaiting merge.
+
+**Blocked — stays `in_progress`/`open`, never `implemented`, never `closed`:**
+
+The parent states this exception directly: "Blocked work stays
+`in_progress`/`open` with blocker and partial SHA — never `implemented`, never
+`closed`." Record the blocker and the partial SHA and leave the task open.
+
+- A dependency has not landed — e.g. a Reverie change whose consuming Hermit pin
+  bump is still outstanding. This case is the parent's wording verbatim.
+- Validation is red, or the exact-head receipt is missing or stale. The parent
+  does not name this case; treating a PR that cannot land as blocked is a
+  reading of its exception, recorded here as a reading rather than a quotation.
 
 **`closed` + `CLOSURE-VERIFIED` (landing debt discharged):**
 
@@ -506,24 +510,6 @@ the lower status and say why in a task note.
 - A coordinated Hermit/Reverie change: the Reverie PR merged first, the Hermit
   consumer revalidated against the exact landed SHA, and the parent gitlink
   updated.
-
-**Blocked — stays `in_progress`/`open`, never `implemented`, never `closed`:**
-
-This is the parent's own exception and it is not optional. Blocked work stays
-open with the blocker and the partial SHA recorded. Closing a blocked task does
-not resolve the blocker; it deletes the consequence of having one, which is the
-failure mode this whole section exists to prevent.
-
-- **Validation is red, or the exact-head receipt is missing or stale.** A PR
-  that cannot land is blocked. Closing it converts a visible failure into a
-  closed record and removes the pressure to fix the red. Report the exact
-  failure and leave the task open.
-- **A dependency has not landed** — e.g. a Reverie change whose consuming Hermit
-  pin bump is still outstanding. Record both SHAs and the direction of the
-  dependency, and leave it open.
-
-The distinction from the case above is narrow and deliberate: *awaiting only a
-merge* is not a blocker, and everything else that stops a PR landing is.
 
 **Not done (stays `in_progress`, never tagged `implemented` or closed):**
 
