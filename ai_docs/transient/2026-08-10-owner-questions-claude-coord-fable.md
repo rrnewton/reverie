@@ -210,6 +210,65 @@ commit on the gitlink, eleven on the checkout.
 is reliable? My recommendation is to hold, then bump deliberately with a validate immediately
 before and after so any behaviour change is attributable. I have not acted either way.
 
+## Q10 — Four detcore product decisions, each blocking PRs, none resolvable by a merge
+
+These came out of characterizing the 41-PR `detcore*` cluster. Each is a **model choice**, not a
+conflict to resolve, and between them they block roughly twelve PRs. All four were verified in
+code, not inferred from titles.
+
+**1. chown: emulate or forward? (#1851 vs #1918 — direct contradiction)**
+#1851 moves `chown/fchown/fchownat/lchown` from PassThrough to
+`SyscallClassification::Determinized` and answers them with `handle_ownership_change_noop`
+returning `Ok(0)`, documented as *"the success is not observable through a later stat."*
+#1918 adds `translate_virtual_root_ownership`, rewriting `arg1`/`arg2` so the **real host chown
+runs**. Under #1851 the family never reaches `ExecuteOriginal`, so #1918 becomes dead code for the
+family it was written for. **Landing order silently decides which one is a no-op.**
+
+**2. flock: which copy? (#1742 vs #1759 — identity, not similarity)**
+Both PRs' `syscall_classification.rs` post-image is the **byte-identical blob `32b226dd`** (main is
+`a8df8603`). #1742 additionally carries `detcore/src/fd.rs +78/-0` — `flock_mode`, so a contended
+blocking *conversion* restores the lock Linux non-atomically dropped. #1759 changes `fd.rs` not at
+all, and its declared scope is *"Fence RDRAND determinization off LiteInst, SaBRe and e9patch"* —
+the flock work is out-of-scope carry-over of a strictly thinner copy. Recommendation: keep #1742's
+flock, strip it from #1759. Cheap, but it is someone's work either way.
+
+**3. DETLOG memory-record format (#1695 vs #1875 — mutually exclusive)**
+#1875 deletes `procmaps::display()` and drops the bracketed pathname *by design*; #1695 adds
+`display_as(map, "[heap]")`, which depends on that pathname existing. **#1875 deletes the function
+#1695 extends.** A combined design is plausible but would be a third PR.
+
+**4. Reverie pin: three mutually exclusive candidates**
+#1975 (`108f9ab4`, pre-rename), #2097 (`4664b5e5`, the only one rebased past DBI→DBT), #1767
+(`7c67585f`). Only one can be current.
+
+**Question:** rulings on 1–3, and confirmation that #2097's `4664b5e5` is the intended pin. I have
+not guessed at any of them; they are product-model decisions, not coordination.
+
+## Q11 — detcore's bottleneck is REVIEW, not validation, and I cannot fix it alone
+
+Batching does not help here, and my own reasoning about why was backwards — an agent corrected it:
+folding N critical PRs yields **2 reviews at one head instead of 2N reviews at N heads**, so folding
+*reduces* review cost. The problem is the absolute number.
+
+Of the 36 non-getrusage detcore PRs, **31 carry no review label at all and 9 are
+`post-facto-human-review`.** These are Hermit syscall handling, which is *critical* under your
+2026-08-10 policy, so two different agents should review each — roughly **70 outstanding reviews**
+against a cluster where only 5 PRs have any review.
+
+Two things make this tractable rather than hopeless, and one makes it your call:
+
+- **Cross-model review works and is worth its cost.** A Codex review of #2113 returned
+  REQUEST-CHANGES with four real defects that the authoring agent's own content-identity proof
+  could not surface — because that proof binds *content presence*, a different property from *guard
+  efficacy*. This is concrete evidence for Q1.
+- The detcore cluster is also **116–165 commits behind main**, so most of it needs a rebase before
+  review is even meaningful.
+
+**Question:** should this team spend its capacity on detcore review throughput — running paired
+Claude+Codex reviews against rebased heads — or stay on the drain lanes and leave detcore for a
+team that owns that code? Reviewing ~70 critical determinism changes is a large, slow commitment
+and I would rather be told to make it than assume it.
+
 ## Not questions — flagged for awareness
 
 - **ORC is down for two independent reasons.** `~/.tg/active_db` names `hermit`, but
