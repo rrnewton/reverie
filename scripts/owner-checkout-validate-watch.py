@@ -53,6 +53,16 @@ READMISSION_REFUSAL_PATTERN = re.compile(
 )
 CANONICAL_GREEN_VERDICT = "VALIDATED"
 CANONICAL_RED_VERDICT = "FAILED"
+COMMIT_VALIDATION_HARD_GREEN = "HARD_GREEN"
+COMMIT_VALIDATION_NOT_HARD_GREEN = "NOT_HARD_GREEN"
+COMMIT_VALIDATION_UNKNOWN = "UNKNOWN"
+CHECKOUT_FRESHNESS_UNKNOWN = "UNKNOWN"
+CHECKOUT_FRESHNESS_BY_RELATION = {
+    "current": "CURRENT",
+    "stale": "BEHIND",
+    "ahead": "AHEAD",
+    "diverged": "DIVERGED",
+}
 RELINK_DIRECT_SIGNATURES = (
     (
         "non-executable",
@@ -214,6 +224,7 @@ def checkout_revision_context(
         "head": head,
         "origin_main": origin_main,
         "relation": relation,
+        "freshness": CHECKOUT_FRESHNESS_BY_RELATION[relation],
         "behind": behind,
         "ahead": ahead,
         "current": current,
@@ -1347,7 +1358,8 @@ def render_message(result: dict[str, Any]) -> str:
         f"checkout: {result['checkout']}",
         f"sha: {result.get('sha') or 'unresolved'}",
         f"origin_main_sha: {result.get('origin_main_sha') or 'unresolved'}",
-        f"checkout_relation: {result.get('checkout_relation') or 'unresolved'}",
+        "checkout_freshness: "
+        + str(result.get("checkout_freshness") or CHECKOUT_FRESHNESS_UNKNOWN),
         f"checkout_behind: {result.get('checkout_behind')!r}",
         f"checkout_ahead: {result.get('checkout_ahead')!r}",
         f"verdict_qualifier: {result.get('verdict_qualifier') or 'unresolved'}",
@@ -1362,8 +1374,10 @@ def render_message(result: dict[str, Any]) -> str:
         f"canonical_verdict: {(result.get('canonical_status') or {}).get('verdict')!r}",
         f"canonical_receipt: {(result.get('canonical_status') or {}).get('receipt')!r}",
         f"admission_refusal: {result.get('admission_refusal')!r}",
-        f"landing_authority: {result.get('landing_authority')!r}",
-        f"landing_authority_reason: {result.get('landing_authority_reason') or 'none'}",
+        "commit_validation_state: "
+        + str(result.get("commit_validation_state") or COMMIT_VALIDATION_UNKNOWN),
+        f"commit_validation_sha: {result.get('commit_validation_sha') or 'unresolved'}",
+        f"commit_validation_reason: {result.get('commit_validation_reason') or 'none'}",
         f"lock_admission: {result.get('lock_admission')!r}",
         f"lock_block_evidence: {result.get('lock_block_evidence')!r}",
         f"lock_holder: {result.get('lock_holder')!r}",
@@ -1439,7 +1453,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     message_path = state_dir / "results" / f"{attempt_id}.md"
     invocation_ledger = state_dir / "invocations.jsonl"
     result: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "attempt_id": attempt_id,
         "started_at": utc_now(),
         "checkout": str(checkout),
@@ -1448,7 +1462,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         "reason": "initializing",
         "executed_tests": None,
         "dirty_paths_after": None,
-        "landing_authority": False,
+        # UNKNOWN is deliberate: initialization has established neither a
+        # failing commit nor a stale checkout. Each fact becomes known only
+        # after its own authority is queried.
+        "commit_validation_state": COMMIT_VALIDATION_UNKNOWN,
+        "commit_validation_sha": None,
+        "commit_validation_reason": "canonical validate-status not queried",
+        "checkout_freshness": CHECKOUT_FRESHNESS_UNKNOWN,
         "lock_admission": {
             "state": "NOT_ATTEMPTED",
             "reason": "watch preflight has not launched validate-lock",
@@ -1491,6 +1511,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         pre = tree_state(checkout)
         result.update(
             sha=pre["head"],
+            commit_validation_sha=pre["head"],
             pre_tree_hash=pre["whole_tree_hash"],
             dirty_paths_before=pre["dirty_paths"],
         )
@@ -1525,10 +1546,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         result.update(
             origin_main_sha=origin,
-            checkout_relation=revision["relation"],
+            checkout_freshness=revision["freshness"],
             checkout_behind=revision["behind"],
             checkout_ahead=revision["ahead"],
-            checkout_is_current=revision["current"],
             verdict_qualifier=revision["verdict_qualifier"],
         )
 
@@ -1621,34 +1641,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             exception_qualified = False
             result["validate_log"] = str(validate_log)
 
-        # Landing authority is a property of the COMMIT, asked of the one
-        # canonical authority for it. Deriving it from "did my attempt write a
-        # row" made a refused-because-already-green attempt report
-        # landing_authority=False reason=none about a commit that was, in fact,
-        # the validated frontier.
+        # Hard green is a property of this exact COMMIT, asked of its one
+        # canonical evidence reader. Checkout freshness is deliberately absent
+        # from this classification: a validated commit remains HARD_GREEN when
+        # the working copy later falls behind. Conversely, this harness does
+        # not infer soft-green landability; that requires the separate recorded
+        # X-to-Y rebase defined by hermit-validation-authority.
         canonical = canonical_validate_status(parent, pre["head"])
         result["canonical_status"] = canonical
         canonical_green = (
             canonical["available"] and canonical["verdict"] == CANONICAL_GREEN_VERDICT
         )
-        result["landing_authority"] = bool(canonical_green and revision["current"])
-        if result["landing_authority"]:
-            result["landing_authority_reason"] = (
-                "canonical validate-status reports VALIDATED for this exact SHA at "
-                "current origin/main; " + describe_receipt(canonical["receipt"])
+        if canonical_green:
+            result["commit_validation_state"] = COMMIT_VALIDATION_HARD_GREEN
+            result["commit_validation_reason"] = (
+                "canonical validate-status reports VALIDATED for exact commit "
+                f"{pre['head']}; " + describe_receipt(canonical["receipt"])
             )
         elif not canonical["available"]:
-            result["landing_authority_reason"] = (
-                "withheld: " + (canonical["reason"] or "canonical authority unavailable")
-            )
-        elif not canonical_green:
-            result["landing_authority_reason"] = (
-                f"withheld: canonical validate-status verdict is {canonical['verdict']}, "
-                f"not {CANONICAL_GREEN_VERDICT}, for this exact SHA"
+            result["commit_validation_state"] = COMMIT_VALIDATION_UNKNOWN
+            result["commit_validation_reason"] = (
+                canonical["reason"] or "canonical validate-status unavailable"
             )
         else:
-            result["landing_authority_reason"] = (
-                "withheld because the owner checkout is not current origin/main"
+            result["commit_validation_state"] = COMMIT_VALIDATION_NOT_HARD_GREEN
+            result["commit_validation_reason"] = (
+                f"canonical validate-status verdict is {canonical['verdict']}, not "
+                f"{CANONICAL_GREEN_VERDICT}, for exact commit {pre['head']}"
             )
 
         # The launcher's own log carries any admission refusal; the producer's

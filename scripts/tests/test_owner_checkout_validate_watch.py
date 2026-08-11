@@ -198,8 +198,13 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
         self.assertEqual(
             result["admission_refusal"]["kind"], "canonical-terminal-readmission"
         )
-        self.assertTrue(result["landing_authority"])
-        self.assertIn("VALIDATED", result["landing_authority_reason"])
+        self.assertEqual(
+            result["commit_validation_state"],
+            watch.COMMIT_VALIDATION_HARD_GREEN,
+        )
+        self.assertEqual(result["commit_validation_sha"], result["sha"])
+        self.assertIn("VALIDATED", result["commit_validation_reason"])
+        self.assertNotIn("landing_authority", result)
         launched.assert_called_once()
 
     def test_terminal_red_readmission_refusal_is_still_fail(self) -> None:
@@ -220,7 +225,10 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
         self.assertEqual(rc, watch.FAIL)
         self.assertEqual(result["state"], "FAIL")
         self.assertIn("FAILED", result["reason"])
-        self.assertFalse(result["landing_authority"])
+        self.assertEqual(
+            result["commit_validation_state"],
+            watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
+        )
 
     def test_other_exit_two_refusal_is_unvalidated_not_green_and_not_fail(self) -> None:
         """A head that cannot be validated at all is a THIRD, distinct outcome."""
@@ -240,7 +248,10 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
         self.assertIn("producer floor", result["reason"])
         self.assertEqual(result["admission_refusal"]["kind"], "admission-refusal")
         self.assertNotIn("GREEN", result["reason"])
-        self.assertFalse(result["landing_authority"])
+        self.assertEqual(
+            result["commit_validation_state"],
+            watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
+        )
 
     def test_a_real_failing_node_is_still_fail(self) -> None:
         """A genuine product failure keeps reporting FAIL, counts and all."""
@@ -260,7 +271,10 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
         self.assertEqual(result["executed_tests"], 814)
         self.assertIn("result=fail", result["reason"])
         self.assertIsNone(result["admission_refusal"])
-        self.assertFalse(result["landing_authority"])
+        self.assertEqual(
+            result["commit_validation_state"],
+            watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
+        )
 
     def test_readmission_refusal_the_authority_no_longer_backs_is_not_green(self) -> None:
         """Fail closed when the durable line and the live authority disagree."""
@@ -273,9 +287,12 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
         self.assertEqual(rc, watch.NO_RESULT)
         self.assertEqual(result["state"], "NO_RESULT")
         self.assertIn("refusing to infer a verdict", result["reason"])
-        self.assertFalse(result["landing_authority"])
+        self.assertEqual(
+            result["commit_validation_state"],
+            watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
+        )
 
-    def test_landing_authority_follows_the_authority_not_the_local_attempt(self) -> None:
+    def test_commit_validation_follows_the_authority_not_the_local_attempt(self) -> None:
         """A qualifying LOCAL row cannot mint authority the canonical source denies."""
         rc, result, _ = self._run(
             returncode=0,
@@ -286,8 +303,11 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
         )
 
         self.assertTrue(result["canonical_qualified"])
-        self.assertFalse(result["landing_authority"])
-        self.assertIn("NOT-VALIDATED", result["landing_authority_reason"])
+        self.assertEqual(
+            result["commit_validation_state"],
+            watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
+        )
+        self.assertIn("NOT-VALIDATED", result["commit_validation_reason"])
         self.assertEqual(rc, watch.PASS)
 
     def test_unreadable_canonical_authority_never_reports_green(self) -> None:
@@ -306,8 +326,12 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
 
         self.assertEqual(rc, watch.NO_RESULT)
         self.assertEqual(result["state"], "NO_RESULT")
-        self.assertFalse(result["landing_authority"])
-        self.assertIn("withheld", result["landing_authority_reason"])
+        self.assertEqual(
+            result["commit_validation_state"],
+            watch.COMMIT_VALIDATION_UNKNOWN,
+        )
+        self.assertIn("unreadable", result["commit_validation_reason"])
+        self.assertNotIn("landing_authority", result)
 
 
 class AdmissionRefusalEvidenceTest(unittest.TestCase):
@@ -380,6 +404,17 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(result["state"], "CANNOT_START")
             self.assertIn("dirty before launch", result["reason"])
             self.assertIsNone(result["executed_tests"])
+            self.assertEqual(
+                result["checkout_freshness"], watch.CHECKOUT_FRESHNESS_UNKNOWN
+            )
+            self.assertEqual(
+                result["commit_validation_state"],
+                watch.COMMIT_VALIDATION_UNKNOWN,
+            )
+            message = next((state / "results").glob("*.md")).read_text()
+            self.assertIn("checkout_freshness: UNKNOWN", message)
+            self.assertNotIn("checkout_freshness: BEHIND", message)
+            self.assertNotIn("landing_authority", message)
             events = [
                 json.loads(line)["event"]
                 for line in (state / "invocations.jsonl").read_text().splitlines()
@@ -412,12 +447,16 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(result["dirty_paths_after"], [])
             self.assertEqual(result["pre_tree_hash"], result["post_tree_hash"])
             self.assertFalse(result["known_dirty_exception"]["applied"])
-            self.assertEqual(result["checkout_relation"], "current")
+            self.assertEqual(result["checkout_freshness"], "CURRENT")
             self.assertEqual(result["checkout_behind"], 0)
             self.assertEqual(result["checkout_ahead"], 0)
+            self.assertEqual(
+                result["commit_validation_state"],
+                watch.COMMIT_VALIDATION_UNKNOWN,
+            )
             self.assertIn("current main", result["verdict_qualifier"])
 
-    def test_stale_main_runs_and_discloses_exact_distance_without_authority(self) -> None:
+    def test_validated_stale_checkout_reports_hard_green_and_behind(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             repo = clean_repository(root)
@@ -466,13 +505,19 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(result["state"], "PASS")
             self.assertEqual(result["sha"], head)
             self.assertEqual(result["origin_main_sha"], origin)
-            self.assertEqual(result["checkout_relation"], "stale")
+            self.assertEqual(result["schema_version"], 2)
+            self.assertEqual(result["checkout_freshness"], "BEHIND")
             self.assertEqual(result["checkout_behind"], 2)
             self.assertEqual(result["checkout_ahead"], 0)
             self.assertIn("does not describe current main", result["verdict_qualifier"])
             self.assertIn("2 commit(s) behind", result["reason"])
-            self.assertFalse(result["landing_authority"])
-            self.assertIn("withheld", result["landing_authority_reason"])
+            self.assertEqual(
+                result["commit_validation_state"],
+                watch.COMMIT_VALIDATION_HARD_GREEN,
+            )
+            self.assertEqual(result["commit_validation_sha"], head)
+            self.assertIn("VALIDATED", result["commit_validation_reason"])
+            self.assertNotIn("landing_authority", result)
 
     def test_current_main_runs_and_can_carry_exact_head_authority(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -517,10 +562,13 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             result = json.loads(
                 next((state / "results").glob("*.json")).read_text()
             )
-            self.assertEqual(result["checkout_relation"], "current")
+            self.assertEqual(result["checkout_freshness"], "CURRENT")
             self.assertEqual(result["checkout_behind"], 0)
             self.assertEqual(result["checkout_ahead"], 0)
-            self.assertTrue(result["landing_authority"])
+            self.assertEqual(
+                result["commit_validation_state"],
+                watch.COMMIT_VALIDATION_HARD_GREEN,
+            )
             self.assertIn("current main", result["verdict_qualifier"])
 
     def test_exact_known_symlink_runs_policy_and_discloses_exception(self) -> None:
