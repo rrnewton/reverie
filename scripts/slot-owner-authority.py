@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Fail-closed liveness authority for one registered slot owner.
+"""Fail-closed liveness authority for registered slot owner identities.
 
 The allocator records a schema-versioned ``owner_sidecar`` inside the slot row
 under the same registry lock as the ownership mutation.  This verifier reads
 that exact row under a shared lock and answers only from the recorded
 ``(boot_id, supervisor_pid, start_ticks)`` identity.
 
-Exit codes deliberately match ``agent_liveness_probe.py``:
+For ``--slot``, exit codes deliberately match ``agent_liveness_probe.py``:
 
 * 0: the recorded owner incarnation is proven dead;
 * 1: the recorded owner incarnation is alive (adoption/release refused);
@@ -15,12 +15,18 @@ Exit codes deliberately match ``agent_liveness_probe.py``:
 Missing, malformed, unsupported, or mismatched evidence is indeterminate,
 never dead.  There are no production path overrides: caller-selected evidence
 would let a caller manufacture authority.
+
+``--all`` is a transport optimization for census consumers: it reads one
+guarded registry snapshot and returns every typed per-slot verdict plus the
+snapshot digest. Exit 0 means that complete envelope was produced; it does not
+mean any owner is dead or alive.
 """
 
 from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import sys
@@ -315,25 +321,13 @@ def assess(
     boot_id_path: Path = Path("/proc/sys/kernel/random/boot_id"),
     cgroup_root: Path = Path("/sys/fs/cgroup"),
 ) -> Verdict:
-    lock_path = root / "worktree-state.lock"
-    state_path = root / "worktree-state.json"
-    try:
-        with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_SH)
-            try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
-            finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
-    except (OSError, json.JSONDecodeError) as error:
+    state, error = read_guarded_state(root)
+    if error is not None:
         return verdict(
             "indeterminate",
             "registry-unreadable",
-            f"cannot read guarded slot registry: {error}",
+            error,
             slot,
-        )
-    if not isinstance(state, Mapping):
-        return verdict(
-            "indeterminate", "registry-unreadable", "slot registry is not an object", slot
         )
     return assess_state(
         slot,
@@ -344,15 +338,112 @@ def assess(
     )
 
 
+def read_guarded_state(root: Path) -> tuple[Mapping[str, object], str | None]:
+    """Read one exact registry snapshot under the canonical shared lock."""
+
+    lock_path = root / "worktree-state.lock"
+    state_path = root / "worktree-state.json"
+    try:
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    except (OSError, json.JSONDecodeError) as error:
+        return {}, f"cannot read guarded slot registry: {error}"
+    if not isinstance(state, Mapping):
+        return {}, "slot registry is not an object"
+    return state, None
+
+
+def registry_digest(state: Mapping[str, object]) -> str:
+    encoded = json.dumps(
+        state, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def assess_all(
+    root: Path,
+    *,
+    proc_root: Path = Path("/proc"),
+    boot_id_path: Path = Path("/proc/sys/kernel/random/boot_id"),
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> tuple[dict[str, object] | None, str | None]:
+    """Assess every active/held row from one guarded registry snapshot.
+
+    Per-slot verdicts retain the exact typed authority. Bulk mode changes only
+    transport: one process and one lock acquisition replace N serial processes
+    and N independently contended lock acquisitions.
+    """
+
+    state, error = read_guarded_state(root)
+    if error is not None:
+        return None, error
+    slots = state.get("slots")
+    if not isinstance(slots, Mapping):
+        return None, "slot registry slots is not an object"
+    selected = sorted(
+        str(slot)
+        for slot, row in slots.items()
+        if isinstance(row, Mapping) and row.get("status") in {"active", "held"}
+    )
+    authorities = {
+        slot: assess_state(
+            slot,
+            state,
+            proc_root=proc_root,
+            boot_id_path=boot_id_path,
+            cgroup_root=cgroup_root,
+        ).render()
+        for slot in selected
+    }
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "registry_sha256": registry_digest(state),
+        "authorities": authorities,
+    }, None
+
+
 def repository_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--slot", required=True)
+    subject = parser.add_mutually_exclusive_group(required=True)
+    subject.add_argument("--slot")
+    subject.add_argument("--all", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.all:
+        payload, error = assess_all(repository_root())
+        if error is not None:
+            if args.json:
+                print(json.dumps({
+                    "schema_version": SCHEMA_VERSION,
+                    "state": "indeterminate",
+                    "reason_code": "registry-unreadable",
+                    "detail": error,
+                }, sort_keys=True))
+            else:
+                print(f"state=indeterminate reason=registry-unreadable detail={error}")
+            return 2
+        assert payload is not None
+        if args.json:
+            print(json.dumps(payload, sort_keys=True))
+        else:
+            authorities = payload["authorities"]
+            counts = {state: 0 for state in ("alive", "dead", "indeterminate")}
+            for authority in authorities.values():
+                counts[authority["state"]] += 1
+            print(
+                f"authorities={len(authorities)} alive={counts['alive']} "
+                f"dead={counts['dead']} indeterminate={counts['indeterminate']}"
+            )
+        return 0
+    assert args.slot is not None
     result = assess(args.slot, repository_root())
     if args.json:
         print(json.dumps(result.render(), sort_keys=True))

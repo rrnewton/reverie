@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -83,30 +85,40 @@ class ResidueSweepTest(unittest.TestCase):
         payload = self._owner_authority(state)["owned"]
         if isinstance(payload.get("owner_identity"), dict):
             payload["owner_identity"]["generation"] = generation
+        digest = hashlib.sha256(
+            json.dumps(
+                registry, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            ).encode("utf-8")
+        ).hexdigest()
+        envelope = {
+            "schema_version": 1,
+            "registry_sha256": digest,
+            "authorities": {"owned": payload},
+        }
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)
             script = root / "scripts" / "slot-owner-authority.py"
             script.parent.mkdir()
             script.write_text(
                 "import json, sys\n"
-                f"print(json.dumps({payload!r}))\n"
+                f"print(json.dumps({envelope!r}))\n"
                 f"raise SystemExit({exit_code})\n",
                 encoding="utf-8",
             )
             return residue_sweep.read_guarded_owner_authorities(registry, root)
 
-    def test_authority_exit_code_must_match_typed_state(self) -> None:
-        with self.assertRaisesRegex(residue_sweep.SweepUnavailable, "exit code"):
+    def test_bulk_authority_transport_failure_is_refused(self) -> None:
+        with self.assertRaisesRegex(residue_sweep.SweepUnavailable, "rc=2"):
             self._read_authority_fixture(state="dead", exit_code=2)
 
     def test_authority_generation_must_match_registry_snapshot(self) -> None:
         with self.assertRaisesRegex(residue_sweep.SweepUnavailable, "registry snapshot"):
             self._read_authority_fixture(
-                state="alive", exit_code=1, generation="boot-a:123:999"
+                state="alive", exit_code=0, generation="boot-a:123:999"
             )
 
     def test_authority_state_exit_and_generation_match(self) -> None:
-        result = self._read_authority_fixture(state="alive", exit_code=1)
+        result = self._read_authority_fixture(state="alive", exit_code=0)
         self.assertEqual(result["owned"]["state"], "alive")
 
     def test_exact_decline_marker_routes_to_coordinator(self) -> None:

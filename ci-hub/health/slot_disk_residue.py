@@ -136,6 +136,26 @@ def active_slot_names(registry: dict[str, object]) -> set[str]:
     }
 
 
+def quarantined_slot_names(registry: dict[str, object]) -> set[str]:
+    """Rows retired from allocation but retained visibly and non-destructively.
+
+    Quarantine is deliberately not active-cap occupancy, but it is never hidden
+    from the report.  The transition mechanism owns which exact quarantine
+    statuses may be written; this consumer merely preserves their denominator.
+    """
+
+    raw_slots = registry.get("slots")
+    if not isinstance(raw_slots, dict):
+        raise ResidueUnavailable("slot registry slots is not an object")
+    return {
+        str(name)
+        for name, raw in raw_slots.items()
+        if isinstance(raw, dict)
+        and isinstance(raw.get("status"), str)
+        and raw["status"].startswith("quarantined-")
+    }
+
+
 @dataclass
 class Occupancy:
     counts: dict[str, int] = field(default_factory=dict)
@@ -394,11 +414,21 @@ def evaluate(
             age_h = (now - sized_at).total_seconds() / 3600.0 if sized_at else None
             if rec.get("size_bytes") is None or age_h is None or age_h >= refresh_hours:
                 stale.append(slot)
-        for slot in stale[:max_measure]:
+        cursor = prior.get("measure_cursor")
+        if isinstance(cursor, str) and stale:
+            after = [slot for slot in stale if slot > cursor]
+            before = [slot for slot in stale if slot <= cursor]
+            stale = [*after, *before]
+        selected = stale[:max_measure]
+        for slot in selected:
             size = disk_bytes(root / WORKTREES_DIR / slot, timeout=du_timeout)
             if size is not None:
                 next_slots[slot]["size_bytes"] = size
                 next_slots[slot]["sized_at"] = fmt_ts(now)
+        if selected:
+            # Advance on an attempted measurement even when du fails, otherwise
+            # one unreadable directory starves every later slot forever.
+            prior = {**prior, "measure_cursor": selected[-1]}
 
     results: list[SlotResidue] = []
     for slot in sorted(on_disk):
@@ -433,7 +463,10 @@ def evaluate(
             size_bytes=size, reclaimable=reclaimable, reason=reason,
         ))
 
-    return results, {"slots": next_slots}, occ
+    next_state = {"slots": next_slots}
+    if isinstance(prior.get("measure_cursor"), str):
+        next_state["measure_cursor"] = prior["measure_cursor"]
+    return results, next_state, occ
 
 
 def summarize(
@@ -526,14 +559,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             registry = read_registry(registry_path)
         active_slots = active_slot_names(registry)
-        prior = read_state(state_path)
-        now = datetime.now(timezone.utc)
-        results, next_state, occ = evaluate(
-            root, prior, now,
-            idle_hours=args.idle_hours, min_gib=args.min_gib,
-            refresh_hours=args.refresh_hours, max_measure=args.max_measure,
-            du_timeout=args.du_timeout, measure=not args.no_measure,
-        )
+        quarantined_slots = quarantined_slot_names(registry)
+        active_count = len(active_slots)
+        active_excess = max(0, active_count - args.active_slot_cap)
         try:
             if disk_only_fixture and args.test_owner_authority_json is None:
                 authorities: dict[str, dict[str, object]] = {}
@@ -545,14 +573,55 @@ def main(argv: list[str] | None = None) -> int:
                     if args.test_owner_authority_json
                     else None,
                 )
-            dead_owner = residue_sweep.guarded_dead_owner_slots(
-                registry, authorities, set(occ.counts)
-            )
-            live_owner_slots = residue_sweep.guarded_live_owner_slots(
-                registry, authorities
-            )
         except residue_sweep.SweepUnavailable as exc:
-            raise ResidueUnavailable(str(exc)) from exc
+            # Owner liveness is independent of aggregate capacity. If its
+            # guarded snapshot cannot complete within its internal bound, keep
+            # the known cap breach visible rather than letting the outer 30s
+            # runner erase every field. Never infer an owner verdict here.
+            summary_parts = []
+            if active_excess:
+                summary_parts.append(
+                    f"ACTIVE SLOT CAP BREACH: {active_count} active slot(s) against "
+                    f"cap {args.active_slot_cap} (excess {active_excess})"
+                )
+            summary_parts.append(
+                "guarded owner census unavailable; owner state remains INDETERMINATE: "
+                + " ".join(str(exc).split())
+            )
+            state = "actionable" if active_excess else UNKNOWN
+            fields = {
+                "active_slots": active_count,
+                "active_slot_cap": args.active_slot_cap,
+                "active_slot_excess": active_excess,
+                "quarantined_slots": len(quarantined_slots),
+                "owner_census_status": "indeterminate",
+                "dead_owner_slots": 0,
+                "guarded_live_owner_slots": 0,
+            }
+            summary = "; ".join(summary_parts)
+            if args.json:
+                print(json.dumps({"state": state, "summary": summary, **fields},
+                                 indent=2, sort_keys=True))
+            else:
+                print(f"state={state}")
+                print(f"summary={summary}")
+                for key, value in fields.items():
+                    print(f"{key}={value}")
+            return 1 if active_excess else 2
+        prior = read_state(state_path)
+        now = datetime.now(timezone.utc)
+        results, next_state, occ = evaluate(
+            root, prior, now,
+            idle_hours=args.idle_hours, min_gib=args.min_gib,
+            refresh_hours=args.refresh_hours, max_measure=args.max_measure,
+            du_timeout=args.du_timeout, measure=not args.no_measure,
+        )
+        dead_owner = residue_sweep.guarded_dead_owner_slots(
+            registry, authorities, set(occ.counts)
+        )
+        live_owner_slots = residue_sweep.guarded_live_owner_slots(
+            registry, authorities
+        )
     except ResidueUnavailable as exc:
         # Never silent: an unreadable input is `unknown`, which is not `ok`.
         print(f"state={UNKNOWN}")
@@ -585,12 +654,12 @@ def main(argv: list[str] | None = None) -> int:
 
     state, summary, fields = summarize(results, occ, fresh, args.min_gib)
 
-    active_count = len(active_slots)
-    active_excess = max(0, active_count - args.active_slot_cap)
     fields.update({
         "active_slots": active_count,
         "active_slot_cap": args.active_slot_cap,
         "active_slot_excess": active_excess,
+        "quarantined_slots": len(quarantined_slots),
+        "owner_census_status": "complete",
         "dead_owner_slots": len(dead_owner),
         "guarded_live_owner_slots": len(live_owner_slots),
     })

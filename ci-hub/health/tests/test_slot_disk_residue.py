@@ -16,6 +16,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -136,6 +137,24 @@ class DiskResidueBracketTest(unittest.TestCase):
             )
             self.assertFalse(results[0].reclaimable)
             self.assertIn("could not be measured", results[0].reason)
+
+    def test_incremental_measurement_round_robins_without_starvation(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), ["a", "b", "c"])
+            prior = {
+                "slots": {},
+                "measure_cursor": "b",
+            }
+            with mock.patch.object(sdr, "disk_bytes", return_value=4096) as measure:
+                _, next_state, _ = sdr.evaluate(
+                    root, prior, NOW, idle_hours=24.0, min_gib=1.0,
+                    refresh_hours=24.0, max_measure=1, du_timeout=5,
+                )
+            self.assertEqual(measure.call_count, 1)
+            self.assertEqual(measure.call_args.args[0].name, "c")
+            self.assertEqual(next_state["measure_cursor"], "c")
+            self.assertIsNotNone(next_state["slots"]["c"]["sized_at"])
+            self.assertIsNone(next_state["slots"]["a"]["sized_at"])
 
     def test_registry_absence_alone_never_flags_anything(self) -> None:
         """The registry is not consulted at all -- the filesystem is the authority.
@@ -300,6 +319,70 @@ class TickHubScopeTest(unittest.TestCase):
             any("slot_disk_residue.py" in c for c in cmds),
             "disk-reclamation monitoring was lost, not re-scoped",
         )
+
+    def test_disk_gate_has_count_independent_expensive_work_bound(self) -> None:
+        command = next(
+            cmd for cmd in self._active_gate_cmds()
+            if "slot_disk_residue.py" in cmd
+        )
+        self.assertIn("--max-measure 1", command)
+        self.assertIn("--du-timeout 5", command)
+        self.assertIn("--refresh-hours 24", command)
+
+
+class CapacityDenominatorTest(unittest.TestCase):
+    def test_quarantine_stays_visible_beside_active_without_consuming_cap(self) -> None:
+        registry = {
+            "slots": {
+                "working": {"status": "active"},
+                "preserved": {"status": "quarantined-retired"},
+                "parked": {"status": "parked"},
+            }
+        }
+        self.assertEqual(sdr.active_slot_names(registry), {"working"})
+        self.assertEqual(sdr.quarantined_slot_names(registry), {"preserved"})
+
+    def test_owner_census_timeout_cannot_erase_known_cap_breach(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), ["working"])
+            (root / "ci-hub").mkdir()
+            (root / "ci-hub" / "ci-hub").touch()
+            scripts = root / "scripts"
+            scripts.mkdir()
+            (scripts / "slot-owner-authority.py").write_text(
+                "import sys\nprint('owner census unavailable')\nraise SystemExit(2)\n",
+                encoding="utf-8",
+            )
+            registry = root / "worktree-state.json"
+            registry.write_text(json.dumps({
+                "slots": {
+                    "working": {
+                        "status": "active",
+                        "agents": [{"name": "agent", "read_only": False}],
+                    }
+                }
+            }), encoding="utf-8")
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO / "ci-hub/health/slot_disk_residue.py"),
+                    "--root", str(root),
+                    "--registry", str(registry),
+                    "--state", str(root / "state.json"),
+                    "--active-slot-cap", "0",
+                    "--gate",
+                    "--no-measure",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("state=actionable", proc.stdout)
+        self.assertIn("active_slots=1", proc.stdout)
+        self.assertIn("active_slot_excess=1", proc.stdout)
+        self.assertIn("owner_census_status=indeterminate", proc.stdout)
+        self.assertIn("owner state remains INDETERMINATE", proc.stdout)
 
 
 if __name__ == "__main__":

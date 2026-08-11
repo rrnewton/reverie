@@ -18,6 +18,7 @@ dead-owner finding.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -36,6 +37,7 @@ TASK_ID = "periodic-residue-sweep-correct-refusals-leave-unowned-work"
 OWNER_QUEUE = "owner-decision-queue-2026-08-04"
 ORPHAN_DETECTOR = ROOT / "scripts" / "orphaned-task-detector.sh"
 REGISTRY = ROOT / "worktree-state.json"
+OWNER_AUTHORITY_TIMEOUT_SECS = 10
 
 NOTE_MARKERS = (
     "did not commit",
@@ -336,42 +338,43 @@ def read_guarded_owner_authorities(
         authorities = value["authorities"]
     else:
         command = root / "scripts" / "slot-owner-authority.py"
-        authorities: dict[str, object] = {}
-        for slot in selected:
-            try:
-                result = subprocess.run(
-                    (sys.executable, str(command), "--slot", slot, "--json"),
-                    cwd=root,
-                    text=True,
-                    capture_output=True,
-                    timeout=30,
-                    check=False,
-                )
-            except (OSError, subprocess.SubprocessError) as exc:
-                raise SweepUnavailable(
-                    f"slot owner authority unavailable for {slot}: {exc}"
-                ) from exc
-            if result.returncode not in {0, 1, 2}:
-                detail = " ".join((result.stdout + result.stderr).split())
-                raise SweepUnavailable(
-                    f"slot owner authority for {slot} rc={result.returncode}: {detail}"
-                )
-            try:
-                authority = json.loads(result.stdout)
-            except json.JSONDecodeError as exc:
-                raise SweepUnavailable(
-                    f"slot owner authority for {slot} returned invalid JSON: {exc}"
-                ) from exc
-            expected_rc = {
-                "dead": 0,
-                "alive": 1,
-                "indeterminate": 2,
-            }.get(authority.get("state") if isinstance(authority, dict) else None)
-            if expected_rc != result.returncode:
-                raise SweepUnavailable(
-                    f"slot owner authority for {slot} contradicts its exit code"
-                )
-            authorities[slot] = authority
+        try:
+            result = subprocess.run(
+                (sys.executable, str(command), "--all", "--json"),
+                cwd=root,
+                text=True,
+                capture_output=True,
+                timeout=OWNER_AUTHORITY_TIMEOUT_SECS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SweepUnavailable(f"slot owner authority unavailable: {exc}") from exc
+        if result.returncode != 0:
+            detail = " ".join((result.stdout + result.stderr).split())
+            raise SweepUnavailable(
+                f"bulk slot owner authority rc={result.returncode}: {detail}"
+            )
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise SweepUnavailable(
+                f"bulk slot owner authority returned invalid JSON: {exc}"
+            ) from exc
+        expected_digest = hashlib.sha256(
+            json.dumps(
+                registry, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+            ).encode("utf-8")
+        ).hexdigest()
+        if (
+            not isinstance(payload, dict)
+            or payload.get("schema_version") != 1
+            or payload.get("registry_sha256") != expected_digest
+            or not isinstance(payload.get("authorities"), dict)
+        ):
+            raise SweepUnavailable(
+                "bulk slot owner authority is not bound to the registry snapshot"
+            )
+        authorities = payload["authorities"]
 
     for slot in selected:
         authority = authorities.get(slot)

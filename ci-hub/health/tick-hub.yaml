@@ -89,7 +89,12 @@ reminders:
   - name: worktree_disk_residue
     cadence_secs: 900
     gate:
-      cmd: python3 ci-hub/health/slot_disk_residue.py --gate
+      # One guarded bulk owner census replaces one subprocess/registry-lock
+      # acquisition per row. Disk sizing is also incremental: at most one 5s
+      # `du` per tick. A persisted round-robin cursor prevents an unreadable or
+      # newly-stale early slot from starving later rows. Expensive work per tick
+      # is fixed even while the visible backlog grows.
+      cmd: python3 ci-hub/health/slot_disk_residue.py --gate --max-measure 1 --du-timeout 5 --refresh-hours 24
       when: failure
       capture: true
     emit:

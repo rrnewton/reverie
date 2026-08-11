@@ -210,6 +210,44 @@ class SlotOwnerAuthorityTest(unittest.TestCase):
         self.assertEqual(result.reason_code, "registry-unreadable")
         self.assertEqual(result.exit_code, 2)
 
+    def test_bulk_assessment_binds_all_verdicts_to_one_registry_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            document = state(None)
+            (root / "worktree-state.lock").touch()
+            (root / "worktree-state.json").write_text(
+                json.dumps(document), encoding="utf-8"
+            )
+            proc = root / "proc"
+            proc.mkdir()
+            boot_path = root / "boot_id"
+            boot_path.write_text("boot-a", encoding="utf-8")
+            cgroup_root = root / "cgroup"
+            cgroup_root.mkdir()
+            payload, error = authority.assess_all(
+                root,
+                proc_root=proc,
+                boot_id_path=boot_path,
+                cgroup_root=cgroup_root,
+            )
+        self.assertIsNone(error)
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["registry_sha256"], authority.registry_digest(document))
+        self.assertEqual(
+            payload["authorities"]["slot-a"]["state"], "indeterminate"
+        )
+
+    def test_bulk_registry_failure_stays_indeterminate(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "worktree-state.lock").touch()
+            (root / "worktree-state.json").write_text("not json\n", encoding="utf-8")
+            payload, error = authority.assess_all(root)
+        self.assertIsNone(payload)
+        self.assertIn("cannot read guarded slot registry", error or "")
+
 
 if __name__ == "__main__":
     unittest.main()
