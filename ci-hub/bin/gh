@@ -192,6 +192,32 @@ def body_option(args: list[str]) -> tuple[int, int, str] | None:
     return None
 
 
+def close_comment_option(args: list[str]) -> tuple[int, int, str] | None:
+    """Return the sole ``pr close`` comment option, in any gh-supported form."""
+
+    found: tuple[int, int, str] | None = None
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        candidate: tuple[int, int, str] | None = None
+        if arg in ("--comment", "-c"):
+            if index + 1 >= len(args):
+                die(f"{arg} requires a value")
+            candidate = (index, 2, args[index + 1])
+        elif arg.startswith("--comment="):
+            candidate = (index, 1, arg.split("=", 1)[1])
+        elif arg.startswith("-c") and not arg.startswith("--"):
+            candidate = (index, 1, arg[2:])
+        if candidate is None:
+            index += 1
+            continue
+        if found is not None:
+            die("pr close must supply --comment exactly once")
+        found = candidate
+        index += candidate[1]
+    return found
+
+
 def rewrite_body_option(
     args: list[str], disclosure: disclosure_tag.Disclosure, *, required: bool
 ) -> list[str]:
@@ -202,6 +228,20 @@ def rewrite_body_option(
         die("comment command has no supported --body/--body-file argument")
     index, consumed, body = found
     return args[:index] + ["--body", attributed(body, disclosure)] + args[index + consumed :]
+
+
+def rewrite_close_comment(
+    args: list[str], disclosure: disclosure_tag.Disclosure
+) -> list[str]:
+    found = close_comment_option(args)
+    if found is None:
+        die("pr close comment write has no --comment value")
+    index, consumed, body = found
+    return (
+        args[:index]
+        + ["--comment", attributed(body, disclosure)]
+        + args[index + consumed :]
+    )
 
 
 def api_method(args: list[str]) -> str:
@@ -253,6 +293,8 @@ def is_comment_write(args: list[str]) -> bool:
         ["pr", "review"],
     ):
         return True
+    if len(args) >= 2 and args[:2] == ["pr", "close"]:
+        return close_comment_option(args) is not None
     if not args or args[0] != "api":
         return False
     if len(args) > 1 and args[1] == "graphql":
@@ -297,6 +339,8 @@ def rewrite(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[str]
         return rewrite_body_option(args, disclosure, required=False)
     if len(args) >= 2 and args[:2] == ["pr", "review"]:
         return rewrite_body_option(args, disclosure, required=True)
+    if len(args) >= 2 and args[:2] == ["pr", "close"]:
+        return rewrite_close_comment(args, disclosure)
     if args and args[0] == "api":
         return rewrite_api(args, disclosure)
     return args

@@ -216,6 +216,64 @@ class FleetGhTest(unittest.TestCase):
             f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=reviewer]\nevidence",
         )
 
+    def test_pr_close_comment_without_identity_is_refused_before_write(self) -> None:
+        result = self.run_shim(
+            "pr", "close", "42", "--comment", "closing disposition"
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("missing required --who", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+    def test_pr_close_comment_gets_mechanical_five_field_prefix(self) -> None:
+        result = self.run_shim(
+            *self.identity(role="coordinator"),
+            "pr", "close", "42", "--comment", "closing disposition",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        captured = self.captured()
+        body = captured[captured.index("--comment") + 1]
+        machine = socket.gethostname().split(".", 1)[0]
+        self.assertEqual(
+            body,
+            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, "
+            "role=coordinator]\nclosing disposition",
+        )
+
+    def test_pr_close_attached_short_comment_is_canonicalized_and_prefixed(self) -> None:
+        result = self.run_shim(
+            *self.identity(), "pr", "close", "42", "-cclosing disposition"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        captured = self.captured()
+        self.assertNotIn("-cclosing disposition", captured)
+        body = captured[captured.index("--comment") + 1]
+        self.assertTrue(body.endswith("role=impl]\nclosing disposition"))
+
+    def test_pr_close_duplicate_comment_options_are_refused_before_write(self) -> None:
+        result = self.run_shim(
+            *self.identity(),
+            "pr", "close", "42",
+            "--comment", "first",
+            "--comment=second",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("must supply --comment exactly once", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+    def test_pr_close_comment_body_that_looks_like_an_option_is_not_reparsed(self) -> None:
+        result = self.run_shim(
+            *self.identity(), "pr", "close", "42", "--comment", "--comment=words"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        captured = self.captured()
+        body = captured[captured.index("--comment") + 1]
+        self.assertTrue(body.endswith("role=impl]\n--comment=words"))
+
+    def test_pr_close_without_comment_needs_no_identity_and_passes_through(self) -> None:
+        result = self.run_shim("pr", "close", "42")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.captured(), ["pr", "close", "42"])
+
     def test_resolved_process_model_is_emitted_and_not_caller_typed(self) -> None:
         self.install_identity_stub(model="gpt-5.6-sol")
         result = self.run_shim(
