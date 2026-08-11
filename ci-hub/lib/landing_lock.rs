@@ -2701,8 +2701,8 @@ fn scan_descendants(root_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
             continue;
         };
         match scan_process_stat_fields(pid) {
-            Ok((_, parent, start_ticks)) => {
-                processes.insert(pid, (parent, start_ticks));
+            Ok((state, parent, start_ticks)) => {
+                processes.insert(pid, (state, parent, start_ticks));
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {}
             Err(source) => return Err(source),
@@ -2711,7 +2711,7 @@ fn scan_descendants(root_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
     let mut domain = BTreeSet::from([root_pid]);
     loop {
         let before = domain.len();
-        for (&pid, &(parent, _)) in &processes {
+        for (&pid, &(_, parent, _)) in &processes {
             if domain.contains(&parent) {
                 domain.insert(pid);
             }
@@ -2724,10 +2724,19 @@ fn scan_descendants(root_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
     Ok(domain
         .into_iter()
         .filter_map(|pid| {
-            processes.get(&pid).map(|(_, start_ticks)| ProcessIdentity {
-                pid,
-                start_ticks: *start_ticks,
-            })
+            processes
+                .get(&pid)
+                // A zombie owns no executable payload. Direct and adopted
+                // zombies are reaped before each census sample below; this
+                // filter also prevents an unreapable zombie beneath a still-
+                // live descendant from masquerading as a second live owner.
+                // The live parent remains in the census and keeps cleanup
+                // fail-closed.
+                .filter(|(state, _, _)| *state != 'Z')
+                .map(|(_, _, start_ticks)| ProcessIdentity {
+                    pid,
+                    start_ticks: *start_ticks,
+                })
         })
         .collect())
 }
@@ -2806,6 +2815,11 @@ pub(crate) struct ResidualCapture {
 pub(crate) fn capture_and_freeze_residuals(supervisor_pid: u32) -> ResidualCapture {
     let mut prior = Vec::new();
     for _ in 0..4 {
+        // The supervisor is a child subreaper. A payload helper can therefore
+        // become our adopted zombie after the supervised group leader has
+        // already returned. Drain those exits before every sample rather than
+        // turning a completed helper into durable residual ownership.
+        reap_exited_children();
         let identities = match scan_descendants(supervisor_pid) {
             Ok(identities) => identities,
             Err(_) => {
@@ -2825,7 +2839,9 @@ pub(crate) fn capture_and_freeze_residuals(supervisor_pid: u32) -> ResidualCaptu
         for identity in &identities {
             match process_stat_fields(identity.pid) {
                 Ok((state, _, start_ticks)) if start_ticks == identity.start_ticks => {
-                    all_stopped &= state == 'T' || state == 't' || state == 'Z';
+                    // A transition to Z is not stable ownership. Force another
+                    // loop so the next leading reap can remove it.
+                    all_stopped &= state == 'T' || state == 't';
                 }
                 Ok(_) => {}
                 Err(source) if source.kind() == io::ErrorKind::NotFound => {}
@@ -3839,6 +3855,51 @@ mod tests {
         assert!(target_signaled, "typed process-group signal was refused");
         assert!(target_exited, "target group did not terminate within 2s");
         assert!(control_survived, "unrelated process group was signalled");
+    }
+
+    /// POSITIVE BRACKET: an exited child can remain visible as a zombie until
+    /// the subreaper drains it. It owns no executable payload and must not
+    /// manufacture a residual quarantine after an otherwise completed run.
+    #[test]
+    fn zombie_only_descendant_is_reaped_and_domain_is_empty() {
+        let _domain_guard = process_domain_test_guard();
+        let zombie = Command::new("/bin/true").process_group(0).spawn().unwrap();
+        let pid = zombie.id();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if matches!(process_stat_fields(pid), Ok(('Z', _, _))) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child {pid} did not enter zombie state"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let capture = capture_and_freeze_residuals(std::process::id());
+        assert!(capture.complete);
+        assert!(capture.identities.is_empty());
+        assert!(!process_group_exists(pid));
+    }
+
+    /// NEGATIVE BRACKET: draining zombies must not turn the classifier into a
+    /// way to clear a genuinely executing descendant.
+    #[test]
+    fn live_descendant_remains_an_exact_residual() {
+        let _domain_guard = process_domain_test_guard();
+        let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let identity = ProcessIdentity {
+            pid: child.id(),
+            start_ticks: process_start_ticks(child.id()).unwrap(),
+        };
+
+        let capture = capture_and_freeze_residuals(std::process::id());
+        assert!(capture.complete);
+        assert!(capture.identities.contains(&identity));
+
+        signal_exact_process(&identity, libc::SIGKILL).unwrap();
+        child.wait().unwrap();
     }
 
     #[test]

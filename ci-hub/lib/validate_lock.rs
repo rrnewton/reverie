@@ -5396,6 +5396,88 @@ while :; do sleep 60; done
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// POSITIVE PROTOCOL BRACKET: the supervised leader deliberately exits
+    /// while leaving one already-exited child adopted by the subreaper. That
+    /// zombie is completion bookkeeping, not executable payload ownership;
+    /// cleanup must release both authorities and admit the next run.
+    #[test]
+    fn completed_run_with_adopted_zombie_releases_and_readmits() {
+        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let stub = write_stub("zombie-readmit-admit", "#!/bin/sh\necho OK\nexit 0\n");
+        env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
+
+        let paths = temp_paths("zombie-readmit");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let zombie_script = r#"
+import os
+import time
+
+child = os.fork()
+if child == 0:
+    os._exit(0)
+while True:
+    with open(f"/proc/{child}/stat", encoding="utf-8") as stat:
+        if stat.read().split()[2] == "Z":
+            break
+    time.sleep(0.001)
+os._exit(0)
+"#;
+        let run_args = |agent: &str, child: Vec<OsString>| RunArgs {
+            agent: agent.into(),
+            kind: Kind::Validate,
+            target: HEX_SHA.into(),
+            run_record: None,
+            no_wait: false,
+            wait: 0,
+            hold: 30,
+            child_deadline: 30,
+            max: 1,
+            skip_base_check: false,
+            child,
+        };
+
+        let first = lock.run(
+            run_args(
+                "zombie-complete-validate",
+                vec![
+                    OsString::from("/usr/bin/python3"),
+                    OsString::from("-c"),
+                    OsString::from(zombie_script),
+                ],
+            ),
+            &root,
+        );
+        assert_eq!(first.unwrap(), 0);
+        assert!(lock.read_holder().unwrap().is_none());
+        assert!(!paths.cleanup.exists());
+
+        // Satisfy the independent owner-watch fairness rule, then exercise the
+        // real box-anchor + durable-lease admission path a second time.
+        let released = ReleaseRecord::parse(&fs::read_to_string(&paths.released).unwrap()).unwrap();
+        let admitted_at = loop {
+            let now = epoch_seconds().unwrap();
+            if now > released.released_at {
+                break now;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        seed_owner_watch_cursor(&paths, released.released_at, Some(admitted_at));
+        let second = lock.run(
+            run_args("post-zombie-validate", vec![OsString::from("/bin/true")]),
+            &root,
+        );
+        assert_eq!(second.unwrap(), 0);
+        assert!(lock.read_holder().unwrap().is_none());
+
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        let _ = fs::remove_file(&stub);
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn escaped_payload_quarantine_refuses_consumers_until_exact_recovery() {
         let _domain_guard = crate::landing_lock::process_domain_test_guard();
