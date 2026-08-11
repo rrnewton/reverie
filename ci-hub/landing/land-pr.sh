@@ -546,6 +546,21 @@ else
   say "exact-head validation authority authorized: $receipt_detail"
 fi
 
+# An exact-head approval cannot inherit semantic coverage from a source PR.
+# A cherry-picked commit has a new base, neighbours, and stated intent even when
+# its patch is byte-identical.  Require the PR Summary to disclose each explicit
+# source trailer and require every relied-upon current approval lane to attest
+# the COMPLETE source-to-semantics digest in THIS head context.  Run this after
+# every other potentially slow boundary check because the PR body is mutable
+# without moving HEAD.  This is a review/disclosure gate, not a claim that
+# cherry-picked code is defective.
+cherry_pick_detail=$(python3 "$SCRIPT_DIR/cherry_pick_context.py" \
+  --repo "$R" --pr "$PR" --expected-head "$HEAD" --gate 2>&1)
+cherry_pick_rc=$?
+say "cherry-pick context authority(head=$HEAD) rc=$cherry_pick_rc: $cherry_pick_detail"
+[ "$cherry_pick_rc" -eq 0 ] \
+  || abandon "cherry-pick context contract REFUSED for $HEAD: ${cherry_pick_detail:-no result}" 5
+
 # 6. The merge command is the mergeability arbiter. Make exactly one attempt
 # under the final-boundary verdict above. Retrying here would let an authorization
 # age for minutes after the mutable tips were observed. A refusal reruns the gate,

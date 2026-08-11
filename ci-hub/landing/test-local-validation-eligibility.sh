@@ -295,6 +295,15 @@ else
   audit "final boundary can consume an unbound passed-review cache label" bad
 fi
 
+if grep -Fq 'cherry_pick_context.py"' "$lander" &&
+   grep -Fq -- '--repo "$R" --pr "$PR" --expected-head "$HEAD" --gate' "$lander" &&
+   grep -Fq 'cherry_pick_rc=$?' "$lander" &&
+   grep -Fq 'cherry-pick context contract REFUSED' "$lander"; then
+  audit "final boundary re-derives cherry-pick disclosure and new-context review" ok
+else
+  audit "final boundary can land a cherry-picked semantic unit on inherited review" bad
+fi
+
 merge_prefix='gh pr '
 merge_suffix='merge "$PR"'
 if [ "$(grep -Fc "${merge_prefix}${merge_suffix}" "$lander")" -eq 1 ] &&
