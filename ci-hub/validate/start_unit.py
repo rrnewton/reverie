@@ -784,6 +784,11 @@ def build_systemd_command(
     # point is that this run does not share a package-cache lock with the box.
     if cargo_home is not None:
         build_budget_env.extend(["--setenv", f"CARGO_HOME={cargo_home}"])
+    if repo == "rrnewton/reverie":
+        # This is part of the Reverie producer contract, not ambient caller
+        # state.  Without it KVM tests silently skip on a host where /dev/kvm
+        # is absent or unusable, and a partial suite can look green.
+        build_budget_env.extend(["--setenv", "REVERIE_REQUIRE_KVM=1"])
 
     child = ["/usr/bin/env"]
     if pr is not None:

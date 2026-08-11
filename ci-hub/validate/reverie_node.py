@@ -39,6 +39,11 @@ class Refusal(RuntimeError):
     pass
 
 
+def require_kvm_environment() -> None:
+    if os.environ.get("REVERIE_REQUIRE_KVM") != "1":
+        raise Refusal("REVERIE_REQUIRE_KVM=1 is required; KVM tests must not silently skip")
+
+
 def run(argv: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, check=False)
 
@@ -219,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
             raise Refusal("checkout HEAD does not match target")
         if git(checkout, "status", "--porcelain=v1"):
             raise Refusal("checkout is dirty")
+        require_kvm_environment()
         cgroup = safe_ci_cgroup()
         authority = lock_authority(root, args.target)
         tree = git(checkout, "rev-parse", "HEAD^{tree}")

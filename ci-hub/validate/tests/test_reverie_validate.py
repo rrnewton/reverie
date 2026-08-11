@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,7 @@ class ReverieValidateTest(unittest.TestCase):
         self.assertIn("ci-hub/validate/reverie_safe_ci.py", joined)
         self.assertIn("--kind reverie-validate", joined)
         self.assertIn("--repo", start_unit.parser().format_help())
+        self.assertIn("REVERIE_REQUIRE_KVM=1", joined)
         self.assertNotIn("--allow-cgroup-failure", joined)
         self.assertNotIn("--unsafe-no-cgroups", joined)
         self.assertNotIn("scripts/validate.rs", joined)
@@ -103,6 +105,13 @@ test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out;
                 reverie_node.safe_ci_cgroup(),
                 "/user.slice/safe-ci-123.scope/step-validate.reverie-full",
             )
+
+    def test_kvm_requirement_refuses_absence_and_accepts_exact_value(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(reverie_node.Refusal):
+                reverie_node.require_kvm_environment()
+        with mock.patch.dict(os.environ, {"REVERIE_REQUIRE_KVM": "1"}, clear=True):
+            reverie_node.require_kvm_environment()
 
 
 if __name__ == "__main__":
