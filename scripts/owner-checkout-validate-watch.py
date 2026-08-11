@@ -42,6 +42,17 @@ ACQUIRED_PATTERN = re.compile(
 )
 NODE_LINE_PATTERN = re.compile(r"^\[(?P<node>[^]]+)\]\s+(?P<body>.*)$")
 E2E_NODE_PATTERN = re.compile(r"^(?:privileged-)?e2e\.")
+# `validate-run` spends ONE exit code (2) on every admission refusal, so the code
+# alone cannot separate "this SHA is already proven green, nothing to re-run"
+# from "this head cannot be validated at all". The durable line can, and it is
+# the only place that distinction is written down.
+ADMISSION_REFUSAL_PATTERN = re.compile(r"^validate-run: REFUSED: (?P<detail>.+)$")
+READMISSION_REFUSAL_PATTERN = re.compile(
+    r"canonical validate-status already has terminal verdict "
+    r"(?P<verdict>[A-Z][A-Z-]*) for unchanged SHA (?P<sha>[0-9a-f]{40})"
+)
+CANONICAL_GREEN_VERDICT = "VALIDATED"
+CANONICAL_RED_VERDICT = "FAILED"
 RELINK_DIRECT_SIGNATURES = (
     (
         "non-executable",
@@ -525,6 +536,123 @@ def lock_block_evidence(log: Path) -> dict[str, Any] | None:
         if anchor:
             evidence["anchor_identity"] = anchor
     return evidence
+
+
+def admission_refusal_evidence(log: Path) -> dict[str, Any] | None:
+    """Recognize a ``validate-run`` ADMISSION refusal and name which kind it is.
+
+    A refusal is not a verdict on the product.  Reporting every nonzero wrapper
+    exit as FAIL is what made the de-duplication guard — whose whole job is to
+    say "this commit is ALREADY PROVEN GREEN, do not burn the box-exclusive lane
+    re-proving it" — render to the owner as a failure.  The guard is correct; only
+    its classification was wrong.  So separate the reasons here and let the caller
+    treat them differently, rather than widening or disabling the guard.
+    """
+    if not log.is_file():
+        return None
+    for raw in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = raw.strip()
+        match = ADMISSION_REFUSAL_PATTERN.match(line)
+        if match is None:
+            continue
+        evidence: dict[str, Any] = {
+            "kind": "admission-refusal",
+            "line": line,
+            "detail": match.group("detail"),
+        }
+        terminal = READMISSION_REFUSAL_PATTERN.search(line)
+        if terminal is not None:
+            evidence.update(
+                kind="canonical-terminal-readmission",
+                refused_verdict=terminal.group("verdict"),
+                refused_sha=terminal.group("sha"),
+            )
+        return evidence
+    return None
+
+
+def canonical_validate_status(parent: Path, sha: str) -> dict[str, Any]:
+    """Ask the ONE canonical authority whether THIS COMMIT is validated.
+
+    Bound to the SHA, never to this attempt.  A refused re-admission writes no
+    ledger row of its own, yet the commit it declined to re-measure may already
+    carry a qualifying receipt — deriving the answer from "my attempt produced no
+    row" is the same cache-for-source confusion that drifted the
+    ``locally-validated`` label.  Unreadable output, a verdict for some other
+    SHA, or a VALIDATED verdict with no receipt behind it are all NOT green.
+    """
+    completed = run(
+        [parent / "ci-hub/ci-hub", "validate-status", "--sha", sha, "--json"],
+        cwd=parent,
+    )
+    status: dict[str, Any] = {
+        "sha": sha,
+        "available": False,
+        "verdict": None,
+        "exit_code": completed.returncode,
+        "receipt": None,
+        "reason": "",
+    }
+    detail = (completed.stderr or completed.stdout or f"exit {completed.returncode}").strip()
+    try:
+        report = json.loads(completed.stdout or "")
+        verdict = str(report["verdict"])
+        reported_sha = str(report["sha"])
+    except (ValueError, TypeError, KeyError) as error:
+        status["reason"] = f"canonical validate-status unreadable ({detail[:400]}; {error})"
+        return status
+    if reported_sha != sha:
+        status["reason"] = (
+            f"canonical validate-status answered for {reported_sha}, not the requested {sha}"
+        )
+        return status
+    receipt = report.get("newest_qualifying")
+    if isinstance(receipt, dict):
+        identity = receipt.get("receipt_identity")
+        status["receipt"] = {
+            "validated_at": receipt.get("finished_at"),
+            "profile": receipt.get("profile"),
+            "selection_mode": receipt.get("selection_mode"),
+            "coverage_satisfied": receipt.get("coverage_satisfied"),
+            "coverage_status": receipt.get("coverage_status"),
+            "discovered_tests": receipt.get("discovered_tests"),
+            "executed_tests": receipt.get("executed_tests"),
+            "filtered_tests": receipt.get("filtered_tests"),
+            "failures": receipt.get("failures"),
+            "checks": receipt.get("checks"),
+            "log_file": receipt.get("log_file"),
+            "receipt_digest": (identity or {}).get("digest")
+            if isinstance(identity, dict)
+            else None,
+        }
+    if verdict == CANONICAL_GREEN_VERDICT and status["receipt"] is None:
+        status["reason"] = (
+            "canonical validate-status is internally inconsistent: verdict=VALIDATED "
+            "with no qualifying receipt behind it"
+        )
+        return status
+    status.update(
+        available=True,
+        verdict=verdict,
+        reason=f"canonical validate-status verdict={verdict} for {sha}",
+    )
+    return status
+
+
+def describe_receipt(receipt: dict[str, Any] | None) -> str:
+    """Render the existing receipt so a green needs no second lookup to audit."""
+    if not receipt:
+        return "no receipt fields available"
+    return (
+        f"validated_at={receipt.get('validated_at')} "
+        f"profile={receipt.get('profile')} "
+        f"selection={receipt.get('selection_mode')} "
+        f"coverage_satisfied={receipt.get('coverage_satisfied')} "
+        f"coverage_status={receipt.get('coverage_status')} "
+        f"executed_tests={receipt.get('executed_tests')} "
+        f"failures={receipt.get('failures')} "
+        f"checks={receipt.get('checks')}"
+    )
 
 
 def parse_key_value_file(path: Path) -> dict[str, str]:
@@ -1231,6 +1359,9 @@ def render_message(result: dict[str, Any]) -> str:
         f"known_dirty_exception_make_assessment: {exception.get('make_assessment')!r}",
         f"canonical_qualified: {result.get('canonical_qualified')!r}",
         f"exception_adjusted_qualified: {result.get('exception_adjusted_qualified')!r}",
+        f"canonical_verdict: {(result.get('canonical_status') or {}).get('verdict')!r}",
+        f"canonical_receipt: {(result.get('canonical_status') or {}).get('receipt')!r}",
+        f"admission_refusal: {result.get('admission_refusal')!r}",
         f"landing_authority: {result.get('landing_authority')!r}",
         f"landing_authority_reason: {result.get('landing_authority_reason') or 'none'}",
         f"lock_admission: {result.get('lock_admission')!r}",
@@ -1474,16 +1605,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             qualified, reason = qualify_row(parent, checkout, pre["head"], row)
             result["canonical_qualified"] = qualified
             result["canonical_qualification_reason"] = reason
-            result["landing_authority"] = qualified and revision["current"]
-            result["landing_authority_reason"] = (
-                "exact-head canonical receipt qualifies at current origin/main"
-                if result["landing_authority"]
-                else (
-                    "withheld because the owner checkout is not current origin/main"
-                    if not revision["current"]
-                    else reason
-                )
-            )
             exception_qualified = False
             exception_reason = "not evaluated"
             if exception["applied"]:
@@ -1499,6 +1620,48 @@ def main(argv: Sequence[str] | None = None) -> int:
             qualified, reason = False, "no exact-attempt ledger row"
             exception_qualified = False
             result["validate_log"] = str(validate_log)
+
+        # Landing authority is a property of the COMMIT, asked of the one
+        # canonical authority for it. Deriving it from "did my attempt write a
+        # row" made a refused-because-already-green attempt report
+        # landing_authority=False reason=none about a commit that was, in fact,
+        # the validated frontier.
+        canonical = canonical_validate_status(parent, pre["head"])
+        result["canonical_status"] = canonical
+        canonical_green = (
+            canonical["available"] and canonical["verdict"] == CANONICAL_GREEN_VERDICT
+        )
+        result["landing_authority"] = bool(canonical_green and revision["current"])
+        if result["landing_authority"]:
+            result["landing_authority_reason"] = (
+                "canonical validate-status reports VALIDATED for this exact SHA at "
+                "current origin/main; " + describe_receipt(canonical["receipt"])
+            )
+        elif not canonical["available"]:
+            result["landing_authority_reason"] = (
+                "withheld: " + (canonical["reason"] or "canonical authority unavailable")
+            )
+        elif not canonical_green:
+            result["landing_authority_reason"] = (
+                f"withheld: canonical validate-status verdict is {canonical['verdict']}, "
+                f"not {CANONICAL_GREEN_VERDICT}, for this exact SHA"
+            )
+        else:
+            result["landing_authority_reason"] = (
+                "withheld because the owner checkout is not current origin/main"
+            )
+
+        # The launcher's own log carries any admission refusal; the producer's
+        # durable log (used below for product evidence) never does.
+        refusal = admission_refusal_evidence(validate_log)
+        result["admission_refusal"] = refusal
+        readmission = (
+            refusal
+            if refusal is not None
+            and refusal.get("kind") == "canonical-terminal-readmission"
+            and refusal.get("refused_sha") == pre["head"]
+            else None
+        )
 
         evidence_log = Path(str(result["validate_log"]))
         node_evidence = privileged_tests_evidence(evidence_log)
@@ -1540,6 +1703,59 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reason=(
                     "exact-attempt canonical ledger row reports result=fail; "
                     f"wrapper exit={completed.returncode} is not the job verdict"
+                ),
+            )
+        elif row is None and readmission is not None and canonical_green:
+            # GREEN. Nothing ran because nothing needed to: the guard refused a
+            # redundant re-run of a commit the canonical authority has already
+            # judged. Cite the receipt so this is auditable without a second
+            # lookup, and say plainly that no test executed this attempt.
+            result.update(
+                state="PASS_ALREADY_VALIDATED",
+                reason=(
+                    "GREEN: canonical validate-status already has terminal verdict "
+                    f"{CANONICAL_GREEN_VERDICT} for unchanged SHA {pre['head']}, so the "
+                    "de-duplication guard correctly refused a redundant re-run and no "
+                    "test executed this attempt; existing receipt "
+                    + describe_receipt(canonical["receipt"])
+                    + "; "
+                    + revision["verdict_qualifier"]
+                ),
+            )
+        elif row is None and readmission is not None and canonical["available"] and (
+            canonical["verdict"] == CANONICAL_RED_VERDICT
+        ):
+            # The same guard also refuses a SHA already judged terminally RED.
+            # That refusal is a failure report, not an absence of one.
+            result.update(
+                state="FAIL",
+                reason=(
+                    "canonical validate-status already has terminal verdict "
+                    f"{CANONICAL_RED_VERDICT} for unchanged SHA {pre['head']}; the "
+                    "re-admission refusal is reporting an existing red, not a missing "
+                    "measurement; " + revision["verdict_qualifier"]
+                ),
+            )
+        elif row is None and readmission is not None:
+            # The log says the guard refused on a terminal verdict, but the
+            # authority does not now agree. Fail closed: unvalidated, not green.
+            result.update(
+                state="NO_RESULT",
+                reason=(
+                    "re-admission was refused citing terminal verdict "
+                    f"{readmission.get('refused_verdict')}, but canonical "
+                    f"validate-status now reports {canonical['verdict']!r} "
+                    f"({canonical['reason']}); refusing to infer a verdict"
+                ),
+            )
+        elif row is None and refusal is not None:
+            # Every other admission refusal: honestly unvalidated. NOT green,
+            # and NOT a product failure — no product work ever ran.
+            result.update(
+                state="NO_RESULT",
+                reason=(
+                    "validate-run refused admission before product work, so this SHA is "
+                    f"UNVALIDATED rather than failing: {refusal['detail']}"
                 ),
             )
         elif completed.returncode != 0:
@@ -1639,6 +1855,7 @@ def finish(
     return {
         "PASS": PASS,
         "PASS_WITH_KNOWN_EXCEPTION": PASS,
+        "PASS_ALREADY_VALIDATED": PASS,
         "FAIL": FAIL,
         "NO_RESULT": NO_RESULT,
         "CANNOT_START": CANNOT_START,

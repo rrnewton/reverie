@@ -71,6 +71,287 @@ def advance_origin_main(repo: Path, count: int) -> str:
     return parent
 
 
+def validated_status(sha: str) -> dict[str, object]:
+    """An INERT canonical-authority answer: a report, not an authorization.
+
+    It cannot validate anything or make any gate pass; it only stands in for what
+    `ci-hub validate-status --json` would say about a SHA that already carries a
+    qualifying receipt.
+    """
+    return {
+        "sha": sha,
+        "available": True,
+        "verdict": "VALIDATED",
+        "exit_code": 0,
+        "reason": f"canonical validate-status verdict=VALIDATED for {sha}",
+        "receipt": {
+            "validated_at": "2026-08-11T03:15:07Z",
+            "profile": "full",
+            "selection_mode": "full",
+            "coverage_satisfied": True,
+            "coverage_status": "satisfied",
+            "discovered_tests": 1223,
+            "executed_tests": 873,
+            "filtered_tests": 350,
+            "failures": 0,
+            "checks": 56,
+            "log_file": "/fixture/validate.log",
+            "receipt_digest": "0" * 64,
+        },
+    }
+
+
+def unvalidated_status(sha: str) -> dict[str, object]:
+    return {
+        "sha": sha,
+        "available": True,
+        "verdict": "NOT-VALIDATED",
+        "exit_code": 1,
+        "reason": f"canonical validate-status verdict=NOT-VALIDATED for {sha}",
+        "receipt": None,
+    }
+
+
+def readmission_refusal_log(log: Path, sha: str, verdict: str = "VALIDATED") -> None:
+    """Write the exact durable line the de-duplication guard emits."""
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        "validate-run: REFUSED: canonical validate-status already has terminal "
+        f"verdict {verdict} for unchanged SHA {sha}; refusing blind re-admission. "
+        "Advance HEAD for a new product state.\n",
+        encoding="utf-8",
+    )
+
+
+class ReadmissionRefusalClassificationTest(unittest.TestCase):
+    """Three outcomes where the watch used to have two.
+
+    `validate-run` spends exit code 2 on EVERY admission refusal. Reading the
+    code alone reported 'this commit is already proven green' as FAIL, which is
+    why the owner had never seen a green. Bracket all three directions.
+    """
+
+    def _run(
+        self,
+        *,
+        returncode: int,
+        canonical: dict[str, object],
+        write_log,
+        row: dict[str, object] | None = None,
+        qualified: tuple[bool, str] = (False, "no exact-attempt ledger row"),
+    ) -> tuple[int, dict, mock.Mock]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            head = command(repo, "git", "rev-parse", "HEAD").strip()
+
+            def launch(command_argv, *, cwd, log, state_dir, result, target):
+                write_log(Path(log), head)
+                return subprocess.CompletedProcess([], returncode, "", "")
+
+            with mock.patch.object(
+                watch, "run_validate_observing_admission", side_effect=launch
+            ) as launched, mock.patch.object(
+                watch, "canonical_ledger_rows", return_value=[]
+            ), mock.patch.object(
+                watch, "latest_attempt_row", return_value=row
+            ), mock.patch.object(
+                watch, "qualify_row", return_value=qualified
+            ), mock.patch.object(
+                watch, "canonical_validate_status", return_value=canonical(head)
+            ):
+                rc = watch.main(
+                    [
+                        "--checkout", str(repo),
+                        "--state-dir", str(state),
+                        "--no-fetch",
+                        "--no-notify",
+                    ]
+                )
+            result = json.loads(
+                next((state / "results").glob("*.json")).read_text()
+            )
+            return rc, result, launched
+
+    def test_unchanged_already_green_sha_reports_green_citing_the_prior_receipt(self) -> None:
+        rc, result, launched = self._run(
+            returncode=2,
+            canonical=validated_status,
+            write_log=lambda log, sha: readmission_refusal_log(log, sha),
+        )
+
+        self.assertEqual(rc, watch.PASS)
+        self.assertEqual(result["state"], "PASS_ALREADY_VALIDATED")
+        # It reports green WITHOUT re-running: the guard refused, and the count
+        # of executed tests for THIS attempt is honestly null.
+        self.assertIsNone(result["executed_tests"])
+        self.assertEqual(result["validate_run_rc"], 2)
+        self.assertEqual(result["ledger_row_found"], False)
+        # ...and it cites the receipt it is standing on.
+        self.assertIn("GREEN", result["reason"])
+        self.assertIn("validated_at=2026-08-11T03:15:07Z", result["reason"])
+        self.assertIn("profile=full", result["reason"])
+        self.assertIn("selection=full", result["reason"])
+        self.assertIn("coverage_satisfied=True", result["reason"])
+        self.assertIn("executed_tests=873", result["reason"])
+        self.assertEqual(
+            result["admission_refusal"]["kind"], "canonical-terminal-readmission"
+        )
+        self.assertTrue(result["landing_authority"])
+        self.assertIn("VALIDATED", result["landing_authority_reason"])
+        launched.assert_called_once()
+
+    def test_terminal_red_readmission_refusal_is_still_fail(self) -> None:
+        """The SAME guard refuses a terminally RED SHA. That is not green."""
+        rc, result, _ = self._run(
+            returncode=2,
+            canonical=lambda sha: {
+                "sha": sha,
+                "available": True,
+                "verdict": "FAILED",
+                "exit_code": 3,
+                "reason": "canonical validate-status verdict=FAILED",
+                "receipt": None,
+            },
+            write_log=lambda log, sha: readmission_refusal_log(log, sha, "FAILED"),
+        )
+
+        self.assertEqual(rc, watch.FAIL)
+        self.assertEqual(result["state"], "FAIL")
+        self.assertIn("FAILED", result["reason"])
+        self.assertFalse(result["landing_authority"])
+
+    def test_other_exit_two_refusal_is_unvalidated_not_green_and_not_fail(self) -> None:
+        """A head that cannot be validated at all is a THIRD, distinct outcome."""
+        rc, result, _ = self._run(
+            returncode=2,
+            canonical=unvalidated_status,
+            write_log=lambda log, sha: log.write_text(
+                "validate-run: REFUSED: validation admission refused target: "
+                "head predates producer floor bfb0a9ef\n",
+                encoding="utf-8",
+            ),
+        )
+
+        self.assertEqual(rc, watch.NO_RESULT)
+        self.assertEqual(result["state"], "NO_RESULT")
+        self.assertIn("UNVALIDATED rather than failing", result["reason"])
+        self.assertIn("producer floor", result["reason"])
+        self.assertEqual(result["admission_refusal"]["kind"], "admission-refusal")
+        self.assertNotIn("GREEN", result["reason"])
+        self.assertFalse(result["landing_authority"])
+
+    def test_a_real_failing_node_is_still_fail(self) -> None:
+        """A genuine product failure keeps reporting FAIL, counts and all."""
+        rc, result, _ = self._run(
+            returncode=2,
+            canonical=unvalidated_status,
+            write_log=lambda log, sha: log.write_text(
+                "[test.strict_compat] [compat.yes] ✗ FAIL   "
+                "L2 compatibility: yes (0s, exit 1)\n",
+                encoding="utf-8",
+            ),
+            row={"result": "fail", "executed_tests": 814, "cwd": "", "commit": ""},
+        )
+
+        self.assertEqual(rc, watch.FAIL)
+        self.assertEqual(result["state"], "FAIL")
+        self.assertEqual(result["executed_tests"], 814)
+        self.assertIn("result=fail", result["reason"])
+        self.assertIsNone(result["admission_refusal"])
+        self.assertFalse(result["landing_authority"])
+
+    def test_readmission_refusal_the_authority_no_longer_backs_is_not_green(self) -> None:
+        """Fail closed when the durable line and the live authority disagree."""
+        rc, result, _ = self._run(
+            returncode=2,
+            canonical=unvalidated_status,
+            write_log=lambda log, sha: readmission_refusal_log(log, sha),
+        )
+
+        self.assertEqual(rc, watch.NO_RESULT)
+        self.assertEqual(result["state"], "NO_RESULT")
+        self.assertIn("refusing to infer a verdict", result["reason"])
+        self.assertFalse(result["landing_authority"])
+
+    def test_landing_authority_follows_the_authority_not_the_local_attempt(self) -> None:
+        """A qualifying LOCAL row cannot mint authority the canonical source denies."""
+        rc, result, _ = self._run(
+            returncode=0,
+            canonical=unvalidated_status,
+            write_log=lambda log, sha: log.write_text("", encoding="utf-8"),
+            row={"result": "pass", "executed_tests": 873, "cwd": "", "commit": ""},
+            qualified=(True, "local row qualifies"),
+        )
+
+        self.assertTrue(result["canonical_qualified"])
+        self.assertFalse(result["landing_authority"])
+        self.assertIn("NOT-VALIDATED", result["landing_authority_reason"])
+        self.assertEqual(rc, watch.PASS)
+
+    def test_unreadable_canonical_authority_never_reports_green(self) -> None:
+        rc, result, _ = self._run(
+            returncode=2,
+            canonical=lambda sha: {
+                "sha": sha,
+                "available": False,
+                "verdict": None,
+                "exit_code": 70,
+                "reason": "canonical validate-status unreadable (exit 70)",
+                "receipt": None,
+            },
+            write_log=lambda log, sha: readmission_refusal_log(log, sha),
+        )
+
+        self.assertEqual(rc, watch.NO_RESULT)
+        self.assertEqual(result["state"], "NO_RESULT")
+        self.assertFalse(result["landing_authority"])
+        self.assertIn("withheld", result["landing_authority_reason"])
+
+
+class AdmissionRefusalEvidenceTest(unittest.TestCase):
+    def test_recognizes_the_readmission_refusal_with_verdict_and_sha(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate-run.log"
+            sha = "a4c8aedaf5eaed7dfaafd7148e1acc83aed95348"
+            readmission_refusal_log(log, sha)
+            evidence = watch.admission_refusal_evidence(log)
+            assert evidence is not None
+            self.assertEqual(evidence["kind"], "canonical-terminal-readmission")
+            self.assertEqual(evidence["refused_verdict"], "VALIDATED")
+            self.assertEqual(evidence["refused_sha"], sha)
+
+    def test_a_generic_refusal_is_not_promoted_to_the_readmission_kind(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate-run.log"
+            log.write_text(
+                "validate-run: REFUSED: cannot start ci-hub Herdr server: "
+                "Failed to find executable herdr\n",
+                encoding="utf-8",
+            )
+            evidence = watch.admission_refusal_evidence(log)
+            assert evidence is not None
+            self.assertEqual(evidence["kind"], "admission-refusal")
+            self.assertNotIn("refused_verdict", evidence)
+
+    def test_an_ordinary_producer_log_carries_no_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate-run.log"
+            log.write_text(
+                "validate-run: HANDLE validate-owner-checkout-x.service state=running\n"
+                "[lint.clippy] ✓ PASS   Clippy (78s)\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(watch.admission_refusal_evidence(log))
+
+    def test_a_missing_log_is_not_a_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            self.assertIsNone(
+                watch.admission_refusal_evidence(Path(temporary) / "absent.log")
+            )
+
+
 class OwnerCheckoutValidateWatchTest(unittest.TestCase):
     def test_dirty_checkout_is_a_durable_cannot_start_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -162,6 +443,10 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                 watch, "latest_attempt_row", return_value=row
             ), mock.patch.object(
                 watch, "qualify_row", return_value=(True, "fixture qualifies")
+            ), mock.patch.object(
+                watch,
+                "canonical_validate_status",
+                return_value=validated_status(head),
             ):
                 rc = watch.main(
                     [
@@ -213,6 +498,10 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                 watch, "latest_attempt_row", return_value=row
             ), mock.patch.object(
                 watch, "qualify_row", return_value=(True, "fixture qualifies")
+            ), mock.patch.object(
+                watch,
+                "canonical_validate_status",
+                return_value=validated_status(head),
             ):
                 rc = watch.main(
                     [
