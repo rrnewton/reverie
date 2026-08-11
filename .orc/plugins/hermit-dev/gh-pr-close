@@ -1,0 +1,261 @@
+#!/usr/bin/env bash
+# Registered wrapper for closing a bot-reviewed pull request.
+#
+# A reviewed PR is updated in place by default.  Closing it requires exactly
+# one durable disposition in the closing comment:
+#
+#   SUPERSEDED-BY: #<n>
+#   OWNER-AUTHORIZED-CLOSE: <quoted owner instruction>
+#
+# A successor marker is not accepted on trust.  The named PR is resolved in
+# the same repository and must be a different, currently OPEN pull request.
+#
+# Usage:
+#   gh-pr-close --repo rrnewton/hermit <pr> --comment "<body>"
+#   gh-pr-close --repo rrnewton/hermit <pr> --comment-file <path>
+#   gh-pr-close ... --dry-run
+#
+# Exit codes: 0 allowed (or dry-run allowed); 2 policy refusal; 3 usage error.
+set -euo pipefail
+
+readonly DEFAULT_HTTPS_PROXY="http://fwdproxy:8080"
+readonly GH_COMMAND="${GH_BIN:-gh}"
+readonly SELF="${0##*/}"
+
+repo="${GH_REPO:-}"
+repo_seen=0
+pr=""
+comment=""
+comment_file=""
+comment_sources=0
+dry_run=0
+
+show_usage() {
+  echo "usage: $SELF --repo <owner/repo> <pr-number> (--comment TEXT | --comment-file PATH) [--dry-run]" >&2
+}
+
+die_usage() {
+  echo "$SELF: $1" >&2
+  show_usage
+  exit 3
+}
+
+refuse() {
+  echo "$SELF: REFUSED -- $1" >&2
+  shift
+  local line
+  for line in "$@"; do
+    echo "  $line" >&2
+  done
+  exit 2
+}
+
+set_repo() {
+  ((repo_seen == 0)) || refuse "repository was supplied more than once"
+  repo="$1"
+  repo_seen=1
+}
+
+set_comment() {
+  ((comment_sources == 0)) || refuse "choose exactly one of --comment or --comment-file"
+  comment="$1"
+  comment_sources=1
+}
+
+set_comment_file() {
+  ((comment_sources == 0)) || refuse "choose exactly one of --comment or --comment-file"
+  comment_file="$1"
+  comment_sources=1
+}
+
+while (($# > 0)); do
+  case "$1" in
+    -R|--repo)
+      (($# >= 2)) || die_usage "$1 requires a repository"
+      set_repo "$2"
+      shift 2
+      ;;
+    -R?*)
+      set_repo "${1#-R}"
+      shift
+      ;;
+    --repo=*)
+      set_repo "${1#*=}"
+      shift
+      ;;
+    -c|--comment)
+      (($# >= 2)) || die_usage "$1 requires a body"
+      set_comment "$2"
+      shift 2
+      ;;
+    --comment=*)
+      set_comment "${1#*=}"
+      shift
+      ;;
+    -F|--comment-file)
+      (($# >= 2)) || die_usage "$1 requires a path"
+      set_comment_file "$2"
+      shift 2
+      ;;
+    --comment-file=*)
+      set_comment_file "${1#*=}"
+      shift
+      ;;
+    --dry-run)
+      ((dry_run == 0)) || refuse "--dry-run was supplied more than once"
+      dry_run=1
+      shift
+      ;;
+    -h|--help)
+      show_usage
+      exit 0
+      ;;
+    --delete-branch|-d)
+      refuse "branch deletion is outside the registered close operation"
+      ;;
+    --)
+      refuse "unsupported argument separator; pass only the documented close arguments"
+      ;;
+    -*)
+      refuse "unsupported argument: $1"
+      ;;
+    *)
+      if [[ -z "$pr" ]]; then
+        pr="$1"
+      else
+        refuse "unexpected extra argument: $1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+[[ -n "$pr" ]] || die_usage "a pull request number is required"
+[[ "$pr" =~ ^[1-9][0-9]*$ ]] || die_usage "pull request must be a positive integer (got: $pr)"
+((comment_sources == 1)) || die_usage "pass exactly one of --comment or --comment-file"
+
+if [[ -z "$repo" ]]; then
+  remote="$(git config --get remote.origin.url 2>/dev/null || true)"
+  if [[ "$remote" =~ github\.com[:/]([^/]+)/([^/]+)$ ]]; then
+    repo="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+  else
+    die_usage "pass --repo rrnewton/hermit or --repo rrnewton/reverie"
+  fi
+fi
+repo="${repo#https://github.com/}"
+repo="${repo#http://github.com/}"
+repo="${repo#git@github.com:}"
+repo="${repo#github.com/}"
+repo="${repo%.git}"
+
+case "$repo" in
+  rrnewton/hermit|rrnewton/reverie)
+    ;;
+  facebookexperimental/*)
+    refuse "closing an upstream pull request is outside this wrapper" \
+      "Use the rrnewton fork named by project policy."
+    ;;
+  *)
+    refuse "pull-request closes are restricted to rrnewton/hermit or rrnewton/reverie (got: $repo)"
+    ;;
+esac
+
+if [[ -n "$comment_file" ]]; then
+  [[ -r "$comment_file" ]] || die_usage "cannot read --comment-file $comment_file"
+  # read -d '' preserves the file body, including trailing newlines.
+  IFS= read -r -d '' comment <"$comment_file" || true
+fi
+
+if [[ -z "${comment//[[:space:]]/}" ]]; then
+  refuse "a silent close is never allowed (rule 1)" \
+    "Supply a nonempty closing comment."
+fi
+
+declare -a successor_markers=()
+declare -a owner_markers=()
+mapfile -t successor_markers < <(
+  grep -oE 'SUPERSEDED-BY:[[:space:]]*#[1-9][0-9]*([^[:alnum:]_]|$)' <<<"$comment" || true
+)
+mapfile -t owner_markers < <(
+  grep -oE 'OWNER-AUTHORIZED-CLOSE:[[:space:]]*[^[:space:]]' <<<"$comment" || true
+)
+
+successor_count=${#successor_markers[@]}
+owner_count=${#owner_markers[@]}
+disposition_count=$((successor_count + owner_count))
+
+if ((disposition_count == 0)); then
+  if grep -qiE '(taskgraph|task graph|\btg (note|update|create)\b|filed a task|tracked in a task)' <<<"$comment"; then
+    refuse "a taskgraph task is not a substitute for a PR (rule 3)" \
+      "Update this PR in place, or name the open successor with 'SUPERSEDED-BY: #<n>'."
+  fi
+  if grep -qiE '(procedural|procedurally|deficient|does not meet|non-compliant|noncompliant|out of scope|low quality|not up to standard)' <<<"$comment"; then
+    refuse "a generic procedural rejection is not a review (rule 2)" \
+      "Name the concrete change and leave it as a review comment so this PR can be updated in place."
+  fi
+  refuse "no named successor and no owner authorization (rule 1)" \
+    "Use literal 'SUPERSEDED-BY: #<n>' naming an existing open PR, or" \
+    "'OWNER-AUTHORIZED-CLOSE: <quote the owner instruction>'."
+fi
+
+if ((disposition_count != 1)); then
+  refuse "the closing comment contains multiple or conflicting dispositions (rule 1)" \
+    "Supply exactly one SUPERSEDED-BY marker or one OWNER-AUTHORIZED-CLOSE marker."
+fi
+
+if ((owner_count == 1)) && \
+   grep -qE 'OWNER-AUTHORIZED-CLOSE:[[:space:]]*<quote[[:space:]]+the[[:space:]]+owner[[:space:]]+instruction>' <<<"$comment"; then
+  refuse "OWNER-AUTHORIZED-CLOSE contains the placeholder rather than an instruction (rule 1)"
+fi
+
+successor=""
+successor_state=""
+if ((successor_count == 1)); then
+  marker="${successor_markers[0]}"
+  [[ "$marker" =~ \#([1-9][0-9]*) ]] || refuse "malformed SUPERSEDED-BY marker (rule 1)"
+  successor="${BASH_REMATCH[1]}"
+  if [[ "$successor" == "$pr" ]]; then
+    refuse "SUPERSEDED-BY names this same PR #$pr (rule 1)" \
+      "A PR cannot supersede itself."
+  fi
+
+  export HTTPS_PROXY="${HTTPS_PROXY:-$DEFAULT_HTTPS_PROXY}"
+  unset GH_REPO
+  if ! successor_record="$(
+    "$GH_COMMAND" pr view "$successor" --repo "$repo" --json number,state \
+      --jq '[.number, .state] | @tsv' 2>/dev/null
+  )"; then
+    refuse "SUPERSEDED-BY: #$successor does not resolve in $repo (rule 1)" \
+      "The successor must already exist before the predecessor is closed."
+  fi
+
+  if [[ "$successor_record" == *$'\n'* ]]; then
+    refuse "successor lookup returned more than one record for PR #$successor (rule 1)"
+  fi
+
+  returned_number=""
+  extra=""
+  IFS=$'\t' read -r returned_number successor_state extra <<<"$successor_record"
+  if [[ "$returned_number" != "$successor" || -n "$extra" ]]; then
+    refuse "successor lookup did not bind to PR #$successor in $repo (rule 1)"
+  fi
+  if [[ "$successor_state" != "OPEN" ]]; then
+    refuse "SUPERSEDED-BY: #$successor is $successor_state, not OPEN (rule 1)" \
+      "The successor must be an open pull request when the predecessor closes."
+  fi
+fi
+
+verdict="ALLOWED: explicit owner authorization"
+if ((successor_count == 1)); then
+  verdict="ALLOWED: superseded by open PR #$successor (dereferenced)"
+fi
+
+if ((dry_run == 1)); then
+  echo "$SELF: DRY RUN -- $verdict; PR #$pr in $repo NOT touched"
+  exit 0
+fi
+
+echo "$SELF: $verdict" >&2
+export HTTPS_PROXY="${HTTPS_PROXY:-$DEFAULT_HTTPS_PROXY}"
+unset GH_REPO
+exec "$GH_COMMAND" pr close "$pr" --repo "$repo" --comment "$comment"
