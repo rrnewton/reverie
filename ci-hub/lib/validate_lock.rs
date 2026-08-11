@@ -43,8 +43,8 @@ use crate::landing_lock::{
     reap_exited_children, register_box_claim, remove_cleanup_record_and_claim,
     repository_lock_root, signal_group, spawn_gated_child, suffix, verify_cleanup_record,
     write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor, CleanupDomain, CleanupPhase,
-    CleanupRecord, CleanupVerification, DomainEvidence, GatedChild, ProcessIdentity,
-    ResidualCapture,
+    CleanupRecord, CleanupVerification, DomainAttestation, DomainEvidence, GatedChild,
+    ProcessIdentity, ResidualCapture,
 };
 
 const DEFAULT_WAIT_SECONDS: u64 = 1_800;
@@ -318,6 +318,10 @@ pub struct CensusOrphanedDomainArgs {
     /// with no domain, or legacy cgroup records whose anchor cannot be read.
     #[arg(long)]
     pub attest_domain_empty: bool,
+    /// Identity of the operator making `--attest-domain-empty`. This names the
+    /// claimant; it does not replace any mechanical liveness check.
+    #[arg(long, default_value = "")]
+    pub attester: String,
     /// The exact observations backing `--attest-domain-empty`. Recorded in the
     /// transcript so the attestation is auditable rather than anonymous. Must be
     /// non-empty whenever `--attest-domain-empty` is used.
@@ -522,6 +526,10 @@ struct ReleaseRecord {
     released_by: String,
     kind: String,
     target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attested_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attestation_evidence: Option<String>,
 }
 
 impl ReleaseRecord {
@@ -532,6 +540,8 @@ impl ReleaseRecord {
         let mut released_by = None;
         let mut kind = None;
         let mut target = None;
+        let mut attested_by = None;
+        let mut attestation_evidence = None;
         for (line_number, line) in content.lines().enumerate() {
             let (key, value) = line.split_once('=').ok_or_else(|| {
                 ValidateLockError::InvalidState(format!(
@@ -546,6 +556,8 @@ impl ReleaseRecord {
                 "released_by" => released_by = Some(value.to_string()),
                 "kind" => kind = Some(value.to_string()),
                 "target" => target = Some(value.to_string()),
+                "attested_by" => attested_by = Some(value.to_string()),
+                "attestation_evidence" => attestation_evidence = Some(value.to_string()),
                 unknown => {
                     return Err(ValidateLockError::InvalidState(format!(
                         "unknown release field {unknown:?}"
@@ -554,11 +566,33 @@ impl ReleaseRecord {
             }
         }
         let schema_version = required(schema_version, "release schema_version")?;
-        if schema_version != 1 {
-            return Err(ValidateLockError::InvalidState(format!(
-                "unsupported release schema_version={schema_version}"
-            )));
-        }
+        let (attested_by, attestation_evidence) = match (
+            schema_version,
+            attested_by.as_deref(),
+            attestation_evidence.as_deref(),
+        ) {
+            (1, None, None) => (None, None),
+            (2, Some(attester), Some(evidence)) => {
+                let attestation = DomainAttestation::new(attester, evidence)
+                    .map_err(ValidateLockError::InvalidState)?;
+                (Some(attestation.attester), Some(attestation.evidence))
+            }
+            (1, _, _) => {
+                return Err(ValidateLockError::InvalidState(
+                    "release schema_version=1 cannot carry an attestation".into(),
+                ))
+            }
+            (2, _, _) => {
+                return Err(ValidateLockError::InvalidState(
+                    "release schema_version=2 requires attested_by and attestation_evidence".into(),
+                ))
+            }
+            _ => {
+                return Err(ValidateLockError::InvalidState(format!(
+                    "unsupported release schema_version={schema_version}"
+                )))
+            }
+        };
         Ok(Self {
             schema_version: schema_version as u32,
             released_at: required(released_at, "release released_at")?,
@@ -566,11 +600,13 @@ impl ReleaseRecord {
             released_by: required(released_by, "release released_by")?,
             kind: required(kind, "release kind")?,
             target: required(target, "release target")?,
+            attested_by,
+            attestation_evidence,
         })
     }
 
     fn render(&self) -> String {
-        format!(
+        let mut output = format!(
             "schema_version={}\nreleased_at={}\nreleased_human={}\nreleased_by={}\nkind={}\ntarget={}\n",
             self.schema_version,
             self.released_at,
@@ -578,7 +614,14 @@ impl ReleaseRecord {
             self.released_by,
             self.kind,
             self.target
-        )
+        );
+        if let (Some(attested_by), Some(evidence)) = (&self.attested_by, &self.attestation_evidence)
+        {
+            output.push_str(&format!(
+                "attested_by={attested_by}\nattestation_evidence={evidence}\n"
+            ));
+        }
+        output
     }
 }
 
@@ -2866,7 +2909,7 @@ impl ValidateLock {
             // Publish the transition before removing the lease, under the same
             // guard. If this write fails, the lock stays held: UNKNOWN never
             // becomes a silently free/admissible boundary.
-            self.write_release_record(&holder.agent, &holder.kind, &holder.target)?;
+            self.write_release_record(&holder.agent, &holder.kind, &holder.target, None)?;
             remove_if_exists(&self.paths.lock)?;
             remove_if_exists(&self.paths.owner)?;
             self.remove_from_queue(agent)?;
@@ -3614,21 +3657,23 @@ impl ValidateLock {
                     }
                 };
             };
-            match self.cleanup_verification(Some(&holder)) {
+            let attestation = match self.cleanup_verification(Some(&holder)) {
                 CleanupVerification::Armed { reason, .. }
                 | CleanupVerification::Active { reason, .. }
                 | CleanupVerification::Uncensused { reason, .. }
                 | CleanupVerification::Unknown { reason, .. } => {
                     return Err(ValidateLockError::ReclaimNotProven(reason));
                 }
-                CleanupVerification::Recoverable { .. } | CleanupVerification::None => {}
-            }
+                CleanupVerification::Recoverable { record, .. } => record.attestation,
+                CleanupVerification::None => None,
+            };
             match self.owner_liveness()? {
                 OwnerLiveness::Dead(reason) => {
                     self.write_release_record(
                         &format!("reclaim-dead:{}", holder.agent),
                         &holder.kind,
                         &holder.target,
+                        attestation.as_ref(),
                     )?;
                     remove_if_exists(&self.paths.lock)?;
                     remove_if_exists(&self.paths.owner)?;
@@ -3856,9 +3901,11 @@ impl ValidateLock {
             } else {
                 census_cleanup_domain(&record, pgid)
             };
+            let uses_attestation = matches!(domain, DomainEvidence::Unproven(_));
             let disposition = census_disposition(
                 domain,
                 args.attest_domain_empty,
+                &args.attester,
                 &args.evidence,
                 &mechanical_context,
             )
@@ -3871,6 +3918,10 @@ impl ValidateLock {
                 domain_complete: true,
                 residuals,
             };
+            recovered.attestation = uses_attestation
+                .then(|| DomainAttestation::new(&args.attester, &args.evidence))
+                .transpose()
+                .map_err(ValidateLockError::RecoveryNotProven)?;
             write_cleanup_record(&self.paths.cleanup, &recovered)
                 .map_err(|source| io_error("write", &self.paths.cleanup, source))?;
             let subject = match leader {
@@ -4303,6 +4354,7 @@ impl ValidateLock {
         released_by: &str,
         kind: &str,
         target: &str,
+        attestation: Option<&DomainAttestation>,
     ) -> Result<ReleaseRecord, ValidateLockError> {
         let released_at = epoch_seconds()?;
         let released_human = Local
@@ -4313,12 +4365,14 @@ impl ValidateLock {
             })?
             .to_rfc3339();
         let record = ReleaseRecord {
-            schema_version: 1,
+            schema_version: if attestation.is_some() { 2 } else { 1 },
             released_at,
             released_human,
             released_by: released_by.to_string(),
             kind: kind.to_string(),
             target: target.to_string(),
+            attested_by: attestation.map(|value| value.attester.clone()),
+            attestation_evidence: attestation.map(|value| value.evidence.clone()),
         };
         let temporary = suffix(&self.paths.released, ".tmp");
         write_truncated(&temporary, record.render().as_bytes())?;
@@ -5133,6 +5187,8 @@ mod tests {
             released_by: OWNER_WATCH_AGENT.into(),
             kind: "validate".into(),
             target: "test-bootstrap".into(),
+            attested_by: None,
+            attestation_evidence: None,
         };
         write_truncated(&paths.released, release.render().as_bytes()).unwrap();
         seed_owner_watch_cursor(&paths, now - 60, None);
@@ -5157,6 +5213,8 @@ mod tests {
             released_by: "background-agent".into(),
             kind: "validate".into(),
             target: "test-target".into(),
+            attested_by: None,
+            attestation_evidence: None,
         };
         write_truncated(&paths.released, release.render().as_bytes()).unwrap();
     }
@@ -5261,6 +5319,33 @@ mod tests {
                 && refusal.to_string().contains("census-orphaned-domain"),
             "refusal must name fleet scope and discharge: {refusal}"
         );
+        let cleanup_before_attestation = fs::read(&paths.cleanup).unwrap();
+        let release_before_attestation = fs::read(&paths.released).ok();
+        let anonymous = lock
+            .census_orphaned_domain(CensusOrphanedDomainArgs {
+                agent: "residual-owner".into(),
+                operation: format!("validate:{target}"),
+                leader: None,
+                pgid,
+                attest_domain_empty: true,
+                attester: String::new(),
+                evidence: "unit cgroup absent; migration targets empty".into(),
+            })
+            .unwrap_err();
+        assert!(
+            anonymous.to_string().contains("--attester"),
+            "discharge without a named attester must refuse: {anonymous}"
+        );
+        assert_eq!(
+            fs::read(&paths.cleanup).unwrap(),
+            cleanup_before_attestation,
+            "an anonymous attempt must not mutate the quarantine"
+        );
+        assert_eq!(
+            fs::read(&paths.released).ok(),
+            release_before_attestation,
+            "an anonymous attempt must not publish or alter a release boundary"
+        );
         assert_eq!(
             lock.census_orphaned_domain(CensusOrphanedDomainArgs {
                 agent: "residual-owner".into(),
@@ -5268,6 +5353,7 @@ mod tests {
                 leader: None,
                 pgid,
                 attest_domain_empty: true,
+                attester: "codex-validatelock".into(),
                 evidence: "unit cgroup absent; migration targets empty".into(),
             })
             .unwrap(),
@@ -5282,7 +5368,21 @@ mod tests {
                 ..
             } if residuals.len() == 1
         ));
+        assert_eq!(
+            recovered.attestation,
+            Some(DomainAttestation {
+                attester: "codex-validatelock".into(),
+                evidence: "unit cgroup absent; migration targets empty".into(),
+            })
+        );
         assert_eq!(lock.reclaim_dead().unwrap(), 0);
+        let release = lock.read_release_record().unwrap().unwrap();
+        assert_eq!(release.schema_version, 2);
+        assert_eq!(release.attested_by.as_deref(), Some("codex-validatelock"));
+        assert_eq!(
+            release.attestation_evidence.as_deref(),
+            Some("unit cgroup absent; migration targets empty")
+        );
         seed_watch_after_latest_release(&lock);
         assert_eq!(
             lock.acquire(
@@ -5311,6 +5411,9 @@ mod tests {
             &incomplete_validate_residual("live-owner", "live-head", pgid, Vec::new()),
         )
         .unwrap();
+        let live_holder_before = fs::read(&live_paths.lock).unwrap();
+        let live_owner_before = fs::read(&live_paths.owner).unwrap();
+        let live_cleanup_before = fs::read(&live_paths.cleanup).unwrap();
         let error = live
             .census_orphaned_domain(CensusOrphanedDomainArgs {
                 agent: "live-owner".into(),
@@ -5318,6 +5421,7 @@ mod tests {
                 leader: None,
                 pgid,
                 attest_domain_empty: true,
+                attester: "codex-validatelock".into(),
                 evidence: "inert isolated fixture".into(),
             })
             .unwrap_err();
@@ -5329,7 +5433,9 @@ mod tests {
             live.acquire("would-steal", Kind::Validate, "other-head", 0, 30),
             Err(ValidateLockError::CleanupQuarantined(_))
         ));
-        assert!(live_paths.cleanup.exists());
+        assert_eq!(fs::read(&live_paths.lock).unwrap(), live_holder_before);
+        assert_eq!(fs::read(&live_paths.owner).unwrap(), live_owner_before);
+        assert_eq!(fs::read(&live_paths.cleanup).unwrap(), live_cleanup_before);
         remove_if_exists(&live_paths.owner).unwrap();
         let unverifiable = live
             .census_orphaned_domain(CensusOrphanedDomainArgs {
@@ -5338,6 +5444,7 @@ mod tests {
                 leader: None,
                 pgid,
                 attest_domain_empty: true,
+                attester: "codex-validatelock".into(),
                 evidence: "inert isolated fixture".into(),
             })
             .unwrap_err();
@@ -6135,6 +6242,7 @@ wait
             DomainEvidence::ProvenEmpty("payload cgroup /x is absent".into()),
             false,
             "",
+            "",
             CTX,
         )
         .expect("a mechanically proven domain must discharge with no attestation");
@@ -6149,6 +6257,7 @@ wait
         let ok = census_disposition(
             DomainEvidence::ProvenEmpty("payload cgroup /x is absent".into()),
             true,
+            "redundant-attester",
             "I looked",
             CTX,
         )
@@ -6165,6 +6274,7 @@ wait
         let refusal = census_disposition(
             DomainEvidence::Populated("payload cgroup /x still holds 2 process(es): 11,22".into()),
             false,
+            "",
             "",
             CTX,
         )
@@ -6184,6 +6294,7 @@ wait
         let refusal = census_disposition(
             DomainEvidence::Populated("payload cgroup /x still holds 2 process(es): 11,22".into()),
             true,
+            "unsafe-attester",
             "operator checked: strays are unrelated",
             CTX,
         )
@@ -6204,6 +6315,7 @@ wait
         let refusal = census_disposition(
             DomainEvidence::Populated("/x holds 1".into()),
             true,
+            "",
             "  ",
             CTX,
         )
@@ -6222,6 +6334,7 @@ wait
             DomainEvidence::Unproven("no cgroup anchor".into()),
             false,
             "",
+            "",
             CTX,
         )
         .unwrap_err();
@@ -6233,12 +6346,29 @@ wait
         );
     }
 
-    // The attestation must stay auditable; an anonymous one is still refused.
+    // Mutation guard: satisfying every other input may never produce an
+    // attested discharge whose recorded claimant is empty.
     #[test]
-    fn an_anonymous_attestation_is_still_refused() {
+    fn an_unnamed_attestation_is_still_refused() {
         let refusal = census_disposition(
             DomainEvidence::Unproven("no cgroup anchor".into()),
             true,
+            "",
+            "unit cgroup absent; migration targets empty",
+            CTX,
+        )
+        .expect_err("an attestation with no recorded attester must not discharge");
+        assert!(refusal.contains("--attester"), "got: {refusal}");
+    }
+
+    // The attestation must stay auditable; a named but unexplained one is still
+    // refused.
+    #[test]
+    fn an_unexplained_attestation_is_still_refused() {
+        let refusal = census_disposition(
+            DomainEvidence::Unproven("no cgroup anchor".into()),
+            true,
+            "recovery-agent",
             "   ",
             CTX,
         )
@@ -6253,6 +6383,7 @@ wait
         let ok = census_disposition(
             DomainEvidence::Unproven("no cgroup anchor".into()),
             true,
+            "recovery-agent",
             "unit gone; safe-ci.slice 0 procs",
             CTX,
         )
@@ -7086,6 +7217,7 @@ wait
                         leader: Some(format!("{}:{}", leader.pid, leader.start_ticks)),
                         pgid,
                         attest_domain_empty: false,
+                        attester: String::new(),
                         evidence: String::new(),
                     })
                     .unwrap(),

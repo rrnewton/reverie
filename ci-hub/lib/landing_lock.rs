@@ -114,6 +114,10 @@ pub struct CensusOrphanedDomainArgs {
     /// with no domain, or legacy cgroup records whose anchor cannot be read.
     #[arg(long)]
     pub attest_domain_empty: bool,
+    /// Identity of the operator making `--attest-domain-empty`. This names the
+    /// claimant; it does not replace any mechanical liveness check.
+    #[arg(long, default_value = "")]
+    pub attester: String,
     /// The exact observations backing `--attest-domain-empty`. Recorded in the
     /// transcript so the attestation is auditable rather than anonymous. Must be
     /// non-empty whenever `--attest-domain-empty` is used.
@@ -226,6 +230,51 @@ pub(crate) struct CleanupRecord {
     /// readable legacy boundary, but new records must not copy an inherited
     /// supervisor cgroup and mislabel it as payload-owned.
     pub(crate) domain: CleanupDomain,
+    /// Present only when an operator, rather than a kernel-readable boundary,
+    /// supplied the otherwise-unprovable domain-completeness fact.
+    pub(crate) attestation: Option<DomainAttestation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DomainAttestation {
+    pub(crate) attester: String,
+    pub(crate) evidence: String,
+}
+
+impl DomainAttestation {
+    pub(crate) fn new(attester: &str, evidence: &str) -> Result<Self, String> {
+        let attester = attester.trim();
+        if attester.is_empty() {
+            return Err(
+                "--attester must name who is asserting --attest-domain-empty; the recorded \
+                 lock owner is the subject, not necessarily the attester"
+                    .to_string(),
+            );
+        }
+        if !attester
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._/@+-".contains(character))
+        {
+            return Err(format!(
+                "--attester must be a single agent identity token, got {attester:?}"
+            ));
+        }
+        let evidence = evidence.trim();
+        if evidence.is_empty() {
+            return Err(
+                "--evidence must record the observations backing --attest-domain-empty; an \
+                 anonymous attestation is not auditable"
+                    .to_string(),
+            );
+        }
+        if evidence.contains(['\n', '\r']) {
+            return Err("--evidence must be one line so it cannot inject cleanup fields".into());
+        }
+        Ok(Self {
+            attester: attester.to_string(),
+            evidence: evidence.to_string(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -275,6 +324,7 @@ impl CleanupRecord {
             boot_id: read_current_boot_id()?,
             phase,
             domain: CleanupDomain::LegacyUnproven,
+            attestation: None,
         })
     }
 
@@ -290,6 +340,8 @@ impl CleanupRecord {
         let mut domain_complete = None;
         let mut cgroup = None;
         let mut domain = None;
+        let mut attester = None;
+        let mut attestation_evidence = None;
         let mut residuals = Vec::new();
         for (line_number, line) in content.lines().enumerate() {
             let (key, value) = line
@@ -324,6 +376,10 @@ impl CleanupRecord {
                 "residual" => residuals.push(parse_process_identity(value, "residual")?),
                 "cgroup" => set_once(&mut cgroup, value.to_string(), key)?,
                 "domain" => set_once(&mut domain, value.to_string(), key)?,
+                "attester" => set_once(&mut attester, value.to_string(), key)?,
+                "attestation_evidence" => {
+                    set_once(&mut attestation_evidence, value.to_string(), key)?
+                }
                 unknown => return Err(format!("unknown cleanup field {unknown:?}")),
             }
         }
@@ -377,6 +433,29 @@ impl CleanupRecord {
             Some(value) => return Err(format!("cleanup phase {value:?} has incompatible fields")),
             None => return Err("cleanup record has no phase".to_string()),
         };
+        let attestation = match (attester, attestation_evidence) {
+            (None, None) => None,
+            (Some(attester), Some(evidence)) => Some(DomainAttestation::new(&attester, &evidence)?),
+            _ => {
+                return Err(
+                    "cleanup attestation requires both attester and attestation_evidence"
+                        .to_string(),
+                )
+            }
+        };
+        if attestation.is_some()
+            && !matches!(
+                phase,
+                CleanupPhase::Residual {
+                    domain_complete: true,
+                    ..
+                }
+            )
+        {
+            return Err(
+                "cleanup attestation is only valid on a complete residual census".to_string(),
+            );
+        }
         Ok(Self {
             agent: agent.ok_or_else(|| "cleanup record has no agent".to_string())?,
             operation: operation.ok_or_else(|| "cleanup record has no operation".to_string())?,
@@ -384,6 +463,7 @@ impl CleanupRecord {
             boot_id: boot_id.ok_or_else(|| "cleanup record has no boot_id".to_string())?,
             phase,
             domain: cleanup_domain,
+            attestation,
         })
     }
 
@@ -427,6 +507,12 @@ impl CleanupRecord {
                     ));
                 }
             }
+        }
+        if let Some(attestation) = &self.attestation {
+            output.push_str(&format!(
+                "attester={}\nattestation_evidence={}\n",
+                attestation.attester, attestation.evidence
+            ));
         }
         output
     }
@@ -1531,9 +1617,11 @@ impl LandingLock {
             } else {
                 census_cleanup_domain(&record, pgid)
             };
+            let uses_attestation = matches!(domain, DomainEvidence::Unproven(_));
             let disposition = census_disposition(
                 domain,
                 args.attest_domain_empty,
+                &args.attester,
                 &args.evidence,
                 &mechanical_context,
             )
@@ -1546,6 +1634,10 @@ impl LandingLock {
                 domain_complete: true,
                 residuals,
             };
+            recovered.attestation = uses_attestation
+                .then(|| DomainAttestation::new(&args.attester, &args.evidence))
+                .transpose()
+                .map_err(LandLockError::ReclaimNotProven)?;
             write_cleanup_record(&self.paths.cleanup, &recovered)
                 .map_err(|source| io_error("write", &self.paths.cleanup, source))?;
             let subject = match leader {
@@ -3472,6 +3564,7 @@ mod cgroup_anchor_tests {
             domain: cgroup
                 .map(|value| CleanupDomain::Cgroup(value.to_string()))
                 .unwrap_or(CleanupDomain::LegacyUnproven),
+            attestation: None,
         }
     }
 
@@ -3727,7 +3820,7 @@ pub(crate) fn print_census_recovery(record: &CleanupRecord, command: &str) {
             let domain = census_cleanup_domain(record, *pgid);
             let attestation = match &domain {
                 DomainEvidence::ProvenEmpty(_) => "",
-                _ => " --attest-domain-empty --evidence '<observations>'",
+                _ => " --attest-domain-empty --attester '<agent-name>' --evidence '<observations>'",
             };
             println!(
                 "  recovery={command} census-orphaned-domain --agent {} --operation {} \
@@ -3758,7 +3851,8 @@ pub(crate) fn print_census_recovery(record: &CleanupRecord, command: &str) {
         } => {
             println!(
                 "  recovery={command} census-orphaned-domain --agent {} --operation {} \
-                 --pgid {pgid} --attest-domain-empty --evidence '<observations>'",
+                 --pgid {pgid} --attest-domain-empty --attester '<agent-name>' \
+                 --evidence '<observations>'",
                 record.agent, record.operation
             );
             println!(
@@ -3781,6 +3875,7 @@ pub(crate) fn print_census_recovery(record: &CleanupRecord, command: &str) {
 pub(crate) fn census_disposition(
     domain: DomainEvidence,
     attested: bool,
+    attester: &str,
     evidence: &str,
     mechanical_context: &str,
 ) -> Result<String, String> {
@@ -3799,19 +3894,15 @@ pub(crate) fn census_disposition(
                 return Err(format!(
                     "every mechanical precondition passes ({mechanical_context}), but the \
                      domain could not be censused mechanically: {why}. Re-run with \
-                     --attest-domain-empty --evidence '<observations>' after confirming the \
-                     payload's unit cgroup is absent/empty AND every cgroup the payload \
-                     migrates into is empty."
+                     --attest-domain-empty --attester '<agent-name>' --evidence \
+                     '<observations>' after confirming the payload's unit cgroup is absent/empty \
+                     AND every cgroup the payload migrates into is empty."
                 ));
             }
-            if evidence.trim().is_empty() {
-                return Err("--evidence must record the observations backing \
-                            --attest-domain-empty; an anonymous attestation is not auditable"
-                    .to_string());
-            }
+            let attestation = DomainAttestation::new(attester, evidence)?;
             Ok(format!(
-                "empty domain ATTESTED (not mechanically provable: {why}): {}",
-                evidence.trim()
+                "empty domain ATTESTED by {} (not mechanically provable: {why}): {}",
+                attestation.attester, attestation.evidence
             ))
         }
     }
@@ -4039,6 +4130,7 @@ mod tests {
                 pgid,
             },
             domain: CleanupDomain::LegacyUnproven,
+            attestation: None,
         };
         write_cleanup_record(&lock.paths.cleanup, &record).unwrap();
         (lock, leader, pgid)
@@ -4063,6 +4155,7 @@ mod tests {
                 pgid,
             },
             domain: CleanupDomain::Cgroup(cgroup.to_string()),
+            attestation: None,
         };
         write_cleanup_record(&lock.paths.cleanup, &record).unwrap();
         (lock, leader, pgid)
@@ -4101,7 +4194,7 @@ mod tests {
         let occupied = || DomainEvidence::Populated("payload cgroup X holds 3: 11,22,33".into());
 
         // Unattested -> refused, and the refusal carries the occupants.
-        let refused = census_disposition(occupied(), false, "", "dead owner").unwrap_err();
+        let refused = census_disposition(occupied(), false, "", "", "dead owner").unwrap_err();
         assert!(
             refused.contains("NOT empty") && refused.contains("11,22,33"),
             "a populated domain must be refused and name its occupants, got {refused}"
@@ -4110,7 +4203,7 @@ mod tests {
         // Attestation cannot contradict positive liveness, with or without
         // evidence. This is the leg that protects live agent/infrastructure
         // processes when a stale record points at their broad sandbox.
-        let anonymous = census_disposition(occupied(), true, "   ", "dead owner").unwrap_err();
+        let anonymous = census_disposition(occupied(), true, "", "   ", "dead owner").unwrap_err();
         assert!(
             anonymous.contains("cannot override a live domain"),
             "attestation over a populated domain must be refused, got {anonymous}"
@@ -4121,6 +4214,7 @@ mod tests {
         let ok = census_disposition(
             DomainEvidence::ProvenEmpty("payload cgroup X is absent".into()),
             false,
+            "",
             "",
             "dead owner",
         )
@@ -4158,6 +4252,7 @@ mod tests {
             leader: Some(format!("{}:{}", leader.pid, leader.start_ticks)),
             pgid,
             attest_domain_empty: false,
+            attester: String::new(),
             evidence: String::new(),
         }
     }
@@ -4255,6 +4350,7 @@ mod tests {
                     leader: None,
                     pgid,
                     attest_domain_empty: true,
+                    attester: "recovery-agent".into(),
                     evidence: "unit cgroup absent; migration targets empty".into(),
                 })
                 .unwrap(),
@@ -4310,6 +4406,7 @@ mod tests {
                 leader: None,
                 pgid,
                 attest_domain_empty: true,
+                attester: "recovery-agent".into(),
                 evidence: "inert isolated fixture".into(),
             })
             .unwrap_err();
@@ -4335,6 +4432,7 @@ mod tests {
                 leader: None,
                 pgid,
                 attest_domain_empty: true,
+                attester: "recovery-agent".into(),
                 evidence: "inert isolated fixture".into(),
             })
             .unwrap_err();
@@ -4380,15 +4478,39 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(
-            anonymous.contains("--evidence"),
+            anonymous.contains("--attester"),
             "an anonymous attestation must be refused, got {anonymous}"
+        );
+
+        // Named but unexplained -> still refused. Both pieces form the durable
+        // attestation and neither may be inferred by the tool.
+        let mut unexplained = census_args(&leader, pgid);
+        unexplained.attest_domain_empty = true;
+        unexplained.attester = "recovery-agent".into();
+        let unexplained = lock
+            .census_orphaned_domain(unexplained)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            unexplained.contains("--evidence"),
+            "an unexplained attestation must be refused, got {unexplained}"
         );
 
         // Attested WITH evidence -> discharged.
         let mut attested = census_args(&leader, pgid);
         attested.attest_domain_empty = true;
+        attested.attester = "recovery-agent".into();
         attested.evidence = "unit cgroup absent; safe-ci.slice populated 0".into();
         assert_eq!(lock.census_orphaned_domain(attested).unwrap(), 0);
+        let recovered =
+            CleanupRecord::parse(&fs::read_to_string(&lock.paths.cleanup).unwrap()).unwrap();
+        assert_eq!(
+            recovered.attestation,
+            Some(DomainAttestation {
+                attester: "recovery-agent".into(),
+                evidence: "unit cgroup absent; safe-ci.slice populated 0".into(),
+            })
+        );
 
         // The record is now a complete residual census, so reclaim-dead finishes
         // and a subsequent acquire succeeds. That last step is the one that
