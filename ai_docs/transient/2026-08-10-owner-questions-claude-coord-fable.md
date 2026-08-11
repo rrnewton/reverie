@@ -129,6 +129,38 @@ the current rate.
 team until the pool is under 10, and if so, who issues it? I can only bind my own agents. I
 have deliberately not tried to speak for the fleet.
 
+### Q7 addendum — the throughput arithmetic, measured
+
+Worth having explicitly, because it decides where effort should go and it argues *against*
+the obvious response of adding more agents.
+
+`ci-hub validate-lock` is a **box-exclusive gate — one validate/bench at a time**
+(`ci-hub/ci-hub.rs:113`), shared by every agent and every team on the machine. From the
+LEDGER, full-profile validate wall is **median 8.4 min** (max 13.2), so the ceiling is
+roughly **7 validates per hour for the entire fleet**. Landing requires an exact-head green
+receipt, so:
+
+```
+PRs retired/hour  =  validates/hour  x  PRs per validate  x  success rate
+                     ~7, saturated,     aggregation        currently a coin flip
+                     shared fleet-wide  is the only lever  (Q: see #2111)
+```
+
+At one PR per validate and the observed success rate, retirement lands near the +2.3/hour
+inflow — i.e. **roughly break-even, which matches what the pool has actually been doing.**
+
+Two consequences:
+
+1. **More implementation agents cannot help.** They queue on the same lock. Parallelism buys
+   faster *building* and *diagnosis*, not more landings. I have deliberately held at four
+   lanes rather than scaling up.
+2. **Aggregation is not an optimization, it is the mechanism.** Folding 7 PRs into one branch
+   retires 7 PRs for one 8-minute slot. The measured 22 PRs → 4 landings is a 5.5x
+   compression, and it is the only term that scales.
+
+Eliminating the flake rate (hermit #2111) roughly doubles effective throughput on top of
+that. Those two together are the whole plan; everything else is bookkeeping.
+
 ## Q8 — Two fleet caps are structurally exceeded, and I do not know which way you want it
 
 Both are `AGENTS.md` Hard Invariant 13, both are **per box**, and both were already exceeded
