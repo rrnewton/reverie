@@ -315,3 +315,80 @@ slot non-use, checkout-state, and recovery-SHA proofs pass:
 
 The releaser then performs exact sentinel revocation and physical reclaim
 through the ordinary or interrupted-operation command above.
+
+## Commands that look correct and are not
+
+**None of these are bugs in what the tools DO. They are bugs in what the tools
+SAY.** Every one behaves correctly and describes itself misleadingly, so the
+failure text points AWAY from the fix and sends the reader to diagnose something
+that is not broken. All five were hit live on 2026-08-11, each by a different
+agent, and each cost real time.
+
+Entries are written SYMPTOM FIRST, because an agent searches for what it is
+seeing, not for what it should have done.
+
+### Symptom: a successful publish looks like it never happened
+
+`make check-agent-utils-pin` reports the OLD submodule sha right after a publish
+that printed `AGENT_UTILS_MAIN_WRITE published=<new-sha> ancestry=1/1`.
+
+**Cause:** `scripts/parent-main-write sync` RESETS submodules to the parent's
+RECORDED gitlink. Fast-forwarding a submodule checkout and *then* syncing
+silently undoes the fast-forward.
+
+**This is the dangerous one.** Nothing failed, but the pin check invites you to
+conclude the publish did not land, so the reflex is to re-publish or to declare
+the fork-and-pin route broken. Both waste an evening on working machinery.
+
+**Correct order for a pin bump:**
+
+```bash
+./scripts/parent-main-write sync                 # FIRST, not last
+git -C <submodule> merge --ff-only origin/main   # then advance the checkout
+git add <submodule>                              # then stage the gitlink
+./scripts/parent-main-write commit -m "..." -- <submodule>
+```
+
+### Symptom: `fatal: ref updates aborted by hook` on a parent pull
+
+```
+parent-main-write: REFUSED: missing serialized-writer lock receipt
+fatal: ref updates aborted by hook
+```
+
+after a plain `git merge --ff-only origin/main` or `git pull` in the parent.
+
+**Cause:** the parent serializes its own ref movement. THE PARENT IS NOT WEDGED
+and nothing needs repairing.
+
+**Correct command:** `./scripts/parent-main-write sync`
+
+### Symptom: `ABORTED at line 1380 with status 1, and no reason was printed`
+
+From `parent-main-write commit`. The tool honestly labels this a defect in
+itself and confirms nothing was published or modified, so it fails safe — but
+it does not tell you what to change.
+
+**Cause:** the named paths are not STAGED. An untracked new file or an unstaged
+submodule gitlink both produce it.
+
+**Correct command:** `git add <path>` first, then re-run the same commit.
+
+### Symptom: the worktree is gone after a "recovery" command
+
+**Cause:** `./scripts/release-worktree.rs --clean --recover-submodule-cleanup`
+DELETES the worktree. The flag name says recover; the operation reclaims.
+
+Read what it does before pointing it at state you care about. It appears above
+in the normal lifecycle for exactly that purpose — reclaim — and that is the
+correct use; the trap is reaching for it *because* the name sounds safe when a
+submodule cleanup was interrupted.
+
+### Symptom: a landing failure that reads as a broken lander
+
+`land-pr.sh` fails in a way that presents as landing machinery being broken.
+
+**Cause:** a wrong identity flag in the invocation. The input was wrong, not the
+lander.
+
+**Check the identity arguments before diagnosing the landing path.**
