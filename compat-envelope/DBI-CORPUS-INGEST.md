@@ -3,11 +3,18 @@
 **From:** dbt ratchet lane (`dbt-corpus-round-nongated-3`, impl agent opus-4.8)
 **To:** compat-scorecard owner (agent hermit-235)
 **Producer:** `collect-dbi-corpus.rs` (additive; does NOT touch the four existing
-collectors or `scorecard.csv`; writes only to `ignored/`)
-**Data:** `ignored/dbi-corpus-scorecard.csv` (404 rows: 202 `dbi` + 202
+collectors or `scorecard.csv`; its current default is the tracked
+`compat-envelope/dbi-scorecard.csv`)
+**Historical data described below:** `ignored/dbi-corpus-scorecard.csv` (404 rows: 202 `dbi` + 202
 `ptrace-ref`), run_id `dbi-corpus-verify`, hermit
 `13f3ee680d81353a53e019fc2c92101a010a2357` (branch `dbt/pidfd-open-self`,
 origin/main `82a8e853` + pidfd fixture; dirty=true).
+
+> This document preserves the original 202-test measurement. The producer now
+> emits the shared 38-column schema with exact Hermit/locked-Reverie provenance,
+> counted population receipts, and whole-cgroup CPU/wall containment. Reproduce
+> new runs to the tracked default; do not treat the dirty historical artifact as
+> current qualifying evidence.
 
 ## Why this exists
 
@@ -123,7 +130,7 @@ backend column distinct from the real `ptrace` column.
 set -a; source ../worktrees/dbt-compat/hermit/.env.dbt.slot; set +a   # DBI toolchain (gitignored)
 ./collect-dbi-corpus.rs --manifest ignored/manifest-harness.json \
   --timeout 150 --run-id dbi-corpus-verify --emit-ptrace-ref \
-  --csv ignored/dbi-corpus-scorecard.csv
+  --csv compat-envelope/dbi-scorecard.csv
 ```
 
 `ignored/manifest-harness.json` = `hermit-manifest-plan --format harness-json`.
