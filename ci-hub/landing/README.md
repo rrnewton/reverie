@@ -423,12 +423,15 @@ landable_reason }`.
 ## Consumer contract (the lander QUERIES; it does not read notes)
 
 ```
-ci-hub/landing/rebase_wrapper.py eligible                 # list landable heads
-ci-hub/landing/rebase_wrapper.py eligible --result <Z>    # exit 0 eligible / 2 not
+ci-hub/landing/rebase_wrapper.py authorize --result <Z> --current-base <Y>
+ci-hub/landing/rebase_wrapper.py eligible                 # operational cache view
 ```
 
-A query has no mailbox to miss. It is an operational view over the append-only
-records at `ignored/rebase-records.jsonl`, not a second definition of validation
+`authorize` is the single lander consumer. It first delegates hard-green to the
+exact-head authority. For soft-green it treats the append-only row as untrusted
+cache input, re-dereferences source X through `validate-status`, and replays X on
+fresh current base Y in an isolated clone; the conflict-free recomputed tree must
+equal Z. `eligible` is only an operational view over the cache and is not landing
 authority. Producer paths:
 
 ```

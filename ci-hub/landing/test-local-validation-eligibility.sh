@@ -256,16 +256,23 @@ audit() { # audit <description> <ok|bad>
   else printf 'BAD  AUDIT %s\n' "$1"; audit_fail=1; fi
 }
 
-# 1. All three mutation boundaries invoke the owner-authorized combiner: before
-# rebase, after push, and immediately before merge. The first two capture VRC;
-# the final receipt-bound call captures receipt_rc.
-mapfile -t authority_lines < <(grep -n 'exact-head-validation-authority\.sh"' "$lander" || true)
+# 1. All three mutation boundaries invoke the ONE landability consumer: before
+# rebase, after push, and immediately before merge. The consumer, not this shell
+# entrypoint, selects hard- or soft-green under hermit-validation-authority.
+mapfile -t authority_lines < <(grep -n 'validation_landability "\$' "$lander" || true)
 if [ "${#authority_lines[@]}" -eq 3 ] &&
    [ "$(grep -c 'VRC=\$?' "$lander")" -ge 2 ] &&
-   grep -Fq 'receipt_rc=$?' "$lander"; then
-  audit "land-pr.sh: 3 exact-head authority boundaries capture their rc" ok
+   grep -Fq 'receipt_rc=$?' "$lander" &&
+   grep -Fq 'rebase_wrapper.py" authorize' "$lander"; then
+  audit "land-pr.sh: 3 validation-landability boundaries capture their rc" ok
 else
-  audit "land-pr.sh: expected 3 captured exact-head authority boundaries, found ${#authority_lines[@]}" bad
+  audit "land-pr.sh: expected 3 captured landability boundaries, found ${#authority_lines[@]}" bad
+fi
+if grep -Fq '[ "$plain_rebase" -eq 1 ] && [ "$HEAD" != "$ORIG" ]' "$lander" &&
+   grep -Fq 'rebase_wrapper.py" record' "$lander"; then
+  audit "rewritten plain rebases record provenance; no-op rebases preserve the prior row" ok
+else
+  audit "plain rebase provenance recording can overwrite a no-op soft-green row" bad
 fi
 
 # The combiner independently dereferences semantic local and hosted status. It
@@ -278,9 +285,10 @@ else
   audit "exact-head authority lost a semantic status verifier" bad
 fi
 
-if grep -Fq -- '--current-base "$current_base"' "$lander" &&
+if grep -Fq 'validation_landability "$HEAD" "$current_base"' "$lander" &&
    grep -Fq -- '--current-reverie-base "$current_reverie_base"' "$lander" &&
-   grep -Fq -- '--repo-checkout "$WT" --reverie-checkout "$ROOT/reverie"' "$lander"; then
+   grep -Fq -- '--reverie-checkout "$ROOT/reverie"' "$lander" &&
+   grep -Fq -- '--repo-checkout "$WT"' "$lander"; then
   audit "final authority call carries both freshly resolved bases into the shared verifier" ok
 else
   audit "final authority call lost merge-boundary base evidence" bad
@@ -315,11 +323,9 @@ fi
 
 # 2. The lander refuses on each non-zero code rather than only on rc 3/4.
 for pat in \
-  'exact-head authority reported a genuine red' \
-  'neither exact-head authority produced green' \
-  'could not evaluate exact-head validation authority' \
-  'has no accepted exact-head validation authority' \
-  'exact-head validation authority REFUSED'; do
+  'validation landability refused PR head' \
+  'has no accepted validation landability' \
+  'validation landability REFUSED'; do
   if grep -Fq "$pat" "$lander"; then
     audit "land-pr.sh abandons on: $pat" ok
   else

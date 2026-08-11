@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 
@@ -26,6 +27,11 @@ X = "a" * 40
 Y = "b" * 40
 Z = "c" * 40
 Z2 = "d" * 40
+
+
+def _cp(returncode=0, stdout="", stderr=""):
+    return subprocess.CompletedProcess(args=[], returncode=returncode,
+                                       stdout=stdout, stderr=stderr)
 
 
 # --------------------------------------------------------------------------- #
@@ -352,12 +358,6 @@ def test_default_store_falls_back_to_file_when_no_env(monkeypatch) -> None:
 # --------------------------------------------------------------------------- #
 # receipt_status: an authority FAILURE is UNKNOWN, never ABSENT                 #
 # --------------------------------------------------------------------------- #
-def _cp(returncode=0, stdout="", stderr=""):
-    import subprocess
-    return subprocess.CompletedProcess(args=[], returncode=returncode,
-                                       stdout=stdout, stderr=stderr)
-
-
 def test_receipt_status_validated(monkeypatch) -> None:
     report = {"verdict": "VALIDATED", "qualifying_count": 1,
               "newest_qualifying": {"profile": "full", "selection_mode": "full",
@@ -622,6 +622,187 @@ def test_durable_provenance_off_leaves_head_unaccounted(
     assert M.do_eligible(q) == M.EXIT_OK
     out = json.loads(capsys.readouterr().out)
     assert out["summary"]["unaccounted"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# Landing authority: hard green OR independently recomputed soft green         #
+# --------------------------------------------------------------------------- #
+def _git_run(repo: Path, *args: str) -> str:
+    cp = subprocess.run(["git", "-C", str(repo), *args], text=True,
+                        capture_output=True, check=True)
+    return cp.stdout.strip()
+
+
+def _commit_file(repo: Path, path: str, body: str, message: str) -> str:
+    (repo / path).write_text(body)
+    _git_run(repo, "add", "--", path)
+    _git_run(repo, "commit", "-q", "-m", message)
+    return _git_run(repo, "rev-parse", "HEAD")
+
+
+def _init_repo(repo: Path) -> None:
+    repo.mkdir()
+    _git_run(repo, "init", "-q", "-b", "main")
+    _git_run(repo, "config", "user.name", "fixture")
+    _git_run(repo, "config", "user.email", "fixture@example.invalid")
+
+
+def _clean_rebase_fixture(tmp_path: Path) -> tuple[Path, str, str, str]:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_file(repo, "common", "base\n", "base")
+    _git_run(repo, "checkout", "-q", "-b", "feature")
+    source = _commit_file(repo, "feature", "feature\n", "feature")
+    _git_run(repo, "checkout", "-q", "main")
+    base = _commit_file(repo, "main-only", "main\n", "main")
+    _git_run(repo, "checkout", "-q", "feature")
+    _git_run(repo, "rebase", "-q", "main")
+    result = _git_run(repo, "rev-parse", "HEAD")
+    return repo, source, base, result
+
+
+def _authorization_args(repo: Path, store: Path, base: str, result: str):
+    return M.build_parser().parse_args([
+        "authorize", "--result", result, "--current-base", base,
+        "--repo-checkout", str(repo), "--registry", str(repo / "floors.json"),
+        "--store", str(store), "--json",
+    ])
+
+
+def _plant_zero_conflict(store: Path, source: str, base: str, result: str) -> None:
+    M.append_record(str(store), {
+        "source_rev": source, "base": base, "result": result,
+        "conflicts": [], "soft_green": M.SOFT_ZERO_CONFLICT,
+        "risk_judgement": M.RISK_NA, "base_clears_floor": True,
+        "base_unmet_floors": [], "receipt_at_Z": None, "landable": False,
+    })
+
+
+def _stub_soft_authorities(monkeypatch) -> None:
+    monkeypatch.setattr(M, "exact_head_status", lambda args: _cp(4, "NO_RESULT"))
+    monkeypatch.setattr(M.gate_floors, "load_floors", lambda path: [])
+    monkeypatch.setattr(M.gate_floors, "clears_all",
+                        lambda floors, checkout, base: {"ok": True, "unmet": []})
+    monkeypatch.setattr(M, "receipt_status", lambda source: {
+        "status": M.RECEIPT_VALIDATED,
+        "identity": {"sha": source, "verdict": "VALIDATED"}, "detail": ""})
+
+
+def test_authorize_hard_green_without_rebase_record(
+        tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(M, "exact_head_status", lambda args: _cp(0, "hard green"))
+    args = _authorization_args(tmp_path, tmp_path / "absent.jsonl", Y, Z)
+    assert M.do_authorize(args) == M.EXIT_OK
+    assert json.loads(capsys.readouterr().out)["state"] == "HARD_GREEN"
+
+
+def test_authorize_clean_rebase_soft_green_recomputes_x_on_y(
+        tmp_path, monkeypatch, capsys) -> None:
+    repo, source, base, result = _clean_rebase_fixture(tmp_path)
+    store = tmp_path / "records.jsonl"
+    _plant_zero_conflict(store, source, base, result)
+    _stub_soft_authorities(monkeypatch)
+    assert M.do_authorize(_authorization_args(repo, store, base, result)) == M.EXIT_OK
+    out = json.loads(capsys.readouterr().out)
+    assert out["state"] == "SOFT_GREEN"
+    assert out["source_rev"] == source and out["base"] == base
+
+
+def test_authorize_absent_record_refuses(tmp_path, monkeypatch) -> None:
+    _stub_soft_authorities(monkeypatch)
+    args = _authorization_args(tmp_path, tmp_path / "absent.jsonl", Y, Z)
+    try:
+        M.do_authorize(args)
+    except M.Refused as err:
+        assert "no rebase record" in str(err)
+        return
+    raise AssertionError("an absent rebase record must refuse soft-green")
+
+
+def test_authorize_soft_green_requires_live_validated_source(
+        tmp_path, monkeypatch) -> None:
+    repo, source, base, result = _clean_rebase_fixture(tmp_path)
+    store = tmp_path / "records.jsonl"
+    _plant_zero_conflict(store, source, base, result)
+    _stub_soft_authorities(monkeypatch)
+    monkeypatch.setattr(M, "receipt_status", lambda _source: {
+        "status": M.RECEIPT_ABSENT, "identity": None,
+        "detail": "NOT-VALIDATED"})
+    try:
+        M.do_authorize(_authorization_args(repo, store, base, result))
+    except M.Refused as err:
+        assert "source" in str(err) and "not live VALIDATED" in str(err)
+        return
+    raise AssertionError("soft-green inherited from a source without authority")
+
+
+def test_authorize_soft_green_requires_recorded_base_to_be_current(
+        tmp_path, monkeypatch) -> None:
+    repo, source, base, result = _clean_rebase_fixture(tmp_path)
+    _git_run(repo, "checkout", "-q", "main")
+    newer_base = _commit_file(repo, "later", "later\n", "later main")
+    store = tmp_path / "records.jsonl"
+    _plant_zero_conflict(store, source, base, result)
+    _stub_soft_authorities(monkeypatch)
+    try:
+        M.do_authorize(_authorization_args(repo, store, newer_base, result))
+    except M.Refused as err:
+        assert "is not current main" in str(err)
+        return
+    raise AssertionError("soft-green authorized against a superseded base")
+
+
+def test_authorize_known_red_never_falls_through_to_soft_green(
+        tmp_path, monkeypatch) -> None:
+    repo, source, base, result = _clean_rebase_fixture(tmp_path)
+    store = tmp_path / "records.jsonl"
+    _plant_zero_conflict(store, source, base, result)
+    _stub_soft_authorities(monkeypatch)
+    monkeypatch.setattr(M, "exact_head_status", lambda args: _cp(3, "known red"))
+    try:
+        M.do_authorize(_authorization_args(repo, store, base, result))
+    except M.Refused as err:
+        assert "known red" in str(err)
+        return
+    raise AssertionError("a known-red exact head inherited soft-green")
+
+
+def test_authorize_forged_record_refuses_on_recomputed_tree(
+        tmp_path, monkeypatch) -> None:
+    """Mutation control: without recomputation this forged row authorizes."""
+    repo, source, base, _honest_result = _clean_rebase_fixture(tmp_path)
+    _git_run(repo, "checkout", "-q", "-b", "forged", base)
+    forged_result = _commit_file(repo, "forged", "not the feature\n", "forged")
+    store = tmp_path / "records.jsonl"
+    _plant_zero_conflict(store, source, base, forged_result)
+    _stub_soft_authorities(monkeypatch)
+    try:
+        M.do_authorize(_authorization_args(repo, store, base, forged_result))
+    except M.Refused as err:
+        assert "recomputation produced tree" in str(err)
+        return
+    raise AssertionError("a fabricated row authorized an unrelated result")
+
+
+def test_authorize_real_rebase_conflict_refuses(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _commit_file(repo, "shared", "base\n", "base")
+    _git_run(repo, "checkout", "-q", "-b", "feature")
+    source = _commit_file(repo, "shared", "feature\n", "feature")
+    _git_run(repo, "checkout", "-q", "main")
+    base = _commit_file(repo, "shared", "main\n", "main")
+    _git_run(repo, "checkout", "-q", "-b", "claimed-result", base)
+    result = _commit_file(repo, "shared", "manual resolution\n", "resolved")
+    store = tmp_path / "records.jsonl"
+    _plant_zero_conflict(store, source, base, result)
+    _stub_soft_authorities(monkeypatch)
+    try:
+        M.do_authorize(_authorization_args(repo, store, base, result))
+    except M.Refused as err:
+        assert "recomputation conflicted" in str(err)
+        return
+    raise AssertionError("a genuinely conflicted rebase must refuse inheritance")
 
 
 if __name__ == "__main__":

@@ -314,9 +314,9 @@ abandon(){
 with-proxy git -C "$WT" fetch -q origin main || abandon "fetch origin/main failed" 2
 with-proxy git -C "$WT" fetch -q origin "$BR" 2>/dev/null || true
 
-# 1b. Owner-authorized exact-head local-ledger gate. GH Actions is diagnostic:
-# it neither authorizes nor vetoes a landing. Missing/partial/stale local
-# evidence is NO_RESULT, never green. Re-check after every SHA-changing rebase.
+# 1b. Validation landability is defined only by the tracked
+# hermit-validation-authority skill. This entrypoint calls its consumer; it does
+# not restate hard/soft-green policy. Re-check after every SHA-changing rebase.
 verify_pr_belongs_to_repo
 ORIG=$(git -C "$WT" rev-parse "origin/$BR" 2>/dev/null) || abandon "cannot resolve origin/$BR head for eligibility gate" 4
 # A gate-changing branch is not allowed to choose the ordinary authority path.
@@ -327,11 +327,11 @@ ORIG=$(git -C "$WT" rev-parse "origin/$BR" 2>/dev/null) || abandon "cannot resol
 branch_base=$(git -C "$WT" merge-base origin/main "$ORIG") \
   || abandon "cannot resolve PR merge-base for self-authorization check" 4
 producer_exception=0
-authority_mode=(--local-only)
+authority_mode=local-only
 if git -C "$WT" diff --name-only "$branch_base" "$ORIG" -- \
     scripts/validate.rs | grep -Fxq scripts/validate.rs; then
   producer_exception=1
-  authority_mode=(--hosted-only)
+  authority_mode=hosted-only
   [ "$NO_REBASE" -eq 1 ] || abandon "producer-changing PR requires --no-rebase so exact-head hosted authority survives" 4
   say "producer exception: selecting registered exact-head hosted authority"
 fi
@@ -342,18 +342,23 @@ if git -C "$WT" diff --name-only "$branch_base" "$ORIG" -- \
     abandon "gate-definition change requires the sanctioned --gate-rotation authority" 4
   fi
 fi
+validation_landability() {
+  local candidate=$1 current_main=$2
+  shift 2
+  python3 "$SCRIPT_DIR/rebase_wrapper.py" authorize \
+    --repo "$R" --result "$candidate" --current-base "$current_main" \
+    --authority-mode "$authority_mode" --repo-checkout "$WT" "$@"
+}
 if [ "$GATE_ROTATION" -eq 1 ]; then
   verify_rotation_authority "$ORIG" \
     || abandon "independent gate-rotation authority refused PR head $ORIG" 4
 else
-  VS=$("$SCRIPT_DIR/exact-head-validation-authority.sh" "${authority_mode[@]}" --repo "$R" --sha "$ORIG" 2>&1); VRC=$?
-  say "exact-head validation(head=$ORIG) rc=$VRC: $VS"
-  case "$VRC" in
-    0) say "landing eligibility: exact-head authority green for $ORIG" ;;
-    3) abandon "exact-head authority reported a genuine red for PR head $ORIG" 4 ;;
-    4) abandon "neither exact-head authority produced green for PR head $ORIG" 4 ;;
-    *) abandon "could not evaluate exact-head validation authority (rc=$VRC)" 4 ;;
-  esac
+  eligibility_base=$(git -C "$WT" rev-parse --verify origin/main) \
+    || abandon "cannot resolve current main for validation landability" 4
+  VS=$(validation_landability "$ORIG" "$eligibility_base" --json 2>&1); VRC=$?
+  say "validation landability(head=$ORIG) rc=$VRC: $VS"
+  [ "$VRC" -eq 0 ] \
+    || abandon "validation landability refused PR head $ORIG (rc=$VRC)" 4
 fi
 
 # 2. rebase onto latest main + push
@@ -387,6 +392,9 @@ fi
 # recheck at the head actually being merged, the merge-gate diagnostic observation, the step-5b
 # final-boundary authority + receipt dereference, `--match-head-commit`,
 # obligation arming, and the post-merge mergeCommit.oid ancestry proof.
+plain_rebase=0
+rebase_base=$(git -C "$WT" rev-parse --verify origin/main) \
+  || abandon "cannot resolve current main before rebase" 3
 if [ "$NO_REBASE" -eq 1 ]; then
   say "no-rebase: skipping the local rebase + force-push; merging the authorized head as it stands"
 elif [ "$UNION" -eq 1 ]; then
@@ -399,6 +407,7 @@ elif [ "$UNION" -eq 1 ]; then
     *) abandon "union-rebase did not converge: ${RES:-see $ulog}" 3 ;;
   esac
 else
+  plain_rebase=1
   git -C "$WT" checkout -q -B "_land_$PR" "origin/$BR" || abandon "checkout origin/$BR failed" 3
   if ! GIT_EDITOR=true git -C "$WT" rebase origin/main >/dev/null 2>&1; then
     git -C "$WT" rebase --abort >/dev/null 2>&1
@@ -420,10 +429,23 @@ if [ "$NO_REBASE" -eq 1 ]; then
 else
   say "pushed head=$HEAD"
 fi
+if [ "$plain_rebase" -eq 1 ] && [ "$HEAD" != "$ORIG" ]; then
+  record_rc=0
+  record_detail=$(python3 "$SCRIPT_DIR/rebase_wrapper.py" record \
+    --source "$ORIG" --base "$rebase_base" --result "$HEAD" \
+    --conflicts none --repo-checkout "$WT" --no-fetch \
+    --no-receipt-check 2>&1) || record_rc=$?
+  record_rc=${record_rc:-0}
+  say "rebase provenance(head=$HEAD) rc=$record_rc: $record_detail"
+  # A hard-green result does not need this cache.  A soft-green result will
+  # fail closed in the authority consumer if recording did not succeed.
+elif [ "$plain_rebase" -eq 1 ]; then
+  say "rebase provenance unchanged: rebase did not rewrite $ORIG"
+fi
 
-# 4. The pushed exact head needs a fresh positive from the local ledger. A
-# rebase that changed the SHA cannot inherit the old authorization.
-# Only the ledger-guarded applier may materialize the optional local cache label.
+# 4. Re-evaluate validation landability at the pushed head through the same
+# consumer. Only a hard-green result may materialize the optional exact-head
+# cache label; soft-green remains explicitly distinct.
 #
 # 4a. Re-mint one exact count-backed schema-5 row from its durable log BEFORE
 # reading the ledger. Hermit's Rust driver can write a count-less receipt
@@ -454,10 +476,17 @@ else
     # durable append-only sidecar before the /tmp log is evicted.
     python3 "$ROOT/ci-hub/validate/attribute_reds.py" --last 0 --persist >/dev/null 2>&1 || true
   fi
-  VS=$("$SCRIPT_DIR/exact-head-validation-authority.sh" "${authority_mode[@]}" --repo "$R" --sha "$HEAD" 2>&1); VRC=$?
-  say "post-push exact-head validation(head=$HEAD) rc=$VRC: $VS"
-  [ "$VRC" -eq 0 ] || abandon "pushed head $HEAD has no accepted exact-head validation authority (rc=$VRC)" 4
-  if [ "$producer_exception" -ne 1 ]; then
+  with-proxy git -C "$WT" fetch -q origin main \
+    || abandon "could not refresh current main for post-push landability" 4
+  post_push_base=$(git -C "$WT" rev-parse --verify origin/main) \
+    || abandon "could not resolve current main for post-push landability" 4
+  VS=$(validation_landability "$HEAD" "$post_push_base" --json 2>&1); VRC=$?
+  say "post-push validation landability(head=$HEAD) rc=$VRC: $VS"
+  [ "$VRC" -eq 0 ] \
+    || abandon "pushed head $HEAD has no accepted validation landability (rc=$VRC)" 4
+  landability_state=$(jq -er .state <<<"$VS") \
+    || abandon "validation landability emitted no state for $HEAD" 4
+  if [ "$producer_exception" -ne 1 ] && [ "$landability_state" = HARD_GREEN ]; then
     # The label is a CACHE, not authority: step 4's exact-head check above is the
     # fail-closed gate and it has already returned rc=0 for this head. So exactly
     # one apply-local-label failure is survivable -- the receipt was produced on
@@ -483,6 +512,8 @@ else
       grep -q locally-validated <<<"$LB" || abandon "locally-validated stripped immediately (labels=$LB)" 4
       say "ledger-derived label present; labels=$LB"
     fi
+  elif [ "$landability_state" = SOFT_GREEN ]; then
+    say "soft-green landability accepted; no exact-head cache label is minted at $HEAD"
   fi
 fi
 
@@ -552,17 +583,16 @@ else
       "repos/$R/issues/$PR/comments?per_page=100" >"$receipt_comments"; then
     printf '[]\n' >"$receipt_comments"
   fi
-  receipt_detail=$("$SCRIPT_DIR/exact-head-validation-authority.sh" \
-    "${authority_mode[@]}" --repo "$R" --sha "$HEAD" --comments "$receipt_comments" \
-    --current-base "$current_base" \
+  receipt_detail=$(validation_landability "$HEAD" "$current_base" \
+    --comments "$receipt_comments" \
     --current-reverie-base "$current_reverie_base" \
-    --repo-checkout "$WT" --reverie-checkout "$ROOT/reverie" 2>&1)
+    --reverie-checkout "$ROOT/reverie" 2>&1)
   receipt_rc=$?
   rm -f -- "$receipt_comments"
   if [ "$receipt_rc" -ne 0 ]; then
-    abandon "exact-head validation authority REFUSED for $HEAD: ${receipt_detail:-no result}" 5
+    abandon "validation landability REFUSED for $HEAD: ${receipt_detail:-no result}" 5
   fi
-  say "exact-head validation authority authorized: $receipt_detail"
+  say "validation landability authorized: $receipt_detail"
 fi
 
 # An exact-head approval cannot inherit semantic coverage from a source PR.

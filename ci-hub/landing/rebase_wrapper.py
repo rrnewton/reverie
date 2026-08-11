@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""ci-hub's OWN rebase wrapper: record `X rebased on main Y -> Z` and DERIVE soft-green.
+"""Record X-on-Y provenance and serve the lander's validation-landability query.
+
+POLICY SOURCE: `.claude/skills/hermit-validation-authority/SKILL.md` owns the
+definitions of hard green, soft green, and landability.  This module does not
+create a second threshold.  Its `authorize` consumer binds that policy to live
+evidence: the exact-head verifier for hard green, or a live VALIDATED source X
+plus an isolated, conflict-free X-on-Y recomputation whose tree equals Z.
 
 OWNER, 2026-08-04: "ci-hub should have its own REBASE WRAPPER that RECORDS that
 REVISION X WAS REBASED ON MAIN Y TO YIELD Z, with or without merge conflicts.
@@ -40,27 +46,17 @@ FOUR THINGS THIS TOOL GETS RIGHT (each a Proxy-Binding predicate):
      the base's floor status is carried in the record and RE-CHECKED live at query
      time, so a floor added after recording demotes a stale record.
 
-  4. CARRY THE RECEIPT AT Z, THE *PUSHED* HEAD. This wrapper OWNS the whole span
-     rebase -> push -> validate-at-pushed-head -> record: not just the rebase.
-     THE PUSH REWRITES THE HEAD, so a receipt earned on the pre-push SHA dies with
-     it -- and the merge gate checks the pushed Z, for which no receipt then
-     exists. That exact gap cost an afternoon (2026-08-04): 15 heads rebased,
-     pushed, marked ready; NONE could merge (`qualifying_count: 0`) because every
-     receipt was bound to a SHA the push had discarded. No agent was wrong -- the
-     missing step lived in the GAP between the rebase front (ends at push) and the
-     lander (assumes a receipt). So `receipt_at_Z` is a FIRST-CLASS RECORD FIELD
-     and a null there is VISIBLE (a missing receipt inside an assumption is not),
-     landability REQUIRES it, and `eligible` RE-CHECKS it live by dereferencing the
-     ONE receipt authority (`ci-hub validate-status --sha Z`). A push with no
-     subsequent receipt is REFUSED as landable, never silently queued.
+  4. NEVER TRUST THE REBASE ROW AS AUTHORITY. `ignored/rebase-records.jsonl` is
+     same-uid writable cache state. `authorize` re-dereferences X through the one
+     validation authority and replays X onto the freshly fetched Y in an isolated
+     clone. The recomputed tree must equal Z. A fabricated row, a changed diff,
+     or a real conflict therefore refuses rather than laundering a note into a
+     landing authorization. Legacy `receipt_at_Z`/`landable` fields remain cache
+     observations for older readers; they do not define the lander's threshold.
 
-CONSUMER: the lander QUERIES for eligible heads (`eligible`) rather than reading
-posted notes -- a query has no mailbox to miss, closing the producer-posted-to-
-the-wrong-task gap (12 verified heads were invisible that day because a producer
-posted to its own task). See memory: ci-hub-ledger-cannot-record-soft-vs-hard-green
-(the validate ledger CANNOT record soft-vs-hard green; this store carries the
-provenance the ledger cannot), rebase-base-floors-queryable-gate-floors-py,
-merge-gate-v2-floor-invalidates-pre-floor-greens.
+CONSUMER: the lander calls `authorize`, never reads a row or reproduces policy in
+shell. `eligible` remains an operational reconciliation view over legacy cache
+fields; it is not landing authority.
 
 RECORD SCHEMA (ignored/rebase-records.jsonl, append-only, latest-per-Z wins):
   { schema_version, recorded_utc, source_rev: X, base: Y, result: Z,
@@ -84,9 +80,9 @@ SUBCOMMANDS
             optionally push, then bind the receipt at the PUSHED head Z. Conflicts
             -> abort cleanly, report the conflicted files, and REFUSE to soft-green
             (the resolver resolves, then calls `record --risk-judgement ...`).
-  eligible  Consumer query for the lander: list (or test) heads that are eligible
-            to land NOW -- soft-green AND the base clears every live floor AND a
-            clean full-validation receipt is bound live to the pushed head Z.
+  authorize The lander's single consumer: hard-green, or safely recomputed
+            soft-green under the tracked validation-authority skill.
+  eligible  Operational reconciliation view over stored legacy cache fields.
 
 EXIT CODES (shared with the sibling floor tools)
   0  OK       recorded / listed / the queried head IS eligible
@@ -102,6 +98,8 @@ Usage:
   rebase_wrapper.py rebase   --source <sha-or-branch> --onto <sha|newest-green>
                              [--resolver A] [--push] [--repo-checkout P]
                              [--registry P] [--store P] [--no-fetch] [--json]
+  rebase_wrapper.py authorize --result Z --current-base Y
+                             [--repo-checkout P] [--store P] [--json]
   rebase_wrapper.py eligible [--result Z | --source X] [--recheck-floor/--no-...]
                              [--repo-checkout P] [--registry P] [--store P] [--json]
 """
@@ -114,6 +112,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 # Reuse the floor half of the contract verbatim: one enumeration, one verifier.
 _CIHUB_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -209,6 +208,8 @@ RECEIPT_UNKNOWN = "unknown"       # authority unreachable/unparseable -> VISIBLE
 # ledger and answers "does exactly this SHA carry a clean full-validation receipt?"
 # We never re-derive that verdict here (one verifier per authority) -- we call it.
 _CI_HUB = os.path.join(_PARENT_ROOT, "ci-hub", "ci-hub")
+_EXACT_HEAD_AUTHORITY = os.path.join(
+    _CIHUB_DIR, "landing", "exact-head-validation-authority.sh")
 
 # Reconciliation population: the lander lands HERMIT PRs, so the open-PR set is
 # rrnewton/hermit by default (matches `ci-hub validate-status --repo`'s default).
@@ -474,6 +475,66 @@ def resolve_rev(checkout: str, rev: str) -> str:
     cp = _git(checkout, ["rev-parse", "--verify", "-q", f"{rev}^{{commit}}"])
     if cp.returncode != 0:
         raise RebaseError(f"cannot resolve revision {rev!r} in {checkout}")
+    return cp.stdout.strip()
+
+
+def recompute_clean_rebase(checkout: str, source: str, base: str,
+                           result: str) -> dict:
+    """Re-run X-on-Y in an isolated clone and compare its tree with Z.
+
+    A rebase row is an untrusted cache.  It may identify the three objects, but
+    it cannot establish their relationship.  This recomputation is therefore
+    the load-bearing consumer check: a textual row cannot turn an unrelated Z
+    into inherited validation authority.
+    """
+    source = resolve_rev(checkout, source)
+    base = resolve_rev(checkout, base)
+    result = resolve_rev(checkout, result)
+    ancestor = _git(checkout, ["merge-base", "--is-ancestor", base, result])
+    if ancestor.returncode != 0:
+        return {"ok": False,
+                "reason": "recorded base is not an ancestor of result"}
+
+    with tempfile.TemporaryDirectory(prefix="ci-hub-soft-green-") as td:
+        clone = os.path.join(td, "repo")
+        cp = _run(["git", "clone", "--quiet", "--no-checkout", "--shared",
+                   checkout, clone], timeout=NETWORK_TIMEOUT)
+        if cp.returncode != 0:
+            raise RebaseError(
+                f"could not create isolated rebase clone: "
+                f"{(cp.stderr or cp.stdout).strip()}")
+        cp = _run(["git", "-C", clone, "checkout", "--quiet", "--detach",
+                   source])
+        if cp.returncode != 0:
+            raise RebaseError(
+                f"could not check out source in isolated rebase clone: "
+                f"{(cp.stderr or cp.stdout).strip()}")
+        cp = _run([
+            "git", "-c", "user.name=ci-hub soft-green verifier",
+            "-c", "user.email=ci-hub@invalid",
+            "-c", "commit.gpgSign=false", "-c", "core.hooksPath=/dev/null",
+            "-C", clone, "rebase", base,
+        ], timeout=NETWORK_TIMEOUT)
+        if cp.returncode != 0:
+            return {"ok": False,
+                    "reason": "isolated X-on-Y recomputation conflicted"}
+        recomputed_tree = resolve_rev_tree(clone, "HEAD")
+        result_tree = resolve_rev_tree(checkout, result)
+        if recomputed_tree != result_tree:
+            return {
+                "ok": False,
+                "reason": ("isolated X-on-Y recomputation produced tree "
+                           f"{recomputed_tree}, not recorded Z tree "
+                           f"{result_tree}"),
+            }
+        return {"ok": True, "source": source, "base": base,
+                "result": result, "tree": result_tree}
+
+
+def resolve_rev_tree(checkout: str, rev: str) -> str:
+    cp = _git(checkout, ["rev-parse", "--verify", "-q", f"{rev}^{{tree}}"])
+    if cp.returncode != 0:
+        raise RebaseError(f"cannot resolve tree for {rev!r} in {checkout}")
     return cp.stdout.strip()
 
 
@@ -866,6 +927,110 @@ def conflicted_files(checkout: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
+# authorize (the lander's single validation-landability consumer)             #
+# --------------------------------------------------------------------------- #
+def exact_head_status(args) -> subprocess.CompletedProcess:
+    cmd = [_EXACT_HEAD_AUTHORITY, f"--{args.authority_mode}",
+           "--repo", args.repo, "--sha", args.result]
+    if args.comments:
+        cmd.extend(["--comments", args.comments])
+    boundary = (args.current_base, args.current_reverie_base,
+                args.repo_checkout, args.reverie_checkout)
+    if all(boundary):
+        cmd.extend([
+            "--current-base", args.current_base,
+            "--current-reverie-base", args.current_reverie_base,
+            "--repo-checkout", args.repo_checkout,
+            "--reverie-checkout", args.reverie_checkout,
+        ])
+    return _run(cmd, timeout=NETWORK_TIMEOUT)
+
+
+def verify_soft_green_record(args, rec: dict) -> dict:
+    """Re-derive every authorizing fact that an ignored JSONL row cannot prove.
+
+    The policy vocabulary belongs to hermit-validation-authority/SKILL.md.  This
+    function only enforces its operational bindings: live authority at X, the
+    current Y, and a clean isolated recomputation whose tree is exactly Z.
+    """
+    if args.repo != DEFAULT_PR_REPO or args.authority_mode != "local-only":
+        raise Refused("soft-green inheritance is defined only for ordinary "
+                      "rrnewton/hermit local-ledger authority")
+    if rec.get("result") != args.result:
+        raise Refused("rebase record result does not match the requested head")
+    source = rec.get("source_rev") or ""
+    base = rec.get("base") or ""
+    if not all(_is_hexish(v) and len(v) == 40
+               for v in (source, base, args.result, args.current_base)):
+        raise Refused("soft-green authorization requires exact 40-hex X, Y, and Z")
+    if base != args.current_base:
+        raise Refused(
+            f"recorded base {_short(base)} is not current main "
+            f"{_short(args.current_base)}")
+    if rec.get("conflicts") != []:
+        raise Refused("recorded rebase has conflicts; mechanical inheritance "
+                      "is unavailable")
+    if (rec.get("soft_green") != SOFT_ZERO_CONFLICT
+            or rec.get("risk_judgement") != RISK_NA):
+        raise Refused("record does not describe a zero-conflict mechanical rebase")
+
+    floors = gate_floors.load_floors(args.registry)
+    live_floor = gate_floors.clears_all(floors, args.repo_checkout, base)
+    if not live_floor["ok"]:
+        raise Refused("recorded base does not clear the live gate floors")
+
+    source_status = receipt_status(source)
+    if source_status["status"] != RECEIPT_VALIDATED:
+        raise Refused(
+            f"source {_short(source)} is not live VALIDATED "
+            f"(state={source_status['status']}: "
+            f"{source_status.get('detail', '')})")
+
+    recomputed = recompute_clean_rebase(
+        args.repo_checkout, source, base, args.result)
+    if not recomputed["ok"]:
+        raise Refused(recomputed["reason"])
+    return {"state": "SOFT_GREEN", "source_rev": source, "base": base,
+            "result": args.result, "tree": recomputed["tree"],
+            "source_receipt": source_status["identity"]}
+
+
+def do_authorize(args) -> int:
+    """Answer the lander's one question under the tracked authority skill.
+
+    Hard-green remains the first path.  A known red never inherits.  Only a
+    no-result exact head may fall through to the independently re-derived
+    soft-green path.
+    """
+    if not _is_hexish(args.result) or len(args.result) != 40:
+        raise RebaseError("authorize requires --result as an exact 40-hex sha")
+    if not _is_hexish(args.current_base) or len(args.current_base) != 40:
+        raise RebaseError("authorize requires --current-base as an exact 40-hex sha")
+
+    hard = exact_head_status(args)
+    detail = (hard.stdout or hard.stderr).strip()
+    if hard.returncode == 0:
+        out = {"authorized": True, "state": "HARD_GREEN",
+               "result": args.result, "detail": detail}
+        _print_query(out, args.json)
+        return EXIT_OK
+    if hard.returncode == 3:
+        raise Refused(f"exact head is known red: {detail or 'no detail'}")
+    if hard.returncode != 4:
+        raise RebaseError(
+            f"exact-head authority could not answer (rc={hard.returncode}): "
+            f"{detail or 'no detail'}")
+
+    rec = latest_by_result(load_records(args.store)).get(args.result)
+    if rec is None:
+        raise Refused(f"no rebase record for result {_short(args.result)}")
+    out = verify_soft_green_record(args, rec)
+    out["authorized"] = True
+    _print_query(out, args.json)
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------- #
 # eligible (consumer query for the lander)                                     #
 # --------------------------------------------------------------------------- #
 def _classify_row(z: str, rec: dict, floors, args) -> dict:
@@ -1060,6 +1225,13 @@ def _print_reconciliation(buckets, summary, recorded_not_open, reconciled) -> No
 def _print_query(out: dict, as_json: bool) -> None:
     if as_json:
         print(json.dumps(out, indent=2))
+    elif out.get("authorized"):
+        detail = out.get("detail") or (
+            f"source={_short(out.get('source_rev', ''))} "
+            f"base={_short(out.get('base', ''))} "
+            f"tree={_short(out.get('tree', ''))}")
+        print(f"AUTHORIZED {out.get('state')} {_short(out.get('result',''))}"
+              f" -- {detail}")
     else:
         verdict = "ELIGIBLE" if out.get("eligible") else "NOT-ELIGIBLE"
         rstate = out.get("receipt_state")
@@ -1149,6 +1321,23 @@ def build_parser() -> argparse.ArgumentParser:
                          f"shared {RECEIPT_BRANCH} branch (A2 cross-host close)")
     rb.add_argument("--no-fetch", action="store_true")
     rb.set_defaults(func=do_rebase)
+
+    au = sub.add_parser(
+        "authorize",
+        help=("answer whether a head is landable under the tracked "
+              "hermit-validation-authority skill"))
+    common(au)
+    au.add_argument("--result", required=True, help="candidate head Z")
+    au.add_argument("--repo", default=DEFAULT_PR_REPO)
+    au.add_argument("--current-base", required=True,
+                    help="freshly fetched current Hermit main Y")
+    au.add_argument("--authority-mode", choices=("local-only", "hosted-only"),
+                    default="local-only")
+    au.add_argument("--comments",
+                    help="immutable receipt comments at the final boundary")
+    au.add_argument("--current-reverie-base")
+    au.add_argument("--reverie-checkout")
+    au.set_defaults(func=do_authorize)
 
     el = sub.add_parser("eligible", help="query heads eligible to land now")
     common(el)
