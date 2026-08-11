@@ -1,5 +1,5 @@
 {
-  "_comment": "Canonical registration of the VALIDATE PRODUCER DEFINITION -- which exact whole-file map is currently allowed to mint a landing-authorizing receipt. `registered` is the primary definition; no producer transition is currently staged. Colocated with qualifying-receipt.json / rebase-base-floors.json. Task bind-receipt-to-producer-definition-not-only-the-gate-file.",
+  "_comment": "Canonical registration of the VALIDATE PRODUCER DEFINITION -- which exact whole-file map is currently allowed to mint a landing-authorizing receipt. `registered` is the primary definition; one exact transition for Hermit PR #2077 is staged. Colocated with qualifying-receipt.json / rebase-base-floors.json. Task bind-receipt-to-producer-definition-not-only-the-gate-file.",
   "_why": "hermit #1579 bound the GATE FILE: the run's own .github/workflows/merge-gate.yml blob must equal vars.MERGE_GATE_V4_BLOB. It did NOT bind the PRODUCER. A PR could therefore present a CURRENT gate file while its receipt had been minted by an OLDER validate.sh -- i.e. by an older, weaker definition of what 'validated' means. That is the #231 shape (signal not bound to fact) applied to the producer instead of the consumer. This file is the producer-side half, symmetric with MERGE_GATE_V4_BLOB.",
   "_not_hypothetical": "Measured 2026-08-06: validate.sh blob was 9a9c31ce24abaa764089af7c4cafc820709c4c77 at hermit f89c69766371806d3c9b2c3003531df2d59d6118 and 836a070e5e02017ae232e243904fb033a5c45b17 at 4c70658e785834737cbe1524f77330c781a6f5ea -- the producer definition changed within 8 commits on main in a single day, while ci-portable.yml did not move. A receipt minted at the older head was produced by a different definition than the current one.",
   "_rotation_2026_08_08": "Audited rrnewton/hermit main b6051b1cd1402526c76ea768167c875188144328: it resolves validate.sh to 349f8c0bae065597708019005180d2872d9c90b2 and ci-portable.yml to ef7cdc0211ebaeafcaba4286cb2374a80ab9f3fb. This versioned primary predates direct test-harness binding. It remains qualifying as legacy-selected-paths evidence and must never be reported as complete producer coverage.",
@@ -19,6 +19,7 @@
   "_rotation_2026_08_10_validate_reminder_alias": "Promoted at hermit main d810b399e6df76cd647c4cef0a78eeb80efd6f26 after the entrypoint-audit repair moved the exact scripts/validate.rs blob. The implementation change is documentation-only inside the registered Rust driver: it states that the repository-root validate.sh file is an audited reminder alias with no independent behavior. The same commit strengthens ci/test_harness.sh to accept only the exact three-line executable alias and to reject extra wrapper behavior. Exact whole-map equality correctly refused d810b399 until this rotation even though the other three registered blobs were unchanged. Qualification remains byte-identical; this update changes only the exact registered producer identity and version-bounds the outgoing f4c85fa24 map. The independent PR-2070 candidate is preserved unchanged.",
   "_rotation_2026_08_10_typed_test_count_cache": "Promoted at hermit main c88196aeb6b9ec0909d18a74a23e85cadfb87968 after PR #2099 moved executed-test cache qualification from retired log scraping to typed runner outcomes. The landed commit changes exactly two registered producer paths: scripts/validate.rs and scripts/lib/validate_history.rs. The owner's exact-main run then completed 56/56 nodes with 873 executed tests, zero failures and zero skips, but exact whole-map equality correctly refused the unregistered producer. The four-file map below is derived from c88196ae itself; no SHA is allowlisted independently of its resolved blobs. The outgoing d810 map is version-bounded as legacy, and the independent PR-2070 five-path candidate is preserved byte-for-byte.",
   "_rotation_2026_08_11_timeout_layers": "Promoted at fetched Hermit main 796565d21d123cf177b54e26e2176b695752aef3 after commits 3dc3a08a and 796565d2 moved executable test batches under named nextest timeouts and added a live bracket for the nested timeout ladder. Those already-landed commits change two previously registered producer paths, ci-portable.yml and scripts/validate.rs, and add the counted-nextest wrapper plus its automatically consumed timeout configuration to the complete full-profile definition. A clean descendant at dcec7e9566eb53a203580190101b82e9b15561eb resolved the same exact six-file map and completed schema-5 full validation with 56/56 nodes, all 19 declared test nodes, 1004 executed tests, and zero failures or skips; exact whole-map equality correctly refused its receipt before this rotation. The outgoing c881 map is version-bounded as legacy. The unrelated PR-2070 transition was removed because its registered head was superseded and its 2026-08-11T07:55:00Z expiry had passed; restaging that PR is a separate reviewed change.",
+  "_transition_2026_08_11_pr2077_portable_names": "Coordinator codex-hermit4-014 staged this exact candidate on 2026-08-11 after PR #2077 head 6e9c5d3daaa824a0f02de3499e190d2e32508f8c completed schema-5 full validation: 56/56 nodes, all 19 planned test nodes, 1000 executed tests, zero failures or skips. The PR changes only the registered ci-portable.yml blob within the six-path producer map; all other producer blobs are byte-identical to the primary map. The transition expires at 2026-08-12T09:47:00Z and must be removed or replaced if this exact head does not land.",
   "registered_at": "796565d21d123cf177b54e26e2176b695752aef3",
   "registered_coverage_status": "complete",
   "registered": {
@@ -28,6 +29,27 @@
     "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
     "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
     "scripts/validate.rs": "379a0f24374b562ccb2836726301034140b901b7"
+  },
+  "transition": {
+    "id": "rrnewton-hermit-pr-2077",
+    "registered_at": "6e9c5d3daaa824a0f02de3499e190d2e32508f8c",
+    "provenance": {
+      "repository": "rrnewton/hermit",
+      "pull_request": 2077,
+      "head": "6e9c5d3daaa824a0f02de3499e190d2e32508f8c"
+    },
+    "finalize_after": "2026-08-11T09:47:00Z",
+    "expires_at": "2026-08-12T09:47:00Z",
+    "candidate_coverage_status": "complete",
+    "added_paths": [],
+    "candidate": {
+      ".config/nextest.toml": "ec47795a8289a1f3ea62424b686217c942427b18",
+      ".github/workflows/ci-portable.yml": "8f56ca222078f831e85c86ec743cb3feacb0381a",
+      "ci/run-nextest-counted.sh": "5fcfc77bb7264f9631312ebb4f24f635e464364c",
+      "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
+      "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+      "scripts/validate.rs": "379a0f24374b562ccb2836726301034140b901b7"
+    }
   },
   "legacy": [
     {
