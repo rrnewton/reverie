@@ -84,6 +84,14 @@ So: **write to the parent only under a task that names the parent paths it owns*
 registered slot. "No free slot" is a reason to allocate one, not to write here. A registry records ownership
 and cannot enforce it.
 
+**`ci-hub/` is coordinator-owned live infrastructure.** Never edit it in the shared parent checkout: fleet
+processes execute those files while agents work, so even one writer can expose a half-applied change. A task
+that changes `ci-hub/` uses the disposable-clone protocol in
+[`ai_docs/ci-hub-change-clone-protocol.md`](ai_docs/ci-hub-change-clone-protocol.md): the coordinator creates
+and grants an exact clone lane, the implementer completes and tests one commit there, the serialized parent
+writer publishes it, and the coordinator activates that complete commit in the primary. Directory-scoped
+writer locks are not a substitute; they exclude competing editors but do not protect concurrent readers.
+
 ## Project Overview
 
 `~/work/dev-hermit/` is the multi-agent harness, not product source. Its exact gitlinks are `hermit/`,

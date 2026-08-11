@@ -5,6 +5,12 @@ VALIDATE, LEDGER, GH Actions, and runner operations. Treat each subdirectory as
 an object with one responsibility and a stable public entrypoint; do not add new automation scripts under `scripts/`, `ops/`, or
 an experiment directory.
 
+Changes to this live infrastructure are built and tested in a fresh disposable
+clone, never edited in the shared primary checkout. Follow
+[`../ai_docs/ci-hub-change-clone-protocol.md`](../ai_docs/ci-hub-change-clone-protocol.md);
+publication is one sealed commit through `scripts/parent-main-write`, followed
+by coordinator-owned activation in the primary.
+
 ## Public entrypoints
 
 Every fenced shell invocation in this README and `landing/README.md` is extracted
