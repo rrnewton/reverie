@@ -127,22 +127,18 @@ def lane_shas(comments: list[dict[str, Any]], lane: str,
     UNDETERMINED -- flagged, not passed. A gate that guesses is worse than no
     gate, which is exactly what the heuristic version demonstrated.
     """
-    # GRAMMAR, pinned. Three shapes exist in the wild and all three are real
-    # verdicts, so all three are accepted:
-    #   APPROVED-AT: <lane> <40-hex>     #1851, both lanes
-    #   APPROVED-AT <40-hex>             bare, lane from the role tag
-    #   **APPROVED-AT <40-hex>**         #1864 -- MARKDOWN EMPHASIS
+    # GRAMMAR, pinned. There is exactly one authority-bearing shape:
+    #   APPROVED-AT: <lane> <40-hex>
+    # Whole-line Markdown decoration is harmless and removed above, but the
+    # colon and explicit lane are mandatory. Historical lane-less variants are
+    # intentionally ABSENT authority: inferring a lane from prose recreates the
+    # cache-as-source defect this verifier exists to remove.
     # and the rejection mirror introduced on #2026 (comment 5235451519):
     #   REQUEST CHANGES AT <40-hex>
     #
-    # *** THE THIRD SHAPE COST A REAL APPROVAL. *** Before this normalisation the
-    # line-anchored match required the line to START with APPROVED-AT, so the
-    # leading `**` on #1864 defeated it and a valid exact-head approval read as
-    # UNDETERMINED / bound_to None. An approval that EXISTS but is NOT SEEN reads
-    # as NO APPROVAL, and a consumer acting on that retires real authorisation --
-    # the inverse of the false-authorisation defect this tool exists to prevent.
-    # Reviewers write verdicts in markdown; bolding the load-bearing line is the
-    # natural thing to do, so decoration is stripped rather than legislated away.
+    # Markdown may wrap the canonical line. Decoration is not identity, so
+    # `**APPROVED-AT: claude <sha>**` is normalized before the strict grammar is
+    # applied. The mandatory colon, lane, and full SHA remain unchanged.
     if malformed is None:
         malformed = []
 
@@ -170,7 +166,7 @@ def lane_shas(comments: list[dict[str, Any]], lane: str,
 
     reject = re.compile(r"^REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}$", re.IGNORECASE)
     approve = re.compile(
-        r"^APPROVED[-\s]AT:?\s*(?:(claude|codex)\s+)?([0-9a-f]{40})$", re.IGNORECASE
+        r"^APPROVED-AT:\s*(claude|codex)\s+([0-9a-f]{40})$", re.IGNORECASE
     )
     # LOUD ON THE UNKNOWN. A line that is plainly trying to be a verdict binding
     # -- a verdict-ish keyword on the same line as a 40-hex -- but which matches
@@ -191,7 +187,6 @@ def lane_shas(comments: list[dict[str, Any]], lane: str,
         # quoting the approval it supersedes, must not bind as a positive.
         if any(reject.match(l) for l in lines):
             continue
-        first_line = (lines[0] if lines else "").lower()
         for line in lines:
             m = approve.match(line)
             if not m:
@@ -204,27 +199,27 @@ def lane_shas(comments: list[dict[str, Any]], lane: str,
                         malformed.append(finding)
                 continue
             explicit_lane, sha = m.group(1), m.group(2)
-            if explicit_lane:
-                if explicit_lane.lower() == lane:
-                    found.append(sha)
-                continue
-            # No explicit lane: derive from the role tag, but ONLY from an
-            # unambiguous token. "gpt-5.6-sol" tags a Codex-family reviewer on
-            # #1727 yet says neither "codex" nor "claude", so inferring from it
-            # would be the guessing this tool exists to refuse.
-            tagged_claude = "claude" in first_line
-            tagged_codex = "codex" in first_line
-            if tagged_claude ^ tagged_codex:
-                if (lane == "claude") == tagged_claude:
-                    found.append(sha)
+            if explicit_lane.lower() == lane:
+                found.append(sha)
     return found
 
 
-def collect_live(repo: str, malformed: list[tuple[str, str]]) -> list[dict[str, Any]]:
-    prs = gh_json(
-        ["pr", "list", "--repo", repo, "--state", "open", "--limit", "300",
-         "--json", "number,headRefOid,labels,mergeable"]
-    ) or []
+def collect_live(
+    repo: str,
+    malformed: list[tuple[str, str]],
+    pr_number: int | None = None,
+) -> list[dict[str, Any]]:
+    if pr_number is None:
+        prs = gh_json(
+            ["pr", "list", "--repo", repo, "--state", "open", "--limit", "300",
+             "--json", "number,headRefOid,labels,mergeable"]
+        ) or []
+    else:
+        pr = gh_json(
+            ["pr", "view", str(pr_number), "--repo", repo,
+             "--json", "number,headRefOid,labels,mergeable"]
+        )
+        prs = [pr] if isinstance(pr, dict) else []
     # Same concurrency rationale as unevaluated_head.py: the per-PR comment and
     # run queries are INDEPENDENT and were merely serialised. This skips nothing
     # -- same PRs, same comments, same run counts -- it only stops waiting one at
@@ -297,6 +292,11 @@ def collect_fixture(path: str, malformed: list[tuple[str, str]]) -> list[dict[st
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo", default="rrnewton/hermit")
+    ap.add_argument(
+        "--pr",
+        type=int,
+        help="Restrict live verification to one PR (used by the final landing boundary)",
+    )
     ap.add_argument("--from-json", dest="fixture")
     ap.add_argument("--gate", action="store_true")
     ap.add_argument(
@@ -323,17 +323,26 @@ def main() -> int:
     a.gate_on = getattr(a, "gate_on", "all")
 
     malformed: list[tuple[str, str]] = []
-    rows = collect_fixture(a.fixture, malformed) if a.fixture else collect_live(a.repo, malformed)
+    if a.fixture and a.pr is not None:
+        ap.error("--pr cannot be combined with --from-json")
+    rows = (
+        collect_fixture(a.fixture, malformed)
+        if a.fixture
+        else collect_live(a.repo, malformed, a.pr)
+    )
     bad = [r for r in rows if r["state"] != BOUND_CURRENT]
+    authoritative = len(rows) - len(bad)
     # The composed state: an approval that no longer holds, on a head nothing
     # evaluated. Approved, unevaluated, and indistinguishable from ready.
     combined = [r for r in bad if r["runs_at_head"] == 0]
 
     if a.as_json:
-        print(json.dumps({"approvals": len(rows), "not_holding": len(bad),
+        print(json.dumps({"approvals": len(rows), "authoritative": authoritative,
+                          "authority_absent": len(bad), "not_holding": len(bad),
                           "approved_and_unevaluated": len(combined), "rows": rows}, indent=2))
     else:
-        print(f"inspected {len(rows)} approval label(s); not holding: {len(bad)}; "
+        print(f"inspected {len(rows)} approval label(s); authoritative at current head: "
+              f"{authoritative}; authority absent: {len(bad)}; "
               f"approved AND unevaluated: {len(combined)}")
         for r in rows:
             if r["state"] == BOUND_CURRENT:

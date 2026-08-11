@@ -3,7 +3,8 @@
 
 Four behaviours the convention has to have, and one it must NOT have:
 
-  APPROVED-AT <sha>                         binds
+  APPROVED-AT: <lane> <sha>                 binds
+  APPROVED-AT <sha>                         stays UNDETERMINED
   no binding line                           stays UNDETERMINED
   REQUEST CHANGES AT <sha>                  does NOT bind as a positive
   bound approval + head moved               SUPERSEDED, not green
@@ -19,9 +20,8 @@ rejection wins over approval within a comment, and the last case here plants
 exactly that mixed body.
 
 The ambiguous-tag case is the real #1727 shape: a Codex-family reviewer tagged
-`gpt-5.6-sol`, which says neither "codex" nor "claude". It must fail CLOSED
-rather than be guessed -- which is the argument for standardising on the
-lane-explicit spelling.
+`gpt-5.6-sol`, which says neither "codex" nor "claude". The explicit lane makes
+the binding deterministic without guessing from that model-name prose.
 """
 import sys, importlib.util
 spec = importlib.util.spec_from_file_location("ab", "ci-hub/health/approval_binding.py")
@@ -35,10 +35,13 @@ def case(name, comments, lane, expect_state, expect_bound=None):
     ok = st == expect_state and (expect_bound is None or (shas[-1] if shas else None) == expect_bound)
     cases.append((ok, name, f"state={st} bound={shas[-1] if shas else None}"))
 
-# 1. APPROVED-AT binds (dispatch's canonical no-lane form, lane from tag)
-case("APPROVED-AT <sha> with claude tag BINDS",
-     C(f"[adversarial-reviewer agent, CLAUDE] [x, y]\nAPPROVED-AT {CUR}\n"), "claude", ab.BOUND_CURRENT, CUR)
-# 1b. lane-explicit form binds
+# 1. Only the lane-explicit form binds.
+malformed_lane_less = []
+lane_less = C(f"[adversarial-reviewer agent, CLAUDE] [x, y]\nAPPROVED-AT {CUR}\n")
+lane_less_shas = ab.lane_shas(lane_less, "claude", malformed_lane_less)
+cases.append((lane_less_shas == [] and len(malformed_lane_less) == 1,
+              "APPROVED-AT <sha> without a lane is ABSENT authority",
+              f"bound={lane_less_shas} malformed={len(malformed_lane_less)}"))
 case("APPROVED-AT: claude <sha> BINDS",
      C(f"[adversarial-reviewer agent, claude-opus-5] [x]\n\nAPPROVED-AT: claude {CUR}\n"), "claude", ab.BOUND_CURRENT, CUR)
 # 2. no line stays UNDETERMINED
@@ -56,28 +59,24 @@ case("REQUEST CHANGES AT <sha> does NOT bind",
 # quotes a prior approval it is superseding. Now the guard is the only thing
 # preventing a rejection from binding as a positive.
 case("rejection QUOTING a line-anchored APPROVED-AT still does NOT bind",
-     C(f"[adversarial-reviewer agent, CLAUDE]\nREQUEST CHANGES AT {CUR}\n\nThe convention is:\nAPPROVED-AT {CUR}\n"),
+     C(f"[adversarial-reviewer agent, CLAUDE]\nREQUEST CHANGES AT {CUR}\n\nThe convention is:\nAPPROVED-AT: claude {CUR}\n"),
      "claude", ab.UNDETERMINED)
 # 4. a push after a bound approval => SUPERSEDED, not green
 case("bound approval + head moved => SUPERSEDED",
-     C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT {OLD}\n"), "claude", ab.SUPERSEDED, OLD)
+     C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT: claude {OLD}\n"), "claude", ab.SUPERSEDED, OLD)
 # 5. lane isolation: a codex approval must not satisfy the claude lane
-case("codex-tagged approval does NOT satisfy the claude lane",
-     C(f"[adversarial-reviewer agent, GPT-5 Codex] [codex-reviewer]\nAPPROVED-AT {CUR}\n"), "claude", ab.UNDETERMINED)
-case("codex-tagged approval DOES satisfy the codex lane",
-     C(f"[adversarial-reviewer agent, GPT-5 Codex] [codex-reviewer]\nAPPROVED-AT {CUR}\n"), "codex", ab.BOUND_CURRENT, CUR)
-# 6. ambiguous tag (the real #1727 case) fails closed
-case("ambiguous 'gpt-5.6-sol' tag with no explicit lane fails CLOSED",
-     C(f"[adversarial-reviewer agent, gpt-5.6-sol]\nAPPROVED-AT {CUR}\n"), "codex", ab.UNDETERMINED)
+case("codex-lane approval does NOT satisfy the claude lane",
+     C(f"[adversarial-reviewer agent, GPT-5 Codex] [codex-reviewer]\nAPPROVED-AT: codex {CUR}\n"), "claude", ab.UNDETERMINED)
+case("codex-lane approval DOES satisfy the codex lane",
+     C(f"[adversarial-reviewer agent, GPT-5 Codex] [codex-reviewer]\nAPPROVED-AT: codex {CUR}\n"), "codex", ab.BOUND_CURRENT, CUR)
+# 6. The explicit lane, not a model-name guess, supplies lane identity.
+case("ambiguous 'gpt-5.6-sol' tag with explicit lane still binds",
+     C(f"[adversarial-reviewer agent, gpt-5.6-sol]\nAPPROVED-AT: codex {CUR}\n"), "codex", ab.BOUND_CURRENT, CUR)
 
-# --- VARIANT 3: MARKDOWN EMPHASIS. The one that cost a real approval. --------
-# #1864 carries **APPROVED-AT <sha>** and the line-anchored match required the
-# line to START with APPROVED-AT, so the leading ** defeated it and a valid
-# exact-head approval read as UNDETERMINED / bound_to None. Reviewers write
-# verdicts in markdown; bolding the load-bearing line is natural, so decoration
-# is stripped rather than legislated away.
-case("**APPROVED-AT <sha>** (bold) BINDS",
-     C(f"[adversarial-reviewer agent, CLAUDE] [x]\n**APPROVED-AT {CUR}**\n"), "claude", ab.BOUND_CURRENT, CUR)
+# --- MARKDOWN EMPHASIS: decoration may wrap the canonical line. --------------
+# Bolding or code-formatting does not change the mandatory colon, lane, or SHA.
+case("**APPROVED-AT: claude <sha>** (bold) BINDS",
+     C(f"[adversarial-reviewer agent, CLAUDE] [x]\n**APPROVED-AT: claude {CUR}**\n"), "claude", ab.BOUND_CURRENT, CUR)
 case("`APPROVED-AT: claude <sha>` (backticked) BINDS",
      C(f"[adversarial-reviewer agent, claude-opus-5]\n`APPROVED-AT: claude {CUR}`\n"), "claude", ab.BOUND_CURRENT, CUR)
 quoted = []
@@ -106,7 +105,7 @@ ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED @ {CUR}\n"), "co
 cases.append((len(mal) == 1, "one malformed source line is counted once across lanes",
               f"malformed={len(mal)}"))
 mal2 = []
-ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT {CUR}\n"), "claude", mal2)
+ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT: claude {CUR}\n"), "claude", mal2)
 cases.append((len(mal2) == 0, "a WELL-FORMED binding is not reported as malformed",
               f"malformed={len(mal2)}"))
 mal3 = []

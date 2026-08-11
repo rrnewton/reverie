@@ -510,6 +510,18 @@ live_head=$(with-proxy gh pr view "$PR" -R "$R" --json headRefOid -q .headRefOid
   || abandon "could not resolve the live PR head before receipt authorization" 5
 [ "$live_head" = "$HEAD" ] \
   || abandon "PR head moved before receipt authorization (expected $HEAD, observed ${live_head:-missing})" 5
+
+# Review labels are caches, never authority. Re-read this PR through the one
+# APPROVED-AT verifier at the final mutation boundary. A passed-review-* label
+# with no exact-head binding is ABSENT approval and refuses the merge; it is not
+# softened into a present-but-unverified state. No label is planted or deleted.
+review_detail=$(python3 "$ROOT/ci-hub/health/approval_binding.py" \
+  --repo "$R" --pr "$PR" --gate 2>&1)
+review_rc=$?
+say "exact-head review authority(head=$HEAD) rc=$review_rc: $review_detail"
+[ "$review_rc" -eq 0 ] \
+  || abandon "exact-head review authority REFUSED for $HEAD: ${review_detail:-no result}" 5
+
 if [ "$GATE_ROTATION" -eq 1 ]; then
   verify_rotation_authority "$HEAD" \
     || abandon "independent gate-rotation authority refused at final current-main boundary" 5

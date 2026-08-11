@@ -286,6 +286,15 @@ else
   audit "final authority call lost merge-boundary base evidence" bad
 fi
 
+if grep -Fq 'health/approval_binding.py"' "$lander" &&
+   grep -Fq -- '--repo "$R" --pr "$PR" --gate' "$lander" &&
+   grep -Fq 'review_rc=$?' "$lander" &&
+   grep -Fq 'exact-head review authority REFUSED' "$lander"; then
+  audit "final boundary re-derives passed-review cache authority from APPROVED-AT" ok
+else
+  audit "final boundary can consume an unbound passed-review cache label" bad
+fi
+
 merge_prefix='gh pr '
 merge_suffix='merge "$PR"'
 if [ "$(grep -Fc "${merge_prefix}${merge_suffix}" "$lander")" -eq 1 ] &&

@@ -30,6 +30,7 @@ def _pr(
     draft=False,
     labels=(),
     head="a" * 40,
+    comments=(),
 ):
     return {
         "number": number,
@@ -38,6 +39,7 @@ def _pr(
         "mergeable": mergeable,
         "mergeStateStatus": merge_state,
         "labels": [{"name": label} for label in labels],
+        "comments": [{"body": body} for body in comments],
         "statusCheckRollup": rollup,
         "headRefOid": head,
     }
@@ -552,10 +554,12 @@ class SetupOnlyRollupClassificationTests(unittest.TestCase):
 
 
 class ReviewProtocolClassificationTests(unittest.TestCase):
-    def classify(self, *labels: str, draft: bool = False):
+    HEAD = "a" * 40
+
+    def classify(self, *labels: str, draft: bool = False, comments=()):
         status = pr_status._classify_gh_prs(
             "rrnewton/hermit",
-            [_pr(12, [], draft=draft, labels=labels)],
+            [_pr(12, [], draft=draft, labels=labels, comments=comments)],
         )
         self.assertEqual(len(status.review_protocol), 1)
         return status.review_protocol[0]
@@ -567,6 +571,10 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             "adversarial-review-claude1",
             "passed-review-codex",
             "passed-review-claude",
+            comments=(
+                f"[adversarial-reviewer agent, CODEX]\nAPPROVED-AT: codex {self.HEAD}",
+                f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT: claude {self.HEAD}",
+            ),
         )
         self.assertTrue(audit.complete)
         self.assertEqual(audit.review_rounds, "complete")
@@ -579,6 +587,10 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             "adversarial-review-claude3",
             "passed-review-codex",
             "passed-review-claude",
+            comments=(
+                f"[adversarial-reviewer agent, CODEX]\nAPPROVED-AT: codex {self.HEAD}",
+                f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT: claude {self.HEAD}",
+            ),
         )
         self.assertTrue(audit.complete)
         self.assertEqual(audit.codex_rounds, (4,))
@@ -589,11 +601,24 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
             "post-facto-human-review",
             "adversarial-review-claude1",
             "passed-review-claude",
+            comments=(
+                f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT: claude {self.HEAD}",
+            ),
         )
         self.assertEqual(audit.review_rounds, "partial")
         self.assertEqual(audit.current_approvals, "partial")
         self.assertIn("review-round-codex", audit.missing)
         self.assertIn("current-approval-codex", audit.missing)
+
+    def test_unbound_cache_label_is_absent_current_authority(self) -> None:
+        audit = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-codex1",
+            "passed-review-codex",
+        )
+        self.assertEqual(audit.current_approvals, "missing")
+        self.assertIn("current-approval-codex", audit.missing)
+        self.assertIn("passed-review-codex:UNDETERMINED", audit.invalid_labels)
 
     def test_invalid_or_bare_round_labels_do_not_fake_review(self) -> None:
         audit = self.classify(
@@ -1237,13 +1262,17 @@ class RenderTests(unittest.TestCase):
                 _pr(
                     12,
                     [],
-                    labels=(
-                        "post-facto-human-review",
-                        "adversarial-review-codex2",
-                        "adversarial-review-claude3",
-                        "passed-review-claude",
-                    ),
-                )
+                labels=(
+                    "post-facto-human-review",
+                    "adversarial-review-codex2",
+                    "adversarial-review-claude3",
+                    "passed-review-claude",
+                ),
+                comments=(
+                    "[adversarial-reviewer agent, CLAUDE]\n"
+                    f"APPROVED-AT: claude {'a' * 40}",
+                ),
+            )
             ],
         )
         report = pr_status.render_report([status], warn_threshold=10, engine="gh")
@@ -1423,79 +1452,6 @@ class ExecutedTestsCarveOutTests(unittest.TestCase):
         self.assertEqual(status.real_reds, 0)
 
 
-
-class ReviewEvidenceBindingTests(unittest.TestCase):
-    """A `passed-review-*` label must not authorize a head it was not earned on.
-
-    Live instance, rrnewton/reverie#394: PASS earned at
-    92e1e0d0af65e50cd2991d4deaa25f726832fbf4, head rebased to
-    0fc9f61edc01d6425def2efb0ed82f01410c7fcc, `passed-review-claude` still
-    applied. The label's GitHub description says "PASSED at current PR head",
-    so the label asserted a binding that had become false.
-    """
-
-    EARNED = "92e1e0d0af65e50cd2991d4deaa25f726832fbf4"
-    HEAD_AFTER_REBASE = "0fc9f61edc01d6425def2efb0ed82f01410c7fcc"
-
-    # ---- NEGATIVE: the live stale case must not read as approval ----
-
-    def test_the_live_pr394_rebase_reads_as_stale_not_approved(self):
-        state = pr_status.approval_binding(self.EARNED, self.HEAD_AFTER_REBASE)
-        self.assertEqual(state, pr_status.APPROVAL_STALE)
-        self.assertNotEqual(state, pr_status.APPROVAL_BOUND)
-
-    def test_stale_is_distinct_from_never_reviewed(self):
-        # Collapsing these loses both the warning and the reviewer's work.
-        self.assertNotEqual(
-            pr_status.approval_binding(self.EARNED, self.HEAD_AFTER_REBASE),
-            pr_status.approval_binding(None, self.HEAD_AFTER_REBASE),
-        )
-
-    def test_every_ambiguous_input_fails_closed(self):
-        for pass_sha, head in (
-            (None, self.HEAD_AFTER_REBASE),      # no PASS recorded
-            (self.EARNED, None),                 # head unknown
-            ("92e1e0d0", self.HEAD_AFTER_REBASE),  # abbreviated PASS sha
-            (self.EARNED, "0fc9f61e"),           # abbreviated head
-            ("", ""),
-        ):
-            self.assertEqual(
-                pr_status.approval_binding(pass_sha, head),
-                pr_status.APPROVAL_UNBOUND,
-                f"{pass_sha!r} vs {head!r} must not authorize",
-            )
-
-    # ---- POSITIVE: a PASS on the current head still authorizes ----
-
-    def test_a_pass_on_the_current_head_binds(self):
-        self.assertEqual(
-            pr_status.approval_binding(self.EARNED, self.EARNED),
-            pr_status.APPROVAL_BOUND,
-        )
-        # Case-insensitive and whitespace-tolerant, so a copied SHA still binds.
-        self.assertEqual(
-            pr_status.approval_binding(self.EARNED.upper(), f" {self.EARNED} "),
-            pr_status.APPROVAL_BOUND,
-        )
-
-    # ---- the SHA is read from the reviewer's own words ----
-
-    def test_the_pass_sha_is_extracted_from_real_verdict_shapes(self):
-        for body in (
-            f"**VERDICT: PASS at `{self.EARNED}`.**",
-            f"[orc-coord-014] **VERDICT: PASS** at `{self.EARNED}`.",
-            f"## `[orc-coord-014]` PASS - independent re-review at head `{self.EARNED}`",
-        ):
-            self.assertEqual(pr_status.extract_pass_sha(body), self.EARNED, body[:60])
-
-    def test_a_block_verdict_and_an_unanchored_pass_yield_no_sha(self):
-        # A BLOCK must never be mined for a SHA, and a PASS naming no commit
-        # cannot bind to anything.
-        self.assertIsNone(
-            pr_status.extract_pass_sha(f"**VERDICT: BLOCK at `{self.EARNED}`.**")
-        )
-        self.assertIsNone(pr_status.extract_pass_sha("VERDICT: PASS. Looks good."))
-        self.assertIsNone(pr_status.extract_pass_sha(""))
 
 HEAD_RED = "73652f90269c322ba0be298288ec5ff25f089993"    # hermit #1890, live
 HEAD_GREEN = "c36f681eb05f8c9a832f84d89638b527a6283dcd"  # hermit #1897, live

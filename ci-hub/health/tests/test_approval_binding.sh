@@ -59,6 +59,9 @@ out="$(run "$tmp/unbound.json" --gate)"; rc=$?
 grep -q "no APPROVED-AT binding" <<<"$out" \
   && ok "undetermined says WHY -- no APPROVED-AT binding -- rather than just failing" \
   || bad "undetermined gave no reason: $out"
+grep -q "authoritative at current head: 0; authority absent: 1" <<<"$out" \
+  && ok "unbound label counts as 0/1 authority, not present-but-unverified" \
+  || bad "unbound authority count is not explicit: $out"
 
 # --- NEGATIVE: an approval naming the CURRENT head must NOT be flagged -------
 # Without this the tool could reject everything and look diligent.
@@ -70,6 +73,9 @@ out="$(run "$tmp/current.json" --gate)"; rc=$?
 [[ $rc -eq 0 ]] && ok "current approvals: gate PASSES (rc=0)" || bad "current: expected rc=0, got $rc"
 grep -q "every approval label is bound to the current head" <<<"$out" \
   && ok "current approvals reported as holding" || bad "current approvals not reported clean: $out"
+grep -q "authoritative at current head: 2; authority absent: 0" <<<"$out" \
+  && ok "exact-head bindings count as 2/2 authority" \
+  || bad "bound authority count is not explicit: $out"
 # The claude lane re-reviewed: an older SHA followed by the current one still holds.
 grep -qE "SUPERSEDED|UNDETERMINED" <<<"$out" && bad "a re-review (old SHA then current) was wrongly flagged" \
   || ok "a lane that re-reviewed at the new head holds, despite an older SHA in its history"
@@ -128,8 +134,8 @@ else
 fi
 
 echo "======================================================================"
-echo "flagged-when-it-should:     3 cases  (superseded, unbound, composed)"
-echo "not-flagged-when-it-should: 1 case   (approval naming the current head)"
+echo "flagged-when-it-should:     3 cases  (superseded, unbound 0/1 authority, composed)"
+echo "not-flagged-when-it-should: 1 case   (exact-head bindings 2/2 authority)"
 echo "assertions: $pass passed, $fail failed"
 if (( fail )); then echo "RESULT: FAIL"; exit 1; fi
 echo "RESULT: PASS"
