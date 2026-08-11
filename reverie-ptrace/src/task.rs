@@ -286,6 +286,43 @@ fn is_guest_int3_evidence(si_code: libc::c_int, retired_opcode: u8) -> bool {
     si_code == SI_KERNEL && retired_opcode == INT3_OPCODE
 }
 
+/// True when a `SIGTRAP` stop was **generated on behalf of a process** --
+/// `raise`, `kill`, `tgkill`, `sigqueue`, an expiring POSIX timer, a POSIX
+/// message queue, an AIO completion, or `SIGIO`/`F_SETSIG` -- rather than
+/// produced by the trap machinery this tracer itself drives.
+///
+/// This is the other half of guest-owned SIGTRAP provenance;
+/// [`is_guest_int3_evidence`] is the `#BP` half, and the two domains are
+/// disjoint by construction.
+///
+/// The test is Linux's own `SI_FROMUSER`: `include/linux/signal.h` defines
+/// `SI_FROMUSER(siptr) ((siptr)->si_code <= 0)`, and the whole non-positive
+/// range is reserved for sources outside the faulting-instruction machinery --
+/// `SI_USER` (0), `SI_QUEUE` (-1), `SI_TIMER` (-2), `SI_MESGQ` (-3),
+/// `SI_ASYNCIO` (-4), `SI_SIGIO` (-5), `SI_TKILL` (-6), `SI_DETHREAD` (-7),
+/// `SI_ASYNCNL` (-60). Everything the tracer drives is strictly positive:
+/// `TRAP_BRKPT` (1), `TRAP_TRACE` (2), `TRAP_BRANCH` (3), `TRAP_HWBKPT` (4),
+/// `SI_KERNEL` (0x80), and the ptrace stop encodings `SIGTRAP | 0x80` and
+/// `SIGTRAP | PTRACE_EVENT_* << 8`. So the sign of `si_code` separates the two
+/// populations exactly, and it does so at the point the kernel generated the
+/// signal rather than by inference from register state.
+///
+/// Enumerating three codes instead of the domain was the blocking finding on
+/// rrnewton/reverie#388 (`[adversarial-reviewer agent, gpt-5.6-sol]`, exact
+/// head `bf8ee2dd8ebcf61c18e742c943851823bc4904f4`): a guest that arms a POSIX
+/// timer with `sigev_signo = SIGTRAP` gets `SI_TIMER`, which an
+/// `{SI_USER, SI_TKILL, SI_QUEUE}` allowlist still swallows. The domain test
+/// closes that hole and cannot go stale as Linux adds codes.
+///
+/// Safety of the widening in this tracer specifically: nothing in
+/// `reverie-ptrace` sends `SIGTRAP` to a guest. The one signal it does inject,
+/// the precise-timer kick in `timer.rs::finalize_requests`, is
+/// `reverie::PERF_EVENT_SIGNAL` == `SIGSTKFLT`. So no `si_code <= 0` `SIGTRAP`
+/// can be this tracer's own.
+fn is_process_raised_sigtrap(siginfo: &libc::siginfo_t) -> bool {
+    siginfo.si_code <= 0
+}
+
 /// Read the two observations [`is_guest_int3_evidence`] needs off a stopped
 /// tracee.
 fn is_guest_int3_trap(task: &Stopped, rip: u64) -> Result<bool, TraceError> {
@@ -2493,6 +2530,23 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .await_gdb_resume(task, ExpectedGdbResume::Resume)
                 .await?;
             HandleSignalResult::SignalSuppressed(running.next_state().await?)
+        } else if is_process_raised_sigtrap(&task.getsiginfo()?) {
+            // The guest raised this itself, via `raise`/`kill`/`tgkill`/
+            // `sigqueue` or an asynchronous source it armed (POSIX timer,
+            // mqueue, AIO, SIGIO). Swallowing it here let a guest survive a
+            // signal whose default disposition is to kill it: after
+            // `raise(SIGTRAP)` returned, the guest kept running and exited
+            // normally, so its parent saw a normal exit instead of
+            // WIFSIGNALED/SIGTRAP. Deliver it and let the guest's own
+            // disposition decide.
+            //
+            // Not gated on `is_tracer_planted_trap_site`, and deliberately so:
+            // that guard exists to keep the tracer's own `0xcc` bytes from
+            // being attributed to the guest, and a process-generated signal is
+            // not a `#BP` at all -- `rip` has nothing to do with it. Gating it
+            // would silently reinstate the bug under LiteInst, where the guard
+            // refuses blanket.
+            HandleSignalResult::SignalToDeliver(task, Signal::SIGTRAP)
         } else if !self.is_tracer_planted_trap_site(rip_minus_one)
             && is_guest_int3_trap(&task, regs.ip())?
         {
@@ -6069,6 +6123,92 @@ mod tests {
             assert!(
                 !is_guest_int3_evidence(SI_KERNEL, opcode),
                 "opcode {opcode:#04x} at rip-1 is not a one-byte int3"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Process-raised SIGTRAP, the other half of guest-owned SIGTRAP
+    // provenance. Carried from rrnewton/reverie#388 (head
+    // `bf8ee2dd8ebcf61c18e742c943851823bc4904f4`,
+    // `[impl agent, opus-5]` / `codex-coord-030`); the two tests below are that
+    // PR's verbatim, and they still hold against the widened predicate.
+    // ---------------------------------------------------------------------
+
+    fn siginfo_with_code(code: libc::c_int) -> libc::siginfo_t {
+        // SAFETY: siginfo_t is a plain POD union; only si_signo/si_code are read.
+        let mut siginfo: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        siginfo.si_signo = libc::SIGTRAP;
+        siginfo.si_code = code;
+        siginfo
+    }
+
+    /// POSITIVE side of the bracket: a SIGTRAP the guest raised must be
+    /// classified as deliverable. `raise()` is `tgkill` in glibc, so `SI_TKILL`
+    /// is the case the regression actually hit.
+    #[test]
+    fn process_raised_sigtrap_is_delivered() {
+        const SI_QUEUE: libc::c_int = -1;
+        for code in [libc::SI_TKILL, libc::SI_USER, SI_QUEUE] {
+            assert!(
+                is_process_raised_sigtrap(&siginfo_with_code(code)),
+                "si_code {code} is process-raised and must be delivered to the guest"
+            );
+        }
+    }
+
+    /// NEGATIVE side of the bracket: every trap the tracer's own machinery
+    /// produces must stay suppressed. If this ever flips, guests get killed for
+    /// breakpoints and single-steps they never asked for.
+    #[test]
+    fn tracer_mechanism_sigtrap_stays_suppressed() {
+        for code in [
+            libc::TRAP_BRKPT,
+            libc::TRAP_TRACE,
+            libc::TRAP_BRANCH,
+            libc::TRAP_HWBKPT,
+            SI_KERNEL,
+        ] {
+            assert!(
+                !is_process_raised_sigtrap(&siginfo_with_code(code)),
+                "si_code {code} is tracer-generated and must NOT be delivered"
+            );
+        }
+    }
+
+    /// The widening #388's own review demanded, bracketed on the positive side:
+    /// the asynchronous `SI_FROMUSER` sources an arbitrary guest can arm are
+    /// *also* the guest's own signals, and an `{SI_USER, SI_TKILL, SI_QUEUE}`
+    /// allowlist swallowed every one of them. `SI_TIMER` is the concrete case
+    /// the reviewer named: `timer_create` with `sigev_signo = SIGTRAP`.
+    #[test]
+    fn asynchronous_guest_armed_sigtrap_sources_are_delivered() {
+        const SI_TIMER: libc::c_int = -2;
+        const SI_MESGQ: libc::c_int = -3;
+        const SI_ASYNCIO: libc::c_int = -4;
+        const SI_SIGIO: libc::c_int = -5;
+        const SI_DETHREAD: libc::c_int = -7;
+        for code in [SI_TIMER, SI_MESGQ, SI_ASYNCIO, SI_SIGIO, SI_DETHREAD] {
+            assert!(
+                is_process_raised_sigtrap(&siginfo_with_code(code)),
+                "si_code {code} is a guest-armed source and must be delivered \
+                 (rrnewton/reverie#388 review finding 1)"
+            );
+        }
+    }
+
+    /// The two provenance predicates must partition, not overlap: no `si_code`
+    /// may be claimed by both arms of `handle_sigtrap`, or the arm order would
+    /// silently decide behaviour. Swept over the whole plausible range rather
+    /// than a handful of constants.
+    #[test]
+    fn the_two_guest_sigtrap_predicates_are_disjoint() {
+        for code in -70..=0x100 {
+            let process_raised = is_process_raised_sigtrap(&siginfo_with_code(code));
+            let guest_int3 = is_guest_int3_evidence(code, INT3_OPCODE);
+            assert!(
+                !(process_raised && guest_int3),
+                "si_code {code} is claimed by both provenance predicates"
             );
         }
     }
