@@ -103,6 +103,56 @@ grep -q "authoritative at current head: 2; authority absent: 0" <<<"$out" \
 grep -qE "SUPERSEDED|UNDETERMINED" <<<"$out" && bad "a re-review (old SHA then current) was wrongly flagged" \
   || ok "a lane that re-reviewed at the new head holds, despite an older SHA in its history"
 
+# --- MALFORMED SYNTAX IS NOT LOST AUTHORITY ---------------------------------
+# Real #1847 shape: one comment says APPROVE using the historical synonym and
+# also carries the canonical exact-head binding.  The syntax debt stays loud,
+# but the authority gate must not turn it into a missing review.  Re-emitting
+# APPROVED-AT cannot repair this case because the comment already emitted it.
+cat >"$tmp/malformed-authoritative.json" <<JSON
+[{"number":1847,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["[adversarial-reviewer agent, claude-opus-5]\\nAPPROVE $CUR\\nAPPROVED-AT: claude $CUR"],
+  "runs_at_head":12,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/malformed-authoritative.json" --gate)"; rc=$?
+[[ $rc -eq 0 ]] && ok "malformed-but-authoritative: authority gate PASSES (rc=0)" \
+  || bad "malformed-but-authoritative: expected advisory rc=0, got $rc: $out"
+grep -q "authoritative at current head: 1; authority absent: 0" <<<"$out" \
+  && ok "malformed-but-authoritative remains 1/1 authoritative" \
+  || bad "malformed-but-authoritative was reported as lost authority: $out"
+grep -q '^malformed_state=present$' <<<"$out" \
+  && grep -q 'malformed_summary=1 malformed source line(s) across 1 affected approval label(s) on 1 PR(s)' <<<"$out" \
+  && ok "malformed source line reports through its distinct lower-severity channel" \
+  || bad "malformed advisory channel/count missing: $out"
+grep -q '^malformed_remedy=edit or remove the malformed historical source line;' <<<"$out" \
+  && ok "malformed-only remedy names edit/removal, not ineffective re-emission" \
+  || bad "malformed-only remedy is absent or wrong: $out"
+
+# Real #2059 shape: a current-head APPROVED synonym with no canonical binding.
+# Separation must never suppress this actual authority loss.
+cat >"$tmp/malformed-lost.json" <<JSON
+[{"number":2059,"head":"$CUR","labels":["passed-review-codex"],
+  "comments":["[adversarial-reviewer agent, GPT-5]\\nAPPROVED — exact head $CUR."],
+  "runs_at_head":9,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/malformed-lost.json" --gate)"; rc=$?
+[[ $rc -eq 1 ]] && ok "malformed-plus-lost-authority: gate STILL FAILS (rc=1)" \
+  || bad "malformed-plus-lost-authority was over-suppressed (rc=$rc): $out"
+grep -q "authoritative at current head: 0; authority absent: 1" <<<"$out" \
+  && grep -q '^state=unbound$' <<<"$out" \
+  && ok "genuinely lost binding remains a named 0/1 authority failure" \
+  || bad "lost authority disappeared behind syntax reporting: $out"
+grep -q '^malformed_state=present$' <<<"$out" \
+  && ok "lost authority and malformed syntax are both reported, not summed" \
+  || bad "combined case lost its independent malformed diagnostic: $out"
+
+out="$(run "$tmp/malformed-authoritative.json" --gate --json)"; rc=$?
+[[ $rc -eq 0 ]] \
+  && grep -q '"authority_absent": 0' <<<"$out" \
+  && grep -q '"malformed_source_lines": 1' <<<"$out" \
+  && grep -q '"malformed_affected_labels": 1' <<<"$out" \
+  && ok "JSON separates authority loss from malformed source-line/affected-label counts" \
+  || bad "JSON conflates malformed syntax and authority: $out"
+
 # --- THE COMPOSED STATE: superseded AND zero runs ---------------------------
 cat >"$tmp/combined.json" <<JSON
 [{"number":1864,"head":"$CUR","labels":["passed-review-codex"],
@@ -156,7 +206,7 @@ else
   bad "binding grammar suite FAILED"; sed 's/^/        /' "$tmp/grammar.out" | grep FAIL | head -4
 fi
 
-# --- MUTATION CONTROL: removing the load-bearing guard breaks this suite ----
+# --- MUTATION CONTROL: removing either load-bearing guard breaks this suite --
 # Run this complete bracket against a temporary copy whose single-PR empty-set
 # predicate is disabled.  Nonzero alone is insufficient: name the exact
 # #2132 assertion so an unrelated mutant failure cannot masquerade as proof.
@@ -180,10 +230,34 @@ if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
   fi
 fi
 
+# Re-introduce the exact conflation fixed here: malformed syntax alone makes
+# the authority gate fail.  The full suite must name the #1847-shaped break,
+# proving the new positive/advisory half is not inert.
+if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
+  mutant="$tmp/approval_binding-reconflate-malformed.py"
+  sed \
+    's/if a.gate and gating:/if a.gate and (gating or malformed):  # MUTANT: syntax debt reconflated with authority/' \
+    "$tool" >"$mutant"
+  if ! grep -q 'MUTANT: syntax debt reconflated with authority' "$mutant"; then
+    bad "separation mutation control could not locate the authority gate"
+  else
+    APPROVAL_BINDING_TOOL="$mutant" APPROVAL_BINDING_MUTATION_CHILD=1 \
+      bash "$0" >"$tmp/separation-mutant-suite.out" 2>&1
+    mutant_rc=$?
+    if [[ $mutant_rc -ne 0 ]] \
+      && grep -q 'FAIL  malformed-but-authoritative: expected advisory rc=0, got 1' \
+        "$tmp/separation-mutant-suite.out"; then
+      ok "mutation control: suite FAILS when malformed syntax is reconflated with lost authority"
+    else
+      bad "separation mutation control did not fail on the #1847-shaped case (rc=$mutant_rc)"
+    fi
+  fi
+fi
+
 echo "======================================================================"
 echo "refused-when-it-should:     1 case   (selected PR with zero approvals)"
-echo "flagged-when-it-should:     3 cases  (superseded, unbound 0/1 authority, composed)"
-echo "not-flagged-when-it-should: 1 case   (exact-head bindings 2/2 authority)"
+echo "flagged-when-it-should:     4 cases  (superseded, unbound 0/1 authority, composed, malformed+lost)"
+echo "not-flagged-when-it-should: 2 cases  (exact-head bindings; malformed-but-authoritative)"
 echo "assertions: $pass passed, $fail failed"
 if (( fail )); then echo "RESULT: FAIL"; exit 1; fi
 echo "RESULT: PASS"

@@ -113,6 +113,21 @@ ab.lane_shas(C("[adversarial-reviewer agent, CLAUDE]\nThis looks good, nice work
 cases.append((len(mal3) == 0, "ordinary prose with no SHA is not reported as malformed",
               f"malformed={len(mal3)}"))
 
+# The real #1847 shape: syntax debt and canonical authority can coexist in one
+# comment.  Parsing must preserve BOTH facts so the report layer can assign
+# them different severity and remedies instead of making one erase the other.
+mal4 = []
+mal4_prs = {}
+same_comment = C(
+    f"[adversarial-reviewer agent, claude-opus-5]\n"
+    f"APPROVE {CUR}\n"
+    f"APPROVED-AT: claude {CUR}\n"
+)
+same_comment_shas = ab.lane_shas(same_comment, "claude", mal4, 1847, mal4_prs)
+cases.append((same_comment_shas == [CUR] and len(mal4) == 1 and mal4_prs.get(mal4[0]) == 1847,
+              "same comment preserves canonical authority AND malformed syntax debt",
+              f"bound={same_comment_shas} malformed={len(mal4)} pr={mal4_prs.get(mal4[0]) if mal4 else None}"))
+
 p=sum(1 for ok,_,_ in cases if ok); f=len(cases)-p
 for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
 print(f"assertions: {p} passed, {f} failed")

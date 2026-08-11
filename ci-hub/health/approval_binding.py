@@ -51,6 +51,13 @@ States, three not two -- the same discipline as `unevaluated_head.py`:
                   it correctly reports that these approvals are unverifiable
                   rather than pretending to verify them.
 
+MALFORMED SOURCE LINES ARE ORTHOGONAL TO THOSE STATES. A comment may contain a
+historical ``APPROVE <sha>`` synonym and a valid canonical binding at the same
+head. The synonym remains syntax debt worth reporting, but it cannot turn the
+canonical BOUND_CURRENT authority into absence. Conversely, a malformed line
+with no canonical binding remains UNDETERMINED or SUPERSEDED and still fails
+the authority gate. Counts and remedies for the two conditions stay separate.
+
 Usage:
   approval_binding.py --repo rrnewton/hermit [--gate] [--json]
   approval_binding.py --from-json FIXTURE [--pr N] [--gate]  # offline bracket
@@ -96,8 +103,13 @@ def gh_json(args: list[str]) -> Any:
     return json.loads(out.stdout or "null")
 
 
-def lane_shas(comments: list[dict[str, Any]], lane: str,
-               malformed: list[tuple[str, str]] | None = None) -> list[str]:
+def lane_shas(
+    comments: list[dict[str, Any]],
+    lane: str,
+    malformed: list[tuple[str, str]] | None = None,
+    pr_number: int | None = None,
+    malformed_prs: dict[tuple[str, str], int] | None = None,
+) -> list[str]:
     """SHAs a lane EXPLICITLY bound itself to, oldest first. Never inferred.
 
     *** THIS DELIBERATELY REFUSES TO GUESS, AND THE FIRST VERSION DID GUESS. ***
@@ -191,12 +203,17 @@ def lane_shas(comments: list[dict[str, Any]], lane: str,
             m = approve.match(line)
             if not m:
                 if suspect.match(line) and not reject.match(line):
-                    finding = (c.get("html_url") or c.get("url") or "?", line[:120])
+                    finding = (
+                        c.get("html_url") or c.get("url") or "?",
+                        line[:120],
+                    )
                     # collect_live checks the same comment once per approval
                     # lane.  Count a malformed source line once, not once per
                     # label, or one defect becomes a confident count of two.
                     if finding not in malformed:
                         malformed.append(finding)
+                    if pr_number is not None and malformed_prs is not None:
+                        malformed_prs[finding] = pr_number
                 continue
             explicit_lane, sha = m.group(1), m.group(2)
             if explicit_lane.lower() == lane:
@@ -207,6 +224,7 @@ def lane_shas(comments: list[dict[str, Any]], lane: str,
 def collect_live(
     repo: str,
     malformed: list[tuple[str, str]],
+    malformed_prs: dict[tuple[str, str], int],
     pr_number: int | None = None,
 ) -> list[dict[str, Any]]:
     if pr_number is None:
@@ -249,7 +267,9 @@ def collect_live(
         comments, runs = f["comments"], f["runs"]
         for label in approvals:
             lane = label.rsplit("-", 1)[-1]
-            shas = lane_shas(comments, lane, malformed)
+            shas = lane_shas(
+                comments, lane, malformed, pr["number"], malformed_prs
+            )
             rows.append(
                 {
                     "number": pr["number"],
@@ -268,6 +288,7 @@ def collect_live(
 def collect_fixture(
     path: str,
     malformed: list[tuple[str, str]],
+    malformed_prs: dict[tuple[str, str], int],
     pr_number: int | None = None,
 ) -> list[dict[str, Any]]:
     rows = []
@@ -277,7 +298,19 @@ def collect_fixture(
         for label in pr["labels"]:
             lane = label.rsplit("-", 1)[-1]
             if "comments" in pr:
-                shas = lane_shas([{"body": b} for b in pr["comments"]], lane, malformed)
+                shas = lane_shas(
+                    [
+                        {
+                            "body": body,
+                            "url": f"fixture://pr/{pr['number']}/comment/{index}",
+                        }
+                        for index, body in enumerate(pr["comments"])
+                    ],
+                    lane,
+                    malformed,
+                    pr["number"],
+                    malformed_prs,
+                )
             else:
                 shas = pr.get("lane_shas", {}).get(lane, [])
             rows.append(
@@ -329,10 +362,11 @@ def main() -> int:
     a.gate_on = getattr(a, "gate_on", "all")
 
     malformed: list[tuple[str, str]] = []
+    malformed_pr_by_source: dict[tuple[str, str], int] = {}
     rows = (
-        collect_fixture(a.fixture, malformed, a.pr)
+        collect_fixture(a.fixture, malformed, malformed_pr_by_source, a.pr)
         if a.fixture
-        else collect_live(a.repo, malformed, a.pr)
+        else collect_live(a.repo, malformed, malformed_pr_by_source, a.pr)
     )
     # The final landing boundary always selects exactly one PR with --pr.  An
     # empty row set there means the PR supplied no passed-review-* cache label
@@ -343,6 +377,10 @@ def main() -> int:
     approval_set_missing = a.pr is not None and not rows
     bad = [r for r in rows if r["state"] != BOUND_CURRENT]
     authoritative = len(rows) - len(bad)
+    malformed_prs = set(malformed_pr_by_source.values())
+    malformed_affected_labels = {
+        (r["number"], r["label"]) for r in rows if r["number"] in malformed_prs
+    }
     # The composed state: an approval that no longer holds, on a head nothing
     # evaluated. Approved, unevaluated, and indistinguishable from ready.
     combined = [r for r in bad if r["runs_at_head"] == 0]
@@ -353,7 +391,19 @@ def main() -> int:
                           "required_approval_sets": 1 if a.pr is not None else 0,
                           "approval_sets_missing": int(approval_set_missing),
                           "authority_absent": len(bad), "not_holding": len(bad),
-                          "approved_and_unevaluated": len(combined), "rows": rows}, indent=2))
+                          "approved_and_unevaluated": len(combined),
+                          "malformed_source_lines": len(malformed),
+                          "malformed_affected_labels": len(malformed_affected_labels),
+                          "malformed_affected_prs": sorted(malformed_prs),
+                          "malformed_details": [
+                              {
+                                  "pr": malformed_pr_by_source.get((where, line)),
+                                  "where": where,
+                                  "line": line,
+                              }
+                              for where, line in malformed
+                          ],
+                          "rows": rows}, indent=2))
     else:
         print(f"inspected {len(rows)} approval label(s); authoritative at current head: "
               f"{authoritative}; authority absent: {len(bad)}; "
@@ -371,7 +421,9 @@ def main() -> int:
             print("  every approval label is bound to the current head")
         for where, line in malformed:
             # LOUD, never ignored: something tried to be a binding and is not one.
-            print(f"  MALFORMED-BINDING  {line}   ({where})")
+            pr = malformed_pr_by_source.get((where, line))
+            pr_text = f"PR {pr}  " if pr is not None else ""
+            print(f"  MALFORMED-SOURCE-LINE  {pr_text}{line}   ({where})")
 
     if a.gate_on == "superseded":
         gating = [r for r in rows if r["state"] == SUPERSEDED] + [
@@ -384,14 +436,7 @@ def main() -> int:
 
     if a.gate and not a.as_json:
         affected = ",".join(f"#{r['number']}" for r in gating[:8]) or "none"
-        if malformed:
-            state = "malformed"
-            summary = (
-                f"{len(malformed)} malformed approval bindings across {len(rows)} "
-                "approval labels; authority cannot be established; remedy: emit "
-                "APPROVED-AT: <lane> <40-hex-head>"
-            )
-        elif approval_set_missing:
+        if approval_set_missing:
             state = "absent"
             summary = (
                 f"PR #{a.pr} has zero passed-review labels; absence of review "
@@ -407,15 +452,22 @@ def main() -> int:
             )
         print(f"state={state}")
         print(f"summary={summary}")
+        if malformed:
+            print("malformed_state=present")
+            print(
+                "malformed_summary="
+                f"{len(malformed)} malformed source line(s) across "
+                f"{len(malformed_affected_labels)} affected approval label(s) "
+                f"on {len(malformed_prs)} PR(s); label authority is reported separately"
+            )
+            print(
+                "malformed_remedy=edit or remove the malformed historical source line; "
+                "emitting APPROVED-AT repairs missing label authority but does not clear "
+                "a malformed line when the same comment is already authoritative"
+            )
+        else:
+            print("malformed_state=none")
 
-    if a.gate and malformed:
-        print(
-            f"GATE FAIL: {len(malformed)} line(s) look like a verdict binding but match no known "
-            "grammar. An unrecognised variant that is silently skipped reads as NO approval, which "
-            "retires real authorisation -- so this is reported, not ignored.",
-            file=sys.stderr,
-        )
-        return 1
     if a.gate and approval_set_missing:
         print(
             f"GATE FAIL: PR #{a.pr} has zero passed-review labels. Zero approvals "
@@ -431,6 +483,12 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if a.gate and malformed:
+        print(
+            f"GATE ADVISORY: {len(malformed)} malformed source line(s) need syntax cleanup, "
+            "but malformed syntax is not itself proof that label authority is absent.",
+            file=sys.stderr,
+        )
     return 0
 
 
