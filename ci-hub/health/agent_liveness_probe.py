@@ -32,10 +32,29 @@ Repairing its CONTENTS cannot fix that; only asking a different source can.
 DEAD is a POSITIVE observation of absence, and absence can only be claimed over
 a scan whose coverage is known. So:
 
+- No usable agent name at all               -> UNVERIFIABLE, refuse (rc 2).
 - Any live process for the name             -> ALIVE, refuse (rc 1).
 - Zero matches, coverage complete, probe
   demonstrably working                      -> VERIFIED_DEAD, permit (rc 0).
 - Anything else                             -> UNVERIFIABLE, refuse (rc 2).
+
+The first branch exists because the ONE thing this tool must never do is answer
+a question it was not asked. Measured 2026-08-10: the ORC caller passed the
+agent name in a shape the dispatcher did not bind, the probe was invoked with an
+empty `$1`, and it answered `{"agent": "", "state": "verified-dead",
+"may_replace": true}` -- for EVERY query, including agents that were
+demonstrably alive. Nothing was wrong with the scan: it swept 265 processes,
+carried `blind_spot: 0`, and saw another agent alive, so every self-check above
+was satisfied. The verdict was simply about the empty name rather than about the
+subject, and an empty name matches nothing, so absence was "established"
+vacuously.
+
+That is the Proxy Binding failure the policy names: a verdict CORRELATED with
+the subject (it was produced by asking about it) but not BOUND to it. A caller
+cannot detect it either, because `may_replace: true` looks identical whether it
+was earned or vacuous. So the name is validated HERE, at the authority, and not
+left to the plumbing -- fixing the one caller that got the shape wrong would
+leave the next one able to reintroduce it silently.
 
 "Anything else" includes the case that matters most: **if the scan cannot see
 ANY agent at all, the probe cannot tell "this agent is dead" from "my detector
@@ -97,6 +116,21 @@ NOT_RUNNING_STATES = frozenset("ZX")
 # widens the hole; `test_unreadable_agent_comm_still_blocks` pins the direction
 # by proving an unreadable `claude` DOES block.
 AGENT_COMMS = frozenset({"claude", "codex", "node"})
+
+# An empty/whitespace `DG_AGENT_NAME` is never a real agent identity, so a query
+# carrying one is a BROKEN CALLER, not a dead agent. Kept as a constant so the
+# test asserts the same string the tool emits.
+NO_NAME_REASON = (
+    "no agent name was supplied, so there is no subject to verify; a blank name "
+    "matches no process and would make 'absence' vacuously true. This is a "
+    "broken caller, not a dead agent -- refusing rather than authorizing a "
+    "replacement nobody named."
+)
+
+
+def _usable_name(name: str | None) -> bool:
+    """A name that can actually bind a verdict to a subject."""
+    return bool(name and name.strip())
 
 
 @dataclass(frozen=True)
@@ -222,6 +256,14 @@ class Verdict:
 
 def judge(name: str, scan: Scan) -> Verdict:
     """Pure verdict over already-collected evidence. No I/O."""
+    # FIRST, before any evidence is consulted. Every branch below reasons about
+    # what the scan saw for `name`; if `name` is blank they all reason about
+    # nothing and the most permissive of them (a complete scan with no match)
+    # wins. Guarding here rather than only in `verify` keeps the rule on the
+    # pure authority, so a caller that assembles its own Scan cannot bypass it.
+    if not _usable_name(name):
+        return Verdict("unverifiable", NO_NAME_REASON, scan)
+
     if scan.scan_error:
         return Verdict("unverifiable", scan.scan_error, scan)
 
@@ -279,6 +321,11 @@ def judge(name: str, scan: Scan) -> Verdict:
 
 
 def verify(name: str, *, root: Path = Path("/proc")) -> Verdict:
+    # Short-circuit before the sweep: with no subject there is nothing a scan
+    # could establish, and an empty Scan keeps the reported coverage honest
+    # (own_uid_total 0 = "did not look") instead of implying a complete sweep.
+    if not _usable_name(name):
+        return judge(name, Scan())
     return judge(name, scan_proc(name, root=root))
 
 
@@ -324,6 +371,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             "close+respawn. Never kills anything."
         )
     )
+    # Required positional, so a caller that passes NOTHING is rejected by
+    # argparse with SystemExit(2) -- which is UNVERIFIABLE, i.e. it refuses.
+    # That polarity is load-bearing rather than lucky, and
+    # `test_missing_argument_exits_unverifiable` pins it: argparse's usage-error
+    # code and this module's refusal code must not be allowed to drift apart.
+    #
+    # A caller that passes an EMPTY string gets past argparse (it is a present
+    # argument), which is the shape actually observed in the wild, and is caught
+    # by the `_usable_name` guard in `judge`.
     parser.add_argument("agent", help="the DG_AGENT_NAME to verify")
     parser.add_argument("--json", action="store_true", dest="as_json")
     parser.add_argument(

@@ -4,6 +4,6 @@
   "main": "./index.ts",
   "description": "Canonical dev-hermit coordinator policies",
   "scripts": {
-    "test": "node ./speculative-land-outcome.test.mjs && node ./permission-prompt-detect.test.mjs"
+    "test": "node ./speculative-land-outcome.test.mjs && node ./permission-prompt-detect.test.mjs && node ./script-arg-passing.test.mjs"
   }
 }

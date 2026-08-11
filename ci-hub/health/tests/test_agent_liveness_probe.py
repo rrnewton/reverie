@@ -149,6 +149,105 @@ class SyntheticProcTest(unittest.TestCase):
         (entry / "stat").write_text("300 (x) S 1 1 0 0 -1 0 0 0\n")
         self.assertEqual("unverifiable", probe.verify("victim", root=self.root).state)
 
+    # ---- BLANK SUBJECT: the observed fail-open ---------------------------
+    # Measured 2026-08-10 from the ORC surface: the probe was called with an
+    # empty `$1` and returned `may_replace: true` for EVERY query while the scan
+    # itself was healthy (265 processes, blind_spot 0, another agent seen
+    # alive). Every self-check passed; the verdict was simply not ABOUT anybody.
+    # These cases must stay refusals no matter how good the scan looks.
+
+    def test_empty_name_refuses_even_on_a_perfect_scan(self) -> None:
+        """The exact reproduction: healthy scan, live agents visible, blank name.
+
+        Without the guard this is `verified-dead` + `may_replace: true`, because
+        a blank name matches nothing and "nothing matched over a complete scan"
+        is the permit branch. A vacuous absence must never authorize a kill.
+        """
+        plant(self.root, 101, agent="bystander")
+        plant(self.root, 102, agent="other")
+        verdict = probe.verify("", root=self.root)
+        self.assertEqual("unverifiable", verdict.state)
+        self.assertEqual(probe.UNVERIFIABLE, verdict.rc)
+        self.assertFalse(verdict.may_replace)
+        self.assertEqual(probe.NO_NAME_REASON, verdict.reason)
+
+    def test_whitespace_name_refuses(self) -> None:
+        """`" "` is a present argument and a real shell can produce it."""
+        plant(self.root, 101, agent="bystander")
+        for blank in (" ", "\t", "\n", "   "):
+            with self.subTest(blank=repr(blank)):
+                verdict = probe.verify(blank, root=self.root)
+                self.assertEqual("unverifiable", verdict.state)
+                self.assertFalse(verdict.may_replace)
+
+    def test_blank_name_does_not_even_scan(self) -> None:
+        """Coverage must report "did not look", not a complete sweep.
+
+        A blank-name refusal that carried `own_uid_total: 265` would invite a
+        reader to conclude the scan had cleared the subject.
+        """
+        plant(self.root, 101, agent="bystander")
+        verdict = probe.verify("", root=self.root)
+        self.assertEqual(0, verdict.scan.own_uid_total)
+        self.assertEqual((), verdict.scan.matches)
+
+    def test_pure_judge_also_refuses_a_blank_name(self) -> None:
+        """The guard lives on the authority, not only on the `verify` wrapper.
+
+        A caller that assembles its own Scan -- the exact thing that makes
+        `judge` reusable -- must not be able to route around the check.
+        """
+        scan = probe.Scan(
+            own_uid_total=265,
+            distinct_agents_seen=frozenset({"bystander"}),
+        )
+        verdict = probe.judge("", scan)
+        self.assertEqual("unverifiable", verdict.state)
+        self.assertFalse(verdict.may_replace)
+
+    def test_a_real_name_on_that_same_scan_still_permits(self) -> None:
+        """POSITIVE control for the guard: it must not have disabled healing.
+
+        Same Scan object as the negative case above, differing ONLY in the name.
+        Without this, the four refusals above would also be satisfied by a probe
+        that had started refusing everything.
+        """
+        scan = probe.Scan(
+            own_uid_total=265,
+            distinct_agents_seen=frozenset({"bystander"}),
+        )
+        verdict = probe.judge("victim", scan)
+        self.assertEqual("verified-dead", verdict.state)
+        self.assertTrue(verdict.may_replace)
+
+    def test_rendered_blank_verdict_echoes_the_empty_name_and_refuses(self) -> None:
+        """The JSON a caller actually reads must not say `may_replace: true`."""
+        import json
+
+        verdict = probe.verify("", root=self.root)
+        payload = json.loads(probe._render("", verdict, as_json=True))
+        self.assertEqual("", payload["agent"])
+        self.assertFalse(payload["may_replace"])
+        self.assertEqual(probe.UNVERIFIABLE, payload["rc"])
+
+    def test_missing_argument_exits_unverifiable(self) -> None:
+        """argparse's usage-error code and UNVERIFIABLE must not drift apart.
+
+        A caller passing no argument at all is refused only because argparse
+        happens to exit 2. That equals UNVERIFIABLE today; pin it so a future
+        switch to a custom parser cannot silently turn it into 0.
+        """
+        with self.assertRaises(SystemExit) as caught:
+            probe.main([])
+        self.assertEqual(probe.UNVERIFIABLE, caught.exception.code)
+
+    def test_cli_with_empty_name_returns_unverifiable(self) -> None:
+        """End to end through `main`, the path the ORC script actually takes."""
+        self.assertEqual(
+            probe.UNVERIFIABLE,
+            probe.main(["", "--json", "--proc-root", str(self.root)]),
+        )
+
 
 
 def _reap(process) -> None:

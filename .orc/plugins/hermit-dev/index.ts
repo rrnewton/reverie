@@ -130,6 +130,48 @@ const AGENT_LIVENESS_SCRIPT_NAME = "hermitVerifyAgentDeath";
 const AGENT_LIVENESS_COMMAND =
   'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
   'python3 ci-hub/health/agent_liveness_probe.py "$1" --json';
+
+// ARGUMENT PASSING, measured rather than assumed -- read this before "fixing"
+// an empty `$1` again.
+//
+// `orc.registerScript` binds call arguments to SHELL POSITIONALS. There is no
+// `{}` placeholder anywhere in the orc surface, so a body containing `{}` sends
+// those two literal characters to the program (observed 2026-08-10 as
+// `unknown argument: {}`). Use `"$1"`.
+//
+// The binding works, and two independent production controls prove it rather
+// than one reading of the docs:
+//   * `hermitSpeculativeLandWakeSent` (`--target "$1"`) wrote 76 records via
+//     this surface with target `coordinator` (39) or `hermit-lander` (37) and
+//     EMPTY IN ZERO of 76.
+//   * `hermitOperationalTick` (`HERMIT_AGENT_SNAPSHOT_JSON="$1"`) has run on
+//     that argument continuously.
+// Both call through `orc.scripts.<name>(...)`.
+//
+// WHAT DOES BREAK, and how an empty `$1` is actually produced: calling
+// `orc.callScriptInternal` by hand. Its signature is
+// `callScriptInternal(name, argsJson?)` and `argsJson` is a **JSON STRING**.
+// Hand it an array and the dispatcher rejects the call; hand it a bare name and
+// `argsJson` is not valid JSON, so NO positionals bind and the script runs with
+// an empty `$1`. Nothing was dropped -- nothing well-formed was supplied.
+//
+// `orc.scripts` also LOOKS broken and is not: it is a `Proxy` whose `get` trap
+// manufactures a function for any name, so it has no own enumerable properties
+// and inspects as `{}` while every property access is callable. Believing it
+// empty is what pushes callers onto the raw internal.
+//
+// Prefer `callRegisteredScript()` below, which marshals correctly for both.
+const ARGV_ECHO_SCRIPT_NAME = "hermitEchoScriptArgv";
+// INERT BY CONSTRUCTION. It echoes its own argv as JSON and can authorize,
+// mutate, and kill nothing -- the fixture discipline this repo already applies
+// to the closure gateway. It reports `$0` SEPARATELY from `"$@"` so the answer
+// distinguishes correct binding from the classic `sh -c` off-by-one (where the
+// first argument lands in `$0` and `$1` is empty) instead of merely showing
+// that something is wrong.
+const ARGV_ECHO_COMMAND =
+  "python3 -c 'import json,sys; " +
+  'print(json.dumps({"dollar_zero": sys.argv[1], "argv": sys.argv[2:]}))\' ' +
+  '"$0" "$@"';
 const SPECULATIVE_LAND_INTERVAL_MS = 15 * 1000;
 // Measured 2026-08-06/07: live ticks 5.1-19.3s (n=8) and 5.55-5.85s (n=5 at
 // 03:03-03:05Z), out-of-band 5.1-16.8s (n=6); worst case a cold ci-hub rebuild
@@ -720,6 +762,298 @@ export async function speculativeLandRemediationHeartbeat(
   });
 }
 
+// --- registered-script invocation -------------------------------------------
+
+interface ScriptResult {
+  exitCode: number;
+  stdout?: string;
+  stderr?: string;
+}
+
+/** Call a registered script with arguments marshalled the way the runtime
+ * actually wants them. THE ONE PLACE that knows the calling convention, so a
+ * caller cannot reintroduce the empty-`$1` bug by guessing at the shape. */
+async function callRegisteredScript(
+  name: string,
+  args: unknown[],
+): Promise<ScriptResult> {
+  // Preferred path: the `orc.scripts` Proxy, which is what the two production
+  // controls use. It JSON-encodes `args` itself.
+  const scripts = orc.scripts as Record<string, unknown> | undefined;
+  if (scripts) {
+    const fn = scripts[name];
+    if (typeof fn === "function") {
+      return await (fn as (...a: unknown[]) => Promise<ScriptResult>)(...args);
+    }
+  }
+  // Fallback for a build without the Proxy. `argsJson` is a JSON STRING; this
+  // is precisely the encoding whose absence produces an empty `$1`.
+  const response = await orc.callScriptInternal(name, JSON.stringify(args)) as
+    | { result?: ScriptResult }
+    | ScriptResult;
+  const unwrapped = (response as { result?: ScriptResult }).result;
+  return (unwrapped === undefined ? response : unwrapped) as ScriptResult;
+}
+
+// --- the Hard-Invariant-16 death gate ----------------------------------------
+
+interface AgentDeathVerdict {
+  agent: string;
+  state: string;
+  may_replace: boolean;
+  rc: number;
+  reason: string;
+  live_pids: number[];
+}
+
+/** Every refusal shape in one place, so no branch can forget `may_replace`. */
+function deathGateRefusal(agent: string, reason: string): AgentDeathVerdict {
+  return {
+    agent,
+    state: "unverifiable",
+    may_replace: false,
+    rc: 2,
+    reason,
+    live_pids: [],
+  };
+}
+
+/** MANDATORY before close+respawn (Hard Invariant 16). rc 0 verified-dead,
+ * 1 alive, 2 unverifiable; REFUSE on 1 and 2 alike, because failing to prove
+ * life is not proving death.
+ *
+ * Registered as a top-level function because the effects reference advertised
+ * `orc.hermitVerifyAgentDeath(name)` while `registerScript` only ever creates
+ * `orc.scripts.<name>` -- so the documented call threw `not a function`, and
+ * the workaround people reached for was the raw internal that silently drops
+ * arguments. A safeguard the coordinator cannot invoke is not a safeguard.
+ *
+ * Fail-closed at EVERY exit: a blank name, an unparseable body, a verdict about
+ * the wrong subject, and any thrown error all return `may_replace: false`. */
+async function hermitVerifyAgentDeath(
+  agent: string,
+): Promise<AgentDeathVerdict> {
+  if (typeof agent !== "string" || agent.trim().length === 0) {
+    return deathGateRefusal(
+      typeof agent === "string" ? agent : "",
+      "no agent name was supplied; refusing rather than asking the probe a " +
+        "question about nobody. This is the exact 2026-08-10 fail-open, where " +
+        "an empty name produced a confident verified-dead for every query.",
+    );
+  }
+
+  let result: ScriptResult;
+  try {
+    result = await callRegisteredScript(AGENT_LIVENESS_SCRIPT_NAME, [agent]);
+  } catch (err) {
+    return deathGateRefusal(agent, "probe invocation failed: " + String(err));
+  }
+
+  // The probe prints its verdict to STDOUT only when it permits, and to STDERR
+  // when it refuses. Reading stdout alone would see an empty body for every
+  // ALIVE verdict -- a refusal that looks like no answer at all.
+  const raw = String(result.stdout || "").trim() ||
+    String(result.stderr || "").trim();
+  if (!raw) {
+    return deathGateRefusal(
+      agent,
+      "probe produced no output (exitCode " + String(result.exitCode) + ")",
+    );
+  }
+
+  let parsed: Partial<AgentDeathVerdict>;
+  try {
+    parsed = JSON.parse(raw) as Partial<AgentDeathVerdict>;
+  } catch (_err) {
+    return deathGateRefusal(agent, "probe output was not JSON: " + raw);
+  }
+
+  // PROXY BINDING, made executable. A verdict is only about the agent it
+  // NAMES. This single comparison is what the original bug needed and lacked:
+  // the probe answered `{"agent": ""}` and the caller read `may_replace: true`
+  // without ever noticing the answer was about a different (empty) subject.
+  if (parsed.agent !== agent) {
+    return deathGateRefusal(
+      agent,
+      "probe answered about " + JSON.stringify(parsed.agent) + " but was " +
+        "asked about " + JSON.stringify(agent) +
+        "; the verdict is not bound to this subject",
+    );
+  }
+
+  // Permit only on unanimous agreement between the process exit code and the
+  // decoded body. Anything else refuses.
+  const permitted = Number(result.exitCode) === 0 &&
+    parsed.state === "verified-dead" &&
+    parsed.may_replace === true;
+
+  return {
+    agent,
+    state: String(parsed.state || "unverifiable"),
+    may_replace: permitted,
+    rc: Number(result.exitCode),
+    reason: String(parsed.reason || ""),
+    live_pids: Array.isArray(parsed.live_pids) ? parsed.live_pids : [],
+  };
+}
+
+// --- script discovery ---------------------------------------------------------
+
+interface DiscoveredScript {
+  name: string;
+  description: string | null;
+  call: string;
+  takesArguments: boolean;
+}
+
+/** Enumerate the registered scripts WITH the syntax that actually calls them.
+ *
+ * `orc.scripts` is a `Proxy` whose `get` trap manufactures a function on
+ * demand, so it has no own enumerable properties: `Object.keys()` is `[]` and
+ * it inspects as `{}`. That is indistinguishable from "no scripts registered",
+ * and believing it empty is what sends people to the raw
+ * `orc.callScriptInternal`, whose `argsJson` parameter they then get wrong --
+ * which is how a script ends up running with an empty `$1`.
+ *
+ * The registry itself IS enumerable via `orc.listScripts()`. This joins the two
+ * so the answer to "what can I call, and how?" is one call and needs no
+ * knowledge of the Proxy. */
+async function hermitDevListScripts(): Promise<{
+  scripts: DiscoveredScript[];
+  note: string;
+}> {
+  let listed: unknown[] = [];
+  try {
+    listed = await orc.listScripts() as unknown[];
+  } catch (err) {
+    return {
+      scripts: [],
+      note: "orc.listScripts() failed: " + String(err) +
+        " -- this is a registry read failure, NOT evidence that no scripts " +
+        "are registered.",
+    };
+  }
+
+  const scripts = (Array.isArray(listed) ? listed : []).map((entry) => {
+    const row = (entry || {}) as { name?: string; description?: string; script?: string };
+    const name = String(row.name || "");
+    // A body referencing a positional expects arguments; one that does not,
+    // takes none. Reported so a caller does not have to read the shell.
+    const body = String(row.script || "");
+    const takesArguments = /\$\{?[1-9]/.test(body) || body.includes('"$@"');
+    return {
+      name,
+      description: row.description === undefined ? null : String(row.description),
+      call: "await orc.scripts." + name + "(" +
+        (takesArguments ? "arg1, …" : "") + ")",
+      takesArguments,
+    };
+  });
+
+  return {
+    scripts,
+    note: "orc.scripts is a Proxy: it inspects as {} and Object.keys() is " +
+      "empty, but every name above is callable on it. Arguments bind to SHELL " +
+      "POSITIONALS ($1, $2, …). There is NO {} placeholder -- a body " +
+      "containing {} sends those two literal characters to the program. Do " +
+      "not hand-roll orc.callScriptInternal: its argsJson parameter is a JSON " +
+      "STRING, and getting that wrong binds no positionals at all.",
+  };
+}
+
+// --- argv bracket ------------------------------------------------------------
+// The claim "the surface drops every argument" and the claim "my call shape was
+// wrong" predict DIFFERENT observations, and only a run can separate them. This
+// makes that run one call, against the live registry, with the counts stated.
+
+async function verifyScriptArgPassing(): Promise<SelfTestResult> {
+  const checks: SelfTestCheck[] = [];
+  const add = (
+    name: string,
+    pass: boolean,
+    detail: string,
+    severity: "error" | "notice" = "error",
+  ) => {
+    checks.push({ name, pass, severity, detail });
+  };
+
+  // POSITIVE: distinctive multi-argument payload, including a space and an
+  // empty string, so a truncating or re-splitting binder cannot coincidentally
+  // look correct.
+  const sent = ["alpha", "two words", "", "4"];
+  let echoed: { dollar_zero?: string; argv?: string[] } | null = null;
+  let rawBody = "";
+  try {
+    const result = await callRegisteredScript(ARGV_ECHO_SCRIPT_NAME, sent);
+    rawBody = String(result.stdout || "").trim() ||
+      String(result.stderr || "").trim();
+    echoed = JSON.parse(rawBody) as { dollar_zero?: string; argv?: string[] };
+  } catch (err) {
+    add("argv-echo-callable", false, "echo script failed: " + String(err));
+    return { pass: false, checks };
+  }
+  add("argv-echo-callable", true, "returned " + rawBody);
+
+  const got = Array.isArray(echoed.argv) ? echoed.argv : [];
+  const exact = got.length === sent.length &&
+    sent.every((value, index) => got[index] === value);
+  add(
+    "arguments-arrive-exactly",
+    exact,
+    "sent " + JSON.stringify(sent) + " -> received " + JSON.stringify(got) +
+      " (" + got.length + "/" + sent.length + " positionals)",
+  );
+
+  // The off-by-one this bug was blamed on: with `sh -c cmd arg1`, `$0` becomes
+  // arg1 and `$1` is empty. Naming it explicitly means a future failure reports
+  // WHICH binding broke rather than just "empty".
+  add(
+    "no-sh-c-off-by-one",
+    echoed.dollar_zero !== sent[0],
+    "$0=" + JSON.stringify(echoed.dollar_zero) + "; first argument sent was " +
+      JSON.stringify(sent[0]) +
+      (echoed.dollar_zero === sent[0]
+        ? " -- ARGUMENTS ARE SHIFTED: $1 is empty because arg 1 landed in $0"
+        : " -- distinct, so positionals are not shifted"),
+  );
+
+  // NEGATIVE: the same path with no arguments must come back genuinely empty.
+  // Without this, "arguments arrive" could be satisfied by a stub echoing a
+  // canned payload regardless of input.
+  try {
+    const bare = await callRegisteredScript(ARGV_ECHO_SCRIPT_NAME, []);
+    const body = String(bare.stdout || "").trim();
+    const parsed = JSON.parse(body) as { argv?: string[] };
+    const empty = Array.isArray(parsed.argv) && parsed.argv.length === 0;
+    add(
+      "no-arguments-yields-empty-argv",
+      empty,
+      "sent [] -> received " + JSON.stringify(parsed.argv) +
+        " (echo is input-sensitive, not a canned reply)",
+    );
+  } catch (err) {
+    add("no-arguments-yields-empty-argv", false, String(err));
+  }
+
+  // The death gate itself, end to end, refusing on a blank subject. Inert: it
+  // reads /proc and returns a verdict, and nothing here acts on one.
+  try {
+    const blank = await hermitVerifyAgentDeath("");
+    add(
+      "death-gate-refuses-blank-subject",
+      blank.may_replace === false && blank.rc === 2,
+      "blank name -> rc " + blank.rc + " may_replace " + blank.may_replace,
+    );
+  } catch (err) {
+    add("death-gate-refuses-blank-subject", false, String(err));
+  }
+
+  const pass = checks.every((check) =>
+    check.pass || check.severity === "notice"
+  );
+  return { pass, checks };
+}
+
 // --- registration ----------------------------------------------------------
 // Every side effect this module has lives in here, and it is reached only
 // through the reduced-context guard at the bottom of the file. Nothing above
@@ -762,6 +1096,14 @@ function registerPluginSurface(): void {
     timeoutSec: 30,
   });
 
+  orc.registerScript(ARGV_ECHO_SCRIPT_NAME, {
+    script: ARGV_ECHO_COMMAND,
+    description:
+      "Diagnostic: echo this script's own argv as JSON (inert; authorizes and " +
+      "changes nothing). Answers 'did my arguments arrive?' directly",
+    timeoutSec: 30,
+  });
+
   // Placeholders only; startup replaces all three with the real policy text.
   registerHermitDevSkill(
     "The canonical dev-hermit policies are loaded from AGENTS.md during startup.",
@@ -781,6 +1123,51 @@ function registerPluginSurface(): void {
       description: "Reload AGENTS.md and activate the canonical dev-hermit policies",
       params: [],
       sig: "await orc.hermit-dev.activate()",
+    },
+  );
+
+  // Top-level, NOT plugin-namespaced: this is the exact name Hard Invariant 16
+  // and the effects reference already tell the coordinator to call.
+  orc.exposeFunction(
+    AGENT_LIVENESS_SCRIPT_NAME,
+    hermitVerifyAgentDeath,
+    {
+      description:
+        "REQUIRED before close+respawn: independently verify a named agent is " +
+        "genuinely dead. Returns {agent, state, may_replace, rc, reason, " +
+        "live_pids}. Replace ONLY on may_replace true; rc 1 (alive) and rc 2 " +
+        "(unverifiable) both refuse. Never kills anything",
+      params: [{ name: "agent", type: "string", description: "the DG_AGENT_NAME to verify" }],
+      sig: "await orc.hermitVerifyAgentDeath(agent: string)",
+    },
+  );
+
+  // Discoverability for a Proxy that reads as empty. Without this, "there are
+  // no scripts" and "I cannot enumerate the scripts" look identical.
+  orc.exposeFunction(
+    PLUGIN_NAME + ".listScripts",
+    hermitDevListScripts,
+    {
+      description:
+        "List registered scripts with the exact syntax that calls them " +
+        "(orc.scripts is a Proxy and inspects as {} even when populated)",
+      params: [],
+      sig: "await orc.hermit-dev.listScripts()",
+    },
+  );
+
+  // The argv bracket, exposed separately because it is async and the sync
+  // `selftest` cannot await a script. Run it whenever an argument "looks
+  // dropped" -- it answers with evidence instead of inference.
+  orc.exposeFunction(
+    PLUGIN_NAME + ".verifyScriptArgs",
+    verifyScriptArgPassing,
+    {
+      description:
+        "Bracket registered-script argument passing both ways against the live " +
+        "registry using an inert argv-echo script",
+      params: [],
+      sig: "await orc.hermit-dev.verifyScriptArgs()",
     },
   );
 

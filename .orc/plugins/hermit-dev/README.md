@@ -71,3 +71,58 @@ interval and `ci-hub/health/tick-hub.yaml` config. `orc.listWorkflows()` must sh
 sleeping `hermit-dev-operational-health-v1` and
 `hermit-dev-speculative-land-remediation-v1` workflows and must not show
 `hermit-dev-pr-health`.
+
+## Calling a registered script (read this before "fixing" an empty `$1`)
+
+`orc.registerScript` binds call arguments to **shell positionals** — `"$1"`,
+`"$2"`, `"$@"`. Call a script through the `orc.scripts` proxy:
+
+```js
+await orc.scripts.hermitVerifyAgentDeath("codex-tgaudit")
+```
+
+Three things mislead people here, and all three cost time on 2026-08-10:
+
+- **`orc.scripts` inspects as `{}` and is not empty.** It is a `Proxy` whose
+  `get` trap manufactures a function for any name, so it has no own enumerable
+  properties. `Object.keys(orc.scripts)` is `[]` while every registered name is
+  callable. Use `await orc.hermit-dev.listScripts()` to see what is there along
+  with the syntax that calls it.
+- **There is no `{}` placeholder.** No brace substitution exists anywhere in the
+  orc script surface. A body containing `{}` passes those two literal characters
+  through to the program, which is what produced `unknown argument: {}`.
+- **Do not hand-roll `orc.callScriptInternal`.** Its signature is
+  `callScriptInternal(name, argsJson?)` and `argsJson` is a **JSON string**.
+  Pass an array and the dispatcher rejects the call; pass a bare name and it is
+  not valid JSON, so **no positionals bind and the script runs with an empty
+  `$1`**. Nothing was dropped — nothing well-formed was supplied.
+
+That the binding works is measured, not assumed: `hermitSpeculativeLandWakeSent`
+(`--target "$1"`) wrote 76 of 76 production records with a non-empty target, and
+`hermitOperationalTick` (`HERMIT_AGENT_SNAPSHOT_JSON="$1"`) runs on its argument
+continuously.
+
+To answer "did my arguments arrive?" with evidence rather than inference:
+
+```js
+await orc.hermit-dev.verifyScriptArgs()
+```
+
+It round-trips a distinctive payload through the inert `hermitEchoScriptArgv`
+script — which echoes its own argv and can authorize nothing — and reports `$0`
+separately from `"$@"`, so a genuine mis-binding is named rather than merely
+showing up as "empty".
+
+## The death gate
+
+`await orc.hermitVerifyAgentDeath("<name>")` is the Hard-Invariant-16 check that
+must precede any close+respawn. It returns
+`{agent, state, may_replace, rc, reason, live_pids}`; **replace only on
+`may_replace: true`**, since rc 1 (alive) and rc 2 (unverifiable) both refuse —
+failing to prove life is not proving death.
+
+The wrapper refuses on a blank name, unparseable output, a missing body, a
+disagreement between exit code and body, and — the case that matters — a verdict
+whose `agent` is not the agent asked about. `ci-hub/health/agent_liveness_probe.py`
+independently refuses a blank name with rc 2, so the fail-open cannot be
+reintroduced from the caller side either.
