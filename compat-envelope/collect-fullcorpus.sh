@@ -43,7 +43,7 @@
 #                              of re-sweeping for hours.
 #     [--out PATH]             output CSV (default: fullcorpus-scorecard.csv)
 #     [--self-check-env-pin]    bracket the generated Hermit argv; run no guests
-#     [--self-check-containment] bracket timeout/refusal result mapping; run no guests
+#     [--self-check-containment] bracket probe routing + timeout/refusal mapping; run no guests
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -91,8 +91,24 @@ bounded_run() { # $1=seconds $2=diag-log $3=label ; rest=command argv
   return "$rc"
 }
 
+# Probe a backend through the SAME whole-subtree containment used by measured
+# cells. A functional probe is still a real Hermit execution: GNU timeout alone
+# cannot reap a KVM supervisor which reparents or creates a new process group.
+# This is a functional probe, not clap acceptance: a compiled feature backend
+# can still be unusable on this host (for example, e9patch without its rewriter).
+have_backend() { # $1 = backend name; probes the binary's --backend enum + host
+  local b="$1" rc=0
+  case "$b" in
+    ptrace|liteinst) return 0 ;;
+    kvm) [ -e /dev/kvm ] || return 1 ;;
+  esac
+  bounded_run 30 "$ROWS/probe-$b.box.log" "compat.probe.$b" \
+    "$BIN" --backend "$b" run -- /bin/true >/dev/null 2>&1 || rc=$?
+  [ "$rc" = 0 ]
+}
+
 self_check_subtree_containment_adapter() {
-  local tmp fake saved_box rc
+  local tmp fake saved_box saved_bin rc probe_calls
   tmp="$(mktemp -d)" || return 1
   fake="$tmp/fake-box"
   cat >"$fake" <<'EOF'
@@ -105,28 +121,46 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+[ -n "${FAKE_BOX_CALLS:-}" ] && printf '%s\n' "$*" >>"$FAKE_BOX_CALLS"
 [ -n "$diag" ] && [ -n "${FAKE_BOX_MARKER:-}" ] && printf '%s\n' "$FAKE_BOX_MARKER" >>"$diag"
 exit "${FAKE_BOX_RC:-0}"
 EOF
   chmod +x "$fake"
-  saved_box="$BOX_RUN"; BOX_RUN="$fake"; ROWS="$tmp/rows"; mkdir -p "$ROWS"
+  saved_box="$BOX_RUN"; saved_bin="$BIN"
+  BOX_RUN="$fake"; BIN=/planted/hermit; ROWS="$tmp/rows"; mkdir -p "$ROWS"
+
+  probe_calls="$tmp/probe.calls"
+  FAKE_BOX_RC=0 FAKE_BOX_MARKER='' FAKE_BOX_CALLS="$probe_calls" have_backend dbi || {
+    BOX_RUN="$saved_box"; BIN="$saved_bin"; rm -rf "$tmp"; return 1
+  }
+  if [ "$(wc -l <"$probe_calls")" != 1 ] ||
+     ! grep -Fxq '/planted/hermit --backend dbi run -- /bin/true' "$probe_calls"; then
+    BOX_RUN="$saved_box"; BIN="$saved_bin"; rm -rf "$tmp"; return 1
+  fi
+
+  rm -f "$ROWS/BOXING_REFUSED"
+  FAKE_BOX_RC=3 FAKE_BOX_MARKER='' FAKE_BOX_CALLS="$probe_calls" have_backend dbi; rc=$?
+  if [ "$rc" != 1 ] || [ ! -e "$ROWS/BOXING_REFUSED" ]; then
+    BOX_RUN="$saved_box"; BIN="$saved_bin"; rm -rf "$tmp"; return 1
+  fi
+  rm -f "$ROWS/BOXING_REFUSED"
 
   FAKE_BOX_RC=137 FAKE_BOX_MARKER='WALL-TIMEOUT: planted' \
     bounded_run 1 "$tmp/wall.diag" test -- true; rc=$?
-  [ "$rc" = 124 ] || { BOX_RUN="$saved_box"; rm -rf "$tmp"; return 1; }
+  [ "$rc" = 124 ] || { BOX_RUN="$saved_box"; BIN="$saved_bin"; rm -rf "$tmp"; return 1; }
 
   FAKE_BOX_RC=137 FAKE_BOX_MARKER='' \
     bounded_run 1 "$tmp/signal.diag" test -- true; rc=$?
-  [ "$rc" = 137 ] || { BOX_RUN="$saved_box"; rm -rf "$tmp"; return 1; }
+  [ "$rc" = 137 ] || { BOX_RUN="$saved_box"; BIN="$saved_bin"; rm -rf "$tmp"; return 1; }
 
   FAKE_BOX_RC=3 FAKE_BOX_MARKER='' \
     bounded_run 1 "$tmp/refused.diag" test -- true; rc=$?
   if [ "$rc" != 125 ] || [ ! -e "$ROWS/BOXING_REFUSED" ]; then
-    BOX_RUN="$saved_box"; rm -rf "$tmp"; return 1
+    BOX_RUN="$saved_box"; BIN="$saved_bin"; rm -rf "$tmp"; return 1
   fi
 
-  BOX_RUN="$saved_box"; rm -rf "$tmp"
-  echo "self-check: wall/cpu reaps normalize to timeout; ordinary SIGKILL stays distinct; absent cgroup refuses publication"
+  BOX_RUN="$saved_box"; BIN="$saved_bin"; rm -rf "$tmp"
+  echo "self-check: backend probe boxed 1/1 and unavailable box marked refusal 1/1; wall/cpu reaps normalize to timeout; ordinary SIGKILL stays distinct; absent cgroup refuses publication"
 }
 
 # Build every measured Hermit command in one place. `--base-env host` is the
@@ -251,25 +285,6 @@ HSHA="$(git -C "$HROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 RSHA="$(git -C "$RROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 
 # --- backend auto-detection --------------------------------------------------
-have_backend() { # $1 = backend name; probes the binary's --backend enum + host
-  local b="$1"
-  case "$b" in
-    ptrace|liteinst) return 0 ;;
-    kvm) [ -e /dev/kvm ] || return 1 ;;
-  esac
-  # feature backends (dbi/sabre/e9patch): require a FUNCTIONAL probe run on a
-  # canonical (no-"..") guest path, not merely clap acceptance. clap exit 2 ==
-  # "invalid value for --backend" (not compiled in); but a backend can be
-  # compiled in yet non-runnable here — e9patch needs the e9tool AOT rewriter,
-  # which fails at RUNTIME (exit 1) when absent. e9patch also REJECTS any guest
-  # path containing parent ("..") components, so the probe path must be canonical
-  # or e9patch would be spuriously dropped. Contract: a feature backend that
-  # cannot run a plain guest here is n/a.
-  timeout 30 "$BIN" --backend "$b" run -- /bin/true >/dev/null 2>&1
-  local rc=$?
-  [ "$rc" = 0 ]
-}
-
 ALL_BACKENDS="ptrace kvm dbi sabre e9patch liteinst"
 # --- per-backend ratchet baselines (green-stays-green floor) ------------------
 # Existing 205-cell floors were measured at hermit 82a8e853; the thirty performance
@@ -332,16 +347,29 @@ if [ -n "$assert_only" ]; then
 fi
 
 [ -n "$backends_arg" ] && ALL_BACKENDS="${backends_arg//,/ }"
+ROWS="$(mktemp -d)"
+if ! bounded_run 1 "$ROWS/preflight.box.log" compat.preflight true; then
+  echo "collect-fullcorpus: REFUSED — cgroup containment preflight failed; no Hermit process started and no scorecard published" >&2
+  rm -rf "$ROWS"
+  exit 3
+fi
 DETECTED=""
 for b in $ALL_BACKENDS; do
-  if have_backend "$b"; then DETECTED="$DETECTED $b"; else echo "  backend $b: NOT available here (recorded n/a)"; fi
+  if have_backend "$b"; then
+    DETECTED="$DETECTED $b"
+  elif [ -e "$ROWS/BOXING_REFUSED" ]; then
+    echo "collect-fullcorpus: REFUSED — cgroup containment unavailable during backend probe; no guests run and no scorecard published" >&2
+    rm -rf "$ROWS"
+    exit 3
+  else
+    echo "  backend $b: NOT available here (recorded n/a)"
+  fi
 done
 DETECTED="${DETECTED# }"
 echo "== full-corpus gate: hermit=$HSHA backends=[$DETECTED] par=$PAR =="
 echo "   corpus = $(wc -l <"$CORPUS_C") C + $(grep -vc '^#' "$CORPUS_NONC") non-C cells"
 
 
-ROWS="$(mktemp -d)"
 # RFC4180-quote a field, but only when it needs it, so today's comma-free
 # reasons stay byte-identical and a future free-text reason cannot silently
 # shift every column after it (`reason` is mid-row here, ahead of
