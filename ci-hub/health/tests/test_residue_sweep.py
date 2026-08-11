@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,6 +12,103 @@ import residue_sweep
 
 
 class ResidueSweepTest(unittest.TestCase):
+    def _owner_registry(self) -> dict[str, object]:
+        return {
+            "slots": {
+                "owned": {
+                    "status": "active",
+                    "task": "task-owner",
+                    "agents": [
+                        {"name": "agent-owner", "task": "task-owner", "read_only": False}
+                    ],
+                }
+            }
+        }
+
+    def _owner_authority(self, state: str) -> dict[str, dict[str, object]]:
+        identity = None
+        if state != "indeterminate":
+            identity = {
+                "source": "orc-tmux-pane-supervisor-v1",
+                "generation": "boot-a:123:456",
+                "supervisor_pid": 123,
+                "boot_id": "boot-a",
+                "start_ticks": 456,
+            }
+        return {
+            "owned": {
+                "schema_version": 1,
+                "state": state,
+                "slot": "owned",
+                "agent": "agent-owner" if state != "indeterminate" else None,
+                "owner_identity": identity,
+            }
+        }
+
+    def test_sidecar_dead_owner_is_counted_once(self) -> None:
+        result = residue_sweep.guarded_dead_owner_slots(
+            self._owner_registry(), self._owner_authority("dead"), set()
+        )
+        self.assertEqual([item.key for item in result], ["owned"])
+        self.assertIn("authority=slot-owner-sidecar", result[0].evidence)
+
+    def test_sidecar_live_owner_is_never_counted_dead(self) -> None:
+        registry = self._owner_registry()
+        authority = self._owner_authority("alive")
+        self.assertEqual(
+            residue_sweep.guarded_dead_owner_slots(registry, authority, set()), []
+        )
+        self.assertEqual(
+            residue_sweep.guarded_live_owner_slots(registry, authority), {"owned"}
+        )
+
+    def test_sidecar_indeterminate_owner_is_neither_dead_nor_live(self) -> None:
+        registry = self._owner_registry()
+        authority = self._owner_authority("indeterminate")
+        self.assertEqual(
+            residue_sweep.guarded_dead_owner_slots(registry, authority, set()), []
+        )
+        self.assertEqual(
+            residue_sweep.guarded_live_owner_slots(registry, authority), set()
+        )
+
+    def _read_authority_fixture(
+        self, *, state: str, exit_code: int, generation: str = "boot-a:123:456"
+    ) -> dict[str, dict[str, object]]:
+        registry = self._owner_registry()
+        registry["slots"]["owned"]["owner_sidecar"] = {
+            "agent": "agent-owner",
+            "generation": "boot-a:123:456",
+        }
+        payload = self._owner_authority(state)["owned"]
+        if isinstance(payload.get("owner_identity"), dict):
+            payload["owner_identity"]["generation"] = generation
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            script = root / "scripts" / "slot-owner-authority.py"
+            script.parent.mkdir()
+            script.write_text(
+                "import json, sys\n"
+                f"print(json.dumps({payload!r}))\n"
+                f"raise SystemExit({exit_code})\n",
+                encoding="utf-8",
+            )
+            return residue_sweep.read_guarded_owner_authorities(registry, root)
+
+    def test_authority_exit_code_must_match_typed_state(self) -> None:
+        with self.assertRaisesRegex(residue_sweep.SweepUnavailable, "exit code"):
+            self._read_authority_fixture(state="dead", exit_code=2)
+
+    def test_authority_generation_must_match_registry_snapshot(self) -> None:
+        with self.assertRaisesRegex(residue_sweep.SweepUnavailable, "registry snapshot"):
+            self._read_authority_fixture(
+                state="alive", exit_code=1, generation="boot-a:123:999"
+            )
+
+    def test_authority_state_exit_and_generation_match(self) -> None:
+        result = self._read_authority_fixture(state="alive", exit_code=1)
+        self.assertEqual(result["owned"]["state"], "alive")
+
     def test_exact_decline_marker_routes_to_coordinator(self) -> None:
         notes = [residue_sweep.NoteRow(7, "task-a", "worker", "file left untracked")]
         result = residue_sweep.classify_notes(notes, set())

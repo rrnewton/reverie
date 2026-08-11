@@ -499,7 +499,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--test-owner-authority-json", default=None,
-        help="test-only fixture for guarded validate-lock authority JSON",
+        help="test-only fixture for guarded per-slot owner-authority JSON",
     )
     p.add_argument("--dry-run", action="store_true",
                    help="do not persist state (idle clocks and baseline stay unchanged)")
@@ -536,24 +536,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         try:
             if disk_only_fixture and args.test_owner_authority_json is None:
-                authority: dict[str, object] = {
-                    "schema_version": 1,
-                    "state": "free",
-                    "holder": None,
-                    "owner": None,
-                }
+                authorities: dict[str, dict[str, object]] = {}
             else:
-                authority = residue_sweep.read_guarded_owner_authority(
+                authorities = residue_sweep.read_guarded_owner_authorities(
+                    registry,
                     root,
                     Path(args.test_owner_authority_json)
                     if args.test_owner_authority_json
                     else None,
                 )
             dead_owner = residue_sweep.guarded_dead_owner_slots(
-                registry, authority, set(occ.counts)
+                registry, authorities, set(occ.counts)
             )
             live_owner_slots = residue_sweep.guarded_live_owner_slots(
-                registry, authority
+                registry, authorities
             )
         except residue_sweep.SweepUnavailable as exc:
             raise ResidueUnavailable(str(exc)) from exc
@@ -567,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
         if result.slot in live_owner_slots:
             result.reclaimable = False
             result.reason = (
-                "validate-lock-guarded registered owner is alive; "
+                "slot-owner-sidecar registered owner is alive; "
                 "idle time cannot qualify this slot"
             )
 
@@ -606,7 +602,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if dead_owner:
         findings.append(
-            f"{len(dead_owner)} slot(s) have a validate-lock-guarded owner proven dead "
+            f"{len(dead_owner)} slot(s) have a sidecar-bound owner proven dead "
             f"and no live process using the slot: "
             + ", ".join(item.key for item in dead_owner)
         )

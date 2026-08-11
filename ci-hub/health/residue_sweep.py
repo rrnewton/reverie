@@ -8,11 +8,11 @@ slot.  That second condition prevents a live delegated worker without a tmux
 window from being mistaken for residue.
 
 The tick-hub slot-cap gate uses the narrower ``guarded_dead_owner_slots``
-interface below.  It does not consult the ORC fleet at all: it accepts only the
-canonical, flock-guarded ``validate-lock authority-status --json`` contract,
-whose owner identity is PID + boot_id + start_ticks.  Only the typed
-``dead`` owner verdict is proof of absence; alive, unknown, malformed, or
-unrelated owners produce no dead-owner finding.
+interface below.  It does not consult the ORC fleet or validate-lock: it accepts
+only each slot row's schema-versioned owner sidecar through
+``slot-owner-authority.py``.  Only the typed ``dead`` verdict is proof of
+absence; alive, indeterminate, malformed, or unrelated owners produce no
+dead-owner finding.
 """
 
 from __future__ import annotations
@@ -294,16 +294,25 @@ def classify_slots(
     return residues
 
 
-def read_guarded_owner_authority(
-    root: Path = ROOT, fixture: Path | None = None
-) -> dict[str, object]:
-    """Read the one guarded process-identity authority, or fail closed.
+def read_guarded_owner_authorities(
+    registry: dict[str, object], root: Path = ROOT, fixture: Path | None = None
+) -> dict[str, dict[str, object]]:
+    """Read one guarded process-identity verdict for every active slot.
 
     A fixture file is accepted only as an explicit function argument so tests
-    can bracket the consumer without forging the production authority.  The
-    production path has no environment override and asks validate-lock for one
-    coherent snapshot taken while its guard is held.
+    can bracket the consumer without forging the production authority. The
+    production verifier has no path override and takes the registry lock for
+    each exact slot snapshot.
     """
+
+    raw_slots = registry.get("slots")
+    if not isinstance(raw_slots, dict):
+        raise SweepUnavailable("worktree-state.json slots is not an object")
+    selected = sorted(
+        str(slot)
+        for slot, row in raw_slots.items()
+        if isinstance(row, dict) and row.get("status") in {"active", "held"}
+    )
 
     if fixture is not None:
         try:
@@ -312,106 +321,142 @@ def read_guarded_owner_authority(
             raise SweepUnavailable(
                 f"cannot read owner-authority fixture {fixture}: {exc}"
             ) from exc
-    else:
-        command = root / "ci-hub" / "ci-hub"
         try:
-            result = subprocess.run(
-                (str(command), "validate-lock", "authority-status", "--json"),
-                cwd=root,
-                text=True,
-                capture_output=True,
-                timeout=30,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise SweepUnavailable(f"guarded owner authority unavailable: {exc}") from exc
-        if result.returncode != 0:
-            detail = " ".join((result.stdout + result.stderr).split())
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
             raise SweepUnavailable(
-                f"guarded owner authority rc={result.returncode}: {detail}"
-            )
-        raw = result.stdout
+                f"guarded owner authority returned invalid JSON: {exc}"
+            ) from exc
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != 1
+            or not isinstance(value.get("authorities"), dict)
+        ):
+            raise SweepUnavailable("guarded owner authority has unsupported schema")
+        authorities = value["authorities"]
+    else:
+        command = root / "scripts" / "slot-owner-authority.py"
+        authorities: dict[str, object] = {}
+        for slot in selected:
+            try:
+                result = subprocess.run(
+                    (sys.executable, str(command), "--slot", slot, "--json"),
+                    cwd=root,
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise SweepUnavailable(
+                    f"slot owner authority unavailable for {slot}: {exc}"
+                ) from exc
+            if result.returncode not in {0, 1, 2}:
+                detail = " ".join((result.stdout + result.stderr).split())
+                raise SweepUnavailable(
+                    f"slot owner authority for {slot} rc={result.returncode}: {detail}"
+                )
+            try:
+                authority = json.loads(result.stdout)
+            except json.JSONDecodeError as exc:
+                raise SweepUnavailable(
+                    f"slot owner authority for {slot} returned invalid JSON: {exc}"
+                ) from exc
+            expected_rc = {
+                "dead": 0,
+                "alive": 1,
+                "indeterminate": 2,
+            }.get(authority.get("state") if isinstance(authority, dict) else None)
+            if expected_rc != result.returncode:
+                raise SweepUnavailable(
+                    f"slot owner authority for {slot} contradicts its exit code"
+                )
+            authorities[slot] = authority
 
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise SweepUnavailable(
-            f"guarded owner authority returned invalid JSON: {exc}"
-        ) from exc
-    if not isinstance(value, dict) or value.get("schema_version") != 1:
-        raise SweepUnavailable("guarded owner authority has unsupported schema")
-    return value
+    for slot in selected:
+        authority = authorities.get(slot)
+        if (
+            not isinstance(authority, dict)
+            or authority.get("schema_version") != 1
+            or authority.get("state") not in {"alive", "dead", "indeterminate"}
+            or authority.get("slot") != slot
+        ):
+            raise SweepUnavailable(f"slot owner authority for {slot} has invalid shape")
+        if authority["state"] in {"alive", "dead"}:
+            row = raw_slots[slot]
+            sidecar = row.get("owner_sidecar")
+            identity = authority.get("owner_identity")
+            agent = authority.get("agent")
+            if (
+                not isinstance(sidecar, dict)
+                or not isinstance(identity, dict)
+                or not isinstance(agent, str)
+                or not agent
+                or sidecar.get("agent") != agent
+                or sidecar.get("generation") != identity.get("generation")
+            ):
+                raise SweepUnavailable(
+                    f"slot owner authority for {slot} is not bound to the registry snapshot"
+                )
+    return {slot: authorities[slot] for slot in selected}
 
 
 def guarded_dead_owner_slots(
     registry: dict[str, object],
-    authority: dict[str, object],
+    authorities: dict[str, dict[str, object]],
     occupied_slots: set[str],
 ) -> list[Residue]:
-    """Return slots bound to the one owner that is *proven* dead.
+    """Return slots whose exact recorded owner incarnation is proven dead.
 
     This deliberately does not turn absence from a name census into death.
-    validate-lock already did the PID-reuse and reboot checks under its guard;
-    this consumer verifies the typed shape and then only joins its holder agent
-    to registered active/held slots.  A live process using the slot still wins:
-    dead registration ownership is immediate evidence, but never permission to
-    describe a busy directory as reclaimable.
+    The slot authority already did the PID-reuse and reboot checks under the
+    registry guard. A live process using the slot still wins: dead registration
+    ownership is evidence, but never permission to call a busy directory
+    reclaimable.
     """
 
     raw_slots = registry.get("slots")
     if not isinstance(raw_slots, dict):
         raise SweepUnavailable("worktree-state.json slots is not an object")
 
-    holder = authority.get("holder")
-    owner = authority.get("owner")
-    if not isinstance(holder, dict) or not isinstance(owner, dict):
-        return []
-    if owner.get("liveness") != "dead":
-        return []
-
-    agent = holder.get("agent")
-    boot_id = owner.get("boot_id")
-    pid = owner.get("pid")
-    start_ticks = owner.get("start_ticks")
-    if (
-        not isinstance(agent, str)
-        or not agent
-        or not isinstance(boot_id, str)
-        or not boot_id
-        or type(pid) is not int
-        or pid <= 0
-        or type(start_ticks) is not int
-        or start_ticks <= 0
-    ):
-        raise SweepUnavailable("dead owner authority omitted its guarded process identity")
-
     residues: list[Residue] = []
     for slot, raw in sorted(raw_slots.items()):
         if not isinstance(raw, dict) or raw.get("status") not in {"active", "held"}:
             continue
+        authority = authorities[slot]
+        if authority.get("state") != "dead":
+            continue
         if slot in occupied_slots:
             continue
-        raw_agents = raw.get("agents")
-        if not isinstance(raw_agents, list):
-            continue
-        matching = [
-            entry for entry in raw_agents
-            if isinstance(entry, dict) and entry.get("name") == agent
-        ]
-        if not matching:
-            continue
-        tasks = sorted(
-            str(entry.get("task")) for entry in matching if entry.get("task")
-        )
+        agent = authority.get("agent")
+        identity = authority.get("owner_identity")
+        if not isinstance(agent, str) or not isinstance(identity, dict):
+            raise SweepUnavailable(
+                f"dead owner authority for {slot} omitted its guarded identity"
+            )
+        pid = identity.get("supervisor_pid")
+        boot_id = identity.get("boot_id")
+        start_ticks = identity.get("start_ticks")
+        if (
+            type(pid) is not int
+            or pid <= 0
+            or not isinstance(boot_id, str)
+            or not boot_id
+            or type(start_ticks) is not int
+            or start_ticks <= 0
+        ):
+            raise SweepUnavailable(
+                f"dead owner authority for {slot} has an incomplete identity"
+            )
+        task = raw.get("task")
         residues.append(
             Residue(
                 kind="held-slot-dead-owner",
                 key=str(slot),
                 evidence=(
-                    f"owner={agent} tasks={','.join(tasks) or 'none'} "
+                    f"owner={agent} tasks={task or 'none'} "
                     f"owner_identity={pid}@{start_ticks} boot_id={boot_id} "
-                    f"authority=validate-lock-guarded authority_state="
-                    f"{authority.get('state')} owner_liveness=dead "
+                    f"authority=slot-owner-sidecar authority_state=dead "
                     "live_processes_under_slot=0"
                 ),
                 route_task=TASK_ID,
@@ -422,7 +467,7 @@ def guarded_dead_owner_slots(
 
 
 def guarded_live_owner_slots(
-    registry: dict[str, object], authority: dict[str, object]
+    registry: dict[str, object], authorities: dict[str, dict[str, object]]
 ) -> set[str]:
     """Slots whose registered owner is the exact guarded live process.
 
@@ -434,39 +479,12 @@ def guarded_live_owner_slots(
     raw_slots = registry.get("slots")
     if not isinstance(raw_slots, dict):
         raise SweepUnavailable("worktree-state.json slots is not an object")
-    holder = authority.get("holder")
-    owner = authority.get("owner")
-    if not isinstance(holder, dict) or not isinstance(owner, dict):
-        return set()
-    if owner.get("liveness") != "alive":
-        return set()
-
-    agent = holder.get("agent")
-    boot_id = owner.get("boot_id")
-    pid = owner.get("pid")
-    start_ticks = owner.get("start_ticks")
-    if (
-        not isinstance(agent, str)
-        or not agent
-        or not isinstance(boot_id, str)
-        or not boot_id
-        or type(pid) is not int
-        or pid <= 0
-        or type(start_ticks) is not int
-        or start_ticks <= 0
-    ):
-        raise SweepUnavailable("live owner authority omitted its guarded process identity")
-
     return {
         str(slot)
         for slot, raw in raw_slots.items()
         if isinstance(raw, dict)
         and raw.get("status") in {"active", "held"}
-        and isinstance(raw.get("agents"), list)
-        and any(
-            isinstance(entry, dict) and entry.get("name") == agent
-            for entry in raw["agents"]
-        )
+        and authorities[slot].get("state") == "alive"
     }
 
 

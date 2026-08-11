@@ -63,6 +63,18 @@ const BASE_DISTANCE_NOTICE: u64 = 20;
 const DEFAULT_DISK_CAP_GB: u64 = 1425;
 const SLOT_COUNT_ADVISORY: usize = 12;
 const LANGUISH_HOURS: i64 = 24;
+const OWNER_SIDECAR_SCHEMA_VERSION: u64 = 1;
+const ORC_OWNER_SIDECAR_SOURCE: &str = "orc-tmux-pane-supervisor-v1";
+const CODEX_OWNER_SIDECAR_SOURCE: &str = "codex-systemd-sentinel-v1";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ObservedOwnerLease {
+    pane: String,
+    cgroup: String,
+    supervisor_pid: u32,
+    boot_id: String,
+    start_ticks: u64,
+}
 
 const USAGE: &str = r#"Usage: allocate-worktree.rs --agent NAME [OPTIONS]
 
@@ -265,9 +277,9 @@ fn verify_repair_checkout_published(
             "{slot}/{product}: could not prove remote containment: {rev_error}"
         ));
     }
-    let unpushed = count.parse::<u64>().map_err(|_| {
-        format!("{slot}/{product}: invalid unpushed-commit count {count:?}")
-    })?;
+    let unpushed = count
+        .parse::<u64>()
+        .map_err(|_| format!("{slot}/{product}: invalid unpushed-commit count {count:?}"))?;
     if unpushed != 0 {
         return Err(format!(
             "{slot}/{product}: {unpushed} commit(s) are reachable from HEAD but no remote ref"
@@ -657,7 +669,11 @@ fn active_row(name: &str, slot: &Value) -> String {
     let liteinst2 = slot["liteinst2_branch"].as_str().unwrap_or("-");
     let task = slot["task"].as_str().unwrap_or("-");
     let status = slot["status"].as_str().unwrap_or("active");
-    let shared = if read_only_agents.is_empty() { "no" } else { "shared" };
+    let shared = if read_only_agents.is_empty() {
+        "no"
+    } else {
+        "shared"
+    };
     format!(
         "| {name} | {agent_cell} | {hermit} | {reverie} | {liteinst2} | {task} | {status} | {shared} |"
     )
@@ -666,7 +682,6 @@ fn active_row(name: &str, slot: &Value) -> String {
 /// Rewrite the managed table block inside worktrees/ACTIVE.md from state.
 /// Human-authored content outside the markers is preserved verbatim.
 fn regen_active_md(root: &Path, state: &Value) -> bool {
-
     let mut rows = String::new();
     rows.push_str("| Slot | Agent | HermitBranch | ReverieBranch | LiteInst2Branch | Task | Status | ReadOnly |\n");
     rows.push_str("| --- | --- | --- | --- | --- | --- | --- | --- |\n");
@@ -682,27 +697,26 @@ fn regen_active_md(root: &Path, state: &Value) -> bool {
 
     let path = root.join("worktrees").join("ACTIVE.md");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let new_content = if let (Some(b), Some(e)) =
-        (existing.find(ACTIVE_BEGIN), existing.find(ACTIVE_END))
-    {
-        let e_end = e + ACTIVE_END.len();
-        let after = existing[e_end..]
-            .strip_prefix('\n')
-            .unwrap_or(&existing[e_end..]);
-        format!("{}{}{}", &existing[..b], block, after)
-    } else {
-        let sep = if existing.is_empty() || existing.ends_with('\n') {
-            ""
+    let new_content =
+        if let (Some(b), Some(e)) = (existing.find(ACTIVE_BEGIN), existing.find(ACTIVE_END)) {
+            let e_end = e + ACTIVE_END.len();
+            let after = existing[e_end..]
+                .strip_prefix('\n')
+                .unwrap_or(&existing[e_end..]);
+            format!("{}{}{}", &existing[..b], block, after)
         } else {
-            "\n"
+            let sep = if existing.is_empty() || existing.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
+            let lead = if existing.is_empty() {
+                "# Active Hermit Worktrees\n\n## Machine-managed slot table\n\n".to_string()
+            } else {
+                format!("{sep}\n## Machine-managed slot table\n\n")
+            };
+            format!("{existing}{lead}{block}")
         };
-        let lead = if existing.is_empty() {
-            "# Active Hermit Worktrees\n\n## Machine-managed slot table\n\n".to_string()
-        } else {
-            format!("{sep}\n## Machine-managed slot table\n\n")
-        };
-        format!("{existing}{lead}{block}")
-    };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
@@ -723,8 +737,8 @@ fn regen_active_md_scoped(
     selected: &BTreeSet<String>,
 ) -> Result<bool, String> {
     let path = root.join("worktrees/ACTIVE.md");
-    let existing = fs::read_to_string(&path)
-        .map_err(|error| format!("read {}: {error}", path.display()))?;
+    let existing =
+        fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let begin = existing
         .find(ACTIVE_BEGIN)
         .ok_or_else(|| "ACTIVE.md lacks managed BEGIN marker".to_string())?;
@@ -746,7 +760,9 @@ fn regen_active_md_scoped(
             .map(str::trim);
         if let Some(name) = name.filter(|name| selected.contains(*name)) {
             if !seen.insert(name.to_string()) {
-                return Err(format!("ACTIVE.md has duplicate managed row for scoped slot {name}"));
+                return Err(format!(
+                    "ACTIVE.md has duplicate managed row for scoped slot {name}"
+                ));
             }
             let slot = slots
                 .get(name)
@@ -984,9 +1000,12 @@ fn repair_registry(
     let publication_checks = if scoped { &observed } else { &changes };
     for (slot, product, actual) in publication_checks {
         if actual == "-" {
-            if changes.iter().any(|(changed_slot, changed_product, changed_actual)| {
-                changed_slot == slot && changed_product == product && changed_actual == actual
-            }) {
+            if changes
+                .iter()
+                .any(|(changed_slot, changed_product, changed_actual)| {
+                    changed_slot == slot && changed_product == product && changed_actual == actual
+                })
+            {
                 unpublished.push(format!(
                     "{slot}/{product}: checkout is absent; unpublished state cannot be proven"
                 ));
@@ -1147,7 +1166,133 @@ fn owner_snapshot_implausibility(agents: &[Value]) -> Option<String> {
 /// newly provisioned slot may precede agent startup; in that case allocation
 /// succeeds but release remains fail-closed until the coordinator re-runs this
 /// allocator adoption after the owner is live.
-fn observe_owner_lease(root: &Path, agent: &str) -> Result<(String, String), String> {
+fn process_start_ticks(pid: u32) -> Result<u64, String> {
+    let path = PathBuf::from(format!("/proc/{pid}/stat"));
+    let raw =
+        fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let close = raw
+        .rfind(") ")
+        .ok_or_else(|| format!("{} has no closing process name", path.display()))?;
+    raw[close + 2..]
+        .split_whitespace()
+        .nth(19)
+        .ok_or_else(|| format!("{} omits field 22 start_ticks", path.display()))?
+        .parse()
+        .map_err(|error| format!("parse {} field 22 start_ticks: {error}", path.display()))
+}
+
+fn current_boot_id() -> Result<String, String> {
+    let path = Path::new("/proc/sys/kernel/random/boot_id");
+    let value =
+        fs::read_to_string(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(format!("{} is empty", path.display()));
+    }
+    Ok(value.to_string())
+}
+
+fn owner_sidecar(
+    slot: &str,
+    agent: &str,
+    task: &str,
+    recorded_at: &str,
+    source: &str,
+    supervisor_pid: u32,
+    boot_id: &str,
+    start_ticks: u64,
+    tmux_pane_id: Option<&str>,
+    cgroup_path: &str,
+) -> Result<Value, String> {
+    if supervisor_pid == 0 || start_ticks == 0 || boot_id.is_empty() {
+        return Err("slot-owner sidecar has an incomplete supervisor identity".to_string());
+    }
+    if cgroup_path == "/" || !cgroup_path.starts_with('/') {
+        return Err("slot-owner sidecar has no normalized non-root cgroup".to_string());
+    }
+    let generation = format!("{boot_id}:{supervisor_pid}:{start_ticks}");
+    Ok(json!({
+        "schema_version": OWNER_SIDECAR_SCHEMA_VERSION,
+        "source": source,
+        "slot": slot,
+        "agent": agent,
+        "task": task,
+        "recorded_at": recorded_at,
+        "generation": generation,
+        "supervisor_pid": supervisor_pid,
+        "boot_id": boot_id,
+        "start_ticks": start_ticks,
+        "tmux_pane_id": tmux_pane_id,
+        "cgroup_path": cgroup_path,
+    }))
+}
+
+fn observed_owner_sidecar(
+    slot: &str,
+    agent: &str,
+    task: &str,
+    recorded_at: &str,
+    lease: &ObservedOwnerLease,
+) -> Result<Value, String> {
+    owner_sidecar(
+        slot,
+        agent,
+        task,
+        recorded_at,
+        ORC_OWNER_SIDECAR_SOURCE,
+        lease.supervisor_pid,
+        &lease.boot_id,
+        lease.start_ticks,
+        Some(&lease.pane),
+        &lease.cgroup,
+    )
+}
+
+fn codex_owner_sidecar(
+    slot: &str,
+    agent: &str,
+    task: &str,
+    recorded_at: &str,
+    lease: &Value,
+) -> Result<Value, String> {
+    if lease["schema_version"].as_u64() != Some(1)
+        || lease["source"].as_str() != Some(CODEX_OWNER_SIDECAR_SOURCE)
+    {
+        return Err("Codex coordinator lease has an unsupported identity schema".to_string());
+    }
+    let pid = lease["main_pid"]
+        .as_u64()
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "Codex coordinator lease has no supervisor pid".to_string())?;
+    let recorded_ticks = lease["main_pid_starttime"]
+        .as_u64()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| "Codex coordinator lease has no supervisor start_ticks".to_string())?;
+    let observed_ticks = process_start_ticks(pid)?;
+    if observed_ticks != recorded_ticks {
+        return Err(format!(
+            "Codex coordinator supervisor {pid} was reused: recorded start_ticks={recorded_ticks}, observed={observed_ticks}"
+        ));
+    }
+    let cgroup = lease["cgroup_path"]
+        .as_str()
+        .ok_or_else(|| "Codex coordinator lease has no cgroup path".to_string())?;
+    owner_sidecar(
+        slot,
+        agent,
+        task,
+        recorded_at,
+        CODEX_OWNER_SIDECAR_SOURCE,
+        pid,
+        &current_boot_id()?,
+        recorded_ticks,
+        None,
+        cgroup,
+    )
+}
+
+fn observe_owner_lease(root: &Path, agent: &str) -> Result<ObservedOwnerLease, String> {
     let snapshot_path = root.join("ignored/ci-hub/agent-snapshot.json");
     let raw = fs::read_to_string(&snapshot_path)
         .map_err(|error| format!("read {}: {error}", snapshot_path.display()))?;
@@ -1260,7 +1405,10 @@ fn observe_owner_lease(root: &Path, agent: &str) -> Result<(String, String), Str
     if pids.len() != 1 {
         return Err(format!("tmux pane {pane} resolves {} times", pids.len()));
     }
-    let cgroup_text = fs::read_to_string(format!("/proc/{}/cgroup", pids[0]))
+    let supervisor_pid = pids[0];
+    let start_ticks_before = process_start_ticks(supervisor_pid)?;
+    let boot_id = current_boot_id()?;
+    let cgroup_text = fs::read_to_string(format!("/proc/{supervisor_pid}/cgroup"))
         .map_err(|error| format!("read pane {pane} cgroup: {error}"))?;
     let groups: Vec<&str> = cgroup_text
         .lines()
@@ -1276,14 +1424,26 @@ fn observe_owner_lease(root: &Path, agent: &str) -> Result<(String, String), Str
     {
         return Err(format!("pane {pane} cgroup is not normalized"));
     }
-    Ok((pane.to_string(), groups[0].to_string()))
+    let start_ticks_after = process_start_ticks(supervisor_pid)?;
+    if start_ticks_before != start_ticks_after {
+        return Err(format!(
+            "pane {pane} supervisor pid {supervisor_pid} changed identity while binding"
+        ));
+    }
+    Ok(ObservedOwnerLease {
+        pane: pane.to_string(),
+        cgroup: groups[0].to_string(),
+        supervisor_pid,
+        boot_id,
+        start_ticks: start_ticks_before,
+    })
 }
 
-fn apply_observed_owner_lease(owner: &mut Value, observed: &Result<(String, String), String>) {
+fn apply_observed_owner_lease(owner: &mut Value, observed: &Result<ObservedOwnerLease, String>) {
     match observed {
-        Ok((pane, cgroup)) => {
-            owner["tmux_pane_id"] = json!(pane);
-            owner["cgroup_path"] = json!(cgroup);
+        Ok(lease) => {
+            owner["tmux_pane_id"] = json!(lease.pane);
+            owner["cgroup_path"] = json!(lease.cgroup);
         }
         Err(_) => {
             // An adoption attempt that cannot bind the current exact owner
@@ -2098,7 +2258,7 @@ fn main() {
             }
             // Slot-level task/purpose/branches describe the mutating OWNER. A
             // read-mostly sharer records its own task but cannot clobber these.
-            if !read_mostly {
+            if !read_mostly && !codex_systemd_sentinel {
                 if !task.is_empty() {
                     entry["task"] = json!(task.clone());
                 }
@@ -2177,6 +2337,30 @@ fn main() {
                 }
                 agents.push(owner);
             }
+            if !read_mostly {
+                match observed_owner_lease
+                    .as_ref()
+                    .expect("non-Codex allocation observes owner")
+                {
+                    Ok(lease) => {
+                        let bound_task = entry["task"].as_str().unwrap_or("");
+                        entry["owner_sidecar"] =
+                            observed_owner_sidecar(&slot, &agent, bound_task, &now, lease)
+                                .unwrap_or_else(|error| {
+                                    die(&format!("publish slot-owner sidecar: {error}"))
+                                });
+                    }
+                    Err(_) => {
+                        // A sidecar is authority for one exact supervisor
+                        // incarnation. Failed adoption invalidates the old
+                        // incarnation instead of leaving stale proof behind.
+                        entry
+                            .as_object_mut()
+                            .expect("slot record is an object")
+                            .remove("owner_sidecar");
+                    }
+                }
+            }
         }
 
         if let Some(plan) = &codex_plan {
@@ -2243,6 +2427,31 @@ fn main() {
         }
     }
 
+    if codex_systemd_sentinel {
+        let entry = &mut state["slots"][&slot];
+        let lease = entry["coordinator_lease"].clone();
+        let mutating: Vec<&Value> = entry["agents"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|owner| !owner["read_only"].as_bool().unwrap_or(false))
+            .collect();
+        if mutating.len() != 1 {
+            die(&format!(
+                "slot-owner sidecar requires exactly one mutating owner, found {}",
+                mutating.len()
+            ));
+        }
+        let owner_agent = mutating[0]["name"]
+            .as_str()
+            .unwrap_or_else(|| die("mutating owner has no name"))
+            .to_string();
+        let owner_task = mutating[0]["task"].as_str().unwrap_or("").to_string();
+        entry["owner_sidecar"] =
+            codex_owner_sidecar(&slot, &owner_agent, &owner_task, &now_iso(), &lease)
+                .unwrap_or_else(|error| die(&format!("publish Codex slot-owner sidecar: {error}")));
+    }
+
     save_state(&root, &mut state);
     regen_active_md(&root, &state);
 
@@ -2287,9 +2496,41 @@ mod tests {
         });
         apply_observed_owner_lease(
             &mut owner,
-            &Ok(("%new".to_string(), "/agent.slice/new.scope".to_string())),
+            &Ok(ObservedOwnerLease {
+                pane: "%new".to_string(),
+                cgroup: "/agent.slice/new.scope".to_string(),
+                supervisor_pid: 42,
+                boot_id: "boot-a".to_string(),
+                start_ticks: 99,
+            }),
         );
         assert_eq!(owner["tmux_pane_id"], "%new");
         assert_eq!(owner["cgroup_path"], "/agent.slice/new.scope");
+    }
+
+    #[test]
+    fn owner_sidecar_binds_exact_supervisor_generation() {
+        let lease = ObservedOwnerLease {
+            pane: "%7".to_string(),
+            cgroup: "/agent.slice/live.scope".to_string(),
+            supervisor_pid: 123,
+            boot_id: "boot-a".to_string(),
+            start_ticks: 456,
+        };
+        let sidecar = observed_owner_sidecar(
+            "slot07",
+            "codex-7",
+            "task-7",
+            "2026-08-11T00:00:00Z",
+            &lease,
+        )
+        .unwrap();
+        assert_eq!(sidecar["schema_version"], 1);
+        assert_eq!(sidecar["source"], ORC_OWNER_SIDECAR_SOURCE);
+        assert_eq!(sidecar["slot"], "slot07");
+        assert_eq!(sidecar["agent"], "codex-7");
+        assert_eq!(sidecar["supervisor_pid"], 123);
+        assert_eq!(sidecar["start_ticks"], 456);
+        assert_eq!(sidecar["generation"], "boot-a:123:456");
     }
 }
