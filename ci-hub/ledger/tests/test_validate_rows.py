@@ -37,6 +37,30 @@ def test_record_is_immediately_visible_through_canonical_union(tmp_path: Path):
     assert validate_rows.rows(root=tmp_path) == [source]
 
 
+def test_canonical_reverie_repo_uses_top_level_reverie_shard(tmp_path: Path):
+    source = row(tmp_path)
+    source["repo"] = "rrnewton/reverie"
+    source["cwd"] = str(tmp_path / "worktrees" / "slot" / "reverie")
+
+    report = validate_rows.record(source, root=tmp_path)
+
+    assert report["spool"].startswith(
+        "ignored/ci-hub/validate-ledger-spool/reverie__hosta__2026-08__"
+    )
+    assert report["published_shard"] == "ledger/reverie/hosta/2026-08.jsonl"
+    assert validate_rows.rows(root=tmp_path) == [source]
+
+
+def test_unmapped_path_bearing_repo_is_refused_before_spool(tmp_path: Path):
+    source = row(tmp_path)
+    source["repo"] = "unknown/repository"
+
+    with pytest.raises(ValueError, match="path-safe ledger team mapping"):
+        validate_rows.record(source, root=tmp_path)
+
+    assert not validate_rows.live_spool_dir(tmp_path).exists()
+
+
 def test_repeated_record_of_same_event_unions_once(tmp_path: Path):
     source = row(tmp_path)
     validate_rows.record(source, root=tmp_path)

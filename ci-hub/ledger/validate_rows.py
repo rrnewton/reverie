@@ -92,6 +92,28 @@ def _owner_home_for_workspace(workspace: str) -> str | None:
     return None
 
 
+def _ledger_team(repo: object) -> str:
+    """Map repository identity to the path-safe ledger shard identity.
+
+    ``repo`` remains unmodified inside ``legacy_row`` so readers can bind the
+    receipt to the exact repository.  The team is a filesystem/shard key,
+    however, and must never inherit the slash in a canonical ``owner/repo``
+    identity: the publisher intentionally snapshots only top-level batches.
+    """
+    value = str(repo or "hermit")
+    aliases = {
+        "hermit": "hermit",
+        "rrnewton/hermit": "hermit",
+        "reverie": "reverie",
+        "rrnewton/reverie": "reverie",
+    }
+    if value in aliases:
+        return aliases[value]
+    if "/" in value or "\\" in value or "__" in value:
+        raise ValueError(f"repository has no path-safe ledger team mapping: {value!r}")
+    return value
+
+
 def _event_for_row(row: dict, root: Path) -> dict:
     record_id = str(row.get("record_id") or "")
     if not record_id:
@@ -101,7 +123,7 @@ def _event_for_row(row: dict, root: Path) -> dict:
     emitted_at = str(row.get("finished_at") or "")
     if len(emitted_at) < 7:
         raise ValueError("validation row has no usable finished_at")
-    team = str(row.get("repo") or "hermit")
+    team = _ledger_team(row.get("repo"))
     outcome = str(row.get("result") or "no_result")
     if outcome not in {"pass", "fail", "timeout", "incomplete", "killed", "no_result"}:
         outcome = "no_result"
