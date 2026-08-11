@@ -4834,10 +4834,126 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
     }
 }
 
+/// What a freshly fetched remote ledger knows about a commit that THIS checkout
+/// cannot read.
+///
+/// WHY THIS EXISTS. `ledger/` is a TRACKED directory, so a checkout only learns
+/// of a run when it PULLS. The spool's retention deliberately protects only the
+/// PRODUCING root -- `publisher.py::reap_retained` keeps a batch until that
+/// root's own shards carry it -- so a run produced by any OTHER parent root is
+/// invisible here until this one pulls, and no local retention can ever cover
+/// it. Measured 2026-08-11: hermit `647c7af5` was validated (full profile, FAIL,
+/// 959 tests, 49 nodes, retained log) and published to `origin/main`, while this
+/// reader printed `0 non-qualifying record(s)` -- byte-identical to a commit
+/// nobody ever tested. "No record exists" and "I have not pulled" are different
+/// facts about different subjects and must never print the same.
+#[derive(Debug)]
+enum LedgerFreshness {
+    /// The remote ledger carries records for this commit that this checkout
+    /// cannot see. The local absence is a STALENESS fact, not a verdict.
+    UpstreamHasRecord { records: usize, git_ref: String },
+    /// The remote ledger has no record either: absence is genuine.
+    UpstreamAgrees { git_ref: String },
+    /// Freshness could not be established. NEVER collapse this into
+    /// `UpstreamAgrees`: failing to prove staleness is not proving currency,
+    /// and hardening an unverifiable probe into an absence claim would rebuild
+    /// the exact defect this type exists to remove.
+    Unknown { reason: String },
+}
+
+/// Count records for `sha` in `git_ref`'s tracked ledger shards.
+///
+/// Parses each row instead of substring-matching the 40-hex sha: `base_sha` (and
+/// other commit-shaped fields) can equal this commit on a record that belongs to
+/// a DIFFERENT commit, so a substring probe would manufacture a false lag report
+/// and tell an agent to pull for a record that was never there.
+fn remote_ledger_records_for(
+    root: &Path,
+    git_ref: &str,
+    sha: &str,
+) -> Result<usize, String> {
+    let listing = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-tree", "-r", "--name-only", git_ref, "ledger/"])
+        .output()
+        .map_err(|source| format!("git ls-tree {git_ref} failed to launch: {source}"))?;
+    if !listing.status.success() {
+        return Err(format!(
+            "git ls-tree {git_ref} exited {}",
+            listing.status.code().unwrap_or(-1)
+        ));
+    }
+    let mut records = 0usize;
+    for shard in String::from_utf8_lossy(&listing.stdout).lines() {
+        if !shard.ends_with(".jsonl") {
+            continue;
+        }
+        let blob = Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["show", &format!("{git_ref}:{shard}")])
+            .output()
+            .map_err(|source| format!("git show {git_ref}:{shard} failed to launch: {source}"))?;
+        if !blob.status.success() {
+            continue;
+        }
+        for line in String::from_utf8_lossy(&blob.stdout).lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            let commit = event
+                .get("legacy_row")
+                .and_then(|row| row.get("commit"))
+                .or_else(|| event.get("commit"))
+                .and_then(serde_json::Value::as_str);
+            if commit == Some(sha) {
+                records += 1;
+            }
+        }
+    }
+    Ok(records)
+}
+
+/// Probe remote ledger freshness. Runs ONLY on the pure-absence path, so the
+/// network cost is paid exactly when this reader is about to assert that
+/// nothing exists -- never on a path that already has evidence.
+fn probe_ledger_freshness(root: &Path, sha: &str) -> LedgerFreshness {
+    let git_ref = std::env::var("CI_HUB_LEDGER_LAG_REF")
+        .unwrap_or_else(|_| "origin/main".to_string());
+    // Seam for offline and hermetic tests: a planted local ref can stand in for
+    // the remote so both brackets run without network.
+    if std::env::var("CI_HUB_LEDGER_LAG_FETCH").as_deref() != Ok("0") {
+        if let Err(error) = fetch_history_branch(root, "main") {
+            return LedgerFreshness::Unknown {
+                reason: format!("could not fetch origin/main: {error}"),
+            };
+        }
+    }
+    match remote_ledger_records_for(root, &git_ref, sha) {
+        Ok(0) => LedgerFreshness::UpstreamAgrees {
+            git_ref,
+        },
+        Ok(records) => LedgerFreshness::UpstreamHasRecord { records, git_ref },
+        Err(reason) => LedgerFreshness::Unknown { reason },
+    }
+}
+
 /// `ci-hub validate-status --sha <SHA> | --pr <N>` — the SHA-queryable local
 /// receipt/cache authority. Only a scripts/validate.rs change selects GH Actions.
 /// Exit 0 VALIDATED, 3 FAILED (known-bad), 4 for every
-/// re-measurement state (TRUNCATED, NEEDS-RERUN, NO-RESULT, or NOT-VALIDATED).
+/// re-measurement state (TRUNCATED, NEEDS-RERUN, NO-RESULT, NOT-VALIDATED, or
+/// LEDGER-LAGGING).
+///
+/// LEDGER-LAGGING deliberately KEEPS exit 4. It is a distinct OUTCOME, not a
+/// distinct authorization: every existing consumer already refuses on 4, while a
+/// new code could fall through an enumerated `case`/`if` and be read as success.
+/// The distinction belongs in the verdict string and JSON, where a reader
+/// consumes it; the exit code stays in the refusal class where it belongs.
 fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiHubError> {
     let path = ledger_path(root);
     let rows = load_ledger_rows(&path)?;
@@ -4859,6 +4975,45 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
         .map_err(CiHubError::ValidateStatus)?;
     let newest = newest_canonical_receipt(&assessment.qualifying);
 
+    // Only the PURE-ABSENCE case is confusable. If any record for this commit is
+    // readable here -- qualifying or not -- the reader has evidence about the
+    // commit and staleness cannot be masquerading as absence, so no probe runs
+    // and no network cost is paid.
+    let local_records = assessment.qualifying.len() + assessment.disqualified.len();
+    let freshness = if matches!(assessment.verdict, validate_status::Verdict::NotValidated)
+        && local_records == 0
+    {
+        Some(probe_ledger_freshness(root, &assessment.sha))
+    } else {
+        None
+    };
+    let freshness_json = match &freshness {
+        Some(LedgerFreshness::UpstreamHasRecord { records, git_ref }) => serde_json::json!({
+            "state": "upstream-has-record",
+            "ref": git_ref,
+            "upstream_records": records,
+            "local_absence_is_authoritative": false,
+        }),
+        Some(LedgerFreshness::UpstreamAgrees { git_ref }) => serde_json::json!({
+            "state": "current",
+            "ref": git_ref,
+            "upstream_records": 0,
+            "local_absence_is_authoritative": true,
+        }),
+        Some(LedgerFreshness::Unknown { reason }) => serde_json::json!({
+            "state": "unknown",
+            "reason": reason,
+            "local_absence_is_authoritative": false,
+        }),
+        None => serde_json::Value::Null,
+    };
+    // A lagging read is reported as its own verdict so no consumer mistakes it
+    // for a statement about the commit.
+    let reported_verdict = match &freshness {
+        Some(LedgerFreshness::UpstreamHasRecord { .. }) => "LEDGER-LAGGING",
+        _ => assessment.verdict.as_str(),
+    };
+
     if args.json {
         let qualifying_receipts: Vec<_> =
             assessment.qualifying.iter().map(describe_receipt).collect();
@@ -4866,8 +5021,12 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
             "schema_version": 1,
             "repo": args.repo,
             "sha": assessment.sha,
-            "verdict": assessment.verdict.as_str(),
+            "verdict": reported_verdict,
             "exit_code": assessment.verdict.exit_code(),
+            // Present only on the pure-absence path. `local_absence_is_authoritative`
+            // is the field a consumer must read before treating a missing record
+            // as "never tested".
+            "ledger_freshness": freshness_json,
             "qualifying_count": assessment.qualifying.len(),
             "disqualified_count": assessment.disqualified.len(),
             // Genuine clean full-coverage FAILs on this same commit. When the
@@ -4955,13 +5114,39 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
                     assessment.sha,
                 );
             }
-            validate_status::Verdict::NotValidated => {
-                println!(
-                    "# validate NOT-VALIDATED {} -- no clean full-coverage PASS record ({} non-qualifying record(s) for this commit)",
-                    assessment.sha,
-                    assessment.disqualified.len(),
-                );
-            }
+            validate_status::Verdict::NotValidated => match &freshness {
+                // The confusable case, now named. This says nothing about the
+                // commit -- it reports that THIS READER cannot see records that
+                // demonstrably exist.
+                Some(LedgerFreshness::UpstreamHasRecord { records, git_ref }) => {
+                    println!(
+                        "# validate LEDGER-LAGGING {} -- THIS CHECKOUT IS STALE, NOT THIS COMMIT UNTESTED. {} ledger record(s) for this commit exist in {git_ref} and are unreadable here; `ledger/` is tracked, so it advances only on pull. Pull, then re-run this query. No verdict about the commit is implied and nothing is authorized.",
+                        assessment.sha, records,
+                    );
+                }
+                // Freshness unprovable: report the absence WITH its caveat rather
+                // than letting an unverifiable probe harden into a clean claim.
+                Some(LedgerFreshness::Unknown { reason }) => {
+                    println!(
+                        "# validate NOT-VALIDATED {} -- no clean full-coverage PASS record (0 non-qualifying record(s) for this commit); FRESHNESS UNVERIFIED ({reason}), so this absence is NOT authoritative -- a record may exist upstream that this checkout cannot see",
+                        assessment.sha,
+                    );
+                }
+                // Absence confirmed against the remote: genuinely never validated.
+                Some(LedgerFreshness::UpstreamAgrees { git_ref }) => {
+                    println!(
+                        "# validate NOT-VALIDATED {} -- no clean full-coverage PASS record (0 non-qualifying record(s) for this commit); {git_ref} carries no record for it either, so this absence IS authoritative",
+                        assessment.sha,
+                    );
+                }
+                None => {
+                    println!(
+                        "# validate NOT-VALIDATED {} -- no clean full-coverage PASS record ({} non-qualifying record(s) for this commit)",
+                        assessment.sha,
+                        assessment.disqualified.len(),
+                    );
+                }
+            },
         }
     }
     Ok(assessment.verdict.exit_code())
@@ -6070,6 +6255,79 @@ mod tests {
     use super::*;
 
     const RECEIPT_SHA: &str = "630f44aab7fdf4ee52e572c38ae09818e92271b2";
+
+    /// The remote-ledger probe must count records BY THEIR COMMIT FIELD.
+    ///
+    /// A 40-hex sha appears in several commit-shaped fields of an unrelated
+    /// record -- `base_sha` most commonly -- so a substring scan would report a
+    /// lag for a record that is not about this commit at all, and send an agent
+    /// to pull for evidence that was never there. Both directions are planted
+    /// here: one genuine record for the target, and one decoy whose `base_sha`
+    /// is the target while its own commit is something else.
+    #[test]
+    fn remote_ledger_probe_counts_by_commit_field_not_substring() {
+        let target = "647c7af521ab5ab7c4e9ad5f8f2dd299345f3eda";
+        let other = "d0dfef25c1552325426e98a4734b9f57abfb846f";
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-ledger-lag-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let shard = root.join("ledger/hermit/devbig014");
+        std::fs::create_dir_all(&shard).unwrap();
+        let genuine = serde_json::json!({
+            "event_id": "genuine",
+            "legacy_row": {"commit": target, "result": "fail", "profile": "full"},
+        });
+        // Decoy: its OWN commit is `other`; the target only appears as base_sha.
+        let decoy = serde_json::json!({
+            "event_id": "decoy",
+            "legacy_row": {"commit": other, "base_sha": target, "result": "pass"},
+        });
+        std::fs::write(
+            shard.join("2026-08.jsonl"),
+            format!("{genuine}\n{decoy}\n"),
+        )
+        .unwrap();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@e")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@e")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "ledger fixture"]);
+
+        assert_eq!(
+            remote_ledger_records_for(&root, "HEAD", target).unwrap(),
+            1,
+            "the genuine record must count and the base_sha decoy must not"
+        );
+        // A commit with no record at all must read as a true zero, or every
+        // absence would be reported as a lag and the outcome would become a
+        // blanket excuse rather than a distinction.
+        assert_eq!(
+            remote_ledger_records_for(&root, "HEAD", "0123456789abcdef0123456789abcdef01234567")
+                .unwrap(),
+            0,
+        );
+        // An unresolvable ref is an ERROR, never a silent zero: a zero here would
+        // harden an unverifiable probe into an authoritative absence claim.
+        assert!(remote_ledger_records_for(&root, "refs/heads/absent", target).is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn obligation_reader_ignores_legacy_and_current_projection_checkpoints() {
