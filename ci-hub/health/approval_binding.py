@@ -53,7 +53,7 @@ States, three not two -- the same discipline as `unevaluated_head.py`:
 
 Usage:
   approval_binding.py --repo rrnewton/hermit [--gate] [--json]
-  approval_binding.py --from-json FIXTURE [--gate]     # offline, for the bracket
+  approval_binding.py --from-json FIXTURE [--pr N] [--gate]  # offline bracket
 """
 
 from __future__ import annotations
@@ -265,9 +265,15 @@ def collect_live(
     return rows
 
 
-def collect_fixture(path: str, malformed: list[tuple[str, str]]) -> list[dict[str, Any]]:
+def collect_fixture(
+    path: str,
+    malformed: list[tuple[str, str]],
+    pr_number: int | None = None,
+) -> list[dict[str, Any]]:
     rows = []
     for pr in json.load(open(path)):
+        if pr_number is not None and pr["number"] != pr_number:
+            continue
         for label in pr["labels"]:
             lane = label.rsplit("-", 1)[-1]
             if "comments" in pr:
@@ -323,13 +329,18 @@ def main() -> int:
     a.gate_on = getattr(a, "gate_on", "all")
 
     malformed: list[tuple[str, str]] = []
-    if a.fixture and a.pr is not None:
-        ap.error("--pr cannot be combined with --from-json")
     rows = (
-        collect_fixture(a.fixture, malformed)
+        collect_fixture(a.fixture, malformed, a.pr)
         if a.fixture
         else collect_live(a.repo, malformed, a.pr)
     )
+    # The final landing boundary always selects exactly one PR with --pr.  An
+    # empty row set there means the PR supplied no passed-review-* cache label
+    # at all.  That is absence of review evidence, not a population with zero
+    # defects.  Fleet-wide scans deliberately retain their historical scope:
+    # they audit approval labels that exist and do not infer which open PRs
+    # require review.
+    approval_set_missing = a.pr is not None and not rows
     bad = [r for r in rows if r["state"] != BOUND_CURRENT]
     authoritative = len(rows) - len(bad)
     # The composed state: an approval that no longer holds, on a head nothing
@@ -338,6 +349,9 @@ def main() -> int:
 
     if a.as_json:
         print(json.dumps({"approvals": len(rows), "authoritative": authoritative,
+                          "approval_set_missing": approval_set_missing,
+                          "required_approval_sets": 1 if a.pr is not None else 0,
+                          "approval_sets_missing": int(approval_set_missing),
                           "authority_absent": len(bad), "not_holding": len(bad),
                           "approved_and_unevaluated": len(combined), "rows": rows}, indent=2))
     else:
@@ -351,7 +365,9 @@ def main() -> int:
             flag = "  *** APPROVED + UNEVALUATED ***" if r["runs_at_head"] == 0 else ""
             print(f"  {r['state']:<13} PR {r['number']}  {r['label']}  "
                   f"bound-to {bound}  head {r['head'][:12]}  runs={r['runs_at_head']}{flag}")
-        if not bad:
+        if approval_set_missing:
+            print(f"  REQUIRED-APPROVAL-SET-MISSING  PR {a.pr} has zero passed-review labels")
+        elif not bad:
             print("  every approval label is bound to the current head")
         for where, line in malformed:
             # LOUD, never ignored: something tried to be a binding and is not one.
@@ -375,6 +391,12 @@ def main() -> int:
                 "approval labels; authority cannot be established; remedy: emit "
                 "APPROVED-AT: <lane> <40-hex-head>"
             )
+        elif approval_set_missing:
+            state = "absent"
+            summary = (
+                f"PR #{a.pr} has zero passed-review labels; absence of review "
+                "evidence cannot satisfy the final landing boundary"
+            )
         else:
             state = "unbound" if gating else "ok"
             summary = (
@@ -391,6 +413,13 @@ def main() -> int:
             f"GATE FAIL: {len(malformed)} line(s) look like a verdict binding but match no known "
             "grammar. An unrecognised variant that is silently skipped reads as NO approval, which "
             "retires real authorisation -- so this is reported, not ignored.",
+            file=sys.stderr,
+        )
+        return 1
+    if a.gate and approval_set_missing:
+        print(
+            f"GATE FAIL: PR #{a.pr} has zero passed-review labels. Zero approvals "
+            "is absence of authority, not zero review problems.",
             file=sys.stderr,
         )
         return 1

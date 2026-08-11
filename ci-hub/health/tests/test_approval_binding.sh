@@ -8,6 +8,7 @@
 # as hard as the negative, and a mutation run at the end proves the suite is not
 # vacuous.
 #
+#   REFUSED     selected PR with ZERO approval labels  -> missing authority
 #   FLAGGED     approval bound to an OLDER head        -> SUPERSEDED
 #   FLAGGED     label with NO SHA in any comment       -> UNDETERMINED
 #   NOT FLAGGED approval naming the CURRENT head       -> BOUND_CURRENT, rc=0
@@ -22,7 +23,7 @@
 set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-tool="$here/../approval_binding.py"
+tool="${APPROVAL_BINDING_TOOL:-$here/../approval_binding.py}"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/approval-binding-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
@@ -34,6 +35,28 @@ ok()  { printf '  PASS  %s\n' "$*"; pass=$((pass+1)); }
 bad() { printf '  FAIL  %s\n' "$*"; fail=$((fail+1)); }
 
 run() { python3 "$tool" --from-json "$1" "${@:2}" 2>&1; }
+
+# --- LOAD-BEARING REFUSAL: the exact #2132 planted shape --------------------
+# Before this repair the final lander selected #2132, the collector discarded
+# it because there were no passed-review labels, and --gate returned rc0 over
+# an empty population: approvals=0, rows=[].  Keep that exact PR number and
+# shape so a synthetic near-miss cannot conceal a regression.
+cat >"$tmp/zero.json" <<JSON
+[{"number":2132,"head":"$CUR","labels":[],
+  "lane_shas":{},"runs_at_head":9,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/zero.json" --pr 2132 --gate)"; rc=$?
+[[ $rc -eq 1 ]] && ok "zero approvals: selected PR gate REFUSES (rc=1)" \
+  || bad "zero approvals: expected rc=1, got $rc"
+grep -q "PR #2132 has zero passed-review labels" <<<"$out" \
+  && ok "zero-approval refusal identifies the selected PR and missing evidence" \
+  || bad "zero-approval refusal is not explicit: $out"
+out="$(run "$tmp/zero.json" --pr 2132 --gate --json)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q '"approval_set_missing": true' <<<"$out" \
+  && grep -q '"required_approval_sets": 1' <<<"$out" \
+  && grep -q '"approval_sets_missing": 1' <<<"$out" \
+  && ok "zero-approval JSON reports 1/1 required approval sets missing" \
+  || bad "zero-approval JSON does not carry its required-set denominator: $out"
 
 # --- POSITIVE 1: superseded approval must be flagged -------------------------
 # This is #1864's real shape: codex approved 87f62930, head moved to b2e44120.
@@ -69,8 +92,8 @@ cat >"$tmp/current.json" <<JSON
 [{"number":1666,"head":"$CUR","labels":["passed-review-claude","passed-review-codex"],
   "lane_shas":{"claude":["$OLD","$CUR"],"codex":["$CUR"]},"runs_at_head":16,"mergeable":"MERGEABLE"}]
 JSON
-out="$(run "$tmp/current.json" --gate)"; rc=$?
-[[ $rc -eq 0 ]] && ok "current approvals: gate PASSES (rc=0)" || bad "current: expected rc=0, got $rc"
+out="$(run "$tmp/current.json" --pr 1666 --gate)"; rc=$?
+[[ $rc -eq 0 ]] && ok "current approvals: selected PR gate PASSES (rc=0)" || bad "current: expected rc=0, got $rc"
 grep -q "every approval label is bound to the current head" <<<"$out" \
   && ok "current approvals reported as holding" || bad "current approvals not reported clean: $out"
 grep -q "authoritative at current head: 2; authority absent: 0" <<<"$out" \
@@ -133,7 +156,32 @@ else
   bad "binding grammar suite FAILED"; sed 's/^/        /' "$tmp/grammar.out" | grep FAIL | head -4
 fi
 
+# --- MUTATION CONTROL: removing the load-bearing guard breaks this suite ----
+# Run this complete bracket against a temporary copy whose single-PR empty-set
+# predicate is disabled.  Nonzero alone is insufficient: name the exact
+# #2132 assertion so an unrelated mutant failure cannot masquerade as proof.
+if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
+  mutant="$tmp/approval_binding-without-zero-guard.py"
+  sed \
+    's/approval_set_missing = a.pr is not None and not rows/approval_set_missing = False  # MUTANT: zero-approval guard removed/' \
+    "$tool" >"$mutant"
+  if ! grep -q 'MUTANT: zero-approval guard removed' "$mutant"; then
+    bad "mutation control could not locate the zero-approval guard"
+  else
+    APPROVAL_BINDING_TOOL="$mutant" APPROVAL_BINDING_MUTATION_CHILD=1 \
+      bash "$0" >"$tmp/mutant-suite.out" 2>&1
+    mutant_rc=$?
+    if [[ $mutant_rc -ne 0 ]] \
+      && grep -q 'FAIL  zero approvals: expected rc=1, got 0' "$tmp/mutant-suite.out"; then
+      ok "mutation control: full suite FAILS on #2132 when zero-approval guard is removed"
+    else
+      bad "mutation control did not fail on the #2132 guard (rc=$mutant_rc)"
+    fi
+  fi
+fi
+
 echo "======================================================================"
+echo "refused-when-it-should:     1 case   (selected PR with zero approvals)"
 echo "flagged-when-it-should:     3 cases  (superseded, unbound 0/1 authority, composed)"
 echo "not-flagged-when-it-should: 1 case   (exact-head bindings 2/2 authority)"
 echo "assertions: $pass passed, $fail failed"
