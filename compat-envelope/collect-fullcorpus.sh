@@ -43,6 +43,7 @@
 #                              of re-sweeping for hours.
 #     [--out PATH]             output CSV (default: fullcorpus-scorecard.csv)
 #     [--self-check-env-pin]    bracket the generated Hermit argv; run no guests
+#     [--self-check-containment] bracket timeout/refusal result mapping; run no guests
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,10 +61,73 @@ OUT="$here/fullcorpus-scorecard.csv"
 PAR="${PAR:-16}"
 TMO_RUN="${TMO_RUN:-90}"
 TMO_VERIFY="${TMO_VERIFY:-120}"
+BOX_RUN="${HERMIT_BOX_RUN:-$here/../scripts/hermit-box-run}"
 backends_arg=""
 do_assert=1
 assert_only=""
 self_check_env_pin=0
+self_check_containment=0
+
+# Run one Hermit leg in a transient cgroup and reap that ENTIRE cgroup on exit.
+# GNU timeout bounded the foreground Hermit process but did not contain a KVM
+# supervisor which moved into its own process group and reparented to PID 1.
+# On 2026-08-09 the collector correctly recorded two 120s TIMEOUT rows, then
+# four escaped KVM supervisors kept logging sched_yield for another 11-12h.
+# A process-group kill cannot close that hole; cgroup.kill does.
+bounded_run() { # $1=seconds $2=diag-log $3=label ; rest=command argv
+  local bound="$1" diag="$2" label="$3" rc=0; shift 3
+  : >"$diag"
+  "$BOX_RUN" --passthrough --cpu-budget "$bound" --wall "$bound" \
+    --label "$label" --diag-log "$diag" -- "$@" || rc=$?
+  if [ "$rc" = 3 ]; then
+    # A row measured without the promised containment would make the same leak
+    # possible again. Mark the parallel sweep globally refused; never publish it.
+    : >"$ROWS/BOXING_REFUSED"
+    return 125
+  fi
+  if [ "$rc" = 137 ] && grep -qE '(^| )((CPU|WALL)-TIMEOUT):' "$diag"; then
+    return 124
+  fi
+  return "$rc"
+}
+
+self_check_subtree_containment_adapter() {
+  local tmp fake saved_box rc
+  tmp="$(mktemp -d)" || return 1
+  fake="$tmp/fake-box"
+  cat >"$fake" <<'EOF'
+#!/usr/bin/env bash
+diag=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --diag-log) diag="$2"; shift 2 ;;
+    --) shift; break ;;
+    *) shift ;;
+  esac
+done
+[ -n "$diag" ] && [ -n "${FAKE_BOX_MARKER:-}" ] && printf '%s\n' "$FAKE_BOX_MARKER" >>"$diag"
+exit "${FAKE_BOX_RC:-0}"
+EOF
+  chmod +x "$fake"
+  saved_box="$BOX_RUN"; BOX_RUN="$fake"; ROWS="$tmp/rows"; mkdir -p "$ROWS"
+
+  FAKE_BOX_RC=137 FAKE_BOX_MARKER='WALL-TIMEOUT: planted' \
+    bounded_run 1 "$tmp/wall.diag" test -- true; rc=$?
+  [ "$rc" = 124 ] || { BOX_RUN="$saved_box"; rm -rf "$tmp"; return 1; }
+
+  FAKE_BOX_RC=137 FAKE_BOX_MARKER='' \
+    bounded_run 1 "$tmp/signal.diag" test -- true; rc=$?
+  [ "$rc" = 137 ] || { BOX_RUN="$saved_box"; rm -rf "$tmp"; return 1; }
+
+  FAKE_BOX_RC=3 FAKE_BOX_MARKER='' \
+    bounded_run 1 "$tmp/refused.diag" test -- true; rc=$?
+  if [ "$rc" != 125 ] || [ ! -e "$ROWS/BOXING_REFUSED" ]; then
+    BOX_RUN="$saved_box"; rm -rf "$tmp"; return 1
+  fi
+
+  BOX_RUN="$saved_box"; rm -rf "$tmp"
+  echo "self-check: wall/cpu reaps normalize to timeout; ordinary SIGKILL stays distinct; absent cgroup refuses publication"
+}
 
 # Build every measured Hermit command in one place. `--base-env host` is the
 # default, but that makes the caller's ambient environment part of the guest's
@@ -164,6 +228,7 @@ while [ $# -gt 0 ]; do
     --assert-only) assert_only="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --self-check-env-pin) self_check_env_pin=1; shift ;;
+    --self-check-containment) self_check_containment=1; shift ;;
     -h|--help) grep '^#' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "collect-fullcorpus: unknown arg $1" >&2; exit 2 ;;
   esac
@@ -173,8 +238,13 @@ if [ "$self_check_env_pin" = 1 ]; then
   self_check_guest_env_pin
   exit $?
 fi
+if [ "$self_check_containment" = 1 ]; then
+  self_check_subtree_containment_adapter
+  exit $?
+fi
 
 [ -n "$assert_only" ] || [ -x "$BIN" ] || { echo "collect-fullcorpus: HERMIT_BIN not executable: $BIN" >&2; exit 2; }
+[ -n "$assert_only" ] || [ -x "$BOX_RUN" ] || { echo "collect-fullcorpus: cgroup box not executable: $BOX_RUN" >&2; exit 3; }
 [ -f "$CORPUS_C" ] || { echo "collect-fullcorpus: missing $CORPUS_C" >&2; exit 2; }
 
 HSHA="$(git -C "$HROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -336,10 +406,12 @@ measure() { # $1=backend $2=cell-dir(holds ptv.out ref) $3=lane $4=id ; rest=gue
   #  (2) --strict --verify -> det signal (L2 self-verify exit code).
   if [ "$backend" = ptrace ]; then
     local t0 t1 dur re ve ohash det outcome reason
-    timeout "$TMO_RUN" "${run_cmd[@]}" "${gcmd[@]}" >"$cell/ptv.out" 2>"$cell/ptv.err"; re=$?
+    bounded_run "$TMO_RUN" "$cell/ptrace-run.box.log" "compat.${id//\//_}.ptrace-run" \
+      "${run_cmd[@]}" "${gcmd[@]}" >"$cell/ptv.out" 2>"$cell/ptv.err"; re=$?
     ohash=$(sha256sum "$cell/ptv.out" | cut -c1-64)
     t0=$(date +%s%3N)
-    timeout "$TMO_VERIFY" "${verify_cmd[@]}" "${gcmd[@]}" >/dev/null 2>"$cell/ptvv.err"; ve=$?
+    bounded_run "$TMO_VERIFY" "$cell/ptrace-verify.box.log" "compat.${id//\//_}.ptrace-verify" \
+      "${verify_cmd[@]}" "${gcmd[@]}" >/dev/null 2>"$cell/ptvv.err"; ve=$?
     t1=$(date +%s%3N); dur=$((t1-t0))
     if [ "$ve" = 0 ]; then det=1; outcome=pass; reason="";
     elif [ "$ve" = 124 ]; then det=0; outcome=timeout; reason="ptrace-verify-timeout-${TMO_VERIFY}s";
@@ -363,10 +435,12 @@ measure() { # $1=backend $2=cell-dir(holds ptv.out ref) $3=lane $4=id ; rest=gue
     return
   fi
   # non-ptrace backend: strict (for parity) + strict --verify (for det)
-  timeout "$TMO_RUN" "${run_cmd[@]}" "${gcmd[@]}" >"$cell/$backend.out" 2>"$cell/$backend.err"; re=$?
+  bounded_run "$TMO_RUN" "$cell/$backend-run.box.log" "compat.${id//\//_}.$backend-run" \
+    "${run_cmd[@]}" "${gcmd[@]}" >"$cell/$backend.out" 2>"$cell/$backend.err"; re=$?
   local t0 t1 dur ve bhash phash det outcome reason parity ohash
   t0=$(date +%s%3N)
-  timeout "$TMO_VERIFY" "${verify_cmd[@]}" "${gcmd[@]}" >"$cell/${backend}v.out" 2>"$cell/${backend}v.err"; ve=$?
+  bounded_run "$TMO_VERIFY" "$cell/$backend-verify.box.log" "compat.${id//\//_}.$backend-verify" \
+    "${verify_cmd[@]}" "${gcmd[@]}" >"$cell/${backend}v.out" 2>"$cell/${backend}v.err"; ve=$?
   t1=$(date +%s%3N); dur=$((t1-t0))
   bhash=$(sha256sum "$cell/$backend.out" | cut -c1-64); ohash="$bhash"
   if [ "$ve" = 0 ]; then det=1; outcome=pass; reason="";
@@ -387,8 +461,8 @@ measure() { # $1=backend $2=cell-dir(holds ptv.out ref) $3=lane $4=id ; rest=gue
   if [ -f "$cell/ptv.out" ] && [ ! -f "$cell/ptv.fail" ]; then ref_hash=$(sha256sum "$cell/ptv.out" | cut -c1-64); fi
   echo "fullcorpus,$RUN_UTC,$HSHA,$RSHA,false,expansion,$lane,$bucket,$id,verify,$backend,expansion,$outcome,$det,,$ohash,$dur,,$(csv_field "$reason"),$verify_compare,,,$det_tier,$legacy_parity,$ref_hash,,,,,,,,unqualified-stdout-only,,,,0,0" > "$ROWS/${backend}_${id//\//_}.row"
 }
-export -f build_hermit_argv measure classify_verify_failure
-export BIN ROWS RUN_UTC HSHA RSHA TMO_RUN TMO_VERIFY
+export -f build_hermit_argv bounded_run measure classify_verify_failure
+export BIN BOX_RUN ROWS RUN_UTC HSHA RSHA TMO_RUN TMO_VERIFY
 
 # --- compile C guests once (shared build tree) -------------------------------
 echo "== compiling/reusing C guests =="
@@ -505,15 +579,24 @@ sweep_backend() {
     # shellcheck disable=SC2086
     measure "'"$backend"'" "$cell" "$lane" "$id" $cmd
   ' _ {}
+  [ ! -e "$ROWS/BOXING_REFUSED" ]
 }
 export ROWS
 for backend in $order; do
   echo "== sweep backend=$backend =="
-  sweep_backend "$backend" "$PAR" 0
+  if ! sweep_backend "$backend" "$PAR" 0; then
+    echo "collect-fullcorpus: REFUSED — cgroup containment unavailable; no scorecard published" >&2
+    rm -rf "$ROWS"
+    exit 3
+  fi
   nto=$(ls "$ROWS/${backend}"_*.row 2>/dev/null | xargs -r grep -l ',timeout,' 2>/dev/null | wc -l)
   if [ "$nto" -gt 0 ]; then
     echo "   repair: re-running $nto timed-out $backend cell(s) serially"
-    sweep_backend "$backend" 1 1
+    if ! sweep_backend "$backend" 1 1; then
+      echo "collect-fullcorpus: REFUSED — cgroup containment unavailable during repair; no scorecard published" >&2
+      rm -rf "$ROWS"
+      exit 3
+    fi
   fi
 done
 
