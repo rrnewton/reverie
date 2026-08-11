@@ -839,18 +839,29 @@ int main(void) {
     return 12;
   }
 
+  errno = 0;
+  result = syscall(SYS_tgkill, pid + 1, tid, SIGUSR1);
+  if (result != -1 || errno != ESRCH) {
+    return 13;
+  }
+  errno = 0;
+  result = syscall(SYS_tgkill, 0, tid, SIGUSR1);
+  if (result != -1 || errno != EINVAL) {
+    return 14;
+  }
+
   sigset_t blocked;
   sigemptyset(&blocked);
   sigaddset(&blocked, SIGUSR2);
   if (sigprocmask(SIG_BLOCK, &blocked, NULL) != 0 ||
       syscall(SYS_tgkill, pid, tid, SIGUSR2) != 0) {
-    return 13;
+    return 15;
   }
   struct timespec no_wait = {0, 0};
   siginfo_t information;
   int received = sigtimedwait(&blocked, &information, &no_wait);
   if (received != SIGUSR2 || information.si_signo != SIGUSR2) {
-    return 14;
+    return 16;
   }
 
   puts("tgkill contract ok");

@@ -9829,12 +9829,14 @@ enum SignalDisposition {
 /// success without performing either action would make the syscall result lie.
 // TODO-HUMAN-REVIEW(#95): Review self-signal termination and the default-disposition table.
 fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> SyscallAction {
-    // tgkill(tgid, tid, sig) carries the signal in its third argument, whereas
-    // kill(pid, sig) and tkill(tid, sig) carry it in the second.
-    let (target, raw_signal) = if number == libc::SYS_tgkill as u64 {
-        (args[1] as i64, args[2])
+    // tgkill(tgid, tid, sig) carries two identities and the signal in its third
+    // argument, whereas kill(pid, sig) and tkill(tid, sig) carry it in the
+    // second. Keep the tgkill thread-group identity: dropping it would accept a
+    // valid tid paired with a foreign tgid.
+    let (thread_group, target, raw_signal) = if number == libc::SYS_tgkill as u64 {
+        (Some(args[0] as i64), args[1] as i64, args[2])
     } else {
-        (args[0] as i64, args[1])
+        (None, args[0] as i64, args[1])
     };
     let Ok(signal) = libc::c_int::try_from(raw_signal) else {
         return continue_with(negative_errno(libc::EINVAL));
@@ -9843,13 +9845,23 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
         return continue_with(negative_errno(libc::EINVAL));
     }
 
+    // Linux rejects nonpositive tkill/tgkill identities with EINVAL. `kill`
+    // intentionally retains its distinct zero/negative process-group forms.
+    if number != libc::SYS_kill as u64
+        && (target <= 0 || thread_group.is_some_and(|tgid| tgid <= 0))
+    {
+        return continue_with(negative_errno(libc::EINVAL));
+    }
+
     // Only self-directed signals are modeled. `kill` accepts the process id, its
-    // own process group (0), or the broadcast set (-1); `tkill`/`tgkill` name
-    // the sole guest thread by its tid.
+    // own process group (0), or the broadcast set (-1); `tkill` names the sole
+    // modeled target thread by tid, and `tgkill` additionally requires its tgid
+    // to name the same guest process.
     let targets_self = if number == libc::SYS_kill as u64 {
         target == i64::from(state.pid) || target == 0 || target == -1
     } else {
         target == i64::from(state.pid)
+            && thread_group.is_none_or(|tgid| tgid == i64::from(state.pid))
     };
     if !targets_self {
         return continue_with(negative_errno(libc::ESRCH));
@@ -21245,16 +21257,66 @@ mod tests {
         let mut state = test_state(&dir.0);
         let foreign_pid = state.pid + 1;
 
-        match kill_signal(
-            &mut state,
-            libc::SYS_kill as u64,
-            &[foreign_pid as u64, libc::SIGTERM as u64, 0, 0, 0, 0],
-        ) {
-            SyscallAction::Continue {
-                result,
-                segment: None,
-            } => assert_eq!(result, negative_errno(libc::ESRCH)),
-            _ => panic!("expected ESRCH continue for a foreign target"),
+        for (number, args) in [
+            (
+                libc::SYS_kill,
+                [foreign_pid as u64, libc::SIGTERM as u64, 0, 0, 0, 0],
+            ),
+            (
+                libc::SYS_tkill,
+                [foreign_pid as u64, libc::SIGTERM as u64, 0, 0, 0, 0],
+            ),
+            (
+                libc::SYS_tgkill,
+                [
+                    foreign_pid as u64,
+                    state.pid as u64,
+                    libc::SIGWINCH as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+            (
+                libc::SYS_tgkill,
+                [
+                    state.pid as u64,
+                    foreign_pid as u64,
+                    libc::SIGTERM as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+        ] {
+            match kill_signal(&mut state, number as u64, &args) {
+                SyscallAction::Continue {
+                    result,
+                    segment: None,
+                } => assert_eq!(result, negative_errno(libc::ESRCH)),
+                _ => panic!("expected ESRCH for syscall {number} with a foreign target"),
+            }
+        }
+    }
+
+    #[test]
+    fn nonpositive_thread_signal_ids_report_einval() {
+        let dir = TestDir::new();
+        let mut state = test_state(&dir.0);
+        let pid = state.pid as u64;
+
+        for (number, args) in [
+            (libc::SYS_tkill, [0, libc::SIGUSR1 as u64, 0, 0, 0, 0]),
+            (libc::SYS_tgkill, [0, pid, libc::SIGUSR1 as u64, 0, 0, 0]),
+            (libc::SYS_tgkill, [pid, 0, libc::SIGUSR1 as u64, 0, 0, 0]),
+        ] {
+            match kill_signal(&mut state, number as u64, &args) {
+                SyscallAction::Continue {
+                    result,
+                    segment: None,
+                } => assert_eq!(result, negative_errno(libc::EINVAL)),
+                _ => panic!("expected EINVAL for syscall {number} with a nonpositive id"),
+            }
         }
     }
 
