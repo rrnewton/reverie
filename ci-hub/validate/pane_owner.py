@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -186,6 +187,24 @@ def create_pane(
     env = environment or os.environ
     ensure_server(run=run, environment=env, sleep=sleep)
     workspace = ensure_workspace(root, run=run, environment=env)
+    # BOUND THE WORKSPACE BEFORE ADDING TO IT. Every create used to be
+    # unconditional and nothing ever closed a pane, so this workspace grew
+    # without limit (observed at 46 tabs). ensure_capacity reaps finished and
+    # orphaned panes, evicts the oldest non-running pane if still full, and
+    # RAISES rather than creating pane cap+1. Imported lazily: pane_lifecycle
+    # imports this module.
+    import pane_lifecycle  # noqa: PLC0415  (lazy, breaks the import cycle)
+
+    pane_lifecycle.ensure_capacity(
+        root,
+        workspace_label=WORKSPACE_LABEL,
+        cap=pane_lifecycle.cap_from_env(),
+        run=run,
+        environment=env,
+        linger_seconds=pane_lifecycle.linger_from_env(),
+        ttl_seconds=pane_lifecycle.ttl_from_env(),
+        report=lambda message: print(message, file=sys.stderr),
+    )
     identity = f"PR #{pr}" if pr is not None else unit
     title = f"{identity} | {target[:12]} | since {started_at}"
     payload = _json_result(

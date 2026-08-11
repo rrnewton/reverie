@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pane_lifecycle
 import pane_owner
 import run_registry
 import service_result
@@ -1188,26 +1189,41 @@ def main(
                     "pane_role": "observer-only",
                 },
             )
-            pane = pane_owner.create_pane(
-                root=root.resolve(),
-                checkout=checkout,
-                unit=unit,
-                target=args.target,
-                log=log,
-                record=record_path,
-                pr=args.pr,
-                started_at=started_at,
-                run=run,
-                environment=environment or os.environ,
-                sleep=sleep,
-            )
+            # The pane is OBSERVER-ONLY: it watches the durable log and the
+            # systemd unit and never runs the driver. So a full workspace must
+            # cost us the window, not the validation -- this run already holds
+            # the box-exclusive validate-lock, and killing it to protect a
+            # cosmetic cap would be the worse trade. Refuse the pane loudly,
+            # keep the work.
+            try:
+                pane = pane_owner.create_pane(
+                    root=root.resolve(),
+                    checkout=checkout,
+                    unit=unit,
+                    target=args.target,
+                    log=log,
+                    record=record_path,
+                    pr=args.pr,
+                    started_at=started_at,
+                    run=run,
+                    environment=environment or os.environ,
+                    sleep=sleep,
+                )
+            except pane_lifecycle.WorkspaceFull as exc:
+                pane = None
+                print(f"PANE-REFUSED {exc}", file=sys.stderr)
+                print(
+                    "PANE-REFUSED continuing WITHOUT an observer pane: the pane only watches "
+                    "the durable log, so the validation itself is unaffected.",
+                    file=sys.stderr,
+                )
             run_registry.update_record(
                 record_path,
                 state="launching",
-                workspace_id=pane.workspace_id,
-                tab_id=pane.tab_id,
-                pane_id=pane.pane_id,
-                pane_title=pane.title,
+                workspace_id=pane.workspace_id if pane else None,
+                tab_id=pane.tab_id if pane else None,
+                pane_id=pane.pane_id if pane else None,
+                pane_title=pane.title if pane else None,
             )
             result = run(command, cwd=root, check=False)
             if result.returncode != 0:
