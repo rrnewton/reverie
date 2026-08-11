@@ -7,9 +7,15 @@ the shared process-context authority (inherited agent identity, ancestry, cwd
 slot owner, pane, cgroup, sidecar, and TaskGraph where readable) and refuses
 unless the result is AGREEMENT and ``--who`` equals the resolved agent.
 
-The resulting disclosure prefix is mechanical, not authentication::
+The resulting disclosure prefix is mechanical, not authentication, and is
+always separated from the body by a newline::
 
-    [team-slug, agent-name, machine-shortname, role=artifact-role]
+    [team-slug, agent-name, resolved-model, machine-shortname, role=enum]
+
+The model comes only from the process resolver.  There is no ``--model`` input;
+an unavailable or ambiguous model is rendered literally as ``unresolved``.
+Roles are the closed owner-approved enum ``impl``, ``debugger``, ``reviewer``,
+``relay``, ``coordinator``, and ``human``.
 
 A shared GitHub credential still cannot prove who typed the arguments.  The
 independent process-context comparison makes a false claim falsifiable; it does
@@ -30,7 +36,7 @@ import socket
 import subprocess
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NoReturn
 
@@ -42,12 +48,22 @@ import agent_identity  # noqa: E402
 
 
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-ROLE_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
+ROLES = frozenset({"impl", "debugger", "reviewer", "relay", "coordinator", "human"})
+MODEL_TOKEN_RE = re.compile(r"^[^,\[\]\r\n]+$")
 DISCLOSURE_RE = re.compile(
     r"^\[(?P<team>[A-Za-z0-9_.-]+), "
     r"(?P<agent>[A-Za-z0-9_.-]+), "
+    r"(?P<model>[^,\]\r\n]+), "
     r"(?P<machine>[A-Za-z0-9_.-]+), "
-    r"role=(?P<role>[A-Za-z0-9_.:/-]+)\]"
+    r"role=(?P<role>[A-Za-z0-9_.-]+)\](?=\n|\Z)"
+)
+MALFORMED_FIVE_FIELD_RE = re.compile(
+    r"^\[[^,\]\n]+, [^,\]\n]+, [^,\]\n]+, [^,\]\n]+, "
+    r"role=[^\]\n]+\](?=\n|\Z)"
+)
+LEGACY_DISCLOSURE_RE = re.compile(
+    r"^(?:\[[^,\]\n]+, [^,\]\n]+, [^,\]\n]+, role=[^\]\n]+\]"
+    r"|\[[^,\]\n]+, [^\]\n]+\] \[[^,\]\n]+, [^\]\n]+\])"
 )
 
 
@@ -55,12 +71,16 @@ DISCLOSURE_RE = re.compile(
 class Disclosure:
     team: str
     agent: str
+    model: str
     machine: str
     role: str
 
     @property
     def prefix(self) -> str:
-        return f"[{self.team}, {self.agent}, {self.machine}, role={self.role}]"
+        return (
+            f"[{self.team}, {self.agent}, {self.model}, {self.machine}, "
+            f"role={self.role}]"
+        )
 
 
 def die(message: str) -> NoReturn:
@@ -92,12 +112,13 @@ def _option_value(args: list[str], index: int, name: str) -> tuple[str, int] | N
 
 
 def disclosure_options(args: list[str]) -> tuple[list[str], dict[str, str]]:
-    """Strip boundary-only identity options from ordinary gh argv."""
+    """Strip leading boundary options without parsing comment body text as flags."""
 
-    remaining: list[str] = []
     values: dict[str, str] = {}
     index = 0
     while index < len(args):
+        if args[index] == "--model" or args[index].startswith("--model="):
+            die("--model is process-resolved and must not be supplied by the caller")
         matched = False
         for name, key in (("--who", "who"), ("--team", "team"), ("--role", "role")):
             parsed = _option_value(args, index, name)
@@ -111,9 +132,8 @@ def disclosure_options(args: list[str]) -> tuple[list[str], dict[str, str]]:
             matched = True
             break
         if not matched:
-            remaining.append(args[index])
-            index += 1
-    return remaining, values
+            break
+    return args[index:], values
 
 
 def required_disclosure(values: Mapping[str, str]) -> Disclosure:
@@ -128,15 +148,23 @@ def required_disclosure(values: Mapping[str, str]) -> Disclosure:
         die(f"--who is not a safe agent token: {agent!r}")
     if TOKEN_RE.fullmatch(team) is None:
         die(f"--team is not a safe team token: {team!r}")
-    if ROLE_RE.fullmatch(role) is None:
-        die(f"--role is not a safe artifact-role token: {role!r}")
+    if role not in ROLES:
+        die(
+            f"--role must be one of {','.join(sorted(ROLES))}; got {role!r}"
+        )
     machine = socket.gethostname().split(".", 1)[0]
     if TOKEN_RE.fullmatch(machine) is None:
         die(f"derived machine shortname is not a safe token: {machine!r}")
-    return Disclosure(team=team, agent=agent, machine=machine, role=role)
+    return Disclosure(
+        team=team,
+        agent=agent,
+        model=agent_identity.MODEL_UNRESOLVED,
+        machine=machine,
+        role=role,
+    )
 
 
-def validate_disclosure(disclosure: Disclosure) -> None:
+def validate_disclosure(disclosure: Disclosure) -> Disclosure:
     resolution = agent_identity.resolve_identity(os.getpid())
     if resolution.state != "AGREEMENT" or not resolution.agent:
         evidence = "; ".join(
@@ -153,27 +181,41 @@ def validate_disclosure(disclosure: Disclosure) -> None:
             f"--who mismatch: claimed {disclosure.agent!r}, but process context "
             f"resolves to {resolution.agent!r} via {','.join(resolution.basis) or 'primary identity'}"
         )
+    if (
+        resolution.model != resolution.model.strip()
+        or MODEL_TOKEN_RE.fullmatch(resolution.model) is None
+    ):
+        die(f"process resolver returned an unsafe model token: {resolution.model!r}")
+    return replace(disclosure, model=resolution.model)
 
 
 def attributed(body: str, disclosure: Disclosure) -> str:
     existing = DISCLOSURE_RE.match(body)
     if existing:
+        if existing.group("role") not in ROLES:
+            die("malformed five-field who-is-talking prefix must be corrected before posting")
         observed = (
             existing.group("team"),
             existing.group("agent"),
+            existing.group("model"),
             existing.group("machine"),
             existing.group("role"),
         )
         wanted = (
             disclosure.team,
             disclosure.agent,
+            disclosure.model,
             disclosure.machine,
             disclosure.role,
         )
         if observed != wanted:
             die("existing who-is-talking prefix conflicts with validated disclosure")
         return body
-    return f"{disclosure.prefix} {body}" if body else disclosure.prefix
+    if LEGACY_DISCLOSURE_RE.match(body):
+        die("legacy who-is-talking prefix must be removed before posting")
+    if MALFORMED_FIVE_FIELD_RE.match(body):
+        die("malformed five-field who-is-talking prefix must be corrected before posting")
+    return f"{disclosure.prefix}\n{body}"
 
 
 def body_option(args: list[str]) -> tuple[int, int, str] | None:
@@ -312,7 +354,7 @@ def main() -> int:
     args, supplied = disclosure_options(sys.argv[1:])
     if is_comment_write(args):
         disclosure = required_disclosure(supplied)
-        validate_disclosure(disclosure)
+        disclosure = validate_disclosure(disclosure)
         args = rewrite(args, disclosure)
     return subprocess.run([real_gh(), *args]).returncode
 

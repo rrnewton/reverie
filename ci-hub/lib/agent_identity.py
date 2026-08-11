@@ -7,6 +7,12 @@ agent is spawned and is already the independent source used by
 owners are corroboration: they can expose a relay or stale registry row, but
 none is allowed to manufacture an identity when the process carries none.
 
+The selected model is a separate process-context fact.  It is read only from
+an explicit model option on a recognized ``codex`` or ``claude`` process
+command line.  It is never caller-supplied and never guessed from an agent
+name, client family, configuration file, or default.  When no unique explicit
+model is visible the stable value is ``unresolved``.
+
 The resolver deliberately has three outcomes:
 
 * ``AGREEMENT`` (rc 0): a process-derived identity exists and every readable
@@ -37,9 +43,11 @@ import taskgraph_db
 AGREEMENT = 0
 DISAGREEMENT = 1
 UNRESOLVED = 2
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 IDENTITY_VAR = "DG_AGENT_NAME"
 AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]*$")
+MODEL_RE = re.compile(r"^[^,\[\]\r\n]+$")
+MODEL_UNRESOLVED = "unresolved"
 PANE_RE = re.compile(r"^%[0-9]+$")
 ACTIVE_TASK_STATES = frozenset({"IN_PROGRESS", "IN PROGRESS"})
 
@@ -66,6 +74,8 @@ class Resolution:
     basis: tuple[str, ...]
     signals: tuple[Signal, ...]
     pid: int
+    model: str = MODEL_UNRESOLVED
+    model_source: str | None = None
     schema: int = SCHEMA_VERSION
 
     @property
@@ -83,6 +93,8 @@ class Resolution:
             "primary_source": self.primary_source,
             "basis": list(self.basis),
             "pid": self.pid,
+            "model": self.model,
+            "model_source": self.model_source,
             "signals": [signal.to_dict() for signal in self.signals],
         }
 
@@ -96,6 +108,8 @@ class ProcessContext:
     ppid: int | None
     environ: Mapping[str, str] | None
     environ_error: str | None = None
+    cmdline: tuple[str, ...] | None = None
+    cmdline_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -141,6 +155,21 @@ def _read_ppid(path: Path) -> tuple[int | None, str | None]:
     return int(fields[1]), None
 
 
+def _read_cmdline(path: Path) -> tuple[tuple[str, ...] | None, str | None]:
+    try:
+        raw = path.read_bytes()
+    except OSError as error:
+        return None, f"unreadable cmdline: {error}"
+    argv = tuple(
+        item.decode("utf-8", "replace")
+        for item in raw.split(b"\0")
+        if item
+    )
+    if not argv:
+        return None, "empty cmdline"
+    return argv, None
+
+
 def process_ancestry(pid: int, proc_root: Path) -> tuple[list[ProcessContext], str | None]:
     """Read one ancestry chain without crossing a cycle or guessing a parent."""
 
@@ -156,13 +185,137 @@ def process_ancestry(pid: int, proc_root: Path) -> tuple[list[ProcessContext], s
             return contexts, f"process {current} does not exist"
         ppid, stat_error = _read_ppid(proc / "stat")
         environ, environ_error = _read_environ(proc / "environ")
-        contexts.append(ProcessContext(current, ppid, environ, environ_error))
+        cmdline, cmdline_error = _read_cmdline(proc / "cmdline")
+        contexts.append(
+            ProcessContext(
+                current,
+                ppid,
+                environ,
+                environ_error,
+                cmdline,
+                cmdline_error,
+            )
+        )
         if stat_error:
             return contexts, f"pid {current}: {stat_error}"
         if ppid in (None, 0, current):
             break
         current = ppid
     return contexts, None
+
+
+def _safe_model(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    # The owner requires the CLI's model slug verbatim. Reject values that
+    # cannot occupy one comma-delimited prefix field; never normalize them into
+    # a different vocabulary or strip quoting/whitespace into apparent validity.
+    return raw if raw == raw.strip() and MODEL_RE.fullmatch(raw) else None
+
+
+def _recognized_client_index(argv: Sequence[str]) -> int | None:
+    """Find the real agent client without treating arbitrary body text as argv."""
+
+    for index, raw in enumerate(argv[:4]):
+        name = Path(raw).name.casefold()
+        if name in {"codex", "claude"}:
+            return index
+    return None
+
+
+def _explicit_models(argv: Sequence[str]) -> tuple[list[str], bool]:
+    """Return valid explicit model values and whether malformed input existed."""
+
+    start = _recognized_client_index(argv)
+    if start is None:
+        return [], False
+    args = list(argv[start + 1 :])
+    values: list[str] = []
+    malformed = False
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        raw: str | None = None
+        consumed = 1
+        if arg == "--model":
+            if index + 1 >= len(args):
+                malformed = True
+            else:
+                raw = args[index + 1]
+                consumed = 2
+        elif arg.startswith("--model="):
+            raw = arg.split("=", 1)[1]
+        elif arg in {"-c", "--config"}:
+            if index + 1 < len(args) and args[index + 1].startswith("model="):
+                raw = args[index + 1].split("=", 1)[1]
+                consumed = 2
+        elif arg.startswith("--config=model="):
+            raw = arg.split("=", 2)[2]
+        if raw is not None:
+            model = _safe_model(raw)
+            if model is None:
+                malformed = True
+            else:
+                values.append(model)
+        index += consumed
+    return values, malformed
+
+
+def model_signal(contexts: Sequence[ProcessContext]) -> tuple[Signal, str, str | None]:
+    """Resolve one explicit launch model, or report the stable unresolved value."""
+
+    found: list[tuple[int, str]] = []
+    malformed_pids: list[int] = []
+    unreadable_pids: list[int] = []
+    for context in contexts:
+        if context.cmdline is None:
+            unreadable_pids.append(context.pid)
+            continue
+        models, malformed = _explicit_models(context.cmdline)
+        found.extend((context.pid, model) for model in models)
+        if malformed:
+            malformed_pids.append(context.pid)
+
+    unique = tuple(sorted({model for _, model in found}, key=str.casefold))
+    if malformed_pids:
+        return (
+            Signal(
+                "process-model",
+                "error",
+                detail="malformed explicit model at pid(s) "
+                + ",".join(map(str, malformed_pids)),
+            ),
+            MODEL_UNRESOLVED,
+            None,
+        )
+    if len(unique) > 1:
+        return (
+            Signal(
+                "process-model",
+                "ambiguous",
+                detail="recognized client cmdlines carry different explicit models",
+                candidates=unique,
+            ),
+            MODEL_UNRESOLVED,
+            None,
+        )
+    if len(unique) == 1:
+        pids = [str(pid) for pid, model in found if model == unique[0]]
+        return (
+            Signal(
+                "process-model",
+                "resolved",
+                detail=f"model={unique[0]} explicit at pid(s) " + ",".join(pids),
+            ),
+            unique[0],
+            "process-cmdline",
+        )
+    detail = "no recognized codex/claude cmdline carries an explicit model"
+    if unreadable_pids:
+        detail += "; unreadable/empty cmdline pid(s) " + ",".join(
+            map(str, unreadable_pids)
+        )
+    return Signal("process-model", "unavailable", detail=detail), MODEL_UNRESOLVED, None
 
 
 def _identity_signals(
@@ -526,6 +679,8 @@ def resolve_identity(
     registry = load_registry(state_path or root / "worktree-state.json")
     contexts, ancestry_error = process_ancestry(pid, proc_root)
     signals, primary, primary_source, inherited_env = _identity_signals(contexts, ancestry_error)
+    process_model_signal, model, model_source = model_signal(contexts)
+    signals.append(process_model_signal)
 
     cwd, cwd_detail = _read_cwd(pid, proc_root)
     slot_signal, derived_tasks = slot_owner_signal(cwd, cwd_detail, registry, root)
@@ -539,15 +694,53 @@ def resolve_identity(
 
     resolved = [signal for signal in signals if signal.state == "resolved" and signal.agent]
     identities = {_canonical(signal.agent) for signal in resolved if signal.agent}
-    ambiguous = [signal for signal in signals if signal.state == "ambiguous" and signal.candidates]
+    # Model ambiguity is reported alongside identity evidence but is not an
+    # agent-name disagreement. Keep the two authorities separate: a caller can
+    # have a proven agent and an explicitly unresolved model.
+    ambiguous = [
+        signal
+        for signal in signals
+        if signal.source != "process-model"
+        and signal.state == "ambiguous"
+        and signal.candidates
+    ]
     for signal in ambiguous:
         identities.update(_canonical(candidate) for candidate in signal.candidates)
     basis = tuple(signal.source for signal in resolved)
 
     if len(identities) > 1:
-        return Resolution("DISAGREEMENT", None, primary_source, basis, tuple(signals), pid)
+        return Resolution(
+            "DISAGREEMENT",
+            None,
+            primary_source,
+            basis,
+            tuple(signals),
+            pid,
+            model,
+            model_source,
+        )
     if primary is None:
-        return Resolution("UNRESOLVED", None, None, basis, tuple(signals), pid)
+        return Resolution(
+            "UNRESOLVED", None, None, basis, tuple(signals), pid, model, model_source
+        )
     if identities and _canonical(primary) not in identities:
-        return Resolution("DISAGREEMENT", None, primary_source, basis, tuple(signals), pid)
-    return Resolution("AGREEMENT", primary, primary_source, basis, tuple(signals), pid)
+        return Resolution(
+            "DISAGREEMENT",
+            None,
+            primary_source,
+            basis,
+            tuple(signals),
+            pid,
+            model,
+            model_source,
+        )
+    return Resolution(
+        "AGREEMENT",
+        primary,
+        primary_source,
+        basis,
+        tuple(signals),
+        pid,
+        model,
+        model_source,
+    )

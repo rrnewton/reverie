@@ -707,14 +707,21 @@ refresh_selected_identity "$tmp/current-weak-row-raw.json" "$tmp/current-weak-ro
 verify_file "$tmp/current-weak-row.json" fail "current role artifact with weak selected row" \
     '[coordinator, gpt-5.6-sol]'
 
-# Preserve the historical automated service tag and accept each current
-# AGENTS.md role-tag form. Tags outside those exact forms remain inert.
+# Preserve historical role and four-field artifacts, while accepting the final
+# five-field prefix as the complete first line. New writes put the body on line
+# two and admit only impl|debugger|reviewer|relay|coordinator|human.
 valid_role_tags=(
     '[impl agent, ci-hub]'
     '[impl agent, gpt-5.6-sol]'
     '[adversarial-reviewer agent, gpt-5.6-sol]'
     '[coordinator, gpt-5.6-sol]'
     '[Human]'
+    '[hermit2, codex-2, devbig014, role=impl]'
+    '[hermit2, codex-2, devbig014, role=impl] [coordinator, gpt-5.6-sol]'
+    '[hermit2, codex-2, gpt-5.6-sol, devbig014, role=impl]'
+    '[hermit2, codex-2, gpt-5.6-sol, devbig014, role=debugger]'
+    '[hermit2, codex-2, unresolved, devbig014, role=relay]'
+    '[hermit2, orc-coord-014, claude-opus-5, devbig014, role=coordinator]'
 )
 for role_tag in "${valid_role_tags[@]}"; do
     write_comments "$path" "$digest" "$role_tag"
@@ -731,6 +738,11 @@ invalid_role_tags=(
     '[coordinator, ]'
     '[Human, gpt-5.6-sol]'
     'prefix [coordinator, gpt-5.6-sol]'
+    '[hermit2, codex-2, devbig014, role=]'
+    '[hermit2, codex-2, role=impl]'
+    '[hermit2, codex-2, devbig014, role=impl] [assistant, gpt-5.6-sol]'
+    '[hermit2, codex-2, gpt-5.6-sol, devbig014, role=auditor]'
+    '[hermit2, codex-2, gpt-5.6-sol, devbig014, role=impl] [coordinator, gpt-5.6-sol]'
 )
 for role_tag in "${invalid_role_tags[@]}"; do
     write_comments "$path" "$digest" "$role_tag"
@@ -992,4 +1004,4 @@ if [[ $mutation_anchor_failures -ne 0 ]]; then
     exit 1
 fi
 
-echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; previous/tampered/missing-wrapper/wrong-head production definitions (4/4), 2/2 additional identity/compatibility receipts, 5/5 valid and 4/4 malformed role tags, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"
+echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; previous/tampered/missing-wrapper/wrong-head production definitions (4/4), 2/2 additional identity/compatibility receipts, ${#valid_role_tags[@]}/${#valid_role_tags[@]} valid and ${#invalid_role_tags[@]}/${#invalid_role_tags[@]} malformed role tags, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"

@@ -1,28 +1,12 @@
 #!/usr/bin/env bash
 #
-# Post a GitHub issue/PR comment as the orc-coord-014 coordinator team.
+# Post a GitHub issue/PR comment through the fleet attribution boundary.
 #
-# WHY THIS EXISTS. Several agent teams comment on the same rrnewton repositories,
-# and the owner needs to tell this team's output apart at a glance. A rule that
-# lives only in AGENTS.md is remembered; a wrapper is enforced. So this normalises
-# the team prefix instead of trusting every caller to type it.
-#
-# THE RULE (canonical text: AGENTS.md, "Team identity — orc-coord-014"):
-#   the FIRST LINE of every comment must carry the literal tag [orc-coord-014].
-#   A role tag may precede it on the same line -- "[coordinator, opus-5]
-#   [orc-coord-014] ..." is correct and common. The role tag says WHAT KIND of
-#   agent wrote it; the team tag says WHICH TEAM. Neither substitutes for the
-#   other, which is why this checks only for the team tag and leaves role tags
-#   alone.
-#
-# THREE OUTCOMES, deliberately distinct:
-#   present   -> pass through byte-for-byte. Never rewrite a correct comment.
-#   absent    -> prepend "[orc-coord-014] " and post. Normalising beats refusing
-#                here: the comment is wanted, only the attribution is missing.
-#   CONFLICT  -> refuse, exit 2. A first line carrying a DIFFERENT [orc-coord-NNN]
-#                is another team's identity; silently retagging it would forge
-#                attribution, which is the exact thing this wrapper exists to make
-#                reliable.
+# This wrapper restricts coordinator destinations and requires the caller's
+# agent/team/role declaration. ci-hub/bin/gh independently resolves agent and
+# model from process context, validates the closed role enum, and emits the
+# five-field prefix followed by a newline. This wrapper does not hand-format or
+# add a competing legacy prefix.
 #
 # Destination is restricted to rrnewton/*. facebookexperimental/* is REFUSED, not
 # redirected: comment targets are per-repo issue numbers, so "the same comment on
@@ -31,18 +15,17 @@
 #
 #   gh-coord-comment --who codex-1 --team hermit2 --role coordinator \
 #     --repo rrnewton/hermit 1844 --body "text"
-#   gh-coord-comment --who codex-1 --team hermit2 --role relay:reviewer-verdict \
+#   gh-coord-comment --who codex-1 --team hermit2 --role relay \
 #     --repo rrnewton/hermit --pr 1719 --body-file note.md
 
 set -euo pipefail
 
-readonly TEAM_TAG="[orc-coord-014]"
 readonly DEFAULT_HTTPS_PROXY="http://fwdproxy:8080"
 PLUGIN_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly PLUGIN_ROOT
 # GH_BIN remains an offline-test seam. Production always crosses the fleet-aware
 # comment boundary, which validates --who against process context and emits the
-# four-field disclosure before this team's legacy tag. A shared owner credential
+# five-field disclosure plus newline. A shared owner credential
 # must never be the speaker ID.
 readonly GH_COMMAND="${GH_BIN:-$PLUGIN_ROOT/ci-hub/bin/gh}"
 
@@ -107,16 +90,6 @@ case "$repo" in
     die "refusing to comment on $repo: upstream syncs into Meta's internal task tracker. Comment on the rrnewton fork instead (the issue numbers differ, so this is NOT a redirect)." ;;
   *) die "coordination comments are restricted to rrnewton/* (got: $repo)" ;;
 esac
-
-# --- the attribution rule -----------------------------------------------------
-first_line="${body%%$'\n'*}"
-if [[ "$first_line" == *"$TEAM_TAG"* ]]; then
-  : # already attributed; pass through unchanged
-elif [[ "$first_line" =~ \[orc-coord-[0-9]+\] ]]; then
-  die "first line carries a different team tag (${BASH_REMATCH[0]}), not $TEAM_TAG. Refusing to retag another team's comment."
-else
-  body="$TEAM_TAG $body"
-fi
 
 if ((check_only)); then
   printf 'repo=%s kind=%s target=%s who=%s team=%s role=%s\n' \

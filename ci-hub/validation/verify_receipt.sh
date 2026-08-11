@@ -509,15 +509,30 @@ fi
 
 owner=${repo%%/*}
 mapfile -t candidates < <(jq -r --arg owner "$owner" '
-    # Historical ci-hub comments used a service actor in the model slot. Keep
-    # that exact tag readable; new comments use one of the four AGENTS.md role
-    # forms, with a nonempty model for automated roles.
-    def accepted_role_tag:
+    # Historical ci-hub comments used a service actor or the former four-field
+    # disclosure. Keep those exact artifacts readable. New comments use the
+    # five-field prefix as the complete first line; the body starts on line two.
+    # The model is a nonempty resolved token or literal `unresolved`, and role is
+    # the closed six-value enum.
+    def four_field_prefix: "^\\[[^,\\]]+, [^,\\]]+, [^,\\]]+, role=[^\\]]+\\]";
+    def five_field_prefix:
+      "^\\[[^,\\]]+, [^,\\]]+, [^,\\]]+, [^,\\]]+, role=(impl|debugger|reviewer|relay|coordinator|human)\\]$";
+    def legacy_role_tag:
       . == "[impl agent, ci-hub]"
       or . == "[Human]"
       or (
         (capture("^\\[(?<role>impl agent|adversarial-reviewer agent|coordinator), (?<model>[^]]+)\\]$")? // {})
         | ((.model // "") | test("\\S"))
+      );
+    def accepted_role_tag:
+      legacy_role_tag
+      or test(five_field_prefix)
+      or (
+        test(four_field_prefix)
+        and (
+          (sub(four_field_prefix; "") | sub("^ +"; "")) as $rest
+          | ($rest == "" or ($rest | legacy_role_tag))
+        )
       );
     [ .[][]?
       | select(.user.login == $owner)

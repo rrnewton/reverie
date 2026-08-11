@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state", type=Path, help="worktree-state.json override")
     parser.add_argument("--task", help="active TaskGraph task to cross-check")
     parser.add_argument("--db", type=Path, help="TaskGraph database override")
-    parser.add_argument("--json", action="store_true", help="emit stable schema-1 JSON")
+    parser.add_argument("--json", action="store_true", help="emit stable schema-2 JSON")
     return parser.parse_args()
 
 
@@ -46,6 +46,8 @@ def main() -> int:
     else:
         print(f"state={result.state}")
         print(f"agent={result.agent or ''}")
+        print(f"model={result.model}")
+        print(f"model_source={result.model_source or ''}")
         print(f"primary_source={result.primary_source or ''}")
         print("basis=" + ",".join(result.basis))
         for signal in result.signals:

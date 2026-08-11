@@ -92,6 +92,7 @@ class IdentityFixture(unittest.TestCase):
         cwd: Path | str | None = None,
         cgroup: str | None = None,
         environ: bool = True,
+        cmdline: tuple[str, ...] | None = ("fixture-process",),
     ) -> None:
         process = self.proc / str(pid)
         process.mkdir()
@@ -107,6 +108,10 @@ class IdentityFixture(unittest.TestCase):
             (process / "cwd").symlink_to(str(cwd))
         if cgroup is not None:
             (process / "cgroup").write_text(f"0::{cgroup}\n")
+        if cmdline is not None:
+            (process / "cmdline").write_bytes(
+                ("\0".join(cmdline) + "\0").encode()
+            )
 
     def standard_processes(
         self,
@@ -116,9 +121,11 @@ class IdentityFixture(unittest.TestCase):
         cwd: Path | str | None = None,
         pane: str | None = "%7",
         cgroup: str | None = "/agent.slice/a.scope",
+        caller_cmdline: tuple[str, ...] = ("fixture-process",),
+        parent_cmdline: tuple[str, ...] = ("fixture-process",),
     ) -> None:
         self.add_process(1, 0, environ=True)
-        self.add_process(50, 1, agent=parent_agent)
+        self.add_process(50, 1, agent=parent_agent, cmdline=parent_cmdline)
         self.add_process(
             100,
             50,
@@ -126,6 +133,7 @@ class IdentityFixture(unittest.TestCase):
             pane=pane,
             cwd=cwd if cwd is not None else self.repo / "worktrees" / "slot-a" / "hermit",
             cgroup=cgroup,
+            cmdline=caller_cmdline,
         )
 
     def resolve(self, *, task: str | None = "task-a") -> agent_identity.Resolution:
@@ -323,13 +331,83 @@ class ResolutionTests(IdentityFixture):
         self.assertEqual("UNRESOLVED", result.state)
         self.assertEqual(2, result.exit_code)
 
-    def test_schema_one_json_never_asserts_agent_on_disagreement(self) -> None:
+    def test_schema_two_json_never_asserts_agent_on_disagreement(self) -> None:
         self.write_state(owners=("agent-b",), sidecar_agent="agent-b")
         self.standard_processes()
         payload = json.loads(self.resolve(task=None).to_json())
-        self.assertEqual(1, payload["schema"])
+        self.assertEqual(2, payload["schema"])
         self.assertEqual("DISAGREEMENT", payload["state"])
         self.assertIsNone(payload["agent"])
+        self.assertEqual("unresolved", payload["model"])
+
+    def test_explicit_codex_model_is_resolved_from_process_cmdline(self) -> None:
+        self.standard_processes(
+            caller_cmdline=("codex", "--model", "gpt-5.6-sol", "--sandbox", "workspace-write")
+        )
+        result = self.resolve()
+        self.assertEqual("AGREEMENT", result.state)
+        self.assertEqual("gpt-5.6-sol", result.model)
+        self.assertEqual("process-cmdline", result.model_source)
+        signal = next(s for s in result.signals if s.source == "process-model")
+        self.assertEqual("resolved", signal.state)
+
+    def test_cli_model_slug_is_passed_through_verbatim_without_mapping(self) -> None:
+        self.standard_processes(
+            caller_cmdline=("codex", "--model", "vendor/model:vNext+preview")
+        )
+        result = self.resolve()
+        self.assertEqual("vendor/model:vNext+preview", result.model)
+
+    def test_literal_model_punctuation_is_not_normalized(self) -> None:
+        self.standard_processes(
+            caller_cmdline=("codex", "--model", "'gpt-5.6-sol'")
+        )
+        result = self.resolve()
+        self.assertEqual("'gpt-5.6-sol'", result.model)
+
+    def test_explicit_claude_model_equals_form_is_resolved(self) -> None:
+        self.standard_processes(
+            parent_cmdline=("/usr/local/bin/claude", "--model=claude-opus-5")
+        )
+        result = self.resolve()
+        self.assertEqual("claude-opus-5", result.model)
+
+    def test_codex_config_model_is_resolved_but_reasoning_effort_is_not(self) -> None:
+        self.standard_processes(
+            caller_cmdline=(
+                "codex",
+                "--config",
+                "model_reasoning_effort=high",
+                "-c",
+                "model=gpt-5.6-sol",
+            )
+        )
+        result = self.resolve()
+        self.assertEqual("gpt-5.6-sol", result.model)
+
+    def test_absent_explicit_model_is_literal_unresolved_not_a_guess(self) -> None:
+        self.standard_processes(caller_cmdline=("codex", "exec", "task"))
+        result = self.resolve()
+        self.assertEqual("unresolved", result.model)
+        self.assertIsNone(result.model_source)
+
+    def test_model_text_on_non_client_shell_cmdline_is_not_parsed(self) -> None:
+        self.standard_processes(
+            caller_cmdline=("bash", "-lc", "post body containing --model gpt-forged")
+        )
+        result = self.resolve()
+        self.assertEqual("unresolved", result.model)
+
+    def test_conflicting_explicit_models_are_unresolved_not_nearest_guess(self) -> None:
+        self.standard_processes(
+            caller_cmdline=("codex", "--model", "gpt-5.6-sol"),
+            parent_cmdline=("claude", "--model", "claude-opus-5"),
+        )
+        result = self.resolve()
+        self.assertEqual("AGREEMENT", result.state)
+        self.assertEqual("unresolved", result.model)
+        signal = next(s for s in result.signals if s.source == "process-model")
+        self.assertEqual("ambiguous", signal.state)
 
 
 class CliTests(IdentityFixture):
