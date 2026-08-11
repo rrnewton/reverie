@@ -308,6 +308,84 @@ Claude+Codex reviews against rebased heads — or stay on the drain lanes and le
 team that owns that code? Reviewing ~70 critical determinism changes is a large, slow commitment
 and I would rather be told to make it than assume it.
 
+## Q12 — Reverie pin currency is strict equality, so every Reverie commit invalidates every outstanding Hermit receipt (probable root cause of the backlog)
+
+This is the most consequential thing found tonight and I think it explains the drain far better
+than anything else in this document.
+
+`ci-hub/qualifying_receipt.py:572`, inside a function whose docstring reads *"Assert strict
+mutable-tip currency exactly once before merge"*:
+
+```python
+if row["reverie_base_sha"] != current_reverie_base:
+    return BaseVerdict.REVERIE_BASE_NOT_CURRENT
+```
+
+**Strict equality, not ancestry.** A Hermit receipt is admissible at land time only if the Reverie
+SHA it was validated against *is* Reverie's current tip.
+
+Measured 2026-08-11: Hermit `main` pins `99437f05e82377…` across five `Cargo.toml` files; Reverie
+`origin/main` is `349460925ee56f…`. **Reverie moved twice in a few hours** (`99437f05 → 4664b5e5 →
+3494609`).
+
+**The consequence.** Every Reverie commit invalidates every outstanding Hermit receipt at once.
+Combined with a **box-exclusive validate lock at ~7 runs/hour shared fleet-wide**, the window in
+which a Hermit PR can be validated *and* landed before Reverie moves again is narrow, and it
+resets for the whole queue each time. This was found by bisecting why `land-pr.sh` refuses
+#2113 at step 5b with the exact-head authority passing twice; it is not specific to that PR and
+will block every Hermit landing through that lander.
+
+It also cascades: landing a pin bump immediately invalidates every *other* pending receipt,
+including the ones that were green a minute earlier.
+
+**Question:** is strict tip-equality the intended rule while Reverie is under active development?
+Three plausible relaxations, none of which I will pick unilaterally because each trades away real
+assurance:
+
+1. **Ancestry instead of equality** — require the validated Reverie SHA to be an ancestor of
+   Reverie `main`, so a receipt stays admissible if Reverie has only moved *forward*. Loses the
+   guarantee that Hermit was tested against exactly what it will build with.
+2. **Equality against the pin, not the tip** — assert the receipt matches what Hermit's
+   `Cargo.toml` actually pins, and enforce pin currency separately and deliberately. Decouples
+   "did you test what you ship" from "is your pin fresh".
+3. **Keep it, and batch pin bumps** — accept the coupling, but land Reverie changes in scheduled
+   batches so the invalidation happens on a known cadence instead of continuously.
+
+I have authorized only the conservative path meanwhile: a standalone pin-bump PR to `3494609`,
+validated on its own, kept out of any consolidation. An agent correctly refused to bump the shared
+cross-repo pin from inside a CI-harness batch, which would have buried it where no reviewer would
+look for it.
+
+## Q13 — the worktree registry records a branch at allocation and never writes it back
+
+Small, but it fail-closes unrelated destructive work, and the shape recurs.
+
+`release-worktree.rs --clean` runs a **registry-wide** verifier and refuses to remove *any* slot
+while *any* row is stale. Tonight an authorized reclaim of three already-merged slots was blocked
+by two unrelated rows:
+
+```
+DRIFT slot=claude-1     hermit recorded=detached                  actual=fix/e2e-applications-hermetic-guest-cwd
+DRIFT slot=drain-corpus hermit recorded=drain/test-corpus-batch-1 actual=drain/test-corpus-batch-4
+worktree-registry: FAIL rows=23 correct_rows=21 drift_rows=2 product_cells=69 drift_cells=2
+```
+
+Both drifts are **benign in origin**: the registry records the branch at *allocation* time and has
+no write-back when an agent legitimately switches branches, so any long-lived slot accrues drift
+simply by being worked in. Both were our slots and both are being re-recorded through
+`allocate-worktree.rs`, which is the sanctioned adoption move. Nobody forced or hand-edited
+anything.
+
+The fail-closed design is right — refusing a destructive operation while its model of the world is
+known-stale is the correct trade. Two cheap fixes would preserve that while removing the false
+block: a branch write-back on the allocate/release path, or treating recorded-vs-actual branch
+drift in an *active* slot as advisory while keeping it fatal for the slot actually being cleaned.
+
+Worth noting this is the same defect shape as the classification census triple (#2118) and the
+`mechanism:`-label discipline (#2116): **a recorded value that must be manually kept in sync with
+reality, with nothing enforcing the sync.** Three instances in one night suggests it is a pattern
+worth naming in policy rather than fixing three times.
+
 ## Not questions — flagged for awareness
 
 - **ORC is down for two independent reasons.** `~/.tg/active_db` names `hermit`, but
