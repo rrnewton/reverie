@@ -23,6 +23,7 @@ COMMENT = PLUGIN / "gh-coord-comment"
 PR_CREATE = PLUGIN / "gh-coord-pr-create"
 AGENTS_MD = Path(__file__).resolve().parent.parent / "AGENTS.md"
 TEAM_TAG = "[orc-coord-014]"
+COMMENT_IDENTITY = ("--who", "codex-boundary", "--team", "hermit2", "--role", "coordinator")
 
 
 def run(script: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -35,7 +36,19 @@ class CommentPrefixTests(unittest.TestCase):
     """The first line must carry [orc-coord-014]; three distinct outcomes."""
 
     def comment(self, body: str, repo: str = "rrnewton/hermit"):
-        return run(COMMENT, "--repo", repo, "1844", "--body", body, "--check-only")
+        return run(
+            COMMENT, *COMMENT_IDENTITY, "--repo", repo, "1844", "--body", body,
+            "--check-only",
+        )
+
+    def test_missing_who_is_refused(self) -> None:
+        r = run(
+            COMMENT, "--team", "hermit2", "--role", "coordinator",
+            "--repo", "rrnewton/hermit", "1844", "--body", "anonymous",
+            "--check-only",
+        )
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("missing required --who", r.stderr)
 
     def test_missing_prefix_is_normalised_not_refused(self) -> None:
         # The comment is wanted; only the attribution is missing.
@@ -82,7 +95,7 @@ class DestinationRestrictionTests(unittest.TestCase):
     """rrnewton only; upstream refused, and refused rather than redirected."""
 
     def test_upstream_comment_is_refused(self) -> None:
-        r = run(COMMENT, "--repo", "facebookexperimental/hermit", "1",
+        r = run(COMMENT, *COMMENT_IDENTITY, "--repo", "facebookexperimental/hermit", "1",
                 "--body", "x", "--check-only")
         self.assertEqual(r.returncode, 2)
         self.assertIn("internal task tracker", r.stderr)
@@ -90,13 +103,19 @@ class DestinationRestrictionTests(unittest.TestCase):
         self.assertIn("NOT a redirect", r.stderr)
 
     def test_unrelated_repo_is_refused(self) -> None:
-        r = run(COMMENT, "--repo", "someone/else", "1", "--body", "x", "--check-only")
+        r = run(
+            COMMENT, *COMMENT_IDENTITY, "--repo", "someone/else", "1",
+            "--body", "x", "--check-only",
+        )
         self.assertEqual(r.returncode, 2)
         self.assertIn("restricted to rrnewton", r.stderr)
 
     def test_rrnewton_is_accepted(self) -> None:
         for repo in ("rrnewton/hermit", "rrnewton/reverie", "rrnewton/dev-hermit"):
-            r = run(COMMENT, "--repo", repo, "1", "--body", "x", "--check-only")
+            r = run(
+                COMMENT, *COMMENT_IDENTITY, "--repo", repo, "1", "--body", "x",
+                "--check-only",
+            )
             self.assertEqual(r.returncode, 0, f"{repo}: {r.stderr}")
 
     def test_upstream_pr_creation_is_refused(self) -> None:
@@ -143,9 +162,9 @@ class PolicyTextTests(unittest.TestCase):
         self.assertIn("exact final machine token matching `devbigNNN`", self.text)
 
     def test_agents_md_requires_the_tag_on_all_three_surfaces(self) -> None:
-        self.assertIn("each commit's final line", self.text)
-        self.assertIn("PR description opening line", self.text)
-        self.assertIn("cross-team GitHub comment prefix", self.text)
+        self.assertIn("every commit's final line", self.text)
+        self.assertIn("PR-description opening", self.text)
+        self.assertIn("cross-team comment prefix", self.text)
 
     def test_wrappers_are_executable(self) -> None:
         for script in (COMMENT, PR_CREATE):

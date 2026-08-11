@@ -1,26 +1,80 @@
 #!/usr/bin/env python3
-"""Mutation brackets for the fleet-aware gh write boundary."""
+"""Mutation-sensitive brackets for the fleet GitHub write boundary."""
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
+import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SHIM = ROOT / "ci-hub/bin/gh"
+SOURCE_SHIM = Path(os.environ.get("FLEET_GH_UNDER_TEST", ROOT / "ci-hub/bin/gh"))
+TEST_AGENT = os.environ.get("DG_AGENT_NAME", "codex-boundary")
+
+
+def owner_row(agent: str = TEST_AGENT, *, sidecar: bool = True) -> dict:
+    cgroup = "/user.slice/test-boundary.service"
+    task = "test-who-is-talking"
+    row = {
+        "status": "active",
+        "task": task,
+        "agents": [{"name": agent, "read_only": False, "task": task}],
+        "coordinator_lease": {
+            "schema_version": 1,
+            "source": "codex-systemd-sentinel-v1",
+            "main_pid": 4242,
+            "main_pid_starttime": 101,
+            "cgroup_path": cgroup,
+        },
+    }
+    if sidecar:
+        row["owner_sidecar"] = {
+            "schema_version": 1,
+            "source": "codex-systemd-sentinel-v1",
+            "slot": "slot01",
+            "agent": agent,
+            "task": task,
+            "recorded_at": "2026-08-11T00:00:00Z",
+            "generation": "boot:4242:101",
+            "supervisor_pid": 4242,
+            "boot_id": "boot",
+            "start_ticks": 101,
+            "tmux_pane_id": None,
+            "cgroup_path": cgroup,
+        }
+    return row
 
 
 class FleetGhTest(unittest.TestCase):
+    def test_installed_boundary_is_executable(self) -> None:
+        self.assertTrue(SOURCE_SHIM.stat().st_mode & 0o111, SOURCE_SHIM)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        root = Path(self.temp.name)
-        self.capture = root / "capture.json"
-        self.fake = root / "real-gh"
+        self.root = Path(self.temp.name)
+        (self.root / "ci-hub/bin").mkdir(parents=True)
+        (self.root / "ci-hub/lib").mkdir(parents=True)
+        self.shim = self.root / "ci-hub/bin/gh"
+        shutil.copy2(SOURCE_SHIM, self.shim)
+        self.shim.chmod(0o755)
+        for dependency in ("agent_identity.py", "taskgraph_db.py"):
+            shutil.copy2(ROOT / "ci-hub/lib" / dependency, self.root / "ci-hub/lib" / dependency)
+
+        self.slot = self.root / "worktrees/slot01"
+        self.cwd = self.slot / "hermit"
+        self.cwd.mkdir(parents=True)
+        (self.root / "worktree-state.lock").touch()
+        self.write_registry(owner_row())
+
+        self.capture = self.root / "capture.json"
+        self.fake = self.root / "real-gh"
         self.fake.write_text(
             "#!/usr/bin/env python3\n"
             "import json, os, sys\n"
@@ -29,101 +83,269 @@ class FleetGhTest(unittest.TestCase):
         )
         self.fake.chmod(0o755)
         self.env = os.environ.copy()
-        self.env.update(
-            FLEET_REAL_GH=str(self.fake),
-            GH_CAPTURE=str(self.capture),
-            DG_AGENT_NAME="codex-boundary",
-            AGENT_SESSION_ID="orc-session-123",
-        )
+        self.env.update(FLEET_REAL_GH=str(self.fake), GH_CAPTURE=str(self.capture))
+        self.env["DG_AGENT_NAME"] = TEST_AGENT
 
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def run_shim(self, *args: str, env: dict[str, str] | None = None):
+    def write_registry(self, row: dict) -> None:
+        (self.root / "worktree-state.json").write_text(
+            json.dumps({"slots": {"slot01": row}})
+        )
+
+    @staticmethod
+    def identity(
+        *, who: str = TEST_AGENT, team: str = "hermit2", role: str = "impl"
+    ) -> list[str]:
+        return ["--who", who, "--team", team, "--role", role]
+
+    def run_shim(
+        self,
+        *args: str,
+        env: dict[str, str] | None = None,
+        cwd: Path | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            [str(SHIM), *args], env=env or self.env, text=True, capture_output=True
+            [str(self.shim), *args],
+            env=env or self.env,
+            cwd=cwd or self.cwd,
+            text=True,
+            capture_output=True,
         )
 
     def captured(self) -> list[str]:
         return json.loads(self.capture.read_text())
 
-    def test_pr_comment_is_attributed_at_write_boundary(self) -> None:
-        result = self.run_shim("pr", "comment", "42", "--body", "evidence")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        body = self.captured()[self.captured().index("--body") + 1]
-        self.assertEqual(
-            body,
-            "[fleet-comment agent=codex-boundary session=orc-session-123] evidence",
+    def test_missing_who_is_distinct_and_refused_before_write(self) -> None:
+        result = self.run_shim(
+            "--team", "hermit2", "--role", "impl",
+            "pr", "comment", "42", "--body", "anonymous",
         )
-
-    def test_owner_shell_without_agent_identity_is_unchanged(self) -> None:
-        env = dict(self.env)
-        env.pop("DG_AGENT_NAME")
-        result = self.run_shim("pr", "comment", "42", "--body", "owner words", env=env)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.captured(), ["pr", "comment", "42", "--body", "owner words"])
-
-    def test_agent_without_session_is_refused_before_write(self) -> None:
-        env = dict(self.env)
-        for name in (
-            "AGENT_SESSION_ID", "ORC_AGENT_SESSION_ID", "CODEX_THREAD_ID",
-            "CLAUDE_CODE_PARENT_SESSION_ID", "META_3PAI_INVOCATION_ID",
-        ):
-            env.pop(name, None)
-        result = self.run_shim("pr", "comment", "42", "--body", "ambiguous", env=env)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("no fleet session identity", result.stderr)
+        self.assertIn("missing required --who", result.stderr)
+        self.assertNotIn("mismatch", result.stderr)
         self.assertFalse(self.capture.exists())
 
-    def test_review_without_body_gets_attribution_body(self) -> None:
-        result = self.run_shim("pr", "review", "42", "--approve")
+    def test_missing_team_or_role_is_refused_before_write(self) -> None:
+        cases = (
+            (["--who", TEST_AGENT, "--role", "impl"], "missing required --team"),
+            (["--who", TEST_AGENT, "--team", "hermit2"], "missing required --role"),
+        )
+        for supplied, expected in cases:
+            with self.subTest(expected=expected):
+                self.capture.unlink(missing_ok=True)
+                result = self.run_shim(
+                    *supplied, "pr", "comment", "42", "--body", "incomplete"
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(expected, result.stderr)
+                self.assertFalse(self.capture.exists())
+
+    def test_mismatched_who_is_distinct_and_refused_before_write(self) -> None:
+        result = self.run_shim(
+            *self.identity(who="someone-else"),
+            "pr", "comment", "42", "--body", "false claim",
+        )
+        self.assertNotEqual(
+            result.returncode,
+            0,
+            "MISMATCHED --who WAS POSTED after worktree-owner validation disappeared",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--who mismatch", result.stderr)
+        self.assertIn(f"process context resolves to '{TEST_AGENT}'", result.stderr)
+        self.assertNotIn("missing required --who", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+    def test_matching_who_posts_mechanical_four_field_prefix(self) -> None:
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "pr", "comment", "42", "--body", "evidence",
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        machine = socket.gethostname().split(".", 1)[0]
+        self.assertEqual(
+            body,
+            f"[hermit2, {TEST_AGENT}, {machine}, role=reviewer] evidence",
+        )
+
+    def test_shared_primary_cwd_uses_proven_process_identity(self) -> None:
+        result = self.run_shim(
+            *self.identity(),
+            "issue", "comment", "42", "--body", "from shared primary",
+            cwd=self.root,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        self.assertIn(f"[hermit2, {TEST_AGENT},", body)
+
+    def test_missing_sidecar_is_unavailable_but_proven_identity_still_posts(self) -> None:
+        self.write_registry(owner_row(sidecar=False))
+        result = self.run_shim(
+            *self.identity(),
+            "pr", "comment", "42", "--body", "legacy slot",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.capture.exists())
+
+    def test_missing_tmux_pane_is_unavailable_but_proven_identity_still_posts(self) -> None:
+        row = owner_row()
+        row["owner_sidecar"]["source"] = "orc-tmux-pane-supervisor-v1"
+        row.pop("coordinator_lease")
+        self.write_registry(row)
+        result = self.run_shim(
+            *self.identity(),
+            "pr", "comment", "42", "--body", "unadopted ORC slot",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.capture.exists())
+
+    def test_truly_unresolved_identity_is_explicitly_refused(self) -> None:
+        (self.root / "ci-hub/lib/agent_identity.py").write_text(
+            "class Signal:\n"
+            "    source='caller-environ'; state='unavailable'; detail='no inherited identity'\n"
+            "class Resolution:\n"
+            "    state='UNRESOLVED'; agent=None; basis=(); signals=(Signal(),)\n"
+            "def resolve_identity(pid): return Resolution()\n"
+        )
+        result = self.run_shim(
+            *self.identity(),
+            "pr", "comment", "42", "--body", "nobody established",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("owner unresolved", result.stderr)
+        self.assertIn("UNRESOLVED", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+    def test_role_can_disclose_a_relay(self) -> None:
+        result = self.run_shim(
+            *self.identity(role="relay:reviewer-verdict"),
+            "pr", "comment", "42", "--body", "relaying another verdict",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        self.assertIn("role=relay:reviewer-verdict]", body)
+
+    def test_review_without_body_gets_attribution_body(self) -> None:
+        result = self.run_shim(
+            *self.identity(role="reviewer"), "pr", "review", "42", "--approve"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        machine = socket.gethostname().split(".", 1)[0]
         self.assertEqual(
             self.captured()[-2:],
-            ["--body", "[fleet-comment agent=codex-boundary session=orc-session-123]"],
+            [
+                "--body",
+                f"[hermit2, {TEST_AGENT}, {machine}, role=reviewer]",
+            ],
         )
 
     def test_raw_api_comment_body_is_attributed(self) -> None:
         result = self.run_shim(
-            "api", "-X", "POST", "repos/o/r/issues/42/comments", "-f", "body=evidence"
+            *self.identity(),
+            "api", "-X", "POST", "repos/o/r/issues/42/comments", "-f", "body=evidence",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+        machine = socket.gethostname().split(".", 1)[0]
         self.assertIn(
-            "body=[fleet-comment agent=codex-boundary session=orc-session-123] evidence",
+            f"body=[hermit2, {TEST_AGENT}, {machine}, role=impl] evidence",
             self.captured(),
         )
 
     def test_raw_api_review_body_is_attributed(self) -> None:
         result = self.run_shim(
-            "api", "-X", "POST", "repos/o/r/pulls/42/reviews", "-f", "body=approved"
+            *self.identity(role="reviewer"),
+            "api", "-X", "POST", "repos/o/r/pulls/42/reviews", "-f", "body=approved",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(
-            "body=[fleet-comment agent=codex-boundary session=orc-session-123] approved",
-            self.captured(),
-        )
+        body = next(value for value in self.captured() if value.startswith("body="))
+        self.assertIn("role=reviewer] approved", body)
 
     def test_raw_graphql_comment_mutation_is_refused(self) -> None:
         result = self.run_shim(
-            "api", "graphql", "-f", "query=mutation { addDiscussionComment(input: {}) }"
+            *self.identity(),
+            "api", "graphql", "-f",
+            "query=mutation { addDiscussionComment(input: {}) }",
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("cannot be attributed safely", result.stderr)
         self.assertFalse(self.capture.exists())
 
-    def test_foreign_prefix_is_refused(self) -> None:
+    def test_foreign_existing_disclosure_is_refused(self) -> None:
         result = self.run_shim(
+            *self.identity(),
             "pr", "comment", "42", "--body",
-            "[fleet-comment agent=someone-else session=other]\n\nwords",
+            "[other, somebody, devbig999, role=impl] words",
         )
         self.assertEqual(result.returncode, 2)
-        self.assertIn("different agent or session", result.stderr)
+        self.assertIn("existing who-is-talking prefix conflicts", result.stderr)
         self.assertFalse(self.capture.exists())
 
-    def test_non_comment_command_passes_through(self) -> None:
+    def test_matching_existing_disclosure_is_not_duplicated(self) -> None:
+        machine = socket.gethostname().split(".", 1)[0]
+        body = f"[hermit2, {TEST_AGENT}, {machine}, role=impl] already attributed"
+        result = self.run_shim(
+            *self.identity(), "pr", "comment", "42", "--body", body
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        posted = self.captured()[self.captured().index("--body") + 1]
+        self.assertEqual(posted, body)
+        self.assertEqual(posted.count("[hermit2,"), 1)
+
+    def test_environment_and_ancestry_disagreement_is_an_additional_refusal(self) -> None:
+        env = dict(self.env, DG_AGENT_NAME="different-process-agent")
+        result = self.run_shim(
+            *self.identity(),
+            "pr", "comment", "42", "--body", "conflicting process context",
+            env=env,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("DISAGREEMENT", result.stderr)
+        self.assertNotIn("--who mismatch", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+    def test_non_comment_command_needs_no_identity_and_passes_through(self) -> None:
         result = self.run_shim("pr", "view", "42", "--json", "headRefOid")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.captured(), ["pr", "view", "42", "--json", "headRefOid"])
+
+    @unittest.skipIf(
+        bool(os.environ.get("FLEET_ATTRIBUTION_MUTATION_CHILD")),
+        "mutation child must not recurse",
+    )
+    def test_mutation_removing_owner_comparison_fails_on_mismatch_post(self) -> None:
+        mutant_dir = self.root / "mutant"
+        mutant_dir.mkdir()
+        mutant = mutant_dir / "gh"
+        source = SOURCE_SHIM.read_text()
+        needle = "if disclosure.agent != resolution.agent:"
+        replacement = (
+            "if False and disclosure.agent != resolution.agent:  "
+            "# MUTANT: resolved-owner comparison removed"
+        )
+        self.assertIn(needle, source, "mutation could not locate owner comparison")
+        mutant.write_text(source.replace(needle, replacement, 1))
+        mutant.chmod(0o755)
+        env = dict(
+            os.environ,
+            FLEET_GH_UNDER_TEST=str(mutant),
+            FLEET_ATTRIBUTION_MUTATION_CHILD="1",
+        )
+        child = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "FleetGhTest.test_mismatched_who_is_distinct_and_refused_before_write",
+            ],
+            env=env,
+            text=True,
+            capture_output=True,
+        )
+        combined = child.stdout + child.stderr
+        self.assertNotEqual(child.returncode, 0, combined)
+        self.assertIn("MISMATCHED --who WAS POSTED", combined)
 
 
 if __name__ == "__main__":

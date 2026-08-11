@@ -1,35 +1,69 @@
 #!/usr/bin/env python3
 """Fleet-aware boundary for GitHub CLI comment writes.
 
-Agents intentionally share the repository owner's GitHub credential.  That is
-acceptable for repository access, but an unmarked comment made with that token
-is indistinguishable from the owner's own speech.  When ``DG_AGENT_NAME`` is
-present, this shim prefixes every supported comment/review body with the exact
-agent and session that caused the write.  Human shells (no ``DG_AGENT_NAME``)
-pass through byte-for-byte.
+Every supported comment/review write requires caller-supplied ``--who``,
+``--team``, and ``--role`` arguments.  The boundary resolves the caller through
+the shared process-context authority (inherited agent identity, ancestry, cwd
+slot owner, pane, cgroup, sidecar, and TaskGraph where readable) and refuses
+unless the result is AGREEMENT and ``--who`` equals the resolved agent.
 
-This is deliberately a write-boundary control, not a prose convention.  It
-also refuses comment mutation shapes it cannot safely rewrite rather than
-letting a fleet comment silently impersonate the owner.
+The resulting disclosure prefix is mechanical, not authentication::
+
+    [team-slug, agent-name, machine-shortname, role=artifact-role]
+
+A shared GitHub credential still cannot prove who typed the arguments.  The
+independent process-context comparison makes a false claim falsifiable; it does
+not turn the prefix into identity or review-family authority.
+
+Truly unresolvable ownership is deliberately fail-closed for every comment
+lane.  A missing cwd, pane, or sidecar remains an explicit unavailable signal
+but is not by itself UNRESOLVED when inherited process identity is proven and
+all readable signals agree.  DISAGREEMENT and UNRESOLVED always REFUSE; callers
+may not self-classify a write as non-critical to bypass either outcome.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import socket
 import subprocess
 import sys
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 
-PREFIX_RE = re.compile(
-    r"^\[fleet-comment agent=(?P<agent>[A-Za-z0-9_.-]+) "
-    r"session=(?P<session>[A-Za-z0-9_.:/-]+)\]"
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "ci-hub/lib"))
+
+import agent_identity  # noqa: E402
+
+
+TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+ROLE_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
+DISCLOSURE_RE = re.compile(
+    r"^\[(?P<team>[A-Za-z0-9_.-]+), "
+    r"(?P<agent>[A-Za-z0-9_.-]+), "
+    r"(?P<machine>[A-Za-z0-9_.-]+), "
+    r"role=(?P<role>[A-Za-z0-9_.:/-]+)\]"
 )
-IDENT_RE = re.compile(r"^[A-Za-z0-9_.:/-]+$")
 
 
-def die(message: str) -> "NoReturn":
+@dataclass(frozen=True)
+class Disclosure:
+    team: str
+    agent: str
+    machine: str
+    role: str
+
+    @property
+    def prefix(self) -> str:
+        return f"[{self.team}, {self.agent}, {self.machine}, role={self.role}]"
+
+
+def die(message: str) -> NoReturn:
     print(f"fleet-gh: REFUSE: {message}", file=sys.stderr)
     raise SystemExit(2)
 
@@ -46,45 +80,100 @@ def real_gh() -> str:
     die("could not locate the real gh binary (set FLEET_REAL_GH)")
 
 
-def fleet_identity() -> tuple[str, str] | None:
-    agent = os.environ.get("DG_AGENT_NAME", "")
-    if not agent:
-        return None
-    session = next(
-        (
-            os.environ.get(name, "")
-            for name in (
-                "AGENT_SESSION_ID",
-                "ORC_AGENT_SESSION_ID",
-                "CODEX_THREAD_ID",
-                "CLAUDE_CODE_PARENT_SESSION_ID",
-                "META_3PAI_INVOCATION_ID",
-            )
-            if os.environ.get(name, "")
-        ),
-        "",
-    )
-    if not IDENT_RE.fullmatch(agent):
-        die(f"DG_AGENT_NAME is not a safe identity token: {agent!r}")
-    if not session:
-        die("DG_AGENT_NAME is set but no fleet session identity is available")
-    if not IDENT_RE.fullmatch(session):
-        die("fleet session identity contains unsupported characters")
-    return agent, session
+def _option_value(args: list[str], index: int, name: str) -> tuple[str, int] | None:
+    arg = args[index]
+    if arg == name:
+        if index + 1 >= len(args):
+            die(f"{name} requires a value")
+        return args[index + 1], 2
+    if arg.startswith(name + "="):
+        return arg.split("=", 1)[1], 1
+    return None
 
 
-def attributed(body: str, identity: tuple[str, str]) -> str:
-    agent, session = identity
-    wanted = f"[fleet-comment agent={agent} session={session}]"
-    existing = PREFIX_RE.match(body)
+def disclosure_options(args: list[str]) -> tuple[list[str], dict[str, str]]:
+    """Strip boundary-only identity options from ordinary gh argv."""
+
+    remaining: list[str] = []
+    values: dict[str, str] = {}
+    index = 0
+    while index < len(args):
+        matched = False
+        for name, key in (("--who", "who"), ("--team", "team"), ("--role", "role")):
+            parsed = _option_value(args, index, name)
+            if parsed is None:
+                continue
+            if key in values:
+                die(f"{name} was supplied more than once")
+            value, consumed = parsed
+            values[key] = value
+            index += consumed
+            matched = True
+            break
+        if not matched:
+            remaining.append(args[index])
+            index += 1
+    return remaining, values
+
+
+def required_disclosure(values: Mapping[str, str]) -> Disclosure:
+    if not values.get("who"):
+        die("missing required --who for a GitHub comment/review write")
+    if not values.get("team"):
+        die("missing required --team for a GitHub comment/review write")
+    if not values.get("role"):
+        die("missing required --role for a GitHub comment/review write")
+    agent, team, role = values["who"], values["team"], values["role"]
+    if TOKEN_RE.fullmatch(agent) is None:
+        die(f"--who is not a safe agent token: {agent!r}")
+    if TOKEN_RE.fullmatch(team) is None:
+        die(f"--team is not a safe team token: {team!r}")
+    if ROLE_RE.fullmatch(role) is None:
+        die(f"--role is not a safe artifact-role token: {role!r}")
+    machine = socket.gethostname().split(".", 1)[0]
+    if TOKEN_RE.fullmatch(machine) is None:
+        die(f"derived machine shortname is not a safe token: {machine!r}")
+    return Disclosure(team=team, agent=agent, machine=machine, role=role)
+
+
+def validate_disclosure(disclosure: Disclosure) -> None:
+    resolution = agent_identity.resolve_identity(os.getpid())
+    if resolution.state != "AGREEMENT" or not resolution.agent:
+        evidence = "; ".join(
+            f"{signal.source}={signal.state}"
+            + (f":{signal.detail}" if signal.detail else "")
+            for signal in resolution.signals
+        )
+        die(
+            f"owner unresolved: identity resolver returned {resolution.state}; "
+            f"no comment was posted; signals={evidence}"
+        )
+    if disclosure.agent != resolution.agent:
+        die(
+            f"--who mismatch: claimed {disclosure.agent!r}, but process context "
+            f"resolves to {resolution.agent!r} via {','.join(resolution.basis) or 'primary identity'}"
+        )
+
+
+def attributed(body: str, disclosure: Disclosure) -> str:
+    existing = DISCLOSURE_RE.match(body)
     if existing:
-        if existing.group("agent") != agent or existing.group("session") != session:
-            die("existing fleet-comment prefix names a different agent or session")
+        observed = (
+            existing.group("team"),
+            existing.group("agent"),
+            existing.group("machine"),
+            existing.group("role"),
+        )
+        wanted = (
+            disclosure.team,
+            disclosure.agent,
+            disclosure.machine,
+            disclosure.role,
+        )
+        if observed != wanted:
+            die("existing who-is-talking prefix conflicts with validated disclosure")
         return body
-    # Keep an existing role/team tag on the first line.  The repository policy
-    # requires those tags there, while this prefix adds the speaker identity
-    # that a shared GitHub account cannot supply.
-    return f"{wanted} {body}" if body else wanted
+    return f"{disclosure.prefix} {body}" if body else disclosure.prefix
 
 
 def body_option(args: list[str]) -> tuple[int, int, str] | None:
@@ -109,14 +198,16 @@ def body_option(args: list[str]) -> tuple[int, int, str] | None:
     return None
 
 
-def rewrite_body_option(args: list[str], identity: tuple[str, str], *, required: bool) -> list[str]:
+def rewrite_body_option(
+    args: list[str], disclosure: Disclosure, *, required: bool
+) -> list[str]:
     found = body_option(args)
     if found is None:
         if required:
-            return args + ["--body", attributed("", identity)]
+            return args + ["--body", attributed("", disclosure)]
         die("comment command has no supported --body/--body-file argument")
     index, consumed, body = found
-    return args[:index] + ["--body", attributed(body, identity)] + args[index + consumed :]
+    return args[:index] + ["--body", attributed(body, disclosure)] + args[index + consumed :]
 
 
 def api_method(args: list[str]) -> str:
@@ -161,17 +252,31 @@ def is_comment_endpoint(endpoint: str) -> bool:
     )
 
 
-def rewrite_api(args: list[str], identity: tuple[str, str]) -> list[str]:
+def is_comment_write(args: list[str]) -> bool:
+    if len(args) >= 2 and args[:2] in (
+        ["pr", "comment"],
+        ["issue", "comment"],
+        ["pr", "review"],
+    ):
+        return True
+    if not args or args[0] != "api":
+        return False
     if len(args) > 1 and args[1] == "graphql":
         joined = "\n".join(args[2:])
-        if re.search(
+        return re.search(
             r"\b(addComment|addDiscussionComment|addPullRequestReview|"
             r"updateIssueComment|updatePullRequestReview|"
             r"updatePullRequestReviewComment)\b",
             joined,
-        ):
-            die("raw GraphQL comment mutations cannot be attributed safely")
-        return args
+        ) is not None
+    return api_method(args) in {"POST", "PATCH", "PUT"} and is_comment_endpoint(
+        api_endpoint(args)
+    )
+
+
+def rewrite_api(args: list[str], disclosure: Disclosure) -> list[str]:
+    if len(args) > 1 and args[1] == "graphql":
+        die("raw GraphQL comment mutations cannot be attributed safely")
     method = api_method(args)
     endpoint = api_endpoint(args)
     if method not in {"POST", "PATCH", "PUT"} or not is_comment_endpoint(endpoint):
@@ -183,31 +288,32 @@ def rewrite_api(args: list[str], identity: tuple[str, str]) -> list[str]:
             if args[index + 1].startswith("body="):
                 body = args[index + 1].split("=", 1)[1]
                 rewritten = list(args)
-                rewritten[index + 1] = f"body={attributed(body, identity)}"
+                rewritten[index + 1] = f"body={attributed(body, disclosure)}"
                 return rewritten
         for prefix in ("--raw-field=body=", "--field=body="):
             if arg.startswith(prefix):
                 rewritten = list(args)
-                rewritten[index] = f"{prefix}{attributed(arg[len(prefix):], identity)}"
+                rewritten[index] = f"{prefix}{attributed(arg[len(prefix):], disclosure)}"
                 return rewritten
     die(f"raw API comment mutation {method} {endpoint} has no supported body field")
 
 
-def rewrite(args: list[str], identity: tuple[str, str]) -> list[str]:
+def rewrite(args: list[str], disclosure: Disclosure) -> list[str]:
     if len(args) >= 2 and args[:2] in (["pr", "comment"], ["issue", "comment"]):
-        return rewrite_body_option(args, identity, required=False)
+        return rewrite_body_option(args, disclosure, required=False)
     if len(args) >= 2 and args[:2] == ["pr", "review"]:
-        return rewrite_body_option(args, identity, required=True)
+        return rewrite_body_option(args, disclosure, required=True)
     if args and args[0] == "api":
-        return rewrite_api(args, identity)
+        return rewrite_api(args, disclosure)
     return args
 
 
 def main() -> int:
-    args = sys.argv[1:]
-    identity = fleet_identity()
-    if identity is not None:
-        args = rewrite(args, identity)
+    args, supplied = disclosure_options(sys.argv[1:])
+    if is_comment_write(args):
+        disclosure = required_disclosure(supplied)
+        validate_disclosure(disclosure)
+        args = rewrite(args, disclosure)
     return subprocess.run([real_gh(), *args]).returncode
 
 

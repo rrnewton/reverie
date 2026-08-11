@@ -29,18 +29,21 @@
 # the fork" is a different thread, and upstream syncs into Meta's internal task
 # tracker (see AGENTS.md, Bot-Created GitHub Issue Policy).
 #
-#   gh-coord-comment --repo rrnewton/hermit 1844 --body "text"
-#   gh-coord-comment --repo rrnewton/hermit --pr 1719 --body-file note.md
-#   gh-coord-comment --repo rrnewton/hermit 1844 --body "x" --check-only  # no network
+#   gh-coord-comment --who codex-1 --team hermit2 --role coordinator \
+#     --repo rrnewton/hermit 1844 --body "text"
+#   gh-coord-comment --who codex-1 --team hermit2 --role relay:reviewer-verdict \
+#     --repo rrnewton/hermit --pr 1719 --body-file note.md
 
 set -euo pipefail
 
 readonly TEAM_TAG="[orc-coord-014]"
 readonly DEFAULT_HTTPS_PROXY="http://fwdproxy:8080"
-readonly PLUGIN_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
+PLUGIN_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
+readonly PLUGIN_ROOT
 # GH_BIN remains an offline-test seam. Production always crosses the fleet-aware
-# comment boundary, which adds exact agent+session identity before this team's
-# existing role tag. A shared owner credential must never be the speaker ID.
+# comment boundary, which validates --who against process context and emits the
+# four-field disclosure before this team's legacy tag. A shared owner credential
+# must never be the speaker ID.
 readonly GH_COMMAND="${GH_BIN:-$PLUGIN_ROOT/ci-hub/bin/gh}"
 
 repo="${GH_REPO:-}"
@@ -49,6 +52,9 @@ kind="issue"
 body=""
 body_source="none"
 check_only=0
+who=""
+team=""
+role=""
 
 die() { echo "error: $*" >&2; exit 2; }
 
@@ -56,6 +62,12 @@ while (($# > 0)); do
   case "$1" in
     -R|--repo)   (($# >= 2)) || die "$1 requires a repository"; repo="$2"; shift 2 ;;
     --repo=*)    repo="${1#*=}"; shift ;;
+    --who)       (($# >= 2)) || die "--who requires an agent"; who="$2"; shift 2 ;;
+    --who=*)     who="${1#*=}"; shift ;;
+    --team)      (($# >= 2)) || die "--team requires a slug"; team="$2"; shift 2 ;;
+    --team=*)    team="${1#*=}"; shift ;;
+    --role)      (($# >= 2)) || die "--role requires an artifact role"; role="$2"; shift 2 ;;
+    --role=*)    role="${1#*=}"; shift ;;
     --pr)        (($# >= 2)) || die "--pr requires a number"; kind="pr"; target="$2"; shift 2 ;;
     --issue)     (($# >= 2)) || die "--issue requires a number"; kind="issue"; target="$2"; shift 2 ;;
     -b|--body)   (($# >= 2)) || die "$1 requires a value"; body="$2"; body_source="arg"; shift 2 ;;
@@ -73,6 +85,9 @@ done
 [[ -n "$target" ]] || die "pass the issue/PR number (or --pr N / --issue N)"
 [[ "$body_source" != "none" ]] || die "pass --body or --body-file"
 [[ -n "${body//[[:space:]]/}" ]] || die "refusing to post an empty comment"
+[[ -n "$who" ]] || die "missing required --who"
+[[ -n "$team" ]] || die "missing required --team"
+[[ -n "$role" ]] || die "missing required --role"
 
 # Normalise the destination the same way gh-issue-create does.
 if [[ -z "$repo" ]]; then
@@ -104,11 +119,13 @@ else
 fi
 
 if ((check_only)); then
-  printf 'repo=%s kind=%s target=%s\n' "$repo" "$kind" "$target"
+  printf 'repo=%s kind=%s target=%s who=%s team=%s role=%s\n' \
+    "$repo" "$kind" "$target" "$who" "$team" "$role"
   printf '%s\n' "$body"
   exit 0
 fi
 
 export HTTPS_PROXY="${HTTPS_PROXY:-$DEFAULT_HTTPS_PROXY}"
 unset GH_REPO
-exec "$GH_COMMAND" "$kind" comment "$target" --repo "$repo" --body "$body"
+exec "$GH_COMMAND" --who "$who" --team "$team" --role "$role" \
+  "$kind" comment "$target" --repo "$repo" --body "$body"
