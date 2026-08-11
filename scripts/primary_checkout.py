@@ -112,6 +112,7 @@ _COMMAND_PHASE: ContextVar[str | None] = ContextVar(
 #: pathologically slow preamble can still squeeze this phase, and that is
 #: deliberate -- widening the outer bound to fit the work is the trade this
 #: whole line of work exists to refuse.
+PARENT_MAIN_WRITE_PHASE = "serialized parent-main snapshot commit"
 PARENT_MAIN_WRITE_PHASE_BUDGET_SECS = 20.0
 
 
@@ -976,7 +977,7 @@ def publish_parent_snapshot(
         return SNAPSHOT_BLOCKED
 
     with _phase(
-        "serialized parent-main snapshot commit",
+        PARENT_MAIN_WRITE_PHASE,
         PARENT_MAIN_WRITE_PHASE_BUDGET_SECS,
     ):
         publish = run_parent_main_write(
@@ -1233,30 +1234,82 @@ def checkout_fresh(
             else str(command)
         )
         phase = getattr(error, "primary_checkout_phase", None) or _COMMAND_PHASE.get()
+        published = _published_snapshot_after_timeout(root, phase)
+        if published:
+            print(
+                f"SUCCESS: parent snapshot {published} was committed and published "
+                "before the wrapper deadline expired; no retry is required.",
+                file=out,
+            )
+            print(
+                "WARNING: primary checkout snapshot exceeded its inner deadline "
+                "after publication; reporting the child's durable outcome rather "
+                "than the wrapper timeout.",
+                file=err,
+            )
+            _print_timed_child_output(error, err)
+            return SNAPSHOT_PUBLISHED
         print(
             "ERROR: primary checkout snapshot inner deadline exhausted"
             + (f" in phase [{phase}]" if phase else "")
             + f" while running: {rendered}",
             file=err,
         )
-        # PRESERVE WHAT THE KILLED CHILD MANAGED TO SAY. `capture_output=True`
-        # means its stdout/stderr exist on the exception and are otherwise
-        # discarded, so the cut would destroy the only account of how far the
-        # step got -- which is the outer kill's defect, reproduced one layer in.
-        # strict_compat was undiagnosable for hours for exactly this reason.
-        for label, stream in (("stdout", error.stdout), ("stderr", error.stderr)):
-            if not stream:
-                continue
-            text = stream.decode("utf-8", "replace") if isinstance(stream, bytes) else stream
-            text = text.strip()
-            if not text:
-                continue
-            print(f"--- killed child {label} (preserved) ---", file=err)
-            print(text, file=err)
+        _print_timed_child_output(error, err)
         return SNAPSHOT_BLOCKED
     finally:
         if token is not None:
             _COMMAND_DEADLINE.reset(token)
+
+
+def _published_snapshot_after_timeout(root: Path, phase: str | None) -> str:
+    """Return the exact already-published snapshot SHA, or an empty string.
+
+    This is deliberately local and read-only. A successful push updates the
+    remote-tracking ref; requiring it to equal the committed local main keeps a
+    preserved success transcript from becoming authority by itself. Clearing
+    the expired context only permits these bounded local observations -- it
+    does not extend or relaunch the child.
+    """
+
+    if phase != PARENT_MAIN_WRITE_PHASE:
+        return ""
+    token = _COMMAND_DEADLINE.set(None)
+    try:
+        branch = run_git(root, "branch", "--show-current")
+        head = run_git(root, "rev-parse", "HEAD")
+        published = run_git(root, "rev-parse", "refs/remotes/origin/main")
+        subject = run_git(root, "show", "-s", "--format=%s", "HEAD")
+    finally:
+        _COMMAND_DEADLINE.reset(token)
+    observations = (branch, head, published, subject)
+    if any(result.returncode != 0 for result in observations):
+        return ""
+    head_sha = head.stdout.strip()
+    if (
+        branch.stdout.strip() != "main"
+        or not FULL_SHA.fullmatch(head_sha)
+        or published.stdout.strip() != head_sha
+        or subject.stdout.strip() != SNAPSHOT_COMMIT_MESSAGE
+    ):
+        return ""
+    return head_sha
+
+
+def _print_timed_child_output(error: subprocess.TimeoutExpired, stream: TextIO) -> None:
+    """Preserve child output without interpreting its prose as authority."""
+
+    # `capture_output=True` leaves both streams on the exception. The durable
+    # repository boundary above decides success; these bytes remain diagnostic.
+    for label, output in (("stdout", error.stdout), ("stderr", error.stderr)):
+        if not output:
+            continue
+        text = output.decode("utf-8", "replace") if isinstance(output, bytes) else output
+        text = text.strip()
+        if not text:
+            continue
+        print(f"--- timed child {label} (preserved) ---", file=stream)
+        print(text, file=stream)
 
 
 @dataclass(frozen=True)

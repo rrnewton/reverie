@@ -423,6 +423,27 @@ _PrimaryFixture = _ParentWorkspaceFixture
 
 
 class PrimaryCheckoutDeadlineTests(unittest.TestCase):
+    def snapshot_boundary(
+        self, *, published: bool
+    ) -> tuple[tempfile.TemporaryDirectory, Path, str]:
+        temp = tempfile.TemporaryDirectory()
+        root = Path(temp.name)
+        git(root, "init", "-b", "main")
+        git(root, "config", "user.email", "snapshot-test@example.com")
+        git(root, "config", "user.name", "Snapshot Test")
+        (root / "seed").write_text("initial\n")
+        git(root, "add", "seed")
+        git(root, "commit", "-m", "initial parent")
+        initial = git(root, "rev-parse", "HEAD")
+        git(root, "update-ref", "refs/remotes/origin/main", initial)
+        (root / "seed").write_text("snapshot\n")
+        git(root, "add", "seed")
+        git(root, "commit", "-m", primary_checkout.SNAPSHOT_COMMIT_MESSAGE)
+        head = git(root, "rev-parse", "HEAD")
+        if published:
+            git(root, "update-ref", "refs/remotes/origin/main", head)
+        return temp, root, head
+
     def test_active_deadline_bounds_each_owned_child(self) -> None:
         completed = subprocess.CompletedProcess(["git"], 0, "", "")
         token = primary_checkout._COMMAND_DEADLINE.set(110.0)
@@ -454,6 +475,57 @@ class PrimaryCheckoutDeadlineTests(unittest.TestCase):
         self.assertIn("inner deadline exhausted", err.getvalue())
         self.assertIn("with-proxy git ls-remote", err.getvalue())
         self.assertIsNone(primary_checkout._COMMAND_DEADLINE.get())
+
+    def test_slow_child_published_snapshot_reports_success_not_wrapper_error(self) -> None:
+        temp, root, head = self.snapshot_boundary(published=True)
+        self.addCleanup(temp.cleanup)
+        timeout = subprocess.TimeoutExpired(
+            ["scripts/parent-main-write", "commit"],
+            20.0,
+            output=f"[main {head[:7]}] {primary_checkout.SNAPSHOT_COMMIT_MESSAGE}\n",
+        )
+        timeout.primary_checkout_phase = primary_checkout.PARENT_MAIN_WRITE_PHASE
+        out, err = StringIO(), StringIO()
+        with patch.object(
+            primary_checkout,
+            "_checkout_fresh_impl",
+            side_effect=timeout,
+        ):
+            result = primary_checkout.checkout_fresh(
+                root, deadline_secs=24.0, out=out, err=err
+            )
+
+        self.assertEqual(primary_checkout.SNAPSHOT_PUBLISHED, result)
+        self.assertIn(f"SUCCESS: parent snapshot {head}", out.getvalue())
+        self.assertIn("exceeded its inner deadline after publication", err.getvalue())
+        self.assertNotIn("ERROR:", err.getvalue())
+        self.assertIn("timed child stdout (preserved)", err.getvalue())
+
+    def test_timed_child_without_published_boundary_still_reports_error(self) -> None:
+        temp, root, head = self.snapshot_boundary(published=False)
+        self.addCleanup(temp.cleanup)
+        timeout = subprocess.TimeoutExpired(
+            ["scripts/parent-main-write", "commit"],
+            20.0,
+            output=(
+                f"[main {head[:7]}] {primary_checkout.SNAPSHOT_COMMIT_MESSAGE}\n"
+                "To github.com:rrnewton/dev-hermit.git old..new\n"
+            ),
+        )
+        timeout.primary_checkout_phase = primary_checkout.PARENT_MAIN_WRITE_PHASE
+        out, err = StringIO(), StringIO()
+        with patch.object(
+            primary_checkout,
+            "_checkout_fresh_impl",
+            side_effect=timeout,
+        ):
+            result = primary_checkout.checkout_fresh(
+                root, deadline_secs=24.0, out=out, err=err
+            )
+
+        self.assertEqual(primary_checkout.SNAPSHOT_BLOCKED, result)
+        self.assertIn("ERROR: primary checkout snapshot inner deadline exhausted", err.getvalue())
+        self.assertNotIn("SUCCESS:", out.getvalue())
 
 
 class PrimaryCheckoutTests(_ParentWorkspaceFixture):
