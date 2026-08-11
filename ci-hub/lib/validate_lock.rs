@@ -47,6 +47,7 @@ const DEFAULT_WAIT_SECONDS: u64 = 1_800;
 const DEFAULT_HOLD_SECONDS: u64 = 900;
 const POLL_SECONDS: u64 = 3;
 const GUARD_WAIT_SECONDS: u64 = 30;
+const GLOBAL_QUEUE_DECLARATION_TTL_SECONDS: i64 = 86_400;
 /// Box-exclusive cap. Raising this is UNPROVEN: detcore_misc false-FAILED
 /// residual is monotonic in load (`experiments/multisect_detcore_misc_20260803`),
 /// so >1 requires hermit-250 evidence, not a config pick.
@@ -147,6 +148,9 @@ pub struct ValidateLockArgs {
 
 #[derive(Subcommand, Clone, Debug)]
 pub enum ValidateLockCommand {
+    /// Declare the priority for one future run. The declaration is inert until
+    /// that exact agent/kind/target reaches the box-global queue.
+    Prioritize(PrioritizeArgs),
     /// Wait in FIFO order and acquire the box-exclusive lease.
     Acquire(AcquireArgs),
     /// Refresh a lease owned by this agent.
@@ -168,6 +172,62 @@ pub enum ValidateLockCommand {
     /// Acquire and run with a heartbeat + child-deadline; release after complete
     /// cleanup proof, otherwise retain a quarantine.
     Run(RunArgs),
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum QueuePriority {
+    OwnerDirective,
+    Expedited,
+    Prepared,
+    Routine,
+}
+
+impl QueuePriority {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::OwnerDirective => "owner-directive",
+            Self::Expedited => "expedited",
+            Self::Prepared => "prepared",
+            Self::Routine => "routine",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, ValidateLockError> {
+        match value {
+            "owner-directive" => Ok(Self::OwnerDirective),
+            "expedited" => Ok(Self::Expedited),
+            "prepared" => Ok(Self::Prepared),
+            "routine" => Ok(Self::Routine),
+            other => Err(ValidateLockError::InvalidState(format!(
+                "unknown queue priority {other:?}"
+            ))),
+        }
+    }
+
+    fn rank(self, agent: &str) -> u8 {
+        if agent == OWNER_WATCH_AGENT {
+            0
+        } else {
+            match self {
+                Self::OwnerDirective => 1,
+                Self::Expedited => 2,
+                Self::Prepared => 3,
+                Self::Routine => 4,
+            }
+        }
+    }
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct PrioritizeArgs {
+    #[arg(long)]
+    pub agent: String,
+    #[arg(long, value_enum)]
+    pub kind: Kind,
+    #[arg(long)]
+    pub target: String,
+    #[arg(long, value_enum)]
+    pub priority: QueuePriority,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -527,6 +587,93 @@ impl QueueEntry {
 
     fn render(&self) -> String {
         format!("{}\t{}\t{}\n", self.enqueued_at, self.agent, self.target)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GlobalQueueEntry {
+    enqueued_at: i64,
+    priority: QueuePriority,
+    agent: String,
+    kind: Kind,
+    target: String,
+    owner: Option<ProcessOwner>,
+}
+
+impl GlobalQueueEntry {
+    fn parse(line: &str, line_number: usize) -> Result<Self, ValidateLockError> {
+        let fields: Vec<_> = line.split('\t').collect();
+        if fields.len() != 10 {
+            return Err(ValidateLockError::InvalidState(format!(
+                "global queue line {line_number} must have ten tab-separated fields"
+            )));
+        }
+        let parse_u32 = |name: &str, value: &str| {
+            let parsed = parse_integer(name, value)?;
+            u32::try_from(parsed).map_err(|_| {
+                ValidateLockError::InvalidState(format!("{name} is outside u32: {value:?}"))
+            })
+        };
+        let parse_u64 = |name: &str, value: &str| {
+            let parsed = parse_integer(name, value)?;
+            u64::try_from(parsed).map_err(|_| {
+                ValidateLockError::InvalidState(format!("{name} is negative: {value:?}"))
+            })
+        };
+        let owner = match fields[5] {
+            "declared" => {
+                if fields[6..] != ["-", "-", "0", "0"] {
+                    return Err(ValidateLockError::InvalidState(format!(
+                        "global queue line {line_number} has identity fields on an inactive declaration"
+                    )));
+                }
+                None
+            }
+            "active" => Some(ProcessOwner {
+                host: fields[6].to_string(),
+                boot_id: fields[7].to_string(),
+                pid: parse_u32("global queue owner pid", fields[8])?,
+                start_ticks: parse_u64("global queue owner start_ticks", fields[9])?,
+            }),
+            state => {
+                return Err(ValidateLockError::InvalidState(format!(
+                    "global queue line {line_number} has unknown state {state:?}"
+                )))
+            }
+        };
+        Ok(Self {
+            enqueued_at: parse_integer("global queue timestamp", fields[0])?,
+            priority: QueuePriority::parse(fields[1])?,
+            agent: fields[2].to_string(),
+            kind: Kind::parse(fields[3])?,
+            target: fields[4].to_string(),
+            owner,
+        })
+    }
+
+    fn render(&self) -> String {
+        let (state, host, boot_id, pid, start_ticks) = match &self.owner {
+            Some(owner) => (
+                "active",
+                owner.host.as_str(),
+                owner.boot_id.as_str(),
+                owner.pid,
+                owner.start_ticks,
+            ),
+            None => ("declared", "-", "-", 0, 0),
+        };
+        format!(
+            "{}\t{}\t{}\t{}\t{}\t{state}\t{host}\t{boot_id}\t{pid}\t{start_ticks}\n",
+            self.enqueued_at,
+            self.priority.as_str(),
+            self.agent,
+            self.kind.as_str(),
+            self.target,
+        )
+    }
+
+    fn matches(&self, agent: &str, kind: Kind, target: &str) -> bool {
+        self.agent == agent && self.kind == kind && self.target == target
     }
 }
 
@@ -1312,11 +1459,23 @@ enum AcquireToken {
     },
 }
 
+enum GlobalTurn {
+    Acquired(BoxExclusionAnchor),
+    WaitPriority {
+        head_agent: String,
+        head_priority: QueuePriority,
+        own_priority: QueuePriority,
+        position: usize,
+    },
+    Held(String),
+}
+
 pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockError> {
     let lock = ValidateLock {
         paths: LockPaths::for_workspace(root),
     };
     match args.command {
+        ValidateLockCommand::Prioritize(args) => lock.prioritize(args),
         ValidateLockCommand::Acquire(args) => {
             reject_bad_max(args.max)?;
             base_admission_check(root, &args.target, args.kind, args.skip_base_check)?;
@@ -1514,6 +1673,373 @@ fn base_admission_check(
 }
 
 impl ValidateLock {
+    fn global_queue_path(&self) -> PathBuf {
+        suffix(&self.paths.anchor, ".priority-queue")
+    }
+
+    fn global_queue_guard_path(&self) -> PathBuf {
+        suffix(&self.paths.anchor, ".priority-queue.guard")
+    }
+
+    fn with_global_queue_guard<T>(
+        &self,
+        action: impl FnOnce() -> Result<T, ValidateLockError>,
+    ) -> Result<T, ValidateLockError> {
+        let path = self.global_queue_guard_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|source| io_error("create global queue directory", parent, source))?;
+        }
+        let guard = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .map_err(|source| io_error("open global queue guard", &path, source))?;
+        let deadline = Instant::now() + Duration::from_secs(GUARD_WAIT_SECONDS);
+        loop {
+            match guard.try_lock_exclusive() {
+                Ok(()) => break,
+                Err(source) if source.kind() == io::ErrorKind::WouldBlock => {
+                    if Instant::now() >= deadline {
+                        return Err(ValidateLockError::GuardTimeout);
+                    }
+                    thread::sleep(Duration::from_millis(100));
+                }
+                Err(source) => {
+                    return Err(io_error("lock global queue guard", &path, source));
+                }
+            }
+        }
+        let result = action();
+        let unlock = FileExt::unlock(&guard)
+            .map_err(|source| io_error("unlock global queue guard", &path, source));
+        match (result, unlock) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
+        }
+    }
+
+    fn read_global_queue(&self) -> Result<Vec<GlobalQueueEntry>, ValidateLockError> {
+        let path = self.global_queue_path();
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(source) => return Err(io_error("read global priority queue", &path, source)),
+        };
+        let queue: Vec<_> = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .enumerate()
+            .map(|(index, line)| GlobalQueueEntry::parse(line, index + 1))
+            .collect::<Result<_, _>>()?;
+        for (index, entry) in queue.iter().enumerate() {
+            if queue[..index]
+                .iter()
+                .any(|prior| prior.matches(&entry.agent, entry.kind, &entry.target))
+            {
+                return Err(ValidateLockError::InvalidState(format!(
+                    "global priority queue has duplicate identity agent={} kind={} target={}; refusing ambiguous admission",
+                    entry.agent,
+                    entry.kind.as_str(),
+                    entry.target
+                )));
+            }
+        }
+        Ok(queue)
+    }
+
+    fn write_global_queue(&self, queue: &[GlobalQueueEntry]) -> Result<(), ValidateLockError> {
+        let path = self.global_queue_path();
+        let temporary = suffix(&path, &format!(".tmp-{}", std::process::id()));
+        let mut content = String::new();
+        for entry in queue {
+            content.push_str(&entry.render());
+        }
+        fs::write(&temporary, content)
+            .map_err(|source| io_error("write global priority queue temp", &temporary, source))?;
+        fs::rename(&temporary, &path)
+            .map_err(|source| io_error("replace global priority queue", &path, source))
+    }
+
+    fn global_queue_owner_liveness(
+        &self,
+        owner: &ProcessOwner,
+    ) -> Result<OwnerLiveness, ValidateLockError> {
+        let host = current_host();
+        if host == "unknown" || owner.host != host {
+            return Ok(OwnerLiveness::Unknown(format!(
+                "queue owner host {} does not match observable host {host}",
+                owner.host
+            )));
+        }
+        let boot_id = current_boot_id()?;
+        if owner.boot_id != boot_id {
+            return Ok(OwnerLiveness::Dead(format!(
+                "queue owner boot {} differs from current boot {boot_id}",
+                owner.boot_id
+            )));
+        }
+        match process_start_ticks(owner.pid) {
+            Ok(observed) if observed == owner.start_ticks => Ok(OwnerLiveness::Alive),
+            Ok(observed) => Ok(OwnerLiveness::Dead(format!(
+                "queue owner pid {} start_ticks changed from {} to {observed}",
+                owner.pid, owner.start_ticks
+            ))),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(OwnerLiveness::Dead(
+                format!("queue owner pid {} no longer exists", owner.pid),
+            )),
+            Err(source) => Ok(OwnerLiveness::Unknown(format!(
+                "queue owner pid {} cannot be verified: {source}",
+                owner.pid
+            ))),
+        }
+    }
+
+    fn prune_and_sort_global_queue(
+        &self,
+        queue: &mut Vec<GlobalQueueEntry>,
+        now: i64,
+    ) -> Result<(), ValidateLockError> {
+        let mut retained = Vec::with_capacity(queue.len());
+        for entry in queue.drain(..) {
+            match &entry.owner {
+                None if entry.enqueued_at < now - GLOBAL_QUEUE_DECLARATION_TTL_SECONDS => {}
+                None => retained.push(entry),
+                Some(owner) => match self.global_queue_owner_liveness(owner)? {
+                    OwnerLiveness::Alive => retained.push(entry),
+                    OwnerLiveness::Dead(_) => {}
+                    OwnerLiveness::Unknown(reason) => {
+                        return Err(ValidateLockError::InvalidState(format!(
+                            "global priority queue owner is UNKNOWN for agent={} target={}: {reason}; absence is not permission",
+                            entry.agent, entry.target
+                        )))
+                    }
+                },
+            }
+        }
+        retained.sort_by(|left, right| {
+            left.owner
+                .is_none()
+                .cmp(&right.owner.is_none())
+                .then_with(|| {
+                    left.priority
+                        .rank(&left.agent)
+                        .cmp(&right.priority.rank(&right.agent))
+                })
+                // `sort_by` is stable, so same-second declarations retain the
+                // file's guard-serialized insertion order: equal priority is FIFO.
+                .then_with(|| left.enqueued_at.cmp(&right.enqueued_at))
+        });
+        *queue = retained;
+        Ok(())
+    }
+
+    fn prioritize(&self, args: PrioritizeArgs) -> Result<i32, ValidateLockError> {
+        for (name, value) in [
+            ("agent", args.agent.as_str()),
+            ("kind", args.kind.as_str()),
+            ("target", args.target.as_str()),
+        ] {
+            anchor_token(name, value)?;
+        }
+        let now = epoch_seconds()?;
+        let position = self.with_global_queue_guard(|| {
+            let mut queue = self.read_global_queue()?;
+            self.prune_and_sort_global_queue(&mut queue, now)?;
+            if let Some(entry) = queue
+                .iter_mut()
+                .find(|entry| entry.matches(&args.agent, args.kind, &args.target))
+            {
+                entry.priority = args.priority;
+            } else {
+                queue.push(GlobalQueueEntry {
+                    enqueued_at: now,
+                    priority: args.priority,
+                    agent: args.agent.clone(),
+                    kind: args.kind,
+                    target: args.target.clone(),
+                    owner: None,
+                });
+            }
+            self.prune_and_sort_global_queue(&mut queue, now)?;
+            let position = queue
+                .iter()
+                .filter(|entry| entry.owner.is_some())
+                .position(|entry| entry.matches(&args.agent, args.kind, &args.target));
+            self.write_global_queue(&queue)?;
+            Ok(position)
+        })?;
+        match position {
+            Some(position) => eprintln!(
+                "validate-lock: reprioritized ACTIVE waiter agent={} kind={} target={} priority={} position={}",
+                args.agent,
+                args.kind.as_str(),
+                args.target,
+                args.priority.as_str(),
+                position + 1
+            ),
+            None => eprintln!(
+                "validate-lock: DECLARED agent={} kind={} target={} priority={}; inert until that exact run enters the global queue",
+                args.agent,
+                args.kind.as_str(),
+                args.target,
+                args.priority.as_str()
+            ),
+        }
+        Ok(0)
+    }
+
+    fn try_global_turn(
+        &self,
+        args: &RunArgs,
+        owner: &ProcessOwner,
+        attribution: &str,
+    ) -> Result<GlobalTurn, ValidateLockError> {
+        let now = epoch_seconds()?;
+        self.with_global_queue_guard(|| {
+            let mut queue = self.read_global_queue()?;
+            self.prune_and_sort_global_queue(&mut queue, now)?;
+            if let Some(entry) = queue
+                .iter_mut()
+                .find(|entry| entry.matches(&args.agent, args.kind, &args.target))
+            {
+                match &entry.owner {
+                    None => entry.owner = Some(owner.clone()),
+                    Some(recorded) if recorded == owner => {}
+                    Some(recorded) => {
+                        return Err(ValidateLockError::InvalidState(format!(
+                            "global priority queue identity agent={} kind={} target={} is already owned by live pid {} start_ticks {}; refusing replacement by pid {} start_ticks {}",
+                            args.agent,
+                            args.kind.as_str(),
+                            args.target,
+                            recorded.pid,
+                            recorded.start_ticks,
+                            owner.pid,
+                            owner.start_ticks
+                        )))
+                    }
+                }
+            } else {
+                queue.push(GlobalQueueEntry {
+                    enqueued_at: now,
+                    priority: QueuePriority::Routine,
+                    agent: args.agent.clone(),
+                    kind: args.kind,
+                    target: args.target.clone(),
+                    owner: Some(owner.clone()),
+                });
+            }
+            self.prune_and_sort_global_queue(&mut queue, now)?;
+            let my_index = queue
+                .iter()
+                .position(|entry| entry.matches(&args.agent, args.kind, &args.target))
+                .ok_or_else(|| {
+                    ValidateLockError::InvalidState(
+                        "global priority queue lost the current run".into(),
+                    )
+                })?;
+            if my_index != 0 {
+                let head = &queue[0];
+                let result = GlobalTurn::WaitPriority {
+                    head_agent: head.agent.clone(),
+                    head_priority: head.priority,
+                    own_priority: queue[my_index].priority,
+                    position: my_index + 1,
+                };
+                self.write_global_queue(&queue)?;
+                return Ok(result);
+            }
+
+            let anchor = BoxExclusionAnchor::take_attributed(&self.paths.anchor, 0, attribution)
+                .map_err(|source| {
+                    io_error("take box exclusion anchor", &self.paths.anchor, source)
+                })?;
+            match anchor {
+                Some(anchor) => {
+                    queue.remove(my_index);
+                    self.write_global_queue(&queue)?;
+                    Ok(GlobalTurn::Acquired(anchor))
+                }
+                None => {
+                    let holder = BoxExclusionAnchor::describe_holder(&self.paths.anchor);
+                    self.write_global_queue(&queue)?;
+                    Ok(GlobalTurn::Held(holder))
+                }
+            }
+        })
+    }
+
+    fn remove_own_global_waiter(
+        &self,
+        args: &RunArgs,
+        owner: &ProcessOwner,
+    ) -> Result<(), ValidateLockError> {
+        self.with_global_queue_guard(|| {
+            let mut queue = self.read_global_queue()?;
+            queue.retain(|entry| {
+                !(entry.matches(&args.agent, args.kind, &args.target)
+                    && entry.owner.as_ref() == Some(owner))
+            });
+            self.write_global_queue(&queue)
+        })
+    }
+
+    fn wait_for_global_turn(
+        &self,
+        args: &RunArgs,
+        owner: &ProcessOwner,
+        attribution: &str,
+    ) -> Result<Option<BoxExclusionAnchor>, ValidateLockError> {
+        let started = Instant::now();
+        let mut last = String::new();
+        loop {
+            match self.try_global_turn(args, owner, attribution)? {
+                GlobalTurn::Acquired(anchor) => return Ok(Some(anchor)),
+                GlobalTurn::WaitPriority {
+                    head_agent,
+                    head_priority,
+                    own_priority,
+                    position,
+                } => {
+                    let token = format!(
+                        "priority:{head_agent}:{}:{position}",
+                        head_priority.as_str()
+                    );
+                    if token != last {
+                        eprintln!(
+                            "validate-lock: YIELD priority={} position={position}; earlier-or-higher-priority queue head agent={head_agent} priority={}",
+                            own_priority.as_str(),
+                            head_priority.as_str()
+                        );
+                        last = token;
+                    }
+                }
+                GlobalTurn::Held(holder) => {
+                    let token = format!("held:{holder}");
+                    if token != last {
+                        eprintln!(
+                            "validate-lock: waiting in declared-priority queue; live holder retained: {holder}"
+                        );
+                        last = token;
+                    }
+                }
+            }
+            if args.no_wait || started.elapsed() >= Duration::from_secs(args.wait) {
+                self.remove_own_global_waiter(args, owner)?;
+                eprintln!(
+                    "REFUSED: declared-priority queue did not grant agent={} target={} within {}s",
+                    args.agent,
+                    args.target,
+                    started.elapsed().as_secs()
+                );
+                return Ok(None);
+            }
+            thread::sleep(Duration::from_secs(POLL_SECONDS));
+        }
+    }
+
     fn cleanup_verification(&self, holder: Option<&ValidateLockState>) -> CleanupVerification {
         let operation = holder.map(|holder| format!("{}:{}", holder.kind, holder.target));
         let expected = holder
@@ -1805,10 +2331,35 @@ impl ValidateLock {
         wait: u64,
         hold: u64,
     ) -> Result<i32, ValidateLockError> {
+        self.acquire_ordered(agent, kind, target, wait, hold, true)
+    }
+
+    fn acquire_after_global_turn(
+        &self,
+        agent: &str,
+        kind: Kind,
+        target: &str,
+        wait: u64,
+        hold: u64,
+    ) -> Result<i32, ValidateLockError> {
+        self.acquire_ordered(agent, kind, target, wait, hold, false)
+    }
+
+    fn acquire_ordered(
+        &self,
+        agent: &str,
+        kind: Kind,
+        target: &str,
+        wait: u64,
+        hold: u64,
+        honor_repository_fifo: bool,
+    ) -> Result<i32, ValidateLockError> {
         let started = Instant::now();
         let mut last = String::new();
         loop {
-            let token = self.with_guard(|| self.try_acquire(agent, kind, target, hold))?;
+            let token = self.with_guard(|| {
+                self.try_acquire_ordered(agent, kind, target, hold, honor_repository_fifo)
+            })?;
             match token {
                 AcquireToken::Acquired => {
                     eprintln!(
@@ -1884,6 +2435,7 @@ impl ValidateLock {
         }
     }
 
+    #[cfg(test)]
     fn try_acquire(
         &self,
         agent: &str,
@@ -1891,11 +2443,32 @@ impl ValidateLock {
         target: &str,
         hold: u64,
     ) -> Result<AcquireToken, ValidateLockError> {
+        self.try_acquire_ordered(agent, kind, target, hold, true)
+    }
+
+    fn try_acquire_after_global_turn(
+        &self,
+        agent: &str,
+        kind: Kind,
+        target: &str,
+        hold: u64,
+    ) -> Result<AcquireToken, ValidateLockError> {
+        self.try_acquire_ordered(agent, kind, target, hold, false)
+    }
+
+    fn try_acquire_ordered(
+        &self,
+        agent: &str,
+        kind: Kind,
+        target: &str,
+        hold: u64,
+        honor_repository_fifo: bool,
+    ) -> Result<AcquireToken, ValidateLockError> {
         let now = epoch_seconds()?;
         let holder = self.read_holder()?;
         self.require_no_cleanup(holder.as_ref())?;
         let mut queue = self.read_queue()?;
-        if !queue.iter().any(|entry| entry.agent == agent) {
+        if honor_repository_fifo && !queue.iter().any(|entry| entry.agent == agent) {
             queue.push(QueueEntry {
                 enqueued_at: now,
                 agent: agent.to_string(),
@@ -1904,10 +2477,14 @@ impl ValidateLock {
         }
         let cutoff = now - (2 * DEFAULT_WAIT_SECONDS) as i64;
         queue.retain(|entry| entry.enqueued_at >= cutoff);
-        let my_index = queue
-            .iter()
-            .position(|entry| entry.agent == agent)
-            .unwrap_or(0);
+        let my_index = if honor_repository_fifo {
+            queue
+                .iter()
+                .position(|entry| entry.agent == agent)
+                .unwrap_or(0)
+        } else {
+            0
+        };
 
         let dead_owner = if holder.as_ref().is_some_and(|holder| holder.live_at(now)) {
             match self.owner_liveness()? {
@@ -1959,7 +2536,7 @@ impl ValidateLock {
 
         // The watch is the priority acquirer at a yielded free boundary. This
         // is queue ordering only — never signalling, reclaiming, or preemption.
-        if agent != OWNER_WATCH_AGENT {
+        if honor_repository_fifo && agent != OWNER_WATCH_AGENT {
             if let Some(head) = queue.first() {
                 if head.agent != agent {
                     let head_agent = head.agent.clone();
@@ -2702,9 +3279,39 @@ impl ValidateLock {
     }
 
     fn print_queue(&self) -> Result<(), ValidateLockError> {
+        let global = self.with_global_queue_guard(|| self.read_global_queue())?;
+        if !global.is_empty() {
+            println!("global priority queue:");
+            let mut active_position = 0;
+            for entry in &global {
+                match &entry.owner {
+                    Some(owner) => {
+                        active_position += 1;
+                        println!(
+                            "  {:>6}\tpriority={} agent={} kind={} target={} owner={}:{}:{}",
+                            active_position,
+                            entry.priority.as_str(),
+                            entry.agent,
+                            entry.kind.as_str(),
+                            entry.target,
+                            owner.pid,
+                            owner.boot_id,
+                            owner.start_ticks
+                        );
+                    }
+                    None => println!(
+                        "  declared\tpriority={} agent={} kind={} target={}",
+                        entry.priority.as_str(),
+                        entry.agent,
+                        entry.kind.as_str(),
+                        entry.target
+                    ),
+                }
+            }
+        }
         let queue = self.read_queue()?;
         if !queue.is_empty() {
-            println!("queue (FIFO):");
+            println!("repository compatibility queue (FIFO):");
             for (index, entry) in queue.iter().enumerate() {
                 print!("  {:>6}\t{}", index + 1, entry.render());
             }
@@ -3078,15 +3685,13 @@ impl ValidateLock {
             return Ok(yield_status);
         }
 
-        // BOX-GLOBAL ANCHOR, TAKEN OUTERMOST AND HELD FOR THE WHOLE RUN.
+        // BOX-GLOBAL PRIORITY QUEUE, THEN ANCHOR, BOTH BEFORE REPOSITORY STATE.
         //
-        // Before this, exclusion was per selected lease file, so two roots admitted
-        // 2/2 concurrently. The anchor is taken BEFORE any lease work so a loser
-        // waits without holding its own repository's lease, and AFTER
-        // `base_admission_check` so a stale-base validate is refused without ever
-        // occupying the box. `_box_anchor` lives until `run` returns; the kernel
-        // drops the flock if this supervisor dies, which is why it can never wedge
-        // the box the way a stale record can.
+        // The old order took the anchor first and reached a repository-local FIFO
+        // second. Independent clones therefore raced for the flock and timing chose
+        // the winner. The global queue guard now admits exactly its declared head
+        // to try the anchor. `_box_anchor` still lives until `run` returns; queue
+        // ordering never releases, signals, or preempts it.
         //
         // RESIDUE, stated rather than papered over: the flock spans the SUPERVISOR,
         // so an escaped payload that outlives its supervisor releases the anchor
@@ -3094,22 +3699,9 @@ impl ValidateLock {
         // cleanup quarantine, which is unchanged and still consulted below; ACROSS
         // repositories it is not. Closing that needs a box-global durable record,
         // which is a different change from this one.
-        let wait_budget = if args.no_wait { 0 } else { args.wait };
-        let _box_anchor = match BoxExclusionAnchor::take_attributed(
-            &self.paths.anchor,
-            wait_budget,
-            &anchor_attribution,
-        )
-        .map_err(|source| io_error("take box exclusion anchor", &self.paths.anchor, source))?
-        {
+        let _box_anchor = match self.wait_for_global_turn(&args, &owner, &anchor_attribution)? {
             Some(anchor) => anchor,
             None => {
-                eprintln!(
-                    "REFUSED: box-exclusive anchor held by {}; this box admits one \
-                     validate or benchmark at a time across ALL checkouts and \
-                     clones, not one per lock file",
-                    BoxExclusionAnchor::describe_holder(&self.paths.anchor)
-                );
                 return Ok(REFUSED_EXIT_CODE);
             }
         };
@@ -3138,8 +3730,9 @@ impl ValidateLock {
         // Admission: block FIFO, or refuse immediately under --no-wait. Never
         // silently admit a second box-exclusive holder.
         if args.no_wait {
-            let token = self
-                .with_guard(|| self.try_acquire(&args.agent, args.kind, &args.target, args.hold))?;
+            let token = self.with_guard(|| {
+                self.try_acquire_after_global_turn(&args.agent, args.kind, &args.target, args.hold)
+            })?;
             match token {
                 AcquireToken::Acquired => eprintln!(
                     "validate-lock: ACQUIRED by {} running {} {} (lease {}s)",
@@ -3190,8 +3783,13 @@ impl ValidateLock {
                 }
             }
         } else {
-            let acquire_status =
-                self.acquire(&args.agent, args.kind, &args.target, args.wait, args.hold)?;
+            let acquire_status = self.acquire_after_global_turn(
+                &args.agent,
+                args.kind,
+                &args.target,
+                args.wait,
+                args.hold,
+            )?;
             if acquire_status != 0 {
                 return Ok(acquire_status);
             }
@@ -4952,6 +5550,24 @@ mod tests {
             QueueEntry::parse(entry.render().trim_end(), 1).unwrap(),
             entry
         );
+
+        let global = GlobalQueueEntry {
+            enqueued_at: 1785770488,
+            priority: QueuePriority::OwnerDirective,
+            agent: "codex-timeouts".into(),
+            kind: Kind::Validate,
+            target: HEX_SHA.into(),
+            owner: Some(ProcessOwner {
+                host: "testhost".into(),
+                boot_id: "boot-1".into(),
+                pid: 42,
+                start_ticks: 99,
+            }),
+        };
+        assert_eq!(
+            GlobalQueueEntry::parse(global.render().trim_end(), 1).unwrap(),
+            global
+        );
     }
 
     // 2. N=3 sequential jobs with the priority watch admitted at each free
@@ -6567,6 +7183,160 @@ exit 0
         );
         drop(held);
         let _ = fs::remove_dir_all(record.parent().unwrap());
+    }
+
+    fn global_queue_run_args(agent: &str, target: &str) -> RunArgs {
+        RunArgs {
+            agent: agent.into(),
+            kind: Kind::Validate,
+            target: target.into(),
+            run_record: None,
+            no_wait: false,
+            wait: 30,
+            hold: 30,
+            child_deadline: 30,
+            max: 1,
+            skip_base_check: false,
+            child: vec![OsString::from("/bin/true")],
+        }
+    }
+
+    /// PRIORITY BRACKET + NO-PREEMPTION BRACKET. Both waiters arrive while an
+    /// unrelated live holder owns the anchor. The higher-priority waiter moves
+    /// to the head, the lower waiter yields, and neither operation changes or
+    /// releases the holder. Only after the holder drops does the head acquire.
+    #[test]
+    fn lower_priority_yields_without_preempting_live_holder() {
+        let paths = temp_paths("global-priority-yield");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let live_holder = BoxExclusionAnchor::take(&paths.anchor, 0).unwrap().unwrap();
+        let holder_before = fs::read_to_string(&paths.anchor).unwrap();
+        let low = global_queue_run_args("prepared-agent", HEX_SHA);
+        let high = global_queue_run_args(
+            "owner-directive-agent",
+            "1111111111111111111111111111111111111111",
+        );
+        lock.prioritize(PrioritizeArgs {
+            agent: low.agent.clone(),
+            kind: low.kind,
+            target: low.target.clone(),
+            priority: QueuePriority::Prepared,
+        })
+        .unwrap();
+        lock.prioritize(PrioritizeArgs {
+            agent: high.agent.clone(),
+            kind: high.kind,
+            target: high.target.clone(),
+            priority: QueuePriority::OwnerDirective,
+        })
+        .unwrap();
+        let owner = current_process_owner().unwrap();
+
+        assert!(matches!(
+            lock.try_global_turn(&low, &owner, "fixture=low").unwrap(),
+            GlobalTurn::Held(_)
+        ));
+        assert!(matches!(
+            lock.try_global_turn(&high, &owner, "fixture=high").unwrap(),
+            GlobalTurn::Held(_)
+        ));
+        assert!(matches!(
+            lock.try_global_turn(&low, &owner, "fixture=low").unwrap(),
+            GlobalTurn::WaitPriority {
+                head_agent,
+                head_priority: QueuePriority::OwnerDirective,
+                own_priority: QueuePriority::Prepared,
+                position: 2,
+            } if head_agent == high.agent
+        ));
+        assert_eq!(fs::read_to_string(&paths.anchor).unwrap(), holder_before);
+        assert!(
+            BoxExclusionAnchor::take(&paths.anchor, 0)
+                .unwrap()
+                .is_none(),
+            "queue ordering must never preempt a live holder"
+        );
+
+        drop(live_holder);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let admitted = loop {
+            match lock.try_global_turn(&high, &owner, "fixture=high").unwrap() {
+                GlobalTurn::Acquired(anchor) => break anchor,
+                GlobalTurn::Held(_) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                _ => panic!("higher-priority head did not acquire after holder release"),
+            }
+        };
+        assert!(
+            BoxExclusionAnchor::take(&paths.anchor, 0)
+                .unwrap()
+                .is_none(),
+            "admitted head must retain the anchor"
+        );
+        drop(admitted);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// Equal priorities preserve guard-serialized insertion order, including
+    /// declarations made within the same one-second timestamp bucket.
+    #[test]
+    fn equal_priority_global_waiters_are_fifo() {
+        let paths = temp_paths("global-priority-fifo");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let holder = BoxExclusionAnchor::take(&paths.anchor, 0).unwrap().unwrap();
+        let first = global_queue_run_args("z-first", HEX_SHA);
+        let second = global_queue_run_args("a-second", "2222222222222222222222222222222222222222");
+        for args in [&first, &second] {
+            lock.prioritize(PrioritizeArgs {
+                agent: args.agent.clone(),
+                kind: args.kind,
+                target: args.target.clone(),
+                priority: QueuePriority::Prepared,
+            })
+            .unwrap();
+        }
+        let owner = current_process_owner().unwrap();
+        assert!(matches!(
+            lock.try_global_turn(&first, &owner, "fixture=first")
+                .unwrap(),
+            GlobalTurn::Held(_)
+        ));
+        assert!(matches!(
+            lock.try_global_turn(&second, &owner, "fixture=second")
+                .unwrap(),
+            GlobalTurn::WaitPriority { head_agent, .. } if head_agent == first.agent
+        ));
+        drop(holder);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// A dead active waiter is mechanically pruned rather than wedging every
+    /// lower-priority run. UNKNOWN remains an error in the production helper.
+    #[test]
+    fn dead_global_waiter_is_pruned() {
+        let paths = temp_paths("global-priority-dead");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let now = epoch_seconds().unwrap();
+        let mut dead_owner = current_process_owner().unwrap();
+        dead_owner.pid = u32::MAX;
+        let mut queue = vec![GlobalQueueEntry {
+            enqueued_at: now,
+            priority: QueuePriority::OwnerDirective,
+            agent: "dead-priority".into(),
+            kind: Kind::Validate,
+            target: HEX_SHA.into(),
+            owner: Some(dead_owner),
+        }];
+        lock.prune_and_sort_global_queue(&mut queue, now).unwrap();
+        assert!(queue.is_empty());
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
     #[test]
