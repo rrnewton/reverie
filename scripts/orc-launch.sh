@@ -22,9 +22,11 @@
 #      still accepted.
 #   2. --sandbox and --model are NOT repeatable ("cannot be used multiple
 #      times"). Putting either in --codex-args collides with the flag ORC adds
-#      (--sandbox) or with the per-spawn --model, killing the pane at startup.
-#      So: no --sandbox and no --model here. The model is selected per spawn and
-#      by ~/.codex/config.toml (model = "gpt-5.6-sol").
+#      (--sandbox) or with a per-spawn --model, killing the pane at startup.
+#      So: no --sandbox and no --model here. Instead, select the model through
+#      Codex's repeatable --config model=SLUG form. This makes the selection
+#      process-visible without guessing whether a hidden config or the server
+#      would otherwise choose it.
 #   3. --dangerously-bypass-approvals-and-sandbox is rejected at runtime with
 #      "cannot be used with '--ask-for-approval'", which ORC always adds.
 #
@@ -36,6 +38,7 @@
 set -euo pipefail
 
 readonly DEFAULT_DB="hermit"
+readonly DEFAULT_CODEX_MODEL="gpt-5.6-sol"
 readonly GATED_CODEX_SANDBOX_FLAG="--dangerously-disable-linux-sandbox"
 readonly DEV_HERMIT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -69,8 +72,19 @@ codex_accepts_gated_sandbox_flag() {
     timeout 60 "$codex" "$GATED_CODEX_SANDBOX_FLAG" --version >/dev/null 2>&1
 }
 
+codex_model() {
+    local model="${ORC_CODEX_MODEL:-$DEFAULT_CODEX_MODEL}"
+    if [[ ! $model =~ ^[A-Za-z0-9][A-Za-z0-9._/+:~-]*$ ]]; then
+        echo "orc-launch: ORC_CODEX_MODEL must be a nonempty CLI model slug, got '$model'" >&2
+        return 2
+    fi
+    printf '%s' "$model"
+}
+
 codex_args() {
     local -a args=()
+    local model
+    model=$(codex_model) || return $?
 
     if [[ ${ORC_CODEX_FORCE_SANDBOX_FLAG:-} == 1 ]] || codex_accepts_gated_sandbox_flag; then
         args+=("$GATED_CODEX_SANDBOX_FLAG")
@@ -85,6 +99,7 @@ codex_args() {
 
     args+=(--dangerously-enable-internet-mode)
     # -c/--config IS repeatable, so this composes safely with per-spawn args.
+    args+=(--config "model=$model")
     args+=(--config model_reasoning_effort=xhigh)
 
     printf '%s' "${args[*]}"
@@ -104,12 +119,37 @@ Usage: scripts/orc-launch.sh [DB] [-- EXTRA_ORC_ARGS...]
 
 Launch ORC (default db: hermit) with --claude-args/--codex-args that the locally
 installed binaries accept. Read the header comment before changing either set:
---sandbox and --model are not repeatable and must never appear here.
+--sandbox and --model are not repeatable and must never appear here. Codex uses
+ORC_CODEX_MODEL when set, otherwise gpt-5.6-sol, through --config model=SLUG.
 EOF
 }
 
 self_test() {
-    local rc=0 out
+    local rc=0 out model tail
+
+    model="vendor/model:vNext+preview"
+    out=$(ORC_CODEX_MODEL="$model" ORC_CODEX_FORCE_SANDBOX_FLAG=1 codex_args)
+    [[ $out == *"--config model=$model"* ]] || {
+        echo "self-test: explicit Codex model was not emitted" >&2
+        rc=1
+    }
+    tail=${out#*"--config model=$model"}
+    [[ $tail != *"--config model="* ]] || {
+        echo "self-test: Codex model was emitted more than once" >&2
+        rc=1
+    }
+
+    out=$(ORC_CODEX_FORCE_SANDBOX_FLAG=1 codex_args)
+    [[ $out == *"--config model=$DEFAULT_CODEX_MODEL"* ]] || {
+        echo "self-test: default Codex model was not emitted" >&2
+        rc=1
+    }
+
+    if ORC_CODEX_MODEL='not,a,slug' ORC_CODEX_FORCE_SANDBOX_FLAG=1 \
+        codex_args >/dev/null 2>&1; then
+        echo "self-test: unsafe Codex model slug was accepted" >&2
+        rc=1
+    fi
 
     out=$(ORC_CODEX_FORCE_SANDBOX_FLAG=1 codex_args)
     [[ $out == *"$GATED_CODEX_SANDBOX_FLAG"* ]] || {
