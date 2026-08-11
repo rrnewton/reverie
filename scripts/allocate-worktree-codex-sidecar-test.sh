@@ -76,8 +76,6 @@ state = {
                 "task": "codex-sidecar-regression",
                 "read_only": False,
             }],
-            "task": "codex-sidecar-regression",
-            "purpose": "prove existing sentinel sidecar adoption",
             "hermit_path": "worktrees/codex-fixture/hermit",
             "reverie_path": "worktrees/codex-fixture/reverie",
             "liteinst2_path": "worktrees/codex-fixture/liteinst2",
@@ -122,5 +120,15 @@ assert sidecar["supervisor_pid"] == pid
 assert sidecar["start_ticks"] == start_ticks
 assert sidecar["cgroup_path"] == "/fixture/codex-fixture"
 assert row["coordinator_lease"]["generation"] == "fixture-generation"
+assert row["task"] == "codex-sidecar-regression"
+assert row["purpose"] == "prove existing sentinel sidecar adoption"
 print("PASS: existing Codex sentinel re-adoption published its exact owner sidecar")
 PY
+
+if ! grep -Fq \
+  '| codex-fixture | codex-fixture | detached | - | - | codex-sidecar-regression | active | no |' \
+  "$root/worktrees/ACTIVE.md"; then
+  echo "FAIL: ACTIVE.md omitted the sentinel-backed owner task"
+  sed 's/^/  /' "$root/worktrees/ACTIVE.md"
+  exit 1
+fi

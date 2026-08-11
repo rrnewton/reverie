@@ -2258,7 +2258,7 @@ fn main() {
             }
             // Slot-level task/purpose/branches describe the mutating OWNER. A
             // read-mostly sharer records its own task but cannot clobber these.
-            if !read_mostly && !codex_systemd_sentinel {
+            if !read_mostly {
                 if !task.is_empty() {
                     entry["task"] = json!(task.clone());
                 }
