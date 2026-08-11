@@ -658,25 +658,6 @@ impl E9patchBackend {
         }
     }
 
-    /// Runs a tool and captures the rewritten guest's stdout and stderr.
-    // TODO-HUMAN-REVIEW(PR-102): Review the public captured-output backend API.
-    pub async fn run_with_output<T>(
-        command: Command,
-        config: <T::GlobalState as GlobalTool>::Config,
-    ) -> Result<(Output, T::GlobalState), Error>
-    where
-        T: Tool + 'static,
-    {
-        let (tracer, resource, _stats) = Self::spawn::<T>(command, config, false).await?;
-        let result = tracer.wait_with_output().await;
-        let cleanup = resource.cleanup();
-        match (result, cleanup) {
-            (Ok(result), Ok(())) => Ok(result),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error.into()),
-        }
-    }
-
     /// Runs a tool with the rewritten ELF mounted at its original path.
     ///
     /// The caller must already be in a private mount namespace with permission
@@ -1080,6 +1061,30 @@ impl Backend for E9patchBackend {
         let cleanup = resource.cleanup();
         match (result, cleanup) {
             (Ok((status, global)), Ok(())) => Ok((status, global, stats.backend_stats())),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+        }
+    }
+
+    // TODO-HUMAN-REVIEW(PR-102): Review the public captured-output backend API.
+    async fn run_with_output<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(Output, T::GlobalState, Self::Stats), Error>
+    where
+        T: Tool + 'static,
+    {
+        // Pipe here rather than relying on the caller. The previous inherent
+        // `run_with_output` left this to whoever called it, so a caller that
+        // forgot returned empty buffers that were indistinguishable from a
+        // guest that printed nothing.
+        command.stdout(reverie::process::Stdio::piped());
+        command.stderr(reverie::process::Stdio::piped());
+        let (tracer, resource, stats) = Self::spawn::<T>(command, config, false).await?;
+        let result = tracer.wait_with_output().await;
+        let cleanup = resource.cleanup();
+        match (result, cleanup) {
+            (Ok((output, global)), Ok(())) => Ok((output, global, stats.backend_stats())),
             (Err(error), _) => Err(error),
             (Ok(_), Err(error)) => Err(error.into()),
         }
