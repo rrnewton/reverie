@@ -99,8 +99,9 @@ pub struct CensusOrphanedDomainArgs {
     #[arg(long)]
     pub operation: String,
     /// Must equal the recorded published `leader` as `<pid>:<start_ticks>`.
+    /// Omit for an incomplete residual record, which has no leader field.
     #[arg(long)]
-    pub leader: String,
+    pub leader: Option<String>,
     /// Must equal the recorded published `pgid`.
     #[arg(long)]
     pub pgid: u32,
@@ -851,7 +852,11 @@ impl LandingLock {
                 LandLockError::CleanupQuarantined(format!("ACTIVE: {reason}")),
             ),
             CleanupVerification::Uncensused { reason, .. } => Err(
-                LandLockError::CleanupQuarantined(format!("UNCENSUSED: {reason}")),
+                LandLockError::CleanupQuarantined(format!(
+                    "FLEET-WIDE landing quarantine: every land-lock acquisition is refused. \
+                     Discharge with `land-lock census-orphaned-domain` using the exact command \
+                     printed by `land-lock status`, then run `land-lock reclaim-dead`: {reason}"
+                )),
             ),
             CleanupVerification::Recoverable { reason, .. } => Err(
                 LandLockError::CleanupQuarantined(format!(
@@ -1274,8 +1279,9 @@ impl LandingLock {
                 print_cleanup_record(&record, &reason);
             }
             CleanupVerification::Uncensused { record, reason } => {
-                println!("QUARANTINED (published domain lacks final census):");
+                println!("QUARANTINED (payload domain lacks final census):");
                 print_cleanup_record(&record, &reason);
+                print_census_recovery(&record, "ci-hub land-lock");
             }
             CleanupVerification::Unknown { record, reason } => {
                 println!("QUARANTINED (cleanup unverifiable):");
@@ -1338,8 +1344,7 @@ impl LandingLock {
     /// This is the missing producer, gated the same five ways validate-lock
     /// gates its own.
     fn census_orphaned_domain(&self, args: CensusOrphanedDomainArgs) -> Result<i32, LandLockError> {
-        let restated = parse_leader_identity(&args.leader)?;
-        let (leader, pgid, disposition) = self.with_guard(|| {
+        let (subject, pgid, disposition) = self.with_guard(|| {
             let holder = self.read_holder()?.ok_or_else(|| {
                 LandLockError::ReclaimNotProven(
                     "no lock holder; a census only discharges a quarantine bound to one".into(),
@@ -1378,9 +1383,37 @@ impl LandingLock {
                 }
             };
 
-            let (leader, pgid) = match &record.phase {
+            let (leader, pgid, residuals, incomplete_residual) = match &record.phase {
                 CleanupPhase::Published { leader, pgid }
-                | CleanupPhase::CensusPending { leader, pgid } => (leader.clone(), *pgid),
+                | CleanupPhase::CensusPending { leader, pgid } => {
+                    let restated = args.leader.as_deref().ok_or_else(|| {
+                        LandLockError::ReclaimNotProven(
+                            "--leader is required for a published cleanup record".into(),
+                        )
+                    })?;
+                    let restated = parse_leader_identity(restated)?;
+                    if *leader != restated {
+                        return Err(LandLockError::ReclaimNotProven(format!(
+                            "restated leader {}:{} does not match recorded leader {}:{}",
+                            restated.pid, restated.start_ticks, leader.pid, leader.start_ticks
+                        )));
+                    }
+                    (Some(leader.clone()), *pgid, Vec::new(), false)
+                }
+                CleanupPhase::Residual {
+                    pgid,
+                    domain_complete: false,
+                    residuals,
+                } => {
+                    if args.leader.is_some() {
+                        return Err(LandLockError::ReclaimNotProven(
+                            "--leader must be omitted for an incomplete residual record, which \
+                             has no recorded leader identity"
+                                .into(),
+                        ));
+                    }
+                    (None, *pgid, residuals.clone(), true)
+                }
                 other => {
                     return Err(LandLockError::ReclaimNotProven(format!(
                         "uncensused authority has unexpected phase {other:?}"
@@ -1400,12 +1433,6 @@ impl LandingLock {
                 return Err(LandLockError::ReclaimNotProven(format!(
                     "restated operation {:?} does not match recorded operation {:?}",
                     args.operation, record.operation
-                )));
-            }
-            if leader != restated {
-                return Err(LandLockError::ReclaimNotProven(format!(
-                    "restated leader {}:{} does not match recorded leader {}:{}",
-                    restated.pid, restated.start_ticks, leader.pid, leader.start_ticks
                 )));
             }
             if pgid != args.pgid {
@@ -1434,18 +1461,36 @@ impl LandingLock {
 
             // (4) Re-assert the mechanically checkable half of absence at the
             // instant of the write, under the guard.
-            match exact_process_liveness(&leader) {
-                Ok(false) => {}
-                Ok(true) => {
-                    return Err(LandLockError::ReclaimNotProven(format!(
-                        "recorded leader {}:{} is ALIVE",
-                        leader.pid, leader.start_ticks
-                    )))
+            if let Some(leader) = &leader {
+                match exact_process_liveness(leader) {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        return Err(LandLockError::ReclaimNotProven(format!(
+                            "recorded leader {}:{} is ALIVE",
+                            leader.pid, leader.start_ticks
+                        )))
+                    }
+                    Err(reason) => {
+                        return Err(LandLockError::ReclaimNotProven(format!(
+                            "cannot verify recorded leader absence: {reason}"
+                        )))
+                    }
                 }
-                Err(reason) => {
-                    return Err(LandLockError::ReclaimNotProven(format!(
-                        "cannot verify recorded leader absence: {reason}"
-                    )))
+            }
+            for identity in &residuals {
+                match exact_process_liveness(identity) {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        return Err(LandLockError::ReclaimNotProven(format!(
+                            "recorded residual {}:{} is ALIVE",
+                            identity.pid, identity.start_ticks
+                        )))
+                    }
+                    Err(reason) => {
+                        return Err(LandLockError::ReclaimNotProven(format!(
+                            "cannot verify recorded residual absence: {reason}"
+                        )))
+                    }
                 }
             }
             if process_group_exists(pgid) {
@@ -1457,33 +1502,58 @@ impl LandingLock {
             // (5) The domain itself, through the SHARED policy both authorities
             // use. New records carry the payload-owned process group; legacy
             // anchorless records retain the explicit attestation branch.
-            let disposition = census_disposition(
-                census_cleanup_domain(&record, pgid),
-                args.attest_domain_empty,
-                &args.evidence,
-                &format!(
+            let mechanical_context = match &leader {
+                Some(leader) => format!(
                     "supervisor dead, leader {}:{} absent, pgid {pgid} absent",
                     leader.pid, leader.start_ticks
                 ),
+                None => format!(
+                    "supervisor dead, {} recorded residual identity/identities absent, pgid \
+                     {pgid} absent",
+                    residuals.len()
+                ),
+            };
+            let domain = if incomplete_residual {
+                DomainEvidence::Unproven(
+                    "residual process-domain capture was incomplete, so escaped descendants \
+                     cannot be reconstructed post-hoc"
+                        .into(),
+                )
+            } else {
+                census_cleanup_domain(&record, pgid)
+            };
+            let disposition = census_disposition(
+                domain,
+                args.attest_domain_empty,
+                &args.evidence,
+                &mechanical_context,
             )
             .map_err(LandLockError::ReclaimNotProven)?;
 
+            let recorded_residual_count = residuals.len();
             let mut recovered = record.clone();
             recovered.phase = CleanupPhase::Residual {
                 pgid,
                 domain_complete: true,
-                residuals: Vec::new(),
+                residuals,
             };
             write_cleanup_record(&self.paths.cleanup, &recovered)
                 .map_err(|source| io_error("write", &self.paths.cleanup, source))?;
-            Ok((leader, pgid, disposition))
+            let subject = match leader {
+                Some(leader) => format!("leader={}:{}", leader.pid, leader.start_ticks),
+                None => format!(
+                    "incomplete-residual recorded_identities={}",
+                    recorded_residual_count
+                ),
+            };
+            Ok((subject, pgid, disposition))
         })?;
         // Truthful about WHICH evidence discharged this: a mechanically proven
         // census and an operator attestation are not the same claim.
         eprintln!(
-            "landing-lock: CENSUSED orphaned domain agent={} operation={} leader={}:{} pgid={pgid}; \
-             supervisor proven dead, leader and process group proven absent, {}",
-            args.agent, args.operation, leader.pid, leader.start_ticks, disposition
+            "landing-lock: CENSUSED orphaned domain agent={} operation={} {subject} pgid={pgid}; \
+             supervisor and every recorded payload identity proven absent, {}",
+            args.agent, args.operation, disposition
         );
         eprintln!(
             "landing-lock: quarantine is now RECOVERABLE; run `land-lock reclaim-dead` to release \
@@ -2133,12 +2203,6 @@ pub(crate) fn verify_cleanup_record(
             domain_complete,
             residuals,
         } => {
-            if !domain_complete {
-                return CleanupVerification::Unknown {
-                    reason: "residual process-domain capture was incomplete".into(),
-                    record: Some(record),
-                };
-            }
             let mut active = Vec::new();
             let mut unknown = Vec::new();
             for identity in residuals {
@@ -2164,6 +2228,12 @@ pub(crate) fn verify_cleanup_record(
                 CleanupVerification::Unknown {
                     reason: unknown.join("; "),
                     record: Some(record),
+                }
+            } else if !domain_complete {
+                CleanupVerification::Uncensused {
+                    reason: "all recorded residual identities and the captured process group are absent, but residual process-domain capture was incomplete; escaped descendants remain unproven"
+                        .into(),
+                    record,
                 }
             } else {
                 CleanupVerification::Recoverable {
@@ -3585,6 +3655,62 @@ pub(crate) fn census_cleanup_domain(record: &CleanupRecord, pgid: u32) -> Domain
     }
 }
 
+/// Print the exact phase-sensitive discharge command for either lock consumer.
+/// Published records carry a leader identity; incomplete residual records do
+/// not and always require explicit domain evidence because their escaped
+/// descendants cannot be reconstructed after the fact.
+pub(crate) fn print_census_recovery(record: &CleanupRecord, command: &str) {
+    match &record.phase {
+        CleanupPhase::Published { leader, pgid } | CleanupPhase::CensusPending { leader, pgid } => {
+            let domain = census_cleanup_domain(record, *pgid);
+            let attestation = match &domain {
+                DomainEvidence::ProvenEmpty(_) => "",
+                _ => " --attest-domain-empty --evidence '<observations>'",
+            };
+            println!(
+                "  recovery={command} census-orphaned-domain --agent {} --operation {} \
+                 --leader {}:{} --pgid {pgid}{attestation}",
+                record.agent, record.operation, leader.pid, leader.start_ticks
+            );
+            match domain {
+                DomainEvidence::ProvenEmpty(detail) => println!(
+                    "  recovery_precondition=none; the recorded cleanup domain is ALREADY \
+                     proven empty ({detail}), so no attestation is required. reclaim-dead \
+                     alone still CANNOT clear this state."
+                ),
+                DomainEvidence::Populated(detail) => println!(
+                    "  recovery_precondition=BLOCKED: {detail}. No census can run and no \
+                     attestation can override a live domain."
+                ),
+                DomainEvidence::Unproven(why) => println!(
+                    "  recovery_precondition={why}, so confirm by hand that the payload's unit \
+                     cgroup is absent/empty AND every cgroup it migrates into is empty; \
+                     reclaim-dead alone CANNOT clear this state"
+                ),
+            }
+        }
+        CleanupPhase::Residual {
+            pgid,
+            domain_complete: false,
+            ..
+        } => {
+            println!(
+                "  recovery={command} census-orphaned-domain --agent {} --operation {} \
+                 --pgid {pgid} --attest-domain-empty --evidence '<observations>'",
+                record.agent, record.operation
+            );
+            println!(
+                "  recovery_precondition=residual process-domain capture was incomplete; \
+                 confirm by hand that the payload's unit cgroup is absent/empty AND every \
+                 cgroup it could migrate into is empty. The command rechecks the guarded \
+                 supervisor identity, every recorded residual identity, and the PGID; \
+                 reclaim-dead alone CANNOT clear this state"
+            );
+        }
+        _ => {}
+    }
+}
+
 /// What discharges this census, if anything.
 ///
 /// Pure on purpose: this is the entire policy change of the cgroup-anchor work,
@@ -3922,11 +4048,195 @@ mod tests {
         CensusOrphanedDomainArgs {
             agent: "mergegate-fix".into(),
             operation: "pr:1666".into(),
-            leader: format!("{}:{}", leader.pid, leader.start_ticks),
+            leader: Some(format!("{}:{}", leader.pid, leader.start_ticks)),
             pgid,
             attest_domain_empty: false,
             evidence: String::new(),
         }
+    }
+
+    fn incomplete_residual(
+        agent: &str,
+        operation: &str,
+        pgid: u32,
+        residuals: Vec<ProcessIdentity>,
+    ) -> CleanupRecord {
+        CleanupRecord::new(
+            agent,
+            operation,
+            CleanupPhase::Residual {
+                pgid,
+                domain_complete: false,
+                residuals,
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn shared_classifier_distinguishes_incomplete_residual_absent_live_and_unverifiable() {
+        let (lock, _, pgid) = anchorless_published_quarantine("residual-classifier");
+        let absent = ProcessIdentity {
+            pid: 0,
+            start_ticks: 1,
+        };
+        write_cleanup_record(
+            &lock.paths.cleanup,
+            &incomplete_residual("mergegate-fix", "pr:1666", pgid, vec![absent]),
+        )
+        .unwrap();
+        assert!(matches!(
+            lock.cleanup_verification(lock.read_holder().unwrap().as_ref()),
+            CleanupVerification::Uncensused { .. }
+        ));
+
+        let live = ProcessIdentity {
+            pid: std::process::id(),
+            start_ticks: process_start_ticks(std::process::id()).unwrap(),
+        };
+        write_cleanup_record(
+            &lock.paths.cleanup,
+            &incomplete_residual("mergegate-fix", "pr:1666", pgid, vec![live]),
+        )
+        .unwrap();
+        assert!(matches!(
+            lock.cleanup_verification(lock.read_holder().unwrap().as_ref()),
+            CleanupVerification::Active { .. }
+        ));
+
+        write_cleanup_record(
+            &lock.paths.cleanup,
+            &incomplete_residual("mergegate-fix", "pr:1666", u32::MAX, Vec::new()),
+        )
+        .unwrap();
+        assert!(matches!(
+            lock.cleanup_verification(lock.read_holder().unwrap().as_ref()),
+            CleanupVerification::Unknown { .. }
+        ));
+    }
+
+    #[test]
+    fn incomplete_residual_discharge_recovers_dead_owner_but_refuses_live_owner() {
+        let (orphaned, _, pgid) = anchorless_published_quarantine("residual-discharge-dead");
+        write_cleanup_record(
+            &orphaned.paths.cleanup,
+            &incomplete_residual(
+                "mergegate-fix",
+                "pr:1666",
+                pgid,
+                vec![ProcessIdentity {
+                    pid: 0,
+                    start_ticks: 1,
+                }],
+            ),
+        )
+        .unwrap();
+        let holder = orphaned.read_holder().unwrap();
+        let refusal = orphaned.require_no_cleanup(holder.as_ref()).unwrap_err();
+        assert!(
+            refusal
+                .to_string()
+                .contains("FLEET-WIDE landing quarantine")
+                && refusal.to_string().contains("census-orphaned-domain"),
+            "refusal must name fleet scope and discharge: {refusal}"
+        );
+        assert_eq!(
+            orphaned
+                .census_orphaned_domain(CensusOrphanedDomainArgs {
+                    agent: "mergegate-fix".into(),
+                    operation: "pr:1666".into(),
+                    leader: None,
+                    pgid,
+                    attest_domain_empty: true,
+                    evidence: "unit cgroup absent; migration targets empty".into(),
+                })
+                .unwrap(),
+            0
+        );
+        let recovered =
+            CleanupRecord::parse(&fs::read_to_string(&orphaned.paths.cleanup).unwrap()).unwrap();
+        assert!(matches!(
+            recovered.phase,
+            CleanupPhase::Residual {
+                domain_complete: true,
+                ref residuals,
+                ..
+            } if residuals.len() == 1
+        ));
+        assert_eq!(orphaned.reclaim_dead().unwrap(), 0);
+        assert_eq!(
+            orphaned
+                .acquire(&AcquireArgs {
+                    agent: "post-discharge".into(),
+                    pr: "1667".into(),
+                    wait: 0,
+                    hold: 30,
+                })
+                .unwrap(),
+            0
+        );
+
+        let live_paths = temp_paths("residual-discharge-live");
+        let live = LandingLock {
+            paths: live_paths.clone(),
+        };
+        assert_eq!(
+            live.acquire(&AcquireArgs {
+                agent: "live-owner".into(),
+                pr: "77".into(),
+                wait: 0,
+                hold: 30,
+            })
+            .unwrap(),
+            0
+        );
+        live.write_current_process_owner().unwrap();
+        write_cleanup_record(
+            &live.paths.cleanup,
+            &incomplete_residual("live-owner", "pr:77", pgid, Vec::new()),
+        )
+        .unwrap();
+        let error = live
+            .census_orphaned_domain(CensusOrphanedDomainArgs {
+                agent: "live-owner".into(),
+                operation: "pr:77".into(),
+                leader: None,
+                pgid,
+                attest_domain_empty: true,
+                evidence: "inert isolated fixture".into(),
+            })
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("supervisor process is ALIVE"),
+            "live owner must refuse the discharge verb: {error}"
+        );
+        assert!(matches!(
+            live.acquire(&AcquireArgs {
+                agent: "would-steal".into(),
+                pr: "78".into(),
+                wait: 0,
+                hold: 30,
+            }),
+            Err(LandLockError::CleanupQuarantined(_))
+        ));
+        assert!(live.paths.cleanup.exists());
+        remove_if_exists(&live.paths.owner).unwrap();
+        let unverifiable = live
+            .census_orphaned_domain(CensusOrphanedDomainArgs {
+                agent: "live-owner".into(),
+                operation: "pr:77".into(),
+                leader: None,
+                pgid,
+                attest_domain_empty: true,
+                evidence: "inert isolated fixture".into(),
+            })
+            .unwrap_err();
+        assert!(
+            unverifiable.to_string().contains("UNVERIFIABLE"),
+            "missing guarded owner evidence must refuse: {unverifiable}"
+        );
+        assert!(live.paths.cleanup.exists());
+        let _ = fs::remove_dir_all(live_paths.lock.parent().unwrap());
     }
 
     /// The whole point of A1: before this command existed, `reclaim-dead`
@@ -4038,7 +4348,7 @@ mod tests {
         assert!(attest(wrong_op).contains("does not match recorded operation"));
 
         let mut wrong_leader = census_args(&leader, pgid);
-        wrong_leader.leader = format!("{}:{}", leader.pid, leader.start_ticks - 1);
+        wrong_leader.leader = Some(format!("{}:{}", leader.pid, leader.start_ticks - 1));
         assert!(attest(wrong_leader).contains("does not match recorded leader"));
 
         let mut wrong_pgid = census_args(&leader, pgid);
@@ -4047,7 +4357,7 @@ mod tests {
 
         // A bare pid is refused: start_ticks is what defeats PID reuse.
         let mut bare = census_args(&leader, pgid);
-        bare.leader = leader.pid.to_string();
+        bare.leader = Some(leader.pid.to_string());
         assert!(attest(bare).contains("<pid>:<start_ticks>"));
 
         // And after all those refusals the quarantine is still intact. Verify it
