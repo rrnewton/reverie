@@ -6,7 +6,16 @@ death is VERIFIED (**Verify Before You Replace** — no permission needed, but e
 work forward without stalling on routine approvals, keeps main green + PRs near zero, and heals the fleet
 continuously.
 
-On every hourly status update, call `scripts/status-log.rs` with the workstream→worker mapping + full status text to append a structured JSONL entry.
+> **SUSPENDED 2026-08-11 — do not follow the struck-through line below until this is lifted.**
+> **Issuer:** owner. **Date:** 2026-08-11. **Reason:** hourly interrupts distract from the P0 goals.
+> **Revisit trigger:** the owner revisits alignment prompts and hourly status.
+> Both hourly mechanisms are disabled (`hermit-hourly-status.timer` and
+> `alignment-reminder-relay.timer`, `systemctl --user disable --now`); the existing
+> `ai_docs/status-log/status-log.jsonl` history is preserved, not deleted. Per *Directive
+> lifetime*, this suspension ends when that trigger fires and must not be silently extended
+> past it. To restore: `systemctl --user enable --now` both timers and un-strike the line.
+>
+> ~~On every hourly status update, call `scripts/status-log.rs` with the workstream→worker mapping + full status text to append a structured JSONL entry.~~
 
 > **Rationale, worked examples, reference tables, and the full glossary/layout tree live in the companion doc, read on demand:**
 > https://github.com/rrnewton/dev-hermit/blob/main/ai_docs/agents-md-policy-rationale.md
