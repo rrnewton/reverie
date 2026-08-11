@@ -9832,11 +9832,16 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
     // tgkill(tgid, tid, sig) carries two identities and the signal in its third
     // argument, whereas kill(pid, sig) and tkill(tid, sig) carry it in the
     // second. Keep the tgkill thread-group identity: dropping it would accept a
-    // valid tid paired with a foreign tgid.
+    // valid tid paired with a foreign tgid. Decode through pid_t so an x86-64
+    // caller's zero-extended 32-bit -1 remains negative.
     let (thread_group, target, raw_signal) = if number == libc::SYS_tgkill as u64 {
-        (Some(args[0] as i64), args[1] as i64, args[2])
+        (
+            Some(i64::from(args[0] as libc::pid_t)),
+            i64::from(args[1] as libc::pid_t),
+            args[2],
+        )
     } else {
-        (None, args[0] as i64, args[1])
+        (None, i64::from(args[0] as libc::pid_t), args[1])
     };
     let Ok(signal) = libc::c_int::try_from(raw_signal) else {
         return continue_with(negative_errno(libc::EINVAL));
@@ -21304,11 +21309,24 @@ mod tests {
         let dir = TestDir::new();
         let mut state = test_state(&dir.0);
         let pid = state.pid as u64;
+        let negative_one = u64::from(u32::MAX);
 
         for (number, args) in [
             (libc::SYS_tkill, [0, libc::SIGUSR1 as u64, 0, 0, 0, 0]),
+            (
+                libc::SYS_tkill,
+                [negative_one, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            ),
             (libc::SYS_tgkill, [0, pid, libc::SIGUSR1 as u64, 0, 0, 0]),
+            (
+                libc::SYS_tgkill,
+                [negative_one, pid, libc::SIGUSR1 as u64, 0, 0, 0],
+            ),
             (libc::SYS_tgkill, [pid, 0, libc::SIGUSR1 as u64, 0, 0, 0]),
+            (
+                libc::SYS_tgkill,
+                [pid, negative_one, libc::SIGUSR1 as u64, 0, 0, 0],
+            ),
         ] {
             match kill_signal(&mut state, number as u64, &args) {
                 SyscallAction::Continue {
