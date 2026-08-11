@@ -98,6 +98,56 @@ name someone to reconcile them.
 
 ---
 
+## Q7 — The drain arithmetic does not close while only one team is holding fire
+
+You told this team: *"don't do NEW work on top, except CI fixes."* We are following it. But
+the pool is not behaving like a backlog being drained — it is behaving like a queue with an
+open tap.
+
+Measured 2026-08-10 across all 131 open `rrnewton/hermit` PRs:
+
+| Signal | Value |
+|---|---|
+| Open PRs | **131** (target: <10) |
+| Drafts | **113** (86%) |
+| Updated in the last 24h | 84 |
+| Updated 3–7 days ago | 43 |
+| **Older than 7 days** | **0** |
+| Measured net inflow | ≈ **+2.3 PRs/hour** |
+
+Nothing is stale. There is no abandoned-work pile to sweep. Every open PR is live work from
+a currently-active team, which means closure-by-triage has a small ceiling and the pool
+refills faster than careful landing can drain it.
+
+Aggregation is the only lever with enough compression, and it works: one agent folded **22
+PRs into 4 landings** today with zero content dropped, and a second family is being folded
+now. But a 5.5x compression against a 2.3/hour inflow still loses if the other teams — the
+Codex coordinator, ORC, and any other Claude coordinator on this box — keep opening PRs at
+the current rate.
+
+**Question:** should the "no new work except CI fixes" directive be broadcast to *every*
+team until the pool is under 10, and if so, who issues it? I can only bind my own agents. I
+have deliberately not tried to speak for the fleet.
+
+## Q8 — Two fleet caps are structurally exceeded, and I do not know which way you want it
+
+Both are `AGENTS.md` Hard Invariant 13, both are **per box**, and both were already exceeded
+before this session:
+
+- **Active worktree slots: 16, against a documented cap of 12.** Plus 4 released and 2
+  `owner-lease-revoked` rows.
+- **Top-level `claude`/`codex` agent processes: 22, against a cap of 15.** (Counted as
+  processes whose parent is not itself one, per the invariant's own definition. The invariant
+  already records 16 on 2026-08-08 and notes it was over then.)
+
+I have been routing new work into slots I already own rather than allocating more, which
+respects the spirit but leaves the count wrong. The honest options are (a) the caps are
+current and the fleet must shed slots/agents, or (b) the caps are stale for a 316-core box
+and should be raised to a number that matches how this machine is actually used. Either is
+fine; silently operating over a documented invariant is not.
+
+**Question:** raise the caps, or enforce them?
+
 ## Not questions — flagged for awareness
 
 - **ORC is down for two independent reasons.** `~/.tg/active_db` names `hermit`, but
