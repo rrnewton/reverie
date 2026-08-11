@@ -166,8 +166,8 @@ that. Those two together are the whole plan; everything else is bookkeeping.
 Both are `AGENTS.md` Hard Invariant 13, both are **per box**, and both were already exceeded
 before this session:
 
-- **Active worktree slots: 16, against a documented cap of 12.** Plus 4 released and 2
-  `owner-lease-revoked` rows.
+- **Active worktree slots: 17, against a documented cap of 12** (16 when first counted; my team
+  added one). Plus 4 `released` and 2 `owner-lease-revoked` rows, 23 total.
 - **Top-level `claude`/`codex` agent processes: 22, against a cap of 15.** (Counted as
   processes whose parent is not itself one, per the invariant's own definition. The invariant
   already records 16 on 2026-08-08 and notes it was over then.)
@@ -179,6 +179,45 @@ and should be raised to a number that matches how this machine is actually used.
 fine; silently operating over a documented invariant is not.
 
 **Question:** raise the caps, or enforce them?
+
+### Q8 addendum — the registry is CORRECT; the alarm is a vocabulary mismatch; and a fourth slot state exists that no cap governs
+
+Reconciled on 2026-08-11. **Neither side is wrong** — all three views agree exactly:
+
+| view | count |
+|---|---|
+| physical directories under `worktrees/` | 23 |
+| `ACTIVE.md` managed rows | 23 |
+| registered git worktrees (union of `hermit`/`reverie`/`liteinst2`) | 23 |
+
+**Zero disk-only paths, zero row-only entries, zero unregistered directories.** The failure mode
+`AGENTS.md` warns about — a worktree on disk with no row, or a row pointing at a deleted worktree —
+is simply not present. Nothing needs preserving or attributing.
+
+**The allocator's "23 physical slot dirs against an advisory 12" warning is apples-to-oranges:** it
+counts *physical directories* against the *active* soft limit. The honest breach is smaller and
+differently shaped:
+
+- **17 active against a cap of 12 — over by 5.** A genuine Invariant 13 breach.
+- **6 retained non-active against a parked allowance of 5 — over by 1.**
+
+**The bookkeeping defect worth naming:** those 6 are not *parked* in the policy sense. Parked means
+"clean, detached, cache-retained, and **omitted from `ACTIVE.md`**". These are clean, but they still
+hold branches (not detached) and they are still listed. So `released` and `owner-lease-revoked` rows
+occupy neither the active cap nor the parked allowance, and **no counter in the policy actually
+governs them.** That is a policy gap, not an agent error — worth closing whichever way you rule on
+the caps themselves.
+
+**No work is at risk in the six.** All are clean (zero dirty files in every child), and every branch
+is either merged to `main` or pushed to `origin`. Three (`cadence2`, `scorecard`, `slot04`) hold
+branches with **literally zero unique commits** — they point at commits already on `main`
+(`b5a4748e` is #2023's merge, `0c6f20ea` is #2018's). I have authorized reclaiming only those three.
+
+**Two cannot self-heal without you.** `drainer-5` and `slot03` are `owner-lease-revoked`: leases
+never expire, their owners are gone, so per the adoption rule nobody can bind the lease and
+`--clean` will keep refusing indefinitely. They will sit there until someone overrides. Note
+`drainer-5` carries `codex/versioned-strict-verify-receipt`, the branch behind **open PR #1749**,
+which is a live port job — reclaiming its disk is safe, but the PR is still wanted.
 
 ## Q9 — `agent-utils` pin is in drift; I deliberately did NOT repair it mid-drain
 
