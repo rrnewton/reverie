@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch one detached, admitted Hermit validation through ci-hub."""
+"""Launch one detached, admitted Hermit or Reverie validation through ci-hub."""
 
 from __future__ import annotations
 
@@ -32,6 +32,28 @@ CANONICAL_TERMINAL_VERDICTS = {"VALIDATED": 0, "FAILED": 3}
 CANONICAL_REMEASUREMENT_VERDICTS = frozenset(
     ("TRUNCATED", "NEEDS-RERUN", "NO-RESULT", "NOT-VALIDATED")
 )
+SUPPORTED_REPOS = {
+    "hermit": "rrnewton/hermit",
+    "rrnewton/hermit": "rrnewton/hermit",
+    "reverie": "rrnewton/reverie",
+    "rrnewton/reverie": "rrnewton/reverie",
+}
+
+
+def canonical_repo(value: str) -> str:
+    try:
+        return SUPPORTED_REPOS[value]
+    except KeyError as error:
+        raise ValueError(
+            f"unsupported validation repository {value!r}; expected rrnewton/hermit or rrnewton/reverie"
+        ) from error
+
+
+def row_matches_repo(row: Mapping[str, Any], repo: str) -> bool:
+    value = row.get("repo")
+    if repo == "rrnewton/hermit":
+        return value in (None, "hermit", repo)
+    return value in ("reverie", repo)
 
 
 def canonical_verdict_exit_code(verdict: str) -> int | None:
@@ -136,7 +158,7 @@ def default_unit(agent: str, target: str) -> str:
 
 
 def prepare_fresh_checkout(
-    source: Path, target: str, *, run: Runner, parent: Path
+    source: Path, target: str, *, run: Runner, parent: Path, repo: str
 ) -> Path:
     """Materialize `target` into a private temp worktree and PROVE it is usable.
 
@@ -193,11 +215,12 @@ def prepare_fresh_checkout(
     )
     # PROVE usable, do not assume. Each of these is a thing whose absence has
     # produced a misleading fast exit rather than an honest failure.
-    missing = [
-        rel
-        for rel in ("scripts/validate.rs", "agent-utils/rs/safe-ci-dag-runner/Cargo.toml")
-        if not (fresh / rel).exists()
-    ]
+    required = (
+        ("scripts/validate.rs", "agent-utils/rs/safe-ci-dag-runner/Cargo.toml")
+        if repo == "rrnewton/hermit"
+        else ("validate.sh",)
+    )
+    missing = [rel for rel in required if not (fresh / rel).exists()]
     if missing:
         raise RuntimeError(
             f"fresh checkout {fresh} is missing {', '.join(missing)}; refusing to launch a run "
@@ -310,7 +333,13 @@ def remove_private_cargo_home(private: Path | None, *, run: Runner) -> None:
 
 
 def assert_row_readable_from_canonical_ledger(
-    root: Path, target: str, cwd: Path, run_started_at: str, *, run: Runner
+    root: Path,
+    target: str,
+    cwd: Path,
+    run_started_at: str,
+    *,
+    repo: str,
+    run: Runner,
 ) -> tuple[str, str, int]:
     """REQUIREMENT (a). Fail unless this run's exact row is readable canonically.
 
@@ -340,6 +369,8 @@ def assert_row_readable_from_canonical_ledger(
             "validate-status",
             "--sha",
             target,
+            "--repo",
+            repo,
             "--json",
         ],
         cwd=root,
@@ -400,7 +431,11 @@ def assert_row_readable_from_canonical_ledger(
             continue
         if not isinstance(row, dict):
             continue
-        if row.get("commit") != target or row.get("cwd") != str(cwd):
+        if (
+            not row_matches_repo(row, repo)
+            or row.get("commit") != target
+            or row.get("cwd") != str(cwd)
+        ):
             continue
         row_start = parse_utc_timestamp(row.get("started_at"), role="canonical ledger row")
         if row_start >= handle_start:
@@ -514,14 +549,16 @@ def validate_checkout(
     checkout: Path,
     target: str,
     *,
+    repo: str,
     run: Runner,
     allow_owner_validate_symlink: bool = False,
 ) -> Path:
     checkout = require_guest_visible_root(checkout, role="source checkout")
     if not SHA_RE.fullmatch(target):
         raise ValueError("--target must be an exact lowercase 40-hex commit SHA")
-    if not (checkout / "scripts/validate.rs").is_file():
-        raise ValueError(f"missing scripts/validate.rs in checkout {checkout}")
+    driver = "scripts/validate.rs" if repo == "rrnewton/hermit" else "validate.sh"
+    if not (checkout / driver).is_file():
+        raise ValueError(f"missing {driver} in checkout {checkout}")
 
     top = Path(
         checked_output(
@@ -556,7 +593,7 @@ def validate_checkout(
 
 
 def refuse_canonical_terminal_readmission(
-    root: Path, target: str, *, run: Runner
+    root: Path, target: str, *, repo: str, run: Runner
 ) -> str:
     """Refuse a blind rerun once the canonical authority has judged ``target``.
 
@@ -577,6 +614,8 @@ def refuse_canonical_terminal_readmission(
             "validate-status",
             "--sha",
             target,
+            "--repo",
+            repo,
             "--json",
         ],
         cwd=root,
@@ -613,7 +652,30 @@ def refuse_canonical_terminal_readmission(
     raise RuntimeError(f"canonical validate-status refused admission ({detail})")
 
 
-def preflight(root: Path, checkout: Path, target: str, *, run: Runner) -> None:
+def preflight(
+    root: Path, checkout: Path, target: str, *, repo: str, run: Runner
+) -> None:
+    if repo == "rrnewton/reverie":
+        result = run(
+            [
+                "git",
+                "-C",
+                str(checkout),
+                "merge-base",
+                "--is-ancestor",
+                "refs/remotes/origin/main",
+                target,
+            ],
+            check=False,
+        )
+        if result.returncode == 1:
+            raise RuntimeError(
+                "validation admission refused target: Reverie head does not contain current origin/main"
+            )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            raise RuntimeError(f"cannot establish Reverie current-main ancestry: {detail}")
+        return
     command = [
         str(root / "ci-hub/validate/preflight_validate.py"),
         "--head",
@@ -698,6 +760,7 @@ def build_systemd_command(
     allow_owner_validate_symlink: bool = False,
     cargo_home: Path | None = None,
     ci_dag_jobs: int | None = None,
+    repo: str = "rrnewton/hermit",
 ) -> list[str]:
     home = environment.get("HOME", "")
     path = environment.get("PATH", "")
@@ -731,7 +794,24 @@ def build_systemd_command(
         # unanchored; the owner watch interprets that distinct evidence rather
         # than laundering it into a clean canonical receipt.
         child.append("VALIDATE_RUN_ON_DIRTY_TREE=1")
-    if make_validate:
+    if repo == "rrnewton/reverie":
+        child.extend(
+            [
+                sys.executable,
+                str(root / "ci-hub/validate/reverie_safe_ci.py"),
+                "--root",
+                str(root),
+                "--checkout",
+                str(checkout),
+                "--target",
+                target,
+                "--log",
+                str(log),
+            ]
+        )
+        if pr is not None:
+            child.extend(["--pr", str(pr)])
+    elif make_validate:
         child.extend(["with-proxy", "make", "validate"])
     else:
         child.extend(["with-proxy", "./scripts/validate.rs", *(validate_args or ["full"])])
@@ -805,7 +885,7 @@ def build_systemd_command(
         "--unit",
         unit,
         "--description",
-        f"ci-hub full validation {target[:12]} ({agent})",
+        f"ci-hub full validation {repo} {target[:12]} ({agent})",
         "--working-directory",
         str(checkout),
         "--setenv",
@@ -831,7 +911,7 @@ def build_systemd_command(
         "--agent",
         agent,
         "--kind",
-        "validate",
+        "reverie-validate" if repo == "rrnewton/reverie" else "validate",
         "--target",
         target,
         "--run-record",
@@ -976,8 +1056,9 @@ def attach(
         target = str(record["target"])
         checkout = Path(str(record["checkout"]))
         run_started_at = str(record["started_at"])
+        repo = canonical_repo(str(record.get("repo", "rrnewton/hermit")))
         row, canonical_verdict, canonical_exit = assert_row_readable_from_canonical_ledger(
-            root, target, checkout, run_started_at, run=run
+            root, target, checkout, run_started_at, repo=repo, run=run
         )
     except (KeyError, RuntimeError, ValueError) as error:
         print(f"validate-run: CANONICAL-VERDICT-UNAVAILABLE: {error}", file=sys.stderr)
@@ -1009,6 +1090,11 @@ def parser() -> argparse.ArgumentParser:
     )
     result.add_argument("--checkout", type=Path)
     result.add_argument(
+        "--repo",
+        default="rrnewton/hermit",
+        help="receipt repository: rrnewton/hermit (default) or rrnewton/reverie",
+    )
+    result.add_argument(
         "--in-place",
         action="store_true",
         help=(
@@ -1031,7 +1117,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--log", type=Path, help="durable log (default: ignored/validate/<unit>.log)")
     result.add_argument("--wait", type=int, default=7200, help="validate-lock queue wait bound")
     result.add_argument("--hold", type=int, default=1200, help="validate-lock lease seconds")
-    result.add_argument("--child-deadline", type=int, default=3600)
+    result.add_argument(
+        "--child-deadline",
+        type=int,
+        help="payload wall deadline (default: Hermit 3600s; Reverie 8000s)",
+    )
     result.add_argument(
         "--ci-dag-jobs",
         type=int,
@@ -1082,6 +1172,11 @@ def main(
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     args = parser().parse_args(argv)
+    try:
+        repo = canonical_repo(args.repo)
+    except ValueError as error:
+        print(f"validate-run: REFUSED: {error}", file=sys.stderr)
+        return 2
     if args.caller_poll_seconds <= 0:
         print("validate-run: REFUSED: caller poll seconds must be positive", file=sys.stderr)
         return 2
@@ -1131,6 +1226,13 @@ def main(
             file=sys.stderr,
         )
         return 2
+    if repo == "rrnewton/reverie" and (args.make_validate or validate_args):
+        print(
+            "validate-run: REFUSED: Reverie always runs its exact full validate.sh under "
+            "safe-ci-dag-runner; --make-validate and trailing driver arguments are unsupported",
+            file=sys.stderr,
+        )
+        return 2
     if args.allow_owner_validate_symlink and not (args.in_place and args.make_validate):
         print(
             "validate-run: REFUSED: --allow-owner-validate-symlink requires "
@@ -1141,7 +1243,10 @@ def main(
     if args.pr is not None and args.pr <= 0:
         print("validate-run: REFUSED: --pr must be positive", file=sys.stderr)
         return 2
-    if min(args.wait, args.hold, args.child_deadline) <= 0:
+    child_deadline = args.child_deadline or (
+        8000 if repo == "rrnewton/reverie" else 3600
+    )
+    if min(args.wait, args.hold, child_deadline) <= 0:
         print("validate-run: REFUSED: wait/hold/child-deadline must be positive", file=sys.stderr)
         return 2
     if args.ci_dag_jobs is not None and args.ci_dag_jobs <= 0:
@@ -1155,10 +1260,13 @@ def main(
         source_checkout = validate_checkout(
             args.checkout,
             args.target,
+            repo=repo,
             run=run,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
         )
-        refuse_canonical_terminal_readmission(root.resolve(), args.target, run=run)
+        refuse_canonical_terminal_readmission(
+            root.resolve(), args.target, repo=repo, run=run
+        )
         if args.in_place:
             checkout = source_checkout
         else:
@@ -1168,9 +1276,10 @@ def main(
                 args.target,
                 run=run,
                 parent=(root / "ignored").resolve(),
+                repo=repo,
             )
             checkout = fresh_checkout
-        preflight(root, checkout, args.target, run=run)
+        preflight(root, checkout, args.target, repo=repo, run=run)
         private_cargo_home = prepare_private_cargo_home(
             (root / "ignored").resolve(),
             run=run,
@@ -1192,12 +1301,13 @@ def main(
             validate_args=validate_args,
             wait=args.wait,
             hold=args.hold,
-            child_deadline=args.child_deadline,
+            child_deadline=child_deadline,
             environment=environment or os.environ,
             make_validate=args.make_validate,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
             cargo_home=private_cargo_home,
             ci_dag_jobs=args.ci_dag_jobs,
+            repo=repo,
         )
         if args.dry_run:
             pane = None
@@ -1210,6 +1320,7 @@ def main(
                     "state": "preparing",
                     "unit": f"{unit}.service",
                     "target": args.target,
+                    "repo": repo,
                     "checkout": str(checkout),
                     "log": str(log),
                     "agent": args.agent,
@@ -1289,6 +1400,7 @@ def main(
         "state": "planned" if args.dry_run else "running",
         "unit": f"{unit}.service",
         "target": args.target,
+        "repo": repo,
         "checkout": str(checkout),
         "log": str(log),
         "record": str(record_path),
@@ -1342,7 +1454,7 @@ def main(
     # invisible-green failure this gate exists to make impossible.
     try:
         row, canonical_verdict, canonical_exit = assert_row_readable_from_canonical_ledger(
-            root.resolve(), args.target, checkout, started_at, run=run
+            root.resolve(), args.target, checkout, started_at, repo=repo, run=run
         )
     except RuntimeError as error:
         print(f"validate-run: CANONICAL-VERDICT-UNAVAILABLE: {error}", file=sys.stderr)

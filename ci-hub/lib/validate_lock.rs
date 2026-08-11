@@ -340,12 +340,13 @@ pub struct CensusOrphanedDomainArgs {
     pub evidence: String,
 }
 
-/// A box-exclusive job kind. BOTH kinds share the ONE lock, so a validate and a
-/// bench are mutually exclusive — the point is total box exclusivity, not
+/// A box-exclusive job kind. ALL kinds share the ONE lock, so Hermit validation,
+/// Reverie validation, and benchmarks are mutually exclusive — the point is total box exclusivity, not
 /// per-kind exclusivity.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum Kind {
     Validate,
+    ReverieValidate,
     Bench,
 }
 
@@ -353,6 +354,7 @@ impl Kind {
     fn as_str(self) -> &'static str {
         match self {
             Kind::Validate => "validate",
+            Kind::ReverieValidate => "reverie-validate",
             Kind::Bench => "bench",
         }
     }
@@ -360,11 +362,16 @@ impl Kind {
     fn parse(value: &str) -> Result<Self, ValidateLockError> {
         match value {
             "validate" => Ok(Kind::Validate),
+            "reverie-validate" => Ok(Kind::ReverieValidate),
             "bench" => Ok(Kind::Bench),
             other => Err(ValidateLockError::InvalidState(format!(
-                "unknown kind {other:?}, expected validate|bench"
+                "unknown kind {other:?}, expected validate|reverie-validate|bench"
             ))),
         }
+    }
+
+    fn is_validation(self) -> bool {
+        matches!(self, Kind::Validate | Kind::ReverieValidate)
     }
 }
 
@@ -1787,12 +1794,15 @@ fn is_full_sha(target: &str) -> bool {
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
 }
 
-/// Refuse to admit a `Validate` unless its exact head contains every immutable
+/// Refuse to admit a validation unless its exact head satisfies its repository
+/// boundary. Hermit must contain every immutable
 /// producer and merge-gate floor. Mutable origin/main currency is intentionally
 /// absent here: the receipt records its exact base and the canonical verifier
 /// asserts currency once at the final merge boundary.
 ///
-/// Non-Validate kinds pass through. Validate targets that are not exact SHAs and
+/// Reverie has no Hermit producer-floor registry: its versioned product
+/// contract requires current `origin/main` ancestry, checked against the
+/// canonical Reverie object store. Bench kinds pass through. Validation targets that are not exact SHAs and
 /// the legacy `--skip-base-check` flag are refused: either would sever the
 /// observable binding between the admission verdict and the validated commit.
 /// The predicate is shelled out to `preflight_validate.py`, the same composite
@@ -1812,7 +1822,7 @@ fn base_admission_check(
     kind: Kind,
     skip: bool,
 ) -> Result<(), ValidateLockError> {
-    if kind != Kind::Validate {
+    if !kind.is_validation() {
         return Ok(()); // bench/diagnostic work is not landing evidence
     }
     if skip {
@@ -1829,6 +1839,36 @@ fn base_admission_check(
              40-hex commit SHA, so base ancestry cannot be bound to the child. \
              Resolve the rebased PR head exactly before validating."
         )));
+    }
+
+    if kind == Kind::ReverieValidate {
+        let checkout = root.join("reverie");
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&checkout)
+            .args([
+                "merge-base",
+                "--is-ancestor",
+                "refs/remotes/origin/main",
+                target,
+            ])
+            .output()
+            .map_err(|error| {
+                ValidateLockError::StaleBase(format!(
+                    "validate-lock: Reverie ancestry check could not run in {} ({error}); current-main ancestry for {target} is UNRESOLVED.",
+                    checkout.display()
+                ))
+            })?;
+        return match output.status.code() {
+            Some(0) => Ok(()),
+            Some(1) => Err(ValidateLockError::StaleBase(format!(
+                "REFUSE: Reverie validation target {target} does not contain current origin/main. Rebase before validating."
+            ))),
+            other => Err(ValidateLockError::StaleBase(format!(
+                "validate-lock: Reverie ancestry for {target} is UNRESOLVED (git exit {other:?}: {}).",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ))),
+        };
     }
 
     let override_argv = test_only_override(ADMIT_PREFLIGHT_CMD_ENV)
@@ -3497,7 +3537,7 @@ impl ValidateLock {
                 cleanup_state,
             ));
         }
-        if holder_record.kind != Kind::Validate.as_str() {
+        if !matches!(holder_record.kind.as_str(), "validate" | "reverie-validate") {
             return Ok(AuthorityStatus::refused(
                 AuthorityState::Held,
                 "canonical-holder-kind-not-validate",
@@ -8220,6 +8260,55 @@ exit 0
             res.is_ok(),
             "a floor-containing head must be GRANTED, got {res:?}"
         );
+    }
+
+    #[test]
+    fn reverie_admission_brackets_current_main_ancestry() {
+        let root = env::temp_dir().join(format!(
+            "ci-hub-reverie-admission-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        let repo = root.join("reverie");
+        fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| -> String {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        fs::write(repo.join("file"), "old\n").unwrap();
+        git(&["add", "file"]);
+        git(&["commit", "-qm", "old"]);
+        let old = git(&["rev-parse", "HEAD"]);
+        fs::write(repo.join("file"), "current\n").unwrap();
+        git(&["commit", "-qam", "current"]);
+        let current = git(&["rev-parse", "HEAD"]);
+        git(&["update-ref", "refs/remotes/origin/main", &current]);
+
+        assert!(base_admission_check(&root, &current, Kind::ReverieValidate, false).is_ok());
+        assert!(matches!(
+            base_admission_check(&root, &old, Kind::ReverieValidate, false),
+            Err(ValidateLockError::StaleBase(message)) if message.contains("does not contain current origin/main")
+        ));
+        assert!(matches!(
+            base_admission_check(&root, "not-a-sha", Kind::ReverieValidate, false),
+            Err(ValidateLockError::StaleBase(_))
+        ));
+        let _ = fs::remove_dir_all(root);
     }
 
     // FAIL-CLOSED: an ERROR (unresolvable base) is treated as stale, never waved

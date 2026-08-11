@@ -1,0 +1,286 @@
+#!/usr/bin/env python3
+"""Run Reverie's full validator inside one proven safe-ci step and record it."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import socket
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+
+EXPECTED_GATES = (
+    "Cross-client skill discovery",
+    "Merge-gate policy",
+    "Build workspace",
+    "Test regular workspace cases",
+    "Documentation tests",
+    "Clippy",
+    "Rustfmt",
+)
+TEST_GATES = (
+    "Test regular workspace cases",
+    "Documentation tests",
+)
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+TEST_RESULT_RE = re.compile(
+    r"^\s*test result: (?:ok|FAILED)\. (\d+) passed;.*? (\d+) filtered out;",
+    re.MULTILINE,
+)
+
+
+class Refusal(RuntimeError):
+    pass
+
+
+def run(argv: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, check=False)
+
+
+def git(checkout: Path, *args: str) -> str:
+    result = run(["git", "-C", str(checkout), *args], cwd=checkout)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise Refusal(f"git {' '.join(args)}: {detail}")
+    return result.stdout.strip()
+
+
+def safe_ci_cgroup() -> str:
+    try:
+        lines = Path("/proc/self/cgroup").read_text().splitlines()
+    except OSError as error:
+        raise Refusal(f"cannot inspect safe-ci cgroup: {error}") from error
+    paths = [line.split(":", 2)[-1] for line in lines if line]
+    matches = [path for path in paths if "safe-ci-" in path and "/step-" in path]
+    if len(matches) != 1:
+        raise Refusal(
+            "process is not in exactly one safe-ci per-step cgroup; "
+            f"observed={paths!r}"
+        )
+    return matches[0]
+
+
+def lock_authority(root: Path, target: str) -> dict[str, Any]:
+    result = run(
+        [str(root / "ci-hub/ci-hub"), "validate-lock", "authority-status", "--json"],
+        cwd=root,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise Refusal(f"validate-lock authority unavailable: {detail}")
+    try:
+        authority = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise Refusal(f"validate-lock authority returned malformed JSON: {error}") from error
+    holder = authority.get("holder")
+    owner = authority.get("owner")
+    if (
+        authority.get("schema_version") != 1
+        or authority.get("admissible") is not True
+        or not isinstance(holder, dict)
+        or holder.get("kind") != "reverie-validate"
+        or holder.get("target") != target
+        or not isinstance(owner, dict)
+        or owner.get("liveness") != "alive"
+        or authority.get("canonical_anchor_held") is not True
+    ):
+        raise Refusal(f"validate-lock authority does not bind this run: {authority!r}")
+
+    owner_pid = os.environ.get("CI_HUB_VALIDATE_LOCK_OWNER_PID", "")
+    owner_file = os.environ.get("CI_HUB_VALIDATE_LOCK_OWNER_FILE", "")
+    if not owner_pid.isdigit() or int(owner_pid) <= 1 or not owner_file:
+        raise Refusal("validate-lock owner ancestry environment is absent")
+    try:
+        observed_owner = Path(owner_file).read_text()
+    except OSError as error:
+        raise Refusal(f"validate-lock owner sidecar is unreadable: {error}") from error
+    if f"pid={owner_pid}\n" not in observed_owner:
+        raise Refusal("validate-lock owner sidecar does not match the inherited owner PID")
+
+    # Prove the inherited owner is an ancestor of this safe-ci node. Merely
+    # observing a live lock elsewhere on the box cannot authorize this process.
+    wanted = int(owner_pid)
+    cursor = os.getpid()
+    seen: set[int] = set()
+    while cursor > 1 and cursor not in seen:
+        if cursor == wanted:
+            return authority
+        seen.add(cursor)
+        try:
+            stat = Path(f"/proc/{cursor}/stat").read_text()
+        except OSError as error:
+            raise Refusal(f"cannot prove validate-lock owner ancestry: {error}") from error
+        close = stat.rfind(")")
+        if close < 0:
+            raise Refusal("cannot parse process ancestry")
+        fields = stat[close + 2 :].split()
+        if len(fields) < 2 or not fields[1].isdigit():
+            raise Refusal("cannot parse parent PID from process ancestry")
+        cursor = int(fields[1])
+    raise Refusal(
+        f"safe-ci node pid {os.getpid()} is not descended from validate-lock owner {wanted}"
+    )
+
+
+def load_source_row(root: Path, target: str, checkout: Path, log: Path, started: datetime) -> dict[str, Any]:
+    result = run(
+        [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "rows"], cwd=root
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise Refusal(f"canonical ledger union unavailable: {detail}")
+    candidates: list[dict[str, Any]] = []
+    for line in result.stdout.splitlines():
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if row.get("repo") not in ("reverie", "rrnewton/reverie"):
+            continue
+        if row.get("commit") != target or row.get("cwd") != str(checkout):
+            continue
+        if row.get("log_file") != str(log):
+            continue
+        try:
+            row_started = datetime.fromisoformat(str(row["started_at"]).replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if row_started >= started:
+            candidates.append(row)
+    if len(candidates) != 1:
+        raise Refusal(
+            "expected exactly one Reverie source row for this safe-ci node, "
+            f"found {len(candidates)}"
+        )
+    return candidates[0]
+
+
+def gate_coverage(log_text: str) -> tuple[int, int, list[str], list[str]]:
+    sections: dict[str, str] = {}
+    markers = list(re.finditer(r"^== (.+) ==$", log_text, re.MULTILINE))
+    for index, marker in enumerate(markers):
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(log_text)
+        sections[marker.group(1)] = log_text[marker.end() : end]
+    absent = [gate for gate in TEST_GATES if gate not in sections]
+    zero: list[str] = []
+    executed = 0
+    filtered = 0
+    for gate in TEST_GATES:
+        banners = TEST_RESULT_RE.findall(sections.get(gate, ""))
+        passed = sum(int(item[0]) for item in banners)
+        filtered += sum(int(item[1]) for item in banners)
+        executed += passed
+        if gate in sections and passed == 0:
+            zero.append(gate)
+    return executed, filtered, zero, absent
+
+
+def record(root: Path, row: dict[str, Any]) -> None:
+    result = subprocess.run(
+        [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "record"],
+        input=json.dumps(row, sort_keys=True) + "\n",
+        cwd=root,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise Refusal(f"canonical ledger writer refused Reverie row: {detail}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--checkout", type=Path, required=True)
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--log", type=Path, required=True)
+    parser.add_argument("--pr", type=int)
+    args = parser.parse_args(argv)
+    root = args.root.resolve()
+    checkout = args.checkout.resolve()
+    log = args.log.resolve()
+    # validate.sh records whole seconds. Floor this boundary to the same
+    # precision so a row started later in this second cannot compare earlier
+    # merely because the producer omitted microseconds.
+    started = datetime.now(timezone.utc).replace(microsecond=0)
+    try:
+        if not SHA_RE.fullmatch(args.target):
+            raise Refusal("target must be an exact lowercase 40-hex SHA")
+        if git(checkout, "rev-parse", "HEAD^{commit}") != args.target:
+            raise Refusal("checkout HEAD does not match target")
+        if git(checkout, "status", "--porcelain=v1"):
+            raise Refusal("checkout is dirty")
+        cgroup = safe_ci_cgroup()
+        authority = lock_authority(root, args.target)
+        tree = git(checkout, "rev-parse", "HEAD^{tree}")
+        env = os.environ.copy()
+        env["VALIDATE_LOG_FILE"] = str(log)
+        env["VALIDATE_LABEL_PR"] = "0"
+        if args.pr is not None:
+            env["PR_NUMBER"] = str(args.pr)
+        result = subprocess.run(
+            [str(checkout / "validate.sh"), "--no-label-pr"],
+            cwd=checkout,
+            env=env,
+            text=True,
+            check=False,
+        )
+        source = load_source_row(root, args.target, checkout, log, started)
+        log_text = log.read_text(errors="replace")
+        executed, filtered, zero, absent = gate_coverage(log_text)
+        gates = source.get("gates")
+        gate_names = [gate.get("name") for gate in gates] if isinstance(gates, list) else []
+        canonical = dict(source)
+        canonical.update(
+            {
+                "schema_version": 5,
+                "producer": "ci-hub-reverie-validate-run",
+                "repo": "rrnewton/reverie",
+                "tree": tree,
+                "raw_result": source.get("result"),
+                "gates_run": source.get("checks"),
+                "gates_expected": len(EXPECTED_GATES),
+                "executed_tests": executed,
+                "filtered_tests": filtered,
+                "coverage": {
+                    "planned_test_nodes": len(TEST_GATES),
+                    "executed_test_nodes": len(TEST_GATES) - len(zero) - len(absent),
+                    "zero_executed_nodes": zero,
+                    "absent_nodes": absent,
+                },
+                "admission": "ci-hub-validate-lock",
+                "concurrent_validates": 0,
+                "concurrency_proof": "validate_lock_owner_ancestry",
+                "safe_ci": {
+                    "required": True,
+                    "observed": True,
+                    "cgroup": cgroup,
+                    "step": "validate.reverie-full",
+                    "fallback_allowed": False,
+                },
+                "validate_lock_authority": authority,
+                "reverie_validation_policy": "reverie-local-validation/v1",
+            }
+        )
+        # The canonical row records even a product red. Shape failures are not
+        # repaired here; the reader will refuse them rather than minting green.
+        record(root, canonical)
+        if gate_names != list(EXPECTED_GATES):
+            raise Refusal(f"Reverie gate set drifted: {gate_names!r}")
+        return result.returncode
+    except (OSError, Refusal) as error:
+        print(f"reverie-safe-validate: REFUSED: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

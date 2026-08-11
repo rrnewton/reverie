@@ -75,6 +75,7 @@ const DEFAULT_POLL_SECONDS: u64 = 15;
 const DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECONDS: u64 = 10 * 60;
 const GATE_FLOOR_POLICY: &str = "registry-effective-floor";
 const CANONICAL_VALIDATE_REPO: &str = "rrnewton/hermit";
+const CANONICAL_REVERIE_REPO: &str = "rrnewton/reverie";
 const ROOT_HELP: &str = r#"Typed front door for dev-hermit validation, GH Actions, and runner operations
 
 Usage: ci-hub <COMMAND>
@@ -3666,6 +3667,28 @@ fn extra_str<'a>(row: &'a HistoryRow, key: &str) -> Option<&'a str> {
     row.extra.get(key).and_then(|value| value.as_str())
 }
 
+fn canonical_validation_repo(repo: &str) -> Option<&'static str> {
+    match repo {
+        "hermit" | CANONICAL_VALIDATE_REPO => Some(CANONICAL_VALIDATE_REPO),
+        "reverie" | CANONICAL_REVERIE_REPO => Some(CANONICAL_REVERIE_REPO),
+        _ => None,
+    }
+}
+
+fn row_matches_validation_repo(row: &HistoryRow, repo: &str) -> bool {
+    match canonical_validation_repo(repo) {
+        Some(CANONICAL_VALIDATE_REPO) => matches!(
+            row.repo.as_deref(),
+            None | Some("hermit") | Some(CANONICAL_VALIDATE_REPO)
+        ),
+        Some(CANONICAL_REVERIE_REPO) => matches!(
+            row.repo.as_deref(),
+            Some("reverie") | Some(CANONICAL_REVERIE_REPO)
+        ),
+        _ => false,
+    }
+}
+
 fn canonical_row_json_and_sha256(row: &HistoryRow) -> Option<(String, String)> {
     // Canonicalization contract v1: serde's struct field order, BTreeMap order
     // for flattened extras, and original Vec order. Any parsed receipt field,
@@ -3871,6 +3894,116 @@ fn qualify_canonical_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRe
     })
 }
 
+/// Return the complete evidence bundle iff one row alone proves Reverie's
+/// versioned local-validation contract. Direct `validate.sh` rows are useful
+/// diagnostics but never qualify: only the central runner can carry both a
+/// live validate-lock ancestry proof and observed safe-ci step containment.
+fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingReceipt> {
+    const GATES: [&str; 7] = [
+        "Cross-client skill discovery",
+        "Merge-gate policy",
+        "Build workspace",
+        "Test regular workspace cases",
+        "Documentation tests",
+        "Clippy",
+        "Rustfmt",
+    ];
+    if row.schema_version? < 5
+        || !row_matches_validation_repo(row, CANONICAL_REVERIE_REPO)
+        || row.commit.as_deref() != Some(sha)
+        || !is_oid(sha)
+        || row.commit_anchored != Some(true)
+        || row.tree_dirty != Some(false)
+        || row.profile.as_deref() != Some("full")
+        || row.selection_mode.as_deref() != Some("full")
+        || row.full_coverage != Some(true)
+        || row.result.as_deref() != Some("pass")
+        || extra_str(row, "raw_result") != Some("pass")
+        || row.exit_code != Some(0)
+        || row.failures != Some(0)
+        || extra_str(row, "producer") != Some("ci-hub-reverie-validate-run")
+        || extra_str(row, "admission") != Some("ci-hub-validate-lock")
+        || row.concurrent_validates != Some(0)
+        || extra_str(row, "concurrency_proof") != Some("validate_lock_owner_ancestry")
+        || extra_str(row, "reverie_validation_policy") != Some("reverie-local-validation/v1")
+    {
+        return None;
+    }
+    let tree = extra_str(row, "tree")?;
+    if !is_oid(tree) {
+        return None;
+    }
+    let checks = row.checks?;
+    let gates_run = row.gates_run?;
+    let gates_expected = row.gates_expected?;
+    if checks != 7
+        || gates_run != 7
+        || gates_expected != 7
+        || row.gates.len() != GATES.len()
+        || row.gates.iter().zip(GATES).any(|(gate, expected)| {
+            gate.name != expected
+                || gate.result.as_deref() != Some("pass")
+                || gate.exit_code != Some(0)
+        })
+    {
+        return None;
+    }
+    let executed_tests = row.executed_tests?;
+    let filtered_tests = row.filtered_tests?;
+    let coverage = row.coverage.as_ref()?;
+    if executed_tests <= 0
+        || filtered_tests < 0
+        || coverage.planned_test_nodes != 2
+        || coverage.executed_test_nodes != 2
+        || !crate::qualifying_receipt::coverage_satisfied(coverage)
+    {
+        return None;
+    }
+    let safe_ci = row.extra.get("safe_ci")?.as_object()?;
+    let cgroup = safe_ci.get("cgroup")?.as_str()?;
+    if safe_ci.get("required")?.as_bool()? != true
+        || safe_ci.get("observed")?.as_bool()? != true
+        || safe_ci.get("fallback_allowed")?.as_bool()? != false
+        || safe_ci.get("step")?.as_str()? != "validate.reverie-full"
+        || !cgroup.contains("safe-ci-")
+        || !cgroup.contains("/step-")
+    {
+        return None;
+    }
+    let authority = row.extra.get("validate_lock_authority")?.as_object()?;
+    if authority.get("schema_version")?.as_u64()? != 1
+        || authority.get("admissible")?.as_bool()? != true
+        || authority.get("canonical_anchor_held")?.as_bool()? != true
+        || authority.get("holder")?.get("kind")?.as_str()? != "reverie-validate"
+        || authority.get("holder")?.get("target")?.as_str()? != sha
+        || authority.get("owner")?.get("liveness")?.as_str()? != "alive"
+    {
+        return None;
+    }
+    for required in [
+        row.finished_at.as_deref(),
+        row.host.as_deref(),
+        row.slot.as_deref(),
+        row.log_file.as_deref(),
+    ] {
+        if required.is_none_or(|value| value.trim().is_empty()) {
+            return None;
+        }
+    }
+    let (canonical_row_json, canonical_sha256) = canonical_row_json_and_sha256(row)?;
+    Some(QualifyingReceipt {
+        row: row.clone(),
+        canonical_row_json,
+        selected_tests: executed_tests,
+        discovered_tests: executed_tests.checked_add(filtered_tests)?,
+        count_derivation:
+            "selected_tests=executed_tests;discovered_tests=executed_tests+filtered_tests",
+        coverage_basis: "reverie-declared-two-test-gates",
+        canonical_sha256,
+        producer_definition: None,
+    })
+}
+
 #[cfg(not(test))]
 fn resolve_producer_definition_evidence(
     root: &Path,
@@ -3981,11 +4114,11 @@ fn assess_canonical_receipts(
     sha: &str,
     repo: &str,
 ) -> Result<CanonicalReceiptAssessment, String> {
-    if repo != CANONICAL_VALIDATE_REPO {
-        return Err(format!(
-            "canonical local receipt ledger is bound to {CANONICAL_VALIDATE_REPO}, not {repo}"
-        ));
-    }
+    let repo = canonical_validation_repo(repo).ok_or_else(|| {
+        format!(
+            "canonical local receipt ledger supports only {CANONICAL_VALIDATE_REPO} and {CANONICAL_REVERIE_REPO}, not {repo}"
+        )
+    })?;
     let mut qualifying = Vec::new();
     let mut disqualified = Vec::new();
     let mut saw_failed = false;
@@ -3993,16 +4126,25 @@ fn assess_canonical_receipts(
     let mut saw_truncated = false;
     let mut saw_no_result = false;
     for row in rows {
-        if row.commit.as_deref() != Some(sha) {
+        if !row_matches_validation_repo(row, repo) || row.commit.as_deref() != Some(sha) {
             continue;
         }
-        if let Some(mut receipt) = qualify_canonical_receipt(row, sha) {
-            match resolve_producer_definition_evidence(root, row, sha)? {
-                Some(evidence) => {
-                    receipt.producer_definition = Some(evidence);
-                    qualifying.push(receipt);
+        let receipt = if repo == CANONICAL_VALIDATE_REPO {
+            qualify_canonical_receipt(row, sha)
+        } else {
+            qualify_reverie_receipt(row, sha)
+        };
+        if let Some(mut receipt) = receipt {
+            if repo == CANONICAL_VALIDATE_REPO {
+                match resolve_producer_definition_evidence(root, row, sha)? {
+                    Some(evidence) => {
+                        receipt.producer_definition = Some(evidence);
+                        qualifying.push(receipt);
+                    }
+                    None => disqualified.push(row.clone()),
                 }
-                None => disqualified.push(row.clone()),
+            } else {
+                qualifying.push(receipt);
             }
         } else {
             match validate_status::failure_disposition(row, sha) {
@@ -4030,7 +4172,12 @@ fn assess_canonical_receipts(
     };
     // Retain the current-main adverse-record accounting while the canonical
     // receipt predicate above remains the stricter positive authority.
-    let status_assessment = validate_status::assess(rows, sha);
+    let repo_rows = rows
+        .iter()
+        .filter(|row| row_matches_validation_repo(row, repo))
+        .cloned()
+        .collect::<Vec<_>>();
+    let status_assessment = validate_status::assess(&repo_rows, sha);
     Ok(CanonicalReceiptAssessment {
         sha: sha.to_string(),
         verdict,
@@ -4055,9 +4202,14 @@ fn newest_canonical_receipt(rows: &[QualifyingReceipt]) -> Option<&QualifyingRec
 fn describe_receipt(receipt: &QualifyingReceipt) -> serde_json::Value {
     let row = &receipt.row;
     let tree = extra_str(row, "tree").expect("qualified receipt has tree");
+    let repo = row
+        .repo
+        .as_deref()
+        .and_then(canonical_validation_repo)
+        .unwrap_or(CANONICAL_VALIDATE_REPO);
     serde_json::json!({
         "schema_version": row.schema_version,
-        "repo": CANONICAL_VALIDATE_REPO,
+        "repo": repo,
         "sha": row.commit,
         "commit": row.commit,
         "tree": tree,
@@ -4977,6 +5129,7 @@ fn remote_ledger_records_for(
     root: &Path,
     git_ref: &str,
     sha: &str,
+    repo: &str,
 ) -> Result<usize, String> {
     let listing = Command::new("git")
         .arg("-C")
@@ -4991,8 +5144,13 @@ fn remote_ledger_records_for(
         ));
     }
     let mut records = 0usize;
+    let team = if repo == CANONICAL_REVERIE_REPO {
+        "reverie"
+    } else {
+        "hermit"
+    };
     for shard in String::from_utf8_lossy(&listing.stdout).lines() {
-        if !shard.ends_with(".jsonl") {
+        if !shard.ends_with(".jsonl") || !shard.starts_with(&format!("ledger/{team}/")) {
             continue;
         }
         let blob = Command::new("git")
@@ -5028,9 +5186,9 @@ fn remote_ledger_records_for(
 /// Probe remote ledger freshness. Runs ONLY on the pure-absence path, so the
 /// network cost is paid exactly when this reader is about to assert that
 /// nothing exists -- never on a path that already has evidence.
-fn probe_ledger_freshness(root: &Path, sha: &str) -> LedgerFreshness {
-    let git_ref = std::env::var("CI_HUB_LEDGER_LAG_REF")
-        .unwrap_or_else(|_| "origin/main".to_string());
+fn probe_ledger_freshness(root: &Path, sha: &str, repo: &str) -> LedgerFreshness {
+    let git_ref =
+        std::env::var("CI_HUB_LEDGER_LAG_REF").unwrap_or_else(|_| "origin/main".to_string());
     // Seam for offline and hermetic tests: a planted local ref can stand in for
     // the remote so both brackets run without network.
     if std::env::var("CI_HUB_LEDGER_LAG_FETCH").as_deref() != Ok("0") {
@@ -5040,10 +5198,8 @@ fn probe_ledger_freshness(root: &Path, sha: &str) -> LedgerFreshness {
             };
         }
     }
-    match remote_ledger_records_for(root, &git_ref, sha) {
-        Ok(0) => LedgerFreshness::UpstreamAgrees {
-            git_ref,
-        },
+    match remote_ledger_records_for(root, &git_ref, sha, repo) {
+        Ok(0) => LedgerFreshness::UpstreamAgrees { git_ref },
         Ok(records) => LedgerFreshness::UpstreamHasRecord { records, git_ref },
         Err(reason) => LedgerFreshness::Unknown { reason },
     }
@@ -5063,12 +5219,26 @@ fn probe_ledger_freshness(root: &Path, sha: &str) -> LedgerFreshness {
 fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiHubError> {
     let path = ledger_path(root);
     let rows = load_ledger_rows(&path)?;
+    let repo = canonical_validation_repo(&args.repo).ok_or_else(|| {
+        CiHubError::ValidateStatus(format!(
+            "--repo must be {CANONICAL_VALIDATE_REPO} or {CANONICAL_REVERIE_REPO}, got {}",
+            args.repo
+        ))
+    })?;
+    // Repository identity is part of the key. Filter BEFORE prefix resolution:
+    // a same-SHA row from the other product must neither disambiguate nor bless
+    // this query.
+    let repo_rows = rows
+        .iter()
+        .filter(|row| row_matches_validation_repo(row, repo))
+        .cloned()
+        .collect::<Vec<_>>();
     // A SHA may arrive as `--sha` or positionally; clap already forbids giving
     // both, or either together with `--pr`.
     let sha_input = args.sha.as_ref().or(args.sha_positional.as_ref());
     let sha = match (sha_input, args.pr) {
         (Some(input), None) => {
-            validate_status::resolve_sha(&rows, input).map_err(CiHubError::ValidateStatus)?
+            validate_status::resolve_sha(&repo_rows, input).map_err(CiHubError::ValidateStatus)?
         }
         (None, Some(pr)) => gh_pr_head(root, &args.repo, pr)?,
         _ => {
@@ -5077,7 +5247,7 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
             ))
         }
     };
-    let assessment = assess_canonical_receipts(root, &rows, &sha, &args.repo)
+    let assessment = assess_canonical_receipts(root, &repo_rows, &sha, repo)
         .map_err(CiHubError::ValidateStatus)?;
     let newest = newest_canonical_receipt(&assessment.qualifying);
 
@@ -5089,7 +5259,7 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
     let freshness = if matches!(assessment.verdict, validate_status::Verdict::NotValidated)
         && local_records == 0
     {
-        Some(probe_ledger_freshness(root, &assessment.sha))
+        Some(probe_ledger_freshness(root, &assessment.sha, repo))
     } else {
         None
     };
@@ -5125,7 +5295,7 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
             assessment.qualifying.iter().map(describe_receipt).collect();
         let report = serde_json::json!({
             "schema_version": 1,
-            "repo": args.repo,
+            "repo": repo,
             "sha": assessment.sha,
             "verdict": reported_verdict,
             "exit_code": assessment.verdict.exit_code(),
@@ -6518,7 +6688,7 @@ mod tests {
         git(&["commit", "-qm", "ledger fixture"]);
 
         assert_eq!(
-            remote_ledger_records_for(&root, "HEAD", target).unwrap(),
+            remote_ledger_records_for(&root, "HEAD", target, CANONICAL_VALIDATE_REPO).unwrap(),
             1,
             "the genuine record must count and the base_sha decoy must not"
         );
@@ -6526,13 +6696,24 @@ mod tests {
         // absence would be reported as a lag and the outcome would become a
         // blanket excuse rather than a distinction.
         assert_eq!(
-            remote_ledger_records_for(&root, "HEAD", "0123456789abcdef0123456789abcdef01234567")
-                .unwrap(),
+            remote_ledger_records_for(
+                &root,
+                "HEAD",
+                "0123456789abcdef0123456789abcdef01234567",
+                CANONICAL_VALIDATE_REPO,
+            )
+            .unwrap(),
             0,
         );
         // An unresolvable ref is an ERROR, never a silent zero: a zero here would
         // harden an unverifiable probe into an authoritative absence claim.
-        assert!(remote_ledger_records_for(&root, "refs/heads/absent", target).is_err());
+        assert!(remote_ledger_records_for(
+            &root,
+            "refs/heads/absent",
+            target,
+            CANONICAL_VALIDATE_REPO,
+        )
+        .is_err());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -6606,6 +6787,74 @@ mod tests {
                 {"name": "fmt", "result": "pass", "exit_code": 0},
                 {"name": "test", "result": "pass", "exit_code": 0}
             ]
+        })
+    }
+
+    fn reverie_receipt_value() -> serde_json::Value {
+        let gates = [
+            "Cross-client skill discovery",
+            "Merge-gate policy",
+            "Build workspace",
+            "Test regular workspace cases",
+            "Documentation tests",
+            "Clippy",
+            "Rustfmt",
+        ]
+        .into_iter()
+        .map(|name| serde_json::json!({"name": name, "result": "pass", "exit_code": 0}))
+        .collect::<Vec<_>>();
+        serde_json::json!({
+            "schema_version": 5,
+            "producer": "ci-hub-reverie-validate-run",
+            "repo": CANONICAL_REVERIE_REPO,
+            "started_at": "2026-08-11T12:00:00Z",
+            "finished_at": "2026-08-11T12:01:00Z",
+            "host": "validation-host",
+            "slot": "reverie-slot",
+            "cwd": "/tmp/reverie",
+            "profile": "full",
+            "selection_mode": "full",
+            "full_coverage": true,
+            "commit": RECEIPT_SHA,
+            "tree": "f9294df9294df9294df9294df9294df9294df929",
+            "commit_anchored": true,
+            "tree_dirty": false,
+            "result": "pass",
+            "raw_result": "pass",
+            "exit_code": 0,
+            "executed_tests": 100,
+            "filtered_tests": 20,
+            "coverage": {
+                "planned_test_nodes": 2,
+                "executed_test_nodes": 2,
+                "zero_executed_nodes": [],
+                "absent_nodes": []
+            },
+            "checks": 7,
+            "gates_run": 7,
+            "gates_expected": 7,
+            "failures": 0,
+            "real_seconds": 60.0,
+            "log_file": "/tmp/reverie-validate.log",
+            "admission": "ci-hub-validate-lock",
+            "concurrent_validates": 0,
+            "concurrency_proof": "validate_lock_owner_ancestry",
+            "safe_ci": {
+                "required": true,
+                "observed": true,
+                "fallback_allowed": false,
+                "step": "validate.reverie-full",
+                "cgroup": "/user.slice/safe-ci-123.scope/step-validate.reverie-full"
+            },
+            "validate_lock_authority": {
+                "schema_version": 1,
+                "admissible": true,
+                "canonical_anchor_held": true,
+                "holder": {"kind": "reverie-validate", "target": RECEIPT_SHA},
+                "owner": {"liveness": "alive"}
+            },
+            "reverie_validation_policy": "reverie-local-validation/v1",
+            "gates": gates
         })
     }
 
@@ -6792,14 +7041,82 @@ mod tests {
             qualify_canonical_receipt(&history_row(schema5_missing_repo), RECEIPT_SHA).is_none()
         );
 
-        let error = assess_canonical_receipts(
+        let cross_repo = assess_canonical_receipts(
             Path::new("."),
             &[history_row(schema4_receipt_value())],
             RECEIPT_SHA,
-            "rrnewton/reverie",
+            CANONICAL_REVERIE_REPO,
         )
-        .unwrap_err();
-        assert!(error.contains("bound to rrnewton/hermit"));
+        .unwrap();
+        assert!(cross_repo.qualifying.is_empty());
+    }
+
+    #[test]
+    fn reverie_receipt_requires_central_safe_ci_and_repo_binding() {
+        let positive = history_row(reverie_receipt_value());
+        let assessment = assess_canonical_receipts(
+            Path::new("."),
+            &[positive],
+            RECEIPT_SHA,
+            CANONICAL_REVERIE_REPO,
+        )
+        .unwrap();
+        assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
+        assert_eq!(assessment.qualifying.len(), 1);
+
+        for (name, path, replacement) in [
+            (
+                "direct producer",
+                vec!["producer"],
+                serde_json::json!("reverie-validate-sh"),
+            ),
+            (
+                "unobserved safe-ci",
+                vec!["safe_ci", "observed"],
+                serde_json::json!(false),
+            ),
+            (
+                "unboxed fallback",
+                vec!["safe_ci", "fallback_allowed"],
+                serde_json::json!(true),
+            ),
+            (
+                "missing test node",
+                vec!["coverage", "absent_nodes"],
+                serde_json::json!(["Documentation tests"]),
+            ),
+        ] {
+            let mut planted = reverie_receipt_value();
+            let mut cursor = &mut planted;
+            for key in &path[..path.len() - 1] {
+                cursor = &mut cursor[*key];
+            }
+            cursor[path[path.len() - 1]] = replacement;
+            assert!(
+                qualify_reverie_receipt(&history_row(planted), RECEIPT_SHA).is_none(),
+                "planted {name} row qualified"
+            );
+        }
+    }
+
+    #[test]
+    fn repository_filter_prevents_same_sha_cross_product_authority() {
+        let hermit = history_row(schema4_receipt_value());
+        let reverie = history_row(reverie_receipt_value());
+        let rows = vec![hermit, reverie];
+        let hermit_assessment =
+            assess_canonical_receipts(Path::new("."), &rows, RECEIPT_SHA, CANONICAL_VALIDATE_REPO)
+                .unwrap();
+        let reverie_assessment =
+            assess_canonical_receipts(Path::new("."), &rows, RECEIPT_SHA, CANONICAL_REVERIE_REPO)
+                .unwrap();
+        assert_eq!(hermit_assessment.qualifying.len(), 1);
+        assert_eq!(reverie_assessment.qualifying.len(), 1);
+        assert_eq!(hermit_assessment.qualifying[0].row.repo, None);
+        assert_eq!(
+            reverie_assessment.qualifying[0].row.repo.as_deref(),
+            Some(CANONICAL_REVERIE_REPO)
+        );
     }
 
     #[test]

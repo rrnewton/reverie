@@ -1,6 +1,7 @@
 # `validate/` — local validation run visibility
 
-**Follow skill `hermit-validation-authority` for validation authority.**
+**Follow skill `hermit-validation-authority` for Hermit authority and Reverie's
+`reverie-validation-authority` skill for Reverie rows.**
 
 This object turns the records that `hermit/scripts/validate.rs` writes into readable,
 machine-wide views. It owns the linkage from local run records to retained
@@ -16,6 +17,25 @@ Two consumers live here:
 
 Both are read-only. The front door exposes them as `ci-hub local-history` and
 `ci-hub validate-worktrees`.
+
+## Reverie centralized producer
+
+`ci-hub validate-run --repo rrnewton/reverie --checkout <reverie> --agent
+<agent> --target <exact-sha>` uses the same detached systemd service,
+box-exclusive `validate-lock`, run registry, and ledger adapter as Hermit. Its
+product command is always the exact full `./validate.sh --no-label-pr`, executed
+as one `safe-ci-dag-runner` step. Cgroup containment is mandatory: the wrapper
+passes neither `--allow-cgroup-failure` nor `--unsafe-no-cgroups`, and the node
+itself proves both the safe-ci step cgroup and live validate-lock owner ancestry
+before it runs the product driver.
+
+Reverie events use the existing HistoryRow/JSONL wire format and shard to
+`ledger/reverie/<host>/<month>.jsonl`. The direct schema-3 row emitted by
+`validate.sh` remains diagnostic. The central wrapper emits the schema-5
+`ci-hub-reverie-validate-run` row that carries exact repository, seven-gate,
+test-coverage, lock, and safe-ci evidence. `validate-status` filters by
+repository before resolving a SHA, so a same-text Hermit SHA cannot satisfy a
+Reverie query.
 
 ## Hub-report artifacts
 

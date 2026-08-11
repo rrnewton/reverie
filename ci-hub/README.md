@@ -242,6 +242,14 @@ single `bin/agent-tool` adapter materializes the exact pinned commit and runs:
   summaries. `validate/aggregate.py` links local run records to that store; it
   does not reimplement the runner or profile schema.
 
+`validate-run` supports both `rrnewton/hermit` and `rrnewton/reverie`. Reverie
+uses the same central lock and ledger format but a repository-specific
+qualifier. Its full product driver is one mandatory, fail-closed safe-ci node;
+there is no unboxed fallback. See `validate/README.md` and Reverie's
+`reverie-validation-authority` skill for the exact row contract. The canonical
+exact-head local row is Reverie's current validation authority; hosted results
+remain diagnostics only under the owner's project-wide Actions-off directive.
+
 Before adding code, audit the pinned `agent-utils` APIs. If the capability is
 generic, add it there and link/use it here.
 
