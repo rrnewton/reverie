@@ -1,0 +1,49 @@
+{
+  "name": "liteinst-enotsupp-cluster",
+  "date": "2026-08-10",
+  "hypothesis": "LiteInst's handle_new_task returns ENOTSUPP unconditionally, blocking every task-creating syscall and suppressing a large cohort of otherwise-passing compat cells.",
+  "result": "Confirmed. LiteInst passing cells 127 -> 171 (+44) out of a 235 denominator; the ENOTSUPP cohort is exactly 51 of 78. All 44 gained cells satisfy the full L2 predicate with zero violations, independently recomputed from the CSVs rather than from the PR's claim.",
+  "backend": "liteinst",
+  "control": "ptrace re-sweep (fixed-ptrace.csv) confirms no regression on the production path; all 17 hunks walked, none observable by a non-LiteInst session.",
+  "assurance_level": "L2",
+  "artifact": {
+    "reverie_pr": "https://github.com/rrnewton/reverie/pull/430",
+    "pr_state": "open, draft, BLOCKED on two CHANGES-REQUESTED reviews",
+    "gated_hermit_pr": "https://github.com/rrnewton/hermit/pull/2083",
+    "note": "#2083 does NOT contain a Reverie pin bump; a separate Hermit commit is required between #430 landing and #2083 landing."
+  },
+  "dependency_verification": {
+    "claim": "hermit #2083 depends on reverie #430",
+    "method": "empirical, not assumed",
+    "evidence": "hermit test: liteinst at 66138d34 fails -524 ENOTSUPP on exactly the two tests #2083 inverts, against the pinned reverie 99437f05."
+  },
+  "provenance": {
+    "rescued_from": "worktrees/fix-liteinst/hermit/ignored/sweep/",
+    "reason": "gitignored directory inside an agent worktree; sole evidence for four of six fixes in the cluster; would be destroyed on slot reclaim",
+    "rescued_by": "claude-coord-fable",
+    "rescued_at": "2026-08-11T02:00Z",
+    "host": "devbig030"
+  },
+  "producers": {
+    "sweep.py": "generates the per-cell CSVs",
+    "summarize.py": "reduces CSVs to the scorecard"
+  },
+  "excluded": {
+    "path": "build/",
+    "size": "13 MB",
+    "contents": "compiled guest executables plus 2481 per-cell .out/.err/.json artifacts",
+    "reason": "compiled binaries may not be committed under the Binary And Large-File Policy; per-cell artifacts are regenerable via sweep.py"
+  },
+  "sha256": {
+    "baseline.csv": "7e85061fff7b62cf1f0083b96220d2ba12d81ce2d05ea21272d882217427f656",
+    "final.csv": "03ecc1da065f13c292f868276a0eb862d36ae25a72cb1764ded8520d91e6d1f5",
+    "fixed.csv": "b4b47af813709342389a4c9c4812e665f0421e0ec66d77baba7544f5dc88539a",
+    "fixed-ptrace.csv": "59eb10039be0c5a8e9e70e631a882736d119eb7f7744bd38b17a4e1421cfb485",
+    "summarize.py": "a0adbb20ef01137d9b91d6aa2502d668f58f74f1d373f39cf0f437784c3f12f7",
+    "sweep.py": "1496319e5c800cd27ad40223d87ab12320173a78856ec21b9dad68359dd22023"
+  },
+  "limitations": [
+    "The sweep is not hermetic against a busy multi-tenant box; see hermit #2111 for the flake classes and #2109 / #2107 for the two host-state surfaces that break bitwise parity.",
+    "Per-cell stdout/stderr are not preserved and must be regenerated if needed."
+  ]
+}
