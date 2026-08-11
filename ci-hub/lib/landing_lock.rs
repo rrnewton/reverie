@@ -794,15 +794,24 @@ pub fn execute(root: &Path, args: LandLockArgs) -> Result<i32, LandLockError> {
     }
     match args.command {
         LandLockCommand::Acquire(args) => {
-            // `acquire` cannot HOLD the anchor (see `held_by_another`), but it must
+            // `acquire` cannot HOLD the anchor, but it must
             // not hand out a lease while another repository's landing owns the box.
-            if BoxExclusionAnchor::held_by_another(&lock.paths.anchor) {
-                eprintln!(
-                    "REFUSED: box-exclusive landing anchor held by {}; this box \
-                     lands one PR at a time across ALL checkouts and clones",
-                    BoxExclusionAnchor::describe_holder(&lock.paths.anchor)
-                );
-                return Ok(REFUSED_EXIT_CODE);
+            match BoxExclusionAnchor::observe(&lock.paths.anchor) {
+                BoxAnchorObservation::Free => {}
+                BoxAnchorObservation::Held(holder) => {
+                    eprintln!(
+                        "REFUSED: box-exclusive landing anchor held by {holder}; this box \
+                         lands one PR at a time across ALL checkouts and clones"
+                    );
+                    return Ok(REFUSED_EXIT_CODE);
+                }
+                BoxAnchorObservation::Unknown(reason) => {
+                    eprintln!(
+                        "REFUSED: box-exclusive landing anchor state UNKNOWN: {reason}; \
+                         absence is not permission"
+                    );
+                    return Ok(REFUSED_EXIT_CODE);
+                }
             }
             // The anchor is a live-process signal; this is the durable one. A
             // supervisor that died leaving its payload alive released the anchor,
@@ -3140,6 +3149,13 @@ pub(crate) struct BoxExclusionAnchor {
     path: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum BoxAnchorObservation {
+    Free,
+    Held(String),
+    Unknown(String),
+}
+
 impl BoxExclusionAnchor {
     /// Take the anchor, waiting up to `wait_seconds` (0 = do not wait).
     ///
@@ -3233,24 +3249,54 @@ impl BoxExclusionAnchor {
         &self.path
     }
 
-    /// Is the anchor currently held by SOMEONE ELSE? Tests without taking it.
-    ///
-    /// For `acquire`, whose lease outlives the process: this cannot HOLD the
-    /// anchor (a flock dies with its process, so holding it here would release the
-    /// instant the command exits and would be a lie), but it can and must refuse
-    /// while another box-exclusive payload is live. Unreadable/unopenable is NOT
-    /// treated as held: the anchor must never be able to wedge every repository on
-    /// a filesystem hiccup, and the per-repository lease is still a full gate.
-    pub(crate) fn held_by_another(path: &Path) -> bool {
-        let Ok(file) = OpenOptions::new().read(true).write(true).open(path) else {
-            return false;
+    /// Observe the same kernel flock that `take` uses without creating or
+    /// mutating it. This is deliberately tri-state: an I/O failure is not proof
+    /// that a box-exclusive authority is free.
+    pub(crate) fn observe(path: &Path) -> BoxAnchorObservation {
+        let file = match OpenOptions::new().read(true).write(true).open(path) {
+            Ok(file) => file,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                return BoxAnchorObservation::Free
+            }
+            Err(source) => {
+                return BoxAnchorObservation::Unknown(format!(
+                    "cannot open anchor {}: {source}",
+                    path.display()
+                ))
+            }
         };
         match file.try_lock_exclusive() {
             Ok(()) => {
-                let _ = FileExt::unlock(&file);
-                false
+                if let Err(source) = FileExt::unlock(&file) {
+                    BoxAnchorObservation::Unknown(format!(
+                        "cannot unlock observed anchor {}: {source}",
+                        path.display()
+                    ))
+                } else {
+                    BoxAnchorObservation::Free
+                }
             }
-            Err(source) => source.kind() == io::ErrorKind::WouldBlock,
+            Err(source) if source.kind() == io::ErrorKind::WouldBlock => {
+                let mut body = String::new();
+                let mut handle = &file;
+                match handle.read_to_string(&mut body) {
+                    Ok(_) if !body.trim().is_empty() => {
+                        BoxAnchorObservation::Held(body.trim().replace('\n', " "))
+                    }
+                    Ok(_) => BoxAnchorObservation::Unknown(format!(
+                        "held anchor {} has an empty attribution record",
+                        path.display()
+                    )),
+                    Err(source) => BoxAnchorObservation::Unknown(format!(
+                        "cannot read held anchor {}: {source}",
+                        path.display()
+                    )),
+                }
+            }
+            Err(source) => BoxAnchorObservation::Unknown(format!(
+                "cannot probe anchor {}: {source}",
+                path.display()
+            )),
         }
     }
 }
@@ -5306,7 +5352,10 @@ exit 0
         let anchor = dir.join("landing-box.lock");
 
         // Nothing held: the FIRST caller is admitted (the mechanism is not inert).
-        assert!(!BoxExclusionAnchor::held_by_another(&anchor));
+        assert_eq!(
+            BoxExclusionAnchor::observe(&anchor),
+            BoxAnchorObservation::Free
+        );
         let first = BoxExclusionAnchor::take(&anchor, 0).unwrap();
         assert!(first.is_some(), "an unheld anchor must be granted");
 
@@ -5317,7 +5366,10 @@ exit 0
             BoxExclusionAnchor::take(&anchor, 0).unwrap().is_none(),
             "a held anchor must refuse the second caller"
         );
-        assert!(BoxExclusionAnchor::held_by_another(&anchor));
+        assert!(matches!(
+            BoxExclusionAnchor::observe(&anchor),
+            BoxAnchorObservation::Held(_)
+        ));
         assert!(
             BoxExclusionAnchor::describe_holder(&anchor).contains("box-exclusive-v1"),
             "the refusal must be able to name the holder"

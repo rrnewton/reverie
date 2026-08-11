@@ -38,8 +38,9 @@ use crate::landing_lock::{
     print_census_recovery, print_cleanup_record, process_group_exists, process_start_ticks,
     reap_exited_children, register_box_claim, remove_cleanup_record_and_claim,
     repository_lock_root, signal_group, spawn_gated_child, suffix, verify_cleanup_record,
-    write_cleanup_record, BoxExclusionAnchor, CleanupDomain, CleanupPhase, CleanupRecord,
-    CleanupVerification, DomainEvidence, GatedChild, ProcessIdentity, ResidualCapture,
+    write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor, CleanupDomain, CleanupPhase,
+    CleanupRecord, CleanupVerification, DomainEvidence, GatedChild, ProcessIdentity,
+    ResidualCapture,
 };
 
 const DEFAULT_WAIT_SECONDS: u64 = 1_800;
@@ -864,6 +865,184 @@ struct VerifiedRunAttribution {
     record: PathBuf,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct GlobalValidateHolder {
+    pid: u32,
+    start_ticks: u64,
+    boot_id: String,
+    host: String,
+    agent: String,
+    kind: String,
+    target: String,
+    unit: String,
+    record: PathBuf,
+    cgroup: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum GlobalValidateObservation {
+    Free,
+    Held(GlobalValidateHolder),
+    Unknown(String),
+}
+
+fn unique_anchor_field<'a>(body: &'a str, name: &str) -> Result<&'a str, String> {
+    let mut values = body.split_whitespace().filter_map(|token| {
+        let (key, value) = token.split_once('=')?;
+        (key == name).then_some(value)
+    });
+    let value = values
+        .next()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("held anchor has no nonempty {name}= field"))?;
+    if values.next().is_some() {
+        return Err(format!("held anchor has duplicate {name}= fields"));
+    }
+    Ok(value)
+}
+
+fn cgroup_contains_unit(cgroup: &str, unit: &str) -> bool {
+    cgroup.lines().any(|line| {
+        line.splitn(3, ':')
+            .nth(2)
+            .is_some_and(|path| path.split('/').any(|component| component == unit))
+    })
+}
+
+fn verify_global_validate_holder(body: &str) -> Result<GlobalValidateHolder, String> {
+    if unique_anchor_field(body, "anchor")? != "box-exclusive-v1" {
+        return Err("held anchor has an unsupported authority version".into());
+    }
+    let pid: u32 = unique_anchor_field(body, "pid")?
+        .parse()
+        .map_err(|_| "held anchor pid is not a u32".to_string())?;
+    let start_ticks: u64 = unique_anchor_field(body, "start_ticks")?
+        .parse()
+        .map_err(|_| "held anchor start_ticks is not a u64".to_string())?;
+    if pid == 0 || start_ticks == 0 {
+        return Err("held anchor identity requires pid>0 and start_ticks>0".into());
+    }
+    let boot_id = unique_anchor_field(body, "boot_id")?.to_string();
+    let host = unique_anchor_field(body, "host")?.to_string();
+    let agent = unique_anchor_field(body, "agent")?.to_string();
+    let kind = unique_anchor_field(body, "kind")?.to_string();
+    let target = unique_anchor_field(body, "target")?.to_string();
+    let unit = unique_anchor_field(body, "unit")?.to_string();
+    let record = PathBuf::from(unique_anchor_field(body, "record")?);
+
+    let current_host_name = current_host();
+    if current_host_name == "unknown" || host != current_host_name {
+        return Err(format!(
+            "held anchor host {host} does not match observable host {current_host_name}"
+        ));
+    }
+    let observed_boot = current_boot_id().map_err(|error| error.to_string())?;
+    if boot_id != observed_boot {
+        return Err(format!(
+            "held anchor boot_id {boot_id} does not match observable boot {observed_boot}"
+        ));
+    }
+    match process_start_ticks(pid) {
+        Ok(observed) if observed == start_ticks => {}
+        Ok(observed) => {
+            return Err(format!(
+                "held anchor pid {pid} start_ticks mismatch: recorded {start_ticks}, observed {observed}"
+            ))
+        }
+        Err(error) => {
+            return Err(format!(
+                "held anchor pid {pid} liveness is unverifiable: {error}"
+            ))
+        }
+    }
+
+    let canonical_record = fs::canonicalize(&record).map_err(|error| {
+        format!(
+            "cannot canonicalize exact run record {}: {error}",
+            record.display()
+        )
+    })?;
+    if canonical_record != record {
+        return Err(format!(
+            "held anchor run record is not canonical: {} resolves to {}",
+            record.display(),
+            canonical_record.display()
+        ));
+    }
+    let content = fs::read_to_string(&record)
+        .map_err(|error| format!("cannot read exact run record {}: {error}", record.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|error| format!("exact run record {} is not JSON: {error}", record.display()))?;
+    let field = |name: &str| value.get(name).and_then(serde_json::Value::as_str);
+    if value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+        || field("agent") != Some(agent.as_str())
+        || field("target") != Some(target.as_str())
+        || field("unit") != Some(unit.as_str())
+    {
+        return Err(format!(
+            "exact run record {} does not bind schema=1 agent={agent} target={target} unit={unit}",
+            record.display()
+        ));
+    }
+    let identity = value
+        .get("process_identity")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            format!(
+                "exact run record {} has no process_identity",
+                record.display()
+            )
+        })?;
+    if identity.get("pid").and_then(serde_json::Value::as_u64) != Some(u64::from(pid))
+        || identity
+            .get("start_ticks")
+            .and_then(serde_json::Value::as_u64)
+            != Some(start_ticks)
+        || identity.get("boot_id").and_then(serde_json::Value::as_str) != Some(boot_id.as_str())
+    {
+        return Err(format!(
+            "exact run record {} carries a different process_identity",
+            record.display()
+        ));
+    }
+
+    let cgroup_path = PathBuf::from(format!("/proc/{pid}/cgroup"));
+    let cgroup = fs::read_to_string(&cgroup_path)
+        .map_err(|error| format!("cannot read live cgroup {}: {error}", cgroup_path.display()))?;
+    if !cgroup_contains_unit(&cgroup, &unit) {
+        return Err(format!(
+            "live cgroup for pid {pid} does not contain exact unit {unit}"
+        ));
+    }
+
+    Ok(GlobalValidateHolder {
+        pid,
+        start_ticks,
+        boot_id,
+        host,
+        agent,
+        kind,
+        target,
+        unit,
+        record,
+        cgroup: cgroup.trim().to_string(),
+    })
+}
+
+fn observe_global_validate_anchor(path: &Path) -> GlobalValidateObservation {
+    match BoxExclusionAnchor::observe(path) {
+        BoxAnchorObservation::Free => GlobalValidateObservation::Free,
+        BoxAnchorObservation::Held(body) => match verify_global_validate_holder(&body) {
+            Ok(holder) => GlobalValidateObservation::Held(holder),
+            Err(reason) => GlobalValidateObservation::Unknown(reason),
+        },
+        BoxAnchorObservation::Unknown(reason) => GlobalValidateObservation::Unknown(reason),
+    }
+}
+
 fn systemd_service_unit(cgroup: &str) -> Option<String> {
     cgroup.lines().find_map(|line| {
         let path = line.splitn(3, ':').nth(2)?;
@@ -1146,18 +1325,27 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
             if yield_status != 0 {
                 return Ok(yield_status);
             }
-            // `acquire` cannot HOLD the box-global anchor (see `held_by_another`),
+            // `acquire` cannot HOLD the box-global anchor,
             // but it must not hand out a lease while another repository's payload
             // owns the box. `run` is the sanctioned production path
             // (ci-hub/validate/start_unit.py invokes `validate-lock run`); this
             // keeps the bare-`acquire` path from being the way around it.
-            if BoxExclusionAnchor::held_by_another(&lock.paths.anchor) {
-                eprintln!(
-                    "REFUSED: box-exclusive anchor held by {}; this box admits one \
-                     validate or benchmark at a time across ALL checkouts and clones",
-                    BoxExclusionAnchor::describe_holder(&lock.paths.anchor)
-                );
-                return Ok(REFUSED_EXIT_CODE);
+            match BoxExclusionAnchor::observe(&lock.paths.anchor) {
+                BoxAnchorObservation::Free => {}
+                BoxAnchorObservation::Held(holder) => {
+                    eprintln!(
+                        "REFUSED: box-exclusive anchor held by {holder}; this box admits one \
+                         validate or benchmark at a time across ALL checkouts and clones"
+                    );
+                    return Ok(REFUSED_EXIT_CODE);
+                }
+                BoxAnchorObservation::Unknown(reason) => {
+                    eprintln!(
+                        "REFUSED: box-exclusive anchor state UNKNOWN: {reason}; absence is not \
+                         permission"
+                    );
+                    return Ok(REFUSED_EXIT_CODE);
+                }
             }
             // The anchor is a live-process signal; this is the durable one. A
             // supervisor that died leaving its payload alive released the anchor,
@@ -2407,6 +2595,32 @@ impl ValidateLock {
     }
 
     fn status(&self) -> Result<(), ValidateLockError> {
+        match observe_global_validate_anchor(&self.paths.anchor) {
+            GlobalValidateObservation::Held(holder) => {
+                println!("HELD (box-global authority):");
+                println!("  agent={}", holder.agent);
+                println!("  kind={}", holder.kind);
+                println!("  target={}", holder.target);
+                println!("  host={}", holder.host);
+                println!("  owner_pid={}", holder.pid);
+                println!("  owner_boot_id={}", holder.boot_id);
+                println!("  owner_start_ticks={}", holder.start_ticks);
+                println!("  unit={}", holder.unit);
+                println!("  record={}", holder.record.display());
+                println!("  cgroup={}", holder.cgroup);
+                self.print_queue()?;
+                return Ok(());
+            }
+            GlobalValidateObservation::Unknown(reason) => {
+                println!("UNKNOWN (box-global authority):");
+                println!("  reason={reason}");
+                println!("  acquirable=false");
+                self.print_queue()?;
+                return Ok(());
+            }
+            GlobalValidateObservation::Free => {}
+        }
+
         let now = epoch_seconds()?;
         let holder = self.read_holder()?;
         let liveness = self.owner_liveness()?;
@@ -2484,6 +2698,10 @@ impl ValidateLock {
                 None => println!("FREE"),
             }
         }
+        self.print_queue()
+    }
+
+    fn print_queue(&self) -> Result<(), ValidateLockError> {
         let queue = self.read_queue()?;
         if !queue.is_empty() {
             println!("queue (FIFO):");
@@ -6191,7 +6409,10 @@ exit 0
         let anchor = dir.join("validate-box.lock");
 
         // Nothing held: the FIRST caller is admitted (the mechanism is not inert).
-        assert!(!BoxExclusionAnchor::held_by_another(&anchor));
+        assert_eq!(
+            BoxExclusionAnchor::observe(&anchor),
+            BoxAnchorObservation::Free
+        );
         let first = BoxExclusionAnchor::take(&anchor, 0).unwrap();
         assert!(first.is_some(), "an unheld anchor must be granted");
 
@@ -6202,7 +6423,10 @@ exit 0
             second.is_none(),
             "a held anchor must refuse the second caller"
         );
-        assert!(BoxExclusionAnchor::held_by_another(&anchor));
+        assert!(matches!(
+            BoxExclusionAnchor::observe(&anchor),
+            BoxAnchorObservation::Held(_)
+        ));
         assert!(
             BoxExclusionAnchor::describe_holder(&anchor).contains("box-exclusive-v1"),
             "the refusal must be able to name the holder"
@@ -6231,6 +6455,118 @@ exit 0
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn attributed_status_fixture(
+        name: &str,
+    ) -> (PathBuf, PathBuf, BoxExclusionAnchor, GlobalValidateHolder) {
+        let dir = env::temp_dir().join(format!(
+            "ci-hub-vlock-global-status-{name}-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let anchor = dir.join("validate-box.lock");
+        let record = dir.join("validate-status-fixture.json");
+        let pid = std::process::id();
+        let start_ticks = process_start_ticks(pid).unwrap();
+        let boot_id = current_boot_id().unwrap();
+        let host = current_host();
+        let cgroup = fs::read_to_string(format!("/proc/{pid}/cgroup")).unwrap();
+        let unit = cgroup
+            .lines()
+            .find_map(|line| line.splitn(3, ':').nth(2))
+            .and_then(|path| path.rsplit('/').find(|component| !component.is_empty()))
+            .unwrap()
+            .to_string();
+        fs::write(
+            &record,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": 1,
+                // Mutable observer state is not owner identity.
+                "state": "completed",
+                "agent": "global-status-agent",
+                "target": HEX_SHA,
+                "unit": unit,
+                "process_identity": {
+                    "pid": pid,
+                    "start_ticks": start_ticks,
+                    "boot_id": boot_id,
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let record = fs::canonicalize(record).unwrap();
+        let attribution = format!(
+            "boot_id={boot_id} start_ticks={start_ticks} agent=global-status-agent \
+             kind=validate target={HEX_SHA} unit={unit} record={}",
+            record.display()
+        );
+        let held = BoxExclusionAnchor::take_attributed(&anchor, 0, &attribution)
+            .unwrap()
+            .unwrap();
+        let expected = GlobalValidateHolder {
+            pid,
+            start_ticks,
+            boot_id,
+            host,
+            agent: "global-status-agent".into(),
+            kind: "validate".into(),
+            target: HEX_SHA.into(),
+            unit,
+            record: record.clone(),
+            cgroup: cgroup.trim().to_string(),
+        };
+        (anchor, record, held, expected)
+    }
+
+    /// HELD bracket: global flock, exact record identity, and live cgroup agree
+    /// even though the record's mutable observer state is terminal.
+    #[test]
+    fn global_status_names_the_exact_live_holder() {
+        let (anchor, record, held, expected) = attributed_status_fixture("held");
+        assert_eq!(
+            observe_global_validate_anchor(&anchor),
+            GlobalValidateObservation::Held(expected)
+        );
+        drop(held);
+        let _ = fs::remove_dir_all(record.parent().unwrap());
+    }
+
+    /// FREE bracket: an absent anchor is a positive, non-mutating free sample.
+    #[test]
+    fn global_status_reports_free_with_no_holder() {
+        let dir = env::temp_dir().join(format!(
+            "ci-hub-vlock-global-status-free-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            observe_global_validate_anchor(&dir.join("absent-anchor")),
+            GlobalValidateObservation::Free
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// UNKNOWN bracket: a live flock whose exact record is unreadable is not
+    /// FREE, and the kernel authority still refuses a second acquisition.
+    #[test]
+    fn unreadable_live_record_is_unknown_and_not_acquirable() {
+        let (anchor, record, held, _) = attributed_status_fixture("unknown");
+        fs::remove_file(&record).unwrap();
+        assert!(matches!(
+            observe_global_validate_anchor(&anchor),
+            GlobalValidateObservation::Unknown(reason)
+                if reason.contains("exact run record")
+        ));
+        assert!(
+            BoxExclusionAnchor::take(&anchor, 0).unwrap().is_none(),
+            "UNKNOWN must not become an acquirable boundary"
+        );
+        drop(held);
+        let _ = fs::remove_dir_all(record.parent().unwrap());
     }
 
     #[test]
