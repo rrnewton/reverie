@@ -8,11 +8,18 @@ The canonical line is intentionally both human-readable and grep-able:
 where ``machine`` is an exact ``devbigNNN`` token.  A comma-delimited final
 field is required; merely mentioning ``devbig030`` somewhere in a free-form
 team name would recreate the ambiguous attribution this checker replaces.
+
+Agent identity is a separate, derived ``Agent:`` trailer.  It is NOT the team
+slug: teams are shared between agents and one agent may legitimately change
+team, so a team label cannot answer "were these two commits written by two
+different agents?".  See :func:`reviewers_are_disjoint`, the single verifier
+any author-disjointness consumer should call.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable, Sequence
 import os
 from pathlib import Path
 import re
@@ -32,6 +39,13 @@ TRAILER_RE = re.compile(
 IDENT_RE = re.compile(
     r"^(?P<name>[^<>\r\n]+) <(?P<email>[^<>\r\n]+)> [0-9]+ [+-][0-9]{4}$"
 )
+# The role/team line carries no agent identity: ``team`` is a TEAM, which is
+# neither unique per agent nor stable across one agent's session, and ``model``
+# is unvalidated free text.  Agent identity therefore rides in its own derived
+# trailer, sourced from the process environment the way ``machine`` is sourced
+# from the hostname -- never typed from context by the committing model.
+AGENT_TRAILER_RE = re.compile(r"^Agent:[ \t]*(?P<agent>[A-Za-z0-9][A-Za-z0-9._/@+-]*)$")
+AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]*$")
 ALLOWED_OSS_AUTHOR_EMAILS = frozenset({"rrnewton@gmail.com"})
 RESERVED_FIXTURE_DOMAINS = frozenset(
     {"example.com", "example.net", "example.org", "example.invalid"}
@@ -65,6 +79,69 @@ def detect_machine() -> str:
     return match.group(1)
 
 
+def detect_agent() -> str | None:
+    """Return this process's agent id from the environment, or None if absent.
+
+    Mirrors :func:`detect_machine`.  ``DG_AGENT_NAME`` is the same value the
+    liveness probe reads out of ``/proc``, so it is set by whatever launched the
+    agent rather than chosen by the agent mid-session.  Absence returns None
+    rather than raising: not every writer is an agent, and a missing id must not
+    block a commit -- it only means identity cannot be asserted for it.
+    """
+
+    raw = os.environ.get("DG_AGENT_NAME")
+    if raw is None or not raw.strip():
+        return None
+    agent = raw.strip()
+    if not AGENT_NAME_RE.fullmatch(agent):
+        raise AttributionError(
+            f"DG_AGENT_NAME must match {AGENT_NAME_RE.pattern}, got {agent!r}"
+        )
+    return agent
+
+
+def canonical_identity(value: str) -> str:
+    """Fold one identity token for comparison.
+
+    Case folding ONLY, and deliberately nothing else.  ``claude`` and ``CLAUDE``
+    must not be two identities, but ``codex-1635`` and ``codex-2`` are two real
+    agents that differ only by a trailing ordinal -- any normaliser that strips
+    ordinals, prefixes, or punctuation merges them and silently defeats
+    two-reviewer enforcement in the opposite direction.
+    """
+
+    return value.strip().casefold()
+
+
+def agent_from_message(message: str) -> str | None:
+    """Return the ``Agent:`` trailer of one message, or None when absent."""
+
+    for line in reversed(message.splitlines()):
+        match = AGENT_TRAILER_RE.fullmatch(line.strip())
+        if match is not None:
+            return match.group("agent")
+    return None
+
+
+def distinct_identities(identities: Iterable[str | None]) -> set[str]:
+    """Canonical identities present, ignoring unknowns."""
+
+    return {canonical_identity(i) for i in identities if i is not None and i.strip()}
+
+
+def reviewers_are_disjoint(identities: Sequence[str | None], required: int = 2) -> bool:
+    """Whether these identities are ``required`` genuinely distinct agents.
+
+    The single verifier for author-disjointness.  An unknown identity is never
+    counted, so a missing ``Agent:`` trailer fails closed instead of passing as
+    an anonymous extra reviewer.
+    """
+
+    if any(i is None or not i.strip() for i in identities):
+        return False
+    return len(distinct_identities(identities)) >= required
+
+
 def final_message_line(message: str) -> str:
     """Return the final stored line, ignoring Git's trailing editor comments."""
 
@@ -76,9 +153,30 @@ def final_message_line(message: str) -> str:
     return lines[-1]
 
 
-def validate_message(message: str, expected_machine: str | None = None) -> str:
-    """Validate one message and return its exact machine token."""
+def validate_message(
+    message: str,
+    expected_machine: str | None = None,
+    expected_agent: str | None = None,
+) -> str:
+    """Validate one message and return its exact machine token.
 
+    ``expected_agent`` cross-checks the ``Agent:`` trailer against the writer's
+    own environment, exactly as ``expected_machine`` does for the hostname.  A
+    message with no ``Agent:`` trailer is accepted: adoption is incremental and
+    a missing id is an absence of a claim, not a false one.  A present trailer
+    that disagrees with the writer IS rejected -- that is the spoof this closes.
+    """
+
+    if expected_agent is not None:
+        claimed = agent_from_message(message)
+        if claimed is not None and canonical_identity(claimed) != canonical_identity(
+            expected_agent
+        ):
+            raise AttributionError(
+                f"commit claims agent {claimed!r}, but this writer is "
+                f"{expected_agent!r}; the Agent trailer is derived from "
+                "DG_AGENT_NAME and must not be retyped"
+            )
     line = final_message_line(message)
     match = TRAILER_RE.fullmatch(line)
     if match is None:
@@ -150,11 +248,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="require this exact devbigNNN token; use 'auto' for the hostname",
     )
     parser.add_argument("--detect-machine", action="store_true")
+    parser.add_argument(
+        "--expected-agent",
+        help=(
+            "reject an Agent trailer that disagrees with this id; "
+            "use 'auto' for DG_AGENT_NAME"
+        ),
+    )
+    parser.add_argument("--detect-agent", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
-    if args.detect_machine:
+    if args.detect_machine or args.detect_agent:
         if any((args.message_file, args.stdin, args.commit, args.commit_range)):
-            parser.error("--detect-machine does not accept a message source")
+            parser.error("--detect-machine/--detect-agent do not accept a message source")
     elif not any((args.message_file, args.stdin, args.commit, args.commit_range)):
         parser.error("one message source is required")
     return args
@@ -166,6 +272,21 @@ def main(argv: list[str] | None = None) -> int:
         if args.detect_machine:
             print(detect_machine())
             return 0
+        if args.detect_agent:
+            agent = detect_agent()
+            if agent is None:
+                raise AttributionError("DG_AGENT_NAME is unset; no agent identity")
+            print(agent)
+            return 0
+
+        expected_agent = args.expected_agent
+        if expected_agent == "auto":
+            expected_agent = detect_agent()
+        elif expected_agent is not None and not AGENT_NAME_RE.fullmatch(expected_agent):
+            raise AttributionError(
+                f"--expected-agent must match {AGENT_NAME_RE.pattern}, "
+                f"got {expected_agent!r}"
+            )
 
         expected = args.expected_machine
         if expected == "auto":
@@ -210,7 +331,7 @@ def main(argv: list[str] | None = None) -> int:
         machines: set[str] = set()
         for identity, message in records:
             try:
-                machines.add(validate_message(message, expected))
+                machines.add(validate_message(message, expected, expected_agent))
             except AttributionError as error:
                 raise AttributionError(f"{identity}: {error}") from error
 

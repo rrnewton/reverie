@@ -282,5 +282,85 @@ class HookAndInstallerTests(unittest.TestCase):
                 self.assertEqual(0, checked.returncode, checked.stderr)
 
 
+sys.path.insert(0, str(ROOT / "scripts"))
+import check_commit_attribution as cca  # noqa: E402
+
+
+class AgentIdentityDisjointness(unittest.TestCase):
+    """Both-direction tests for the identity the role/team line cannot carry.
+
+    Measured 2026-08-11 across 32 PRs and 252 main commits: 8 of 32 PRs carried
+    more than one team slug, the model field held 10 spellings for at most 3
+    real families, and 24 commits put a non-model (``automation``,
+    ``primary-checkout``) in the model slot.  Neither field separates one agent
+    under two slugs from two genuinely distinct agents, which is exactly the
+    discrimination author-disjointness needs.
+    """
+
+    def test_one_agent_twice_does_not_satisfy_two_reviewers(self):
+        # NEGATIVE bracket: the bypass this exists to close.
+        self.assertFalse(cca.reviewers_are_disjoint(["codex-1", "codex-1"]))
+
+    def test_one_agent_under_two_cases_is_still_one_agent(self):
+        # The cheap half: casing must not manufacture a second reviewer.
+        self.assertFalse(cca.reviewers_are_disjoint(["claude", "CLAUDE"]))
+        self.assertEqual(
+            cca.canonical_identity("CLAUDE"), cca.canonical_identity("claude")
+        )
+
+    def test_two_distinct_agents_are_still_distinct(self):
+        # POSITIVE bracket: over-tightening must not collapse real reviewers.
+        self.assertTrue(cca.reviewers_are_disjoint(["codex-1", "claude-1"]))
+
+    def test_trailing_ordinals_are_not_normalised_away(self):
+        # codex-1635 and codex-2 are two real agents seen on main tonight; a
+        # normaliser that strips ordinals would merge them and defeat the gate
+        # in the opposite direction.
+        self.assertTrue(cca.reviewers_are_disjoint(["codex-1635", "codex-2"]))
+        self.assertNotEqual(
+            cca.canonical_identity("codex-1635"), cca.canonical_identity("codex-2")
+        )
+
+    def test_unknown_identity_fails_closed(self):
+        # A missing Agent trailer must never count as an anonymous extra
+        # reviewer.
+        self.assertFalse(cca.reviewers_are_disjoint(["codex-1", None]))
+        self.assertFalse(cca.reviewers_are_disjoint(["codex-1", "  "]))
+
+    def test_agent_trailer_is_parsed_from_a_message(self):
+        message = f"subject\n\nbody\n\nAgent: codex-1\nTask: t\n{TRAILER_014}\n"
+        self.assertEqual("codex-1", cca.agent_from_message(message))
+
+    def test_absent_agent_trailer_is_accepted_for_incremental_adoption(self):
+        message = f"subject\n\nbody\n{TRAILER_014}\n"
+        self.assertIsNone(cca.agent_from_message(message))
+        # Must not raise: absence is not a false claim.
+        cca.validate_message(message, "devbig014", "codex-1")
+
+    def test_a_retyped_agent_trailer_is_rejected(self):
+        # The spoof: claiming an identity the writer's environment contradicts.
+        message = f"subject\n\nAgent: someone-else\n{TRAILER_014}\n"
+        with self.assertRaises(cca.AttributionError) as caught:
+            cca.validate_message(message, "devbig014", "codex-1")
+        self.assertIn("someone-else", str(caught.exception))
+
+    def test_agent_trailer_matching_the_writer_is_accepted(self):
+        message = f"subject\n\nAgent: codex-1\n{TRAILER_014}\n"
+        self.assertEqual("devbig014", cca.validate_message(message, "devbig014", "codex-1"))
+
+    def test_detect_agent_reads_the_environment_not_the_message(self):
+        previous = os.environ.get("DG_AGENT_NAME")
+        try:
+            os.environ["DG_AGENT_NAME"] = "codex-7"
+            self.assertEqual("codex-7", cca.detect_agent())
+            del os.environ["DG_AGENT_NAME"]
+            self.assertIsNone(cca.detect_agent())
+        finally:
+            if previous is None:
+                os.environ.pop("DG_AGENT_NAME", None)
+            else:
+                os.environ["DG_AGENT_NAME"] = previous
+
+
 if __name__ == "__main__":
     unittest.main()
