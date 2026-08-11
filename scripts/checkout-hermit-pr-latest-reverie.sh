@@ -11,6 +11,7 @@ usage() {
 Usage:
   checkout-hermit-pr-latest-reverie.sh \
     --repo <clean-hermit-worktree> --model <MODEL> --agent <team-slug> \
+    --task <stable-task-id> \
     [--push] <pr> [<pr> ...]
 
 The command resolves latest Reverie main itself. Optional
@@ -40,6 +41,7 @@ repo=
 target=${TARGET_SHA:-}
 model=${LANDER_MODEL:-}
 agent=${DG_AGENT_NAME:-}
+task=
 push=false
 foreground=false
 prs=()
@@ -65,6 +67,11 @@ while (($#)); do
     --agent)
       (($# >= 2)) || die "--agent requires a team slug"
       agent=$2
+      shift 2
+      ;;
+    --task)
+      (($# >= 2)) || die "--task requires a stable task id"
+      task=$2
       shift 2
       ;;
     --push)
@@ -97,6 +104,8 @@ done
   die "--model (or LANDER_MODEL) is required and must be a tag-safe model name"
 [[ $agent =~ ^[a-z0-9][a-z0-9-]*$ ]] || \
   die "--agent (or DG_AGENT_NAME) is required and must be a lowercase team slug"
+[[ $task =~ ^[a-z0-9][a-z0-9._-]*$ ]] || \
+  die "--task is required and must be a stable task id"
 ((${#prs[@]} > 0)) || die "at least one PR is required"
 repo=$(realpath "$repo")
 [[ -d $repo/.git || -f $repo/.git ]] || die "not a Git worktree: $repo"
@@ -128,7 +137,7 @@ if ! $foreground; then
   launcher_log="$evidence_dir/$unit.log"
   relaunch=(
     "$0" --foreground --target-sha "$target" --repo "$repo"
-    --model "$model" --agent "$agent"
+    --model "$model" --agent "$agent" --task "$task"
   )
   $push && relaunch+=(--push)
   relaunch+=("${prs[@]}")
@@ -194,6 +203,7 @@ for pr in "${prs[@]}"; do
   git -C "$repo" switch -c "$branch"
   if ! git -C "$repo" merge --no-ff \
     -m "Merge current Hermit main into PR #$pr" \
+    -m "Task: $task" \
     -m "$commit_attribution" refs/remotes/origin/main; then
     git -C "$repo" merge --abort || true
     die "PR #$pr does not merge cleanly with current Hermit main"
@@ -248,6 +258,7 @@ for pr in "${prs[@]}"; do
     git -C "$repo" diff --cached --quiet && \
       die "PR #$pr: pin paths changed but produced no staged update"
     git -C "$repo" commit -m "build: bump Reverie pin to $short_target" \
+      -m "Task: $task" \
       -m "$commit_attribution"
     candidate=$(git -C "$repo" rev-parse HEAD)
   else
@@ -263,7 +274,7 @@ for pr in "${prs[@]}"; do
   set +e
   CARGO_BUILD_JOBS=2 THIRD_PARTY_BUILD_JOBS=2 "$ci_hub" validate-run \
     --checkout "$repo" \
-    --agent hermit-ptw \
+    --agent "$agent" \
     --target "$candidate" \
     --pr "$pr" \
     --in-place \

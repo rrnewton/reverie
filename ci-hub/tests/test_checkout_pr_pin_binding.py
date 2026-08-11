@@ -22,6 +22,19 @@ def _invocation_binds_target_repo(invocation: str) -> bool:
     return '--repo "$repo"' in invocation
 
 
+def _has_complete_task_plumbing(source: str) -> bool:
+    return (
+        "--task <stable-task-id>" in source
+        and '--task "$task"' in source
+        and source.count('-m "Task: $task"') == 2
+    )
+
+
+def _validator_uses_requested_agent(source: str) -> bool:
+    validate_block = source.split('"$ci_hub" validate-run', 1)[-1]
+    return '--agent "$agent"' in validate_block and "--agent hermit-ptw" not in source
+
+
 def test_checkout_helper_binds_print_pin_to_target_repo() -> None:
     source = CHECKOUT_HELPER.read_text()
     invocations = _print_pin_invocations(source)
@@ -31,6 +44,28 @@ def test_checkout_helper_binds_print_pin_to_target_repo() -> None:
     assert not _invocation_binds_target_repo(
         invocations[0].replace('--repo "$repo"', "")
     )
+
+
+def test_checkout_helper_threads_task_trailers_through_every_commit() -> None:
+    source = CHECKOUT_HELPER.read_text()
+
+    assert _has_complete_task_plumbing(source)
+    assert not _has_complete_task_plumbing(
+        source.replace('-m "Task: $task"', "", 1)
+    )
+    assert not _has_complete_task_plumbing(source.replace('--task "$task"', "", 1))
+
+
+def test_checkout_helper_binds_validation_to_requested_agent() -> None:
+    source = CHECKOUT_HELPER.read_text()
+    mutated = source.replace(
+        '--agent "$agent" \\\n    --target "$candidate"',
+        '--agent hermit-ptw \\\n    --target "$candidate"',
+    )
+
+    assert _validator_uses_requested_agent(source)
+    assert mutated != source
+    assert not _validator_uses_requested_agent(mutated)
 
 
 def test_checker_repo_binding_works_from_parent_cwd() -> None:
