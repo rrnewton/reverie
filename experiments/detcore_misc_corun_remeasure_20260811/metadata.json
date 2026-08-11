@@ -1,0 +1,71 @@
+{
+  "experiment": "detcore_misc_corun_remeasure_20260811",
+  "question": "At the reverie rev hermit builds today, does test.detcore_misc's vfork::vfork_parent_resumes_after_child_exec still hang under concurrent co-running, and at what rate?",
+  "date": "2026-08-11",
+  "host": "devbig014",
+  "nproc": 316,
+  "agent": "codex-2",
+  "task": "measure-detcore-misc-corun-flake-at-current-reverie-pin",
+  "follows": "experiments/multisect_detcore_misc_20260803",
+  "test": "vfork::vfork_parent_resumes_after_child_exec --exact --test-threads=1",
+  "subject": {
+    "hermit": "2b6005cf3696c0351a4183ea713f469d2b50abec",
+    "reverie_as_built": "349460925ee56f2aca686a3392b534e8861ba375",
+    "reverie_source": "detcore/Cargo.toml rev=, NOT the parent submodule gitlink",
+    "provenance_check": "binary embeds checkouts/reverie-2fc770f7a9c80803/3494609",
+    "binary_md5": "bc14e40d79e95eac56e1e4855ddf896d",
+    "build_cmd": "cargo test -p hermit-detcore --test tests_misc --no-run",
+    "build_slot": "worktrees/w18/hermit",
+    "build_seconds": 21.78
+  },
+  "controls": {
+    "positive_calibrator": {
+      "label": "zhead",
+      "hermit": "0ac1c1d7",
+      "historical_rate": "52/320 = 16.3% FLAKY (2026-08-03)",
+      "role": "a wave counts ONLY if this hangs at least once; otherwise the wave was under-powered and is discarded"
+    },
+    "negative_control": {
+      "label": "aclean",
+      "hermit": "21e91ff3",
+      "historical_rate": "0/320 = 0.0% CLEAN (2026-08-03)",
+      "role": "proves the probe is not simply timing everything out"
+    }
+  },
+  "probe": {
+    "harness": "matched-pgsafe.sh",
+    "design": "matched-load co-scheduling, identical to multisect_detcore_misc_20260803/matched.sh",
+    "deviation": "stray reaping is per-process-group (bash monitor mode, kill -- -PGID on groups this script created) instead of `pkill -9 -x <basename>`, which Hard Invariant 15 forbids on this shared box; measurement semantics unchanged",
+    "concurrency_per_label": [32, 64],
+    "iteration_timeout_s": 20,
+    "hang_code": 124,
+    "waves_attempted": 45,
+    "waves_valid": 36,
+    "waves_discarded_underpowered": 9,
+    "samples_per_label_valid": 1632,
+    "total_instances": 4896,
+    "non_zero_non_124_exits": 0,
+    "ambient_load1_during_run": "24-54 on 316 cores"
+  },
+  "results": {
+    "cur": {"hangs": 1, "samples": 1632, "rate_pct": 0.061, "ci95_pct": [0.0016, 0.3409]},
+    "zhead": {"hangs": 65, "samples": 1632, "rate_pct": 3.983, "ci95_pct": [3.0871, 5.0485]},
+    "aclean": {"hangs": 1, "samples": 1632, "rate_pct": 0.061, "ci95_pct": [0.0016, 0.3409]},
+    "fisher_cur_vs_zhead_two_sided_p": 9.666e-19,
+    "fisher_cur_vs_aclean_two_sided_p": 1.0
+  },
+  "power_caveat": "The calibrator returned 3.98% where the SAME binary was recorded at 16.3%, because ambient load was 24-54 vs the original's 286-590. Detection power is roughly a quarter of the original's, so the absolute rate is an under-estimate; rely on the load-matched comparison against both controls in the same waves.",
+  "verdict": "The current pin has returned to the CLEAN baseline, not to zero. cur is statistically indistinguishable from the historically-clean commit (p=1.000) and ~65x below the historically-flaky one (p=9.7e-19). detcore_misc is no longer in the flaky regime and is safe to co-run on this evidence. reverie PR #355 (820b2b64) is still NOT an ancestor of 3494609, so the outcome improved by some other means; the mechanism was not identified here.",
+  "retracts": "The 'test.detcore_misc is the one node with evidence-backed need for exclusion' finding of task p0-is-validate-box-exclusivity-a-hardware-requirement-or-a-default.",
+  "still_open": [
+    "kvm resource cap (2 privileged nodes, 124.4s) is unmeasured, not cleared",
+    "privileged-e2e.manifest_applications runs at 67.3% of its 130s wall budget (1.5x headroom) and is now the leading blocker to co-tenancy",
+    "reverie #355 or a successor should still land: a latent 1-in-1632 hang is not a fixed one"
+  ],
+  "artifacts": {
+    "harness": "matched-pgsafe.sh",
+    "per_wave_counts": "results.csv",
+    "raw_exit_codes": "../multisect_detcore_misc_20260803/ignored/matched-pgsafe/<stamp>/ (gitignored)",
+    "control_binaries": "../multisect_detcore_misc_20260803/ignored/bins/ (gitignored)"
+  }
+}
