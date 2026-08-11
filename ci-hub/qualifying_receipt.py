@@ -56,6 +56,26 @@ class ProducerDefinitionError(RuntimeError):
     """The validated commit cannot be bound to one registered whole map."""
 
 
+class ProducerDefinitionUndereferenceable(ProducerDefinitionError):
+    """No candidate checkout on THIS host can even hold the validated commit.
+
+    This is a statement about the READER, not about the evidence, and the two
+    must never share an outcome.  "The receipt does not qualify" blames the
+    fleet's evidence; "I cannot read the definition" blames my own checkout.
+    Measured 2026-08-11: an actor holding the identical 1423-row shard, with
+    both rows for the SHA present, reported `NOT-VALIDATED, 1 non-qualifying`
+    purely because `hermit/` was an uninitialized submodule -- an empty but
+    EXISTING directory, so it passed the `is_dir()` candidate filter, failed
+    resolution, and was reported as unresolvable evidence.  Initializing the
+    submodule flipped the same receipt to VALIDATED with no other change.  An
+    actor in that state silently disbelieves every valid receipt in the fleet.
+
+    Subclasses ProducerDefinitionError deliberately: every existing consumer
+    that already fails closed on that type keeps doing so unchanged.  Only
+    consumers that opt in can tell the two apart.
+    """
+
+
 def producer_definition_verifier_path() -> Path:
     """The one semantic producer-map verifier.
 
@@ -164,6 +184,45 @@ def producer_definition_repositories(
     return ordered
 
 
+def _checkout_holds_commit(checkout: Path, sha: str) -> bool:
+    """Can git in ``checkout`` durably resolve ``sha`` as a commit object?
+
+    Commit existence is the minimum identity primitive; a directory that merely
+    EXISTS proves nothing. An uninitialized submodule is a real directory with
+    no object store, which is exactly why the candidate filter alone cannot
+    detect it.
+    """
+    try:
+        return (
+            subprocess.run(
+                ["git", "-C", str(checkout), "cat-file", "-e", f"{sha}^{{commit}}"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).returncode
+            == 0
+        )
+    except OSError:
+        return False
+
+
+def _checkout_defect(checkout: Path) -> str:
+    """Why this candidate could not hold the commit, in the reader's terms."""
+    if not checkout.is_dir():
+        return "no such directory"
+    if not any(checkout.iterdir()):
+        return "EMPTY DIRECTORY -- uninitialized submodule"
+    inside = subprocess.run(
+        ["git", "-C", str(checkout), "rev-parse", "--is-inside-work-tree"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if inside.returncode != 0 or inside.stdout.strip() != "true":
+        return "not a git work tree"
+    return "git repository, but it does not contain that commit"
+
+
 def resolve_producer_definition(
     row: dict[str, Any],
     sha: str,
@@ -179,9 +238,33 @@ def resolve_producer_definition(
     """
     if _SHA40.fullmatch(sha) is None:
         raise ProducerDefinitionError("validated commit is not 40 lowercase hex")
+    candidates = producer_definition_repositories(row, repositories)
+    # Separate "my checkout cannot hold this commit" from "the map is not one
+    # currently allowed" BEFORE attempting resolution, because the verifier
+    # reports both as rc 1 and the caller cannot then tell them apart. The
+    # identity primitive is the one named in policy: resolve the object itself.
+    holders = [
+        checkout for checkout in candidates if _checkout_holds_commit(checkout, sha)
+    ]
+    if not holders:
+        raise ProducerDefinitionUndereferenceable(
+            f"cannot dereference the producer definition for {sha}: no candidate "
+            "checkout on this host holds that commit, so the producing check "
+            "definition could not be read AT ALL. This is a defect in THIS "
+            "CHECKOUT, not in the receipt -- the receipt has not been judged. "
+            "Most often an uninitialized submodule: run `git submodule update "
+            "--init --recursive` and retry. Candidates inspected: "
+            + (
+                "; ".join(
+                    f"{checkout} ({_checkout_defect(checkout)})"
+                    for checkout in candidates
+                )
+                or "(none existed)"
+            )
+        )
     attempted: list[str] = []
     failures: list[str] = []
-    for checkout in producer_definition_repositories(row, repositories):
+    for checkout in holders:
         attempted.append(str(checkout))
         result = _run_producer_definition_verifier(
             "--producer-definition-resolve",
@@ -928,12 +1011,30 @@ def main(argv: list[str] | None = None) -> int:
             producer = resolve_producer_definition(
                 row, args.sha, repositories=repositories
             )
+        except ProducerDefinitionUndereferenceable as error:
+            # rc 3, NOT rc 1. rc 1 means "this receipt does not qualify"; this
+            # means "I could not judge it". Collapsing them makes an actor with
+            # an incomplete checkout disbelieve every valid receipt in the fleet
+            # and blame the evidence for its own missing submodule.
+            print(
+                json.dumps(
+                    {
+                        "accepted": False,
+                        "producer_definition_status": "undereferenceable-reader-incomplete",
+                        "receipt_judged": False,
+                        "detail": str(error),
+                    },
+                    sort_keys=True,
+                )
+            )
+            return 3
         except ProducerDefinitionError as error:
             print(
                 json.dumps(
                     {
                         "accepted": False,
                         "producer_definition_status": "unregistered-or-unresolvable",
+                        "receipt_judged": True,
                         "detail": str(error),
                     },
                     sort_keys=True,

@@ -3832,7 +3832,21 @@ fn resolve_producer_definition_evidence(
             }
             Ok(Some(evidence))
         }
+        // rc 1: the definition WAS readable and is not one currently allowed.
+        // That is a verdict about the evidence, so the row is disqualified.
         Some(1) => Ok(None),
+        // rc 3: the definition could not be read AT ALL on this host, so no
+        // verdict about the receipt exists. This must never become a
+        // disqualified row -- that reports "the receipt is bad" when the true
+        // statement is "my checkout is incomplete". Fail loudly and closed so
+        // the reader fixes itself instead of disbelieving the whole fleet.
+        Some(3) => Err(format!(
+            "CANNOT DEREFERENCE PRODUCER DEFINITION for {sha} -- THIS CHECKOUT is \
+             incomplete, and the receipt has NOT been judged. Nothing is wrong with \
+             the evidence. Most often an uninitialized submodule: run `git submodule \
+             update --init --recursive` and retry. Resolver detail: {}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        )),
         _ => Err(format!(
             "producer-definition resolver failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
