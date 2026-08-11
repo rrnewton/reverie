@@ -20,8 +20,9 @@ that must also be reflected in the generated source.
 ## Architecture Overview
 
 This is the coordinator-level map; the canonical `.claude/skills/` files
-(`reverie-architecture`, `syscall-interception`, `adding-a-backend`, and
-`testing-tools`) are the task-level detail. Claude reads them through
+(`reverie-architecture`, `reverie-validation-authority`,
+`syscall-interception`, `adding-a-backend`, and `testing-tools`) are the
+task-level detail. Claude reads them through
 `.llms/skills`; stock Codex reads the structured
 `.agents/skills/<name>/SKILL.md` package links. **Read `reverie-architecture`
 before working anywhere in the tree.**
