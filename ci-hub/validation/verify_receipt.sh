@@ -507,16 +507,94 @@ if ((boundary_count == 4)); then
     )
 fi
 
+# The disclosure role enum has ONE definition: `ROLES` in `ci-hub/lib/disclosure_tag.py`.
+# DERIVE it here; never restate it. A restatement drifts silently in the worst
+# possible direction -- a role added to ROLES makes the emitter publish receipts
+# this filter drops on their first line, and the refusal reads as "no receipt"
+# rather than "unknown role". That is exactly the defect that broke the lander on
+# 2026-08-11, and two copies cannot be held in sync by discipline because they land
+# in different commits by different agents at different times.
+#
+# Parse the assignment rather than importing it: `ast` extraction has no import
+# path, executes no module-level code, and cannot be perturbed by the module's
+# other contents.
+#
+# FAIL CLOSED. An unreadable module, a missing or empty ROLES, or a token that is
+# not a safe lowercase identifier is a DEPLOY DEFECT -> exit 2. Never widen to a
+# permissive pattern on failure: accepting any role string would forge the
+# authority this filter exists to bind, which is worse than refusing to land.
+disclosure_roles_module=${DISCLOSURE_ROLES_MODULE:-}
+if [[ -z $disclosure_roles_module ]]; then
+    script_dir=${script_dir:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)}
+    disclosure_roles_module="$script_dir/../lib/disclosure_tag.py"
+fi
+role_alternation=$(DISCLOSURE_ROLES_MODULE_PATH="$disclosure_roles_module" python3 - <<'PY'
+import ast
+import os
+import re
+import sys
+
+path = os.environ["DISCLOSURE_ROLES_MODULE_PATH"]
+try:
+    with open(path, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
+except (OSError, SyntaxError) as error:
+    sys.stderr.write(f"cannot read disclosure role definition {path}: {error}\n")
+    raise SystemExit(2)
+
+found = None
+for node in ast.walk(tree):
+    if not isinstance(node, ast.Assign):
+        continue
+    if not any(isinstance(t, ast.Name) and t.id == "ROLES" for t in node.targets):
+        continue
+    value = node.value
+    # Accept `ROLES = frozenset({...})` and a bare set/tuple/list literal.
+    if (
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Name)
+        and value.func.id in {"frozenset", "set"}
+        and len(value.args) == 1
+    ):
+        value = value.args[0]
+    try:
+        found = ast.literal_eval(value)
+    except ValueError:
+        found = None
+    break
+
+if not found:
+    sys.stderr.write(f"no usable ROLES definition in {path}\n")
+    raise SystemExit(2)
+
+token = re.compile(r"^[a-z][a-z0-9_-]*$")
+roles = sorted(found)
+for role in roles:
+    if not isinstance(role, str) or not token.fullmatch(role):
+        sys.stderr.write(f"unsafe role token in {path}: {role!r}\n")
+        raise SystemExit(2)
+print("|".join(roles))
+PY
+) || {
+    printf 'disclosure role enum is underivable from %s\n' "$disclosure_roles_module" >&2
+    exit 2
+}
+if [[ -z $role_alternation ]]; then
+    printf 'disclosure role enum resolved empty from %s\n' "$disclosure_roles_module" >&2
+    exit 2
+fi
+
 owner=${repo%%/*}
-mapfile -t candidates < <(jq -r --arg owner "$owner" '
+mapfile -t candidates < <(jq -r --arg owner "$owner" --arg role_alternation "$role_alternation" '
     # Historical ci-hub comments used a service actor or the former four-field
     # disclosure. Keep those exact artifacts readable. New comments use the
     # five-field prefix as the complete first line; the body starts on line two.
     # The model is a nonempty resolved token or literal `unresolved`, and role is
-    # the closed six-value enum.
+    # the closed enum DERIVED from ROLES above and passed in as $role_alternation,
+    # so adding a role there needs no edit here.
     def four_field_prefix: "^\\[[^,\\]]+, [^,\\]]+, [^,\\]]+, role=[^\\]]+\\]";
     def five_field_prefix:
-      "^\\[[^,\\]]+, [^,\\]]+, [^,\\]]+, [^,\\]]+, role=(impl|debugger|reviewer|relay|coordinator|human)\\]$";
+      "^\\[[^,\\]]+, [^,\\]]+, [^,\\]]+, [^,\\]]+, role=(" + $role_alternation + ")\\]$";
     def legacy_role_tag:
       . == "[impl agent, ci-hub]"
       or . == "[Human]"

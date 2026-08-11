@@ -753,6 +753,46 @@ for role_tag in "${invalid_role_tags[@]}"; do
         exit 1
     fi
 done
+
+# The role enum is DERIVED from `ROLES`, not restated here. Brackets in both
+# directions, because the whole point is that this file need not change when the
+# enum does:
+#   POSITIVE  adding a role to ROLES makes a receipt carrying it land, with the
+#             verifier untouched. `auditor` is deliberately reused from the
+#             malformed list above, so the SAME tag that was just refused is now
+#             accepted purely because the definition moved. That is the property;
+#             a test that only checked the six current roles would pass against a
+#             hardcoded restatement and prove nothing.
+#   NEGATIVE  an underivable enum REFUSES. Failing open here would forge the
+#             authority this filter binds, so it must exit nonzero rather than
+#             fall back to a permissive pattern.
+derived_role_tag='[hermit2, codex-2, claude-opus-5, devbig014, role=auditor]'
+write_comments "$path" "$digest" "$derived_role_tag"
+
+extended_roles=$tmp/extended_roles.py
+printf 'ROLES = frozenset({"impl", "debugger", "reviewer", "relay", "coordinator", "human", "auditor"})\n' \
+    >"$extended_roles"
+if ! DISCLOSURE_ROLES_MODULE="$extended_roles" "$verifier" --sha "$sha" \
+    --comments "$tmp/comments.json" --fixture-receipts "$tmp/receipts" \
+    --producer-repo-checkout "$producer_repo" >/dev/null 2>&1; then
+    printf 'FAIL: role added to ROLES was refused; the enum is not derived\n' >&2
+    exit 1
+fi
+
+for broken_roles in "$tmp/absent_roles.py" "$tmp/empty_roles.py" "$tmp/unsafe_roles.py"; do
+    case $broken_roles in
+        */empty_roles.py) printf 'ROLES = frozenset()\n' >"$broken_roles" ;;
+        */unsafe_roles.py) printf 'ROLES = frozenset({"impl", "role=x|.*"})\n' >"$broken_roles" ;;
+        *) rm -f -- "$broken_roles" ;;
+    esac
+    if DISCLOSURE_ROLES_MODULE="$broken_roles" "$verifier" --sha "$sha" \
+        --comments "$tmp/comments.json" --fixture-receipts "$tmp/receipts" \
+        --producer-repo-checkout "$producer_repo" >/dev/null 2>&1; then
+        printf 'FAIL: underivable role enum was accepted: %s\n' "$broken_roles" >&2
+        exit 1
+    fi
+done
+
 write_comments "$path" "$digest" '[coordinator, gpt-5.6-sol]'
 
 # The same legitimate receipt must not authorize a different (rebased) head.
@@ -1004,4 +1044,4 @@ if [[ $mutation_anchor_failures -ne 0 ]]; then
     exit 1
 fi
 
-echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; previous/tampered/missing-wrapper/wrong-head production definitions (4/4), 2/2 additional identity/compatibility receipts, ${#valid_role_tags[@]}/${#valid_role_tags[@]} valid and ${#invalid_role_tags[@]}/${#invalid_role_tags[@]} malformed role tags, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"
+echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; previous/tampered/missing-wrapper/wrong-head production definitions (4/4), 2/2 additional identity/compatibility receipts, ${#valid_role_tags[@]}/${#valid_role_tags[@]} valid and ${#invalid_role_tags[@]}/${#invalid_role_tags[@]} malformed role tags, derived-enum positive 1/1 and underivable-enum negatives 3/3, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"
