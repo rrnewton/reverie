@@ -65,6 +65,17 @@ class ParentMainWriteTests(unittest.TestCase):
         for name in ("pre-commit", "pre-push", "reference-transaction"):
             shutil.copy2(SOURCE / ".githooks" / name, hooks / name)
         git(self.repo, "config", "core.hooksPath", ".githooks")
+        # Harness-only executables are tracked in the real parent but copied
+        # into this minimal repository after its seed commit. Keep them out of
+        # the fixture's dirty-path census so automatic mode is tested against
+        # planted repository work, not its own test machinery.
+        with (self.repo / ".git/info/exclude").open("a") as exclude:
+            exclude.write(
+                "scripts/\n"
+                ".githooks/pre-commit\n"
+                ".githooks/pre-push\n"
+                ".githooks/reference-transaction\n"
+            )
         self.env = {
             "HERMIT_PARENT_MAIN_LOCK_PATH": str(self.lock),
             "HERMIT_PARENT_MAIN_NO_PROXY": "1",
@@ -322,6 +333,121 @@ class PublishedResidueTests(ParentMainWriteTests):
         (self.repo / "added.md").write_text("new\n")
         (self.repo / "work.txt").write_text(planted if planted is not None else "w2\n")
         return target
+
+    def advance_remote_only(self) -> str:
+        """Advance origin/main while leaving this checkout clean and behind."""
+        other = Path(self.temp.name) / "automatic-sync-publisher"
+        git(Path(self.temp.name), "clone", "-q", str(self.remote), str(other))
+        git(other, "config", "user.name", "Other")
+        git(other, "config", "user.email", "other@example.invalid")
+        (other / "remote-only.md").write_text("landed elsewhere\n")
+        git(other, "add", "remote-only.md")
+        git(other, "commit", "-m", tagged("remote advances"))
+        git(other, "push", "-q", "origin", "HEAD:main")
+        return git(other, "rev-parse", "HEAD").stdout.strip()
+
+    def test_automatic_sync_advances_a_clean_ahead_zero_parent(self) -> None:
+        target = self.advance_remote_only()
+        self.assertEqual("", git(self.repo, "status", "--short").stdout)
+
+        result = self.writer("sync", "--automatic")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn("automatic-boundary dirty=0", result.stdout)
+
+    def test_automatic_sync_accepts_only_exact_target_residue(self) -> None:
+        target = self.freeze()
+
+        result = self.writer("sync", "--automatic")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn("automatic-boundary dirty=3 exact-target=3", result.stdout)
+
+    def test_automatic_sync_refuses_nonexact_target_path_byte_identically(self) -> None:
+        self.freeze(planted="GENUINE UNCOMMITTED WORK\n")
+        head_before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        index_before = git(self.repo, "write-tree").stdout.strip()
+
+        result = self.writer("sync", "--automatic")
+
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn("work.txt", combined)
+        self.assertIn("MODIFIED", combined)
+        self.assertEqual(head_before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(index_before, git(self.repo, "write-tree").stdout.strip())
+        self.assertEqual("GENUINE UNCOMMITTED WORK\n", (self.repo / "work.txt").read_text())
+
+    def test_automatic_sync_refuses_unrelated_dirty_path_byte_identically(self) -> None:
+        self.advance_remote_only()
+        private = self.repo / "private-unpublished.txt"
+        private.write_text("only copy\n")
+        head_before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        index_before = git(self.repo, "write-tree").stdout.strip()
+
+        result = self.writer("sync", "--automatic")
+
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn("private-unpublished.txt", combined)
+        self.assertIn("DIRTY OUTSIDE EXACT FETCHED TARGET", combined)
+        self.assertIn("human", combined.lower())
+        self.assertEqual(head_before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(index_before, git(self.repo, "write-tree").stdout.strip())
+        self.assertEqual("only copy\n", private.read_text())
+
+    def test_automatic_sync_refuses_local_commits_byte_identically(self) -> None:
+        (self.repo / "local-only.md").write_text("unpublished\n")
+        git(self.repo, "add", "local-only.md")
+        git(
+            self.repo, "-c", "core.hooksPath=/dev/null",
+            "commit", "-m", tagged("local only"), "--", "local-only.md",
+        )
+        head_before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        index_before = git(self.repo, "write-tree").stdout.strip()
+
+        result = self.writer("sync", "--automatic")
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("local commit(s)", result.stdout + result.stderr)
+        self.assertIn("human", (result.stdout + result.stderr).lower())
+        self.assertEqual(head_before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(index_before, git(self.repo, "write-tree").stdout.strip())
+        self.assertEqual("unpublished\n", (self.repo / "local-only.md").read_text())
+
+    def test_mutation_control_exact_target_predicate_is_load_bearing(self) -> None:
+        """Removing disk==target changes shared state around a planted edit.
+
+        This is deliberately not a generic "mutant exited nonzero" assertion.
+        The copied writer loses exactly the hash-equality predicate, then moves
+        HEAD/the index around work.txt even though its bytes are not the target.
+        The production negative above proves the same input stays byte-identical.
+        """
+        self.freeze(planted="GENUINE UNCOMMITTED WORK\n")
+        writer = self.repo / "scripts/parent-main-write"
+        source = writer.read_text()
+        predicate = (
+            'if git -C "$root" hash-object -- "$root/$path" 2>/dev/null '
+            '| grep -Fqx "$blob"; then'
+        )
+        self.assertEqual(1, source.count(predicate), "mutation target must be exact")
+        writer.write_text(source.replace(predicate, "if true; then", 1))
+        writer.chmod(0o755)
+        head_before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        index_before = git(self.repo, "write-tree").stdout.strip()
+
+        mutant = self.writer("sync", "--automatic")
+
+        head_after = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        index_after = git(self.repo, "write-tree").stdout.strip()
+        self.assertTrue(
+            head_after != head_before or index_after != index_before,
+            "removing the exact-target predicate must demonstrably touch shared state",
+        )
+        self.assertEqual("GENUINE UNCOMMITTED WORK\n", (self.repo / "work.txt").read_text())
+        self.assertEqual(0, mutant.returncode, mutant.stdout + mutant.stderr)
 
     def test_positive_byte_identical_residue_does_not_block_a_sync(self) -> None:
         target = self.freeze()

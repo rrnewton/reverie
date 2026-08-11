@@ -706,13 +706,15 @@ def publish_parent_snapshot(
     already lost 45 commits exactly that way, so the hazard is real.
 
     IT IS ALREADY PREVENTED ONE LAYER DOWN, ATOMICALLY. `scripts/parent-main-write`
-    takes an exclusive lock, fetches origin/main, requires local main to equal the
-    fetched value, commits, pushes under CAS and verifies ancestry. The currency
-    precheck here was a SECOND, WEAKER COPY of that check run OUTSIDE the lock --
-    which is precisely why it raced when the real one does not. AGENTS.md is
-    explicit: one verifier per authority, called by every consumer. So currency is
-    no longer pre-judged here; `parent-main-write` remains its single verifier and
-    a lost race is reported as DEFERRED.
+    takes an exclusive lock and freshly fetches origin/main. When this checkout is
+    merely behind, its `sync --automatic` mode advances only if there are zero
+    local commits and every dirty regular path is byte-identical to the fetched
+    target; ambiguity refuses for human inspection. The later commit still
+    requires local main to equal the fetched value, pushes under CAS and verifies
+    ancestry. A currency precheck here would be a SECOND, WEAKER COPY run OUTSIDE
+    the lock -- precisely where it can race. AGENTS.md is explicit: one verifier
+    per authority, called by every consumer. `parent-main-write` remains that
+    verifier for both catch-up and publication.
 
     WHAT STAYS AN IMMEDIATE HARD WARNING: incoherence that no amount of retrying
     fixes -- a dirty primary, a primary off main, a primary not at its own
@@ -843,41 +845,91 @@ def publish_parent_snapshot(
         )
         return SNAPSHOT_PUBLISHED
 
-    if parent_branch != "main" or not parent_head or parent_head != parent_remote:
-        # DEFERRED, not blocked. The snapshot genuinely cannot be committed from a
-        # tree that is not sitting on the tip -- that is the stale-base hazard --
-        # but "not right now" is not "something is wrong", and nobody can hold
-        # thirteen agents still long enough to make it right now. The tick's
-        # persistence tracking escalates this only if it never clears.
+    # Yield BEFORE automatic sync when another coordinator has staged a gitlink.
+    # The writer can preserve staged entries, but automation has no authority to
+    # decide what that in-flight transaction means.
+    staged = run_git(root, "diff", "--cached", "--quiet", "--", *PRODUCTS)
+    if staged.returncode != 0:
+        print(
+            "DEFERRED: product gitlinks are already staged by another coordinator "
+            "operation; yielding rather than overwriting it.",
+            file=out,
+        )
+        return SNAPSHOT_DEFERRED
+
+    if parent_branch != "main" or not parent_head:
+        print(
+            "DEFERRED: automatic parent sync requires branch=main and a readable "
+            f"HEAD (branch={parent_branch or 'DETACHED'}). Human inspection required; "
+            "no raw pull or ref rewrite was attempted.",
+            file=out,
+        )
+        return SNAPSHOT_DEFERRED
+
+    if parent_head != parent_remote:
         behind = run_git(
             root, "rev-list", "--count", f"{parent_head}..{parent_remote}"
         ).stdout.strip() or "?"
         ahead = run_git(
             root, "rev-list", "--count", f"{parent_remote}..{parent_head}"
         ).stdout.strip() or "?"
-        note = ""
         if ahead not in ("0", "?"):
-            # Local parent commits are a different defect with a different owner:
-            # the `unpushed_parent_commits` reminder detects and rescues them. Say
-            # so instead of raising a second, competing alarm about the same fact.
-            note = " (parent also has unpublished local commits; that is the "
-            note += "unpushed_parent_commits reminder's authority, not this one)"
-        print(
-            "DEFERRED: parent is not on the tip, so a gitlink commit would sit on a "
-            f"stale base (branch={parent_branch or 'DETACHED'} ahead={ahead} "
-            f"behind={behind} HEAD={parent_head[:12] or 'unknown'} "
-            f"origin/main={parent_remote[:12] or 'unknown'}){note}. "
-            "Snapshot is genuinely due; retrying next tick.",
-            file=out,
-        )
-        return SNAPSHOT_DEFERRED
+            print(
+                "DEFERRED: automatic parent sync REFUSED local commits "
+                f"(ahead={ahead} behind={behind} HEAD={parent_head[:12]} "
+                f"origin/main={parent_remote[:12]}). Human inspection required; "
+                "automation never reconciles, rebases, or rewrites them.",
+                file=out,
+            )
+            return SNAPSHOT_DEFERRED
 
+        with _phase("serialized parent-main automatic sync"):
+            automatic_sync = run_parent_main_write(
+                root, "sync", "--automatic", use_proxy=use_proxy
+            )
+        print_command_output(automatic_sync, out)
+        if automatic_sync.returncode != 0:
+            print(
+                "DEFERRED: registered automatic parent sync REFUSED. The writer's "
+                "exact-target classifier found ambiguity or concurrent ownership; "
+                "human inspection is required. No raw pull was attempted.",
+                file=out,
+            )
+            return SNAPSHOT_DEFERRED
+
+        parent_branch = run_git(root, "branch", "--show-current").stdout.strip()
+        parent_head = run_git(root, "rev-parse", "HEAD").stdout.strip()
+        parent_remote = run_git(root, "rev-parse", "origin/main").stdout.strip()
+        if parent_branch != "main" or not parent_head or parent_head != parent_remote:
+            print(
+                "DEFERRED: registered automatic sync completed but parent currency "
+                f"moved again (branch={parent_branch or 'DETACHED'} "
+                f"HEAD={parent_head[:12] or 'unknown'} "
+                f"origin/main={parent_remote[:12] or 'unknown'}). Retrying next tick.",
+                file=out,
+            )
+            return SNAPSHOT_DEFERRED
+
+        # The writer fetched under its lock. Re-read what is now published: a
+        # concurrent snapshot may have completed the work while we caught up.
+        published_gitlinks = {
+            product: run_git(root, "rev-parse", f"origin/main:{product}").stdout.strip()
+            for product in PRODUCTS
+        }
+        if published_gitlinks == heads:
+            print(
+                "Parent product snapshot became current during registered auto-sync: "
+                + ", ".join(f"{name}={heads[name][:12]}" for name in PRODUCTS),
+                file=out,
+            )
+            return SNAPSHOT_PUBLISHED
+
+    # Recheck after the sync boundary: a coordinator may stage a gitlink while
+    # the registered writer is active. Yield instead of absorbing it.
     staged = run_git(root, "diff", "--cached", "--quiet", "--", *PRODUCTS)
     if staged.returncode != 0:
-        # Another coordinator operation is mid-flight. Transient by construction:
-        # yielding to it is correct, paging about it is not.
         print(
-            "DEFERRED: product gitlinks are already staged by another coordinator "
+            "DEFERRED: product gitlinks became staged by another coordinator "
             "operation; yielding rather than overwriting it.",
             file=out,
         )

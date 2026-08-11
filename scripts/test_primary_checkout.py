@@ -389,6 +389,23 @@ class _ParentWorkspaceFixture(unittest.TestCase):
         git(clone, "push", "origin", "main")
         return git(clone, "rev-parse", "HEAD")
 
+    def install_parent_attribution_checker(self) -> None:
+        """Make the minimal parent fixture capable of publishing a snapshot.
+
+        Production tracks this file already. The fixture starts with product
+        gitlinks only, so commit the checker before creating a behind-parent
+        condition; leaving it untracked would correctly trip automatic sync's
+        unrelated-dirty-path refusal and mask the positive bracket.
+        """
+        scripts = self.root / "scripts"
+        scripts.mkdir(exist_ok=True)
+        checker = scripts / "check_commit_attribution.py"
+        shutil.copy2(REPO_ROOT / "scripts" / checker.name, checker)
+        checker.chmod(0o755)
+        git(self.root, "add", "scripts/check_commit_attribution.py")
+        git(self.root, "commit", "-m", "install fixture attribution checker")
+        git(self.root, "push", "origin", "main")
+
     def drift_hermit_commit(self) -> str:
         """Commit a real Reverie pin drift IN the Hermit submodule. Returns its SHA."""
         lock = self.root / "hermit" / "Cargo.lock"
@@ -1438,17 +1455,17 @@ class LegacyCheckBlindSpotTests(_PrimaryFixture):
 
 
 class SnapshotMovingReferenceTests(_ParentWorkspaceFixture):
-    """Separate a LOST RACE from a REAL DEFECT, and bracket both directions.
+    """Self-heal a clean stale parent and refuse every ambiguous one.
 
-    The gate used to answer "may I publish?" before "is there anything to
-    publish?", and treated every no as a hard warning. With thirteen agents
-    pushing parent main, that made it a check nobody could satisfy: the reference
-    moved faster than any agent could chase it, and one looped trying.
+    The gate used to defer every due snapshot while the parent was behind, but
+    retrying could not change that state. The registered writer now catches up a
+    clean ahead=0 parent under its lock. Local commits, unrelated dirt and staged
+    gitlinks remain human decisions and refuse byte-identically.
 
-    The cheap failure is a false page. The expensive failure is going quiet about
-    a genuinely incoherent snapshot -- a dirty primary or a mismatched Reverie pin
-    would record something actually wrong in the gitlink. So every test below
-    states which side it is defending.
+    The expensive failure is automation reasoning through ambiguity: a dirty
+    primary or mismatched Reverie pin would record an incoherent snapshot, while
+    parent dirt could be somebody's only copy. Every test below states which side
+    it defends.
     """
 
     def snapshot(self) -> tuple[int, str, str]:
@@ -1478,23 +1495,72 @@ class SnapshotMovingReferenceTests(_ParentWorkspaceFixture):
 
     # ---- NEGATIVE: must NOT hard-warn -------------------------------------
 
-    def test_parent_behind_with_snapshot_due_defers_rather_than_warning(self) -> None:
-        """The filed defect. Snapshot IS due and the parent is two commits behind.
-
-        Publishing from here would sit the gitlink commit on a stale base, so
-        declining is correct -- but it is a race, not a fault, and it must not
-        page. Two commits is deliberately small: this is the everyday case.
-        """
-        self.advance_product("liteinst2")
+    def test_clean_parent_behind_auto_syncs_and_publishes_snapshot(self) -> None:
+        """The recurring manual cycle now converges through the registered writer."""
+        self.install_parent_attribution_checker()
+        liteinst = self.advance_product("liteinst2")
         self.advance_parent_remote(2)
+
+        with patch.dict(os.environ, {"HERMIT_COMMIT_MACHINE": "devbig030"}):
+            code, out, err = self.snapshot()
+
+        self.assertEqual(code, primary_checkout.SNAPSHOT_PUBLISHED, err + out)
+        self.assertNotIn("HARD WARNING", err)
+        self.assertIn("automatic-boundary", out)
+        self.assertIn("Published parent snapshot", out)
+        self.assertEqual(
+            git(self.root, "rev-parse", "HEAD"),
+            git(self.root, "rev-parse", "origin/main"),
+        )
+        self.assertEqual(liteinst, git(self.root, "rev-parse", "HEAD:liteinst2"))
+
+    def test_unrelated_dirty_parent_path_refuses_auto_sync_unchanged(self) -> None:
+        self.advance_product("liteinst2")
+        self.advance_parent_remote(1)
+        private = self.root / "private-parent-work.txt"
+        private.write_text("only copy\n")
+        head_before = git(self.root, "rev-parse", "HEAD")
+        index_before = git(self.root, "write-tree")
 
         code, out, err = self.snapshot()
 
-        self.assertEqual(code, primary_checkout.SNAPSHOT_DEFERRED, err)
-        self.assertNotIn("HARD WARNING", err)
-        self.assertIn("DEFERRED", out)
-        self.assertIn("behind=2", out)
-        self.assertIn("stale base", out)
+        self.assertEqual(code, primary_checkout.SNAPSHOT_DEFERRED, err + out)
+        self.assertIn("DIRTY OUTSIDE EXACT FETCHED TARGET", out)
+        self.assertIn("human inspection is required", out)
+        self.assertEqual(head_before, git(self.root, "rev-parse", "HEAD"))
+        self.assertEqual(index_before, git(self.root, "write-tree"))
+        self.assertEqual("only copy\n", private.read_text())
+
+    def test_local_parent_commit_refuses_auto_sync_unchanged(self) -> None:
+        self.advance_product("liteinst2")
+        local = self.root / "local-parent-commit.txt"
+        local.write_text("unpublished\n")
+        git(self.root, "add", local.name)
+        git(self.root, "commit", "-m", "local parent work", "--", local.name)
+        head_before = git(self.root, "rev-parse", "HEAD")
+        index_before = git(self.root, "write-tree")
+
+        code, out, err = self.snapshot()
+
+        self.assertEqual(code, primary_checkout.SNAPSHOT_DEFERRED, err + out)
+        self.assertIn("REFUSED local commits", out)
+        self.assertIn("Human inspection required", out)
+        self.assertEqual(head_before, git(self.root, "rev-parse", "HEAD"))
+        self.assertEqual(index_before, git(self.root, "write-tree"))
+        self.assertEqual("unpublished\n", local.read_text())
+
+    def test_staged_product_gitlink_yields_before_auto_sync(self) -> None:
+        liteinst = self.advance_product("liteinst2")
+        self.advance_parent_remote(1)
+        git(self.root, "add", "liteinst2")
+        head_before = git(self.root, "rev-parse", "HEAD")
+
+        code, out, err = self.snapshot()
+
+        self.assertEqual(code, primary_checkout.SNAPSHOT_DEFERRED, err + out)
+        self.assertIn("already staged by another coordinator", out)
+        self.assertEqual(head_before, git(self.root, "rev-parse", "HEAD"))
+        self.assertEqual(liteinst, git(self.root, "rev-parse", ":liteinst2"))
 
     def test_parent_behind_but_gitlinks_already_published_is_success(self) -> None:
         """The ordering bug, which is a false page with NO underlying defect.
@@ -1588,14 +1654,15 @@ class SnapshotMovingReferenceTests(_ParentWorkspaceFixture):
     # ---- the deferral must reach the caller intact ------------------------
 
     def test_checkout_fresh_propagates_deferred_without_counting_a_failure(self) -> None:
-        """A deferral is neither success nor failure and must stay distinguishable.
+        """A human-required refusal remains a typed deferral to the tick.
 
-        Folding it into 0 hides a snapshot that never publishes; folding it into 1
-        recreates the unsatisfiable page. `checkout_fresh` has to carry the third
-        code out to the tick, which is the only layer that can time it.
+        Folding it into success hides work that never published; folding it into
+        an immediate hard block pages on the first ambiguous sample. The tick is
+        the layer that times whether the human-required condition persists.
         """
         self.advance_product("liteinst2")
         self.advance_parent_remote(1)
+        (self.root / "unowned-parent-work.txt").write_text("preserve\n")
         out, err = StringIO(), StringIO()
 
         code = primary_checkout.checkout_fresh(
@@ -1605,6 +1672,7 @@ class SnapshotMovingReferenceTests(_ParentWorkspaceFixture):
 
         self.assertEqual(code, primary_checkout.SNAPSHOT_DEFERRED, err)
         self.assertNotIn("HARD WARNING", err)
+        self.assertIn("DIRTY OUTSIDE EXACT FETCHED TARGET", out.getvalue())
 
 
 if __name__ == "__main__":

@@ -870,6 +870,70 @@ adopt_published_residue() {
   apply_published_residue "$1" "$2"
 }
 
+# Automatic callers have a narrower authority than a human invoking `sync`.
+# Manual sync may advance around unrelated dirty paths after a coordinator has
+# inspected them. The snapshot tick has made no such judgement: it may carry
+# only exact-target published residue, plus worktree-only drift of a gitlink
+# whose index still equals HEAD. Every other dirty path is ambiguous and must
+# refuse before the first shared-state write.
+#
+# This runs after classify_published_residue and under the same writer lock and
+# fresh-fetch receipt. A precheck in primary_checkout.py would be a stale,
+# weaker copy of the authority this function protects.
+verify_automatic_sync_boundary() {
+  local root=$1 from=$2 target=$3
+  local path entry plan_path exact gitlink blockers='' dirty=0 accepted=0 gitlinks=0
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    dirty=$((dirty + 1))
+    exact=0
+    while IFS= read -r entry; do
+      [ -n "$entry" ] || continue
+      plan_path=${entry#*,}
+      plan_path=${plan_path#*,}
+      if [ "$path" = "$plan_path" ]; then
+        exact=1
+        break
+      fi
+    done <<<"$RESIDUE_PLAN"
+    if [ "$exact" = 1 ]; then
+      accepted=$((accepted + 1))
+      continue
+    fi
+
+    # Product main advancing makes its checked-out submodule differ from the
+    # recorded gitlink. That is the snapshot being due, not parent-file work.
+    # It is safe only while nobody staged the gitlink: the index must still be
+    # byte-identical to FROM, and both endpoints must remain gitlinks.
+    gitlink=0
+    if [ "$(git -C "$root" ls-tree "$from" -- "$path" | awk '{print $1}')" = 160000 ] &&
+       [ "$(git -C "$root" ls-files --stage -- "$path" | awk '{print $1}')" = 160000 ] &&
+       [ "$(git -C "$root" ls-tree "$target" -- "$path" | awk '{print $1}')" = 160000 ] &&
+       git -C "$root" diff --cached --quiet "$from" -- "$path"; then
+      gitlink=1
+    fi
+    if [ "$gitlink" = 1 ]; then
+      gitlinks=$((gitlinks + 1))
+      continue
+    fi
+
+    blockers+="  $path  [DIRTY OUTSIDE EXACT FETCHED TARGET]"$'\n'
+  done < <({
+    git -C "$root" diff --cached --name-only --
+    git -C "$root" diff --name-only --
+    git -C "$root" ls-files --others --exclude-standard
+  } | sort -u)
+
+  if [ -n "$blockers" ]; then
+    printf '%s' "$blockers" >&2
+    die "automatic sync refuses every dirty path that is not exact-target
+  published residue. Nothing was staged, moved, or modified. A human may inspect
+  the named work and invoke ordinary sync; automation must not reason past it."
+  fi
+  printf 'PARENT_MAIN_WRITE automatic-boundary dirty=%s exact-target=%s gitlink-drift=%s refused=0 target=%s\n' \
+    "$dirty" "$accepted" "$gitlinks" "$target"
+}
+
 # ---------------------------------------------------------------------------
 # THE RECONCILE JOURNAL, and why the ref moves before the tree.
 #
@@ -1011,7 +1075,7 @@ usage() {
 usage:
   scripts/parent-main-write commit -m MESSAGE [--audit-reason REASON] -- PATH...
   scripts/parent-main-write publish [--audit-reason REASON] [REV]
-  scripts/parent-main-write sync
+  scripts/parent-main-write sync [--automatic]
   scripts/parent-main-write reconcile
 
 Hooks use: verify-commit, verify-ref OLD NEW, verify-push REMOTE OLD NEW.
@@ -1028,6 +1092,11 @@ case "$command" in
   verify-ref) verify_ref "$@" ;;
   verify-push) verify_push "$@" ;;
   sync)
+    automatic=0
+    if [ "${1:-}" = --automatic ]; then
+      automatic=1
+      shift
+    fi
     [ "$#" -eq 0 ] || usage
     root=$(repo_root)
     HERMIT_PARENT_MAIN_MODE=sync
@@ -1041,9 +1110,19 @@ case "$command" in
       printf 'PARENT_MAIN_WRITE sync already-current=%s\n' "$head"
       exit 0
     fi
+    if [ "$automatic" = 1 ]; then
+      ahead=$(git -C "$root" rev-list --count "$HERMIT_PARENT_MAIN_EXPECT..$head")
+      [ "$ahead" = 0 ] || die "automatic sync found $ahead local commit(s) not
+  contained in fetched origin/main. Nothing was modified. A human must preserve
+  or publish them; automatic sync never reconciles, rebases, or rewrites."
+    fi
     git -C "$root" merge-base --is-ancestor "$head" "$HERMIT_PARENT_MAIN_EXPECT" ||
       die "local main diverges from fetched origin; reconcile without reset"
-    adopt_published_residue "$root" "$HERMIT_PARENT_MAIN_EXPECT"
+    classify_published_residue "$root" HEAD "$HERMIT_PARENT_MAIN_EXPECT"
+    if [ "$automatic" = 1 ]; then
+      verify_automatic_sync_boundary "$root" HEAD "$HERMIT_PARENT_MAIN_EXPECT"
+    fi
+    apply_published_residue "$root" "$HERMIT_PARENT_MAIN_EXPECT"
     git -C "$root" merge --ff-only refs/remotes/origin/main
     printf 'PARENT_MAIN_WRITE sync old=%s new=%s fast-forward=1/1\n' \
       "$head" "$HERMIT_PARENT_MAIN_EXPECT"
