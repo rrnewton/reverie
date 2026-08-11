@@ -118,6 +118,59 @@ def policed_paths(config: Path = TICK_CONFIG) -> list[str]:
     return sorted(found)
 
 
+#: Directories whose contents EXECUTE or decide authority. Everything else in
+#: the parent churns on its own schedule -- `ledger/` gains rows on every
+#: publish, `experiments/` and `ai_docs/` accumulate by design -- and including
+#: them would page every tick and train the fleet to ignore this gate, which is
+#: the one failure mode a currency gate cannot survive.
+_EXECUTABLE_PREFIXES = ("ci-hub/", "scripts/", ".orc/")
+_EXECUTABLE_SUFFIXES = (".py", ".rs", ".sh", ".yaml", ".yml", ".ts", ".toml")
+
+
+def landed_but_unpulled(ref: str = TARGET_REF) -> list[str]:
+    """Executable paths whose landed bytes this working tree is not running.
+
+    WHY THIS WIDENS AN EXISTING GATE RATHER THAN ADDING A NEW ONE. `stale`
+    already means "the bytes that execute are not the bytes that landed", it is
+    already sampled every 900s, and it already pages `hard-warn-coordinator`
+    without anyone querying. The only thing missing was the SUBJECT:
+    `policed_paths` derives from `tick-hub.yaml`, so the gate watched the tick's
+    own 17 tools and nothing else.
+
+    Measured 2026-08-11: three authority fixes landed and sat INACTIVE in the
+    shared parent the same day -- the receipt-prefix verifier
+    (`ci-hub/validation/verify_receipt.sh`), the snapshot wrapper, and
+    `validate-status` (`ci-hub/ci-hub.rs`). Each reported "published, ancestry
+    1/1, tests pass" while the fleet ran the old code, and NONE of the three was
+    in the policed set, so nothing could have surfaced it. At one sampled moment
+    the count was 1 of 1 executable path landed-but-not-deployed and 0 policed.
+
+    LANDED != DEPLOYED is the same shape as CLOSED != LANDED one step later, and
+    the reason it went unnoticed three times is that the gap is TRANSIENT: it
+    closes the moment someone pulls, so an on-demand query almost never catches
+    it. That is precisely why it belongs in a periodic sampler and not in a
+    report anyone has to think to run.
+    """
+    out = _git("diff", "--name-only", ref)
+    if out.returncode != 0:
+        return []
+    return sorted(
+        path
+        for path in out.stdout.split()
+        if path.startswith(_EXECUTABLE_PREFIXES) and path.endswith(_EXECUTABLE_SUFFIXES)
+    )
+
+
+def subject_paths(config: Path = TICK_CONFIG, ref: str = TARGET_REF) -> list[str]:
+    """Everything whose executing bytes this gate is responsible for.
+
+    The union is deliberate: the tick's own tools must stay policed even when
+    they match `ref` (that is the reverted-fix case this file was written for),
+    and landed-but-unpulled code must be policed even though no gate invokes it.
+    """
+    return sorted(set(policed_paths(config)) | set(landed_but_unpulled(ref)))
+
+
 def compare(paths: Sequence[str], ref: str = TARGET_REF) -> list[Verdict]:
     """Working-tree content versus `ref`, per path, fail-closed to unknown."""
     if not paths:
@@ -186,22 +239,22 @@ def render(verdicts: Sequence[Verdict], ref: str = TARGET_REF) -> tuple[int, str
         subjects = ", ".join(v.path for v in stale[:3])
         residue = f" (+{len(stale) - 3} more)" if len(stale) > 3 else ""
         summary = (
-            f"{len(stale)} of {len(verdicts)} tick tool(s) are STALE against {ref} -- "
-            f"the tick is executing bytes that differ from what landed: "
+            f"{len(stale)} of {len(verdicts)} policed path(s) are STALE against {ref} -- "
+            f"this tree is executing bytes that differ from what landed: "
             f"{subjects}{residue}. Reconcile the parent."
         )
         code = DRIFTED
     elif unknown:
         summary = (
-            f"could not establish currency for {len(unknown)} of {len(verdicts)} tick "
-            f"tool(s) against {ref}"
+            f"could not establish currency for {len(unknown)} of {len(verdicts)} policed "
+            f"path(s) against {ref}"
         )
         code = UNKNOWN
     else:
         # Work-in-progress is reported but never paged: it is expected, and it is
         # already visible as dirt to anyone who looks.
         wip = f"; {len(modified)} carrying work-in-progress edits" if modified else ""
-        summary = f"all {len(verdicts)} tick tool(s) match {ref}{wip}"
+        summary = f"all {len(verdicts)} policed path(s) match {ref}{wip}"
         code = CURRENT
 
     lines.append(f"summary={summary}")
@@ -222,7 +275,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    verdicts = compare(policed_paths(args.config), args.ref)
+    verdicts = compare(subject_paths(args.config, args.ref), args.ref)
     code, text = render(verdicts, args.ref)
     if args.as_json:
         print(json.dumps(

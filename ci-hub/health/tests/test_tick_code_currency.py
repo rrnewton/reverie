@@ -199,3 +199,86 @@ class TickCodeCurrency(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LandedButNotDeployed(unittest.TestCase):
+    """A fix that LANDED but is not the code running here must page unprompted.
+
+    LANDED != DEPLOYED is CLOSED != LANDED one step later. On 2026-08-11 three
+    authority fixes landed and sat inactive in the shared parent the same day,
+    each reporting "published, ancestry 1/1, tests pass" while the fleet ran the
+    old code. The gate that should have caught it already existed and already
+    paged; it simply was not LOOKING at those paths, because `policed_paths`
+    derives only from `tick-hub.yaml`.
+
+    The gap is TRANSIENT -- it closes the moment anyone pulls -- which is why
+    nobody caught it by querying and why it has to live in the periodic sampler.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="tick-deploy-gap-")
+        self.addCleanup(self._tmp.cleanup)
+        self.repo = Repo(Path(self._tmp.name))
+        self.addCleanup(setattr, tcc, "ROOT", tcc.ROOT)
+        self.addCleanup(setattr, tcc, "TICK_CONFIG", tcc.TICK_CONFIG)
+        tcc.ROOT = self.repo.root
+        tcc.TICK_CONFIG = self.repo.config
+
+    def _land_only(self, relative: str, body: str) -> None:
+        """Commit and push `relative`, then rewind local so it is unpulled."""
+        target = self.repo.root / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body)
+        self.repo._commit(f"land {relative}")
+        git("push", "-q", "origin", "main", cwd=self.repo.root)
+        git("reset", "-q", "--hard", "HEAD~1", cwd=self.repo.root)
+        git("fetch", "-q", "origin", cwd=self.repo.root)
+
+    def test_the_wiring_gap_this_closes(self) -> None:
+        # new_tool.py landed on origin/main and no gate invokes it. That is the
+        # exact shape of all three fixes that went inactive.
+        landed = "ci-hub/health/new_tool.py"
+        self.assertNotIn(
+            landed, tcc.policed_paths(self.repo.config),
+            "precondition: a landed non-gate tool was invisible to the old subject set",
+        )
+        self.assertIn(landed, tcc.landed_but_unpulled("origin/main"))
+        self.assertIn(landed, tcc.subject_paths(self.repo.config, "origin/main"))
+
+    def test_landed_but_inactive_is_stale_and_pages(self) -> None:
+        verdicts = tcc.compare(
+            tcc.subject_paths(self.repo.config, "origin/main"), "origin/main"
+        )
+        code, text = tcc.render(verdicts, "origin/main")
+        self.assertEqual(code, tcc.DRIFTED, text)
+        self.assertIn("ci-hub/health/new_tool.py", text)
+
+    def test_landed_and_deployed_reports_clean(self) -> None:
+        # The other direction: once pulled, the same gate must go quiet. Without
+        # this the fix would just be a gate that always fires.
+        git("merge", "-q", "--ff-only", "origin/main", cwd=self.repo.root)
+        verdicts = tcc.compare(
+            tcc.subject_paths(self.repo.config, "origin/main"), "origin/main"
+        )
+        code, text = tcc.render(verdicts, "origin/main")
+        self.assertEqual(code, tcc.CURRENT, text)
+        self.assertNotIn("STALE", text)
+
+    def test_churning_non_executable_paths_are_excluded(self) -> None:
+        """`ledger/` gains rows on every publish; paging on it would kill the gate.
+
+        A currency gate that fires every tick is one the fleet learns to ignore,
+        so the widened subject is executable code only. This is the assertion
+        that keeps the new signal credible rather than merely loud.
+        """
+        self._land_only("ledger/hermit/devbig014/2026-08.jsonl", '{"event_id":"x"}\n')
+        self._land_only("ai_docs/some-note.md", "# note\n")
+        self._land_only("experiments/e_20260811/results.csv", "a,b\n1,2\n")
+        subjects = tcc.subject_paths(self.repo.config, "origin/main")
+        for noisy in ("ledger/", "ai_docs/", "experiments/"):
+            self.assertFalse(
+                [p for p in subjects if p.startswith(noisy)],
+                f"{noisy} must not be policed; subjects={subjects}",
+            )
+        # ...while the executable landed path is still caught in the same run.
+        self.assertIn("ci-hub/health/new_tool.py", subjects)
