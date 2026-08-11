@@ -1,4 +1,10 @@
-# MISSION: This is an AUTONOMOUS, forward-driving, SELF-HEALING SWE team. The coordinator replaces broken/degraded/stuck agents immediately and autonomously (close+respawn, no permission needed) once their death is VERIFIED (**Verify Before You Replace** — no permission needed, but evidence needed), drives all work forward without stalling on routine approvals, keeps main green + PRs near zero, and heals the fleet continuously.
+# Mission
+
+This is an AUTONOMOUS, forward-driving, SELF-HEALING SWE team. The coordinator replaces
+broken/degraded/stuck agents immediately and autonomously (close+respawn, no permission needed) once their
+death is VERIFIED (**Verify Before You Replace** — no permission needed, but evidence needed), drives all
+work forward without stalling on routine approvals, keeps main green + PRs near zero, and heals the fleet
+continuously.
 
 On every hourly status update, call `scripts/status-log.rs` with the workstream→worker mapping + full status text to append a structured JSONL entry.
 
@@ -182,17 +188,11 @@ landing target. Ordinary Hermit work flows from a feature branch to a PR against
 
 ### Hermit landing hierarchy (owner decision, 2026-08-10)
 
-**This parent policy authorizes publication; product docs, GH Actions, and rulesets do not.** Never use the
-ambiguous two-letter abbreviation: **VALIDATE** is the admitted exact-head local authority; **LEDGER** is its durable record; **GH ACTIONS**
-are advisory P2 hosted workflows; **RUNNER** is the machine. Normal loop: **WORK -> reviewed PR -> VALIDATE ->
-LEDGER-derived `locally-validated` -> LAND YOUR OWN PR -> ancestry proof -> REPEAT**. Use `validate-run`,
-`apply-local-label`, and the tracked lander; never wait for GH Actions or a backlog lander. If landing breaks
-`main`, stop the drain, re-green it, and resume.
+**Follow skill `manual-ci-mode` for validation authority.**
 
-**Sole Hermit exception:** a PR modifying registered producer `scripts/validate.rs` cannot self-vouch and uses
-the registered exact-head GH Actions result. Do not generalize it. Reverie/parent keep their versioned authority;
-direct `main` stays limited to the named exceptions below. Revert requires a durable owner decision bound to exact
-current/candidate SHAs. Rationale: companion doc, *Hermit landing hierarchy*.
+This parent policy authorizes publication; product docs, hosted workflows, and
+rulesets do not. Direct `main` stays limited to the named exceptions below. A
+revert requires a durable owner decision bound to exact current/candidate SHAs.
 
 ### Red-Tip Direct Land (owner-authorized exception to Hard Invariant 9)
 
@@ -235,7 +235,10 @@ Here, **critical** means Hermit syscall handling, DetCore scheduling, or a Rever
 the exact head. The earlier Codex-only direction was a 12-hour rate-limit response and has expired; it is not
 standing policy and must not be copied into skills or dispatches.
 
-### Proxy Binding Review Axis (predicate; full rationale, registry, 12 examples, 3-layer taxonomy in the [companion doc](https://github.com/rrnewton/dev-hermit/blob/main/ai_docs/agents-md-policy-rationale.md))
+### Proxy Binding Review Axis
+
+Predicate; full rationale, registry, 12 examples, and the 3-layer taxonomy live in the
+[companion doc](https://github.com/rrnewton/dev-hermit/blob/main/ai_docs/agents-md-policy-rationale.md).
 
 **Proxy Binding** asks: **what observably binds this check to the fact it claims?** Reject correlated labels,
 statuses, markers, flags, hashes, or counts without identity/causal/coverage/provenance binding.
@@ -371,9 +374,7 @@ it with `file`, `du`, and the ignore rules — do not commit first and promise t
 
 Use product-local commands, focused tests while developing, then required repository validation. Cross-repo work
 validates the exact proposed pair. Evidence binds to commits and reports exact Hermit/Reverie SHAs, command,
-result, and environment/limitations; never weaken a hardware-dependent test. At mutation, normal Hermit heads need
-a counted LEDGER receipt; only a head modifying `scripts/validate.rs` selects registered exact-head GH Actions.
-Missing/partial/stale selected evidence is NO_RESULT; ordinary GH Actions red remains advisory P2.
+result, and environment/limitations; never weaken a hardware-dependent test.
 
 ### Running validate — `systemd-run --user` Is The Producer Path
 
@@ -412,14 +413,15 @@ replay/relaxed); name the tool (`StraceTool`, `Detcore`, … — never "the Tool
 where (`main`/`PR #N`/exact SHA), and qualify the result (`L0`/`L1`/`L2`, `18/20`, exact tests). Bind evidence
 to commits, not branch names.
 
-## Coordinator Judgement Rules (predicates; full rationale in the [companion doc](https://github.com/rrnewton/dev-hermit/blob/main/ai_docs/agents-md-policy-rationale.md))
+## Coordinator Judgement Rules
+
+Predicates; the full rationale lives in the
+[companion doc](https://github.com/rrnewton/dev-hermit/blob/main/ai_docs/agents-md-policy-rationale.md).
 
 - **Establish what you have before acting.** A **note** is one agent's unverified belief — do not launder "X appears to be Y" into "X is Y, fix it." When a premise comes from a note or second-hand observation, attribute it to its source, mark it **UNVERIFIED**, and make "verify the premise" the explicit first step ("premise refuted" is a valid outcome). A **number** is unqualified until you state **what it measures** (the decision's quantity, or a proxy?), its **unit** (a count is not a rate; a load average is not a utilisation), and its **denominator** — interrogate a surprising ratio's denominator first.
 - **Verify a mechanism by the running thing, not its config.** A flag can be a deprecated no-op; an exit code can come from a different wrapper. Find the running thing and ask what holds it — e.g. for cgroup boxing, walk `/sys/fs/cgroup/...` for the live PID's `cgroup.procs`, not a flag/exit code.
 - **Record every measurement immediately.** First check whether the number already exists (`experiments/`, task notes, ci-hub history store). Any measurement — even incidental — goes into a task note immediately with units, context, and **how obtained (a polled aggregate is not a cgroup-recorded peak)**.
 - **Trust authority, not a handed SHA.** `ci-hub newest-green` establishes the normal local frontier. A candidate changing a registered producer is intentionally local-non-authoritative; dereference its registered exact-head hosted job with `ci-hub hosted-status`. Report discrepancies.
-- **Read hosted state from its named job, not the workflow rollup.** Hosted is P2 except for that producer exception; a workflow conclusion is never the job verdict.
-- **Do not manually dispatch GH Actions under `merge-gate-v4`.** Duplicate runs can poison its diagnostic checks. On hosted NO_RESULT rerun the gate; dispatch manually only with no gate in play, after checking live runs, and use exactly one run. This manages hosted diagnostics, not landing authority.
 - **A land-lock SIGCONT must cover the WHOLE subtree, roots and descendants.** `land-lock status` hangs while its census holds verifiers in `do_signal_stop`; the remedy (SIGCONT, then `reclaim-dead`, never a kill) works only if every stopped member is resumed. Either partial attempt fails silently and looks like a wedged lock — resuming only roots leaves the real worker stopped one level down. Enumerate the subtree recursively from the validator roots, SIGCONT every member whose `stat` starts with `T`, then re-check none remain.
 
 ## Failure, Recovery, And Concurrent Work
