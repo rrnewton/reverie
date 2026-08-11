@@ -37,15 +37,17 @@ drift, so the signal does not cry wolf:
   child obligation is still incomplete);
 - `open` — no implementation yet, but owned and carried by a resolvable task,
   i.e. actively in progress, not drift;
-- `gated` — no implementation yet and deliberately deferred on the named `gate`
-  condition, not drift. The gate is the durable obligation, so it remains
-  `gated` after the finite task that recorded the decision closes; the hourly
-  checker continues to surface the named condition until it is satisfied;
+- `gated` — no implementation yet, deliberately deferred on the named `gate`
+  condition, and carried by a nonterminal accountable task. The ledger keeps
+  gate text as historical provenance, but the checked report retires it when
+  fresh ancestry proves an implementation or when the accountable task closes;
+  stale text therefore cannot keep reporting a block nobody is advancing;
 - `unaccountable` — the row is NOT satisfied and its accountable TaskGraph task is
   `CLOSED`, so nothing will surface the unmet obligation (genuine drift). Task lookup
   tests existence, and a closed task exists; measured 2026-08-08, 3 of 21 rows sat in
-  this state. A closed task on a `satisfied` row or an explicitly `gated` row is
-  expected; the predicate keys on the pairing, not on closure;
+  this state. A closed task on a `satisfied` row is expected; a closed task with
+  no ancestry-confirmed implementation is unaccountable even if historical
+  gate text remains in the ledger;
 - `needs_owner` — no accountable owner recorded (genuine drift);
 - `missing_task` — no resolvable accountable task (genuine drift);
 - `not_landed` — claimed evidence is not an ancestor of fresh main (genuine

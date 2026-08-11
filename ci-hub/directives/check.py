@@ -422,9 +422,6 @@ def _metadata_issues(
         # form of unknown, so an empty gate is rejected as invalid metadata.
         if not directive.gate:
             issues.append("unnamed_gate")
-        elif directive.implementation is not None:
-            # An already-implemented directive cannot also be waiting on a gate.
-            issues.append("gate_on_implemented")
     return issues
 
 
@@ -500,6 +497,17 @@ def evaluate(
         target_tip = None
         reason = "no claimed implementation identity"
         state = "open"
+        # `gate` is durable historical provenance, not an assertion that can
+        # outlive the state which made it true. A terminal accountable task
+        # retires the gate: if no implementation was recorded, the obligation
+        # is unaccountable rather than indefinitely deferred. Likewise, a
+        # claimed implementation is classified from fresh ancestry; stale gate
+        # prose must not override that derived result.
+        gate_active = (
+            implementation is None
+            and bool(directive.gate)
+            and "closed_task" not in issues
+        )
         identity_valid = implementation is not None and not any(
             issue.startswith("invalid_") for issue in issues
         )
@@ -560,19 +568,17 @@ def evaluate(
         ):
             state = "invalid"
             reason = "invalid directive metadata"
-        elif implementation is None and directive.gate:
+        elif gate_active:
             state = "gated"
             reason = f"gated on: {directive.gate}"
         elif implementation is None:
             state = "open"
-        # UNACCOUNTABLE: an ungated row is not satisfied, yet its accountable task is CLOSED.
+        # UNACCOUNTABLE: a row is not satisfied, yet its accountable task is CLOSED.
         # Nothing else catches that pairing, because task lookup tests existence and a closed
-        # task exists. A named external gate is different: the versioned gate condition is the
-        # durable obligation, and the hourly checker continues to surface it after the finite
-        # recording task closes. Demoting that explicit deferral to `unaccountable` makes it
-        # impossible to record a completed decision without filing an artificial forever-open
-        # task. Keep only explicitly named gates exempt; a closed task plus no implementation
-        # and no gate remains genuine drift.
+        # task exists. A gate remains active only while its accountable task is
+        # nonterminal. Once that task closes, preserving the old prose as an
+        # active gate hides the unmet obligation behind a condition that nobody
+        # is advancing.
         # A NO-RESULT IS NOT A NEGATIVE. `unverifiable` and `fetch_failed` mean the
         # checker could not look -- a deadline expired, or the landing verifier
         # errored -- not that the obligation is unmet. Demoting them here asserts
@@ -587,7 +593,7 @@ def evaluate(
         # bucket with drift, because the two need opposite responses: retry or
         # raise the deadline, versus re-land the work.
         if (
-            state not in {"satisfied", "gated", "unverifiable", "fetch_failed"}
+            state not in {"satisfied", "unverifiable", "fetch_failed"}
             and "closed_task" in issues
         ):
             reason = (
@@ -607,7 +613,9 @@ def evaluate(
             parent_id=directive.parent_id,
             implementation_kind=implementation.kind if implementation else None,
             implementation_identity=implementation.identity if implementation else None,
-            gate=directive.gate or None,
+            # The ledger retains the historical text. The report exposes only
+            # an active gate so downstream agents cannot yield to a retired one.
+            gate=directive.gate if gate_active else None,
             state=state,
             landing_state=landing_state,
             ancestry=ancestry,

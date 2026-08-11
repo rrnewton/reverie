@@ -198,7 +198,7 @@ class DirectiveCheckTest(unittest.TestCase):
         self.assertEqual("invalid", item.state)
         self.assertIn("unnamed_gate", item.issues)
 
-    def test_gate_on_implemented_is_invalid(self):
+    def test_satisfied_ancestry_retires_stale_gate_text(self):
         report, _runner = self.evaluate(
             [directive("landed-but-gated", identity="a" * 40, gate="zero open PRs")]
         )
@@ -206,8 +206,10 @@ class DirectiveCheckTest(unittest.TestCase):
         item = next(
             item for item in report.directives if item.id == "landed-but-gated"
         )
-        self.assertEqual("invalid", item.state)
-        self.assertIn("gate_on_implemented", item.issues)
+        self.assertEqual("satisfied", item.state)
+        self.assertIsNone(item.gate)
+        self.assertEqual(1, report.counts["satisfied"])
+        self.assertEqual(0, report.counts.get("gated", 0))
 
     def test_fetch_failure_is_distinct_from_not_checked_and_never_clean(self):
         # Positive side: a fetch failure while verifying a claimed commit must
@@ -290,7 +292,7 @@ class ClosedTaskAccountabilityTest(unittest.TestCase):
         self.assertEqual("open", item.state)
         self.assertNotIn("closed_task", item.issues)
 
-    def test_positive_named_gate_stays_gated_after_recording_task_closes(self):
+    def test_terminal_task_retires_stale_gate_and_exposes_unaccountable_work(self):
         row = directive(
             "deferred",
             identity=None,
@@ -300,11 +302,12 @@ class ClosedTaskAccountabilityTest(unittest.TestCase):
         report = self.evaluate([row], {"t-closed": "CLOSED"})
 
         item = report.directives[0]
-        self.assertEqual("gated", item.state)
+        self.assertEqual("unaccountable", item.state)
         self.assertIn("closed_task", item.issues)
-        self.assertNotIn(item.state, directive_check.DRIFT_STATES)
-        self.assertEqual(1, report.counts["gated"])
-        self.assertEqual(0, report.counts.get("unaccountable", 0))
+        self.assertIsNone(item.gate)
+        self.assertIn(item.state, directive_check.DRIFT_STATES)
+        self.assertEqual(0, report.counts.get("gated", 0))
+        self.assertEqual(1, report.counts["unaccountable"])
 
     def test_positive_landed_row_with_closed_task_stays_satisfied(self):
         # A closed task is the CORRECT end state once the directive has landed; the predicate
