@@ -31,17 +31,17 @@
     "merge-gate-v2-floor-invalidates-pre-floor-greens."
   ],
   "gate_schema": "merge-gate-v2",
-  "_pending": [
+  "_pending": [],
+  "anchors": [
     {
-      "_comment": "EXAMPLE / TBD -- the absent-counts + filtered_tests==0 tightening (hermit-243). is_clean_full_pass also requires executed_tests>0 AND filtered_tests==0; a producer predating the commit that makes validate.sh's append_validation_ledger emit those counts writes them NULL and is rejected. MOVE this into `anchors` with the real 40-hex `sha` and `landed_utc` ONCE that commit lands on rrnewton/hermit:main.",
-      "sha": "TBD-hermit-243-counts-filtered-anchor",
-      "landed_utc": "TBD",
+      "sha": "c88196aeb6b9ec0909d18a74a23e85cadfb87968",
+      "landed_utc": "2026-08-10T19:08:23Z",
       "kind": "producer-anchor",
       "field": "executed_tests/filtered_tests",
-      "reason": "producer predating this commit emits executed_tests/filtered_tests NULL; is_clean_full_pass requires executed_tests>0 AND filtered_tests==0, so no qualifying receipt is possible"
-    }
-  ],
-  "anchors": [
+      "consumer": "ci-hub/lib/validate_status.rs::is_clean_full_pass (landing/cache certifier) + scripts/lib/validate_history.rs (validate.rs cache rows)",
+      "signature": "green-but-null-fielded: a head predating this runs a producer that emits executed_tests NULL, and the universal guard executed_tests == Some(n>0) rejects the record no matter how green the run",
+      "reason": "promoted from _pending (was the TBD-hermit-243-counts-filtered-anchor placeholder) now that its commit has landed: PR #2099 'typed executed-test counts' merged as c88196ae at 2026-08-10T19:08:23Z. Before it, hermit commit 864a336a had already reduced default validate verbosity to terminal summaries only, while the then-current producer recovered counts by scraping libtest banners out of the durable log -- so the banners the parser needed were no longer present and executed_tests came back NULL. Measured: the 57/57 all-pass run at 4c24a4d was DISQUALIFIED for exactly this, and nonzero_result.py --ledger-fields returned null null on its durable log. Any head predating c88196ae is therefore doomed before it starts: it cannot mint a qualifying receipt, so refuse it here rather than spend ~17 minutes of box-exclusive anchor discovering that"
+    },
     {
       "sha": "c369be3ff8e2c751a313b27979fa8f470dafecf0",
       "landed_utc": "2026-08-04T15:45:04Z",
