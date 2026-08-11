@@ -433,6 +433,34 @@ identical? If yes, it is worth stating explicitly in policy, because this will r
 by routine queue churn rather than by anything changing. If no, then re-review after every rebase is
 a real and recurring cost that should be planned for rather than absorbed silently.
 
+### Q14 resolved empirically — and the agent that argued for carry-over reversed itself
+
+The fresh review I ordered came back **CHANGES-REQUESTED**, and it found a **HIGH** defect that
+**three prior review rounds had missed on identical content**: interception state is propagated to
+`ThreadOwnership::Host` CLONE_THREAD workers that inherit `CR4.TSD` but run a tool-less loop with no
+recognizer, so their first CPL3 `RDTSC` takes `#GP(0)` and the worker dies where pre-PR it ran
+natively. Honestly scoped by the reviewer: not reachable from Hermit today
+(`backend_dispatches_thread_tools` is hard-wired true), but reachable through the public
+`reverie-kvm` API and exercised in reverie-kvm's own suite — it escapes CI only because
+`StraceTool` does not subscribe `Instructions::RDTSC`.
+
+The agent that originally made the carry-over case then argued **against its own position**:
+
+> `patch-id` was correct about what it claimed — content identity, now proven across *three* heads.
+> But a fresh look at that identical content found a HIGH defect three prior rounds missed. So
+> content-identity carries a verdict forward faithfully; it does not make the verdict *right*.
+
+**So the answer looks like "may carry, at the coordinator's discretion", not "carries
+automatically."** Re-review of provably identical content had measurable yield here — one HIGH
+finding — which means an automatic carry-over rule would have shipped it. Recommend the policy allow
+discretion rather than either extreme, and that a carried review be recorded as *carried* so a
+reader can see it was not fresh.
+
+Supporting datum: **three of three reviews commissioned tonight returned CHANGES-REQUESTED with real
+defects, on PRs hosted CI had called green.** That is a 100% hit rate against green CI, and it is the
+strongest argument in this document that review — not CI, not effort, not the validate lock — is the
+binding constraint on the Reverie pool.
+
 ## Q15 — slot reclaim has been dead for ~21 hours box-wide, and the cap breach in Q8 is its mechanical consequence
 
 This supersedes my framing in Q8. The slot sprawl is not a discipline failure; **the mechanism for
