@@ -41,6 +41,12 @@ poisons every downstream analysis):
                                      truncated sample yields a strict LOWER BOUND;
                                      each figure states the DIRECTION of its own
                                      error and never a bare percentage.
+  8. ACTIVE-ROLLUP INTEGRITY       — an explicit active-run census, with job
+                                     runner bindings kept distinct from the live
+                                     runner API. An active workflow/check-suite
+                                     whose complete job census is all terminal is
+                                     alarmed as an orphaned rollup and excluded
+                                     from workflow-running diagnostics.
 
 Every number is derived with its basis stated, per the workspace honesty rule.
 
@@ -58,6 +64,7 @@ ci-hub, wired to the tick, rather than the target.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import shlex
@@ -71,6 +78,7 @@ from datetime import datetime, timezone
 QUEUED_STATUSES = frozenset({"queued", "pending", "waiting", "requested"})
 RUNNING_STATUSES = frozenset({"in_progress"})
 INFLIGHT_STATUSES = QUEUED_STATUSES | RUNNING_STATUSES
+TERMINAL_JOB_STATUSES = frozenset({"completed"})
 
 # --- Tick thresholds (env-overridable) ---------------------------------------
 # Each is a warn boundary for the fail-loud tick gate; overriding lets the
@@ -82,6 +90,9 @@ GREEN_AGE_WARN_SECS = int(os.environ.get("CI_GREEN_AGE_WARN_SECS", str(6 * 3600)
 # Only gate "no recent green" for workflows with at least this many runs in the
 # window, so a rarely-triggered workflow does not flap the tick.
 GREEN_GATE_MIN_RUNS = int(os.environ.get("CI_GREEN_GATE_MIN_RUNS", "4"))
+ACTIVE_RUN_CENSUS_LIMIT = int(
+    os.environ.get("CI_ACTIVE_RUN_CENSUS_LIMIT", "1000")
+)
 # Comma-separated substrings of workflow names to exclude from the "no recent
 # green" gate (e.g. an if:always aggregator that is structurally never "success").
 # Default empty: nothing is silenced, so the current signal stays fully honest.
@@ -361,6 +372,81 @@ def fetch_runs(repo: str, gh_cmd: str, limit: int,
     )
 
 
+def fetch_active_runs(repo: str, gh_cmd: str, limit: int,
+                      sink: list[FetchFailure] | None = None,
+                      timeout: float = DEFAULT_GH_CALL_TIMEOUT,
+                      ) -> list[dict] | None:
+    """Fetch run-level ``in_progress`` bookkeeping independently of recency.
+
+    The ordinary newest-N run list can age a permanently stale active row out of
+    view.  This explicit census is diagnostic input only: a row becomes execution
+    evidence only after its jobs carry a live runner binding.
+    """
+    fields = ("databaseId,workflowName,status,conclusion,createdAt,updatedAt,"
+              "headBranch,event,displayTitle")
+    return gh_json(
+        ["run", "list", "--repo", repo, "--status", "in_progress",
+         "--limit", str(max(limit, ACTIVE_RUN_CENSUS_LIMIT)), "--json", fields],
+        gh_cmd, sink=sink, repo=repo, endpoint="active-run-list", timeout=timeout,
+    )
+
+
+@dataclass
+class RunJobEvidence:
+    jobs: list[dict]
+    complete: bool
+    total_count: int | None
+
+
+def fetch_active_run_jobs(
+    repo: str,
+    gh_cmd: str,
+    active_runs: list[dict],
+    sink: list[FetchFailure] | None = None,
+    timeout: float = DEFAULT_GH_CALL_TIMEOUT,
+) -> dict[int, RunJobEvidence]:
+    """Fetch complete-enough job evidence for active runs, concurrently.
+
+    GitHub exposes jobs per run, so a serial census makes tick latency scale with
+    contention.  Bounded parallel reads keep the wall bound at one jobs-API
+    timeout.  More than 100 jobs is deliberately ``complete=False``: the first
+    page cannot prove that *every* job is terminal.
+    """
+    run_ids = sorted({int(r["databaseId"]) for r in active_runs
+                      if r.get("databaseId") is not None})
+    if not run_ids:
+        return {}
+
+    def fetch_one(run_id: int) -> tuple[int, RunJobEvidence | None]:
+        data = gh_json(
+            ["api", f"repos/{repo}/actions/runs/{run_id}/jobs"
+             "?filter=all&per_page=100"],
+            gh_cmd, sink=sink, repo=repo, endpoint="active-jobs-api",
+            timeout=timeout,
+        )
+        if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
+            return run_id, None
+        raw_total = data.get("total_count")
+        total = raw_total if isinstance(raw_total, int) else None
+        jobs = data["jobs"]
+        return run_id, RunJobEvidence(
+            jobs=jobs,
+            complete=(total is not None and total == len(jobs)),
+            total_count=total,
+        )
+
+    out: dict[int, RunJobEvidence] = {}
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(8, len(run_ids))
+    ) as pool:
+        futures = [pool.submit(fetch_one, rid) for rid in run_ids]
+        for future in concurrent.futures.as_completed(futures):
+            run_id, evidence = future.result()
+            if evidence is not None:
+                out[run_id] = evidence
+    return out
+
+
 def fetch_runners(repo: str, gh_cmd: str,
                   sink: list[FetchFailure] | None = None,
                   timeout: float = DEFAULT_GH_CALL_TIMEOUT) -> dict | None:
@@ -433,6 +519,110 @@ class WorkflowQueue:
     @property
     def median_age(self) -> float:
         return _pct(sorted(self.queue_ages), 0.5) if self.queue_ages else 0.0
+
+
+@dataclass
+class ActiveRunFinding:
+    run_id: int
+    workflow: str
+    kind: str  # executing | waiting | orphaned-rollup | indeterminate
+    total_jobs: int
+    terminal_jobs: int
+    runner_bound_active_jobs: int
+    runner_names: tuple[str, ...]
+
+
+@dataclass
+class ActiveRunAnalysis:
+    findings: list[ActiveRunFinding]
+
+    def of_kind(self, kind: str) -> list[ActiveRunFinding]:
+        return [finding for finding in self.findings if finding.kind == kind]
+
+    @property
+    def orphaned_ids(self) -> set[int]:
+        return {finding.run_id for finding in self.of_kind("orphaned-rollup")}
+
+    @property
+    def executing_jobs(self) -> int:
+        return sum(finding.runner_bound_active_jobs
+                   for finding in self.of_kind("executing"))
+
+    def selfhosted_executing_jobs(self, runner_names: set[str]) -> int:
+        return sum(1 for finding in self.of_kind("executing")
+                   for name in finding.runner_names if name in runner_names)
+
+
+def analyze_active_runs(
+    active_runs: list[dict],
+    evidence_by_run: dict[int, RunJobEvidence],
+) -> ActiveRunAnalysis:
+    """Keep workflow bookkeeping, job execution, and capacity distinct.
+
+    ``orphaned-rollup`` requires a non-empty, complete census whose every job is
+    terminal.  A genuinely executing run requires a non-terminal job with an
+    actual runner id/name.  Empty or unassigned active runs are waiting, not
+    capacity; incomplete evidence is indeterminate and can never prove orphaning.
+    """
+    findings: list[ActiveRunFinding] = []
+    for run in active_runs:
+        raw_id = run.get("databaseId")
+        if raw_id is None:
+            continue
+        run_id = int(raw_id)
+        workflow = str(run.get("workflowName") or "?")
+        evidence = evidence_by_run.get(run_id)
+        if evidence is None or not evidence.complete:
+            findings.append(ActiveRunFinding(
+                run_id, workflow, "indeterminate", 0, 0, 0, (),
+            ))
+            continue
+        jobs = evidence.jobs
+        terminal = [j for j in jobs
+                    if j.get("status") in TERMINAL_JOB_STATUSES]
+        active = [j for j in jobs
+                  if j.get("status") not in TERMINAL_JOB_STATUSES]
+        bound = [j for j in active
+                 if j.get("runner_id") is not None or j.get("runner_name")]
+        runner_names = tuple(str(j.get("runner_name")) for j in bound
+                             if j.get("runner_name"))
+        if jobs and len(terminal) == len(jobs):
+            kind = "orphaned-rollup"
+        elif bound:
+            kind = "executing"
+        else:
+            kind = "waiting"
+        findings.append(ActiveRunFinding(
+            run_id=run_id,
+            workflow=workflow,
+            kind=kind,
+            total_jobs=len(jobs),
+            terminal_jobs=len(terminal),
+            runner_bound_active_jobs=len(bound),
+            runner_names=runner_names,
+        ))
+    return ActiveRunAnalysis(findings)
+
+
+def non_orphan_rollup_runs(recent_runs: list[dict], active_runs: list[dict],
+                           analysis: ActiveRunAnalysis) -> list[dict]:
+    """Exclude proven orphan rollups from workflow-state diagnostics.
+
+    This is intentionally not a capacity derivation. Runner capacity remains the
+    live runners API; this list only prevents stale bookkeeping from inflating
+    workflow-level ``running`` and named in-flight counts.
+    """
+    orphaned = analysis.orphaned_ids
+    out = [run for run in recent_runs
+           if int(run.get("databaseId", -1)) not in orphaned]
+    seen = {int(run.get("databaseId", -1)) for run in out}
+    for run in active_runs:
+        run_id = int(run.get("databaseId", -1))
+        if run_id in orphaned or run_id in seen:
+            continue
+        out.append(run)
+        seen.add(run_id)
+    return out
 
 
 @dataclass
@@ -811,8 +1001,14 @@ def report_repo(repo: str, gh_cmd: str, limit: int, sample: int,
     print(f"\n================ {repo} ================")
     now = _now()
     runs = fetch_runs(repo, gh_cmd, limit, sink=sink)
+    active_runs = fetch_active_runs(repo, gh_cmd, limit, sink=sink)
+    active_evidence = (fetch_active_run_jobs(
+        repo, gh_cmd, active_runs, sink=sink,
+    ) if active_runs is not None else {})
+    active_analysis = (analyze_active_runs(active_runs, active_evidence)
+                       if active_runs is not None else None)
 
-    # (4)+(8) Runner health — CONFIGURED vs LIVE, so a silently-dead runner shows.
+    # (4) Runner health — CONFIGURED vs LIVE, so a silently-dead runner shows.
     # Only the repos we administer have a meaningful repo-scope runner inventory;
     # querying any other repo is a structural 403 (needs admin), so we report N/A
     # BY DESIGN there rather than fetch it and print a misleading auth error.
@@ -849,11 +1045,51 @@ def report_repo(repo: str, gh_cmd: str, limit: int, sample: int,
         print("  runs: (could not fetch) — basis: gh run list failed")
         return
 
-    queues = analyze_queue(runs, now=now)
+    workflow_runs = (non_orphan_rollup_runs(runs, active_runs, active_analysis)
+                     if active_runs is not None and active_analysis is not None
+                     else runs)
+    queues = analyze_queue(workflow_runs, now=now)
     greens = analyze_last_green(runs)
 
+    # An Actions run/check-suite rollup is bookkeeping, not runner occupancy.
+    # Bind execution to a non-terminal job's runner id/name, and keep actual
+    # capacity sourced from the live runner API above.
+    if active_analysis is None:
+        print("  active-run execution binding: UNKNOWN — explicit in_progress "
+              "census failed (see DEGRADED summary); no orphan exclusion made")
+    else:
+        executing = active_analysis.of_kind("executing")
+        waiting = active_analysis.of_kind("waiting")
+        orphaned = active_analysis.of_kind("orphaned-rollup")
+        indeterminate = active_analysis.of_kind("indeterminate")
+        runner_names = rh.names if rh is not None else set()
+        selfhosted_jobs = active_analysis.selfhosted_executing_jobs(runner_names)
+        print(f"  active-run execution binding (basis: {len(active_runs)} "
+              f"run-level in_progress bookkeeping rows + complete jobs API): "
+              f"executing_runs={len(executing)} "
+              f"runner_bound_active_jobs={active_analysis.executing_jobs} "
+              f"selfhosted_runner_bound_jobs={selfhosted_jobs} "
+              f"waiting_runs={len(waiting)} "
+              f"orphaned_rollups={len(orphaned)} "
+              f"indeterminate={len(indeterminate)}")
+        print("    capacity authority remains live runner API: "
+              f"effective_pool={rh.online if rh else 'unknown'} "
+              f"busy={rh.busy if rh else 'unknown'}; run-level in_progress "
+              "is never used as runner occupancy")
+        for finding in orphaned:
+            print(f"    ! ORPHANED-ROLLUP #{finding.run_id} "
+                  f"{finding.workflow}: jobs={finding.total_jobs} "
+                  f"terminal={finding.terminal_jobs}; excluded from workflow "
+                  "running counts and capacity diagnostics")
+        for finding in indeterminate:
+            print(f"    ! ACTIVE-RUN INDETERMINATE #{finding.run_id} "
+                  f"{finding.workflow}: complete job census unavailable; "
+                  "NOT classified orphaned")
+
     # (1)+(2a) Queue depth + current queue age, per workflow.
-    print(f"  queue depth (basis: gh run list, last {len(runs)} runs; "
+    print(f"  queue depth (basis: gh run list, last {len(runs)} runs + explicit "
+          f"active census; {len(active_analysis.orphaned_ids) if active_analysis else 0} "
+          f"proven orphaned rollup(s) excluded; "
           f"queue age = now - createdAt, a LOWER BOUND on final wait):")
     active = sorted((q for q in queues.values() if q.inflight),
                     key=lambda q: (-q.inflight, q.workflow))
@@ -872,7 +1108,8 @@ def report_repo(repo: str, gh_cmd: str, limit: int, sample: int,
         print(f"  ^ CAPACITY SIGNAL (binding label not established): {bc}")
 
     # (5) NAMED in-flight runs — "run X on branch Y", not "something is running".
-    inflight = [r for r in runs if r.get("status") in INFLIGHT_STATUSES]
+    inflight = [r for r in workflow_runs
+                if r.get("status") in INFLIGHT_STATUSES]
     if inflight:
         inflight.sort(key=lambda r: (r.get("status") != "in_progress",
                                      r.get("createdAt") or ""))
@@ -933,14 +1170,15 @@ def report_repo(repo: str, gh_cmd: str, limit: int, sample: int,
               "lower-bound signal")
         return
 
-    running_ids = [r["databaseId"] for r in runs
+    running_ids = [r["databaseId"] for r in workflow_runs
                    if r.get("status") in RUNNING_STATUSES]
     completed_all = [r["databaseId"] for r in runs
                      if r.get("status") == "completed"]
     completed_ids = completed_all[:sample]
     sampled_ids = running_ids + completed_ids
     jobs = fetch_job_timings(repo, gh_cmd, sampled_ids, sink=sink)
-    run_wf = {r["databaseId"]: r.get("workflowName", "?") for r in runs}
+    run_wf = {r["databaseId"]: r.get("workflowName", "?")
+              for r in workflow_runs}
     waits = analyze_waits(jobs, run_wf)
 
     print(f"  time-in-queue vs run duration (basis: jobs API over "
@@ -1013,13 +1251,16 @@ def compute_gate(repo: str, gh_cmd: str, limit: int, now: datetime | None = None
                  per_call_timeout: float = DEFAULT_GH_CALL_TIMEOUT,
                  persist_green_time: bool = False,
                  ) -> tuple[int, dict[str, object]]:
-    """Return (exit_code, fields) for the ops tick. Cheap: no jobs-API sampling.
+    """Return (exit_code, fields) for the ops tick.
 
     Unhealthy (exit 1) when any of: a workflow's queued depth >= QUEUE_DEPTH_WARN;
     max current queue age >= QUEUE_AGE_WARN_SECS; a workflow with >=
     GREEN_GATE_MIN_RUNS runs in the window has no green within GREEN_RUNS_BACK_WARN
     runs or GREEN_AGE_WARN_SECS; or the self-hosted lane is the active binding
-    constraint. Every emitted number carries its basis in `summary`.
+    constraint; an active workflow/check-suite rollup has a complete, non-empty
+    job census whose every job is terminal; or an active rollup cannot be
+    classified from complete job evidence. Every emitted number carries its
+    basis in `summary`.
     """
     now = now or _now()
     # Derives from the local history store, so record it even when the live
@@ -1027,16 +1268,26 @@ def compute_gate(repo: str, gh_cmd: str, limit: int, now: datetime | None = None
     # create a hole in the very trend meant to expose health over time.
     green_time = green_time_field(repo, persist=persist_green_time)
     runs = fetch_runs(repo, gh_cmd, limit, sink=sink, timeout=per_call_timeout)
+    active_runs = fetch_active_runs(
+        repo, gh_cmd, limit, sink=sink, timeout=per_call_timeout,
+    )
+    active_evidence = (fetch_active_run_jobs(
+        repo, gh_cmd, active_runs, sink=sink, timeout=per_call_timeout,
+    ) if active_runs is not None else {})
     # Same admin gate as the human report: only fetch the runner inventory where
     # we administer runners, so a non-administered repo never emits a false 403.
     runner_api = (fetch_runners(repo, gh_cmd, sink=sink, timeout=per_call_timeout)
                   if repo in SELF_HOSTED_REPOS else None)
     rh = analyze_runners(runner_api)
-    if runs is None:
-        return 1, {"state": "unknown", "summary": "gh-run-list-failed",
-                   "repo": repo, "green_time": green_time}
+    if runs is None or active_runs is None:
+        failed = "gh-run-list-failed" if runs is None else "active-run-list-failed"
+        return 1, {"state": "unknown", "summary": failed,
+                   "repo": repo, "green_time": green_time,
+                   "failed_census": failed}
 
-    queues = analyze_queue(runs, now=now)
+    active_analysis = analyze_active_runs(active_runs, active_evidence)
+    workflow_runs = non_orphan_rollup_runs(runs, active_runs, active_analysis)
+    queues = analyze_queue(workflow_runs, now=now)
     greens = analyze_last_green(runs)
 
     max_depth = max((q.queued for q in queues.values()), default=0)
@@ -1071,10 +1322,21 @@ def compute_gate(repo: str, gh_cmd: str, limit: int, now: datetime | None = None
         reasons.append("stale-green " + ",".join(stale_green))
     if bc:
         reasons.append("capacity-signal")
+    orphaned = active_analysis.of_kind("orphaned-rollup")
+    indeterminate = active_analysis.of_kind("indeterminate")
+    if orphaned:
+        reasons.append(f"orphaned-rollup={len(orphaned)}")
+    if indeterminate:
+        reasons.append(f"active-run-indeterminate={len(indeterminate)}")
 
     state = "red" if reasons else "ok"
-    runners_txt = (f"total={rh.total},idle={rh.idle},pmu_idle={rh.pmu_idle}"
+    runners_txt = (f"configured={rh.total},effective_pool={rh.online},"
+                   f"busy={rh.busy},idle={rh.idle},pmu_idle={rh.pmu_idle}"
                    if rh else "unavailable")
+    runner_names = rh.names if rh is not None else set()
+    executing = active_analysis.of_kind("executing")
+    waiting = active_analysis.of_kind("waiting")
+    orphaned_terminal_jobs = sum(f.terminal_jobs for f in orphaned)
     fields = {
         "state": state,
         "repo": repo,
@@ -1084,13 +1346,35 @@ def compute_gate(repo: str, gh_cmd: str, limit: int, now: datetime | None = None
         "stale_green": ",".join(stale_green) or "none",
         "binding_constraint": bc or "none",
         "runners": runners_txt,
+        "active_run_rollups": len(active_runs),
+        "executing_runs": len(executing),
+        "runner_bound_active_jobs": active_analysis.executing_jobs,
+        "selfhosted_runner_bound_jobs": (
+            active_analysis.selfhosted_executing_jobs(runner_names)
+        ),
+        "waiting_runs": len(waiting),
+        "orphaned_rollups": len(orphaned),
+        "orphaned_run_ids": ",".join(str(f.run_id) for f in orphaned) or "none",
+        "orphaned_job_counts": (
+            ",".join(f"{f.run_id}:{f.terminal_jobs}/{f.total_jobs}"
+                     for f in orphaned) or "none"
+        ),
+        "orphaned_terminal_jobs": orphaned_terminal_jobs,
+        "indeterminate_active_runs": len(indeterminate),
         # Headline INTEGRAL, reported alongside the instantaneous queue state so a
         # tick shows both "green right now?" and "green over time?". Derived from
         # the local history store; does NOT affect the gate exit code.
         "green_time": green_time,
         "summary": (f"depth<= {max_depth}, age<= {humanize_secs(max_age)}, "
+                    f"active={len(active_runs)} executing={len(executing)} "
+                    f"runner-bound-jobs={active_analysis.executing_jobs} "
+                    f"orphaned={len(orphaned)} rollups/"
+                    f"{orphaned_terminal_jobs} terminal-jobs "
+                    f"excluded-from-running, "
                     f"reasons=[{'; '.join(reasons) or 'none'}] "
-                    f"(basis: last {len(runs)} runs; queue age=now-createdAt)"),
+                    f"(basis: last {len(runs)} runs + explicit active census "
+                    f"and jobs; capacity=live runner API; "
+                    f"queue age=now-createdAt)"),
     }
     return (1 if reasons else 0), fields
 
@@ -1165,7 +1449,7 @@ def main(argv=None) -> int:
                         "and peak-concurrency figures (default 24)")
     p.add_argument("--gate", action="store_true",
                    help="emit key=value tick fields; exit 1 when unhealthy "
-                        "(no jobs-API sampling)")
+                        "(active-run jobs are checked for execution binding)")
     p.add_argument("--gh", default=None,
                    help="gh command (default: $GH or 'with-proxy gh')")
     args = p.parse_args(argv)

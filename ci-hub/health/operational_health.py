@@ -110,13 +110,15 @@ def pr_gate_repo_budget(
     # the inner deadline and reach tick-hub's otherwise-unlabelled 30s kill.
     return max(0.0, left - floor * max(0, repos_remaining_after_this))
 # Per-gh-call bound for the auto-invoked CI queue-health gate, same rationale as
-# the PR gate above: the gate makes at most two gh calls (run-list + runners API)
-# per repo, so 12s each keeps a single default-repo tick to ~24s worst case,
-# under tick-hub's 30s guillotine. On expiry queue_health classifies an UPSTREAM
+# the PR gate above. The queue gate now has three serial metadata phases
+# (recent-run list, active-run list, runners API) plus one bounded concurrent
+# active-jobs phase. At 6s each its worst-case wall bound is ~24s, under
+# tick-hub's 30s guillotine. On expiry queue_health classifies an UPSTREAM
 # timeout ("GitHub slow") rather than being hard-killed into a bare failure that
-# reads as "ci-hub broken".
+# reads as "ci-hub broken". Job calls are concurrent, so the bound does not grow
+# with the number of active rollups.
 DEFAULT_QUEUE_GATE_TIMEOUT_SECS = float(
-    os.environ.get("CI_HUB_QUEUE_GATE_TIMEOUT", "12")
+    os.environ.get("CI_HUB_QUEUE_GATE_TIMEOUT", "6")
 )
 # The semantic check makes several GitHub calls. Keep the whole verdict inside
 # tick-hub's 30s subprocess guillotine so a slow upstream is reported as

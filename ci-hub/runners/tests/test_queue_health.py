@@ -48,6 +48,69 @@ class QueueDepthTests(unittest.TestCase):
         self.assertAlmostEqual(q["portable"].median_age, 10 * 60, delta=60 * 30 + 1)
 
 
+class ActiveRunBindingTests(unittest.TestCase):
+    def test_runner_bound_nonterminal_job_counts_as_execution(self) -> None:
+        active = [run("Portable", "in_progress", rid=101)]
+        evidence = {101: qh.RunJobEvidence(
+            jobs=[{"status": "in_progress", "runner_id": 7,
+                   "runner_name": "hermit-ci-newton"}],
+            complete=True,
+            total_count=1,
+        )}
+        analysis = qh.analyze_active_runs(active, evidence)
+
+        self.assertEqual(len(analysis.of_kind("executing")), 1)
+        self.assertEqual(analysis.executing_jobs, 1)
+        self.assertEqual(
+            analysis.selfhosted_executing_jobs({"hermit-ci-newton"}), 1)
+        effective = qh.non_orphan_rollup_runs([], active, analysis)
+        self.assertEqual(len(effective), 1)
+        self.assertEqual(qh.analyze_queue(effective, NOW)["Portable"].running, 1)
+
+    def test_all_terminal_jobs_alarm_and_exclude_rollup(self) -> None:
+        active = [run("Portable auto-retry", "in_progress", rid=202)]
+        evidence = {202: qh.RunJobEvidence(
+            jobs=[
+                {"status": "completed", "conclusion": "success",
+                 "runner_id": 7, "runner_name": "hermit-ci-newton"},
+                {"status": "completed", "conclusion": "skipped",
+                 "runner_id": None, "runner_name": None},
+            ],
+            complete=True,
+            total_count=2,
+        )}
+        analysis = qh.analyze_active_runs(active, evidence)
+
+        orphaned = analysis.of_kind("orphaned-rollup")
+        self.assertEqual(len(orphaned), 1)
+        self.assertEqual((orphaned[0].total_jobs, orphaned[0].terminal_jobs),
+                         (2, 2))
+        self.assertEqual(analysis.executing_jobs, 0)
+        effective = qh.non_orphan_rollup_runs(active, active, analysis)
+        self.assertEqual(len(effective), 0)
+        self.assertEqual(qh.analyze_queue(effective, NOW), {})
+
+    def test_empty_job_list_is_waiting_not_orphaned(self) -> None:
+        active = [run("Queued rollup", "in_progress", rid=303)]
+        evidence = {303: qh.RunJobEvidence(
+            jobs=[], complete=True, total_count=0,
+        )}
+        analysis = qh.analyze_active_runs(active, evidence)
+        self.assertEqual(len(analysis.of_kind("waiting")), 1)
+        self.assertEqual(len(analysis.of_kind("orphaned-rollup")), 0)
+
+    def test_incomplete_job_census_is_indeterminate_not_orphaned(self) -> None:
+        active = [run("Large rollup", "in_progress", rid=404)]
+        evidence = {404: qh.RunJobEvidence(
+            jobs=[{"status": "completed"}],
+            complete=False,
+            total_count=101,
+        )}
+        analysis = qh.analyze_active_runs(active, evidence)
+        self.assertEqual(len(analysis.of_kind("indeterminate")), 1)
+        self.assertEqual(len(analysis.of_kind("orphaned-rollup")), 0)
+
+
 class LastGreenTests(unittest.TestCase):
     def test_runs_back_counts_from_newest(self) -> None:
         # newest-first: red, red, green, red  -> green is 2 runs back.
@@ -256,11 +319,16 @@ class MergeGateClassifyTests(unittest.TestCase):
 
 
 class GateTests(unittest.TestCase):
-    def _patch(self, runs, api):
+    def _patch(self, runs, api, active=None, evidence=None):
         self.addCleanup(setattr, qh, "fetch_runs", qh.fetch_runs)
         self.addCleanup(setattr, qh, "fetch_runners", qh.fetch_runners)
+        self.addCleanup(setattr, qh, "fetch_active_runs", qh.fetch_active_runs)
+        self.addCleanup(setattr, qh, "fetch_active_run_jobs",
+                        qh.fetch_active_run_jobs)
         qh.fetch_runs = lambda *a, **k: runs
         qh.fetch_runners = lambda *a, **k: api
+        qh.fetch_active_runs = lambda *a, **k: ([] if active is None else active)
+        qh.fetch_active_run_jobs = lambda *a, **k: (evidence or {})
 
     def test_deep_queue_trips_gate(self) -> None:
         runs = [run("portable", "queued", created_min_ago=5, rid=i)
@@ -287,6 +355,44 @@ class GateTests(unittest.TestCase):
         code, fields = qh.compute_gate("r", "gh", 100, now=NOW)
         self.assertEqual(code, 0)
         self.assertEqual(fields["state"], "ok")
+
+    def test_orphaned_rollup_trips_gate_and_is_excluded(self) -> None:
+        orphan = run("Portable auto-retry", "in_progress", rid=202)
+        jobs = {202: qh.RunJobEvidence(
+            jobs=[{"status": "completed", "conclusion": "skipped"}],
+            complete=True,
+            total_count=1,
+        )}
+        self._patch([orphan], None, active=[orphan], evidence=jobs)
+        code, fields = qh.compute_gate("r", "gh", 100, now=NOW)
+        self.assertEqual(code, 1)
+        self.assertEqual(fields["orphaned_rollups"], 1)
+        self.assertEqual(fields["orphaned_run_ids"], "202")
+        self.assertEqual(fields["orphaned_job_counts"], "202:1/1")
+        self.assertEqual(fields["orphaned_terminal_jobs"], 1)
+        self.assertEqual(fields["executing_runs"], 0)
+        self.assertEqual(fields["max_queue_depth"], 0)
+        self.assertIn("orphaned-rollup=1", fields["summary"])
+
+    def test_bound_execution_counts_without_orphan_alarm(self) -> None:
+        executing = run("Portable", "in_progress", rid=101)
+        jobs = {101: qh.RunJobEvidence(
+            jobs=[{"status": "in_progress", "runner_id": 7,
+                   "runner_name": "hermit-ci-newton"}],
+            complete=True,
+            total_count=1,
+        )}
+        api = {"total_count": 1, "runners": [{
+            "name": "hermit-ci-newton", "status": "online", "busy": True,
+            "labels": [],
+        }]}
+        self._patch([executing], api, active=[executing], evidence=jobs)
+        code, fields = qh.compute_gate("rrnewton/hermit", "gh", 100, now=NOW)
+        self.assertEqual(code, 0)
+        self.assertEqual(fields["orphaned_rollups"], 0)
+        self.assertEqual(fields["executing_runs"], 1)
+        self.assertEqual(fields["runner_bound_active_jobs"], 1)
+        self.assertEqual(fields["selfhosted_runner_bound_jobs"], 1)
 
     def test_regular_gate_persists_green_time_observation(self) -> None:
         calls = []
@@ -396,9 +502,14 @@ class SelfHostedSkipTests(unittest.TestCase):
     def _patch(self, runs):
         self.addCleanup(setattr, qh, "fetch_runs", qh.fetch_runs)
         self.addCleanup(setattr, qh, "fetch_runners", qh.fetch_runners)
+        self.addCleanup(setattr, qh, "fetch_active_runs", qh.fetch_active_runs)
+        self.addCleanup(setattr, qh, "fetch_active_run_jobs",
+                        qh.fetch_active_run_jobs)
         self.calls = []
         qh.fetch_runs = lambda *a, **k: runs
         qh.fetch_runners = lambda *a, **k: self.calls.append(a) or None
+        qh.fetch_active_runs = lambda *a, **k: []
+        qh.fetch_active_run_jobs = lambda *a, **k: {}
 
     def test_non_administered_repo_skips_runner_fetch(self) -> None:
         self._patch([run("CI", "completed", "success", rid=1)])
@@ -418,6 +529,9 @@ class SelfHostedSkipTests(unittest.TestCase):
         # Even on a non-admin repo, a run-list auth failure is a real, visible
         # ci-hub-broken failure — it is the core signal, not the admin-only one.
         self.addCleanup(setattr, qh, "fetch_runs", qh.fetch_runs)
+        self.addCleanup(setattr, qh, "fetch_active_runs", qh.fetch_active_runs)
+        self.addCleanup(setattr, qh, "fetch_active_run_jobs",
+                        qh.fetch_active_run_jobs)
 
         def failing_runs(repo, gh_cmd, limit, sink=None):
             if sink is not None:
@@ -425,6 +539,8 @@ class SelfHostedSkipTests(unittest.TestCase):
                                             "HTTP 403"))
             return None
         qh.fetch_runs = failing_runs
+        qh.fetch_active_runs = lambda *a, **k: []
+        qh.fetch_active_run_jobs = lambda *a, **k: {}
         sink: list = []
         qh.report_repo("facebookexperimental/hermit", "gh", 10, 0, 24.0,
                        sink=sink)
