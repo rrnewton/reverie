@@ -14,6 +14,10 @@ use chrono::{Local, TimeZone};
 use clap::{Args, Subcommand, ValueEnum};
 use fs2::FileExt;
 use serde::Serialize;
+#[cfg(test)]
+use std::cell::RefCell;
+#[cfg(test)]
+use std::collections::VecDeque;
 use std::env;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -67,6 +71,13 @@ const REFUSED_EXIT_CODE: i32 = 3;
 const CHILD_TERM_GRACE_SECONDS: u64 = 5;
 /// Interval at which `run` polls a live child for completion or deadline breach.
 const CHILD_POLL_MILLIS: u64 = 500;
+/// A completed child can leave a transient systemd/helper process in its
+/// numeric process group after the subreaper census is already complete. Give
+/// that *empty* census a short, bounded stabilization window. A live,
+/// incomplete, or unreadable domain still quarantines; this is never a signal
+/// or preemption path.
+const EMPTY_DOMAIN_SETTLE_SECONDS: u64 = CHILD_TERM_GRACE_SECONDS;
+const EMPTY_DOMAIN_SETTLE_POLL_MILLIS: u64 = 20;
 /// Exit code reported when admission REFUSES a validate whose head predates an
 /// immutable fixed floor. Same 3 as an ownership refusal: a refusal, not a
 /// crash. Mutable-tip currency belongs only at the final merge boundary.
@@ -1425,6 +1436,132 @@ fn anchor_token(name: &str, value: &str) -> Result<(), ValidateLockError> {
     Ok(())
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum OriginalProcessGroupState {
+    /// The recorded payload group is absent. This also covers a numeric PGID
+    /// that the kernel has already reused for a different leader generation:
+    /// reuse is possible only after the original group ceased to exist.
+    Absent(String),
+    /// The recorded group is still populated by the original generation, or
+    /// persists leaderless. Either case remains executable payload ownership.
+    Active(String),
+    /// The group probe or its generation binding could not be verified.
+    Unknown(String),
+}
+
+fn classify_existing_process_group(
+    pgid: u32,
+    original_leader: &ProcessIdentity,
+    current_leader_start: io::Result<u64>,
+) -> OriginalProcessGroupState {
+    match current_leader_start {
+        Ok(start_ticks) if start_ticks == original_leader.start_ticks => {
+            OriginalProcessGroupState::Active(format!(
+                "payload process group {pgid} retains its exact leader generation {pgid}@{start_ticks}"
+            ))
+        }
+        Ok(start_ticks) => OriginalProcessGroupState::Absent(format!(
+            "numeric process group {pgid} was reused by leader {pgid}@{start_ticks}; original leader was {}@{}",
+            original_leader.pid, original_leader.start_ticks
+        )),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            // `kill(-pgid, 0)` succeeded but there is no PID equal to the PGID.
+            // Linux permits an original group to persist after its leader exits
+            // while other members remain. Never reinterpret that as reuse.
+            OriginalProcessGroupState::Active(format!(
+                "payload process group {pgid} remains populated without a readable group leader"
+            ))
+        }
+        Err(source) => OriginalProcessGroupState::Unknown(format!(
+            "payload process group {pgid} is present but leader generation is unreadable: {source}"
+        )),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Exact, per-test-thread group observations for the zero-residual race.
+    /// Production never consults this queue. The process-domain test guard
+    /// serializes every test that sets it.
+    static ORIGINAL_GROUP_TEST_STATES: RefCell<VecDeque<OriginalProcessGroupState>> =
+        const { RefCell::new(VecDeque::new()) };
+}
+
+fn original_process_group_state(
+    pgid: u32,
+    original_leader: &ProcessIdentity,
+) -> OriginalProcessGroupState {
+    #[cfg(test)]
+    if let Some(state) = ORIGINAL_GROUP_TEST_STATES.with(|states| states.borrow_mut().pop_front()) {
+        return state;
+    }
+
+    if !process_group_exists(pgid) {
+        return OriginalProcessGroupState::Absent(format!(
+            "payload process group {pgid} is absent"
+        ));
+    }
+    classify_existing_process_group(pgid, original_leader, process_start_ticks(pgid))
+}
+
+#[cfg(test)]
+struct OriginalGroupTestStatesGuard;
+
+#[cfg(test)]
+impl OriginalGroupTestStatesGuard {
+    fn install(states: impl IntoIterator<Item = OriginalProcessGroupState>) -> Self {
+        ORIGINAL_GROUP_TEST_STATES.with(|queue| {
+            let mut queue = queue.borrow_mut();
+            assert!(queue.is_empty(), "nested original-group test override");
+            queue.extend(states);
+        });
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for OriginalGroupTestStatesGuard {
+    fn drop(&mut self) {
+        ORIGINAL_GROUP_TEST_STATES.with(|states| states.borrow_mut().clear());
+    }
+}
+
+#[derive(Debug)]
+enum RunCleanupFinalization {
+    Released,
+    Quarantined {
+        residual_count: usize,
+        domain_complete: bool,
+        group: OriginalProcessGroupState,
+    },
+}
+
+fn settle_empty_payload_domain(
+    supervisor_pid: u32,
+    pgid: u32,
+    leader: &ProcessIdentity,
+    mut capture: ResidualCapture,
+) -> ResidualCapture {
+    let deadline = Instant::now() + Duration::from_secs(EMPTY_DOMAIN_SETTLE_SECONDS);
+    while capture.complete && capture.identities.is_empty() {
+        if matches!(
+            original_process_group_state(pgid, leader),
+            OriginalProcessGroupState::Absent(_)
+        ) {
+            return capture;
+        }
+        if Instant::now() >= deadline {
+            return capture;
+        }
+        thread::sleep(Duration::from_millis(EMPTY_DOMAIN_SETTLE_POLL_MILLIS));
+        // Repeat the *whole* census, not merely the PGID probe. A helper that
+        // becomes visible during the grace window must turn into an exact
+        // residual and quarantine; waiting may never erase live ownership.
+        capture = capture_and_freeze_residuals(supervisor_pid);
+    }
+    capture
+}
+
 struct ValidateLock {
     paths: LockPaths,
 }
@@ -2215,26 +2352,82 @@ impl ValidateLock {
         })
     }
 
-    fn record_residuals(
+    /// Finalize the supervisor's census under the same guard that owns the
+    /// durable cleanup authority. A complete empty descendant census is not by
+    /// itself enough: the original process group must also be generation-bound
+    /// absent. Conversely, a different process now using the same numeric PGID
+    /// is proof that the original group ended, not ownership by this run.
+    fn finalize_run_census(
         &self,
         agent: &str,
         kind: Kind,
         target: &str,
+        leader: &ProcessIdentity,
         pgid: u32,
         capture: ResidualCapture,
-    ) -> Result<(), ValidateLockError> {
-        self.transition_run_cleanup(
-            agent,
-            kind,
-            target,
-            |phase| matches!(phase, CleanupPhase::CensusPending { .. }),
-            CleanupPhase::Residual {
+    ) -> Result<RunCleanupFinalization, ValidateLockError> {
+        self.with_guard(|| {
+            let holder = self.read_holder()?.ok_or_else(|| {
+                ValidateLockError::InvalidState("cleanup finalization has no lock holder".into())
+            })?;
+            if holder.agent != agent || holder.kind != kind.as_str() || holder.target != target {
+                return Err(ValidateLockError::InvalidState(
+                    "cleanup finalization does not match the current operation".into(),
+                ));
+            }
+            let mut record = match self.cleanup_verification(Some(&holder)) {
+                CleanupVerification::Armed { record, .. }
+                | CleanupVerification::Active { record, .. }
+                | CleanupVerification::Uncensused { record, .. }
+                | CleanupVerification::Recoverable { record, .. } => record,
+                CleanupVerification::None => {
+                    return Err(ValidateLockError::InvalidState(
+                        "cleanup finalization has no durable authority".into(),
+                    ))
+                }
+                CleanupVerification::Unknown { reason, .. } => {
+                    return Err(ValidateLockError::CleanupQuarantined(format!(
+                        "cannot finalize unverifiable authority: {reason}"
+                    )))
+                }
+            };
+            match &record.phase {
+                CleanupPhase::CensusPending {
+                    leader: recorded_leader,
+                    pgid: recorded_pgid,
+                } if recorded_leader == leader && *recorded_pgid == pgid => {}
+                phase => {
+                    return Err(ValidateLockError::InvalidState(format!(
+                        "cleanup finalization rejected phase {phase:?}"
+                    )))
+                }
+            }
+
+            let group = original_process_group_state(pgid, leader);
+            if capture.complete
+                && capture.identities.is_empty()
+                && matches!(group, OriginalProcessGroupState::Absent(_))
+            {
+                remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.anchor)
+                    .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
+                return Ok(RunCleanupFinalization::Released);
+            }
+
+            let residual_count = capture.identities.len();
+            let domain_complete = capture.complete;
+            record.phase = CleanupPhase::Residual {
                 pgid,
-                domain_complete: capture.complete,
+                domain_complete,
                 residuals: capture.identities,
-            },
-            None,
-        )
+            };
+            write_cleanup_record(&self.paths.cleanup, &record)
+                .map_err(|source| io_error("write", &self.paths.cleanup, source))?;
+            Ok(RunCleanupFinalization::Quarantined {
+                residual_count,
+                domain_complete,
+                group,
+            })
+        })
     }
 
     fn begin_run_census(
@@ -2255,39 +2448,6 @@ impl ValidateLock {
             },
             None,
         )
-    }
-
-    fn clear_proven_run(
-        &self,
-        agent: &str,
-        kind: Kind,
-        target: &str,
-        pgid: u32,
-    ) -> Result<(), ValidateLockError> {
-        self.record_residuals(
-            agent,
-            kind,
-            target,
-            pgid,
-            ResidualCapture {
-                complete: true,
-                identities: Vec::new(),
-            },
-        )?;
-        self.with_guard(|| {
-            let holder = self.read_holder()?.ok_or_else(|| {
-                ValidateLockError::InvalidState("cleanup clear has no lock holder".into())
-            })?;
-            match self.cleanup_verification(Some(&holder)) {
-                CleanupVerification::Recoverable { .. } => {
-                    remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.anchor)
-                        .map_err(|source| io_error("remove", &self.paths.cleanup, source))
-                }
-                other => Err(ValidateLockError::InvalidState(format!(
-                    "cleanup clear requires proven absence, got {other:?}"
-                ))),
-            }
-        })
     }
 
     fn renew_run_lease(
@@ -3899,17 +4059,43 @@ impl ValidateLock {
         let _ = heartbeat.join();
         reap_exited_children();
         let pgid = outcome.pgid();
-        let capture = capture_and_freeze_residuals(std::process::id());
-        let domain_empty =
-            !process_group_exists(pgid) && capture.complete && capture.identities.is_empty();
-        if !domain_empty {
-            let residual_count = capture.identities.len();
-            self.record_residuals(&args.agent, args.kind, &args.target, pgid, capture)?;
-            return Err(ValidateLockError::CleanupQuarantined(format!(
-                "completed process group {pgid} did not yield an empty payload domain; {residual_count} exact residual identities recorded and lock retained"
-            )));
+        let capture = settle_empty_payload_domain(
+            std::process::id(),
+            pgid,
+            &gated.leader,
+            capture_and_freeze_residuals(std::process::id()),
+        );
+        match self.finalize_run_census(
+            &args.agent,
+            args.kind,
+            &args.target,
+            &gated.leader,
+            pgid,
+            capture,
+        )? {
+            RunCleanupFinalization::Released => {}
+            RunCleanupFinalization::Quarantined {
+                residual_count,
+                domain_complete,
+                group,
+            } => {
+                let group = match group {
+                    OriginalProcessGroupState::Absent(reason) => {
+                        format!("original group absent ({reason})")
+                    }
+                    OriginalProcessGroupState::Active(reason) => {
+                        format!("original group active ({reason})")
+                    }
+                    OriginalProcessGroupState::Unknown(reason) => {
+                        format!("original group UNKNOWN ({reason})")
+                    }
+                };
+                return Err(ValidateLockError::CleanupQuarantined(format!(
+                    "completed process group {pgid} did not yield a proven-empty payload domain after a bounded {}s settle; domain_complete={domain_complete}; {residual_count} exact residual identities recorded; {group}; lock retained",
+                    EMPTY_DOMAIN_SETTLE_SECONDS
+                )));
+            }
         }
-        self.clear_proven_run(&args.agent, args.kind, &args.target, pgid)?;
         self.release(&args.agent, true)?;
         match outcome {
             ChildOutcome::Exited { status, pgid } => {
@@ -6230,6 +6416,95 @@ while :; do sleep 60; done
         let _ = fs::remove_dir_all(&root);
     }
 
+    #[test]
+    fn process_group_generation_distinguishes_reuse_from_live_or_unknown() {
+        let original = ProcessIdentity {
+            pid: 4242,
+            start_ticks: 100,
+        };
+        assert!(matches!(
+            classify_existing_process_group(4242, &original, Ok(101)),
+            OriginalProcessGroupState::Absent(reason) if reason.contains("reused")
+        ));
+        assert!(matches!(
+            classify_existing_process_group(
+                4242,
+                &original,
+                Err(io::Error::from(io::ErrorKind::NotFound)),
+            ),
+            OriginalProcessGroupState::Active(reason) if reason.contains("without a readable group leader")
+        ));
+        assert!(matches!(
+            classify_existing_process_group(
+                4242,
+                &original,
+                Err(io::Error::from(io::ErrorKind::PermissionDenied)),
+            ),
+            OriginalProcessGroupState::Unknown(reason) if reason.contains("unreadable")
+        ));
+    }
+
+    /// POSITIVE ZERO-RESIDUAL BRACKET. The completed child leaves no exact
+    /// descendants, while the first PGID sample still reports a transient live
+    /// group — the exact production state from #2127. The bounded re-census
+    /// observes it drain, releases both authorities, and the next validate is
+    /// admitted. Without the stabilization loop the first run quarantines.
+    #[test]
+    fn zero_residual_transient_group_releases_and_immediately_readmits() {
+        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let stub = write_stub("zero-residual-admit", "#!/bin/sh\necho OK\nexit 0\n");
+        env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
+
+        let paths = temp_paths("zero-residual-readmit");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let run_args = |agent: &str| RunArgs {
+            agent: agent.into(),
+            kind: Kind::Validate,
+            target: HEX_SHA.into(),
+            run_record: None,
+            no_wait: false,
+            wait: 0,
+            hold: 30,
+            child_deadline: 30,
+            max: 1,
+            skip_base_check: false,
+            child: vec![OsString::from("/bin/true")],
+        };
+
+        let transient = OriginalGroupTestStatesGuard::install([
+            OriginalProcessGroupState::Active("fixture transient group".into()),
+            OriginalProcessGroupState::Absent("fixture group drained".into()),
+        ]);
+        assert_eq!(lock.run(run_args("zero-residual-green"), &root).unwrap(), 0);
+        drop(transient);
+        assert!(lock.read_holder().unwrap().is_none());
+        assert!(!paths.cleanup.exists());
+
+        let released = ReleaseRecord::parse(&fs::read_to_string(&paths.released).unwrap()).unwrap();
+        let admitted_at = loop {
+            let now = epoch_seconds().unwrap();
+            if now > released.released_at {
+                break now;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        seed_owner_watch_cursor(&paths, released.released_at, Some(admitted_at));
+        assert_eq!(
+            lock.run(run_args("post-zero-residual-green"), &root)
+                .unwrap(),
+            0
+        );
+        assert!(lock.read_holder().unwrap().is_none());
+
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        let _ = fs::remove_file(&stub);
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// POSITIVE PROTOCOL BRACKET: the supervised leader deliberately exits
     /// while leaving one already-exited child adopted by the subreaper. That
     /// zombie is completion bookkeeping, not executable payload ownership;
@@ -6383,10 +6658,16 @@ wait
             CleanupVerification::Active { .. }
         ));
 
+        let held_before = fs::read(&paths.lock).unwrap();
+        let owner_before = fs::read(&paths.owner).unwrap();
+        let cleanup_before = fs::read(&paths.cleanup).unwrap();
         assert!(matches!(
             lock.acquire("replacement-validate", Kind::Validate, "sha-next", 0, 30),
             Err(ValidateLockError::CleanupQuarantined(_))
         ));
+        assert_eq!(fs::read(&paths.lock).unwrap(), held_before);
+        assert_eq!(fs::read(&paths.owner).unwrap(), owner_before);
+        assert_eq!(fs::read(&paths.cleanup).unwrap(), cleanup_before);
         assert!(matches!(
             lock.renew("escaped-validate", 30, false),
             Err(ValidateLockError::CleanupQuarantined(_))
