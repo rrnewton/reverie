@@ -996,22 +996,28 @@ impl Drop for WaitGuard {
 
 #[cfg(test)]
 mod tests {
-    use nix::sys::signal::Signal;
-
     use super::*;
 
+    /// A panic in the container's child callback must be reported as a clean
+    /// exit, not as a signal death.
+    ///
+    /// This assertion used to require `Signaled(SIGABRT)`, which recorded the
+    /// old behaviour rather than the intended one: the callback runs on an
+    /// `extern "C"` trampoline frame, a panic unwinding across it hit
+    /// `panic_cannot_unwind`, and the child died by `abort()`. The parent then
+    /// saw only an opaque signal death, which is a hard, non-retryable crash.
+    ///
+    /// `clone_with_stack` now catches the unwind and exits `101`, the
+    /// conventional Rust panic exit code, so the parent can classify and retry
+    /// it. `101` is asserted exactly, not as "any clean exit": the point is
+    /// that the panic is *reported*, and a container that exited `0` after
+    /// panicking would be a worse bug than the abort this replaces.
     #[test]
     fn can_panic() {
         let result = Container::new().run::<_, ()>(|| panic!());
         assert!(
-            matches!(
-                result,
-                Err(RunError::ExitStatus(ExitStatus::Signaled(
-                    Signal::SIGABRT,
-                    _
-                )))
-            ),
-            "Expected Err(ExitStatus(Signaled(SIGABRT, _))), got {:?}",
+            matches!(result, Err(RunError::ExitStatus(ExitStatus::Exited(101)))),
+            "Expected Err(ExitStatus(Exited(101))), got {:?}",
             result
         );
     }
