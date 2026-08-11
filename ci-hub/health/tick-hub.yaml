@@ -20,12 +20,11 @@ description: |-
   orc-internal state costs an agent. Prefer DETECT-ONLY: a gate that reports a
   fact leaves the decision where the authority is.
 
-  Current roster: 13 active reminders, all passing the test above -- 9 external
-  (merge gates, GitHub main, PRs, CI queue, CI lanes, validate wall time x2,
-  owner directives), 3 local-but-ORC-invisible (unpushed parent commits, primary
-  checkout snapshot, worktree disk residue), 1 report-only resource audit
-  (agent containers). Four ORC-internal gates were removed on 2026-08-08; the
-  removal record is inline below, above `agent_container_lifecycle`.
+  Current roster: 21 active reminders; `tick-hub list` is the canonical count.
+  The ledger spool backlog joins the local-but-ORC-invisible measurements because
+  only the filesystem carries unpublished batch age. Four ORC-internal gates were
+  removed on 2026-08-08; the removal record is inline below, above
+  `agent_container_lifecycle`.
 
 reminders:
   # merge-gate-v4 is fail-closed: on a queued leg it records NO_RESULT, RE-DISPATCHES
@@ -99,6 +98,27 @@ reminders:
       fields:
         component: worktree-disk-residue
       title: "worktree slots are idle on disk and reclaimable: {summary}"
+
+  # LEDGER PUBLICATION BACKLOG. Validation events are visible locally as soon as
+  # the producer atomically admits an immutable *.jsonl spool batch, but they do
+  # not become fleet-wide landing evidence until the publisher appends them to
+  # tracked shards. From 2026-08-09 22:39 until 2026-08-11 this publication path
+  # was stalled with no alarm. A zero-row consumer could not distinguish that
+  # outage from "no validations ran". Measure the missing quantity directly:
+  # completed batch count and age of the oldest unpublished batch. DETECT ONLY;
+  # the serialized publisher remains the authority that may drain the spool.
+  - name: ledger_spool_backlog
+    cadence_secs: 900
+    gate:
+      cmd: python3 ci-hub/health/ledger_spool_backlog.py --gate
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: ledger-spool-backlog
+      title: "validation ledger publication is stalled: {summary}"
 
   # Emits ONLY a supportable verdict. Today the series cannot support one
   # (retention 3.91d < 90d; conditioning 4/26 = 15% < 90%), so this HOLDS at rc=0
