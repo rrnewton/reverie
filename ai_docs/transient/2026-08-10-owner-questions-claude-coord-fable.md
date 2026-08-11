@@ -381,6 +381,25 @@ known-stale is the correct trade. Two cheap fixes would preserve that while remo
 block: a branch write-back on the allocate/release path, or treating recorded-vs-actual branch
 drift in an *active* slot as advisory while keeping it fatal for the slot actually being cleaned.
 
+**The remedy already exists and nothing invokes it.** `allocate-worktree.rs --repair --slot SLOT`
+is documented as *"Reconcile recorded branch cells from physical checkouts"*, supports `--dry-run`,
+and is safe by construction — it is scopeable to one slot and **refuses to rewrite a cell for an
+unpublished checkout**, so it cannot record a branch nobody can fetch. It works. It is simply never
+called on a branch switch.
+
+Two further data points sharpen this:
+
+- **The obvious repair is a silent no-op.** I told two agents to re-run their allocation line — the
+  documented *adoption* move for an unbound lease. One verified it does nothing to the branch cell:
+  `allocate-worktree.rs` writes `hermit_branch` only from an explicit `--hermit-branch`, and
+  defaults it *only when the field is absent or `-`*, so an existing stale value (including the
+  literal `"detached"`) survives while the `updated` timestamp refreshes. It looks like it worked.
+  My error, but the failure mode is the tool's.
+- **Drift regenerates faster than it is repaired.** Within the hour, one row was fixed and a *new*
+  one appeared — `fix-drcache` moved to `bump/reverie-pin-3494609` doing authorized work. The count
+  stayed at two with a different composition. This is not a backlog to clear once; it is a
+  continuous function of agents working normally.
+
 Worth noting this is the same defect shape as the classification census triple (#2118) and the
 `mechanism:`-label discipline (#2116): **a recorded value that must be manually kept in sync with
 reality, with nothing enforcing the sync.** Three instances in one night suggests it is a pattern
