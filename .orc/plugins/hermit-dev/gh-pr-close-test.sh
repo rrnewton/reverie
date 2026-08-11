@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline, bidirectional bracket for gh-pr-close.  The fake gh implementation
 # cannot reach GitHub; it resolves planted PR records and validates/logs the
-# exact final close command.
+# exact attributed final close command.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -11,6 +11,9 @@ trap 'rm -rf -- "$test_tmp"' EXIT
 
 fake_log="$test_tmp/gh.log"
 fake_gh="$test_tmp/gh"
+test_who="codex-boundary"
+test_team="codex-hermit4-014"
+test_role="impl"
 
 cat >"$fake_gh" <<'FAKE'
 #!/usr/bin/env bash
@@ -40,15 +43,23 @@ if [[ "${1:-}" == "pr" && "${2:-}" == "view" ]]; then
   exit 0
 fi
 
-if [[ "${1:-}" == "pr" && "${2:-}" == "close" ]]; then
+if [[ "${1:-}" == "--who" && "${3:-}" == "--team" && \
+      "${5:-}" == "--role" && "${7:-}" == "pr" && \
+      "${8:-}" == "close" ]]; then
   printf 'CLOSE\n' >>"$FAKE_GH_LOG"
-  (($# == 7)) || { echo "fake gh: unexpected pr close argc=$#" >&2; exit 91; }
-  [[ "$3" == "${EXPECT_CLOSE_PR:?}" ]] || { echo "fake gh: wrong source PR: $3" >&2; exit 91; }
-  [[ "$4" == "--repo" && "$5" == "${EXPECT_CLOSE_REPO:?}" ]] || {
+  (($# == 13)) || { echo "fake gh: unexpected attributed pr close argc=$#" >&2; exit 91; }
+  [[ "$2" == "${EXPECT_CLOSE_WHO:?}" && \
+     "$4" == "${EXPECT_CLOSE_TEAM:?}" && \
+     "$6" == "${EXPECT_CLOSE_ROLE:?}" ]] || {
+    echo "fake gh: wrong close attribution fields: $*" >&2
+    exit 91
+  }
+  [[ "$9" == "${EXPECT_CLOSE_PR:?}" ]] || { echo "fake gh: wrong source PR: $9" >&2; exit 91; }
+  [[ "${10}" == "--repo" && "${11}" == "${EXPECT_CLOSE_REPO:?}" ]] || {
     echo "fake gh: wrong close repo/shape: $*" >&2
     exit 91
   }
-  [[ "$6" == "--comment" && "$7" == "${EXPECT_CLOSE_BODY:?}" ]] || {
+  [[ "${12}" == "--comment" && "${13}" == "${EXPECT_CLOSE_BODY:?}" ]] || {
     echo "fake gh: closing body changed" >&2
     exit 91
   }
@@ -69,6 +80,7 @@ fail=0
 reset_case() {
   : >"$fake_log"
   unset EXPECT_CLOSE_PR EXPECT_CLOSE_REPO EXPECT_CLOSE_BODY || true
+  unset EXPECT_CLOSE_WHO EXPECT_CLOSE_TEAM EXPECT_CLOSE_ROLE || true
 }
 
 close_count() {
@@ -86,12 +98,18 @@ view_count() {
 run_wrapper() {
   case "${1:-}" in
     -R|--repo|--repo=*|-R?*)
-      "$wrapper" "$@" >"$test_tmp/out" 2>"$test_tmp/err"
+      "$wrapper" --who "$test_who" --team "$test_team" --role "$test_role" \
+        "$@" >"$test_tmp/out" 2>"$test_tmp/err"
       ;;
     *)
-      "$wrapper" --repo rrnewton/hermit "$@" >"$test_tmp/out" 2>"$test_tmp/err"
+      "$wrapper" --who "$test_who" --team "$test_team" --role "$test_role" \
+        --repo rrnewton/hermit "$@" >"$test_tmp/out" 2>"$test_tmp/err"
       ;;
   esac
+}
+
+run_wrapper_raw() {
+  "$wrapper" --repo rrnewton/hermit "$@" >"$test_tmp/out" 2>"$test_tmp/err"
 }
 
 record_pass() {
@@ -116,7 +134,7 @@ expect_refused() {
     sed 's/^/    /' "$test_tmp/err"
     return
   fi
-  if ! grep -qF "$want" "$test_tmp/err"; then
+  if ! grep -qF -- "$want" "$test_tmp/err"; then
     record_fail "$name" "refusal did not cite '$want'"
     sed 's/^/    /' "$test_tmp/err"
     return
@@ -127,6 +145,31 @@ expect_refused() {
     return
   fi
   record_pass "$name" "refused before close; cited '$want'"
+}
+
+expect_usage_raw() {
+  local name="$1"
+  local want="$2"
+  shift 2
+  reset_case
+  local rc=0
+  run_wrapper_raw "$@" || rc=$?
+  if ((rc != 3)); then
+    record_fail "$name" "expected usage exit 3, got $rc"
+    sed 's/^/    /' "$test_tmp/err"
+    return
+  fi
+  if ! grep -qF -- "$want" "$test_tmp/err"; then
+    record_fail "$name" "usage error did not cite '$want'"
+    sed 's/^/    /' "$test_tmp/err"
+    return
+  fi
+  if [[ "$(close_count)" != "0" || "$(view_count)" != "0" ]]; then
+    record_fail "$name" "identity usage error reached fake gh"
+    sed 's/^/    /' "$fake_log"
+    return
+  fi
+  record_pass "$name" "rejected before lookup/close; cited '$want'"
 }
 
 expect_allowed_dry() {
@@ -140,7 +183,7 @@ expect_allowed_dry() {
     sed 's/^/    /' "$test_tmp/err"
     return
   fi
-  if ! grep -qF "$want" "$test_tmp/out"; then
+  if ! grep -qF -- "$want" "$test_tmp/out"; then
     record_fail "$name" "verdict did not contain '$want'"
     sed 's/^/    /' "$test_tmp/out"
     return
@@ -167,6 +210,9 @@ expect_fake_close() {
   export EXPECT_CLOSE_PR="$source_pr"
   export EXPECT_CLOSE_REPO="rrnewton/hermit"
   export EXPECT_CLOSE_BODY="$body"
+  export EXPECT_CLOSE_WHO="$test_who"
+  export EXPECT_CLOSE_TEAM="$test_team"
+  export EXPECT_CLOSE_ROLE="$test_role"
   if ! run_wrapper "$source_pr" "$@"; then
     record_fail "$name" "qualifying close did not reach the exact fake command"
     sed 's/^/    /' "$test_tmp/err"
@@ -184,6 +230,20 @@ expect_fake_close() {
   fi
   record_pass "$name" "issued $expected_views bound lookup(s) and one byte-checked fake close"
 }
+
+# Caller attribution is mandatory even though a dry run never reaches gh.
+owner_disposition="OWNER-AUTHORIZED-CLOSE: owner requested closure."
+expect_usage_raw identity-missing-who "nonempty --who" \
+  --team "$test_team" --role "$test_role" 1635 --comment "$owner_disposition"
+expect_usage_raw identity-missing-team "nonempty --team" \
+  --who "$test_who" --role "$test_role" 1635 --comment "$owner_disposition"
+expect_usage_raw identity-missing-role "nonempty --role" \
+  --who "$test_who" --team "$test_team" 1635 --comment "$owner_disposition"
+expect_usage_raw identity-empty-who "nonempty --who" \
+  --who "" --team "$test_team" --role "$test_role" 1635 \
+  --comment "$owner_disposition"
+expect_refused identity-duplicate-who "--who was supplied more than once" 1635 \
+  --who another-agent --comment "$owner_disposition"
 
 # Original refusal bracket.
 expect_refused rule1-bare-close "(rule 1)" 1635 --comment "Closing this."

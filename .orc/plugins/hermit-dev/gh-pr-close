@@ -11,15 +11,22 @@
 # the same repository and must be a different, currently OPEN pull request.
 #
 # Usage:
-#   gh-pr-close --repo rrnewton/hermit <pr> --comment "<body>"
-#   gh-pr-close --repo rrnewton/hermit <pr> --comment-file <path>
+#   gh-pr-close --who <agent> --team <slug> --role <role> \
+#     --repo rrnewton/hermit <pr> --comment "<body>"
+#   gh-pr-close --who <agent> --team <slug> --role <role> \
+#     --repo rrnewton/hermit <pr> --comment-file <path>
 #   gh-pr-close ... --dry-run
 #
 # Exit codes: 0 allowed (or dry-run allowed); 2 policy refusal; 3 usage error.
 set -euo pipefail
 
 readonly DEFAULT_HTTPS_PROXY="http://fwdproxy:8080"
-readonly GH_COMMAND="${GH_BIN:-gh}"
+PLUGIN_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
+readonly PLUGIN_ROOT
+# GH_BIN remains an offline-test seam. Production crosses the fleet-aware
+# GitHub boundary, which validates these caller fields against process context
+# and mechanically attributes the closing comment.
+readonly GH_COMMAND="${GH_BIN:-$PLUGIN_ROOT/ci-hub/bin/gh}"
 readonly SELF="${0##*/}"
 
 repo="${GH_REPO:-}"
@@ -29,9 +36,15 @@ comment=""
 comment_file=""
 comment_sources=0
 dry_run=0
+who=""
+who_seen=0
+team=""
+team_seen=0
+role=""
+role_seen=0
 
 show_usage() {
-  echo "usage: $SELF --repo <owner/repo> <pr-number> (--comment TEXT | --comment-file PATH) [--dry-run]" >&2
+  echo "usage: $SELF --who AGENT --team SLUG --role ROLE --repo <owner/repo> <pr-number> (--comment TEXT | --comment-file PATH) [--dry-run]" >&2
 }
 
 die_usage() {
@@ -81,6 +94,45 @@ while (($# > 0)); do
       ;;
     --repo=*)
       set_repo "${1#*=}"
+      shift
+      ;;
+    --who)
+      (($# >= 2)) || die_usage "--who requires an agent"
+      ((who_seen == 0)) || refuse "--who was supplied more than once"
+      who="$2"
+      who_seen=1
+      shift 2
+      ;;
+    --who=*)
+      ((who_seen == 0)) || refuse "--who was supplied more than once"
+      who="${1#*=}"
+      who_seen=1
+      shift
+      ;;
+    --team)
+      (($# >= 2)) || die_usage "--team requires a slug"
+      ((team_seen == 0)) || refuse "--team was supplied more than once"
+      team="$2"
+      team_seen=1
+      shift 2
+      ;;
+    --team=*)
+      ((team_seen == 0)) || refuse "--team was supplied more than once"
+      team="${1#*=}"
+      team_seen=1
+      shift
+      ;;
+    --role)
+      (($# >= 2)) || die_usage "--role requires a role"
+      ((role_seen == 0)) || refuse "--role was supplied more than once"
+      role="$2"
+      role_seen=1
+      shift 2
+      ;;
+    --role=*)
+      ((role_seen == 0)) || refuse "--role was supplied more than once"
+      role="${1#*=}"
+      role_seen=1
       shift
       ;;
     -c|--comment)
@@ -133,6 +185,15 @@ done
 [[ -n "$pr" ]] || die_usage "a pull request number is required"
 [[ "$pr" =~ ^[1-9][0-9]*$ ]] || die_usage "pull request must be a positive integer (got: $pr)"
 ((comment_sources == 1)) || die_usage "pass exactly one of --comment or --comment-file"
+if ((who_seen != 1)) || [[ -z "$who" ]]; then
+  die_usage "pass one nonempty --who"
+fi
+if ((team_seen != 1)) || [[ -z "$team" ]]; then
+  die_usage "pass one nonempty --team"
+fi
+if ((role_seen != 1)) || [[ -z "$role" ]]; then
+  die_usage "pass one nonempty --role"
+fi
 
 if [[ -z "$repo" ]]; then
   remote="$(git config --get remote.origin.url 2>/dev/null || true)"
@@ -258,4 +319,5 @@ fi
 echo "$SELF: $verdict" >&2
 export HTTPS_PROXY="${HTTPS_PROXY:-$DEFAULT_HTTPS_PROXY}"
 unset GH_REPO
-exec "$GH_COMMAND" pr close "$pr" --repo "$repo" --comment "$comment"
+exec "$GH_COMMAND" --who "$who" --team "$team" --role "$role" \
+  pr close "$pr" --repo "$repo" --comment "$comment"
