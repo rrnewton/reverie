@@ -33,6 +33,8 @@
 mod history_queries;
 #[path = "lib/landing_lock.rs"]
 mod landing_lock;
+#[path = "lib/lease.rs"]
+mod lease;
 #[path = "lib/measured.rs"]
 mod measured;
 #[path = "lib/qualifying_receipt.rs"]

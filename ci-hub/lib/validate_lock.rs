@@ -10,6 +10,10 @@
 //! child-deadline heartbeat) mirrors `landing_lock.rs` exactly on its own files;
 //! pure, stateless helpers are reused from that module rather than re-derived.
 
+use crate::lease::{
+    self, DomainState as LeaseDomainState, HandoffState, LeaseDecision, LeaseRecord, LeaseState,
+    OwnerLiveness as LeaseOwnerLiveness,
+};
 use chrono::{Local, TimeZone};
 use clap::{Args, Subcommand, ValueEnum};
 use fs2::FileExt;
@@ -180,6 +184,9 @@ pub enum ValidateLockCommand {
     YieldStatus(YieldStatusArgs),
     /// Reclaim a lease only when its recorded owner process is proven dead.
     ReclaimDead,
+    /// Standard fail-closed stale-clear path. `reclaim-dead` is retained as a
+    /// compatibility alias; both call the same lease verifier.
+    StaleClear,
     /// Census an UNCENSUSED payload domain post-hoc, after the supervisor died
     /// before it could take one, so `reclaim-dead` can finish.
     CensusOrphanedDomain(CensusOrphanedDomainArgs),
@@ -1757,7 +1764,7 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
             debug_assert!(args.json, "clap requires --json");
             lock.print_yield_status()
         }
-        ValidateLockCommand::ReclaimDead => lock.reclaim_dead(),
+        ValidateLockCommand::ReclaimDead | ValidateLockCommand::StaleClear => lock.reclaim_dead(),
         ValidateLockCommand::CensusOrphanedDomain(args) => lock.census_orphaned_domain(args),
         ValidateLockCommand::Run(args) => lock.run(args, root),
     }
@@ -1889,6 +1896,82 @@ fn base_admission_check(
 }
 
 impl ValidateLock {
+    fn holder_lease_record(
+        &self,
+        holder: &ValidateLockState,
+    ) -> Result<LeaseRecord, ValidateLockError> {
+        let ttl = holder.expires_at.saturating_sub(holder.acquired_at);
+        let ttl_seconds = u64::try_from(ttl).map_err(|_| {
+            ValidateLockError::InvalidState("validate holder has a negative TTL".into())
+        })?;
+        let owner_generation = self
+            .read_process_owner()?
+            .map(|owner| {
+                format!(
+                    "{}:{}:{}:{}",
+                    owner.host, owner.boot_id, owner.pid, owner.start_ticks
+                )
+            })
+            .unwrap_or_else(|| "legacy-owner-unverifiable".into());
+        Ok(LeaseRecord {
+            schema_version: lease::LEASE_SCHEMA_VERSION,
+            resource: format!("validate/{}/{}", holder.kind, holder.target),
+            generation: format!(
+                "validate:{}:{}:{}:{}:{}",
+                holder.agent, holder.kind, holder.target, holder.acquired_at, holder.expires_at
+            ),
+            owner_generation,
+            issued_at: holder.acquired_at,
+            renewed_at: holder.acquired_at,
+            ttl_seconds,
+            expires_at: holder.expires_at,
+            state: LeaseState::Active,
+        })
+    }
+
+    fn holder_stale_clear_decision(
+        &self,
+        holder: &ValidateLockState,
+        now: i64,
+        cleanup: CleanupVerification,
+    ) -> Result<LeaseDecision, ValidateLockError> {
+        let mut lease = self.holder_lease_record(holder)?;
+        if !matches!(&cleanup, CleanupVerification::None) {
+            lease.state = LeaseState::Quarantined;
+        }
+        let liveness = match self.owner_liveness()? {
+            OwnerLiveness::Alive => LeaseOwnerLiveness::Alive,
+            OwnerLiveness::Dead(evidence) => LeaseOwnerLiveness::Dead { evidence },
+            OwnerLiveness::Unknown(reason) => LeaseOwnerLiveness::Unknown { reason },
+        };
+        let domain = match cleanup {
+            CleanupVerification::None => LeaseDomainState::ProvenEmpty {
+                evidence: "no supervised payload domain is registered".into(),
+            },
+            CleanupVerification::Recoverable { reason, .. } => {
+                LeaseDomainState::ProvenEmpty { evidence: reason }
+            }
+            CleanupVerification::Active { reason, .. } => {
+                LeaseDomainState::Populated { evidence: reason }
+            }
+            CleanupVerification::Armed { reason, .. }
+            | CleanupVerification::Uncensused { reason, .. }
+            | CleanupVerification::Unknown { reason, .. } => LeaseDomainState::Unproven { reason },
+        };
+        let handoff = HandoffState::complete_ephemeral(format!(
+            "validate:{}:{}:{}:{}",
+            holder.agent, holder.kind, holder.target, lease.generation
+        ));
+        Ok(lease::stale_clear(
+            &lease,
+            &lease.generation,
+            now,
+            liveness,
+            domain,
+            &handoff,
+        ))
+    }
+
     fn global_queue_path(&self) -> PathBuf {
         suffix(&self.paths.anchor, ".priority-queue")
     }
@@ -2787,26 +2870,27 @@ impl ValidateLock {
             0
         };
 
-        let dead_owner = if holder.as_ref().is_some_and(|holder| holder.live_at(now)) {
-            match self.owner_liveness()? {
-                OwnerLiveness::Dead(reason) => Some(reason),
-                OwnerLiveness::Alive | OwnerLiveness::Unknown(_) => None,
-            }
-        } else {
-            None
-        };
-        if let Some(holder) = holder
+        let clear_decision = holder
             .as_ref()
-            .filter(|holder| holder.live_at(now) && dead_owner.is_none())
-        {
-            self.write_queue(&queue)?;
-            return Ok(AcquireToken::Held {
-                agent: holder.agent.clone(),
-                kind: holder.kind.clone(),
-                target: holder.target.clone(),
-                seconds_left: holder.expires_at - now,
-                ahead: my_index,
-            });
+            .map(|holder| {
+                self.holder_stale_clear_decision(
+                    holder,
+                    now,
+                    self.cleanup_verification(Some(holder)),
+                )
+            })
+            .transpose()?;
+        if let (Some(holder), Some(decision)) = (holder.as_ref(), clear_decision.as_ref()) {
+            if !matches!(decision, LeaseDecision::Clear { .. }) {
+                self.write_queue(&queue)?;
+                return Ok(AcquireToken::Held {
+                    agent: holder.agent.clone(),
+                    kind: holder.kind.clone(),
+                    target: holder.target.clone(),
+                    seconds_left: holder.expires_at.saturating_sub(now).max(0),
+                    ahead: my_index,
+                });
+            }
         }
 
         // Only an actually free boundary is subject to the owner-watch yield.
@@ -2850,12 +2934,11 @@ impl ValidateLock {
             }
         }
 
-        let reclaimed = holder.map(|holder| {
-            if let Some(reason) = &dead_owner {
-                format!("{} (dead owner: {reason})", holder.agent)
-            } else {
-                holder.agent
+        let reclaimed = holder.map(|holder| match clear_decision {
+            Some(LeaseDecision::Clear { evidence }) => {
+                format!("{} ({evidence})", holder.agent)
             }
+            _ => holder.agent,
         });
         self.write_holder(&new_holder(agent, kind, target, hold, reclaimed.clone())?)?;
         remove_if_exists(&self.paths.owner)?;
@@ -3657,18 +3740,14 @@ impl ValidateLock {
                     }
                 };
             };
-            let attestation = match self.cleanup_verification(Some(&holder)) {
-                CleanupVerification::Armed { reason, .. }
-                | CleanupVerification::Active { reason, .. }
-                | CleanupVerification::Uncensused { reason, .. }
-                | CleanupVerification::Unknown { reason, .. } => {
-                    return Err(ValidateLockError::ReclaimNotProven(reason));
-                }
-                CleanupVerification::Recoverable { record, .. } => record.attestation,
-                CleanupVerification::None => None,
+            let cleanup = self.cleanup_verification(Some(&holder));
+            let attestation = match &cleanup {
+                CleanupVerification::Recoverable { record, .. } => record.attestation.clone(),
+                _ => None,
             };
-            match self.owner_liveness()? {
-                OwnerLiveness::Dead(reason) => {
+            let now = epoch_seconds()?;
+            match self.holder_stale_clear_decision(&holder, now, cleanup)? {
+                LeaseDecision::Clear { evidence } => {
                     self.write_release_record(
                         &format!("reclaim-dead:{}", holder.agent),
                         &holder.kind,
@@ -3679,12 +3758,9 @@ impl ValidateLock {
                     remove_if_exists(&self.paths.owner)?;
                     remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.anchor)
                         .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
-                    Ok(Some((holder.agent, holder.kind, holder.target, reason)))
+                    Ok(Some((holder.agent, holder.kind, holder.target, evidence)))
                 }
-                OwnerLiveness::Alive => Err(ValidateLockError::ReclaimNotProven(
-                    "recorded owner process is alive".into(),
-                )),
-                OwnerLiveness::Unknown(reason) => Err(ValidateLockError::ReclaimNotProven(reason)),
+                decision => Err(ValidateLockError::ReclaimNotProven(decision.to_string())),
             }
         })?;
         match reclaimed {
@@ -6120,6 +6196,65 @@ mod tests {
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
+    #[test]
+    fn expired_live_holder_is_not_replaced_during_acquire() {
+        let paths = temp_paths("expired-live-holder");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let now = epoch_seconds().unwrap();
+        let mut holder = new_holder("still-running", Kind::Validate, "sha1", 60, None).unwrap();
+        holder.acquired_at = now - 61;
+        holder.expires_at = now - 1;
+        lock.write_holder(&holder).unwrap();
+        lock.write_current_process_owner().unwrap();
+
+        let token = lock
+            .with_guard(|| lock.try_acquire("replacement", Kind::Validate, "sha2", 60))
+            .unwrap();
+        assert!(
+            matches!(token, AcquireToken::Held { ref agent, .. } if agent == "still-running"),
+            "TTL expiry is eligibility, never proof that a live holder is gone"
+        );
+        assert_eq!(
+            lock.read_holder().unwrap().unwrap().agent,
+            "still-running",
+            "mutation control: removing the live-owner refusal must fail this exact assertion"
+        );
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    #[test]
+    fn expired_dead_holder_is_reclaimed_during_acquire() {
+        let paths = temp_paths("expired-dead-holder");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let now = epoch_seconds().unwrap();
+        let mut holder = new_holder("dead-holder", Kind::Validate, "sha1", 60, None).unwrap();
+        holder.acquired_at = now - 61;
+        holder.expires_at = now - 1;
+        lock.write_holder(&holder).unwrap();
+        fs::write(
+            &paths.owner,
+            ProcessOwner {
+                host: current_host(),
+                boot_id: current_boot_id().unwrap(),
+                pid: 0,
+                start_ticks: 1,
+            }
+            .render(),
+        )
+        .unwrap();
+
+        let token = lock
+            .with_guard(|| lock.try_acquire("replacement", Kind::Validate, "sha2", 60))
+            .unwrap();
+        assert!(matches!(token, AcquireToken::AcquiredReclaimed(_)));
+        assert_eq!(lock.read_holder().unwrap().unwrap().agent, "replacement");
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
     // 4. run child-deadline kills the child quickly and releases the box.
     #[test]
     fn run_child_deadline_kills_and_releases() {
@@ -7349,9 +7484,9 @@ exit 0
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
-    // 6. A proven-dead owner is reclaimed before lease expiry.
+    // 6. A proven-dead owner is retained until TTL expiry, then reclaimed.
     #[test]
-    fn dead_owner_reclaimed() {
+    fn dead_owner_waits_for_expiry_then_reclaims() {
         let paths = temp_paths("dead-owner");
         let lock = ValidateLock {
             paths: paths.clone(),
@@ -7369,7 +7504,18 @@ exit 0
             lock.owner_liveness().unwrap(),
             OwnerLiveness::Dead(_)
         ));
-        // A replacement acquires despite the still-live lease, recording provenance.
+        // Death alone does not erase an unexpired distributed lease.
+        assert_eq!(
+            lock.acquire("replacement-validate", Kind::Validate, "sha-new", 0, 60)
+                .unwrap(),
+            1
+        );
+        assert_eq!(lock.read_holder().unwrap().unwrap().agent, "dead-validate");
+        let now = epoch_seconds().unwrap();
+        let mut expired = lock.read_holder().unwrap().unwrap();
+        expired.acquired_at = now - 61;
+        expired.expires_at = now - 1;
+        lock.write_holder(&expired).unwrap();
         assert_eq!(
             lock.acquire("replacement-validate", Kind::Validate, "sha-new", 0, 60)
                 .unwrap(),
@@ -7377,7 +7523,7 @@ exit 0
         );
         let holder = lock.read_holder().unwrap().unwrap();
         assert_eq!(holder.agent, "replacement-validate");
-        assert!(holder.reclaimed_from.unwrap().contains("dead owner"));
+        assert!(holder.reclaimed_from.unwrap().contains("owner dead"));
         lock.release("replacement-validate", false).unwrap();
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }

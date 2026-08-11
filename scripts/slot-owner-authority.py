@@ -38,7 +38,7 @@ from typing import Mapping, Sequence
 SCHEMA_VERSION = 1
 SIDECAR_SCHEMA_VERSION = 1
 SOURCES = frozenset({"orc-tmux-pane-supervisor-v1", "codex-systemd-sentinel-v1"})
-EXACT_FIELDS = frozenset(
+LEGACY_EXACT_FIELDS = frozenset(
     {
         "schema_version",
         "source",
@@ -52,6 +52,21 @@ EXACT_FIELDS = frozenset(
         "start_ticks",
         "tmux_pane_id",
         "cgroup_path",
+    }
+)
+EXACT_FIELDS = LEGACY_EXACT_FIELDS | {"lease"}
+LEASE_EXACT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "resource",
+        "generation",
+        "issued_at",
+        "renewed_at",
+        "ttl_seconds",
+        "expires_at",
+        "state",
+        "last_transition_actor",
+        "automatic_handoff",
     }
 )
 NOT_RUNNING_STATES = frozenset({"Z", "X"})
@@ -131,7 +146,7 @@ def _validated_sidecar(
     sidecar = slot_row.get("owner_sidecar")
     if not isinstance(sidecar, Mapping):
         raise ValueError("slot has no versioned owner_sidecar")
-    if frozenset(sidecar) != EXACT_FIELDS:
+    if frozenset(sidecar) not in {LEGACY_EXACT_FIELDS, EXACT_FIELDS}:
         raise ValueError("owner_sidecar field set is not schema-exact")
     if sidecar.get("schema_version") != SIDECAR_SCHEMA_VERSION:
         raise ValueError("owner_sidecar schema_version is unsupported")
@@ -159,6 +174,31 @@ def _validated_sidecar(
         raise ValueError("owner_sidecar supervisor identity is incomplete")
     if sidecar.get("generation") != f"{boot_id}:{pid}:{start_ticks}":
         raise ValueError("owner_sidecar generation does not bind its exact identity")
+    lease = sidecar.get("lease")
+    if lease is not None:
+        if not isinstance(lease, Mapping) or frozenset(lease) != LEASE_EXACT_FIELDS:
+            raise ValueError("owner_sidecar lease field set is not schema-exact")
+        ttl = lease.get("ttl_seconds")
+        issued = lease.get("issued_at")
+        renewed = lease.get("renewed_at")
+        expires = lease.get("expires_at")
+        if (
+            lease.get("schema_version") != 1
+            or lease.get("resource") != f"slot/{slot}"
+            or lease.get("generation") != sidecar.get("generation")
+            or type(ttl) is not int
+            or ttl <= 0
+            or type(issued) is not int
+            or type(renewed) is not int
+            or issued < 0
+            or renewed < issued
+            or type(expires) is not int
+            or expires != renewed + ttl
+            or lease.get("state") not in {"active", "draining", "quarantined"}
+            or not isinstance(lease.get("last_transition_actor"), str)
+            or not lease.get("last_transition_actor")
+        ):
+            raise ValueError("owner_sidecar lease is malformed or not identity-bound")
     cgroup = sidecar.get("cgroup_path")
     if not isinstance(cgroup, str) or cgroup == "/" or not cgroup.startswith("/"):
         raise ValueError("owner_sidecar cgroup path is not normalized")
@@ -211,6 +251,7 @@ def assess_state(
         "supervisor_pid": sidecar["supervisor_pid"],
         "boot_id": sidecar["boot_id"],
         "start_ticks": sidecar["start_ticks"],
+        "lease": sidecar.get("lease"),
     }
 
     def dead_if_owner_domain_empty(reason_code: str, detail: str) -> Verdict:

@@ -119,6 +119,12 @@ assert sidecar["task"] == "codex-sidecar-regression"
 assert sidecar["supervisor_pid"] == pid
 assert sidecar["start_ticks"] == start_ticks
 assert sidecar["cgroup_path"] == "/fixture/codex-fixture"
+assert sidecar["lease"]["schema_version"] == 1
+assert sidecar["lease"]["resource"] == "slot/codex-fixture"
+assert sidecar["lease"]["generation"] == sidecar["generation"]
+assert sidecar["lease"]["ttl_seconds"] > 0
+assert sidecar["lease"]["expires_at"] == sidecar["lease"]["renewed_at"] + sidecar["lease"]["ttl_seconds"]
+assert sidecar["lease"]["state"] == "active"
 assert row["coordinator_lease"]["generation"] == "fixture-generation"
 assert row["task"] == "codex-sidecar-regression"
 assert row["purpose"] == "prove existing sentinel sidecar adoption"

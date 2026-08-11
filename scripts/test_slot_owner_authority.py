@@ -57,6 +57,18 @@ def sidecar(**updates: object) -> dict[str, object]:
         "start_ticks": 456,
         "tmux_pane_id": "%7",
         "cgroup_path": "/agent.slice/a.scope",
+        "lease": {
+            "schema_version": 1,
+            "resource": "slot/slot-a",
+            "generation": "boot-a:123:456",
+            "issued_at": 100,
+            "renewed_at": 100,
+            "ttl_seconds": 30,
+            "expires_at": 130,
+            "state": "active",
+            "last_transition_actor": "agent-a",
+            "automatic_handoff": None,
+        },
     }
     value.update(updates)
     return value
@@ -127,6 +139,20 @@ class SlotOwnerAuthorityTest(unittest.TestCase):
         )
         self.assertEqual(result.state, "indeterminate")
         self.assertEqual(result.reason_code, "sidecar-invalid")
+
+    def test_malformed_or_unbound_ttl_lease_is_indeterminate(self) -> None:
+        value = sidecar()
+        value["lease"] = {**value["lease"], "generation": "another-owner"}
+        result = self.assess(state(value), stat=process_stat("S", 456))
+        self.assertEqual(result.state, "indeterminate")
+        self.assertEqual(result.reason_code, "sidecar-invalid")
+
+    def test_legacy_identity_without_ttl_remains_liveness_readable(self) -> None:
+        value = sidecar()
+        value.pop("lease")
+        result = self.assess(state(value), stat=process_stat("S", 456))
+        self.assertEqual(result.state, "alive")
+        self.assertIsNone(result.owner_identity["lease"])
 
     def test_binding_mismatch_is_indeterminate(self) -> None:
         result = self.assess(

@@ -64,6 +64,8 @@ const DEFAULT_DISK_CAP_GB: u64 = 1425;
 const SLOT_COUNT_ADVISORY: usize = 12;
 const LANGUISH_HOURS: i64 = 24;
 const OWNER_SIDECAR_SCHEMA_VERSION: u64 = 1;
+const OWNER_LEASE_SCHEMA_VERSION: u64 = 1;
+const OWNER_LEASE_TTL_SECONDS: i64 = 86_400;
 const ORC_OWNER_SIDECAR_SOURCE: &str = "orc-tmux-pane-supervisor-v1";
 const CODEX_OWNER_SIDECAR_SOURCE: &str = "codex-systemd-sentinel-v1";
 
@@ -1211,6 +1213,7 @@ fn owner_sidecar(
         return Err("slot-owner sidecar has no normalized non-root cgroup".to_string());
     }
     let generation = format!("{boot_id}:{supervisor_pid}:{start_ticks}");
+    let issued_at = epoch_now();
     Ok(json!({
         "schema_version": OWNER_SIDECAR_SCHEMA_VERSION,
         "source": source,
@@ -1224,6 +1227,18 @@ fn owner_sidecar(
         "start_ticks": start_ticks,
         "tmux_pane_id": tmux_pane_id,
         "cgroup_path": cgroup_path,
+        "lease": {
+            "schema_version": OWNER_LEASE_SCHEMA_VERSION,
+            "resource": format!("slot/{slot}"),
+            "generation": generation,
+            "issued_at": issued_at,
+            "renewed_at": issued_at,
+            "ttl_seconds": OWNER_LEASE_TTL_SECONDS,
+            "expires_at": issued_at.saturating_add(OWNER_LEASE_TTL_SECONDS),
+            "state": "active",
+            "last_transition_actor": agent,
+            "automatic_handoff": null,
+        },
     }))
 }
 
@@ -2532,5 +2547,14 @@ mod tests {
         assert_eq!(sidecar["supervisor_pid"], 123);
         assert_eq!(sidecar["start_ticks"], 456);
         assert_eq!(sidecar["generation"], "boot-a:123:456");
+        assert_eq!(sidecar["lease"]["schema_version"], 1);
+        assert_eq!(sidecar["lease"]["resource"], "slot/slot07");
+        assert_eq!(sidecar["lease"]["generation"], "boot-a:123:456");
+        assert_eq!(sidecar["lease"]["ttl_seconds"], OWNER_LEASE_TTL_SECONDS);
+        assert_eq!(sidecar["lease"]["state"], "active");
+        assert_eq!(
+            sidecar["lease"]["expires_at"].as_i64().unwrap(),
+            sidecar["lease"]["renewed_at"].as_i64().unwrap() + OWNER_LEASE_TTL_SECONDS
+        );
     }
 }

@@ -1,5 +1,9 @@
 //! Typed implementation of the shared-file landing mutex.
 
+use crate::lease::{
+    self, DomainState as LeaseDomainState, HandoffState, LeaseDecision, LeaseRecord, LeaseState,
+    OwnerLiveness as LeaseOwnerLiveness,
+};
 use chrono::{Local, TimeZone};
 use clap::{Args, Subcommand};
 use fs2::FileExt;
@@ -69,6 +73,9 @@ pub enum LandLockCommand {
     Status,
     /// Reclaim a lease only when its recorded owner process is proven dead.
     ReclaimDead,
+    /// Standard fail-closed stale-clear path. `reclaim-dead` is retained as a
+    /// compatibility alias; both call the same lease verifier.
+    StaleClear,
     /// Census an UNCENSUSED payload domain post-hoc, after the supervisor died
     /// before it could take one, so `reclaim-dead` can finish.
     CensusOrphanedDomain(CensusOrphanedDomainArgs),
@@ -922,13 +929,85 @@ pub fn execute(root: &Path, args: LandLockArgs) -> Result<i32, LandLockError> {
             lock.status()?;
             Ok(0)
         }
-        LandLockCommand::ReclaimDead => lock.reclaim_dead(),
+        LandLockCommand::ReclaimDead | LandLockCommand::StaleClear => lock.reclaim_dead(),
         LandLockCommand::CensusOrphanedDomain(args) => lock.census_orphaned_domain(args),
         LandLockCommand::Run(args) => lock.run(args),
     }
 }
 
 impl LandingLock {
+    fn holder_lease_record(&self, holder: &LockState) -> Result<LeaseRecord, LandLockError> {
+        let ttl = holder.expires_at.saturating_sub(holder.acquired_at);
+        let ttl_seconds = u64::try_from(ttl)
+            .map_err(|_| LandLockError::InvalidState("landing holder has a negative TTL".into()))?;
+        let owner_generation = self
+            .read_process_owner()?
+            .map(|owner| {
+                format!(
+                    "{}:{}:{}:{}",
+                    owner.host, owner.boot_id, owner.pid, owner.start_ticks
+                )
+            })
+            .unwrap_or_else(|| "legacy-owner-unverifiable".into());
+        Ok(LeaseRecord {
+            schema_version: lease::LEASE_SCHEMA_VERSION,
+            resource: format!("landing/{}", holder.pr),
+            generation: format!(
+                "landing:{}:{}:{}:{}",
+                holder.agent, holder.pr, holder.acquired_at, holder.expires_at
+            ),
+            owner_generation,
+            issued_at: holder.acquired_at,
+            renewed_at: holder.acquired_at,
+            ttl_seconds,
+            expires_at: holder.expires_at,
+            state: LeaseState::Active,
+        })
+    }
+
+    fn holder_stale_clear_decision(
+        &self,
+        holder: &LockState,
+        now: i64,
+        cleanup: CleanupVerification,
+    ) -> Result<LeaseDecision, LandLockError> {
+        let mut lease = self.holder_lease_record(holder)?;
+        if !matches!(&cleanup, CleanupVerification::None) {
+            lease.state = LeaseState::Quarantined;
+        }
+        let liveness = match self.owner_liveness()? {
+            OwnerLiveness::Alive => LeaseOwnerLiveness::Alive,
+            OwnerLiveness::Dead(evidence) => LeaseOwnerLiveness::Dead { evidence },
+            OwnerLiveness::Unknown(reason) => LeaseOwnerLiveness::Unknown { reason },
+        };
+        let domain = match cleanup {
+            CleanupVerification::None => LeaseDomainState::ProvenEmpty {
+                evidence: "no supervised payload domain is registered".into(),
+            },
+            CleanupVerification::Recoverable { reason, .. } => {
+                LeaseDomainState::ProvenEmpty { evidence: reason }
+            }
+            CleanupVerification::Active { reason, .. } => {
+                LeaseDomainState::Populated { evidence: reason }
+            }
+            CleanupVerification::Armed { reason, .. }
+            | CleanupVerification::Uncensused { reason, .. }
+            | CleanupVerification::Unknown { reason, .. } => LeaseDomainState::Unproven { reason },
+        };
+        let handoff = HandoffState::complete_ephemeral(format!(
+            "landing:{}:{}:{}",
+            holder.agent, holder.pr, lease.generation
+        ));
+        Ok(lease::stale_clear(
+            &lease,
+            &lease.generation,
+            now,
+            liveness,
+            domain,
+            &handoff,
+        ))
+    }
+
     fn cleanup_verification(&self, holder: Option<&LockState>) -> CleanupVerification {
         let operation = holder.map(|holder| format!("pr:{}", holder.pr));
         let expected = holder
@@ -1244,23 +1323,24 @@ impl LandingLock {
         let cutoff = now - (2 * DEFAULT_WAIT_SECONDS) as i64;
         queue.retain(|entry| entry.enqueued_at >= cutoff);
 
-        let dead_owner = if holder.as_ref().is_some_and(|holder| holder.live_at(now)) {
-            match self.owner_liveness()? {
-                OwnerLiveness::Dead(reason) => Some(reason),
-                OwnerLiveness::Alive | OwnerLiveness::Unknown(_) => None,
-            }
-        } else {
-            None
-        };
-        if let Some(holder) = holder
+        let clear_decision = holder
             .as_ref()
-            .filter(|holder| holder.live_at(now) && dead_owner.is_none())
-        {
-            self.write_queue(&queue)?;
-            return Ok(AcquireToken::Held {
-                agent: holder.agent.clone(),
-                seconds_left: holder.expires_at - now,
-            });
+            .map(|holder| {
+                self.holder_stale_clear_decision(
+                    holder,
+                    now,
+                    self.cleanup_verification(Some(holder)),
+                )
+            })
+            .transpose()?;
+        if let (Some(holder), Some(decision)) = (holder.as_ref(), clear_decision.as_ref()) {
+            if !matches!(decision, LeaseDecision::Clear { .. }) {
+                self.write_queue(&queue)?;
+                return Ok(AcquireToken::Held {
+                    agent: holder.agent.clone(),
+                    seconds_left: holder.expires_at.saturating_sub(now).max(0),
+                });
+            }
         }
 
         if let Some(head) = queue.first() {
@@ -1271,12 +1351,11 @@ impl LandingLock {
             }
         }
 
-        let reclaimed = holder.map(|holder| {
-            if let Some(reason) = &dead_owner {
-                format!("{} (dead owner: {reason})", holder.agent)
-            } else {
-                holder.agent
+        let reclaimed = holder.map(|holder| match clear_decision {
+            Some(LeaseDecision::Clear { evidence }) => {
+                format!("{} ({evidence})", holder.agent)
             }
+            _ => holder.agent,
         });
         self.write_holder(&new_holder(
             &args.agent,
@@ -1684,27 +1763,20 @@ impl LandingLock {
                     }
                 };
             };
-            match self.cleanup_verification(Some(&holder)) {
-                CleanupVerification::Armed { reason, .. }
-                | CleanupVerification::Active { reason, .. }
-                | CleanupVerification::Uncensused { reason, .. }
-                | CleanupVerification::Unknown { reason, .. } => {
-                    return Err(LandLockError::ReclaimNotProven(reason));
-                }
-                CleanupVerification::Recoverable { .. } | CleanupVerification::None => {}
-            }
-            match self.owner_liveness()? {
-                OwnerLiveness::Dead(reason) => {
+            let now = epoch_seconds()?;
+            match self.holder_stale_clear_decision(
+                &holder,
+                now,
+                self.cleanup_verification(Some(&holder)),
+            )? {
+                LeaseDecision::Clear { evidence } => {
                     remove_if_exists(&self.paths.lock)?;
                     remove_if_exists(&self.paths.owner)?;
                     remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.anchor)
                         .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
-                    Ok(Some((holder.agent, holder.pr, reason)))
+                    Ok(Some((holder.agent, holder.pr, evidence)))
                 }
-                OwnerLiveness::Alive => Err(LandLockError::ReclaimNotProven(
-                    "recorded owner process is alive".into(),
-                )),
-                OwnerLiveness::Unknown(reason) => Err(LandLockError::ReclaimNotProven(reason)),
+                decision => Err(LandLockError::ReclaimNotProven(decision.to_string())),
             }
         })?;
         match reclaimed {
@@ -4696,6 +4768,79 @@ mod tests {
     }
 
     #[test]
+    fn expired_live_holder_is_not_replaced_during_acquire() {
+        let paths = temp_paths("expired-live-holder");
+        let lock = LandingLock {
+            paths: paths.clone(),
+        };
+        let now = epoch_seconds().unwrap();
+        let mut holder = new_holder("still-running", "42", 60, None).unwrap();
+        holder.acquired_at = now - 61;
+        holder.expires_at = now - 1;
+        lock.write_holder(&holder).unwrap();
+        lock.write_current_process_owner().unwrap();
+
+        let token = lock
+            .with_guard(|| {
+                lock.try_acquire(&AcquireArgs {
+                    agent: "replacement".into(),
+                    pr: "43".into(),
+                    wait: 0,
+                    hold: 60,
+                })
+            })
+            .unwrap();
+        assert!(
+            matches!(token, AcquireToken::Held { ref agent, .. } if agent == "still-running"),
+            "TTL expiry is eligibility, never proof that a live holder is gone"
+        );
+        assert_eq!(
+            lock.read_holder().unwrap().unwrap().agent,
+            "still-running",
+            "mutation control: removing the live-owner refusal must fail this exact assertion"
+        );
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    #[test]
+    fn expired_dead_holder_is_reclaimed_during_acquire() {
+        let paths = temp_paths("expired-dead-holder");
+        let lock = LandingLock {
+            paths: paths.clone(),
+        };
+        let now = epoch_seconds().unwrap();
+        let mut holder = new_holder("dead-holder", "42", 60, None).unwrap();
+        holder.acquired_at = now - 61;
+        holder.expires_at = now - 1;
+        lock.write_holder(&holder).unwrap();
+        fs::write(
+            &paths.owner,
+            ProcessOwner {
+                host: current_host(),
+                boot_id: current_boot_id().unwrap(),
+                pid: 0,
+                start_ticks: 1,
+            }
+            .render(),
+        )
+        .unwrap();
+
+        let token = lock
+            .with_guard(|| {
+                lock.try_acquire(&AcquireArgs {
+                    agent: "replacement".into(),
+                    pr: "43".into(),
+                    wait: 0,
+                    hold: 60,
+                })
+            })
+            .unwrap();
+        assert!(matches!(token, AcquireToken::AcquiredReclaimed(_)));
+        assert_eq!(lock.read_holder().unwrap().unwrap().agent, "replacement");
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    #[test]
     fn full_protocol_acquire_renew_status_release_and_run() {
         let _domain_guard = process_domain_test_guard();
         let paths = temp_paths("full-protocol");
@@ -5320,7 +5465,7 @@ exit 0
     }
 
     #[test]
-    fn proven_dead_owner_is_reclaimed_before_lease_expiry() {
+    fn proven_dead_owner_waits_for_expiry_then_reclaims() {
         let paths = temp_paths("dead-owner-reclaim");
         let lock = LandingLock {
             paths: paths.clone(),
@@ -5350,11 +5495,28 @@ exit 0
                 hold: 60,
             })
             .unwrap(),
+            1,
+            "death is proven, but TTL remains the stale-clear eligibility boundary"
+        );
+        assert_eq!(lock.read_holder().unwrap().unwrap().agent, "dead-lander");
+        let now = epoch_seconds().unwrap();
+        let mut expired = lock.read_holder().unwrap().unwrap();
+        expired.acquired_at = now - 61;
+        expired.expires_at = now - 1;
+        lock.write_holder(&expired).unwrap();
+        assert_eq!(
+            lock.acquire(&AcquireArgs {
+                agent: "replacement-lander".into(),
+                pr: "101".into(),
+                wait: 0,
+                hold: 60,
+            })
+            .unwrap(),
             0
         );
         let holder = lock.read_holder().unwrap().unwrap();
         assert_eq!(holder.agent, "replacement-lander");
-        assert!(holder.reclaimed_from.unwrap().contains("dead owner"));
+        assert!(holder.reclaimed_from.unwrap().contains("owner dead"));
         lock.release("replacement-lander", false).unwrap();
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
