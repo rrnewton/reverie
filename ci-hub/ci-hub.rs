@@ -111,7 +111,7 @@ LANDING & BATCH CONTROL
   Serialize landings and manage the explicit policy state that gates them.
   land-lock               Acquire, renew, inspect, or release the fleet landing mutex
   validate-lock            Box-exclusive gate: one validate/bench at a time (GRANT/QUEUE/REFUSE)
-  apply-local-label       Label PR heads backed by a clean full-validation receipt
+  apply-local-label       Reconcile the derived label with exact-head validation truth
   ci-mode                 Inspect or change constrained GH Actions admission mode
   batch                   Inspect or edit the named current GH Actions batch
   ci-timeout              Cancel hosted runs starved waiting to start; reroute to local
@@ -152,7 +152,7 @@ lists commands; it does not define those rules independently.
      ./ci-hub/ci-hub validate-run --checkout WORKTREE --agent AGENT --target SHA --pr PR -- full
      ./ci-hub/ci-hub validate-status --sha SHA
 
-3. Derive the cache label from the qualifying row; never type it by hand:
+3. Reconcile the cache label with the exact-head row; never type it by hand:
      ./ci-hub/ci-hub apply-local-label --pr PR --repo rrnewton/hermit
 
 4. Land your own reviewed PR, then prove publication and repeat:
@@ -252,7 +252,7 @@ enum HubCommand {
     NewestGreen(NewestGreenArgs),
     /// Find the newest recorded PASS -> FAIL transition for a local cell or gate.
     FirstBad(FirstBadArgs),
-    /// Apply `locally-validated` to PRs whose head has a clean full-validate record.
+    /// Reconcile `locally-validated` with each PR's exact-head validation record.
     ApplyLocalLabel(ApplyLocalLabelArgs),
     /// Operate the shared-file landing mutex.
     LandLock(landing_lock::LandLockArgs),
@@ -710,13 +710,13 @@ struct ApplyLocalLabelArgs {
     /// A single PR number to consider.
     #[arg(long, conflicts_with = "all_open")]
     pr: Option<u64>,
-    /// Sweep every open PR in the repo, labeling each validated head.
+    /// Sweep every open PR, adding backed labels and removing unbacked labels.
     #[arg(long, conflicts_with = "pr")]
     all_open: bool,
-    /// Repository whose PRs are labeled.
+    /// Repository whose PR labels are reconciled.
     #[arg(long, default_value = "rrnewton/hermit")]
     repo: String,
-    /// Report intended label actions without editing any label.
+    /// Report intended reconciliation actions without editing any label.
     #[arg(long)]
     dry_run: bool,
     /// Emit the machine-readable per-PR action report.
@@ -3479,6 +3479,110 @@ fn gh_pr_head(root: &Path, repo: &str, pr: u64) -> Result<String, CiHubError> {
     Ok(sha)
 }
 
+/// Read the current PR head and whether its derived validation cache label is
+/// present in one GitHub snapshot. Reconciliation must not combine a head from
+/// one API response with labels from another.
+fn gh_pr_head_and_local_label(
+    root: &Path,
+    repo: &str,
+    pr: u64,
+) -> Result<(String, bool), CiHubError> {
+    let pr_arg = pr.to_string();
+    let output = gh_command(
+        root,
+        &[
+            "pr",
+            "view",
+            &pr_arg,
+            "--repo",
+            repo,
+            "--json",
+            "headRefOid,labels",
+        ],
+    )
+    .output()
+    .map_err(|source| CiHubError::Launch {
+        tool: "gh pr view head and labels".into(),
+        source,
+    })?;
+    if !output.status.success() {
+        return Err(CiHubError::Gh {
+            context: format!("pr view head and labels #{pr}"),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        CiHubError::ValidateStatus(format!("invalid head/labels JSON for PR #{pr}: {error}"))
+    })?;
+    let head = value
+        .get("headRefOid")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if head.is_empty() {
+        return Err(CiHubError::Gh {
+            context: format!("pr view head and labels #{pr}"),
+            message: "empty headRefOid".into(),
+        });
+    }
+    let has_label = value
+        .get("labels")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|labels| {
+            labels.iter().any(|label| {
+                label.get("name").and_then(serde_json::Value::as_str)
+                    == Some(LOCALLY_VALIDATED_LABEL)
+            })
+        });
+    Ok((head, has_label))
+}
+
+fn remove_local_validation_label(root: &Path, repo: &str, pr: u64) -> Result<(), CiHubError> {
+    let pr_arg = pr.to_string();
+    let output = gh_command(
+        root,
+        &[
+            "pr",
+            "edit",
+            &pr_arg,
+            "--repo",
+            repo,
+            "--remove-label",
+            LOCALLY_VALIDATED_LABEL,
+        ],
+    )
+    .output()
+    .map_err(|source| CiHubError::Launch {
+        tool: "gh pr edit remove locally-validated".into(),
+        source,
+    })?;
+    if !output.status.success() {
+        return Err(CiHubError::Gh {
+            context: format!("pr edit remove label #{pr}"),
+            message: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalLabelReconcileAction {
+    Bind,
+    Remove,
+    LeaveAbsent,
+}
+
+fn local_label_reconcile_action(validated: bool, has_label: bool) -> LocalLabelReconcileAction {
+    if validated {
+        LocalLabelReconcileAction::Bind
+    } else if has_label {
+        LocalLabelReconcileAction::Remove
+    } else {
+        LocalLabelReconcileAction::LeaveAbsent
+    }
+}
+
 /// List open PR numbers in the repo.
 fn gh_open_prs(root: &Path, repo: &str) -> Result<Vec<u64>, CiHubError> {
     let output = gh_command(
@@ -5885,11 +5989,10 @@ fn bind_verified_receipt_to_pr(
     Ok(())
 }
 
-/// `ci-hub apply-local-label --pr <N> | --all-open` — close the retroactive gap:
-/// when a commit was validated BEFORE its PR existed, the driver could not stamp
-/// `locally-validated`. This applies it to any PR whose head has a clean
-/// full-validate record and lacks the label. Never fabricates the label: a PR
-/// whose head is not VALIDATED is left untouched.
+/// `ci-hub apply-local-label --pr <N> | --all-open` reconciles the derived
+/// `locally-validated` cache in both directions. A qualifying exact-head receipt
+/// binds the label; every other exact-head verdict removes an existing label.
+/// Receipt comments remain immutable history and are already exact-head bound.
 fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, CiHubError> {
     let path = ledger_path(root);
     let rows = load_ledger_rows(&path)?;
@@ -5905,29 +6008,88 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
 
     let mut actions: Vec<serde_json::Value> = Vec::new();
     let mut applied = 0i32;
+    let mut removed = 0i32;
     let mut failed = 0i32;
     for pr in prs {
         // In sweep mode a single unreadable PR must not abort the whole run.
-        let head = match gh_pr_head(root, &args.repo, pr) {
-            Ok(head) => head,
+        let (head, has_label) = match gh_pr_head_and_local_label(root, &args.repo, pr) {
+            Ok(state) => state,
             Err(error) => {
                 eprintln!("ci-hub: apply-local-label: PR #{pr}: {error}");
                 actions.push(
                     serde_json::json!({"pr": pr, "action": "error", "detail": error.to_string()}),
                 );
+                failed += 1;
                 continue;
             }
         };
-        let assessment = assess_canonical_receipts(root, &rows, &head, &args.repo)
-            .map_err(CiHubError::ValidateStatus)?;
-        if assessment.verdict != validate_status::Verdict::Validated {
-            println!(
-                "PR #{pr}: skip -- head {} is {}",
-                &head[..12.min(head.len())],
-                assessment.verdict.as_str()
-            );
-            actions.push(serde_json::json!({"pr": pr, "head": head, "action": "skip", "verdict": assessment.verdict.as_str()}));
-            continue;
+        let assessment = match assess_canonical_receipts(root, &rows, &head, &args.repo) {
+            Ok(assessment) => assessment,
+            Err(detail) => {
+                eprintln!("ci-hub: apply-local-label: PR #{pr}: {detail}");
+                actions.push(serde_json::json!({
+                    "pr": pr,
+                    "head": head,
+                    "action": "assessment-error",
+                    "detail": detail,
+                }));
+                failed += 1;
+                continue;
+            }
+        };
+        match local_label_reconcile_action(
+            assessment.verdict == validate_status::Verdict::Validated,
+            has_label,
+        ) {
+            LocalLabelReconcileAction::Remove => {
+                let action = if args.dry_run {
+                    "would-remove"
+                } else {
+                    match remove_local_validation_label(root, &args.repo, pr) {
+                        Ok(()) => "removed",
+                        Err(error) => {
+                            eprintln!("ci-hub: apply-local-label: PR #{pr}: {error}");
+                            actions.push(serde_json::json!({
+                                "pr": pr,
+                                "head": head,
+                                "action": "remove-failed",
+                                "verdict": assessment.verdict.as_str(),
+                                "detail": error.to_string(),
+                            }));
+                            failed += 1;
+                            continue;
+                        }
+                    }
+                };
+                println!(
+                    "PR #{pr}: {action} stale {LOCALLY_VALIDATED_LABEL} -- head {} is {}",
+                    &head[..12.min(head.len())],
+                    assessment.verdict.as_str()
+                );
+                actions.push(serde_json::json!({
+                    "pr": pr,
+                    "head": head,
+                    "action": action,
+                    "verdict": assessment.verdict.as_str(),
+                }));
+                removed += 1;
+                continue;
+            }
+            LocalLabelReconcileAction::LeaveAbsent => {
+                println!(
+                    "PR #{pr}: skip -- head {} is {} and label is absent",
+                    &head[..12.min(head.len())],
+                    assessment.verdict.as_str()
+                );
+                actions.push(serde_json::json!({
+                    "pr": pr,
+                    "head": head,
+                    "action": "skip",
+                    "verdict": assessment.verdict.as_str(),
+                }));
+                continue;
+            }
+            LocalLabelReconcileAction::Bind => {}
         }
         let selected = newest_canonical_receipt(&assessment.qualifying)
             .expect("validated implies one selected canonical receipt");
@@ -5994,8 +6156,12 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
     }
 
     if args.json {
-        let report =
-            serde_json::json!({"schema_version": 1, "applied": applied, "actions": actions});
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "applied": applied,
+            "removed": removed,
+            "actions": actions,
+        });
         println!(
             "{}",
             serde_json::to_string_pretty(&report).expect("serialize report")
@@ -6255,6 +6421,30 @@ mod tests {
     use super::*;
 
     const RECEIPT_SHA: &str = "630f44aab7fdf4ee52e572c38ae09818e92271b2";
+
+    #[test]
+    fn local_label_reconcile_preserves_or_adds_a_validated_head() {
+        assert_eq!(
+            local_label_reconcile_action(true, true),
+            LocalLabelReconcileAction::Bind
+        );
+        assert_eq!(
+            local_label_reconcile_action(true, false),
+            LocalLabelReconcileAction::Bind
+        );
+    }
+
+    #[test]
+    fn local_label_reconcile_removes_only_an_unbacked_label() {
+        assert_eq!(
+            local_label_reconcile_action(false, true),
+            LocalLabelReconcileAction::Remove
+        );
+        assert_eq!(
+            local_label_reconcile_action(false, false),
+            LocalLabelReconcileAction::LeaveAbsent
+        );
+    }
 
     /// The remote-ledger probe must count records BY THEIR COMMIT FIELD.
     ///
