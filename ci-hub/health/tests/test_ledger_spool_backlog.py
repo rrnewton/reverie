@@ -90,5 +90,104 @@ class LedgerSpoolBacklogTest(unittest.TestCase):
         self.assertIn("python3 ci-hub/health/ledger_spool_backlog.py --gate", config)
 
 
+class MultiParentDiscoveryTest(unittest.TestCase):
+    """The fleet is multi-parent; a root-scoped scan reports the others clean.
+
+    Measured 2026-08-11 on devbig014: three producing parents existed and the
+    root-scoped gate covered 1 of 3. Both invisibility incidents that day lived
+    in a parent the gate does not live in -- including a 55-minute-old fully
+    qualifying green in dev-hermit5 that the gate never saw. These brackets pin
+    the fix in both directions: a sibling parent's backlog must FIRE, and a
+    genuinely drained fleet must still report clean.
+    """
+
+    def _parent(self, base: Path, name: str) -> Path:
+        parent = base / name
+        (parent / "ci-hub" / "ledger").mkdir(parents=True)
+        (parent / "ci-hub" / "ledger" / "validate_rows.py").write_text(
+            "", encoding="utf-8"
+        )
+        spool = parent / "ignored" / "ci-hub" / "validate-ledger-spool"
+        spool.mkdir(parents=True)
+        return parent
+
+    def _load(self):
+        sys.path.insert(0, str(ROOT / "ci-hub" / "health"))
+        import ledger_spool_backlog as gate
+
+        return gate
+
+    def test_discovery_enumerates_sibling_parents_without_a_spool_yet(self) -> None:
+        gate = self._load()
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            own = self._parent(base, "dev-hermit")
+            self._parent(base, "dev-hermit4")
+            # A parent that has never spooled must still be enumerated, or the
+            # gate goes blind exactly when a new parent starts producing.
+            fresh = base / "dev-hermit9"
+            (fresh / "ci-hub" / "ledger").mkdir(parents=True)
+            (fresh / "ci-hub" / "ledger" / "validate_rows.py").write_text("")
+            (base / "not-a-parent").mkdir()
+            found = gate.producing_parents(own)
+            self.assertEqual(len(found), 3, found)
+            self.assertNotIn(base / "not-a-parent", found)
+
+    def test_a_sibling_parents_stalled_backlog_FIRES(self) -> None:
+        """The exact miss: backlog in a parent the gate does not live in."""
+        gate = self._load()
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            own = self._parent(base, "dev-hermit")
+            other = self._parent(base, "dev-hermit5")
+            stale = (
+                other / "ignored" / "ci-hub" / "validate-ledger-spool" / "green.jsonl"
+            )
+            stale.write_text("{}\n", encoding="utf-8")
+            old = time.time() - 3300
+            os.utime(stale, (old, old))
+
+            dirs = [
+                p / "ignored" / "ci-hub" / "validate-ledger-spool"
+                for p in gate.producing_parents(own)
+            ]
+            backlog = gate.measure_parents(dirs, max_age_seconds=60)
+            self.assertTrue(backlog.stalled, "sibling backlog must fire")
+            self.assertEqual(backlog.depth, 1)
+            self.assertEqual(backlog.parents_scanned, 2)
+            self.assertIn("dev-hermit5", backlog.oldest_parent or "")
+
+            # NOT INERT: the same fleet with that one batch published is clean.
+            stale.unlink()
+            drained = gate.measure_parents(dirs, max_age_seconds=60)
+            self.assertFalse(drained.stalled)
+            self.assertEqual(drained.depth, 0)
+
+    def test_depth_sums_and_worst_parent_owns_the_age(self) -> None:
+        gate = self._load()
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            own = self._parent(base, "dev-hermit")
+            other = self._parent(base, "dev-hermit4")
+            now = time.time()
+            for parent, name, age in (
+                (own, "mine.jsonl", 100),
+                (other, "theirs.jsonl", 900),
+            ):
+                path = (
+                    parent / "ignored" / "ci-hub" / "validate-ledger-spool" / name
+                )
+                path.write_text("{}\n", encoding="utf-8")
+                os.utime(path, (now - age, now - age))
+            dirs = [
+                p / "ignored" / "ci-hub" / "validate-ledger-spool"
+                for p in gate.producing_parents(own)
+            ]
+            backlog = gate.measure_parents(dirs, max_age_seconds=60)
+            self.assertEqual(backlog.depth, 2, "depth must sum across parents")
+            self.assertGreaterEqual(backlog.oldest_age_seconds, 890)
+            self.assertIn("dev-hermit4", backlog.oldest_parent or "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

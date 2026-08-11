@@ -44,10 +44,80 @@ class SpoolBacklog:
     oldest_age_seconds: float
     oldest_entry: str | None
     max_age_seconds: float
+    oldest_parent: str | None = None
+    parents_scanned: int = 1
 
     @property
     def stalled(self) -> bool:
         return self.depth > 0 and self.oldest_age_seconds > self.max_age_seconds
+
+
+def producing_parents(root: Path) -> list[Path]:
+    """Every parent checkout on this box that can produce ledger events.
+
+    THE FLEET IS MULTI-PARENT AND THE SPOOL IS PER-PARENT. Scanning only this
+    script's own root measures one parent and reports the others as drained,
+    which is indistinguishable from healthy. Measured 2026-08-11 on devbig014:
+    three producing parents existed (dev-hermit, dev-hermit4, dev-hermit5) and a
+    root-scoped scan covered 1 of 3. Both real invisibility incidents that day
+    lived in parents this script does not live in -- a 55-minute-old fully
+    qualifying green sat unpublished and unalarmed in dev-hermit5 while the
+    root-scoped gate reported its own parent as merely "pending".
+
+    A sibling is a producing parent when it carries the ledger producer module.
+    That is deliberately the producer, not the spool directory: a parent that
+    has not spooled yet must still be enumerated, or the gate goes blind exactly
+    when a new parent starts producing.
+    """
+
+    roots = [root]
+    try:
+        siblings = sorted(root.parent.iterdir())
+    except OSError:
+        return roots
+    for candidate in siblings:
+        if candidate == root or not candidate.is_dir():
+            continue
+        if (candidate / "ci-hub" / "ledger" / "validate_rows.py").is_file():
+            roots.append(candidate)
+    return roots
+
+
+def measure_parents(
+    spool_dirs: list[Path], *, now: float | None = None, max_age_seconds: float
+) -> SpoolBacklog:
+    """Aggregate backlog across every parent, keeping unknown != clean.
+
+    Depth sums; age takes the WORST parent, because one stalled parent is a
+    stalled fleet for every actor that cannot read its spool. The owning parent
+    travels with the alarm -- an operator who is not told which parent is stuck
+    cannot act on it.
+    """
+
+    now = time.time() if now is None else now
+    total_depth = 0
+    worst: SpoolBacklog | None = None
+    worst_parent: str | None = None
+    for spool_dir in spool_dirs:
+        backlog = measure(spool_dir, now=now, max_age_seconds=max_age_seconds)
+        total_depth += backlog.depth
+        if backlog.depth and (
+            worst is None or backlog.oldest_age_seconds > worst.oldest_age_seconds
+        ):
+            worst = backlog
+            worst_parent = str(spool_dir)
+    if worst is None:
+        return SpoolBacklog(
+            0, 0.0, None, max_age_seconds, None, len(spool_dirs)
+        )
+    return SpoolBacklog(
+        total_depth,
+        worst.oldest_age_seconds,
+        worst.oldest_entry,
+        max_age_seconds,
+        worst_parent,
+        len(spool_dirs),
+    )
 
 
 def measure(
@@ -95,20 +165,22 @@ def measure(
 def render(backlog: SpoolBacklog) -> tuple[str, str]:
     age = round(backlog.oldest_age_seconds, 1)
     bound = round(backlog.max_age_seconds, 1)
+    scope = f"parents_scanned={backlog.parents_scanned}"
+    owner = f"; oldest_parent={backlog.oldest_parent}" if backlog.oldest_parent else ""
     if backlog.stalled:
         return (
             "stalled",
             f"ledger spool publication stalled: oldest unpublished batch age={age}s "
             f"exceeds bound={bound}s; depth={backlog.depth}; "
-            f"oldest_entry={backlog.oldest_entry}",
+            f"oldest_entry={backlog.oldest_entry}{owner}; {scope}",
         )
     if backlog.depth:
         return (
             "pending",
             f"ledger spool has {backlog.depth} fresh unpublished batch(es); "
-            f"oldest_age={age}s <= bound={bound}s",
+            f"oldest_age={age}s <= bound={bound}s{owner}; {scope}",
         )
-    return "drained", f"ledger spool drained: depth=0; bound={bound}s"
+    return "drained", f"ledger spool drained: depth=0; bound={bound}s; {scope}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -120,8 +192,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--spool-dir",
         type=Path,
-        default=live_spool_dir(ROOT),
-        help="spool directory (default: canonical live validation-ledger spool)",
+        default=None,
+        help=(
+            "measure exactly this spool directory instead of discovering every "
+            "producing parent on the box (default: discover all parents)"
+        ),
     )
     parser.add_argument(
         "--max-age-seconds",
@@ -133,8 +208,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_age_seconds < 0:
         parser.error("--max-age-seconds must be non-negative")
 
+    if args.spool_dir is not None:
+        spool_dirs = [args.spool_dir]
+    else:
+        spool_dirs = [live_spool_dir(parent) for parent in producing_parents(ROOT)]
+
     try:
-        backlog = measure(args.spool_dir, max_age_seconds=args.max_age_seconds)
+        backlog = measure_parents(spool_dirs, max_age_seconds=args.max_age_seconds)
     except SpoolUnavailable as exc:
         print("state=unknown")
         print(f"summary=ledger spool backlog unavailable: {exc}")
