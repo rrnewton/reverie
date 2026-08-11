@@ -32,11 +32,9 @@ from __future__ import annotations
 
 import os
 import re
-import socket
 import subprocess
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NoReturn
 
@@ -45,11 +43,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci-hub/lib"))
 
 import agent_identity  # noqa: E402
+import disclosure_tag  # noqa: E402
 
 
-TOKEN_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
-ROLES = frozenset({"impl", "debugger", "reviewer", "relay", "coordinator", "human"})
-MODEL_TOKEN_RE = re.compile(r"^[^,\[\]\r\n]+$")
 DISCLOSURE_RE = re.compile(
     r"^\[(?P<team>[A-Za-z0-9_.-]+), "
     r"(?P<agent>[A-Za-z0-9_.-]+), "
@@ -65,22 +61,6 @@ LEGACY_DISCLOSURE_RE = re.compile(
     r"^(?:\[[^,\]\n]+, [^,\]\n]+, [^,\]\n]+, role=[^\]\n]+\]"
     r"|\[[^,\]\n]+, [^\]\n]+\] \[[^,\]\n]+, [^\]\n]+\])"
 )
-
-
-@dataclass(frozen=True)
-class Disclosure:
-    team: str
-    agent: str
-    model: str
-    machine: str
-    role: str
-
-    @property
-    def prefix(self) -> str:
-        return (
-            f"[{self.team}, {self.agent}, {self.model}, {self.machine}, "
-            f"role={self.role}]"
-        )
 
 
 def die(message: str) -> NoReturn:
@@ -136,63 +116,35 @@ def disclosure_options(args: list[str]) -> tuple[list[str], dict[str, str]]:
     return args[index:], values
 
 
-def required_disclosure(values: Mapping[str, str]) -> Disclosure:
+def required_disclosure(values: Mapping[str, str]) -> tuple[str, str, str]:
     if not values.get("who"):
         die("missing required --who for a GitHub comment/review write")
     if not values.get("team"):
         die("missing required --team for a GitHub comment/review write")
     if not values.get("role"):
         die("missing required --role for a GitHub comment/review write")
-    agent, team, role = values["who"], values["team"], values["role"]
-    if TOKEN_RE.fullmatch(agent) is None:
-        die(f"--who is not a safe agent token: {agent!r}")
-    if TOKEN_RE.fullmatch(team) is None:
-        die(f"--team is not a safe team token: {team!r}")
-    if role not in ROLES:
-        die(
-            f"--role must be one of {','.join(sorted(ROLES))}; got {role!r}"
-        )
-    machine = socket.gethostname().split(".", 1)[0]
-    if TOKEN_RE.fullmatch(machine) is None:
-        die(f"derived machine shortname is not a safe token: {machine!r}")
-    return Disclosure(
-        team=team,
-        agent=agent,
-        model=agent_identity.MODEL_UNRESOLVED,
-        machine=machine,
-        role=role,
-    )
+    return values["who"], values["team"], values["role"]
 
 
-def validate_disclosure(disclosure: Disclosure) -> Disclosure:
+def validate_disclosure(
+    claimed_agent: str, team: str, role: str
+) -> disclosure_tag.Disclosure:
     resolution = agent_identity.resolve_identity(os.getpid())
-    if resolution.state != "AGREEMENT" or not resolution.agent:
-        evidence = "; ".join(
-            f"{signal.source}={signal.state}"
-            + (f":{signal.detail}" if signal.detail else "")
-            for signal in resolution.signals
+    try:
+        return disclosure_tag.from_resolution(
+            resolution,
+            team=team,
+            role=role,
+            claimed_agent=claimed_agent,
         )
-        die(
-            f"owner unresolved: identity resolver returned {resolution.state}; "
-            f"no comment was posted; signals={evidence}"
-        )
-    if disclosure.agent != resolution.agent:
-        die(
-            f"--who mismatch: claimed {disclosure.agent!r}, but process context "
-            f"resolves to {resolution.agent!r} via {','.join(resolution.basis) or 'primary identity'}"
-        )
-    if (
-        resolution.model != resolution.model.strip()
-        or MODEL_TOKEN_RE.fullmatch(resolution.model) is None
-    ):
-        die(f"process resolver returned an unsafe model token: {resolution.model!r}")
-    return replace(disclosure, model=resolution.model)
+    except disclosure_tag.DisclosureError as error:
+        die(str(error))
 
 
-def attributed(body: str, disclosure: Disclosure) -> str:
+def attributed(body: str, disclosure: disclosure_tag.Disclosure) -> str:
     existing = DISCLOSURE_RE.match(body)
     if existing:
-        if existing.group("role") not in ROLES:
+        if existing.group("role") not in disclosure_tag.ROLES:
             die("malformed five-field who-is-talking prefix must be corrected before posting")
         observed = (
             existing.group("team"),
@@ -215,7 +167,7 @@ def attributed(body: str, disclosure: Disclosure) -> str:
         die("legacy who-is-talking prefix must be removed before posting")
     if MALFORMED_FIVE_FIELD_RE.match(body):
         die("malformed five-field who-is-talking prefix must be corrected before posting")
-    return f"{disclosure.prefix}\n{body}"
+    return f"{disclosure.tag}\n{body}"
 
 
 def body_option(args: list[str]) -> tuple[int, int, str] | None:
@@ -241,7 +193,7 @@ def body_option(args: list[str]) -> tuple[int, int, str] | None:
 
 
 def rewrite_body_option(
-    args: list[str], disclosure: Disclosure, *, required: bool
+    args: list[str], disclosure: disclosure_tag.Disclosure, *, required: bool
 ) -> list[str]:
     found = body_option(args)
     if found is None:
@@ -316,7 +268,7 @@ def is_comment_write(args: list[str]) -> bool:
     )
 
 
-def rewrite_api(args: list[str], disclosure: Disclosure) -> list[str]:
+def rewrite_api(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[str]:
     if len(args) > 1 and args[1] == "graphql":
         die("raw GraphQL comment mutations cannot be attributed safely")
     method = api_method(args)
@@ -340,7 +292,7 @@ def rewrite_api(args: list[str], disclosure: Disclosure) -> list[str]:
     die(f"raw API comment mutation {method} {endpoint} has no supported body field")
 
 
-def rewrite(args: list[str], disclosure: Disclosure) -> list[str]:
+def rewrite(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[str]:
     if len(args) >= 2 and args[:2] in (["pr", "comment"], ["issue", "comment"]):
         return rewrite_body_option(args, disclosure, required=False)
     if len(args) >= 2 and args[:2] == ["pr", "review"]:
@@ -353,8 +305,8 @@ def rewrite(args: list[str], disclosure: Disclosure) -> list[str]:
 def main() -> int:
     args, supplied = disclosure_options(sys.argv[1:])
     if is_comment_write(args):
-        disclosure = required_disclosure(supplied)
-        disclosure = validate_disclosure(disclosure)
+        claimed_agent, team, role = required_disclosure(supplied)
+        disclosure = validate_disclosure(claimed_agent, team, role)
         args = rewrite(args, disclosure)
     return subprocess.run([real_gh(), *args]).returncode
 

@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci-hub" / "lib"))
 
 import agent_identity  # noqa: E402
+import disclosure_tag  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -27,8 +28,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--state", type=Path, help="worktree-state.json override")
     parser.add_argument("--task", help="active TaskGraph task to cross-check")
     parser.add_argument("--db", type=Path, help="TaskGraph database override")
-    parser.add_argument("--json", action="store_true", help="emit stable schema-2 JSON")
-    return parser.parse_args()
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="emit stable schema-2 JSON")
+    output.add_argument(
+        "--tag",
+        action="store_true",
+        help="print only the canonical who-is-talking tag, with no trailing newline",
+    )
+    parser.add_argument(
+        "--role",
+        choices=sorted(disclosure_tag.ROLES),
+        help="artifact role; required with --tag and never defaulted",
+    )
+    parser.add_argument(
+        "--team",
+        default=disclosure_tag.DEFAULT_TEAM,
+        help=f"team slug for --tag (default: {disclosure_tag.DEFAULT_TEAM})",
+    )
+    args = parser.parse_args()
+    if args.tag and args.role is None:
+        parser.error("--role is required with --tag")
+    if args.role is not None and not args.tag:
+        parser.error("--role is only meaningful with --tag")
+    return args
 
 
 def main() -> int:
@@ -41,7 +63,18 @@ def main() -> int:
         task_id=args.task,
         task_db=args.db,
     )
-    if args.json:
+    if args.tag:
+        try:
+            disclosure = disclosure_tag.from_resolution(
+                result,
+                team=args.team,
+                role=args.role,
+            )
+        except disclosure_tag.DisclosureError as error:
+            print(f"who-am-i: REFUSE: {error}", file=sys.stderr)
+            return result.exit_code if result.state != "AGREEMENT" else 2
+        sys.stdout.write(disclosure.tag)
+    elif args.json:
         print(result.to_json())
     else:
         print(f"state={result.state}")

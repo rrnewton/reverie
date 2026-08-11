@@ -429,6 +429,24 @@ class CliTests(IdentityFixture):
             check=False,
         )
 
+    def run_tag(self, *extra: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "ci-hub" / "bin" / "who-am-i"),
+                "--pid", "100",
+                "--proc-root", str(self.proc),
+                "--repo-root", str(self.repo),
+                "--state", str(self.state),
+                "--db", str(self.db),
+                "--tag",
+                *extra,
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
     def test_cli_exit_codes_are_agreement_disagreement_unresolved(self) -> None:
         self.standard_processes()
         agreed = self.run_cli("--task", "task-a")
@@ -446,6 +464,34 @@ class CliTests(IdentityFixture):
         unresolved = self.run_cli()
         self.assertEqual(2, unresolved.returncode)
         self.assertEqual("UNRESOLVED", json.loads(unresolved.stdout)["state"])
+
+    def test_tag_is_exact_verbatim_model_and_has_no_trailing_newline(self) -> None:
+        self.standard_processes(
+            caller_cmdline=("codex", "--model", "gpt-5.6-sol"),
+            parent_cmdline=("codex", "--model", "gpt-5.6-sol"),
+        )
+        result = self.run_tag("--role", "impl", "--task", "task-a")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            "[hermit2, agent-a, gpt-5.6-sol, "
+            + __import__("socket").gethostname().split(".", 1)[0]
+            + ", role=impl]",
+            result.stdout,
+        )
+        self.assertFalse(result.stdout.endswith("\n"))
+
+    def test_tag_refuses_without_role_or_resolved_identity(self) -> None:
+        self.standard_processes()
+        missing_role = self.run_tag()
+        self.assertEqual(2, missing_role.returncode)
+        self.assertIn("--role is required", missing_role.stderr)
+        self.assertEqual("", missing_role.stdout)
+
+        self.write_state(owners=("agent-b",), sidecar_agent="agent-b")
+        disagreement = self.run_tag("--role", "impl")
+        self.assertEqual(1, disagreement.returncode)
+        self.assertIn("DISAGREEMENT", disagreement.stderr)
+        self.assertEqual("", disagreement.stdout)
 
 
 if __name__ == "__main__":

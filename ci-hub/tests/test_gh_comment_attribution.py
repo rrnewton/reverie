@@ -16,6 +16,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE_SHIM = Path(os.environ.get("FLEET_GH_UNDER_TEST", ROOT / "ci-hub/bin/gh"))
+SOURCE_DISCLOSURE = Path(
+    os.environ.get(
+        "FLEET_DISCLOSURE_TAG_UNDER_TEST",
+        ROOT / "ci-hub/lib/disclosure_tag.py",
+    )
+)
 TEST_AGENT = os.environ.get("DG_AGENT_NAME", "codex-boundary")
 
 
@@ -56,16 +62,28 @@ class FleetGhTest(unittest.TestCase):
     def test_installed_boundary_is_executable(self) -> None:
         self.assertTrue(SOURCE_SHIM.stat().st_mode & 0o111, SOURCE_SHIM)
 
+    def test_gh_and_printer_call_shared_formatter_instead_of_defining_one(self) -> None:
+        gh_source = SOURCE_SHIM.read_text()
+        printer_source = (ROOT / "ci-hub/bin/who-am-i").read_text()
+        for source in (gh_source, printer_source):
+            self.assertIn("disclosure_tag.from_resolution", source)
+            self.assertNotIn("class Disclosure", source)
+        self.assertIn("class Disclosure", SOURCE_DISCLOSURE.read_text())
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         (self.root / "ci-hub/bin").mkdir(parents=True)
         (self.root / "ci-hub/lib").mkdir(parents=True)
         self.shim = self.root / "ci-hub/bin/gh"
+        self.printer = self.root / "ci-hub/bin/who-am-i"
         shutil.copy2(SOURCE_SHIM, self.shim)
+        shutil.copy2(ROOT / "ci-hub/bin/who-am-i", self.printer)
         self.shim.chmod(0o755)
+        self.printer.chmod(0o755)
         for dependency in ("agent_identity.py", "taskgraph_db.py"):
             shutil.copy2(ROOT / "ci-hub/lib" / dependency, self.root / "ci-hub/lib" / dependency)
+        shutil.copy2(SOURCE_DISCLOSURE, self.root / "ci-hub/lib/disclosure_tag.py")
 
         self.slot = self.root / "worktrees/slot01"
         self.cwd = self.slot / "hermit"
@@ -131,7 +149,17 @@ class FleetGhTest(unittest.TestCase):
             "class Resolution:\n"
             f"    state={state!r}; agent={agent!r}; model={model!r}; "
             "basis=('fixture',); signals=(Signal(),)\n"
-            "def resolve_identity(pid): return Resolution()\n"
+            "    exit_code={'AGREEMENT':0,'DISAGREEMENT':1}.get(state,2)\n"
+            "def resolve_identity(pid, **kwargs): return Resolution()\n"
+        )
+
+    def run_printer(self, *args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(self.printer), *args],
+            env=self.env,
+            cwd=self.cwd,
+            text=True,
+            capture_output=True,
         )
 
     def test_missing_who_is_distinct_and_refused_before_write(self) -> None:
@@ -201,6 +229,38 @@ class FleetGhTest(unittest.TestCase):
             f"[hermit2, {TEST_AGENT}, gpt-5.6-sol, {machine}, role=impl]\nevidence",
             "RESOLVED MODEL WAS LOST OR REPLACED BY A GUESS",
         )
+
+    def test_gh_and_who_am_i_use_one_byte_identical_tag_formatter(self) -> None:
+        self.install_identity_stub(model="gpt-5.6-sol")
+        posted = self.run_shim(
+            *self.identity(role="impl"),
+            "pr", "comment", "42", "--body", "evidence",
+        )
+        self.assertEqual(0, posted.returncode, posted.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        gh_tag = body.split("\n", 1)[0]
+
+        printed = self.run_printer("--tag", "--role", "impl")
+        self.assertEqual(0, printed.returncode, printed.stderr)
+        self.assertEqual(gh_tag.encode(), printed.stdout.encode())
+        self.assertFalse(
+            printed.stdout.endswith("\n"),
+            "tag printer must not append a newline that changes command substitution",
+        )
+
+    def test_tag_printer_requires_role_and_refuses_unresolved_or_disagreement(self) -> None:
+        missing = self.run_printer("--tag")
+        self.assertEqual(2, missing.returncode)
+        self.assertIn("--role is required", missing.stderr)
+        self.assertEqual("", missing.stdout)
+
+        for state, expected_rc in (("UNRESOLVED", 2), ("DISAGREEMENT", 1)):
+            with self.subTest(state=state):
+                self.install_identity_stub(state=state, agent=None)
+                refused = self.run_printer("--tag", "--role", "impl")
+                self.assertEqual(expected_rc, refused.returncode, refused.stderr)
+                self.assertIn(state, refused.stderr)
+                self.assertEqual("", refused.stdout)
 
     def test_caller_supplied_model_is_refused(self) -> None:
         result = self.run_shim(
@@ -403,11 +463,11 @@ class FleetGhTest(unittest.TestCase):
     def test_mutation_removing_owner_comparison_fails_on_mismatch_post(self) -> None:
         mutant_dir = self.root / "mutant"
         mutant_dir.mkdir()
-        mutant = mutant_dir / "gh"
-        source = SOURCE_SHIM.read_text()
-        needle = "if disclosure.agent != resolution.agent:"
+        mutant = mutant_dir / "disclosure_tag.py"
+        source = SOURCE_DISCLOSURE.read_text()
+        needle = "if claimed_agent is not None and claimed_agent != agent:"
         replacement = (
-            "if False and disclosure.agent != resolution.agent:  "
+            "if False and claimed_agent is not None and claimed_agent != agent:  "
             "# MUTANT: resolved-owner comparison removed"
         )
         self.assertIn(needle, source, "mutation could not locate owner comparison")
@@ -415,7 +475,7 @@ class FleetGhTest(unittest.TestCase):
         mutant.chmod(0o755)
         env = dict(
             os.environ,
-            FLEET_GH_UNDER_TEST=str(mutant),
+            FLEET_DISCLOSURE_TAG_UNDER_TEST=str(mutant),
             FLEET_ATTRIBUTION_MUTATION_CHILD="1",
         )
         child = subprocess.run(
@@ -439,19 +499,16 @@ class FleetGhTest(unittest.TestCase):
     def test_mutation_discarding_resolved_model_is_killed(self) -> None:
         mutant_dir = self.root / "model-mutant"
         mutant_dir.mkdir()
-        mutant = mutant_dir / "gh"
-        source = SOURCE_SHIM.read_text()
-        needle = "return replace(disclosure, model=resolution.model)"
-        replacement = (
-            "return replace(disclosure, model=agent_identity.MODEL_UNRESOLVED)  "
-            "# MUTANT: resolved model discarded"
-        )
+        mutant = mutant_dir / "disclosure_tag.py"
+        source = SOURCE_DISCLOSURE.read_text()
+        needle = "model = resolution.model"
+        replacement = 'model = "unresolved"  # MUTANT: resolved model discarded'
         self.assertIn(needle, source, "mutation could not locate resolved-model binding")
         mutant.write_text(source.replace(needle, replacement, 1))
         mutant.chmod(0o755)
         env = dict(
             os.environ,
-            FLEET_GH_UNDER_TEST=str(mutant),
+            FLEET_DISCLOSURE_TAG_UNDER_TEST=str(mutant),
             FLEET_ATTRIBUTION_MUTATION_CHILD="1",
         )
         child = subprocess.run(
