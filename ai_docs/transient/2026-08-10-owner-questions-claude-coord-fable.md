@@ -433,6 +433,51 @@ identical? If yes, it is worth stating explicitly in policy, because this will r
 by routine queue churn rather than by anything changing. If no, then re-review after every rebase is
 a real and recurring cost that should be planned for rather than absorbed silently.
 
+## Q15 — slot reclaim has been dead for ~21 hours box-wide, and the cap breach in Q8 is its mechanical consequence
+
+This supersedes my framing in Q8. The slot sprawl is not a discipline failure; **the mechanism for
+reducing it has been inoperable since 2026-08-10 04:42 UTC.**
+
+`release-worktree.rs --clean` — the only disk-reclaim path — refuses:
+
+```
+release-worktree: owner authority refused cleanup:
+canonical ORC owner snapshot is not fresh: age=76773s max=600s
+```
+
+Verified at `release-worktree.rs:1172` against `ignored/ci-hub/agent-snapshot.json`:
+
+| field | value |
+|---|---|
+| `captured_at` | 2026-08-10 04:42:59 UTC |
+| file mtime | 2026-08-10 04:42:59 UTC — identical, so genuinely frozen, not rewritten stale |
+| age | **76,810 s ≈ 21.3 hours** against `max=600s` |
+| agents recorded | **6** |
+
+**The defect is an asymmetry.** `allocate-worktree.rs:2068` **warns** on a stale snapshot and
+proceeds; `release-worktree.rs --clean` **refuses**. So while the snapshot is stale you can keep
+creating slots and cannot reclaim any: **slot count becomes a one-way ratchet.** That explains the
+23 directories and the 6 retained non-active rows mechanically — the allocator has been warning
+about sprawl for 21 hours while the mechanism to reduce sprawl was dead.
+
+The snapshot is ORC machinery, written by `scripts/agent-podman.rs`. **A Claude coordinator cannot
+fix it**, and should not: a pane-less native subagent regenerating it would *under*-report agents —
+`AGENTS.md` already records `/proc` holding 29 live agents while a snapshot listed 13, and this one
+lists 6 — so running `--clean` against it would be worse than not running it. It is also the
+artifact that grants the authority being requested, which the Proxy Binding rule forbids planting.
+The agent that found this declined to regenerate it for exactly those two reasons, and declined
+`--force` because this is an *authority* refusal rather than a work-safety one.
+
+**Question 1:** can something ORC-side republish `ignored/ci-hub/agent-snapshot.json`? Three
+reclaims are queued and re-verified safe behind it (`cadence2`, `scorecard`, `slot04` — all
+`released`, zero dirty, zero unique commits, branches already on `main`).
+
+**Question 2, the more durable one:** should `--clean`'s owner-authority gate accept a **scoped**
+proof for a slot whose row is `released` and whose children are clean and fully merged? Those slots
+have **no live owner by construction** — so as written, the gate demands proof of a thing that
+cannot exist for precisely the slots that are safest to reclaim. Making allocate and release
+symmetric on snapshot staleness (both warn, or both refuse) would also remove the ratchet.
+
 ## Not questions — flagged for awareness
 
 - **ORC is down for two independent reasons.** `~/.tg/active_db` names `hermit`, but
