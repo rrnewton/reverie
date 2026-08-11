@@ -5933,7 +5933,7 @@ fn bind_verified_receipt_to_pr(
     if !comment_pages_contain_marker(&comments_json, &marker) {
         let pr_arg = pr.to_string();
         let body = format!(
-            "[coordinator, gpt-5.6-sol]\n\nLocal validation receipt published before applying `{LOCALLY_VALIDATED_LABEL}`.\n\n- SHA: `{sha}`\n- Run ID: `{}`\n- Executed tests: `{}`\n- Producer coverage: `{}`\n- Producer paths: `{}`\n- Producer valid commits: `{}`\n- Receipt identity SHA-256: `{}`\n- Immutable artifact: `{VALIDATION_RECEIPT_REPO}@{receipt_commit}:{}`\n- Artifact SHA-256: `{}`\n- Log SHA-256: `{}`\n\n{marker}",
+            "Local validation receipt published before applying `{LOCALLY_VALIDATED_LABEL}`.\n\n- SHA: `{sha}`\n- Run ID: `{}`\n- Executed tests: `{}`\n- Producer coverage: `{}`\n- Producer paths: `{}`\n- Producer valid commits: `{}`\n- Receipt identity SHA-256: `{}`\n- Immutable artifact: `{VALIDATION_RECEIPT_REPO}@{receipt_commit}:{}`\n- Artifact SHA-256: `{}`\n- Log SHA-256: `{}`\n\n{marker}",
             artifact.run_id,
             artifact.executed_tests,
             artifact.producer_coverage_status,
@@ -5948,9 +5948,24 @@ fn bind_verified_receipt_to_pr(
             artifact.artifact_sha256,
             artifact.log_sha256,
         );
+        let agent = env::var("DG_AGENT_NAME").unwrap_or_default();
         let comment = gh_command(
             root,
-            &["pr", "comment", &pr_arg, "--repo", repo, "--body", &body],
+            &[
+                "--who",
+                &agent,
+                "--team",
+                "hermit2",
+                "--role",
+                "coordinator",
+                "pr",
+                "comment",
+                &pr_arg,
+                "--repo",
+                repo,
+                "--body",
+                &body,
+            ],
         )
         .output()
         .map_err(|source| CiHubError::Launch {
