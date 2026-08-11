@@ -18,9 +18,15 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 from typing import Any
+
+# Stable, greppable marker meaning "this receipt's evidence lives on another
+# host", as distinct from "this receipt is malformed".  Consumers match on this
+# token rather than on path text; see preserve_log().
+FOREIGN_HOST_TOKEN = "RECEIPT-ARTIFACT-FOREIGN-HOST"
 
 # The shared qualifying-receipt predicate lives at the ci-hub root (beside
 # check_outcome.py), one directory above this validation/ package.
@@ -77,9 +83,33 @@ def selected_record(
     return row
 
 
+def short_hostname() -> str:
+    """The canonical short host, matching how ledger rows record ``host``."""
+    return socket.gethostname().split(".", 1)[0]
+
+
 def preserve_log(evidence_dir: Path, sha: str, row: dict[str, Any]) -> Path:
     source = Path(row["log_file"])
     if not source.is_absolute() or not source.is_file():
+        # A receipt's ``log_file`` is recorded through a host-relative
+        # ``{{WORKSPACE_ROOT}}`` token, which LOOKS portable but is not: the
+        # artifact only exists on the machine that produced it.  Resolving it
+        # here on a different host finds nothing, and the bare message below
+        # then reads as a malformed receipt when the real condition is "this
+        # evidence belongs to another machine".  Say which, and emit a stable
+        # token so a caller can distinguish the two without parsing paths.
+        #
+        # The original sentence is preserved verbatim as a prefix: it is the
+        # same-host failure's contract and is pinned by
+        # validation/test_apply_local_label_receipt_reuse.sh.
+        produced_on = row["host"].split(".", 1)[0]
+        here = short_hostname()
+        if produced_on != here:
+            fail(
+                f"ledger log is not a readable absolute file: {source} "
+                f"[{FOREIGN_HOST_TOKEN}: receipt produced on {produced_on}, "
+                f"this host is {here}; the log artifact is not available here]"
+            )
         fail(f"ledger log is not a readable absolute file: {source}")
     evidence_dir.mkdir(parents=True, exist_ok=True)
     started = "".join(ch for ch in row["started_at"] if ch.isalnum())

@@ -458,12 +458,31 @@ else
   say "post-push exact-head validation(head=$HEAD) rc=$VRC: $VS"
   [ "$VRC" -eq 0 ] || abandon "pushed head $HEAD has no accepted exact-head validation authority (rc=$VRC)" 4
   if [ "$producer_exception" -ne 1 ]; then
-    "$ROOT/ci-hub/ci-hub" apply-local-label --pr "$PR" --repo "$R" \
-      || abandon "ledger-guarded apply-local-label failed" 4
-    sleep 4
-    LB=$(with-proxy gh pr view "$PR" -R "$R" --json labels -q '[.labels[].name]|join(",")')
-    grep -q locally-validated <<<"$LB" || abandon "locally-validated stripped immediately (labels=$LB)" 4
-    say "ledger-derived label present; labels=$LB"
+    # The label is a CACHE, not authority: step 4's exact-head check above is the
+    # fail-closed gate and it has already returned rc=0 for this head. So exactly
+    # one apply-local-label failure is survivable -- the receipt was produced on
+    # another host, whose validate log is simply not on this disk. Aborting there
+    # pinned landing to the validating machine (issue #2137): with receipts minted
+    # on one host, no other coordinator could land at all, however green the head.
+    #
+    # Every OTHER failure still abandons. This is narrowed by a stable token the
+    # publisher emits only for the cross-host case, never by exit status alone.
+    ALL_OUT=$("$ROOT/ci-hub/ci-hub" apply-local-label --pr "$PR" --repo "$R" 2>&1); ALRC=$?
+    [ -n "$ALL_OUT" ] && say "apply-local-label: $ALL_OUT"
+    if [ "$ALRC" -ne 0 ]; then
+      if grep -Fq "RECEIPT-ARTIFACT-FOREIGN-HOST" <<<"$ALL_OUT"; then
+        say "WARN: local cache label not applied -- the receipt's evidence lives on the producing host."
+        say "WARN: this does NOT weaken authorization; the exact-head authority for $HEAD returned rc=0."
+        say "WARN: proceeding to merge without the locally-validated cache label (issue #2137)."
+      else
+        abandon "ledger-guarded apply-local-label failed" 4
+      fi
+    else
+      sleep 4
+      LB=$(with-proxy gh pr view "$PR" -R "$R" --json labels -q '[.labels[].name]|join(",")')
+      grep -q locally-validated <<<"$LB" || abandon "locally-validated stripped immediately (labels=$LB)" 4
+      say "ledger-derived label present; labels=$LB"
+    fi
   fi
 fi
 
