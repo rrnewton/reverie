@@ -111,7 +111,8 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("total=110", output)
         self.assertIn("total_scope=cached-all-open-prs-across-2/2-configured-repos", output)
-        self.assertIn("census_ttl_secs=21600", output)
+        self.assertIn("census_ttl_secs=900", output)
+        self.assertIn("population_repo_coverage=2/2", output)
         self.assertIn("census_stale=no", output)
         self.assertIn("ready_non_draft=3", output)
         self.assertIn("rrnewton/hermit:all_open=103,ready_non_draft=3", output)
@@ -277,6 +278,7 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertIn("degraded=yes", output)
         self.assertIn("total=12", output)  # the healthy repo survived
         self.assertIn("repo_coverage=1/2", output)
+        self.assertIn("population_repo_coverage=1/2", output)
         self.assertIn("PARTIAL SAMPLE, NOT A FLEET CENSUS", output)
         self.assertIn("unavailable=b/two", output)
 
@@ -304,6 +306,7 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("state=degraded", output)
         self.assertIn("total=unknown", output)
+        self.assertIn("population_repo_coverage=0/1", output)
         self.assertIn("a/one:all_open=unknown,ready_non_draft=2", output)
         self.assertIn("census_max_age_secs=unknown", output)
         self.assertIn("population_unknown=a/one", output)
@@ -324,6 +327,7 @@ class OperationalHealthTest(unittest.TestCase):
             result, output = self.capture(operational_health.pull_request_gate)
         self.assertEqual(result, 1)
         self.assertIn("state=unavailable", output)
+        self.assertIn("population_repo_coverage=0/2", output)
         self.assertNotIn("state=ok", output)
 
     def test_pull_request_gate_bounds_each_repo_under_the_guillotine(self) -> None:

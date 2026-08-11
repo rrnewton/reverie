@@ -1844,6 +1844,12 @@ class HostedAuthorityFanOutTests(unittest.TestCase):
 
 
 class DraftCensusThrottleTests(unittest.TestCase):
+    def test_census_cache_can_never_outlive_population_freshness(self) -> None:
+        self.assertLessEqual(
+            pr_status.DEFAULT_CENSUS_TTL_SECS,
+            pr_status.CENSUS_FRESHNESS_BOUND_SECS,
+        )
+
     @mock.patch("pr_status.subprocess.run")
     def test_expensive_graphql_query_is_ready_non_draft_only(self, run: mock.Mock) -> None:
         run.return_value = subprocess.CompletedProcess(
@@ -1859,7 +1865,7 @@ class DraftCensusThrottleTests(unittest.TestCase):
         self.assertIn("--search", command)
         self.assertEqual(command[command.index("--search") + 1], "draft:false")
 
-    def test_lightweight_census_is_cached_for_six_hours(self) -> None:
+    def test_lightweight_census_is_cached_within_freshness_bound(self) -> None:
         rows = [
             {"number": 1, "isDraft": False},
             {"number": 2, "isDraft": True},
@@ -1878,6 +1884,34 @@ class DraftCensusThrottleTests(unittest.TestCase):
         self.assertEqual(second, rows)
         self.assertEqual(first_age, 0.0)
         self.assertEqual(second_age, 1.0)
+        fetch.assert_called_once()
+
+    def test_census_older_than_freshness_bound_refreshes_population(self) -> None:
+        stale_rows = [
+            {"number": number, "isDraft": True}
+            for number in range(1, 39)
+        ]
+        current_rows = [
+            {"number": number, "isDraft": True}
+            for number in range(1, 41)
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory)
+            path = pr_status._census_cache_path("rrnewton/hermit", cache)
+            pr_status._write_census_cache(path, stale_rows, now=100.0)
+            with mock.patch.object(
+                pr_status,
+                "_fetch_open_pr_census_rest",
+                return_value=current_rows,
+            ) as fetch:
+                rows, age = pr_status._cached_open_pr_census(
+                    "rrnewton/hermit",
+                    net_wrapper=[],
+                    cache_dir=cache,
+                    now=100.0 + 15 * 60 + 1.0,
+                )
+        self.assertEqual(len(rows), 40)
+        self.assertEqual(age, 0.0)
         fetch.assert_called_once()
 
     def test_expired_census_is_never_returned_when_refresh_is_unavailable(self) -> None:
@@ -1901,7 +1935,7 @@ class DraftCensusThrottleTests(unittest.TestCase):
                         "rrnewton/hermit",
                         net_wrapper=[],
                         cache_dir=cache,
-                        now=100.0 + pr_status.DEFAULT_CENSUS_TTL_SECS + 1.0,
+                        now=100.0 + 15 * 60 + 1.0,
                     )
         fetch.assert_called_once()
 

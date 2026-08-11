@@ -95,8 +95,19 @@ CI_HUB_BIN = Path(os.environ.get("CI_HUB_BIN", ROOT / "ci-hub/ci-hub"))
 DEFAULT_REPOS = ("rrnewton/hermit", "rrnewton/reverie")
 DEFAULT_WARN_THRESHOLD = 10
 MAX_FETCH_ATTEMPTS = 3
-DEFAULT_CENSUS_TTL_SECS = float(
-    os.environ.get("CI_HUB_PR_CENSUS_TTL_SECS", str(6 * 60 * 60))
+# One successful all-open census is authoritative only through the next health
+# cadence.  A longer transport TTL used to let a six-hour-old population bypass
+# the consumer's 15-minute freshness verdict, so newly-created PRs were absent
+# while the count still looked current.  An operator may shorten caching, but
+# may never extend it past the evidence bound.
+CENSUS_FRESHNESS_BOUND_SECS = 15 * 60
+DEFAULT_CENSUS_TTL_SECS = min(
+    float(
+        os.environ.get(
+            "CI_HUB_PR_CENSUS_TTL_SECS", str(CENSUS_FRESHNESS_BOUND_SECS)
+        )
+    ),
+    CENSUS_FRESHNESS_BOUND_SECS,
 )
 DEFAULT_CENSUS_CACHE_DIR = ROOT / "ignored/ci-hub/pr-census-cache"
 

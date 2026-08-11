@@ -84,12 +84,10 @@ PR_GATE_TOTAL_BUDGET_SECS = float(
 PR_GATE_MIN_REPO_BUDGET_SECS = float(
     os.environ.get("CI_HUB_PR_GATE_MIN_REPO_BUDGET", "4")
 )
-# The census cache TTL is a transport/rate-limit policy, not permission to call
-# an hours-old count current.  The open-PR tick runs every 900s, so after one
-# cadence without a fresh all-open census the count must qualify its own age and
-# the tick must fire.  Keeping this separate from DEFAULT_CENSUS_TTL_SECS is the
-# contract: changing when cache entries expire cannot make a stale verdict true.
-PR_CENSUS_VERDICT_FRESH_SECS = 15 * 60
+# Population discovery and its verdict use one evidence bound.  The cache may
+# be configured shorter, but pr_status clamps it so it can never outlive this
+# 15-minute authority window and silently omit newer PRs.
+PR_CENSUS_VERDICT_FRESH_SECS = pr_status.CENSUS_FRESHNESS_BOUND_SECS
 
 
 def pr_gate_repo_budget(
@@ -409,6 +407,7 @@ def pull_request_gate() -> int:
                 "prerequisite_no_result_checks": 0,
                 "outage": "no",
                 "degraded": "yes",
+                "population_repo_coverage": f"0/{len(repos)}",
                 "summary": (
                     f"PR population and CI health UNAVAILABLE across 0/{len(repos)} "
                     f"configured repos ({'|'.join(repos)}); this is not zero open PRs. "
@@ -450,6 +449,9 @@ def pull_request_gate() -> int:
     population_unknown = [
         repo for repo, count in all_open_by_repo.items() if count is None
     ]
+    population_coverage = (
+        f"{len(statuses) - len(population_unknown)}/{len(repos)}"
+    )
     all_open: int | str = (
         sum(count for count in all_open_by_repo.values() if count is not None)
         if not population_unknown
@@ -517,7 +519,8 @@ def pull_request_gate() -> int:
         f"{all_open_clause} across {coverage} configured repos ({repo_scope}); "
         f"all-open census max_age_s={census_max_age},"
         f"freshness_bound_s={PR_CENSUS_VERDICT_FRESH_SECS},"
-        f"cache_ttl_s={pr_status.DEFAULT_CENSUS_TTL_SECS:.0f}; "
+        f"cache_ttl_s={pr_status.DEFAULT_CENSUS_TTL_SECS:.0f},"
+        f"population_coverage={population_coverage}; "
         f"ready_non_draft={ready_non_draft}, with ready-head CI "
         f"red={counts['red']},pending={counts['pending']},green={counts['green']},"
         f"real_reds={counts['real_reds']},"
@@ -549,6 +552,7 @@ def pull_request_gate() -> int:
             ),
             "stale_census_repos": "|".join(stale_census_repos) or "none",
             "census_ttl_secs": round(pr_status.DEFAULT_CENSUS_TTL_SECS),
+            "population_repo_coverage": population_coverage,
             "repo_coverage": coverage,
             "configured_repos": "|".join(repos),
             "measured_repos": "|".join(measured_repos),
