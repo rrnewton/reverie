@@ -8,6 +8,7 @@ import sys
 import tempfile
 import pathlib
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -342,6 +343,52 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("success", record["result"])
         self.assertEqual(55, record["executed_nodes"])
         self.assertEqual("observer-only", record["pane_role"])
+
+    def test_ambient_ci_dag_jobs_is_not_inherited_without_explicit_override(self) -> None:
+        self.environment["CI_DAG_JOBS"] = "64"
+        with mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(0, rc, error)
+        systemd = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        self.assertFalse(any(item.startswith("CI_DAG_JOBS=") for item in systemd))
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertNotIn("dag_jobs", record)
+
+    def test_explicit_ci_dag_jobs_reaches_unit_and_run_record(self) -> None:
+        with mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None):
+            rc, _output, error = self.invoke(["--ci-dag-jobs", "32", "--", "full"])
+
+        self.assertEqual(0, rc, error)
+        systemd = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        self.assertEqual(1, systemd.count("CI_DAG_JOBS=32"))
+        index = systemd.index("CI_DAG_JOBS=32")
+        self.assertEqual("--setenv", systemd[index - 1])
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual(32, record["dag_jobs"])
+
+    def test_nonpositive_ci_dag_jobs_is_refused_before_launch(self) -> None:
+        for value in ("0", "-1"):
+            with self.subTest(value=value):
+                self.fake.commands.clear()
+                rc, _output, error = self.invoke(["--ci-dag-jobs", value])
+                self.assertEqual(2, rc)
+                self.assertIn("--ci-dag-jobs must be positive", error)
+                self.assertFalse(
+                    any(command[0] == "systemd-run" for command in self.fake.commands)
+                )
 
     def test_collected_sigterm_records_143_but_wrapper_reports_no_authority(self) -> None:
         self.fake.actual_exit = 143

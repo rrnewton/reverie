@@ -697,6 +697,7 @@ def build_systemd_command(
     make_validate: bool = False,
     allow_owner_validate_symlink: bool = False,
     cargo_home: Path | None = None,
+    ci_dag_jobs: int | None = None,
 ) -> list[str]:
     home = environment.get("HOME", "")
     path = environment.get("PATH", "")
@@ -709,6 +710,13 @@ def build_systemd_command(
             if not value.isdigit() or int(value) <= 0:
                 raise ValueError(f"{key} must be a positive integer, got {value!r}")
             build_budget_env.extend(["--setenv", f"{key}={value}"])
+    # Scheduler width is a per-run experimental input, not ambient caller
+    # state.  Requiring the typed option keeps ordinary validation byte-for-byte
+    # on VALIDATE's existing default and makes every non-default run attributable.
+    if ci_dag_jobs is not None:
+        if ci_dag_jobs <= 0:
+            raise ValueError(f"CI_DAG_JOBS must be a positive integer, got {ci_dag_jobs!r}")
+        build_budget_env.extend(["--setenv", f"CI_DAG_JOBS={ci_dag_jobs}"])
     # Last, so it cannot be shadowed by a caller-supplied CARGO_HOME: the whole
     # point is that this run does not share a package-cache lock with the box.
     if cargo_home is not None:
@@ -1025,6 +1033,14 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--hold", type=int, default=1200, help="validate-lock lease seconds")
     result.add_argument("--child-deadline", type=int, default=3600)
     result.add_argument(
+        "--ci-dag-jobs",
+        type=int,
+        help=(
+            "explicit per-run DAG scheduler width propagated into the detached unit; "
+            "when absent, preserve VALIDATE's current default"
+        ),
+    )
+    result.add_argument(
         "--make-validate",
         action="store_true",
         help=(
@@ -1070,7 +1086,18 @@ def main(
         print("validate-run: REFUSED: caller poll seconds must be positive", file=sys.stderr)
         return 2
     if args.attach:
-        if any((args.checkout, args.agent, args.target, args.pr, args.unit, args.log, args.dry_run)):
+        if any(
+            (
+                args.checkout,
+                args.agent,
+                args.target,
+                args.pr,
+                args.unit,
+                args.log,
+                args.ci_dag_jobs,
+                args.dry_run,
+            )
+        ):
             print(
                 "validate-run: REFUSED: --attach cannot be combined with launch arguments",
                 file=sys.stderr,
@@ -1116,6 +1143,9 @@ def main(
         return 2
     if min(args.wait, args.hold, args.child_deadline) <= 0:
         print("validate-run: REFUSED: wait/hold/child-deadline must be positive", file=sys.stderr)
+        return 2
+    if args.ci_dag_jobs is not None and args.ci_dag_jobs <= 0:
+        print("validate-run: REFUSED: --ci-dag-jobs must be positive", file=sys.stderr)
         return 2
 
     fresh_checkout: Path | None = None
@@ -1167,6 +1197,7 @@ def main(
             make_validate=args.make_validate,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
             cargo_home=private_cargo_home,
+            ci_dag_jobs=args.ci_dag_jobs,
         )
         if args.dry_run:
             pane = None
@@ -1187,6 +1218,11 @@ def main(
                     "producer": "systemd-user-v1",
                     "admission": "ci-hub validate-lock",
                     "pane_role": "observer-only",
+                    **(
+                        {"dag_jobs": args.ci_dag_jobs}
+                        if args.ci_dag_jobs is not None
+                        else {}
+                    ),
                 },
             )
             # The pane is OBSERVER-ONLY: it watches the durable log and the
@@ -1264,6 +1300,8 @@ def main(
         "pane_id": pane.pane_id if pane else None,
         "command": command if args.dry_run else None,
     }
+    if args.ci_dag_jobs is not None:
+        report["dag_jobs"] = args.ci_dag_jobs
     emit_report(report, json_output=args.json)
     if args.dry_run:
         if not args.json:
