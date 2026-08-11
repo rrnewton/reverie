@@ -405,6 +405,34 @@ Worth noting this is the same defect shape as the classification census triple (
 reality, with nothing enforcing the sync.** Three instances in one night suggests it is a pattern
 worth naming in policy rather than fixing three times.
 
+## Q14 — does a dual review carry across a rebase proven content-identical by `patch-id`?
+
+Concrete case, and I ruled conservatively pending your answer.
+
+Reverie **#403** ("route timestamp reads through Tool") had a completed dual adversarial PASS. A
+rebase on 2026-08-08 voided the approval labels, and the re-review was never delivered in the two
+days since. The agent working it produced strong evidence that the rebase changed nothing:
+**`git patch-id --stable` is identical (`cbe0798d…`) at both `a6aa8bc4` and `f178de87`.** Its
+argument: patch-id carries the *content* review, and the exact-head hosted green covers
+*integration*, so between them nothing is unreviewed.
+
+I find that reasoning sound on its merits and **still declined to act on it**, for two reasons that
+are about authority rather than evidence:
+
+1. Policy states plainly that **reviews bind to the exact head**. Reading a principled exception
+   into that is a change to the rule, not an application of it.
+2. **A peer coordinator voided those labels.** Overriding another team's deliberate act on my own
+   judgement is exactly the trampling I have been telling my agents not to do.
+
+I directed a fresh review at the current head instead — reviews cost no validate lock, which is the
+actually scarce resource.
+
+**Question:** should a completed dual review carry across a rebase whose `patch-id` is provably
+identical? If yes, it is worth stating explicitly in policy, because this will recur constantly —
+`strict: true` forces every Reverie PR to rebase whenever any sibling lands, so approvals are voided
+by routine queue churn rather than by anything changing. If no, then re-review after every rebase is
+a real and recurring cost that should be planned for rather than absorbed silently.
+
 ## Not questions — flagged for awareness
 
 - **ORC is down for two independent reasons.** `~/.tg/active_db` names `hermit`, but
