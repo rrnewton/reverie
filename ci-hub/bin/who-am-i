@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Report the calling agent identity without guessing through blind spots."""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "ci-hub" / "lib"))
+
+import agent_identity  # noqa: E402
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--pid",
+        type=int,
+        default=os.getppid(),
+        help="caller PID to resolve (default: this command's parent)",
+    )
+    parser.add_argument("--proc-root", type=Path, default=Path("/proc"))
+    parser.add_argument("--repo-root", type=Path, default=ROOT)
+    parser.add_argument("--state", type=Path, help="worktree-state.json override")
+    parser.add_argument("--task", help="active TaskGraph task to cross-check")
+    parser.add_argument("--db", type=Path, help="TaskGraph database override")
+    parser.add_argument("--json", action="store_true", help="emit stable schema-1 JSON")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    result = agent_identity.resolve_identity(
+        args.pid,
+        proc_root=args.proc_root,
+        repo_root=args.repo_root,
+        state_path=args.state,
+        task_id=args.task,
+        task_db=args.db,
+    )
+    if args.json:
+        print(result.to_json())
+    else:
+        print(f"state={result.state}")
+        print(f"agent={result.agent or ''}")
+        print(f"primary_source={result.primary_source or ''}")
+        print("basis=" + ",".join(result.basis))
+        for signal in result.signals:
+            candidates = ",".join(signal.candidates)
+            print(
+                f"signal source={signal.source} state={signal.state} "
+                f"agent={signal.agent or ''} candidates={candidates} detail={signal.detail}"
+            )
+    return result.exit_code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
