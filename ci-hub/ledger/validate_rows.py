@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Iterable
 
 from ledger import read_shard, union_events, validate_event
-from publisher import spool, spooled
+from publisher import retained, spool, spooled
 WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
 HOME_TOKEN = "{{HOME}}"
 LIVE_SPOOL_RELATIVE = Path("ignored/ci-hub/validate-ledger-spool")
@@ -181,6 +181,15 @@ def events(*, root: Path | None = None) -> list[dict]:
         gathered.extend(read_shard(path))
     for pending in spooled(live_spool_dir(root)).values():
         gathered.extend(pending)
+    # Retained batches are PUBLISHED but not yet durable in THIS checkout. A
+    # reader that skipped them would blink: publication writes through a
+    # separate clone, so between the publish and this root's next sync the
+    # receipt is in neither the spool nor the tracked shards. Measured
+    # 2026-08-11 -- a producer answered NOT-VALIDATED with 0 records for a
+    # receipt it had published seconds earlier. Unioning them closes that gap;
+    # event_id dedup makes the overlap with tracked shards free.
+    for published in retained(live_spool_dir(root)).values():
+        gathered.extend(published)
     return union_events(gathered)
 
 

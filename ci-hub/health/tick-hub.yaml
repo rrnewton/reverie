@@ -105,8 +105,9 @@ reminders:
   # tracked shards. From 2026-08-09 22:39 until 2026-08-11 this publication path
   # was stalled with no alarm. A zero-row consumer could not distinguish that
   # outage from "no validations ran". Measure the missing quantity directly:
-  # completed batch count and age of the oldest unpublished batch. DETECT ONLY;
-  # the serialized publisher remains the authority that may drain the spool.
+  # completed batch count and age of the oldest unpublished batch. This entry is
+  # DETECT ONLY and stays that way; the mutation lives in its own entry below so
+  # observation never shares a budget with a push (see ledger_publish_sweep).
   - name: ledger_spool_backlog
     cadence_secs: 900
     gate:
@@ -119,6 +120,38 @@ reminders:
       fields:
         component: ledger-spool-backlog
       title: "validation ledger publication is stalled: {summary}"
+
+  # The mutation half, deliberately separated from the detector above. Detection
+  # was never the whole problem: publication was a MANUAL command, so a receipt
+  # stayed readable only by the parent that produced it -- VALIDATED to its
+  # producer and NOT-VALIDATED to every other actor, landing authority included.
+  # That recurred three times on 2026-08-11, worst case a fully qualifying
+  # 794-second green invisible for 55 minutes.
+  #
+  # This LAUNCHES DETACHED and returns in ~0.04s; it never waits. That is not a
+  # style choice: `unpushed_parent_commits --rescue` was removed on 2026-08-08
+  # because a 65-75s mutation on the 30s gate budget made that gate report
+  # "could not run ... timed out" every cycle for a day and emit no measurement
+  # at all. A publish is heavier than a rescue, so it gets its own budget and
+  # the detector keeps its own. The exit code reports only whether the unit was
+  # ACCEPTED; whether publication succeeded is reported by the next
+  # ledger_spool_backlog observation, which is the honest place for it.
+  #
+  # No new authority: this schedules the existing publisher, which writes only
+  # through a dedicated clone, goes out via the serialized parent-main-write,
+  # appends only, and drops a batch solely after the commit carrying it is
+  # confirmed an ancestor of the freshly fetched remote.
+  - name: ledger_publish_sweep
+    cadence_secs: 900
+    gate:
+      cmd: ./ci-hub/ledger/launch_publish_backlog.sh
+      when: failure
+      capture: true
+    emit:
+      kind: note
+      fields:
+        component: ledger-publish-sweep
+      title: "ledger publish sweep: {summary}"
 
   # Emits ONLY a supportable verdict. Today the series cannot support one
   # (retention 3.91d < 90d; conditioning 4/26 = 15% < 90%), so this HOLDS at rc=0

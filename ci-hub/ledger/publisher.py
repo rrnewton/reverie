@@ -157,8 +157,40 @@ def _spool_snapshot(
     return ({key: union_events(value) for key, value in pending.items()}, files)
 
 
+#: Batches proven published but not yet durable in the PRODUCING checkout.
+#:
+#: Dropping a batch the instant ancestry is proven blinds its own producer:
+#: publication writes through a separate dedicated clone, so between the drop
+#: and the producer's next sync the producing root has lost the spool copy and
+#: not yet gained the published shard. Measured 2026-08-11 on devbig014 -- a
+#: producer answered NOT-VALIDATED with 0 records for a receipt it had published
+#: seconds earlier, which is indistinguishable from "never ran".
+#:
+#: Retention is a MOVE, not a copy, and it is atomic within one filesystem. The
+#: batch stays readable by `spooled()` so the producer never goes blind, while
+#: `_spool_snapshot` keeps globbing only the top level so a retained batch is
+#: never republished. `ledger_spool_backlog` filters on `*.jsonl` entries and so
+#: does not count this directory as backlog -- retained is published, not stalled.
+RETAINED_SUBDIR = "published"
+
+
+def retained_dir(spool_dir: str | os.PathLike[str]) -> Path:
+    return Path(spool_dir) / RETAINED_SUBDIR
+
+
+def retained(spool_dir: str | os.PathLike[str]) -> dict[tuple[str, str, str], list[dict]]:
+    """Published-but-not-yet-durable batches, keyed like ``spooled``."""
+    return _spool_snapshot(retained_dir(spool_dir))[0]
+
+
 def spooled(spool_dir: str | os.PathLike[str]) -> dict[tuple[str, str, str], list[dict]]:
-    """Every pending event, keyed by (team, host, month)."""
+    """Every PENDING event, keyed by (team, host, month).
+
+    Pending means not yet published. Retained batches are excluded here on
+    purpose: this is the publisher's view, and a retained batch must never be
+    republished. The READER's view is `validate_rows.events`, which unions this
+    with `retained` so a producer keeps seeing its own receipt.
+    """
     return _spool_snapshot(spool_dir)[0]
 
 
@@ -402,9 +434,20 @@ def publish(
         status = _git(repo, "status", "--porcelain")
         if status.stdout.strip():
             raise PublishRefused("publisher checkout is not clean")
+    # Reap first: batches the PRODUCING root can now read for itself are done
+    # being retained. Doing it here means every publish run also collects what
+    # the previous run left behind, with no separate schedule to forget.
+    reaped = reap_retained(spool_dir, Path(source_root)) if source_root else 0
+
     pending, snapshot_files = _spool_snapshot(spool_dir)
     if not pending:
-        return {"published": 0, "commit": None, "attempts": 0, "shards": []}
+        return {
+            "published": 0,
+            "commit": None,
+            "attempts": 0,
+            "shards": [],
+            "reaped_retained": reaped,
+        }
 
     # Validate before touching Git. A refused batch stays spooled and visible
     # rather than being written into shared history and linted afterwards.
@@ -476,6 +519,8 @@ def publish(
                 return {"published": sum(len(v) for v in pending.values()),
                         "commit": commit, "attempts": attempt, "shards": written,
                         "ancestry": f"{commit} is an ancestor of {remote}/{branch}",
+                        "reaped_retained": reaped,
+                        "retained": len(snapshot_files),
                         "transport": "parent-main-write" if serialized_writer else "git"}
             last_error = "push reported success but the commit is not an ancestor of the branch"
             continue
@@ -493,9 +538,63 @@ def publish(
 
 
 def _drain(snapshot_files: Sequence[Path]) -> None:
-    """Remove only immutable batches proven published; later batches survive."""
+    """Retain only immutable batches proven published; later batches survive.
+
+    The safety property is unchanged and is not weakened here: this still runs
+    ONLY after the commit carrying the batch is confirmed an ancestor of the
+    freshly-fetched remote. What changes is that a proven batch is MOVED into
+    the retention directory instead of unlinked, so the producing root keeps
+    reading it until the published shard is durably present there. Reaping is
+    `reap_retained`, and it is conditional on that durability.
+    """
     for path in snapshot_files:
+        if not path.exists():
+            continue
+        destination = retained_dir(path.parent)
+        destination.mkdir(parents=True, exist_ok=True)
+        # Same filesystem, so this is atomic: a reader sees the batch at exactly
+        # one of the two paths, never neither.
+        os.replace(path, destination / path.name)
+
+
+def _source_root_event_ids(source_root: Path) -> set[str]:
+    """Event ids the PRODUCING checkout can itself read from tracked shards."""
+    present: set[str] = set()
+    pattern = "ledger/*/*/[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl"
+    for path in sorted(Path(source_root).glob(pattern)):
+        for event in read_shard(path):
+            identifier = event.get("event_id")
+            if isinstance(identifier, str) and identifier:
+                present.add(identifier)
+    return present
+
+
+def reap_retained(spool_dir: str | os.PathLike[str], source_root: Path) -> int:
+    """Delete retained batches now durably readable from the source root.
+
+    This is the exact condition the retention exists for: a batch may be
+    forgotten only once the producing checkout itself contains the published
+    event, not merely once some other clone does. A batch whose events are not
+    all present stays retained, so a source root that never syncs keeps its
+    copy rather than losing visibility.
+    """
+    directory = retained_dir(spool_dir)
+    if not directory.is_dir():
+        return 0
+    durable = _source_root_event_ids(Path(source_root))
+    reaped = 0
+    for path in sorted(directory.glob("*.jsonl")):
+        events = read_shard(path)
+        identifiers = {
+            event.get("event_id")
+            for event in events
+            if isinstance(event.get("event_id"), str)
+        }
+        if not identifiers or not identifiers <= durable:
+            continue
         path.unlink(missing_ok=True)
+        reaped += 1
+    return reaped
 
 
 def main(argv: list[str] | None = None) -> int:
