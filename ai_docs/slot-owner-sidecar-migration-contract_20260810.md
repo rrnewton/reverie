@@ -360,3 +360,18 @@ After the path handoff, implement in one semantic sequence: common verifier and
 read-only status; validate/land adapters; slot renewal plus two-phase release;
 pane adapter with recordless-old refusal; compatibility front doors; then
 policy updates and cross-consumer mutation tests.
+
+#### Publication-time reconciliation
+
+While this artifact waited for the serialized parent writer, order 2 landed as
+parent commit `b4708652746df4950bddadd4dce756ad3b805c8b` immediately before this
+document. It changes only `ci-hub/lib/landing_lock.rs` and
+`ci-hub/lib/validate_lock.rs`, is on current `origin/main`, and records the
+attester/evidence contract. Those two paths are now clean, so order 2 is
+**satisfied**, not an outstanding wait.
+
+The remaining implementation blockers at publication are order 1, the active
+`codex-2` receipt-prefix repair, and order 3, the loose
+`scripts/release-worktree.rs` plus target-scope test owned by
+`codex-validatelock`. The unified lease implementation starts only after both
+are published or explicitly handed off and their overlapping paths are clean.
