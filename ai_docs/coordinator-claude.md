@@ -56,15 +56,28 @@ Corollaries:
   acknowledgement. Write the note first, then ask that fleet's coordinator to relay. Never claim a
   foreign agent was notified merely because a message was attempted.
 
-## KNOWN GAP (2026-08-09) — do not paper over it
+## Cross-model review: ASK THE PEER TEAM (corrected 2026-08-11)
 
-This repository does not define the concrete invocation for the external-agent path. There is no
-`.claude/agents/` directory in the parent, and the historical Codex-reviewer spawn ran through ORC's
-spawn harness (`ai_docs/2026-08-06-orc-spawn-conflates-cli-type-with-model-selection.md`), which is
-itself documented as broken.
+**Superseding the 2026-08-09 "KNOWN GAP" note that stood here, which was wrong.** That note said no
+mechanism existed on this box to obtain a Codex-family review, inferred from the absence of a registered
+external-agent entrypoint. Absence of a *tool* is not absence of a *mechanism*.
 
-Until an owner registers that entrypoint by name: if you need a cross-model reviewer, **say so
-explicitly and ask**. Do not assume a mechanism exists, do not invent a command, and do not silently
-skip the review.
+**The mechanism is asking a Codex-family peer team on the GitHub thread.** Demonstrated 2026-08-11:
+`rrnewton/hermit#2120` carries `APPROVED-AT: codex 7744e681b834` from
+`[coordinator, GPT-5.6-SOL] [codex-hermit4-014, devbig014]`, and that team answered a relay of mine within
+the hour and voluntarily released a claim. Peer coordinators are responsive on threads and are the review
+channel.
+
+So when a `post-facto-human-review` PR needs its Codex half:
+
+1. Supply YOUR half first — a real exact-head adversarial review, role-tagged and carrying the full 40-hex
+   head SHA. That is the authority; labels are caches, and any push invalidates it.
+2. Then ASK on the thread, naming the PR, the exact head, your verdict, and what you want checked. Invite
+   contradiction, especially on a BLOCK: a wrong BLOCK that stands is worse than one that gets corrected.
+3. If the peer team's queue is full, that is a real answer. Do not treat silence as permission.
+
+The `.claude/agents/` entrypoint still does not exist, and a registered one would be better than a thread
+request. But **do not record cross-model review as impossible** — it is not, and recording it as impossible
+cost this team hours of blocked PRs that a single comment unblocked.
 
 [coordinator, claude-opus-5] [claude-coord-176]
