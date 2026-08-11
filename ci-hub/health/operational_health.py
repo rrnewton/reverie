@@ -84,6 +84,12 @@ PR_GATE_TOTAL_BUDGET_SECS = float(
 PR_GATE_MIN_REPO_BUDGET_SECS = float(
     os.environ.get("CI_HUB_PR_GATE_MIN_REPO_BUDGET", "4")
 )
+# The census cache TTL is a transport/rate-limit policy, not permission to call
+# an hours-old count current.  The open-PR tick runs every 900s, so after one
+# cadence without a fresh all-open census the count must qualify its own age and
+# the tick must fire.  Keeping this separate from DEFAULT_CENSUS_TTL_SECS is the
+# contract: changing when cache entries expire cannot make a stale verdict true.
+PR_CENSUS_VERDICT_FRESH_SECS = 15 * 60
 
 
 def pr_gate_repo_budget(
@@ -453,7 +459,8 @@ def pull_request_gate() -> int:
     )
     repo_scope = "|".join(
         f"{repo}:all_open={all_open_by_repo[repo] if all_open_by_repo[repo] is not None else 'unknown'},"
-        f"ready_non_draft={ready_by_repo[repo]}"
+        f"ready_non_draft={ready_by_repo[repo]},"
+        f"census_age_s={round(census_age_by_repo[repo], 1) if isinstance(census_age_by_repo[repo], (int, float)) else 'unknown'}"
         for repo in measured_repos
     )
     coverage = f"{len(statuses)}/{len(repos)}"
@@ -461,21 +468,54 @@ def pull_request_gate() -> int:
         age for age in census_age_by_repo.values() if isinstance(age, (int, float))
     ]
     census_max_age = round(max(known_census_ages), 1) if known_census_ages else "unknown"
+    census_age_unknown = [
+        repo
+        for repo in measured_repos
+        if all_open_by_repo[repo] is not None
+        and not isinstance(census_age_by_repo[repo], (int, float))
+    ]
+    stale_census_repos = [
+        repo
+        for repo in measured_repos
+        if isinstance(census_age_by_repo[repo], (int, float))
+        and census_age_by_repo[repo] > PR_CENSUS_VERDICT_FRESH_SECS
+    ]
+    census_stale = bool(stale_census_repos)
+    census_freshness_unknown = bool(census_age_unknown)
+    if census_stale:
+        all_open_clause = (
+            f"all_open={all_open} AS-OF UP TO {census_max_age}s AGO "
+            f"(STALE; freshness_bound_s={PR_CENSUS_VERDICT_FRESH_SECS})"
+        )
+    elif census_freshness_unknown:
+        all_open_clause = (
+            f"all_open={all_open} AS-OF UNKNOWN "
+            f"(FRESHNESS UNKNOWN; freshness_bound_s={PR_CENSUS_VERDICT_FRESH_SECS})"
+        )
+    else:
+        # A fresh count retains the compact present-tense form.  The bracket
+        # proves this branch and the stale branch use the same consumer.
+        all_open_clause = f"all_open={all_open}"
     outage = any(status.outage_suspected for status in statuses)
     unhealthy = counts["real_reds"] > 0 or outage
-    degraded = bool(unavailable or population_unknown)
+    coverage_degraded = bool(unavailable or population_unknown)
+    degraded = bool(
+        coverage_degraded or census_stale or census_freshness_unknown
+    )
     if unhealthy:
         state = "red"
     elif degraded:
-        # Real reds vs partial coverage are different alarms: "degraded" tells the
-        # coordinator the answer is incomplete (a repo was slow/blocked), not that
-        # PRs are failing.
+        # Real reds and an untrustworthy census are different alarms:
+        # "degraded" says the population answer is partial, stale, or freshness-
+        # unknown, not that a PR's product checks failed.
         state = "degraded"
     else:
         state = "ok"
     summary = (
-        f"all_open={all_open} across {coverage} configured repos ({repo_scope}); "
-        f"all-open census max_age_s={census_max_age},ttl_s={pr_status.DEFAULT_CENSUS_TTL_SECS:.0f}; "
+        f"{all_open_clause} across {coverage} configured repos ({repo_scope}); "
+        f"all-open census max_age_s={census_max_age},"
+        f"freshness_bound_s={PR_CENSUS_VERDICT_FRESH_SECS},"
+        f"cache_ttl_s={pr_status.DEFAULT_CENSUS_TTL_SECS:.0f}; "
         f"ready_non_draft={ready_non_draft}, with ready-head CI "
         f"red={counts['red']},pending={counts['pending']},green={counts['green']},"
         f"real_reds={counts['real_reds']},"
@@ -483,19 +523,29 @@ def pull_request_gate() -> int:
         f"prerequisite_no_result={counts['prerequisite_no_result_checks']},"
         f"outage={'yes' if outage else 'no'}"
     )
-    if degraded:
+    if coverage_degraded:
         summary += (
             "; PARTIAL SAMPLE, NOT A FLEET CENSUS; unavailable="
             + ("|".join(repo for repo, _ in unavailable) or "none")
             + "; population_unknown="
             + ("|".join(population_unknown) or "none")
         )
+    if census_stale:
+        summary += "; STALE CENSUS REPOS=" + "|".join(stale_census_repos)
+    if census_freshness_unknown:
+        summary += "; CENSUS FRESHNESS UNKNOWN REPOS=" + "|".join(census_age_unknown)
     _emit(
         {
             "state": state,
             "total": all_open,
             "total_scope": f"cached-all-open-prs-across-{coverage}-configured-repos",
             "census_max_age_secs": census_max_age,
+            "census_freshness_bound_secs": PR_CENSUS_VERDICT_FRESH_SECS,
+            "census_stale": "yes" if census_stale else "no",
+            "census_freshness_unknown": (
+                "yes" if census_freshness_unknown else "no"
+            ),
+            "stale_census_repos": "|".join(stale_census_repos) or "none",
             "census_ttl_secs": round(pr_status.DEFAULT_CENSUS_TTL_SECS),
             "repo_coverage": coverage,
             "configured_repos": "|".join(repos),

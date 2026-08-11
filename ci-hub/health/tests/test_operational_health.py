@@ -82,6 +82,7 @@ class OperationalHealthTest(unittest.TestCase):
             SimpleNamespace(
                 repo="a/one",
                 all_open=103,
+                population_age_secs=30.0,
                 open=3,
                 red=1,
                 green=1,
@@ -92,6 +93,7 @@ class OperationalHealthTest(unittest.TestCase):
             SimpleNamespace(
                 repo="b/two",
                 all_open=7,
+                population_age_secs=45.0,
                 open=0,
                 red=0,
                 green=0,
@@ -110,11 +112,104 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertIn("total=110", output)
         self.assertIn("total_scope=cached-all-open-prs-across-2/2-configured-repos", output)
         self.assertIn("census_ttl_secs=21600", output)
+        self.assertIn("census_stale=no", output)
         self.assertIn("ready_non_draft=3", output)
         self.assertIn("rrnewton/hermit:all_open=103,ready_non_draft=3", output)
         self.assertIn("rrnewton/reverie:all_open=7,ready_non_draft=0", output)
         self.assertIn("red=1", output)
         self.assertIn("pending=1", output)
+
+    def test_fresh_and_stale_census_verdicts_bracket_same_count_consumer(self) -> None:
+        def status(repo: str, count: int, age: float) -> SimpleNamespace:
+            return SimpleNamespace(
+                repo=repo,
+                all_open=count,
+                population_age_secs=age,
+                open=0,
+                red=0,
+                green=0,
+                pending=0,
+                real_reds=0,
+                outage_suspected=False,
+            )
+
+        repos = ["rrnewton/hermit", "rrnewton/reverie", "rrnewton/agent-utils"]
+        fresh_statuses = [
+            status(repos[0], 83, 30.0),
+            status(repos[1], 7, 20.0),
+            status(repos[2], 5, 10.0),
+        ]
+        with mock.patch.object(
+            operational_health.pr_status, "DEFAULT_REPOS", repos
+        ), mock.patch.object(
+            operational_health.pr_status,
+            "fetch_repo_status",
+            side_effect=fresh_statuses,
+        ):
+            fresh_result, fresh_output = self.capture(
+                operational_health.pull_request_gate
+            )
+
+        self.assertEqual(fresh_result, 0)
+        self.assertIn("state=ok", fresh_output)
+        self.assertIn("total=95", fresh_output)
+        self.assertIn("summary=all_open=95 across 3/3", fresh_output)
+        self.assertIn("census_stale=no", fresh_output)
+        self.assertNotIn("STALE", fresh_output)
+        self.assertNotIn("AS-OF", fresh_output)
+
+        aged_statuses = [
+            status(repos[0], 135, 13806.4),
+            status(repos[1], 7, 13800.0),
+            status(repos[2], 5, 13790.0),
+        ]
+        with mock.patch.object(
+            operational_health.pr_status, "DEFAULT_REPOS", repos
+        ), mock.patch.object(
+            operational_health.pr_status,
+            "fetch_repo_status",
+            side_effect=aged_statuses,
+        ):
+            stale_result, stale_output = self.capture(
+                operational_health.pull_request_gate
+            )
+
+        self.assertEqual(stale_result, 1)
+        self.assertIn("state=degraded", stale_output)
+        self.assertIn("total=147", stale_output)
+        self.assertIn(
+            "summary=all_open=147 AS-OF UP TO 13806.4s AGO "
+            "(STALE; freshness_bound_s=900) across 3/3",
+            stale_output,
+        )
+        self.assertIn("census_stale=yes", stale_output)
+        self.assertIn(
+            "stale_census_repos=rrnewton/hermit|rrnewton/reverie|rrnewton/agent-utils",
+            stale_output,
+        )
+        self.assertNotIn("PARTIAL SAMPLE", stale_output)
+        self.assertIn(
+            "STALE CENSUS REPOS=rrnewton/hermit|rrnewton/reverie|rrnewton/agent-utils",
+            stale_output,
+        )
+        # The tick title interpolates this exact summary.  Prove that its
+        # consumer cannot recover the old present-tense reading.
+        config = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "tick-hub.yaml").read_text()
+        )
+        reminder = next(
+            row
+            for row in config["reminders"]
+            if row["name"] == "pull_request_health"
+        )
+        fields = dict(
+            line.split("=", 1)
+            for line in stale_output.splitlines()
+            if "=" in line
+        )
+        title = reminder["emit"]["title"].format(**fields)
+        self.assertIn("all_open=147 AS-OF UP TO 13806.4s AGO (STALE", title)
+        self.assertNotIn("all_open=147 across", title)
 
     def test_pull_request_gate_exposes_setup_only_no_result(self) -> None:
         status = SimpleNamespace(

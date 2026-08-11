@@ -338,6 +338,9 @@ reminders:
     emit:
       # This remains a real gate and a real report; NOTE is a severity demotion,
       # not silence. Hermit landing authority is local validate + the ledger.
+      # The summary owns the census-age contract: after one 900s cadence an
+      # all_open count is rendered AS-OF ... (STALE), and staleness itself makes
+      # this gate fail, so this title can never present an hours-old count as now.
       kind: note
       fields:
         component: pull-requests
