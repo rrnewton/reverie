@@ -7,7 +7,13 @@ registers it as the `hermit-dev` skill.
 
 ## Responsibilities
 
-- Register and activate the canonical `AGENTS.md` policy.
+- Register and inject the canonical `AGENTS.md` policy at fresh startup and
+  again after a session runtime resumes. The persisted source cache is not
+  evidence that the current coordinator context received the policy.
+- Re-inject that policy every two hours through the versioned
+  `hermit-dev-policy-reload-2h-v1` workflow. A completed interjection reports
+  `context_injected=true`; a refusal reports `context_injected=false` and must
+  never use the success title.
 - Register the two narrow coordinator skills stored beside this file.
 - Expose `await orc.hermit-dev.activate()` and
   `orc.hermit-dev.status()`.
@@ -34,6 +40,10 @@ registers it as the `hermit-dev` skill.
   replacement workflow has the distinct ID
   `hermit-dev-operational-health-v1`, so an old durable source cannot be
   silently retained.
+- Kill the unversioned `policy-reload-2h` workflow at startup. It called
+  `activateSkill` after the skill was already active, so stdlib returned
+  `already activated` without an interjection while its wakeup claimed the
+  policy had been reloaded.
 
 ## Loading
 
@@ -67,10 +77,13 @@ HERMIT_AGENT_SNAPSHOT_JSON='[]' ./ci-hub/bin/health-tick --no-header
 ```
 
 A live session's `orc.hermit-dev.status()` must report the five-minute tick
-interval and `ci-hub/health/tick-hub.yaml` config. `orc.listWorkflows()` must show the
-sleeping `hermit-dev-operational-health-v1` and
-`hermit-dev-speculative-land-remediation-v1` workflows and must not show
-`hermit-dev-pr-health`.
+interval, `ci-hub/health/tick-hub.yaml` config, and a non-null
+`lastPolicyContextInjection` receipt with `contextInjected: true`.
+`orc.listWorkflows()` must show the sleeping
+`hermit-dev-operational-health-v1`,
+`hermit-dev-speculative-land-remediation-v1`, and
+`hermit-dev-policy-reload-2h-v1` workflows and must not show
+`hermit-dev-pr-health` or `policy-reload-2h`.
 
 ## Calling a registered script (read this before "fixing" an empty `$1`)
 

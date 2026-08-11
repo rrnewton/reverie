@@ -296,6 +296,224 @@ const DEAD_BODY = JSON.stringify({
   }
 }
 
+// === 7. Policy context injection: cache state is not context authority =======
+// Evaluate the ACTUAL helper body from index.ts with an inert ORC stub. This
+// catches the production defect that a source-cache hit returned "activated"
+// without calling either activateSkill or interjection after runtime resume.
+function sourceBetween(startMarker, endMarker) {
+  const start = SOURCE.indexOf(startMarker);
+  const end = SOURCE.indexOf(endMarker, start);
+  if (start < 0 || end < 0) {
+    throw new Error("cannot extract " + startMarker + " from index.ts");
+  }
+  return SOURCE.slice(start, end);
+}
+
+function compilePolicyInjectionHelper(functionSource) {
+  const javascript = functionSource
+    .replace("reason: PolicyInjectionReason", "reason")
+    .replace("): Promise<PolicyInjectionReceipt>", ")")
+    .replace(
+      'let injectionMethod: PolicyInjectionReceipt["injectionMethod"];',
+      "let injectionMethod;",
+    )
+    .replace("const receipt: PolicyInjectionReceipt =", "const receipt =");
+  return new Function(
+    "resolveSources",
+    "registerHermitDevSkill",
+    "loadCoordinatorSkill",
+    "registerSpeculativeAttackSkill",
+    "registerUrgentValidationSkill",
+    "orc",
+    "POLICY_CACHE_KEY",
+    "SKILL_NAME",
+    "SPECULATIVE_ATTACK_SKILL_FILE",
+    "URGENT_VALIDATION_SKILL_FILE",
+    "lastPolicyInjection",
+    javascript + "; return injectHermitDevPolicies;",
+  );
+}
+
+async function probePolicyInjection(functionSource, options = {}) {
+  const cached = options.cached ?? true;
+  const activationResult = options.activationResult ??
+    "Skill 'hermit-dev' already activated.";
+  let activateCalls = 0;
+  let interjectionCalls = 0;
+  let kvSets = 0;
+  const policy = "POLICY";
+  const orcStub = {
+    kvGet: () => cached ? policy : "OLDER POLICY",
+    activateSkill: async () => {
+      activateCalls += 1;
+      if (!activationResult.toLowerCase().includes("already activated")) {
+        await orcStub.interjection(policy);
+      }
+      return activationResult;
+    },
+    interjection: async (text) => {
+      if (text !== policy) throw new Error("wrong policy interjected");
+      if (options.failInterjection) throw new Error("interjection refused");
+      interjectionCalls += 1;
+    },
+    kvSet: (key, text) => {
+      if (key !== "policy-cache" || text !== policy) {
+        throw new Error("wrong policy cached");
+      }
+      kvSets += 1;
+    },
+  };
+  const helper = compilePolicyInjectionHelper(functionSource)(
+    async () => ({ policy, policyPath: "/workspace/AGENTS.md" }),
+    () => {},
+    async () => {},
+    () => {},
+    () => {},
+    orcStub,
+    "policy-cache",
+    "hermit-dev",
+    "parallel.md",
+    "urgent.md",
+    null,
+  );
+  let receipt = null;
+  let error = null;
+  try {
+    receipt = await helper("manual");
+  } catch (caught) {
+    error = caught;
+  }
+  return { activateCalls, interjectionCalls, kvSets, receipt, error };
+}
+
+function checkPolicyInjected(name, probe, method) {
+  check(name + " completes", probe.error === null, String(probe.error));
+  check(name + " calls activateSkill once", probe.activateCalls === 1);
+  check(name + " interjects once", probe.interjectionCalls === 1);
+  check(name + " caches only after injection", probe.kvSets === 1);
+  check(
+    name + " returns a bound injection receipt",
+    probe.receipt?.contextInjected === true &&
+      probe.receipt?.injectionMethod === method,
+    JSON.stringify(probe.receipt),
+  );
+}
+
+const policyInjectionSource = sourceBetween(
+  "async function injectHermitDevPolicies",
+  "\nasync function activateHermitDevPolicies",
+);
+const cachedInjection = await probePolicyInjection(policyInjectionSource);
+checkPolicyInjected("cached runtime resume", cachedInjection, "direct-interjection");
+
+const coldInjection = await probePolicyInjection(policyInjectionSource, {
+  cached: false,
+  activationResult: "Skill 'hermit-dev' activated.",
+});
+checkPolicyInjected("cold startup", coldInjection, "activate-skill");
+
+const refusedInjection = await probePolicyInjection(policyInjectionSource, {
+  failInterjection: true,
+});
+check(
+  "interjection refusal is a distinct failure",
+  String(refusedInjection.error).includes("interjection refused"),
+  String(refusedInjection.error),
+);
+check("interjection refusal does not update the cache", refusedInjection.kvSets === 0);
+check("interjection refusal returns no success receipt", refusedInjection.receipt === null);
+
+// Mutation control: restore the old cache-as-authority branch while still
+// claiming contextInjected=true. The positive resume bracket above must kill
+// it because activateCalls=0 and interjectionCalls=0.
+const cacheNeedle =
+  "  const policyWasCached = orc.kvGet(POLICY_CACHE_KEY) === sources.policy;\n";
+const cacheAuthorityMutation = policyInjectionSource.replace(
+  cacheNeedle,
+  cacheNeedle +
+    "  if (policyWasCached) {\n" +
+    "    return { contextInjected: true, injectionMethod: " +
+      "\"direct-interjection\", activationResult: \"cached\", " +
+      "policyPath: sources.policyPath, policyCharacters: " +
+      "sources.policy.length, policyWasCached };\n" +
+    "  }\n",
+);
+const mutatedInjection = await probePolicyInjection(cacheAuthorityMutation);
+check(
+  "mutation still claims context injection",
+  mutatedInjection.receipt?.contextInjected === true,
+);
+check(
+  "mutation is killed by missing activation and interjection",
+  mutatedInjection.activateCalls === 0 && mutatedInjection.interjectionCalls === 0,
+  JSON.stringify(mutatedInjection),
+);
+
+function compilePolicyReloadWorkflow(functionSource, inject, orcStub) {
+  const javascript = functionSource
+    .replace(
+      "export async function policyReloadHeartbeat",
+      "async function policyReloadHeartbeat",
+    )
+    .replace("(wf: WfContext): Promise<void>", "(wf)")
+    .replace(
+      "String((err as { message?: unknown })?.message || err)",
+      "String((err && err.message) || err)",
+    );
+  return new Function(
+    "POLICY_RELOAD_INTERVAL_MS",
+    "injectHermitDevPolicies",
+    "orc",
+    javascript + "; return policyReloadHeartbeat;",
+  )(7_200_000, inject, orcStub);
+}
+
+async function probePolicyReload(inject) {
+  const wakeups = [];
+  const sleeps = [];
+  const workflowSource = sourceBetween(
+    "export async function policyReloadHeartbeat",
+    "\nfunction stableAlertSignature",
+  );
+  const workflow = compilePolicyReloadWorkflow(workflowSource, inject, {
+    sendWakeup: async (targets, title, body) => {
+      wakeups.push({ targets, title, body });
+    },
+  });
+  await workflow({
+    loop: async (body) => body(),
+    sleep: async (milliseconds) => sleeps.push(milliseconds),
+  });
+  return { sleeps, wakeups };
+}
+
+const reloadPassed = await probePolicyReload(async () => ({
+  contextInjected: true,
+  injectionMethod: "direct-interjection",
+  policyCharacters: 123,
+  policyPath: "/workspace/AGENTS.md",
+}));
+check("periodic reload waits two hours", reloadPassed.sleeps[0] === 7_200_000);
+check(
+  "periodic reload reports completed only after injection",
+  reloadPassed.wakeups.length === 1 &&
+    reloadPassed.wakeups[0].title === "POLICY RELOAD COMPLETE" &&
+    reloadPassed.wakeups[0].body.includes("context_injected=true"),
+  JSON.stringify(reloadPassed.wakeups),
+);
+
+const reloadRefused = await probePolicyReload(async () => {
+  throw new Error("no context delivery");
+});
+check(
+  "periodic reload refusal is distinct from success",
+  reloadRefused.wakeups.length === 1 &&
+    reloadRefused.wakeups[0].title === "POLICY RELOAD FAILED" &&
+    reloadRefused.wakeups[0].body.includes("context_injected=false") &&
+    reloadRefused.wakeups[0].body.includes("no context delivery"),
+  JSON.stringify(reloadRefused.wakeups),
+);
+
 // --- report ------------------------------------------------------------------
 if (failures.length > 0) {
   console.error(
@@ -307,5 +525,6 @@ if (failures.length > 0) {
 console.log(
   "script-arg-passing: " + passed + " checks passed " +
     "(argv round-trip through the shipped literal, off-by-one detection, " +
-    "death-gate permit/refuse brackets, and an index.ts drift guard)",
+    "death-gate permit/refuse brackets, policy context pass/fail brackets, " +
+    "a cache-authority mutation control, and index.ts drift guards)",
 );

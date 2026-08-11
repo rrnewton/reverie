@@ -45,6 +45,9 @@ const SPECULATIVE_ATTACK_SKILL_NAME = "hermit-parallel-speculative-attack";
 const URGENT_VALIDATION_SKILL_NAME =
   "hermit-urgent-critical-path-fix-validation";
 const POLICY_CACHE_KEY = "hermit-dev.agents-policy";
+const POLICY_RELOAD_INTERVAL_MS = 2 * 60 * 60 * 1000;
+const POLICY_RELOAD_WORKFLOW_NAME = "hermit-dev-policy-reload-2h-v1";
+const LEGACY_POLICY_RELOAD_WORKFLOW_NAME = "policy-reload-2h";
 const WORKSPACE_SUBPATH = "work/dev-hermit";
 const PLUGIN_SUBPATH = ".orc/plugins/hermit-dev";
 const POLICY_FILE = "AGENTS.md";
@@ -62,6 +65,7 @@ const ISSUE_CREATE_WRAPPER_FILE = "gh-issue-create";
 // load rather than silently, which is the failure mode this check exists for.
 const REQUIRED_ORC_SURFACE = [
   "activateSkill",
+  "interjection",
   "killWorkflow",
   "kvGet",
   "kvSet",
@@ -246,9 +250,23 @@ interface HermitDevSources {
   policy: string;
 }
 
+type PolicyInjectionReason = "startup" | "manual" | "periodic";
+
+interface PolicyInjectionReceipt {
+  contextInjected: true;
+  injectionMethod: "activate-skill" | "direct-interjection";
+  activationResult: string;
+  policyPath: string;
+  policyCharacters: number;
+  policyWasCached: boolean;
+  reason: PolicyInjectionReason;
+  injectedAt: string;
+}
+
 let resolvedSources: HermitDevSources | null = null;
 let lastSurfaceGap: string[] = [];
 let lastSelfTest: SelfTestResult | null = null;
+let lastPolicyInjection: PolicyInjectionReceipt | null = null;
 
 // The only safe capability probe on this build: ask the runtime what it
 // publishes rather than poking a name at the host object. Returns null when
@@ -550,7 +568,9 @@ async function loadCoordinatorSkill(
   register(instructions);
 }
 
-async function activateHermitDevPolicies(): Promise<string> {
+async function injectHermitDevPolicies(
+  reason: PolicyInjectionReason,
+): Promise<PolicyInjectionReceipt> {
   const sources = await resolveSources();
 
   // Re-registering replaces the placeholder or previous policy atomically.
@@ -566,17 +586,45 @@ async function activateHermitDevPolicies(): Promise<string> {
     registerUrgentValidationSkill,
   );
 
-  if (orc.kvGet(POLICY_CACHE_KEY) === sources.policy) {
-    return "hermit-dev policies already activated from " + sources.policyPath;
-  }
-
+  const policyWasCached = orc.kvGet(POLICY_CACHE_KEY) === sources.policy;
   const result = String(await orc.activateSkill(SKILL_NAME));
-  if (!result.toLowerCase().includes("activated")) {
+  const normalizedResult = result.toLowerCase();
+  let injectionMethod: PolicyInjectionReceipt["injectionMethod"];
+  if (normalizedResult.includes("already activated")) {
+    // activateSkill deliberately de-duplicates within one JS runtime. A reload
+    // request is different: its purpose is to put the policy back into the
+    // coordinator's current context after compaction or a long-running turn.
+    // Direct interjection is the load-bearing operation here; do not report a
+    // reload unless it resolves successfully.
+    await orc.interjection(sources.policy);
+    injectionMethod = "direct-interjection";
+  } else if (normalizedResult.includes("activated")) {
+    // stdlib activateSkill injects the registered instructions before it
+    // returns this result. This is the normal cold-start/resume path.
+    injectionMethod = "activate-skill";
+  } else {
     throw new Error("Failed to activate hermit-dev skill: " + result);
   }
 
   orc.kvSet(POLICY_CACHE_KEY, sources.policy);
-  return "hermit-dev policies activated from " + sources.policyPath;
+  const receipt: PolicyInjectionReceipt = {
+    contextInjected: true,
+    injectionMethod,
+    activationResult: result,
+    policyPath: sources.policyPath,
+    policyCharacters: sources.policy.length,
+    policyWasCached,
+    reason,
+    injectedAt: new Date().toISOString(),
+  };
+  lastPolicyInjection = receipt;
+  return receipt;
+}
+
+async function activateHermitDevPolicies(
+  reason: PolicyInjectionReason = "manual",
+): Promise<string> {
+  return JSON.stringify(await injectHermitDevPolicies(reason));
 }
 
 function actionableTickLines(report: string): string[] {
@@ -615,6 +663,29 @@ export async function operationalHealthHeartbeat(wf: WfContext): Promise<void> {
       );
     }
     await wf.sleep(OPERATIONAL_TICK_INTERVAL_MS);
+  });
+}
+
+export async function policyReloadHeartbeat(wf: WfContext): Promise<void> {
+  await wf.loop(async () => {
+    await wf.sleep(POLICY_RELOAD_INTERVAL_MS);
+    try {
+      const receipt = await injectHermitDevPolicies("periodic");
+      await orc.sendWakeup(
+        [],
+        "POLICY RELOAD COMPLETE",
+        "context_injected=true method=" + receipt.injectionMethod +
+          " policy_characters=" + receipt.policyCharacters +
+          " policy_path=" + receipt.policyPath,
+      );
+    } catch (err) {
+      await orc.sendWakeup(
+        [],
+        "POLICY RELOAD FAILED",
+        "context_injected=false error=" +
+          String((err as { message?: unknown })?.message || err),
+      );
+    }
   });
 }
 
@@ -1206,6 +1277,7 @@ function registerPluginSurface(): void {
           URGENT_VALIDATION_SKILL_FILE,
         policyLoaded: typeof cachedPolicy === "string",
         policyBytes: typeof cachedPolicy === "string" ? cachedPolicy.length : 0,
+        lastPolicyContextInjection: lastPolicyInjection,
         workspace: sources ? sources.workspaceRoot : SHELL_WORKSPACE_ROOT,
         registeredPluginDirectory: REGISTERED_PLUGIN_DIRECTORY,
         requiredOrcSurface: REQUIRED_ORC_SURFACE,
@@ -1222,6 +1294,8 @@ function registerPluginSurface(): void {
         operationalTickConfig: SHELL_WORKSPACE_ROOT +
           "/ci-hub/health/tick-hub.yaml",
         operationalTickIntervalMinutes: OPERATIONAL_TICK_INTERVAL_MS / 60000,
+        policyReloadWorkflow: POLICY_RELOAD_WORKFLOW_NAME,
+        policyReloadIntervalMinutes: POLICY_RELOAD_INTERVAL_MS / 60000,
         speculativeLandCommand: SPECULATIVE_LAND_COMMAND,
         speculativeLandWakeCommand: SPECULATIVE_LAND_WAKE_COMMAND,
         agentLivenessCommand: AGENT_LIVENESS_COMMAND,
@@ -1257,6 +1331,16 @@ function registerPluginSurface(): void {
     },
   );
 
+  orc.workflow(
+    policyReloadHeartbeat,
+    "Re-inject AGENTS.md into coordinator context every two hours and report " +
+      "a distinct failure when injection does not complete",
+    {
+      name: POLICY_RELOAD_WORKFLOW_NAME,
+      restartable: HEARTBEAT_RESTARTABLE,
+    },
+  );
+
   orc.registerStartup(PLUGIN_NAME + ".startup", async function hermitDevStartup() {
     // Report; never throw. A named-but-absent API is what crash-looped this
     // plugin, and a startup hook that dies takes the policies down with it.
@@ -1274,13 +1358,18 @@ function registerPluginSurface(): void {
       );
     }
     if (hasOrcSurface("killWorkflow")) {
-      try {
-        await orc.killWorkflow(LEGACY_PR_HEALTH_WORKFLOW_NAME);
-      } catch (_err) {
-        // The legacy workflow is absent in new sessions.
+      for (const legacyWorkflow of [
+        LEGACY_PR_HEALTH_WORKFLOW_NAME,
+        LEGACY_POLICY_RELOAD_WORKFLOW_NAME,
+      ]) {
+        try {
+          await orc.killWorkflow(legacyWorkflow);
+        } catch (_err) {
+          // Legacy workflows are absent in new sessions.
+        }
       }
     }
-    const result = await activateHermitDevPolicies();
+    const result = await activateHermitDevPolicies("startup");
     orc.log("info", result);
   });
 }
