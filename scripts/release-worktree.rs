@@ -355,8 +355,8 @@ fn verify_registry(root: &Path) -> Result<(), String> {
     verify_registry_scope(root, None)
 }
 
-/// Recovery is already bound to one state-recorded canonical slot. Verifying
-/// that same slot prevents unrelated drift from deadlocking a guarded retry;
+/// Cleanup is already bound to one state-recorded canonical slot. Verifying
+/// that same slot prevents unrelated drift from deadlocking a guarded release;
 /// it does not relax any target identity, ownership, cleanliness, publication,
 /// or process proof inside the selected slot.
 fn verify_registry_slot(root: &Path, slot: &str) -> Result<(), String> {
@@ -1948,13 +1948,8 @@ fn final_removal_boundary(
     expected_target: &CleanTarget,
     expected_repositories: &[RepoSnapshot],
     allow_dirty: bool,
-    registry_scope: Option<&str>,
 ) -> Result<(), String> {
-    if let Some(slot) = registry_scope {
-        verify_registry_slot(root, slot)?;
-    } else {
-        verify_registry(root)?;
-    }
+    verify_registry_slot(root, slot)?;
     let current_state = load_state(root);
     let current_slot = current_state["slots"]
         .get(slot)
@@ -5301,16 +5296,9 @@ fn main() {
                 }
             }
         }
-        if recover_submodules {
-            println!(
-                "release recovery scope: slot={slot}; unrelated registry rows are not inspected"
-            );
-            verify_registry_slot(&root, &slot)
-                .unwrap_or_else(|error| die(&format!("scoped clean preflight failed: {error}")));
-        } else {
-            verify_registry(&root)
-                .unwrap_or_else(|error| die(&format!("clean preflight failed: {error}")));
-        }
+        println!("release cleanup scope: slot={slot}; unrelated registry rows are not inspected");
+        verify_registry_slot(&root, &slot)
+            .unwrap_or_else(|error| die(&format!("scoped clean preflight failed: {error}")));
         let clean_targets = clean_targets_from_state(&root, &state, &slot)
             .unwrap_or_else(|error| die(&format!("clean preflight failed: {error}")));
         let preflight_target_paths: Vec<PathBuf> = clean_targets
@@ -5556,7 +5544,6 @@ fn main() {
                 target,
                 expected_repositories,
                 force,
-                recover_submodules.then_some(slot.as_str()),
             )
             .unwrap_or_else(|error| {
                 die(&format!(

@@ -207,6 +207,29 @@ for product in hermit reverie liteinst2; do
   assert_registered "$root" "$product" "$stale"
 done
 
+# Positive: ordinary cleanup is scoped to its exact slot, so unrelated branch
+# drift cannot deadlock reclaim. The unrelated checkout and row must survive
+# byte-for-byte; scope is not permission to repair or absorb them.
+root="$test_root/ordinary-unrelated-drift"
+init_root "$root"
+add_target "$root" hermit target
+write_state "$root" target detached - -
+add_unrelated_drift "$root"
+unrelated_before="$(git -C "$root/worktrees/unrelated/hermit" rev-parse HEAD)"
+run_release "$root" target >"$root/release.out" 2>&1
+grep -Fq 'release cleanup scope: slot=target; unrelated registry rows are not inspected' \
+  "$root/release.out" \
+  || fail 'ordinary cleanup did not report its exact slot boundary'
+[[ ! -e "$root/worktrees/target" ]] \
+  || fail 'ordinary scoped cleanup left the exact target slot'
+[[ -e "$root/worktrees/unrelated/hermit" ]] \
+  || fail 'ordinary scoped cleanup touched the unrelated drifted checkout'
+[[ "$(git -C "$root/worktrees/unrelated/hermit" rev-parse HEAD)" == "$unrelated_before" ]] \
+  || fail 'ordinary scoped cleanup moved the unrelated drifted checkout'
+jq -e '.slots.unrelated.hermit_branch == "wrong-branch"' \
+  "$root/worktree-state.json" >/dev/null \
+  || fail 'ordinary scoped cleanup rewrote the unrelated drifted registry row'
+
 # Positive: products recorded as '-' are outside the release authority and
 # their unrelated stale registry entries remain untouched.
 root="$test_root/dash"
@@ -234,7 +257,7 @@ active_before="$(sha256sum "$root/worktrees/ACTIVE.md")"
 if run_release "$root" target >"$root/release.out" 2>&1; then
   fail 'allocated missing target was accepted'
 fi
-grep -Eq 'clean preflight failed: canonical registry verifier refused cleanup: DRIFT slot=target reverie recorded=detached actual=-' "$root/release.out" \
+grep -Eq 'scoped clean preflight failed: canonical registry verifier refused cleanup: .*DRIFT slot=target reverie recorded=detached actual=-' "$root/release.out" \
   || {
     cat "$root/release.out" >&2
     fail 'missing-target refusal was not explicit'
@@ -255,7 +278,7 @@ write_state "$root" target detached - - worktrees/sibling/hermit
 if run_release "$root" target >"$root/release.out" 2>&1; then
   fail 'mismatched recorded path was accepted'
 fi
-grep -Fq 'canonical registry verifier refused cleanup: DRIFT slot=target hermit path recorded=Some("worktrees/sibling/hermit") expected=worktrees/target/hermit' "$root/release.out" \
+grep -Fq 'DRIFT slot=target hermit path recorded=Some("worktrees/sibling/hermit") expected=worktrees/target/hermit' "$root/release.out" \
   || {
     cat "$root/release.out" >&2
     fail 'mismatched-path refusal was not explicit'
@@ -272,7 +295,7 @@ write_state "$root" target wrong-branch - -
 if run_release "$root" target >"$root/release.out" 2>&1; then
   fail 'checkout identity mismatch was accepted'
 fi
-grep -Fq 'canonical registry verifier refused cleanup: DRIFT slot=target hermit recorded=wrong-branch actual=detached:' "$root/release.out" \
+grep -Fq 'DRIFT slot=target hermit recorded=wrong-branch actual=detached:' "$root/release.out" \
   || fail 'checkout identity refusal was not explicit'
 [[ -e "$root/worktrees/target/hermit" ]] || fail 'identity refusal removed target'
 
@@ -395,7 +418,7 @@ grep -Eq 'unfinished release journal' "$root/retry.out" \
 git -C "$root/hermit" worktree unlock "$root/worktrees/target/hermit"
 add_unrelated_drift "$root"
 run_recovery "$root" target >"$root/recovery.out" 2>&1
-grep -Fq 'release recovery scope: slot=target; unrelated registry rows are not inspected' \
+grep -Fq 'release cleanup scope: slot=target; unrelated registry rows are not inspected' \
   "$root/recovery.out" \
   || fail 'scoped recovery did not report its exact slot boundary'
 jq -e '.slots.target == null' "$root/worktree-state.json" >/dev/null \
@@ -466,4 +489,4 @@ if grep -nE 'worktree.*prune|\["worktree", "prune"\]' "$subject" >/dev/null; the
   fail 'release script still contains a worktree prune call'
 fi
 
-echo 'release-worktree-target-scope-test: PASS (4 positive; 10 negative; scoped two-fault recovery disclosed; local-only recovery refused; 3/3 unrelated registries preserved)'
+echo 'release-worktree-target-scope-test: PASS (5 positive; 10 negative; ordinary and recovery scope disclosed; local-only recovery refused; unrelated drift preserved)'
