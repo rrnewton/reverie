@@ -2337,7 +2337,7 @@ fn main() {
                 }
                 agents.push(owner);
             }
-            if !read_mostly {
+            if !read_mostly && !codex_systemd_sentinel {
                 match observed_owner_lease
                     .as_ref()
                     .expect("non-Codex allocation observes owner")
