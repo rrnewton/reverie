@@ -1,5 +1,7 @@
 # Hermit CI runner / status tooling
 
+**Follow skill `hermit-validation-authority` for validation authority.**
+
 On-demand visibility into the Hermit repos' GitHub Actions state, sized to
 Hermit's reality: Hermit does **not** run a dynamic cloud fleet - it uses a
 small, fixed set of host-local self-hosted runners. This directory provides the
@@ -152,12 +154,8 @@ This is a **capacity** problem, not a broken-tests problem.
 
 ### Landing discipline
 
-Because self-hosted Rust CI cannot reliably go green here, changes land under the
-**post-facto-review** discipline: run the affected checks locally, prove any
-residual failure is baseline/environmental, apply the **`locally-validated`**
-label, and merge on GitHub-hosted (Docs) green. Merged PRs should carry
-`locally-validated` + `post-facto-review`. See
-`hermit/.llms/skills/post-facto-review/SKILL.md`.
+This dated capacity incident does not define landing or validation authority.
+Follow the canonical skill named above.
 
 ### Remediation options (for the human)
 
@@ -169,7 +167,6 @@ label, and merge on GitHub-hosted (Docs) green. Merged PRs should carry
 3. **Throttle redundant triggers** (cancel-in-progress per branch is already
    happening as supersession cancels; also consider path filters / fewer
    pull_request event types).
-4. **Formally accept `locally-validated`** as the gate (current de-facto practice).
 
 ### Starting additional runner slots
 

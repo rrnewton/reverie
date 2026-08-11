@@ -13,13 +13,11 @@ merge while the scalar conflicts. Inspect the exact current
 If it does, preserve the union of intentional entries, derive the count from the
 merged collection with the repository's current verifier, and update the scalar
 to that derived count. Never choose a conflict side or copy the dated counts in
-old task notes. Run the focused structural test and then obtain a new full
-exact-head receipt because a rebase changes the SHA.
+old task notes. Run the focused structural test, then classify validation and
+landability under skill `hermit-validation-authority`; do not assume that a rebase either
+preserves or destroys evidence merely because the SHA changed.
 
-Normal Hermit landing authority remains the exact-head LEDGER receipt accepted
-by `ci-hub validate-status`. Do not re-fire historical GH Actions or infer
-validity from a label. Because this conflict may modify the registered producer
-`scripts/validate.rs`, classify the final diff precisely: only when that file
-changes does the narrow producer exception require registered exact-head GH
-Actions authority. This product fact belongs in Hermit and should migrate there
-when its current implementation is confirmed.
+Do not infer validity from a label or reactivate historical hosted behavior.
+The current local-versus-GitHub boundary and any producer-change bootstrap live
+only in skill `hermit-validation-authority`. This product fact belongs in Hermit and should
+migrate there when its current implementation is confirmed.

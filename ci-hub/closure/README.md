@@ -1,5 +1,8 @@
 # Closure: what proves a change reached `main`
 
+**Follow skill `hermit-validation-authority` for validation authority.** Closure authority
+below is separate and proves publication, not validation.
+
 ## The rule
 
 Landing is a fact about `main`. It is established **only** by

@@ -1,55 +1,27 @@
 ---
 name: validate-orchestrator-discipline
-description: "Coordinator discipline for Hermit validation: require an exact-SHA durable log, launch full runs through systemd-run --user, tight-loop focused failures without bypassing review or landing gates, and verify measurements and running mechanisms."
+description: "Coordinator reporting and debugging discipline around Hermit validation. Use hermit-validation-authority for the producer path, validation authority, evidence fields, hard/soft-green landability, red-main repair, and the GitHub Actions boundary."
 ---
 
-Coordinator/orchestrator discipline for running `validate` and reporting its
-results. Every rule below exists because the coordinator VIOLATED it on
-2026-08-03; they bind coordinator behavior, not just the tool. The TOOL's own
-invariants are the Hermit-level skill, proposed at
-`ai_docs/validate-invariants-hermit-skill-proposal.md` (to be placed by the owner
-under `hermit/.llms/skills/`). Verified 2026-08-03 against `worktrees/226v/hermit`,
-the tool ENFORCES: HEAD-SHA recording into a JSONL run ledger (there is NO
-dirty-tree gate and NO `--run-on-dirty-tree` flag); fail-open-to-FULL
-affected-test selection (`!= 'false'` job gating — default is selective only in
-portable GH Actions, but FULL inside `scripts/validate.rs` itself); wall-clock process-tree gate
-timeouts; flaky-is-RED trinary stress classification; history-derived cost
-estimates always-printed on every exit path (EXIT trap); honest count ratchets
-(`RR_COMPAT_EXPECTED=139` etc. guarded against the actual array size); and a
-four-layer architecture (`scripts/validate.rs` → `ci/run-dag.sh` → `safe-ci-dag-runner`
-→ shared TOML manifests, determinism via `hermit --verify`, not bash). At that
-2026-08-03 verification it did NOT enforce a CPU-time / `RLIMIT_CPU` budget (all
-timeouts were wall-clock only); a per-node `cpu_timeout` budget has since been
-added and IS enforced (`safe-ci-dag-runner/src/scheduler.rs` polls
-`cpu_used_s >= cpu_timeout`, and `scripts/validate.rs`'s caps-audit refuses any
-node that declares none) — reconfirm this against current source rather than
-trusting either snapshot. Still not enforced as of this note: any performance
-ratchet (profiling CSVs remain observability-only) or a dirty-tree refusal.
-**There is NO symlink sharing between `dev-hermit/.claude/skills` and
-`hermit`'s skill dirs** — this cross-reference is an EXPLICIT LINK, not
-inheritance; read both.
+This skill adds coordinator reporting and debugging discipline. It does not
+define validation authority or landing eligibility. Follow
+[`hermit-validation-authority`](../hermit-validation-authority/SKILL.md) for the sole production path,
+the LEDGER record and its fields, hard/soft-green landability, red-`main`
+repair, and the current GitHub Actions boundary.
 
-1. **Never claim green without a completed, durable log.** "Green" requires a
-   validation run that actually FINISHED and left a durable, timestamped log you
-   can point to (per-node wall+CPU, the validated SHA, pass/fail per cell). A
-   still-running run, a killed run, a run whose log you cannot produce, or a
-   remembered outcome is NOT green. State the log path and the SHA, or do not say
-   green.
+1. **Report the durable run, not a remembered outcome.** Green qualification is
+   defined only by `hermit-validation-authority`. In handoffs, state the run handle, durable
+   log path, and SHA so another agent can dereference the same evidence.
 
-2. **Run validate through the durable producer path, because agents recycle.**
-   A full validate outlives an agent's context window. Use the `systemd-run
-   --user` form in `AGENTS.md`, with an explicit worktree, exact SHA, unit name,
-   and durable log. Direct sandbox execution and ad-hoc `nohup` jobs do not
-   establish the required cgroup/producer binding. Hand off the unit, log path,
-   and SHA so a replacement can verify completion.
+2. **Use the canonical durable producer because agents recycle.** The command
+   and producer boundary live only in `hermit-validation-authority`. Hand off the emitted
+   handle rather than relaunching an existing run.
 
-3. **When main is already RED, tight-loop the failing cell without weakening
-   landing controls.** Iterate on the specific failing node (`scripts/validate.rs
-   --only <node>` / `ci/run-node.sh`) rather than rerunning the whole DAG after
-   every edit. Before publication or landing, still satisfy the task's review,
-   exact-head receipt verification and landing-lock requirements. A
-   red baseline changes debugging order; it does not authorize an unreviewed or
-   unverifiable merge.
+3. **When `main` is already red, tight-loop the failing validation node.** A
+   direct `scripts/validate.rs --only <node>` or `ci/run-node.sh` invocation is
+   a debugging probe only: it does not write a qualifying LEDGER record and
+   cannot authorize landing. Use it to shorten the edit loop, then follow the
+   red-`main` repair and production-validation path in `hermit-validation-authority`.
 
 4. **Interrogate a surprising ratio; never just route it.** An unexpected
    pass/fail ratio, a suspiciously round number, or a result that contradicts a

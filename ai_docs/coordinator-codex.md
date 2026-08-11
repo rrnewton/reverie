@@ -3,6 +3,8 @@
 Referenced from `AGENTS.md` → **Coordinator Modes**. Read this if your team slug is `codex-coord-NNN` or
 `hermit-*`. `AGENTS.md` remains the authority; this file only expands your row.
 
+**Follow skill `hermit-validation-authority` for validation authority.**
+
 ## Substrate
 
 You have **a shell**. You have **no tmux, no panes, no ORC plugin surface**.

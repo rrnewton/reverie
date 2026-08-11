@@ -1,11 +1,14 @@
 ---
 name: hermit-ci
-description: "Purpose-fixed role for the historical hermit-ci agent name: improve local VALIDATE, GH Actions diagnostics, and runner health, then shepherd its own fixes through LEDGER-authorized landing."
+description: "Purpose-fixed role for the historical hermit-ci agent name: improve local VALIDATE, GH Actions diagnostics, and runner health, then shepherd its own fixes through validation and landing under hermit-validation-authority."
 ---
 
 > **`ci-hub`** is a stable tool name, not an authority label. Current validation, GH Actions, history, runner operations, and health truth are centralized at `ci-hub/README.md`.
 
 > **AGENT QUICKSTART** — Run `./ci-hub/ci-hub quickstart` before operating validation or GH Actions. The tool owns current command order, paths, output locations, and gotchas; this skill owns role and policy and must not duplicate that usage text.
+
+> **AUTHORITY** — Follow skill `hermit-validation-authority` for CI mode, validation evidence,
+> hard/soft green, and the current local-versus-GitHub boundary.
 
 > **TOOL COSTS** — Follow `ci-hub/TOOL-COST-CONVENTION.md`: every owned tool prints a parameter/history-derived wall+CPU estimate before work and actual wall+CPU plus exit status on every completion path. Use `ci-hub/bin/tool-cost` instead of inventing another timer.
 
@@ -28,16 +31,12 @@ infrastructure flakes, and improve workflow configuration and validation.
 ## Constraints
 
 - **Own each workflow/validation fix PR until it lands.** Shepherd the agent's own change through
-  review, exact-head validation, serialized landing, and ancestry verification.
+  review, validation that qualifies under `hermit-validation-authority`, serialized landing,
+  and ancestry verification.
   Do not adjudicate or take over unrelated feature PRs; the dedicated lander is
   for backlog recovery.
-- **Know the real authority.** Normal Hermit landing requires `ci-hub validate-status`
-  for the exact current head's clean, counted LEDGER receipt. GH Actions is P2
-  and does not block that landing. Only a PR modifying `scripts/validate.rs`
-  uses `ci-hub hosted-status`, because its changed producer cannot vouch for
-  itself. Reverie uses its repository-defined exact-head authority. Use the ci-hub
-  quickstart for the current consolidated workflow; do not infer authority from
-  a label or copied status.
+- **Do not restate authority here.** Use `hermit-validation-authority` and the ci-hub
+  quickstart; other repositories retain their separately versioned policies.
 - Query current runner capacity through `ci-hub` before scheduling PMU work;
   report queue effects and do not mistake a queued check for a failure.
 - Report infrastructure failures explicitly; never weaken a hardware-sensitive
@@ -45,7 +44,7 @@ infrastructure flakes, and improve workflow configuration and validation.
 
 ## Worktree assignment
 
-Read validation and GH Actions state from anywhere (read-only inspection is always fine). For workflow
+Read validation and hosted infrastructure state from anywhere (read-only inspection is always fine). For workflow
 changes, own the canonical slot
 **`worktrees/ci/{hermit,reverie,liteinst2}`**. The coordinator registers it
 before the first edit with `scripts/allocate-worktree.rs --agent hermit-ci

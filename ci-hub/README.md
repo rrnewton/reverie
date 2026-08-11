@@ -1,5 +1,7 @@
 # dev-hermit validation and GH Actions hub
 
+**Follow skill `hermit-validation-authority` for validation authority.**
+
 `ci-hub/` is the stable tool name and the single versioned home for dev-hermit
 VALIDATE, LEDGER, GH Actions, and runner operations. Treat each subdirectory as
 an object with one responsibility and a stable public entrypoint; do not add new automation scripts under `scripts/`, `ops/`, or
@@ -34,9 +36,8 @@ are:
 ./ci-hub/ci-hub health
 
 # Parse the canonical landing command without mutating a PR. Real lands use the
-# same entrypoint without CI_HUB_DOCS_PARSE_ONLY; for a normal Hermit head it
-# verifies counted exact-head LEDGER authority before a head-matched merge.
-# Only a scripts/validate.rs change uses registered exact-head GH Actions.
+# same entrypoint without CI_HUB_DOCS_PARSE_ONLY; its validation-authority
+# selection follows skill hermit-validation-authority.
 CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
   123 example/feature-branch --foreground
 
@@ -69,12 +70,10 @@ CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
 ./ci-hub/ci-hub validate-run --attach validate-hermit-example-aaaaaaaaaaaa
 ```
 
-`validate-run` and the inner `validate-lock` both call the same fail-closed
-admission authority. It refreshes `origin/main`, requires that exact tip to be
-an ancestor of the exact validation SHA, and checks every fixed receipt/merge
-floor before `scripts/validate.rs` can start. A stale or unresolvable base is a refusal,
-not a soft warning. Historical differential debugging on an older head is
-non-qualifying and runs outside this receipt-producing path.
+`validate-run` and the inner `validate-lock` call the same admission mechanism.
+Follow skill `hermit-validation-authority` for the required base-currency check, the sole
+production path, and whether any resulting evidence qualifies. This README
+does not restate those decisions.
 
 Networked commands use `with-proxy` internally.
 
@@ -131,24 +130,22 @@ operator stop as `no_result`, never as a product failure.
 
 ## Standing receipt reconciliation
 
-A validate receipt is keyed to an exact commit SHA, so every rebase/push/mark-ready
-orphans the receipt earned at the old head. Nothing else sweeps for the receipts
-that are STILL valid, so earned ~500s evidence sits unread while the drain queues
-fresh runs. `reconcile-receipts` is the standing join — run it after every drain
-rebase wave:
+A validate receipt remains keyed to the exact commit it tested.
+`reconcile-receipts` joins those records to current open heads; it does not
+decide whether preservation across a rebase is landable. Follow skill
+`hermit-validation-authority` for hard/soft-green meaning and landability.
 
 ```bash
 ./ci-hub/bin/reconcile-receipts          # human table
 ./ci-hub/bin/reconcile-receipts --json   # machine-readable
 ```
 
-It joins every distinct clean-full receipt commit (enumerated from
-`local-history`) against FRESHLY-FETCHED open-PR heads and classifies each,
-always WITH A DENOMINATOR ("valid 1 of 59"):
+It joins distinct receipt commits (enumerated from `local-history`) against
+freshly fetched open-PR heads and reports its exact-head match classes with a
+denominator. Those classes are operational inventory, not an independent
+validation policy.
 
-- `VALID` — head matches, authoritatively `is_clean_full_pass` (via
-  `validate-status`, NOT the looser `local-history` prefilter), and clears every
-  rebase-base floor. Landable NOW: `apply-local-label` + merge, no new validate.
+- `VALID` — the current head exactly matches a receipt accepted by the semantic verifier.
 - `FLOOR-BLOCKED` — matched + certified but the head predates a merge-gate or
   producer floor; it validates green yet landing is refused. Lever is REBASE.
 - `NOT-CERTIFIED` — matched an open head but the authoritative certifier refuses
@@ -156,23 +153,9 @@ always WITH A DENOMINATOR ("valid 1 of 59"):
 - `ORPHANED` — no current open-PR head equals this commit; the head moved or the
   PR landed. `orphaned/total` is the measured cost of push-rewrites-the-head.
 
-**COORDINATOR post-wave step (standing, once per rebase wave).** There is no
-per-wave code hook — a rebase wave is a coordinator-level batch, not a single
-script's loop, and the natural home (`rebase_wrapper.py`) owns an overlapping
-reconcile/`eligible` mechanism. So the coordinator runs this as the FIRST landing
-step after every rebase wave, BEFORE queueing any new ~500s validate:
-
-```bash
-./ci-hub/bin/reconcile-receipts            # 1. sweep the moved frontier
-# 2. for each VALID row: apply-local-label from the receipt, then land it
-#    (ci-hub apply-local-label --pr <N> ; ci-hub/landing/land-pr.sh ...).
-# 3. for each FLOOR-BLOCKED row: it needs REBASE, not a new validate.
-```
-
-A wave rewrites heads — some receipts revive, some die — so only a re-run after
-each wave is current; the query costs seconds against a full run's ~500s. This is
-the cheapest work in the drain: consume evidence already earned before spending
-new compute.
+Run the join when an exact-head inventory is useful. Do not use its `ORPHANED`
+name to conclude that hard-green evidence at X is useless after X becomes Y;
+that separate landability decision belongs only to `hermit-validation-authority`.
 
 Landing verification is PR-aware and has machine-stable result codes:
 
@@ -309,40 +292,15 @@ merge instead of creating an obligation no verifier can satisfy. Omitting
 Reverie never inherits Hermit's default. Arming appends that OPEN event to
 `ignored/ci-hub/obligations.jsonl`, then concurrently:
 
-1. clones the obligation's registered source repository into
-   `ignored/ci-hub/obligations/<id>/hermit`, checks out the exact landed commit
-   detached, runs full `./scripts/validate.rs --no-label-pr`, and dereferences the
-   canonical counted exact-SHA receipt with `ci-hub validate-status`;
-2. dereferences the policy-bound jobs from their exact workflow runs for the
-   same SHA, dispatching the workflows only when GitHub `main` still equals
-   that SHA; and
-3. launches a detached watcher whose durable log lives beside the local
+1. retains local validation and hosted-observation component slots for legacy
+   obligation records; current authority and whether either component may run
+   are selected only by skill `hermit-validation-authority`; and
+2. launches a detached watcher whose durable log lives beside the local
    validation log.
 
-The supported GitHub bindings are explicit rather than inferred from a global
-default. Workflow names in this table are quoted external identifiers; the
-legacy two-letter token inside one name is not policy vocabulary:
-
-| Repository | Workflow file | Workflow name | Required job |
-|---|---|---|---|
-| `rrnewton/hermit` | `.github/workflows/ci-portable.yml` | `CI (GitHub-managed portable)` | `Regular tests (GitHub-managed portable)` |
-| `rrnewton/reverie` | `.github/workflows/ci.yml` | `Rust` | `Regular tests (GitHub-hosted)` |
-| `rrnewton/reverie` | `.github/workflows/ci.yml` | `Rust` | `Host-dependent tests (self-hosted)` |
-
-Current verification-policy schema v3 freezes Hermit's one portable job tuple
-and exact positive count of one; Reverie remains on schema v2 with two required
-job tuples and an exact count of two. Historical Hermit schema-v2 obligations
-retain their frozen two-job policy, but new landing authority does not silently
-add the privileged workflow. A workflow conclusion alone is not authority: the
-consumer dereferences the exact-SHA jobs and refuses a green for a missing,
-skipped, duplicate, truncated, or otherwise vacuous required set. The schema
-does not snapshot authority-selection semantics; a future change to those
-semantics therefore requires its own explicit migration and review.
-
-The owner's 2026-08-10 decision supersedes older deployment prose that treated
-Hermit's hosted merge-gate as normal landing authority. The workflow may still
-run and report diagnostics, but a normal author proceeds from exact-head
-VALIDATE/LEDGER authority without waiting for it.
+Historical obligation schemas retain their recorded workflow tuples for audit
+and replay of old state. Interpret them under the current authority boundary in
+the canonical skill named above.
 
 The event log is append-only and locked. Every transition retains timestamps,
 verification scope (`total` here), GitHub run IDs, local log path, and failure
@@ -364,15 +322,8 @@ arming; the machine-local intent lets ORC recover that window when the same
 workspace returns. Raw merges bypass the intent, and loss of the workspace/disk
 loses its machine-local recovery state.
 
-A local `scripts/validate.rs` exit code is never green authority by itself. Local green
-requires the persisted canonical `validate-status --sha ... --repo ... --json`
-report and its digest: `VALIDATED`, a nonzero qualifying count, full profile and
-selection, a passing dereferenced receipt, and exact landed-SHA provenance.
-Legacy bare greens are rechecked and become `no_result` when that authority
-refuses them. Reverie's versioned policy does not enable the local leg because
-its retained local evidence is not repository-bound; that leg remains
-conservatively `no_result`, while its exact hosted 2/2 job set can satisfy the OR
-policy.
+Green qualification is intentionally not restated here; follow skill
+`hermit-validation-authority`. Legacy obligation fields remain data, not authority.
 
 Automatic local re-dispatch consults the owner-watch admission predicate before
 claiming the obligation or spawning clone/submodule setup. A missing release
@@ -382,22 +333,13 @@ path. This early check is deliberately not the acquisition authority:
 `validate-lock run` repeats the same predicate at the box-anchor boundary, so a
 watch arrival between the precheck and the claim still makes re-dispatch yield.
 
-Parent `AGENTS.md` is authoritative under the owner's 2026-08-10 decision;
-this operational document follows it. Authority is repository-specific and the
-same selection governs landing and remediation. For a normal Hermit head, only a counted exact-head local ledger
-result decides; GH Actions is P2 diagnostic evidence and cannot satisfy, reopen,
-or actuate the obligation. A Hermit head that changes its registered local
-producer is the narrow exception: local is intentionally non-authoritative and
-the registered exact-head hosted job decides because a producer cannot vouch
-for itself. Reverie's versioned hosted authority remains unchanged.
+This operational object does not select validation authority. Follow skill
+`hermit-validation-authority`; repository-specific non-Hermit policy remains separate.
 
-A green from the selected authority satisfies the obligation. `pending` and
-`running` are reserved for dereferenced queued or executing producers; a missing
-workflow/run/job is `no_result`. Results outside the selected authority remain
-visible diagnostics, never an AND gate or mutation trigger. An authoritative
-red remains loud and changes the obligation to `remediation_required`, but a red
-is a verdict, not permission to rewrite `main`: no automatic revert is
-recommended or dispatched. A revert requires a durable owner-authored record
+A qualifying result selected by `hermit-validation-authority` satisfies the validation leg
+of an obligation. Operational `pending`, `running`, `no_result`, and diagnostic
+fields do not redefine that policy. A red verdict is not permission to rewrite
+`main`: no automatic revert is recommended or dispatched. A revert requires a durable owner-authored record
 bound to the exact candidate revert SHA, current-main SHA, and failed-land
 identity; otherwise the obligation is explicitly awaiting that decision.
 The owner record is an exact-main commit comment headed

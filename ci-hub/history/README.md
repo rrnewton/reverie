@@ -1,5 +1,9 @@
 # ci-hub history store
 
+History stores observations; it does not select validation authority. Follow
+skill `hermit-validation-authority` for CI mode, evidence qualification, and the
+local-versus-GitHub boundary.
+
 The **single** local accumulator of commit/CI knowledge. Do not build a parallel
 one — two independently-maintained stores drift (exactly how the hand-maintained
 test-footprint map rotted). Everything joins by the documented file-contract

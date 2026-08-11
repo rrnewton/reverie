@@ -35,8 +35,8 @@ content-addressed caching correct.
   do not try to determinize them here.
 - If e9tool-dependent integration tests are ignored by a hosted workflow, that
   workflow provides no behavior verdict. Exercise the current declared e9patch
-  coverage locally with the exact vendored tool, record executed/ignored counts,
-  and require the full exact-head receipt through `ci-hub validate-status`.
+  coverage locally with the exact vendored tool and record executed/ignored
+  counts. Validation qualification follows skill `hermit-validation-authority`.
   Unit/fmt/clippy success cannot substitute for backend execution.
 - **The direct AOT host is single-process by design.** `injected_syscall_guard`
   rejects `clone/clone3/fork/vfork/execve/execveat` with `EOPNOTSUPP` and the

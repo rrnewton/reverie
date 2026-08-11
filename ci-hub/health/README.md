@@ -1,5 +1,9 @@
 # CI health object
 
+Health reports observe mechanisms; they do not select validation authority.
+Follow skill `hermit-validation-authority` for CI mode, evidence qualification, and the
+local-versus-GitHub boundary.
+
 Dev-hermit uses the pinned `agent-utils/tick-hub` engine for coordinator
 health polling. Project policy stays in this repository:
 

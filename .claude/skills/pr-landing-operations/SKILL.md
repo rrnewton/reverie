@@ -12,13 +12,14 @@ protection, and who may publish.
 
 ## Bind evidence to the final revision
 
-Fetch the target branch before choosing a wave. Rebase or otherwise finalize each candidate first,
-then validate and review that exact head. Any rebase, amend, conflict resolution, or follow-up commit
-changes the identity and invalidates revision-bound evidence.
+**Follow skill `hermit-validation-authority` for validation authority, exact-SHA evidence,
+and hard/soft-green landability.** Fetch the target branch before choosing a
+wave. A rebase changes revision identity, but it does not automatically erase
+the hard-green source evidence; classify the resulting head under that skill.
+Amends, semantic edits, and unsafe conflict resolutions are not soft green.
 
-Classify validation from named checks and their recorded outcomes. An aggregate pass count or label
-does not prove coverage unless repository policy says it does. Likewise, an approval of an older head
-is not approval of the current head.
+Review remains revision-bound: an approval of an older head is not approval of
+the current head.
 
 ## Choose a landing shape
 
@@ -35,11 +36,12 @@ authorized coalesced landing:
    normally closed, so refusing every closed pull request would block the routine case and teach
    operators to skip the check.
 3. Combine only ready, conflict-free heads; return conflicts for individual resolution and review.
-4. Validate and review the exact combined staging head.
+4. Review the exact combined staging head and classify validation under skill `hermit-validation-authority`.
 5. Publish through the repository's normal protection and authorization path.
 
-If the target branch moves, refresh the candidate and repeat revision-bound checks. Do not claim an
-older receipt for a new head.
+If the target branch moves, refresh the candidate, repeat revision-bound review,
+and classify validation under skill `hermit-validation-authority`; never rewrite an older
+receipt as if it described the new head.
 
 ## Serialize writers and prove publication
 

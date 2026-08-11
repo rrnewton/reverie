@@ -1,6 +1,6 @@
 ---
 name: undraft-does-not-trigger-ci
-description: "Historical workflow-trigger observation: ready-for-review does not create VALIDATE authority. Inspect current GH Actions only as diagnostics and use the LEDGER for normal Hermit landing."
+description: "Historical workflow-trigger observation: ready-for-review does not create validation authority. Inspect current workflow behavior as diagnostics and use hermit-validation-authority for Hermit validation and landing."
 ---
 
 # Undrafting is not a validation event
@@ -10,7 +10,6 @@ GH Actions. Workflow triggers can change. Inspect the workflow at current main b
 making a queue claim, and never use draft status or a trigger assumption as
 validation evidence.
 
-Normal Hermit landing uses the exact-head LEDGER receipt accepted by `ci-hub
-validate-status`. Undrafting creates no authority, and any head change
-invalidates the old receipt. GH Actions remains advisory P2 unless the PR
-modifies the registered producer `scripts/validate.rs`.
+Undrafting creates no validation evidence. Follow skill `hermit-validation-authority` for
+current authority, exact-SHA evidence identity, hard/soft green, and the hosted
+boundary.

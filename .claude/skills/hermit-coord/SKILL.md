@@ -44,8 +44,8 @@ is the operational summary of the coordinator role.
 - **Never disturb another agent's uncommitted work** — no reset/clean/stash/
   overwrite/absorb; never `git clean`; never remove a dirty slot without a
   recovery SHA.
-- **Landing:** human-owner review, draft status, and GH Actions are not normal Hermit landing blockers.
-  After required adversarial review and an exact-head counted LEDGER receipt, apply
+- **Landing:** follow skill `hermit-validation-authority` for validation authority and evidence.
+  After required adversarial review and qualifying validation, apply
   `post-facto-human-review` iff one of the four triggers applies, post a
   role-tagged evidence comment, and land the authorized PR. Routine PRs must not
   receive that label. Never apply `pre-land-human-review` or mutate owner-only
@@ -57,12 +57,9 @@ is the operational summary of the coordinator role.
   single-review PR, not mandatory during API outages. Hermit syscall handling, DetCore scheduling,
   and Reverie API changes use two different review agents. The former Codex-only rate-limit measure
   expired after 12 hours and is not standing policy.
-- **PR ownership:** the author shepherds each new PR through exact-head review,
-  VALIDATE, the LEDGER-derived `locally-validated` label, landing, and ancestry
-  confirmation. Do not queue ordinary work behind GH Actions or hand it to a
-  dedicated lander; that role drains inherited backlog. The sole exception is a
-  PR modifying `scripts/validate.rs`, whose registered exact-head GH Actions
-  result replaces self-produced local evidence.
+- **PR ownership:** the author shepherds each new PR through review, validation
+  under `hermit-validation-authority`, landing, and ancestry confirmation. Do not hand
+  ordinary work to a dedicated lander; that role drains inherited backlog.
 - **Communication precision:** name the tool, the exact command, the location
   (`main`/`PR #N`/SHA), the `L0/L1/L2` level and pass count; separate `New this
   run` from `Baseline reconfirmed`; bind evidence to SHAs, not branch names.

@@ -44,11 +44,9 @@ then reconcile this document.
    merge today but may interact after an earlier landing. `unclassified_mechanism_candidates` is the
    analogous signal that the mechanism enum needs extension. They request review; they are not
    proof of a conflict.
-6. **Carry authorization with the head SHA.** A raw `locally-validated` label is a cache hint, not
-   evidence. Landing requires authoritative exact-head CI or a dereferenced exact-head clean
-   validation receipt with full-profile coverage and nonzero execution. Do not wait on or refire a
-   stale merge-gate merely to manufacture authorization when qualifying exact-head evidence already
-   exists.
+6. **Use the canonical validation policy.** Skill `hermit-validation-authority` alone defines
+   validation evidence, label derivation, hard/soft green, landability, and the
+   local-versus-GitHub boundary. This process must not retype those predicates.
 7. **Separate validation from policy approval.** Routine `ci-hygiene` may proceed autonomously.
    `gate-policy` always escalates, even when tests are green. For every policy-changing PR, compare
    its rationale date with current policy; a stale rationale requires coordinator review.
@@ -180,10 +178,10 @@ mint, copy, or reuse landing evidence.
 Use for the moving, newly-created pool. Optimize for landing rate at least equal to production rate.
 
 1. Take the front eligible PR from the ordered plan.
-2. Rebase it onto fetched current `main`. A clean rebase may carry a soft-green scheduling prior; it
-   does not turn a raw label into authorization. A conflict-resolving rebase requires the recorded
-   risk judgement/rationale and may require full exact-head validation.
-3. Resolve adversarial review, validate the resulting exact head, and land serially.
+2. Rebase it onto fetched current `main`, then classify the result under skill
+   `hermit-validation-authority`; this process does not redefine soft inheritance.
+3. Resolve adversarial review, qualify validation under skill
+   `hermit-validation-authority`, and land serially.
 4. Fetch and ancestry-verify before advancing to the next PR.
 
 Do not hold fresh work merely to form a future cluster; the population moves while waiting.
@@ -206,7 +204,7 @@ exact population.
 6. Prove each constituent independently. A staging merge does not prove a non-ancestral PR head was
    included, and it does not authorize closing that PR.
 7. **Land clusters as they ripen.** As soon as one independently authorized component has a current
-   exact-head green and an executable landing path, land it; do not wait for sibling components or
+   validation green accepted by `hermit-validation-authority` and an executable landing path, land it; do not wait for sibling components or
    the entire frozen backlog. Fetch the resulting main, invalidate the old plan frontier, and rebuild
    the remaining components against that new base. Preserve explicit ordering boundaries such as
    patching-backend-last, but never turn them into a barrier for unrelated ready clusters.
@@ -264,7 +262,8 @@ Report measurements from the archived plan and verified target, never impression
 | `no_result` | Rows with zero execution, missing coverage, cancellation, or admission refusal |
 
 Separate **observed** outcomes from planner counterfactuals. `land_now=[]` can be a correct result when
-all candidates are red, pending, held, or lack exact-head evidence.
+all candidates are red, pending, held, or lack qualifying evidence under
+`hermit-validation-authority`.
 
 ## Stop conditions
 
@@ -273,14 +272,14 @@ Stop and write a task note when any of these occurs:
 - egress/fetch fails;
 - the primary is dirty or not on `main` and the dirt is not attributed;
 - fetched/API head identity differs;
-- the exact-head receipt is missing, stale, zero-execution, incomplete, or tampered;
+- the validation authority selected by `hermit-validation-authority` refuses or is unknown;
 - a `gate-policy` PR lacks current rationale/approval;
 - adversarial findings are unresolved;
 - mechanism candidates are unclassified or a mechanism overlap lacks disposition;
 - a merge conflict changes reviewed content without renewed review/validation;
 - the plan cannot be archived;
 - the adjacent fetched base-SHA record is missing or ambiguous;
-- the tracked executor still requires stale merge-gate state despite qualifying exact-head evidence
+- the tracked executor still requires stale merge-gate state despite qualifying validation evidence
   (file an implementation mismatch; never bypass it with `--admin`);
 - ancestry proof fails.
 

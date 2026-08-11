@@ -1,5 +1,7 @@
 # Landing mutex (`ci-hub land-lock`)
 
+**Follow skill `hermit-validation-authority` for validation authority.**
+
 A small, deterministic **shared-file landing mutex** that serializes PR landings
 which mutate the same shared manifest registries. Discoverable, not folklore.
 
@@ -213,7 +215,7 @@ The land sequence itself lives here too, not only in `scratch/`:
 
 | script | role |
 | --- | --- |
-| `ci-hub/landing/land-pr.sh <PR> <BRANCH> [--union\|--no-rebase]` | detached-by-default full single-PR lander: self-wraps in `land-lock run --child-deadline`, selects Hermit's counted local-full exact-head authority for ordinary changes or registered hosted authority for a `scripts/validate.rs` producer change, derives `locally-validated` only from a local receipt, treats merge-gate as diagnostic, rechecks the selected authority at the final mutation boundary, performs a head-matched rebase merge, then verifies ancestry. Producer changes require `--no-rebase` so their exact-head hosted evidence is not orphaned. |
+| `ci-hub/landing/land-pr.sh <PR> <BRANCH> [--union\|--no-rebase]` | detached-by-default full single-PR lander: self-wraps in `land-lock run --child-deadline`, follows skill `hermit-validation-authority` for validation authority, performs a head-matched merge, and verifies ancestry. |
 | `ci-hub/landing/gate_definition_rotation.py --pr N --branch B --checkout WT --execute` | narrow self-authorization fallback: verifies an owner-authored exact head/base/blob/path record, dual exact-head reviews, counted receipt, and typed definition-only self-refusal; then composes through `land-pr.sh --gate-rotation --no-rebase` and registers `MERGE_GATE_V4_BLOB` only after mergeCommit ancestry |
 | `ci-hub/landing/union-rebase.sh <hermit-wt> <BRANCH> [--push]` | authoritative additive union-rebase of the shared manifest registries (`*.toml` by `[[test]]` id, `test-files.json` by path, `matrix.tsv` by row); the derived `ci/expected-e2e-plan.json` is regenerated, never hand-unioned |
 
@@ -254,83 +256,45 @@ The normative event order is exact:
 Putting refresh and ancestry proof between merge and registration makes
 "register only after the push" mechanical rather than remembered.
 
-Parent `AGENTS.md` is the publication authority under the owner's 2026-08-10
-decision. Normal Hermit heads require an exact-head counted local LEDGER PASS;
-GH Actions is P2 and decides nothing. A head modifying the registered producer
-`scripts/validate.rs` is the exception: local is intentionally non-authoritative
-because a producer cannot vouch for itself, so registered exact-head GH Actions
-authority is required. Normal work uses reviewed PRs; Red-Tip and the nine-condition rotation
-above are the only named direct-main scopes. Hermit `docs/MERGE_QUEUE.md`
-describes mechanisms; its broad direct-FF sentence grants no permission.
+Parent `AGENTS.md` is the publication authority. Normal work uses reviewed PRs;
+Red-Tip and the nine-condition rotation above are the only named direct-main
+scopes. Hermit `docs/MERGE_QUEUE.md` describes mechanisms; its broad direct-FF
+sentence grants no permission.
 
-Remediation follows the same authority. An ordinary Hermit hosted red cannot
-recommend or dispatch a `main` mutation; a ledger red is actionable but does not
-itself authorize a revert. A producer-exception hosted red rejects that
-candidate, not `main`. Any revert needs a durable owner record bound to the exact
-candidate revert, current-main, and failed-land identities.
+Remediation follows skill `hermit-validation-authority` for validation verdicts. No
+validation result by itself authorizes a revert; that needs a durable owner
+record bound to the exact candidate revert, current-main, and failed-land
+identities.
 
-### Parent changes: hosted exact-head evidence, not a synthetic validate receipt
+### Parent changes do not manufacture Hermit validation
 
-The local validation ledger is deliberately bound to `rrnewton/hermit` because
-the parent repository has no Hermit validation producer. Parent tooling therefore
-uses a distinct registered authority rather than widening that ledger with rows
-whose profile and coverage fields would be fictitious:
+The parent has no Hermit VALIDATE producer and must not append synthetic rows to
+the Hermit LEDGER. Follow skill `hermit-validation-authority` for the current hosted boundary
+and owner-bootstrap rule.
 
-```bash
-ci-hub/ci-hub hosted-status --repo rrnewton/dev-hermit --sha PARENT_HEAD
-```
+`land-pr.sh` applies these race-tolerance rules after selecting validation
+authority through skill `hermit-validation-authority`:
 
-A parent green is the complete 4/4 exact-head set: `Parent tooling shard`,
-`ci-hub bounded operations shard`, `Reject owner-specific build paths`, and
-`Demo-touching commits require a green-demo attestation`. The verifier
-dereferences workflow, run, job, repository, and SHA identities. A missing or
-cancelled member is `NO_RESULT`, not permission to publish; a red member is red.
-Focused task tests and both sides of a mutation bracket belong in the named
-shards for the mechanism they protect. Text in a PR body or a hand-applied label
-cannot replace this authority.
-
-`land-pr.sh` bakes in the race-tolerance fixes without promoting GH Actions into
-normal landing authority:
-
-1. **Selected exact-head authority first** — a normal Hermit head must have a
-   qualifying counted LEDGER receipt. Only a head modifying
-   `scripts/validate.rs` selects the registered exact-head GH Actions result.
+1. **Resolve validation state first** through the canonical policy and its
+   named evidence sources.
 2. **The merge command is the mergeability arbiter** — do not gate on
    `mergeStateStatus` (it sticks at `UNKNOWN`). Attempt `gh pr merge --rebase`
    once under the freshly evaluated final-boundary verdict. A refusal restarts
    the lander from its authority checks so mutable-tip evidence cannot age
    inside a merge retry loop.
-3. **Treat the label only as a cache** — for a normal Hermit head,
-   `exact-head-validation-authority.sh --local-only` independently queries the
-   counted local receipt. GH Actions is P2, not an alternate positive. A head
-   modifying `scripts/validate.rs` is intentionally ineligible for local
-   authority and instead requires the registered exact-head GH Actions authority.
-   Missing/partial/stale selected-authority evidence is NO_RESULT. Only
-   `apply-local-label` may materialize the optional
-   local cache label. It requires a nonzero executed-test count, hashes the
-   referenced log, and publishes the selected ledger row as an immutable receipt
-   on `rrnewton/dev-hermit:validation-receipts` before commenting or labeling.
-4. **Observe the merge-gate once, without waiting** — record its current GH
-   Actions state as a diagnostic. It does not authorize, veto, dispatch, or
-   delay a normal ledger-authorized landing.
-5. **Dereference the final authorization** — immediately before merge, query the
-   same policy-selected authority. A normal local positive additionally
-   dereferences the current PR comment through
-   `ci-hub/validation/verify_receipt.sh`; a producer-changing candidate must use
-   the registered hosted result, never its own local receipt. Missing, forged, stale, tampered,
-   zero-executed, partial, or contradictory evidence refuses the landing before
-   any merge call. The merge itself uses `--match-head-commit` so a concurrent
-   push cannot inherit that authorization. A failed merge call does not reuse
-   this verdict: the next attempt starts at the gate and re-fetches both bases.
+3. **Treat labels and hosted observations according to `hermit-validation-authority`;** this
+   README does not redefine their evidentiary value.
+4. **Dereference final authorization** immediately before merge. The merge
+   itself uses `--match-head-commit` so a concurrent push cannot inherit that
+   authorization. A failed merge call does not reuse this verdict: the next
+   attempt starts at the gate and re-fetches both bases.
 
-### `--no-rebase`: a rebase can only downgrade an already-authorized head
+### `--no-rebase`: avoid an unnecessary rewrite
 
 **Opt-in; the default path is unchanged, and it is mutually exclusive with
-`--union` (which is itself a rewrite driver).** Step 2 normally rebases the
-branch onto fresh `origin/main` and force-pushes. That rewrites the head, so
-step 4 re-derives the exact-head authority at a *new* SHA and every green earned
-at the old SHA is orphaned — a rebase can never upgrade an authorized head, only
-downgrade it to NO_RESULT.
+`--union` (which is itself a rewrite driver).** It avoids rewriting an already
+usable head. A rebase does not automatically destroy all validation knowledge:
+hard-green and soft-green classification follows skill `hermit-validation-authority`.
 
 It is also unnecessary on `rrnewton/hermit`. Re-verify rather than trust:
 
@@ -349,34 +313,20 @@ ci-hub/landing/land-pr.sh 1711 fixture/pid-tid-virtualization-identity --no-reba
 ```
 
 `--no-rebase` removes a **mutation**, never a **check**: the land-lock, the
-initial and final exact-head authority, the merge-gate diagnostic observation, the final-boundary
-authority plus receipt dereference, `--match-head-commit`, obligation arming,
-and the post-merge `mergeCommit.oid` ancestry proof all still run. Use it when a
-head already holds a qualifying exact-head green and main has since moved.
-Prefer the default rebase when the branch genuinely needs to be updated (real
-conflicts, or a base below a gate floor — that needs a rebase *and* a fresh
-validate, not this flag). Compare `rrnewton/hermit#1812`: an unconditional
+initial and final authority, the merge-gate diagnostic observation, receipt
+dereference, `--match-head-commit`, obligation arming, and the post-merge
+`mergeCommit.oid` ancestry proof all still run. Whether the candidate's
+validation is landable after `main` moves follows skill `hermit-validation-authority`.
+Prefer the default rebase when the branch genuinely needs to be updated. Compare
+`rrnewton/hermit#1812`: an unconditional
 rebase-and-force-push in the union driver amended main's tip onto two PR
 branches and landed #1188/#1209 as semantic no-ops.
 
-### Superseded deployment obligation: `hermit-merge-gate-authority-deployment`
+### Historical hosted deployment plan
 
-This section records the older transition plan; it is retained rather than
-silently deleted. The owner's 2026-08-10 decision and parent `AGENTS.md`
-supersede its use as landing policy: normal Hermit authority is exact-head
-VALIDATE in the LEDGER, and the existing `.github/workflows/merge-gate.yml`
-result is advisory P2. Its portable+privileged shape and verifier pins may still
-need maintenance, but they do not make a normal author wait to land.
-
-The historical follow-up described here was:
-
-1. update `.github/workflows/merge-gate.yml` so the registered hosted producer
-   exception uses its exact policy-bound job set;
-2. advance both immutable dev-hermit `verify_receipt.sh?ref=...` downloads and
-   their SHA-256 checks to this landed parent commit; and
-3. update `docs/MERGE_QUEUE.md` to point to the parent hierarchy and new verifier
-   pin, then bracket normal counted-local positive, producer-changing hosted
-   positive, incomplete/no-result, and genuine-red paths before landing.
+The superseded hosted deployment plan is intentionally not repeated here.
+Current policy and the dated history of that path live in the final section of
+skill `hermit-validation-authority`.
 
 Every terminal bail emits a visible ABANDON signal — stderr **and** a role-tagged
 PR comment — so an abandoned PR never silently languishes (the #244 pattern).
@@ -447,8 +397,8 @@ with-proxy gh api \
 ```
 
 **Do not poll `mergeStateStatus` to decide you've landed.** The tracked lander
-attempts the merge after the selected exact-head authority qualifies; it never
-waits for merge-gate green. After merge, `mergeStateStatus` may read `UNKNOWN` —
+attempts the merge after validation qualifies under `hermit-validation-authority`; it never
+uses `mergeStateStatus` as authority. After merge, that field may read `UNKNOWN` —
 check `state == MERGED` and `mergeCommit`, not the merge-state. Also note the merged SHA is the
 **rebased** commit (a fresh 40-hex), not your pre-merge branch head.
 
@@ -456,48 +406,12 @@ check `state == MERGED` and `mergeCommit`, not the merge-state. Also note the me
 
 # Rebase wrapper + soft-green query (`rebase_wrapper.py`)
 
-`ci-hub/landing/rebase_wrapper.py` is ci-hub's **own** rebase wrapper. It owns the
-whole span **rebase → push → validate-at-pushed-head → record** (not just the
-rebase): it records `revision X rebased on main Y -> Z`, derives a **soft-green
-confidence level**, and binds the **receipt at the pushed head Z**, so a lander
-can decide whether to land on the prior or wait for a tip validate.
-
-**Soft-green is a level, not a boolean.** Zero textual conflicts is a
-high-confidence *prior*, not a proof (git conflict detection is line-based;
-semantic dependency is not — a caller X added while Y changed the callee's
-contract has no conflict and still breaks). So:
-
-- `soft-green(zero-conflict)` — earned mechanically; land on the prior, **verify
-  the tip post-facto, fix forward**. The two halves are one system.
-- `soft-green(resolver-judged)` — a conflict was resolved and the resolving agent
-  judged it low-risk enough to keep the soft green. The **risk judgement is a
-  required field**: a conflicted rebase with no `--risk-judgement` + `--rationale`
-  is **REFUSED (exit 2)**, never defaulted to green.
-
-**Landability carries the base Y.** A clean rebase onto a base **below a gate
-floor** yields an unlandable Z even with zero conflicts. So `landable` includes
-"the base clears every floor in `validate/rebase-base-floors.json`" (delegated to
-`gate_floors.py`, re-checked live at query time so a newly-added floor demotes a
-stale record).
-
-**Landability carries the receipt at the *pushed* head Z.** THE PUSH REWRITES THE
-HEAD, so a receipt earned on the pre-push SHA dies with it — and the merge gate
-checks the pushed Z, for which no receipt then exists. That exact gap cost an
-afternoon (2026-08-04): 15 heads rebased, pushed, marked ready; **none could
-merge** (`qualifying_count: 0`) because every receipt was bound to a SHA the push
-had discarded. No agent was wrong — the missing step lived in the gap between the
-rebase front (ends at push) and the lander (assumes a receipt). So `receipt_at_Z`
-is a **first-class record field** (a `null` there is *visible*; a missing receipt
-inside an assumption is not), and `eligible` **re-derives it live** by
-dereferencing the one receipt authority `ci-hub validate-status --sha Z`. A
-receipt appearing after recording promotes Z with **no re-record**; one revoked
-demotes it. Right after `--push` the receipt is normally `null` (validate at Z has
-not run yet) — the head is recorded `NOT-LANDABLE` and flips eligible only once
-validate at Z completes.
-
-**Full landability:** `landable` = soft-green **AND** base clears every live floor
-**AND** a clean full-validation receipt is bound live to the pushed head Z. A push
-with **no subsequent receipt is REFUSED as landable, never silently queued**.
+`ci-hub/landing/rebase_wrapper.py` records the provenance tuple
+`revision X rebased on main Y -> Z`, conflict details, resolver judgement, base
+floors, and evidence references. **Follow skill `hermit-validation-authority` for the sole
+definitions of hard green, soft green, and landability.** Legacy
+`receipt_at_Z` and `landable` fields are implementation caches and must not be
+read as an independent policy that invalidates preserved X-to-Y evidence.
 
 **Record schema** (`ignored/rebase-records.jsonl`, append-only, latest-per-Z):
 `{ schema_version, recorded_utc, source_rev:X, base:Y, result:Z, conflicts:[]|
@@ -513,12 +427,9 @@ ci-hub/landing/rebase_wrapper.py eligible                 # list landable heads
 ci-hub/landing/rebase_wrapper.py eligible --result <Z>    # exit 0 eligible / 2 not
 ```
 
-A query has no mailbox to miss — this closes the producer-posted-to-the-wrong-task
-gap (12 verified heads were invisible that day because a producer posted to its
-own task). By default `eligible` re-checks **both** the base floor and the receipt
-at Z **live**; `--no-recheck-floor` / `--no-recheck-receipt` trust the frozen
-record snapshot (offline). Records live beside the validate ledger at
-`ignored/rebase-records.jsonl` (append-only, latest-per-Z wins). Producer paths:
+A query has no mailbox to miss. It is an operational view over the append-only
+records at `ignored/rebase-records.jsonl`, not a second definition of validation
+authority. Producer paths:
 
 ```
 # mechanical: ci-hub owns the rebase, auto-soft-greens the zero-conflict case
@@ -529,9 +440,6 @@ rebase_wrapper.py record --source <X> --base <Y> --result <Z> \
     --conflicts <files> --resolver <agent> \
     --risk-judgement retained-soft-green|needs-full-validate --rationale "..."
 ```
-
-See memory `ci-hub-ledger-cannot-record-soft-vs-hard-green` (the validate ledger
-cannot record soft-vs-hard green — this store carries the provenance it can't).
 
 ## Canonical store, reconciliation, and cross-host provenance
 
@@ -545,24 +453,16 @@ records to a store the lander never reads — the same producer-wrote-own /
 consumer-read-other gap `eligible` exists to kill, merely relocated onto the
 filesystem. With the env set once on a host, every copy converges on one store.
 
-**`eligible` list mode reconciles against the LIVE open-PR population** (`gh pr
-list`, default `rrnewton/hermit`; `--no-reconcile` for store-only) so *invisible
-!= nothing-pending*. Every open pushed PR is accounted for exactly once and lands
-in a bucket: `eligible`, `pending-no-receipt` (soft-green + base OK, awaiting
-validate@Z), **`receipt-unknown`** (the receipt authority was unreachable —
-VISIBLE and non-landable, **never** collapsed to absent, so a validate-status
-failure can no longer make an eligible head vanish silently), `unaccounted` (open
-PR with no record — pushed by a path that never called the wrapper), or
-`disqualified`. Recorded heads matching no open PR are reported `recorded_not_open`
-(superseded / force-pushed away — the chronic push-rewrites-the-head orphan case).
+`eligible` list mode reconciles against the live open-PR population and reports
+the wrapper's stored buckets. Interpret those fields only through
+`hermit-validation-authority`; absence from one bucket is not proof of non-landability.
 
 **Cross-host durability (opt-in).** A machine-local JSONL cannot carry the one
 non-derivable datum (the soft-green level + resolver judgement + rationale) to
 another host. `record`/`rebase --publish-provenance` publishes exactly that datum,
 content-addressed and keyed by Z, to the shared `validation-receipts` branch;
 `eligible --durable-provenance` recovers an otherwise-`unaccounted` open-PR head by
-dereferencing it — then holds it to the **same live floor + receipt gates** as a
-local record (durability supplies the datum, never landability). Network stays off
+dereferencing it. Durability supplies provenance, never landability. Network stays off
 the default hot path.
 
 ## Notes
@@ -601,9 +501,9 @@ the gate correctly refuses rather than passing).
 
 1. **The SHA you were handed is a cache; the branch is the source.** Four handed
    SHAs went stale in one night.
-2. **A green must carry a nonzero executed test count.** `--features` gating
-   yields build-ok / target-ran / zero-executed / SUCCESS. Absent and empty logs
-   are refused too.
+2. **Validation qualification follows skill `hermit-validation-authority`.** This preflight
+   mechanically refuses zero-test, absent, and empty logs; it does not define
+   green or landability independently.
 3. **Landing is verified by `mergeCommit.oid` ancestry on a freshly-fetched
    remote** — never the PR head (always false after a rebase replay: that read
    79 unlanded when 46 had landed), never the `MERGED` flag alone (a later

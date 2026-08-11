@@ -1,9 +1,11 @@
 ---
 name: post-facto-review
-description: "Land exact-head validated changes before human review, using the owner's single-review preference and two-agent review for critical syscall, scheduling, or Reverie API changes."
+description: "Land changes after validation qualifies under hermit-validation-authority and before human review, using the owner's single-review preference and two-agent review for critical syscall, scheduling, or Reverie API changes."
 ---
 
 # Post-Facto-Review Mode
+
+**Follow skill `hermit-validation-authority` for validation authority and evidence.**
 
 ## PR Comment Convention
 
@@ -16,8 +18,8 @@ the applicable role tag:
 - `[Human]` for the human owner
 
 This is the **canonical and currently active** review discipline. Normal Hermit
-changes land as soon as required adversarial review is resolved and the exact
-head has a qualifying VALIDATE recorded in the LEDGER. Human review happens
+changes land as soon as required adversarial review is resolved and validation
+qualifies under skill `hermit-validation-authority`. Human review happens
 *after* landing, and corrections fix
 forward. The old pre-land protocol is retained only as an
 [archived historical document](../../archived_skills/human-review-first/SKILL.md);
@@ -239,9 +241,7 @@ rebudget was needed at all.
   actual human approval and is owner-only.
 - The obsolete `human-review` and `post-facto-review` labels must not be
   recreated or applied.
-- `locally-validated` may be derived only by the semantic verifier from a
-  clean, counted, full-profile receipt for the exact current head. It is a
-  cache hint, never landing authority by itself.
+- Validation cache-label rules live only in skill `hermit-validation-authority`.
 
 ## 6. New-syscall code markers
 
@@ -255,25 +255,15 @@ Verify both markers before labeling or landing trigger 1. They are not blanket
 markers for bot-authored code, backend changes, or routine parity fixes. Use
 them only at the smallest new-syscall regions, not across untouched code.
 
-## 7. Land when review and exact-head validation qualify
+## 7. Land when review and selected validation qualify
 
-Once required adversarial review is resolved and the selected exact-head
-authority qualifies, the author lands the change without waiting for a human
-or GH Actions.
-
-- Normal Hermit authority is `ci-hub validate-status` over the clean, counted
-  exact-head LEDGER receipt. Let `apply-local-label` derive
-  `locally-validated`, then land through the tracked lander. GH Actions is
-  advisory P2 and does not delay or veto that path.
-- The sole Hermit exception is a PR modifying the registered producer
-  `scripts/validate.rs`; it uses `ci-hub hosted-status` for the registered
-  exact-head GH Actions job because its own producer cannot vouch for itself.
-  Do not generalize this exception.
-- Reverie requires its repository-defined exact-head validation authority.
+Once required adversarial review is resolved and validation qualifies under
+skill `hermit-validation-authority`, the author lands without waiting for human review.
+Other repositories retain their separately versioned validation policies.
 - When one of the four triggers applies, add `post-facto-human-review`, verify
   every required PR section, verify both exact-head reviews, post role-tagged
   evidence, land through `ci-hub/landing/land-pr.sh` (which re-dereferences the
-  selected policy at the final exact head) using the repository's
+  selected policy at its final boundary) using the repository's
   current merge mode, record the exact landed SHA, and rebase dependents in
   dependency order. Do not add the label to a routine non-triggering PR.
 

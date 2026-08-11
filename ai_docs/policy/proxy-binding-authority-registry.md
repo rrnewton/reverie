@@ -1,10 +1,17 @@
 # Proxy Binding — Authority Registry, Worked Examples, Enforcement Taxonomy
 
-Reference companion to the **Proxy Binding Review Axis** section of `AGENTS.md`. The
-behaviour-changing rules live in `AGENTS.md`; this file holds the maintained registry, the
-worked-example catalogue, and the mechanical-enforcement taxonomy that agents consult when
-touching a gate, verifier, labeler, lander, status view, or closure path. Read it before
-introducing a load-bearing authority or a new consumer of one.
+Reference companion to the **Proxy Binding Review Axis** section of `AGENTS.md`.
+The general Proxy Binding rule lives in `AGENTS.md`; validation-specific rules
+live in skill `hermit-validation-authority`. This file holds the maintained registry, the
+worked-example catalogue, and the mechanical-enforcement taxonomy that agents
+consult when touching a gate, verifier, labeler, lander, status view, or closure
+path. Read it before introducing a load-bearing authority or a new consumer of
+one.
+
+Current Hermit CI mode, validation-evidence qualification, hard/soft-green
+landability, and the local-versus-GitHub boundary live only in skill
+`hermit-validation-authority`. This registry records mechanisms and general Proxy Binding;
+it does not independently set validation policy.
 
 ## Load-Bearing Authority Registry
 
@@ -14,13 +21,13 @@ row only from exact code and tests, never from a PR description.
 
 | Authority and qualified value | Canonical dereferencing verifier | Coverage and remaining hole |
 | --- | --- | --- |
-| **Local validation ledger:** exact Hermit SHA plus clean/full/counted local ledger row and satisfied per-node coverage. | `ci-hub validate-status` / `ci-hub/lib/validate_status.rs`; the lander calls it through `ci-hub/landing/local-validation-eligibility.sh`. | **COVERED on canonical producer and lander paths.** Hermit's Rust driver appends the ledger row first, then delegates label publication to `ci-hub apply-local-label --ledger`; that consumer re-derives the receipt from the ledger. Labels remain caches, not ledger evidence. |
-| **Published validation receipt:** immutable receipt commit and path on the receipt branch, branch ancestry, recomputed receipt and log digests, exact repo/head, and a counted qualifying ledger row. | Producer: `ci-hub/validation/publish_receipt.py`. Consumer: the parent-pinned `ci-hub/validation/verify_receipt.sh`, never PR-controlled verifier code. | **PARTIAL.** The consumer fixture accepts 2/2 legitimate counted receipts and refuses a well-shaped nonexistent receipt, tampering, zero execution, and incomplete coverage. The Hermit merge gate and landing planner still accept a bare `locally-validated` label, and #1593 adds another shape-only parser. Replace every such consumer with the parent verifier. |
+| **Local validation ledger:** the Hermit validation identity and qualified value selected only by skill `hermit-validation-authority`. | `ci-hub validate-status` / `ci-hub/lib/validate_status.rs`; the lander calls it through `ci-hub/landing/local-validation-eligibility.sh`. | **COVERED on canonical producer and lander paths.** Hermit's Rust driver appends the ledger row first, then delegates label publication to `ci-hub apply-local-label --ledger`; that consumer re-derives the receipt from the ledger. Labels remain caches, not ledger evidence. |
+| **Published validation receipt:** immutable receipt commit and path on the receipt branch, branch ancestry, recomputed receipt and log digests, and the validation identity selected by `hermit-validation-authority`. | Producer: `ci-hub/validation/publish_receipt.py`. Consumer: the parent-pinned `ci-hub/validation/verify_receipt.sh`, never PR-controlled verifier code. | **PARTIAL.** The consumer fixture brackets legitimate and malformed receipts. The Hermit merge gate and landing planner still accept a bare `locally-validated` label, and #1593 adds another shape-only parser. Replace every such consumer with the parent verifier. |
 | **Historical Git provenance:** the claimed commit exists in the named repository and the measurement/artifact is bound to that commit, not merely written beside a 40-hex string. | **None.** The minimum identity primitive is a fresh fetch plus `git cat-file -e <sha>^{commit}` in the intended repository; measurement causation additionally needs a commit-bound artifact/receipt. | **MISSING.** Hermit #1546 validates provenance fields and full-SHA syntax without dereferencing the object or a measurement artifact. Commit existence alone proves identity, not that the measurement came from it. |
 | **Adversarial/human review:** reviewer lane, verdict, PR number, and exact reviewed head in a durable receipt produced by that lane. | **None.** `scripts/core-review-protocol-lint.sh` checks cache labels only. | **MISSING.** Push-time label invalidation narrows staleness but does not prove who reviewed what; `passed-review-*`, numbered review labels, and `human-approved` are assertions until a lane-specific exact-head receipt is dereferenced. |
 | **Landing authorization:** a durable coordinator/owner decision names the exact repository, PR, and head allowed to land, with no unresolved hold. | **None.** `land-pr.sh` accepts command-line PR/branch arguments and does not dereference a task authorization record. | **MISSING.** Agent assignment, a ready label, or invoking the lander is not authorization. A future verifier must consume an exact-head authorization receipt; keep this human/coordinator gate explicit until then. |
 | **Landed PR identity and task closure:** GitHub's `mergeCommit.oid` is reachable from a freshly fetched target branch. | `ci-hub verify-landing`; `ci-hub/closure/verified_close.py` calls it. | **PARTIAL.** `ci-hub/landing/land-pr.sh` reimplements the proof, and `ci-hub/remediation/land_and_arm.py` can arm from `state == MERGED` plus a shaped `mergeCommit.oid` without proving ancestry. Route both through `verify-landing`; never substitute PR-head ancestry, `MERGED`, or `mergeStateStatus`. |
-| **GH Actions result:** a registered workflow/job run for the exact head, with terminal success distinct from failure and `NO_RESULT`. It is advisory P2 for normal Hermit heads and authoritative only for a PR modifying `scripts/validate.rs` or a repository whose policy explicitly selects hosted evidence. | Exact-head GitHub API run/job lookup plus the canonical result classifier in `ci-hub/check_outcome.py`. | **PARTIAL.** The producer exception, remediation, health, and history paths call the classifier, but other consumers still hand-roll lookup/classification; `hermit/scripts/pr_status.py` maintains separate conclusion sets and #1593 adds another implementation. Cancelled/skipped/missing/queued/stale are `NO_RESULT`, not red or green. |
+| **GH Actions result:** hosted workflow/job evidence; current validation-authority selection is defined only by skill `hermit-validation-authority`. | Exact-head GitHub API run/job lookup plus the canonical result classifier in `ci-hub/check_outcome.py`. | **INFRASTRUCTURE PRESENT; POLICY EXTERNAL.** Health/history readers classify observational and historical records; whether a result has current validation authority is selected only by skill `hermit-validation-authority`. |
 | **Workflow-policy version:** the required context was emitted by the trusted current workflow definition, not an older PR-branch YAML with weaker rules. | Hermit #1579's versioned context/blob check and ruleset reconciler. | **MISSING on main.** Until the versioned gate lands and every required-context consumer switches, stale branch YAML can emit a current-looking green. |
 | **Live dependency currency:** every tracked manifest and lockfile pin equals the freshly resolved canonical remote ref. | `scripts/check-reverie-pin.rs` from Hermit #1591: live `git ls-remote`, tracked `Cargo.toml` + `Cargo.lock` scan, exact equality. | **PARTIAL until #1591 lands and all paths call it.** The reviewed verifier has an exact-tip positive and real ancestor-behind negative; local validate, both DAGs, hosted aggregate, merge gate, and receipt production are the required consumers. |
 | **Workspace ownership:** `worktree-state.json`, the managed `ACTIVE.md` row, registered worktrees, and actual checked-out branches/detached SHAs agree. | `scripts/check-worktree-registry.rs`; its fixture accepts 2/2 correct rows and refuses planted content drift while preserving a 1/1 correct control. | **PARTIAL.** `allocate-worktree.rs --check-only` calls it, but normal allocation, `release-worktree.rs`, and `worktree-gc.sh` do not all run the verifier before acting. They must call it rather than trusting or independently parsing one surface. |
@@ -31,20 +38,15 @@ row only from exact code and tests, never from a PR description.
 
 The generative cure is: **carry the condition with the value.** A value measured under conditions it does
 not record is a proxy, whether that value is a string, flag, status, hash, or number. Store `{ jobs: 32,
-bytes: N }`, not a bare memory cap `N`; bind green to an exact-SHA run with a nonzero executed-test count;
-bind landing to `mergeCommit.oid` ancestry on freshly fetched main, not a PR head or `MERGED` flag. A bare
+bytes: N }`, not a bare memory cap `N`; bind landing to `mergeCommit.oid` ancestry on freshly fetched main,
+not a PR head or `MERGED` flag. A bare
 value and a qualified value often read identically as facts, so inspection cannot reveal that the
 qualification is missing. Reviewers must ask what conditions made the value true, whether those conditions
 travel with it, and whether they are still current at the decision point.
 
-For test and validation results, **a green must carry what it verified** in one result record: exact SHA,
-profile, discovered count, selected count, executed count, filtered/skipped count, failure count, and the
-declared per-node coverage obligations. A full green requires the full profile, nonzero execution, satisfied
-coverage obligations, and zero failures. A bare `filtered == 0` predicate is not completeness: legitimate
-suites can filter tests (693 in one measured full run), while an incomplete discovery set can report zero
-filtered. A partial-profile `PASS` row is not a full green, and `test result: ok` with zero executed tests is a
-no-result, not success. Keep these qualifications together at the ledger-write point so no downstream reader
-can pair a bare `PASS` with inferred coverage.
+Validation-specific receipt fields, coverage rules, exact-SHA evidence
+identity, and hard/soft-green landability live only in skill
+`hermit-validation-authority`. Their presence here would create a second policy copy.
 
 ## Both-Sides Bracketing
 

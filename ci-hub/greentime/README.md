@@ -1,5 +1,9 @@
 # `ci-hub green-time` — sparse-signal timeline
 
+Signal names in this metric are inputs, not authority definitions. Follow
+skill `hermit-validation-authority` for hard/soft-green meaning, landability, and the
+local-versus-GitHub boundary.
+
 ## The model
 
 On a branch's linear history every commit either carries a **signal**

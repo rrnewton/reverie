@@ -30,5 +30,5 @@ The one genuine case this sweep found: coordinated pair
 net-new, pushed to origin on both repos, no PR, no active owner. Published as
 DRAFT reverie#106 + hermit#723 (cross-linked). It was deliberately not treated
 as validated because its base was stale. Land the lower-level dependency first,
-repin, rebase, and obtain a new exact-head receipt for the final consumer. Never
-type a validation label by hand; it is a cache derived by the semantic verifier.
+repin, rebase, and classify the result under skill `hermit-validation-authority`. Never type
+a validation label by hand; label derivation also lives in that skill.

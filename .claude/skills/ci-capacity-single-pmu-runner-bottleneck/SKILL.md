@@ -1,6 +1,6 @@
 ---
 name: ci-capacity-single-pmu-runner-bottleneck
-description: "Historical PMU-runner capacity context. Use only to recognize the old incident; query live runner capacity and exact-head VALIDATE/LEDGER state through ci-hub."
+description: "Historical PMU-runner capacity context. Use only to recognize the old incident; query live runner capacity through ci-hub and classify current Hermit validation under hermit-validation-authority."
 ---
 
 # Historical PMU capacity incident
@@ -15,8 +15,5 @@ entrypoints. Verify the running mechanism and exact head; do not infer current
 capacity from this note. PMU/KVM work may still require scarce host facilities,
 so derive safe concurrency from live capacity before dispatch.
 
-Normal Hermit landing requires `ci-hub validate-status` over a clean, counted
-exact-head LEDGER receipt. A `locally-validated` label is only its derived
-cache. Runner scarcity and GH Actions queue state are capacity diagnostics, not
-landing verdicts. Only a PR modifying `scripts/validate.rs` uses its registered
-exact-head GH Actions result because that producer cannot vouch for itself.
+Follow skill `hermit-validation-authority` for current validation authority and evidence.
+This historical capacity note supplies no landing verdict.

@@ -31,7 +31,7 @@ with a generated pointer file, a link to `SKILL.md` alone, or a root-level
 - Review, planning, reporting: `backend-reality-reviewer`, `benchmarking`,
   `post-facto-review`, `progress-rubric`, and `research-planning-persona`.
 - Validation and hosted diagnostics: `validate-orchestrator-discipline`,
-  `manual-ci-mode` (the validate-first self-landing protocol), and focused
+  `hermit-validation-authority` (the validate-first self-landing protocol), and focused
   historical references.
 - Safety references: feature-base, worktree, stash, pinned-branch, syscall, and
   record/replay skills.
@@ -62,11 +62,8 @@ those authorities; they should not duplicate a flag-by-flag command manual that
 can drift. Generic engines stay in the pinned `agent-utils` submodule and are
 reached through the parent adapters.
 
-Parent `AGENTS.md` is authoritative under the owner's 2026-08-10 decision:
-VALIDATE is the normal Hermit landing authority, LEDGER is its durable record,
-GH ACTIONS is advisory P2, and RUNNER means the machine. A normal author works,
-validates, applies the ledger-derived label, lands its own PR, and repeats. The
-only Hermit producer exception is a PR modifying `scripts/validate.rs`.
+Follow skill `hermit-validation-authority` for the sole current definition of CI mode,
+validation evidence, hard/soft green, and the local-versus-GitHub boundary.
 
 ## Agent identity and purpose
 

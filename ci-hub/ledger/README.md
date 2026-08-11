@@ -1,5 +1,8 @@
 # Validation ledger
 
+**Follow skill `hermit-validation-authority` for validation authority and evidence
+qualification.** This README documents ledger storage and publication only.
+
 Append-only, Git-backed history of validation runs, sharded per team and
 machine. Schema: `ai_docs/validate-ledger-team-machine-schema_20260807.md`.
 

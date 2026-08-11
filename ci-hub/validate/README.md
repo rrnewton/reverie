@@ -1,5 +1,7 @@
 # `validate/` — local validation run visibility
 
+**Follow skill `hermit-validation-authority` for validation authority.**
+
 This object turns the records that `hermit/scripts/validate.rs` writes into readable,
 machine-wide views. It owns the linkage from local run records to retained
 profiles; it does **not** own the generic DAG runner or the profile format
@@ -32,15 +34,11 @@ writes to the parent validate-run ledger (`build_validation_record`). Runs are
 events and are never deduplicated. Records are `schema_version` >= 3; the fields
 that matter to `worktrees.py` are:
 
-**Validate-run schema version 3** (sometimes shortened internally to
-`schema-3`) is the third JSONL format written by `validate.sh`: it records the
-exact HEAD commit, whether the tree matched that commit, and what selection
-actually ran, while normal agent use refuses unstaged or untracked dirty work
-before a record can be created. Staged work or the explicit
-`--run-on-dirty-tree` escape can still run, but its record says
-`commit_anchored=false` and it cannot apply `locally-validated`. In user-facing
-status, state those consequences instead of saying only that "schema-3
-anchoring is live."
+The current JSONL record written by VALIDATE includes the exact HEAD commit,
+whether the tree matched that commit, and what selection actually ran. Staged
+work or the explicit `--run-on-dirty-tree` escape can still run, but its record
+says `commit_anchored=false`. Skill `hermit-validation-authority` defines the evidentiary
+consequence; this README only documents what the producer stores.
 
 | Field | Meaning |
 | --- | --- |
@@ -54,8 +52,9 @@ anchoring is live."
 | `product_failures` / `killed_by_bound` / `killed_by_signal` / `incomplete_gates` | Explicit terminal attribution; resource kills never collapse into product failure or incomplete. |
 | `commit` / `commit_anchored` / `tree_dirty` | Validated commit and its anchoring state. |
 
-`selection_mode` never says `full` unless the complete suite actually ran, so a
-`full` here is the signal a `locally-validated` stamp depends on.
+`selection_mode` never says `full` unless the complete suite actually ran.
+Qualification and label derivation follow skill `hermit-validation-authority`; the field
+definition here is not another policy predicate.
 
 ### `ignored/worktree-registry.json`
 

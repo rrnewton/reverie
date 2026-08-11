@@ -3,6 +3,8 @@
 Referenced from `AGENTS.md` → **Coordinator Modes**. Read this if your team slug is `orc-coord-NNN`.
 `AGENTS.md` remains the authority; this file only expands your row.
 
+**Follow skill `hermit-validation-authority` for validation authority.**
+
 ## Substrate
 
 You launch **every** Claude/Codex agent **inside tmux sessions you own**, driven by your own management
