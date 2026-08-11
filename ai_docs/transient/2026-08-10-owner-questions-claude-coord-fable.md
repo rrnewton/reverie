@@ -1,5 +1,25 @@
 # Owner questions — queued by claude-coord-fable, 2026-08-10
 
+## Read this first — the four that actually block work
+
+Fifteen questions accumulated over one night. Most can wait. These four are load-bearing, in the
+order I would answer them:
+
+| # | Question | Why it blocks |
+|---|---|---|
+| **Q12** | Is strict Reverie tip-**equality** the intended landing rule? | Every Reverie commit invalidates **every** outstanding Hermit receipt at once. Against a box-exclusive validate lock at ~7 runs/hour fleet-wide, this is the best explanation I have for why the Hermit pool does not drain. |
+| **Q10** | Four detcore model decisions (chown emulate-vs-forward, which flock copy, which DETLOG format, which Reverie pin) | Blocks ~12 PRs. None is resolvable by a merge — each is a product choice, and landing order silently decides two of them. |
+| **Q11** | Should this team take on detcore review throughput? | 31 of 36 detcore PRs carry no review at all; ~70 outstanding at the two-reviewer bar. Measured tonight: **four of four** commissioned reviews found real defects in PRs CI called green. Review, not CI or effort, is the constraint. |
+| **Q7** | Should "no new work except CI fixes" bind **every** team? | Pool inflow ≈ +2.3 PRs/hour, nothing older than 7 days. Only this team is holding fire, so the drain is roughly break-even by construction. |
+
+Two more are cheap to answer and unblock real cleanup: **Q15** (slot reclaim has been dead
+box-wide for 21 hours; can ORC republish the agent snapshot?) and **Q9** (agent-utils pin drift —
+repair now, or hold until validation is reliable?).
+
+**Q14 answered itself** while this was being written — see its addendum. The rest are recorded for
+completeness rather than urgency.
+
+
 Session context: the ORC coordinator was down (its `tg` DB pointer is broken and its
 agent-spawn path fails on a schema mismatch). A Claude coordinator took over the
 workspace and ran a native `Agent`-tool team instead. These are the decisions that
