@@ -267,11 +267,20 @@ reminders:
   - name: speculative_land_obligations
     cadence_secs: 300
     gate:
-      # The command is rust-script-backed: measured 27.75s wall under load while
-      # the watcher itself took 4ms.  Expire inside tick-hub's outer boundary so
-      # an overload/hang becomes a captured NO_RESULT warning, never a silent
-      # "could not run".  Two 55s gates still fit the 180s operational poll.
-      cmd: ./ci-hub/health/bounded_gate.py --name speculative_land_obligations --timeout-secs 45 -- ./ci-hub/ci-hub watch-obligations --once --gate
+      # Invoke the Python producer directly. The Rust front door is
+      # `rust-script --force`: before ci-hub's own cost timer starts it takes the
+      # machine-wide rust-script Cargo build lock. Measured with zero open
+      # obligations, the protocol census took 4ms while the old wiring ranged
+      # from 1.12s when quiet to >45s under lock contention. Three direct
+      # end-to-end samples took 0.48-0.63s. Keep the typed inner/outer bounds,
+      # but do not put unrelated compilation on this five-minute health path.
+      cmd: >-
+        ./ci-hub/health/bounded_gate.py
+        --name speculative_land_obligations --timeout-secs 45 --
+        ./ci-hub/bin/tool-cost --tool ci-hub/watch-obligations
+        --estimate-unknown
+        --basis 'not measured: open-obligation count and GitHub latency vary; direct protocol invocation excludes rust-script compilation'
+        -- python3 ci-hub/remediation/protocol.py watch --once --gate
       timeout_secs: 55
       when: failure
       capture: true

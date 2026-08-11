@@ -138,6 +138,21 @@ class ProductionWiring(unittest.TestCase):
             "reason=missing-captured-summary",
         )
 
+    def test_speculative_land_gate_does_not_take_rust_script_build_lock(self) -> None:
+        config = config_from_yaml(CONFIG.read_text(encoding="utf-8"))
+        gate = {item.name: item for item in config.reminders}[
+            "speculative_land_obligations"
+        ].gate
+        self.assertIsNotNone(gate)
+        assert gate is not None
+        self.assertNotIn("./ci-hub/ci-hub", gate.cmd)
+        self.assertIn("./ci-hub/bin/tool-cost", gate.cmd)
+        self.assertIn("--estimate-unknown", gate.cmd)
+        self.assertIn(
+            "python3 ci-hub/remediation/protocol.py watch --once --gate",
+            gate.cmd,
+        )
+
     def _run_speculative_with(self, stdout: str) -> TickResult:
         config = config_from_yaml(CONFIG.read_text(encoding="utf-8"))
         reminder = {item.name: item for item in config.reminders}[
