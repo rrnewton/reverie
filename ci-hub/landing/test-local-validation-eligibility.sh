@@ -343,16 +343,39 @@ fi
 #    still authorize at the merge gate, so the hole is closed structurally by
 #    keeping exactly one merge call site behind this predicate. Any other
 #    executable merge invocation in the parent must be reported, not used.
-allowed_merge_files="ci-hub/landing/land-pr.sh ci-hub/tests/test_operational_bounds.py"
+# A file-level allowlist cannot tell an INVOCATION from a quoted MENTION, so it
+# had to blanket-exempt whole assertion files -- which would equally have hidden
+# a real merge call added to one of them later. Classify per LINE instead, and
+# allowlist only the one file permitted to actually merge.
+#
+#   invocation : `gh pr merge` reached as a command, i.e. not immediately
+#                preceded by a quote, or reached indirectly through `eval`.
+#   mention    : `gh pr merge` inside a quoted literal (an assertion about the
+#                lander, or an error string), which authorizes nothing.
+#
+# Bracketed by `merge_path_classifier_fixtures` below: every fixture shape is
+# asserted in BOTH directions before this audit is trusted.
+allowed_merge_files="ci-hub/landing/land-pr.sh"
+merge_invocation_re='^[^#]*(^|[^'"'"'"])gh +pr +merge'
+# Indirect invocation: the command is reached through an interpreter, so the
+# quote in front of it means nothing. This is the hole a bare quote-heuristic
+# would leave, and it is bracketed by the `system(...)`/`eval` fixtures below.
+merge_eval_re='^[^#]*(eval|system|popen|subprocess|check_output|check_call|sh +-c|bash +-c)[^#]*gh +pr +merge'
 if merge_files=$(git -C "$root" grep -lI -E '^[^#]*gh +pr +merge' -- \
       '*.sh' '*.py' '*.rs' '*.bash' ':!hermit' ':!reverie' ':!liteinst2' ':!agent-utils' 2>/dev/null); then
-  unexpected=""
+  unexpected=""; mentions=0
   while read -r f; do
     [ -n "$f" ] || continue
-    case " $allowed_merge_files " in *" $f "*) ;; *) unexpected="$unexpected $f";; esac
+    case " $allowed_merge_files " in *" $f "*) continue ;; esac
+    if git -C "$root" grep -qI -E "$merge_invocation_re" -- "$f" 2>/dev/null ||
+       git -C "$root" grep -qI -E "$merge_eval_re" -- "$f" 2>/dev/null; then
+      unexpected="$unexpected $f"
+    else
+      mentions=$((mentions + 1))
+    fi
   done <<<"$merge_files"
   if [ -z "$unexpected" ]; then
-    audit "sole executable merge path is land-pr.sh (+ its own test)" ok
+    audit "sole executable merge path is land-pr.sh ($mentions quoted mention-only file(s) inspected, 0 invocations)" ok
   else
     audit "REPORT: merge invocation outside land-pr.sh:$unexpected" bad
   fi
@@ -360,6 +383,53 @@ else
   # A guard that cannot run is not a guard that passed.
   audit "merge-path audit could not run (git grep failed from $root)" bad
 fi
+
+# Bracket the classifier itself, both ways, against inert fixture text. These
+# strings are never executed and live only in this process: a fixture that
+# merges nothing cannot authorize the merge whose refusal it tests.
+merge_path_classifier_fixtures() {
+  local pos=0 neg=0 bad=0 line
+  # The fixture command is ASSEMBLED AT RUNTIME so this harness never contains
+  # the literal token unquoted -- otherwise the audit above would flag its own
+  # test data and the guard would fail on itself.
+  local m="gh pr"" merge"
+  local -a invocations=(
+    "out=\$(with-proxy $m \"\$PR\" -R \"\$R\" --rebase)"
+    "$m 123 --admin"
+    "  eval \"$m \$PR --rebase\""
+    "system(\"$m\")"
+    "subprocess.check_call(\"$m 7\", shell=True)"
+  )
+  local -a mentions=(
+    "    assert lander.count('$m \"\$PR\"') == 1"
+    "    assert '--match-head-commit' in lander and \"$m\" in lander"
+    "    merge = script.index('$m \"\$PR\"')"
+    "abandon \"$m --rebase refused after the fresh final-boundary check\""
+    "# $m is documented here in a comment"
+  )
+  for line in "${invocations[@]}"; do
+    if printf '%s\n' "$line" | grep -qE "$merge_invocation_re" ||
+       printf '%s\n' "$line" | grep -qE "$merge_eval_re"; then
+      pos=$((pos + 1))
+    else
+      bad=$((bad + 1)); echo "  MISSED invocation: $line" >&2
+    fi
+  done
+  for line in "${mentions[@]}"; do
+    if printf '%s\n' "$line" | grep -qE "$merge_invocation_re" ||
+       printf '%s\n' "$line" | grep -qE "$merge_eval_re"; then
+      bad=$((bad + 1)); echo "  FALSE POSITIVE on mention: $line" >&2
+    else
+      neg=$((neg + 1))
+    fi
+  done
+  if [ "$bad" -eq 0 ]; then
+    audit "merge-path classifier bracketed: ${pos}/${#invocations[@]} invocations flagged, ${neg}/${#mentions[@]} quoted mentions cleared" ok
+  else
+    audit "merge-path classifier MISCLASSIFIED $bad fixture(s)" bad
+  fi
+}
+merge_path_classifier_fixtures
 
 echo
 # Legacy label-independence summary, kept verbatim so existing consumers keep

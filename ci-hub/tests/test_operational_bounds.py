@@ -24,6 +24,15 @@ WALL_SECONDS = 15
 # Keep ordinary command bounds strict and give only complete brackets enough
 # time to report their real pass/fail result.
 RECEIPT_BRACKET_WALL_SECONDS = 90
+# The eligibility bracket drives ~30 negative and 4 positive cases through the
+# real `ci-hub validate-status` binary against the on-disk ledger, so its cost
+# tracks host load rather than any one operation. Measured 2026-08-11 on
+# devbig014 at load ~21: 17.4s, 27.9s, 82.9s, 128.8s across four consecutive
+# runs. The former 15s bound sat BELOW even the fastest observation, so this
+# bracket could only ever time out -- it reported nothing for either leg, which
+# is how three unbacked `locally-validated` labels survived unobserved. A bound
+# that can never be met is not a strict bound, it is a disabled test.
+ELIGIBILITY_BRACKET_WALL_SECONDS = 300
 CPU_SECONDS = 5
 
 
@@ -742,10 +751,17 @@ class OperationalBoundsTest(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            timeout=WALL_SECONDS,
+            timeout=ELIGIBILITY_BRACKET_WALL_SECONDS,
         )
         self.assertIn("unbacked label rejected 2/2", result.stdout)
         self.assertIn("validated head admitted 2/2", result.stdout)
+        # Both legs must be present AND non-inert: the negative leg must refuse
+        # every planted case and the positive leg must still admit a genuinely
+        # ledger-backed head. Asserting the summary line alone would pass on a
+        # harness that silently stopped executing cases.
+        self.assertIn("NEGATIVE refusals: 30/30", result.stdout)
+        self.assertIn("POSITIVE admissions: 4/4", result.stdout)
+        self.assertIn("0 invocations", result.stdout)
 
     def test_lander_no_rebase_is_opt_in_and_removes_only_the_mutation(self) -> None:
         """`--no-rebase` skips step 2 alone; the default path and every check stay.
