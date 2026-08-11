@@ -196,16 +196,17 @@ landing target. Ordinary Hermit work flows from a feature branch to a PR against
 
 ### Hermit landing hierarchy (owner decision, 2026-08-10)
 
-**Follow skill `manual-ci-mode` for validation authority.**
+**Follow skill `hermit-validation-authority` for validation authority.**
 
-This parent policy authorizes publication; product docs, hosted workflows, and
-rulesets do not. Direct `main` stays limited to the named exceptions below. A
-revert requires a durable owner decision bound to exact current/candidate SHAs.
+This parent policy authorizes publication; validation eligibility follows
+skill `hermit-validation-authority`. Direct `main` stays limited to the named exceptions
+below. A revert requires a durable owner decision bound to exact
+current/candidate SHAs.
 
 ### Red-Tip Direct Land (owner-authorized exception to Hard Invariant 9)
 
 When exact `main` is proven red, directly land only its fix (owner, 2026-08-08); premise-refuted stops. Retain
-exact-head local evidence, explicit-path staging, trailer, and no-force rules. The exception ends when `main`
+the validation evidence required by skill `hermit-validation-authority`, explicit-path staging, trailer, and no-force rules. The exception ends when `main`
 is green. Worked evidence and rationale: companion doc, *Red-Tip Direct Land*.
 
 ### Gate-Definition Rotation (owner-scoped direct-land exception)
@@ -223,7 +224,8 @@ off intended uncommitted work.** Fetch via proxy and branch Hermit from verified
 slot HEAD/gitlink/handed SHA. Create the dedicated branch before editing; one coherent task per branch, with
 coordinated repos kept as separate histories. Commit coherent partial work plus blocker if blocked. Unless told
 not to publish, push explicitly (`git push origin HEAD:refs/heads/<branch>`) and open a draft PR without asking.
-Never force-push shared branches/`main`; rebase only an authorized private branch, then revalidate its new SHA.
+Never force-push shared branches/`main`; rebase only an authorized private branch, then classify its validation
+state under skill `hermit-validation-authority`.
 
 **Existing Hermit PR checkout — never validate against the PR's historical Reverie pin.** Checkout and
 preparation are one operation via `scripts/checkout-hermit-pr-latest-reverie.sh` (mechanics: companion doc); a
@@ -231,8 +233,8 @@ stale pin is a hard validation failure, so do not substitute raw `gh pr checkout
 
 ### Publishing And Review
 
-Before publishing, re-read base/remote, audit diff and tests, and bind evidence to the tip. Use `with-proxy`;
-never switch shared auth. Hermit follows the hierarchy above; Reverie still requires its versioned hosted jobs.
+Before publishing, re-read base/remote and audit the diff and tests. Use `with-proxy`; never switch shared auth.
+Hermit validation evidence follows skill `hermit-validation-authority`; other repositories retain their separately versioned policies.
 Unresolved adversarial review or a bare test-process exit blocks.
 
 The owner-set review policy (2026-08-10) is authoritative verbatim:
@@ -251,11 +253,9 @@ Predicate; full rationale, registry, 12 examples, and the 3-layer taxonomy live 
 **Proxy Binding** asks: **what observably binds this check to the fact it claims?** Reject correlated labels,
 statuses, markers, flags, hashes, or counts without identity/causal/coverage/provenance binding.
 
-- **Carry conditions with values:** bind green to exact SHA + nonzero execution, and landing to freshly fetched `mergeCommit.oid` ancestry, never a PR head/`MERGED` flag. A green record carries exact SHA, profile, discovered/selected/executed/filtered/failure counts, and declared per-node coverage; full green means full profile, nonzero execution, satisfied coverage, zero failures. Zero filtered or zero executed is not completeness/success.
-- A grandfathered schema-4 local receipt may retain its historical authority, but it must report
-  `coverage_satisfied: null` and `coverage_status: grandfathered-unknown`; it must never claim per-node coverage it
-  did not carry. Schema-5+ requires declared satisfied per-node coverage.
-- **One verifier per authority, called by every consumer.** Labels/comments/statuses/copied fields are caches, not sources. Do not collapse different authorities. Coverage requires a counted positive, refusal of a well-shaped nonexistent/tampered negative, and audited consumers. Maintain the companion's **Load-Bearing Authority Registry**.
+- **Validation evidence:** follow skill `hermit-validation-authority` for exact-SHA binding, receipt fields, coverage,
+  hard/soft green, and local-versus-GitHub authority. Those CI predicates live only there.
+- **One verifier per authority, called by every consumer.** Labels/comments/statuses/copied fields are caches, not sources. Do not collapse different authorities. Maintain the companion's **Load-Bearing Authority Registry**.
 - **Bracket both sides.** Negative: plant the violating case, confirm refusal. Positive: plant the qualifying case, confirm it fires (not inert). State counts on both sides.
 - **Never plant an artifact that is itself an authorization** (a merge/review/validation label, an auto-merge workflow) to test a gate. Exercise the consumer with an inert fixture, dry-run, or isolated repo incapable of authorizing the action whose refusal it tests.
 
@@ -273,7 +273,7 @@ unless it also enters one of the three critical domains defined above. Full pred
 ### Landing Authorization
 
 On startup/replacement, `hermit-lander` runs `ci-hub/ci-hub inherit-obligations`. Landing needs task authority,
-resolved review, and exact-head authority; human review remains post-facto. Outside the named exceptions, never
+resolved review, and validation that qualifies under skill `hermit-validation-authority`; human review remains post-facto. Outside the named exceptions, never
 push Hermit `main`; never force-push or bypass through a primary. Parent policy/gitlink writes require an owning
 task; `worktrees/ACTIVE.md` never enters commits. Mechanics and obligation lifecycle: companion doc.
 
@@ -380,26 +380,10 @@ it with `file`, `du`, and the ignore rules — do not commit first and promise t
 
 ## Validation And Evidence
 
-Use product-local commands, focused tests while developing, then required repository validation. Cross-repo work
-validates the exact proposed pair. Evidence binds to commits and reports exact Hermit/Reverie SHAs, command,
-result, and environment/limitations; never weaken a hardware-dependent test.
-
-### Running validate — `systemd-run --user` Is The Producer Path
-
-Before claiming validation run `ci-hub/validate/preflight_anchor.py --head <sha>`; exit 2 means rebase, do not
-validate. Re-derive the set; never trust a stale list. An agent sandbox cannot run `scripts/validate.rs` directly.
-The sole producer is detached, boxed `ci-hub validate-run`; if its caller recycles, attach to its handle rather
-than relaunching:
-
-```
-./ci-hub/ci-hub validate-run --checkout <worktree> --agent <agent> \
-  --target <exact-40-hex-head> --pr <number> -- full
-```
-
-The Herdr pane only observes; production remains `validate-lock` -> `scripts/validate.rs` ->
-`safe-ci-dag-runner`. Let `apply-local-label` derive the label from the LEDGER. Derive concurrency from total
-cores. Any GH Actions receipt diagnostic uses immutable parent `verify_receipt.sh`, never PR-controlled code, and
-does not become normal authority. Full mechanics/rationale: companion doc.
+**Follow skill `hermit-validation-authority` for Hermit CI mode and validation-evidence conventions.** Use product-local
+focused tests while developing and report environmental limitations; never weaken a hardware-dependent test.
+That skill also owns the sole production path, evidence reader, cache-label derivation, and current GitHub
+Actions boundary. The Herdr pane is observer-only and never becomes a second producer.
 
 ## Product Vision (full statement in companion doc)
 
@@ -429,7 +413,7 @@ Predicates; the full rationale lives in the
 - **Establish what you have before acting.** A **note** is one agent's unverified belief — do not launder "X appears to be Y" into "X is Y, fix it." When a premise comes from a note or second-hand observation, attribute it to its source, mark it **UNVERIFIED**, and make "verify the premise" the explicit first step ("premise refuted" is a valid outcome). A **number** is unqualified until you state **what it measures** (the decision's quantity, or a proxy?), its **unit** (a count is not a rate; a load average is not a utilisation), and its **denominator** — interrogate a surprising ratio's denominator first.
 - **Verify a mechanism by the running thing, not its config.** A flag can be a deprecated no-op; an exit code can come from a different wrapper. Find the running thing and ask what holds it — e.g. for cgroup boxing, walk `/sys/fs/cgroup/...` for the live PID's `cgroup.procs`, not a flag/exit code.
 - **Record every measurement immediately.** First check whether the number already exists (`experiments/`, task notes, ci-hub history store). Any measurement — even incidental — goes into a task note immediately with units, context, and **how obtained (a polled aggregate is not a cgroup-recorded peak)**.
-- **Trust authority, not a handed SHA.** `ci-hub newest-green` establishes the normal local frontier. A candidate changing a registered producer is intentionally local-non-authoritative; dereference its registered exact-head hosted job with `ci-hub hosted-status`. Report discrepancies.
+- **Trust authority, not a handed SHA.** Follow skill `hermit-validation-authority`; do not reconstruct validation authority from an older directive, label, hosted job, or copied field.
 - **A land-lock SIGCONT must cover the WHOLE subtree, roots and descendants.** `land-lock status` hangs while its census holds verifiers in `do_signal_stop`; the remedy (SIGCONT, then `reclaim-dead`, never a kill) works only if every stopped member is resumed. Either partial attempt fails silently and looks like a wedged lock — resuming only roots leaves the real worker stopped one level down. Enumerate the subtree recursively from the validator roots, SIGCONT every member whose `stat` starts with `T`, then re-check none remain.
 
 ## Failure, Recovery, And Concurrent Work
