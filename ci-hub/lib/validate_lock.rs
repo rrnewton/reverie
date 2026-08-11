@@ -162,6 +162,9 @@ pub enum ValidateLockCommand {
     /// Declare the priority for one future run. The declaration is inert until
     /// that exact agent/kind/target reaches the box-global queue.
     Prioritize(PrioritizeArgs),
+    /// Retire one exact inactive declaration after its work reaches a terminal
+    /// outcome. An active waiter is never retired by this command.
+    RetirePriority(RetirePriorityArgs),
     /// Wait in FIFO order and acquire the box-exclusive lease.
     Acquire(AcquireArgs),
     /// Refresh a lease owned by this agent.
@@ -239,6 +242,38 @@ pub struct PrioritizeArgs {
     pub target: String,
     #[arg(long, value_enum)]
     pub priority: QueuePriority,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+pub enum TerminalOutcome {
+    Completed,
+    Failed,
+    Abandoned,
+}
+
+impl TerminalOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Abandoned => "abandoned",
+        }
+    }
+}
+
+#[derive(Args, Clone, Debug)]
+pub struct RetirePriorityArgs {
+    #[arg(long)]
+    pub agent: String,
+    #[arg(long, value_enum)]
+    pub kind: Kind,
+    #[arg(long)]
+    pub target: String,
+    /// Explicit terminal transition for this exact work identity. The queue
+    /// cannot infer this uniformly: validate targets are SHAs, bench targets
+    /// are arbitrary, and abandoned work has no shared receipt authority.
+    #[arg(long, value_enum)]
+    pub outcome: TerminalOutcome,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -1613,6 +1648,7 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
     };
     match args.command {
         ValidateLockCommand::Prioritize(args) => lock.prioritize(args),
+        ValidateLockCommand::RetirePriority(args) => lock.retire_priority(args),
         ValidateLockCommand::Acquire(args) => {
             reject_bad_max(args.max)?;
             base_admission_check(root, &args.target, args.kind, args.skip_base_check)?;
@@ -2024,6 +2060,68 @@ impl ValidateLock {
                 args.target,
                 args.priority.as_str()
             ),
+        }
+        Ok(0)
+    }
+
+    fn retire_priority(&self, args: RetirePriorityArgs) -> Result<i32, ValidateLockError> {
+        for (name, value) in [
+            ("agent", args.agent.as_str()),
+            ("kind", args.kind.as_str()),
+            ("target", args.target.as_str()),
+        ] {
+            anchor_token(name, value)?;
+        }
+        let now = epoch_seconds()?;
+        let retired = self.with_global_queue_guard(|| {
+            let mut queue = self.read_global_queue()?;
+            let exact = queue
+                .iter()
+                .position(|entry| entry.matches(&args.agent, args.kind, &args.target));
+            match exact {
+                Some(index) if queue[index].owner.is_some() => {
+                    let owner = queue[index].owner.as_ref().expect("checked above");
+                    return Err(ValidateLockError::InvalidState(format!(
+                        "REFUSED: priority identity agent={} kind={} target={} is an ACTIVE waiter owned by pid {} start_ticks {}; terminal retirement may remove declarations only",
+                        args.agent,
+                        args.kind.as_str(),
+                        args.target,
+                        owner.pid,
+                        owner.start_ticks
+                    )));
+                }
+                Some(index) => {
+                    queue.remove(index);
+                    self.prune_and_sort_global_queue(&mut queue, now)?;
+                    self.write_global_queue(&queue)?;
+                    Ok(true)
+                }
+                None => {
+                    // Idempotent terminal delivery: a retry after successful
+                    // retirement, TTL expiry, or declaration consumption is a
+                    // no-op. Still persist ordinary dead/expired pruning.
+                    self.prune_and_sort_global_queue(&mut queue, now)?;
+                    self.write_global_queue(&queue)?;
+                    Ok(false)
+                }
+            }
+        })?;
+        if retired {
+            eprintln!(
+                "validate-lock: RETIRED declaration agent={} kind={} target={} terminal={}",
+                args.agent,
+                args.kind.as_str(),
+                args.target,
+                args.outcome.as_str()
+            );
+        } else {
+            eprintln!(
+                "validate-lock: declaration already absent agent={} kind={} target={} terminal={}",
+                args.agent,
+                args.kind.as_str(),
+                args.target,
+                args.outcome.as_str()
+            );
         }
         Ok(0)
     }
@@ -3439,7 +3537,23 @@ impl ValidateLock {
     }
 
     fn print_queue(&self) -> Result<(), ValidateLockError> {
-        let global = self.with_global_queue_guard(|| self.read_global_queue())?;
+        let now = epoch_seconds()?;
+        let global = self.with_global_queue_guard(|| {
+            let mut queue = self.read_global_queue()?;
+            let original_len = queue.len();
+            // Status is a queue consumer too. Apply the declaration TTL here
+            // without probing active-owner liveness, so an expired declaration
+            // cannot remain visible forever merely because no mutating caller
+            // arrives, while an unverifiable active waiter stays represented.
+            queue.retain(|entry| {
+                entry.owner.is_some()
+                    || entry.enqueued_at >= now - GLOBAL_QUEUE_DECLARATION_TTL_SECONDS
+            });
+            if queue.len() != original_len {
+                self.write_global_queue(&queue)?;
+            }
+            Ok(queue)
+        })?;
         if !global.is_empty() {
             println!("global priority queue:");
             let mut active_position = 0;
@@ -7617,6 +7731,113 @@ exit 0
         }];
         lock.prune_and_sort_global_queue(&mut queue, now).unwrap();
         assert!(queue.is_empty());
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// TERMINAL/PENDING BRACKET. A terminal declaration disappears, while a
+    /// genuinely pending owner directive still outranks a routine active
+    /// waiter once the declared work reaches the queue.
+    #[test]
+    fn terminal_declaration_retires_without_erasing_pending_priority() {
+        let paths = temp_paths("global-priority-terminal-retirement");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let completed = global_queue_run_args(
+            "completed-owner-directive",
+            "1111111111111111111111111111111111111111",
+        );
+        let pending = global_queue_run_args(
+            "pending-owner-directive",
+            "2222222222222222222222222222222222222222",
+        );
+        let routine =
+            global_queue_run_args("routine-waiter", "3333333333333333333333333333333333333333");
+        for args in [&completed, &pending] {
+            lock.prioritize(PrioritizeArgs {
+                agent: args.agent.clone(),
+                kind: args.kind,
+                target: args.target.clone(),
+                priority: QueuePriority::OwnerDirective,
+            })
+            .unwrap();
+        }
+
+        lock.retire_priority(RetirePriorityArgs {
+            agent: completed.agent.clone(),
+            kind: completed.kind,
+            target: completed.target.clone(),
+            outcome: TerminalOutcome::Completed,
+        })
+        .unwrap();
+        let queue = lock.read_global_queue().unwrap();
+        assert!(!queue.iter().any(|entry| entry.matches(
+            &completed.agent,
+            completed.kind,
+            &completed.target
+        )));
+        assert!(queue.iter().any(|entry| entry.matches(
+            &pending.agent,
+            pending.kind,
+            &pending.target
+        )));
+
+        let holder = BoxExclusionAnchor::take(&paths.anchor, 0).unwrap().unwrap();
+        let owner = current_process_owner().unwrap();
+        assert!(matches!(
+            lock.try_global_turn(&routine, &owner, "fixture=routine")
+                .unwrap(),
+            GlobalTurn::Held(_)
+        ));
+        assert!(matches!(
+            lock.try_global_turn(&pending, &owner, "fixture=pending")
+                .unwrap(),
+            GlobalTurn::Held(_)
+        ));
+        assert!(matches!(
+            lock.try_global_turn(&routine, &owner, "fixture=routine")
+                .unwrap(),
+            GlobalTurn::WaitPriority {
+                head_agent,
+                head_priority: QueuePriority::OwnerDirective,
+                own_priority: QueuePriority::Routine,
+                position: 2,
+            } if head_agent == pending.agent
+        ));
+        drop(holder);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// NON-PREEMPTION BRACKET. A terminal assertion against an active waiter
+    /// refuses without changing a byte of queue authority.
+    #[test]
+    fn terminal_retirement_refuses_active_waiter_byte_identically() {
+        let paths = temp_paths("global-priority-active-retirement");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let args = global_queue_run_args("active-owner-directive", HEX_SHA);
+        let owner = current_process_owner().unwrap();
+        lock.write_global_queue(&[GlobalQueueEntry {
+            enqueued_at: epoch_seconds().unwrap(),
+            priority: QueuePriority::OwnerDirective,
+            agent: args.agent.clone(),
+            kind: args.kind,
+            target: args.target.clone(),
+            owner: Some(owner),
+        }])
+        .unwrap();
+        let before = fs::read(lock.global_queue_path()).unwrap();
+        let error = lock
+            .retire_priority(RetirePriorityArgs {
+                agent: args.agent,
+                kind: args.kind,
+                target: args.target,
+                outcome: TerminalOutcome::Abandoned,
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("ACTIVE waiter"));
+        assert_eq!(fs::read(lock.global_queue_path()).unwrap(), before);
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
