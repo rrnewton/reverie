@@ -352,6 +352,46 @@ reminders:
         component: primary-checkout-snapshot
       title: "primary checkout snapshot needs attention: {summary}"
 
+  # STAGED BY LAG, per the owner: "If hermit is <5 commits behind make a small
+  # note. If it is more then get louder." Two gates, ONE measurement tool, so the
+  # threshold is the only thing that differs between them.
+  #
+  # This is the DELTA/SUSTAINED/DEFERRAL family documented at the top of this file
+  # applied to severity rather than to firing: the small note is emitted every
+  # cycle and never paged, so it cannot compete with a live incident, and the loud
+  # band is reserved for a lag nobody has acted on. THERE IS NO SNOOZE AND NO
+  # CLEARING FLAG -- the only input that quiets either band is a smaller lag, and
+  # the only way to get one is to bump the pin. The warning this replaces fired
+  # ~30 times over nine hours on 2026-08-11, stayed accurate throughout, and
+  # became furniture precisely because it had one volume.
+  #
+  # An unmeasurable pin or a rewritten reverie history exits 2 in BOTH bands on
+  # purpose: routing a fault to one band would let the quiet band silently own it.
+  - name: reverie_pin_lag_note
+    cadence_secs: 1800
+    gate:
+      cmd: ./ci-hub/health/reverie_pin_lag.py --gate --min-lag 1 --max-lag 4
+      when: failure
+      capture: true
+    emit:
+      kind: note
+      fields:
+        component: reverie-pin-lag
+      title: "reverie pin is slightly behind: {summary}"
+
+  - name: reverie_pin_lag_escalation
+    cadence_secs: 1800
+    gate:
+      cmd: ./ci-hub/health/reverie_pin_lag.py --gate --min-lag 5
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: reverie-pin-lag
+      title: "reverie pin has fallen far behind and is blocking landings: {summary}"
+
   - name: github_main_health
     cadence_secs: 900
     gate:
