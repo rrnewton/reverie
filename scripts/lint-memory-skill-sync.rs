@@ -156,7 +156,24 @@ fn main() {
             }
             if !path.is_dir() {
                 let rel = path.strip_prefix(&root).unwrap_or(&path).display();
-                problems.push(format!("PACKAGE {rel}: unsupported canonical skill entry"));
+                // A bridge into the agent-utils submodule that has not been
+                // materialised is STILL A FAILURE -- the check stays strict, because
+                // accepting an unresolvable bridge would trade a false failure for a
+                // weaker check. What changes is that the message names the remedy.
+                // Measured 2026-08-11: a plain `git clone` of the parent fails this
+                // lint, because clone does not initialise submodules, and the old text
+                // ("unsupported canonical skill entry") named a SKILL PACKAGE and said
+                // nothing about submodules -- so a reader goes hunting for a missing
+                // skill instead of running one command. An agent searches for the
+                // symptom it is seeing, not for the cause it has not found yet.
+                if let Some(target) = absent_submodule_bridge_target(&path) {
+                    problems.push(format!(
+                        "PACKAGE {rel}: bridge target absent ({target}); \
+                         run `git submodule update --init agent-utils`"
+                    ));
+                } else {
+                    problems.push(format!("PACKAGE {rel}: unsupported canonical skill entry"));
+                }
                 continue;
             }
             let rel = path
@@ -406,6 +423,26 @@ fn read_skill_files(dir: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+/// The link text of a symlink that points into the agent-utils skills tree but does
+/// not resolve, or `None` when this is not that case.
+///
+/// Reads the LINK TEXT rather than canonicalising, because canonicalize fails on a
+/// dangling symlink -- which is exactly the state being diagnosed here, and is why
+/// `is_external_skill_bridge_dir` cannot distinguish "absent submodule" from
+/// "nonsense entry" on its own. This classifies the failure; it never excuses it.
+fn absent_submodule_bridge_target(bridge: &Path) -> Option<String> {
+    let meta = std::fs::symlink_metadata(bridge).ok()?;
+    if !meta.file_type().is_symlink() {
+        return None;
+    }
+    if std::fs::canonicalize(bridge).is_ok() {
+        return None; // resolves; not the absent-submodule case
+    }
+    let target = std::fs::read_link(bridge).ok()?;
+    let text = target.to_string_lossy().to_string();
+    text.contains("agent-utils/skills").then_some(text)
 }
 
 fn is_external_skill_bridge_dir(root: &Path, bridge: &Path) -> bool {
