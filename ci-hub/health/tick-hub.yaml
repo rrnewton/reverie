@@ -275,6 +275,10 @@ reminders:
       skill: hard-warn-coordinator
       fields:
         component: speculative-land-obligation
+        # Captured gate output overrides this value. If the child exits nonzero
+        # without a summary, the title still resolves to an explicit NO-SIGNAL
+        # outcome instead of disappearing at the renderer boundary.
+        summary: "NO-SIGNAL gate=speculative_land_obligations reason=missing-captured-summary"
       title: "speculative land requires immediate attention: {summary}"
 
   # A stale obligation with a named human decision blocker remains visible, but

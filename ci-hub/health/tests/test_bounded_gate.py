@@ -11,13 +11,14 @@ import sys
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 
 ROOT = Path(__file__).resolve().parents[3]
 ADAPTER = ROOT / "ci-hub" / "health" / "bounded_gate.py"
 CONFIG = ROOT / "ci-hub" / "health" / "tick-hub.yaml"
 sys.path.insert(0, str(ROOT / "agent-utils" / "py"))
 
-from tick_hub.engine import run_tick  # noqa: E402
+from tick_hub.engine import TickResult, run_tick  # noqa: E402
 from tick_hub.io import config_from_yaml  # noqa: E402
 from tick_hub.model import Emit, EmitKind, Gate, GateWhen, Reminder, TickConfig  # noqa: E402
 from tick_hub.probes import GlobFileAgeProbe, SubprocessGateRunner  # noqa: E402
@@ -125,6 +126,65 @@ class ProductionWiring(unittest.TestCase):
             )
             checked += 1
         self.assertEqual(checked, 2)
+
+    def test_speculative_land_has_a_no_signal_summary_fallback(self) -> None:
+        config = config_from_yaml(CONFIG.read_text(encoding="utf-8"))
+        reminder = {item.name: item for item in config.reminders}[
+            "speculative_land_obligations"
+        ]
+        self.assertEqual(
+            reminder.emit.fields["summary"],
+            "NO-SIGNAL gate=speculative_land_obligations "
+            "reason=missing-captured-summary",
+        )
+
+    def _run_speculative_with(self, stdout: str) -> TickResult:
+        config = config_from_yaml(CONFIG.read_text(encoding="utf-8"))
+        reminder = {item.name: item for item in config.reminders}[
+            "speculative_land_obligations"
+        ]
+        command = shlex.join(
+            [
+                sys.executable,
+                "-c",
+                f"print({stdout!r}, end=''); raise SystemExit(1)",
+            ]
+        )
+        planted = replace(
+            reminder,
+            gate=Gate(
+                cmd=command,
+                when=GateWhen.FAILURE,
+                capture=True,
+                timeout_secs=2,
+            ),
+        )
+        return run_tick(
+            TickConfig(reminders=(planted,)),
+            OpsState.default(),
+            now=9,
+            fired={},
+            gate_runner=SubprocessGateRunner(),
+            age_probe=GlobFileAgeProbe(),
+        )
+
+    def test_resolvable_speculative_template_emits_one_real_verdict(self) -> None:
+        result = self._run_speculative_with("summary=obligation-123-is-red\n")
+        actions = [line for line in result.lines if line.startswith("ACTION: ")]
+        self.assertEqual(len(actions), 1, result.lines)
+        self.assertEqual(result.actions_emitted, 1)
+        self.assertIn("obligation-123-is-red", actions[0])
+        self.assertNotIn("NO-SIGNAL", actions[0])
+
+    def test_missing_summary_emits_one_visible_no_signal_verdict(self) -> None:
+        result = self._run_speculative_with("")
+        actions = [line for line in result.lines if line.startswith("ACTION: ")]
+        self.assertEqual(len(actions), 1, result.lines)
+        self.assertEqual(result.actions_emitted, 1)
+        self.assertIn("NO-SIGNAL", actions[0])
+        self.assertIn("gate=speculative_land_obligations", actions[0])
+        self.assertIn("reason=missing-captured-summary", actions[0])
+        self.assertFalse(any("{summary}" in line for line in result.lines))
 
 
 class TickConsumerBracket(unittest.TestCase):
