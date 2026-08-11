@@ -180,6 +180,36 @@ fine; silently operating over a documented invariant is not.
 
 **Question:** raise the caps, or enforce them?
 
+## Q9 — `agent-utils` pin is in drift; I deliberately did NOT repair it mid-drain
+
+`make check-agent-utils-pin` reports `state=drift`:
+
+```
+ERROR: canonical checkout branch is "", expected main
+ERROR: checkout is not exactly origin/main (ahead=0, behind=11)
+ERROR: parent gitlink 59da8697... does not match checkout d2fdfc83...
+ERROR: parent gitlink is not exactly origin/main (ahead=0, behind=1)
+```
+
+The checkout is clean (`checkout_dirty=false`), just detached and behind. This predates my
+session — the parent's `git status` showed `M agent-utils` at handover.
+
+**Why I left it alone.** `AGENTS.md` says the peg must equal fetched `rrnewton/agent-utils:main`,
+so the documented repair is to advance the checkout and commit the exact gitlink. But an
+`agent-utils` gitlink bump is precisely what caused the CPU-boxing incident earlier this session:
+it activated `DEFAULT_SMALL_CPU_COUNT = 1` and silently 1-core-boxed seven build steps, costing
+~2.5 minutes on every validate until it was diagnosed. Advancing it now — with four agents
+mid-drain, the box-exclusive validate lock in constant use, and validation already unreliable
+(#2111) — risks perturbing the one measurement everything else depends on, and any resulting
+red would be attributed to whichever PR happened to be validating.
+
+It is a hygiene violation, not an active breakage: validates are running and the drift is one
+commit on the gitlink, eleven on the checkout.
+
+**Question:** repair it now and accept the risk, or hold until the pool is drained and validation
+is reliable? My recommendation is to hold, then bump deliberately with a validate immediately
+before and after so any behaviour change is attributable. I have not acted either way.
+
 ## Not questions — flagged for awareness
 
 - **ORC is down for two independent reasons.** `~/.tg/active_db` names `hermit`, but
