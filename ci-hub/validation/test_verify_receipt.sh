@@ -52,11 +52,13 @@ export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 # transition is malformed.
 production_registry=$script_dir/../validate/producer-definition.json
 production_repo=$root/hermit
-production_registered_at=c88196aeb6b9ec0909d18a74a23e85cadfb87968
-production_rust=23210159bd0a40577ad995e9a184f065f4c875c7
+production_registered_at=796565d21d123cf177b54e26e2176b695752aef3
+production_rust=379a0f24374b562ccb2836726301034140b901b7
 production_history=0255c492791fba04aa9000efb18ec3f57dd6a8ad
 production_receipt=465f6c7e1f027ba81daf09f5011f84ebdd08deb0
-production_portable=dd56c0cf3bc3895b6fc0fb3a5348574446ddef80
+production_portable=3c6934be277a7261dfb8e4b5980f7ddbead1ddc5
+production_nextest_config=ec47795a8289a1f3ea62424b686217c942427b18
+production_nextest_wrapper=5fcfc77bb7264f9631312ebb4f24f635e464364c
 previous_rust=15879c97c0ddcfeafaed18deaab0cba2fab30312
 previous_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
 if ! jq -e \
@@ -64,12 +66,16 @@ if ! jq -e \
     --arg rust "$production_rust" \
     --arg history "$production_history" \
     --arg receipt "$production_receipt" \
-    --arg portable "$production_portable" '
+    --arg portable "$production_portable" \
+    --arg nextest_config "$production_nextest_config" \
+    --arg nextest_wrapper "$production_nextest_wrapper" '
       .registered_at == $at
       and .registered_coverage_status == "complete"
       and (has("registered_valid_commits") | not)
       and (.registered | keys | sort) == [
+        ".config/nextest.toml",
         ".github/workflows/ci-portable.yml",
+        "ci/run-nextest-counted.sh",
         "scripts/lib/validate_history.rs",
         "scripts/lib/validate_receipt.rs",
         "scripts/validate.rs"
@@ -78,6 +84,8 @@ if ! jq -e \
       and .registered["scripts/lib/validate_history.rs"] == $history
       and .registered["scripts/lib/validate_receipt.rs"] == $receipt
       and .registered[".github/workflows/ci-portable.yml"] == $portable
+      and .registered[".config/nextest.toml"] == $nextest_config
+      and .registered["ci/run-nextest-counted.sh"] == $nextest_wrapper
     ' "$production_registry" >/dev/null; then
     echo "FAIL: production producer-definition registry does not match the audited primary" >&2
     exit 1
@@ -189,7 +197,7 @@ write_comments() {
 # normalized. So the anchor compares CANONICAL CONTENT (`jq -S -c`), which is
 # what "the mutation changed the receipt" actually means.
 mutation_anchor_failures=0
-mutation_anchors_total=28
+mutation_anchors_total=29
 assert_mutated() { # assert_mutated <base> <mutant> <label>
     local a b
     a=$(jq -S -c . "$1" 2>/dev/null) || a="<unparseable:$1>"
@@ -262,15 +270,21 @@ retarget_receipt "$tmp/receipt.json" "$tmp/production-current-retargeted.json" \
 jq -cS --arg rust "$production_rust" \
   --arg history "$production_history" \
   --arg receipt "$production_receipt" \
-  --arg portable "$production_portable" '
+  --arg portable "$production_portable" \
+  --arg nextest_config "$production_nextest_config" \
+  --arg nextest_wrapper "$production_nextest_wrapper" '
   .producer.definition = {
     "scripts/validate.rs": $rust,
     "scripts/lib/validate_history.rs": $history,
     "scripts/lib/validate_receipt.rs": $receipt,
-    ".github/workflows/ci-portable.yml": $portable
+    ".github/workflows/ci-portable.yml": $portable,
+    ".config/nextest.toml": $nextest_config,
+    "ci/run-nextest-counted.sh": $nextest_wrapper
   }
   | .producer.paths = [
+      ".config/nextest.toml",
       ".github/workflows/ci-portable.yml",
+      "ci/run-nextest-counted.sh",
       "scripts/lib/validate_history.rs",
       "scripts/lib/validate_receipt.rs",
       "scripts/validate.rs"
@@ -306,6 +320,16 @@ assert_mutated "$tmp/production-current.json" "$tmp/production-tampered.json" \
 PRODUCER_DEFINITION_REGISTRY=$production_registry \
     verify_file "$tmp/production-tampered.json" fail \
     "production rotation: one-blob tamper is refused" \
+    '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
+
+jq -cS 'del(.producer.definition["ci/run-nextest-counted.sh"])
+  | .producer.paths -= ["ci/run-nextest-counted.sh"]' \
+    "$tmp/production-current.json" >"$tmp/production-wrapper-missing.json"
+assert_mutated "$tmp/production-current.json" "$tmp/production-wrapper-missing.json" \
+    "PRODUCER counted-nextest wrapper missing"
+PRODUCER_DEFINITION_REGISTRY=$production_registry \
+    verify_file "$tmp/production-wrapper-missing.json" fail \
+    "production rotation: missing counted-nextest wrapper is refused" \
     '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
 
 PRODUCER_DEFINITION_REGISTRY=$production_registry \
@@ -968,4 +992,4 @@ if [[ $mutation_anchor_failures -ne 0 ]]; then
     exit 1
 fi
 
-echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; previous/tampered/wrong-head production definitions (3/3), 2/2 additional identity/compatibility receipts, 5/5 valid and 4/4 malformed role tags, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all 25 mutation anchors changed canonical content; fixture plant deleted cleanly"
+echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; previous/tampered/missing-wrapper/wrong-head production definitions (4/4), 2/2 additional identity/compatibility receipts, 5/5 valid and 4/4 malformed role tags, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"
