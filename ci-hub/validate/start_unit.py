@@ -212,6 +212,102 @@ def remove_fresh_checkout(source: Path, fresh: Path, *, run: Runner) -> None:
     run(["git", "-C", str(source), "worktree", "prune"], check=False)
 
 
+# Seeded from the shared cache rather than started empty, and seeded with these
+# two subtrees rather than all of it. Both choices are measured, not aesthetic;
+# the numbers are in `test_private_cargo_home.py` and in the commit message.
+CARGO_SEED_SUBTREES: tuple[tuple[str, str], ...] = (
+    ("registry", "registry"),
+    ("git/db", "git/db"),
+)
+
+
+def prepare_private_cargo_home(parent: Path, *, run: Runner, shared: Path) -> Path | None:
+    """Give this validate its own CARGO_HOME, seeded by reflink from the shared one.
+
+    WHY. Cargo serialises every cache mutation on one lock file,
+    `$CARGO_HOME/.package-cache`. `ci-hub validate-lock` is box-exclusive, so no
+    two VALIDATES run at once -- but nothing serialises a validate against the
+    ~18 agents running ordinary `cargo build` in their own slots, and every one
+    of them inherits the same `~/.cargo`. When a validate node loses that race
+    it does not run slowly, it sits in `Blocking waiting for file lock on
+    package cache` until its node budget kills it. Measured on devbig030:
+    `privileged-build.privileged_tests` has a median of 0.05s across 21 passing
+    runs and died at its 120s budget with nothing else in its output, and 9 of
+    14 node timeouts across 78 retained logs show that message.
+
+    This is invisible to every contention signal we had: a process blocked on
+    flock consumes no CPU, so load average and all three PSI counters read
+    clean while a node burns its whole budget. That is why these reds were
+    repeatedly attributed to a busy box and rerun rather than read.
+
+    WHY SEEDED, AND WHY ONLY THESE SUBTREES. An empty CARGO_HOME is correct but
+    would re-fetch the git dependencies on every run. Copying all of `~/.cargo`
+    is also correct and takes 218s here, because 45 of its 48 GB is 324 stale
+    `git/checkouts/reverie-*` revisions that cargo never collects -- pure
+    metadata cost for content the run does not need, since cargo recreates the
+    one checkout it wants from `git/db` locally. Seeding `registry` + `git/db`
+    is 10.4s and reproduces the warm behaviour: the reflink is copy-on-write on
+    btrfs, so it also costs no real space.
+
+    Returns the new CARGO_HOME, or None if it could not be built -- in which
+    case the caller MUST fall back to the shared cache loudly. Degrading in
+    silence would reintroduce the contention while looking fixed.
+    """
+    if not shared.is_dir():
+        print(
+            f"validate-run: no shared cargo home at {shared}; leaving CARGO_HOME unset "
+            "(this run stays exposed to package-cache lock contention)",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        private = Path(
+            checked_output(
+                ["mktemp", "-d", str(parent / "validate-cargo-XXXXXXXX")],
+                run=run,
+                purpose="cannot create private cargo home",
+            )
+        )
+    except (RuntimeError, ValueError) as error:
+        print(f"validate-run: private CARGO_HOME unavailable ({error}); using shared cache", file=sys.stderr)
+        return None
+
+    for relative, destination in CARGO_SEED_SUBTREES:
+        source = shared / relative
+        if not source.is_dir():
+            continue
+        target = private / destination
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # --reflink=auto, not =always: a non-CoW filesystem must still work,
+        # just slower. Failing here would trade a flake for an outage.
+        result = run(
+            ["cp", "-a", "--reflink=auto", str(source), str(target)],
+            check=False,
+        )
+        if getattr(result, "returncode", 1) != 0:
+            print(
+                f"validate-run: could not seed {relative} into {private}; using shared cache",
+                file=sys.stderr,
+            )
+            remove_private_cargo_home(private, run=run)
+            return None
+
+    # Registry sources and credentials live in config; without it a private home
+    # can resolve a different registry than the shared one did.
+    for name in ("config.toml", "config"):
+        candidate = shared / name
+        if candidate.is_file():
+            run(["cp", "-a", str(candidate), str(private / name)], check=False)
+    return private
+
+
+def remove_private_cargo_home(private: Path | None, *, run: Runner) -> None:
+    """Drop the per-run cargo home. Best-effort, never fatal."""
+    if private is None:
+        return
+    run(["rm", "-rf", str(private)], check=False)
+
+
 def assert_row_readable_from_canonical_ledger(
     root: Path, target: str, cwd: Path, run_started_at: str, *, run: Runner
 ) -> tuple[str, str, int]:
@@ -599,6 +695,7 @@ def build_systemd_command(
     environment: Mapping[str, str],
     make_validate: bool = False,
     allow_owner_validate_symlink: bool = False,
+    cargo_home: Path | None = None,
 ) -> list[str]:
     home = environment.get("HOME", "")
     path = environment.get("PATH", "")
@@ -611,6 +708,10 @@ def build_systemd_command(
             if not value.isdigit() or int(value) <= 0:
                 raise ValueError(f"{key} must be a positive integer, got {value!r}")
             build_budget_env.extend(["--setenv", f"{key}={value}"])
+    # Last, so it cannot be shadowed by a caller-supplied CARGO_HOME: the whole
+    # point is that this run does not share a package-cache lock with the box.
+    if cargo_home is not None:
+        build_budget_env.extend(["--setenv", f"CARGO_HOME={cargo_home}"])
 
     child = ["/usr/bin/env"]
     if pr is not None:
@@ -1018,6 +1119,7 @@ def main(
 
     fresh_checkout: Path | None = None
     source_checkout: Path | None = None
+    private_cargo_home: Path | None = None
     try:
         source_checkout = validate_checkout(
             args.checkout,
@@ -1038,6 +1140,11 @@ def main(
             )
             checkout = fresh_checkout
         preflight(root, checkout, args.target, run=run)
+        private_cargo_home = prepare_private_cargo_home(
+            (root / "ignored").resolve(),
+            run=run,
+            shared=Path((environment or os.environ).get("HOME", "")) / ".cargo",
+        )
         unit = sanitize_unit(args.unit) if args.unit else default_unit(args.agent, args.target)
         log = (args.log or root / "ignored/validate" / f"{unit}.log").resolve()
         record_path = run_registry.record_path(root.resolve(), unit)
@@ -1058,6 +1165,7 @@ def main(
             environment=environment or os.environ,
             make_validate=args.make_validate,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
+            cargo_home=private_cargo_home,
         )
         if args.dry_run:
             pane = None
@@ -1118,6 +1226,7 @@ def main(
         # removed. Failures AFTER launch are handled below and RETAIN it.
         if fresh_checkout is not None and source_checkout is not None:
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+        remove_private_cargo_home(private_cargo_home, run=run)
         print(f"validate-run: REFUSED: {error}", file=sys.stderr)
         return 2
 
@@ -1146,6 +1255,7 @@ def main(
             print(f"COMMAND {shlex.join(command)}")
         if fresh_checkout is not None and source_checkout is not None:
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+        remove_private_cargo_home(private_cargo_home, run=run)
         return 0
 
     try:
@@ -1207,6 +1317,7 @@ def main(
                 file=sys.stderr,
             )
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+        remove_private_cargo_home(private_cargo_home, run=run)
         return 2
     updated = run_registry.update_record(
         record_path,
@@ -1221,6 +1332,9 @@ def main(
         print(f"  {row[:160]}")
     if fresh_checkout is not None and source_checkout is not None:
         remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+    # The normal completion path, and the one that matters most: without this the
+    # per-run cargo home leaks on EVERY successful validate.
+    remove_private_cargo_home(private_cargo_home, run=run)
     emit_report(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=args.json,
