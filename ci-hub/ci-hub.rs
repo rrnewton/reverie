@@ -137,30 +137,28 @@ Options:
 "#;
 const AGENT_QUICKSTART: &str = r#"ci-hub agent quickstart
 
-FOR: the normal Hermit loop: work, exact-head VALIDATE, durable LEDGER receipt,
-derived label, self-landing, ancestry proof, repeat.
+FOR: the normal Hermit loop: work, validation, derived label, landing, ancestry
+proof, repeat.
 
-VOCABULARY: VALIDATE is the local authority; LEDGER is its durable record;
-GH ACTIONS is advisory P2; RUNNER is the machine. Do not conflate them.
+POLICY: Follow project skill `hermit-validation-authority` for CI mode, evidence
+qualification, hard/soft green, and the local-versus-GitHub boundary. This help
+lists commands; it does not define those rules independently.
 
 1. Check current state, then work in the assigned slot and publish the PR:
      ./ci-hub/ci-hub health
      ./ci-hub/ci-hub fresh
-   A diagnostic red or unavailable GH Actions run does not veto normal landing.
-
-2. Run full VALIDATE at the exact clean head through the sole admission path:
+2. Run validation through the sole production path, then ask the canonical
+   reader whether the recorded row qualifies:
      ./ci-hub/ci-hub validate-run --checkout WORKTREE --agent AGENT --target SHA --pr PR -- full
      ./ci-hub/ci-hub validate-status --sha SHA
-   Require a clean, full, counted, nonzero PASS in the LEDGER.
 
-3. Derive the cache label from that row; never type it by hand:
+3. Derive the cache label from the qualifying row; never type it by hand:
      ./ci-hub/ci-hub apply-local-label --pr PR --repo rrnewton/hermit
 
 4. Land your own reviewed PR, then prove publication and repeat:
      ./ci-hub/landing/land-pr.sh PR BRANCH --agent AGENT
    The tracked lander uses `land-lock run`, rechecks the LEDGER, and proves
-   ancestry. Do not wait for GH Actions or a dedicated lander. Only a PR
-   modifying scripts/validate.rs uses its registered exact-head GH Actions job.
+   ancestry.
 
 5. Recover and diagnose without changing the authority hierarchy:
      ./ci-hub/ci-hub local-history --since YYYY-MM-DD
@@ -7134,8 +7132,8 @@ mod tests {
         assert!(AGENT_QUICKSTART.contains("validate-run --checkout"));
         assert!(AGENT_QUICKSTART.contains("apply-local-label --pr"));
         assert!(AGENT_QUICKSTART.contains("landing/land-pr.sh"));
-        assert!(AGENT_QUICKSTART.contains("Do not wait for GH Actions"));
-        assert!(AGENT_QUICKSTART.contains("modifying scripts/validate.rs"));
+        assert!(AGENT_QUICKSTART.contains("hermit-validation-authority"));
+        assert!(!AGENT_QUICKSTART.contains("modifying scripts/validate.rs"));
         assert!(AGENT_QUICKSTART.lines().count() < 45);
     }
 
