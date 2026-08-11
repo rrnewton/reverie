@@ -1,14 +1,14 @@
 ---
 name: reverie-validation-authority
-description: "Interpret Reverie's centralized local validation rows without confusing diagnostic validate.sh output, safe-ci containment, or hosted landing authority."
+description: "Interpret Reverie's centralized local validation rows without confusing diagnostic validate.sh output, safe-ci containment, or hosted observations."
 ---
 
 # Reverie validation authority
 
 Use this skill for every Reverie local-validation evidence decision. It defines
 what `ci-hub validate-run --repo rrnewton/reverie` measures and what its ledger
-row means. It does **not** replace Reverie's current hosted merge-gate landing
-authority; changing landing authority is a separate owner decision.
+row means. By owner directive, GitHub Actions is off for validation authority;
+hosted results are diagnostics and never a green, veto, or landing prerequisite.
 
 ## Producer path
 
@@ -63,7 +63,7 @@ same commit text are different evidence and cannot authorize each other.
 
 ## Current landing boundary
 
-This local ledger is measured evidence and a usable diagnostic authority. Until
-the owner separately rotates Reverie's landing policy, Reverie publication and
-landing still follow the repository's versioned hosted merge-gate requirements.
-Do not infer a landing-policy change from this producer existing.
+The canonical exact-head local LEDGER row is Reverie's validation authority.
+Missing, malformed, stale, incomplete, unboxed, zero-execution, or red local
+evidence blocks landing. GitHub Actions remains observable diagnostics only;
+never wait for, dispatch, or cite it as the operative validation decision.
