@@ -45,7 +45,22 @@ class Fixture(unittest.TestCase):
         (self.seed / "scripts").mkdir()
         (self.seed / "scripts/setup-hooks.sh").write_text("#!/bin/sh\nexit 0\n")
         (self.seed / "scripts/setup-hooks.sh").chmod(0o755)
-        git(self.seed, "add", "ci-hub/bin/tool", "outside.txt", "scripts/setup-hooks.sh")
+        (self.seed / "scripts/parent-main-write").write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "test \"$1\" = sync\n"
+            "git fetch origin main\n"
+            "git merge --ff-only origin/main\n"
+        )
+        (self.seed / "scripts/parent-main-write").chmod(0o755)
+        git(
+            self.seed,
+            "add",
+            "ci-hub/bin/tool",
+            "outside.txt",
+            "scripts/setup-hooks.sh",
+            "scripts/parent-main-write",
+        )
         git(self.seed, "commit", "-m", "seed")
         git(self.seed, "remote", "add", "origin", str(self.remote))
         git(self.seed, "push", "-u", "origin", "main")
@@ -161,6 +176,54 @@ class Fixture(unittest.TestCase):
         command("git", "clone", str(self.remote), str(primary))
         (primary / "ci-hub/bin/tool").write_text("somebody else\n")
         self.assertEqual(len(TOOL.dirty_candidate_paths(primary, ["ci-hub/bin/tool"])), 1)
+
+    def test_positive_activation_accepts_later_containing_main(self) -> None:
+        repo = self.clone()
+        candidate = self.commit(repo, "ci-hub/bin/tool", "candidate\n")
+        result = command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        primary = self.root / "primary"
+        self.assertEqual(command("git", "clone", str(self.remote), str(primary)).returncode, 0)
+        git(repo, "push", "origin", "HEAD:main")
+        git(self.seed, "pull", "--ff-only", "origin", "main")
+        (self.seed / "later.txt").write_text("later complete commit\n")
+        git(self.seed, "add", "later.txt")
+        git(self.seed, "commit", "-m", "later")
+        latest = git(self.seed, "rev-parse", "HEAD")
+        git(self.seed, "push", "origin", "main")
+        result = command(
+            str(SOURCE),
+            "activate",
+            "--clone",
+            str(repo),
+            "--primary",
+            str(primary),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(git(primary, "rev-parse", "HEAD"), latest)
+        self.assertEqual(git(primary, "merge-base", "--is-ancestor", candidate, latest), "")
+
+    def test_negative_activation_refuses_noncontaining_main(self) -> None:
+        repo = self.clone()
+        self.commit(repo, "ci-hub/bin/tool", "candidate\n")
+        result = command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (self.seed / "sibling.txt").write_text("noncontaining commit\n")
+        git(self.seed, "add", "sibling.txt")
+        git(self.seed, "commit", "-m", "sibling")
+        git(self.seed, "push", "origin", "main")
+        primary = self.root / "primary"
+        self.assertEqual(command("git", "clone", str(self.remote), str(primary)).returncode, 0)
+        result = command(
+            str(SOURCE),
+            "activate",
+            "--clone",
+            str(repo),
+            "--primary",
+            str(primary),
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("current main to contain candidate", result.stderr)
 
 
 if __name__ == "__main__":

@@ -304,15 +304,23 @@ def dirty_candidate_paths(primary: Path, paths: list[str]) -> list[str]:
     return [line for line in result.splitlines() if line]
 
 
+def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    result = run(
+        ("git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant),
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def command_activate(args: argparse.Namespace) -> None:
     clone = repository_root(Path(args.clone).expanduser())
     primary = repository_root(Path(args.primary).expanduser())
     manifest, seal = verified_seal(clone, require_unpublished_base=False)
     candidate = str(seal["candidate"])
     published = fetch_main(primary)
-    if published != candidate:
+    if not is_ancestor(primary, candidate, published):
         raise Refusal(
-            f"activation requires candidate to remain exact remote tip; candidate={candidate} "
+            f"activation requires current main to contain candidate; candidate={candidate} "
             f"origin/main={published}"
         )
     paths = [str(path) for path in seal["changed_paths"]]
@@ -328,17 +336,19 @@ def command_activate(args: argparse.Namespace) -> None:
         capture=False,
     )
     head = git(primary, "rev-parse", "HEAD^{commit}")
-    if head != candidate:
-        raise Refusal(f"primary activation ended at {head}, not candidate {candidate}")
+    if head != published:
+        raise Refusal(f"primary activation ended at {head}, not fetched main {published}")
+    if not is_ancestor(primary, candidate, head):
+        raise Refusal(f"activated primary {head} does not contain candidate {candidate}")
     tree_check = run(
-        ("git", "-C", str(primary), "diff", "--quiet", candidate, "--", *paths),
+        ("git", "-C", str(primary), "diff", "--quiet", head, "--", *paths),
         check=False,
     )
     if tree_check.returncode != 0:
         raise Refusal("activated primary paths differ from the candidate tree")
     print(
         f"CI_HUB_CHANGE activated=1 task={manifest['task']} candidate={candidate} "
-        f"paths={len(paths)}"
+        f"activated_head={head} paths={len(paths)}"
     )
     print(
         "CI_HUB_CHANGE LIMIT: git working-tree update is serialized but not a "

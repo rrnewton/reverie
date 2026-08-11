@@ -26,10 +26,10 @@ The supported workflow is `scripts/ci-hub-clone-change.py`:
    moves `origin/main` and makes this candidate refuse; the loser rebases its
    private commit, reruns tests, and reseals.
 6. The coordinator runs `activate` against the primary. It refuses any local
-   staged, unstaged, or untracked state in the candidate paths, requires the
-   published candidate still to be the remote tip, calls the registered
-   `parent-main-write sync --automatic`, and verifies exact candidate ancestry
-   and blobs.
+   staged, unstaged, or untracked state in the candidate paths, requires current
+   remote main to contain the published candidate, calls the registered
+   `parent-main-write sync --automatic`, and verifies that the activated remote
+   tip still contains the candidate and that its candidate paths are clean.
 
 Example:
 
@@ -68,7 +68,9 @@ The reviewer inspects the full one-commit diff and the recorded test commands.
 second normal clone. Explicit alternate clones require coordinator path claims.
 Across boxes, publication is serialized by `parent-main-write`; its fresh-base
 check and Git's non-fast-forward rule allow only one candidate from a base to
-land. A losing candidate cannot reuse its old seal.
+land. A losing candidate cannot reuse its old seal. Activation may occur after
+later complete commits land, but only when the sealed candidate is their
+ancestor; it never mistakes an unrelated or rewritten history for publication.
 
 **How does an agent get a clone without violating its write lane?** It does not
 create one speculatively. The coordinator runs `create`, records the exact path
