@@ -184,8 +184,12 @@ for Claude/Codex, and never blocks dispatch.
 has no live pane to bind, so the allocator warns and proceeds (54% of live slots on 2026-08-08). **Repair by
 ADOPTION, never release-then-reallocate** — which collides slots and has already broken one: on arrival the
 living owner re-runs that exact `allocate-worktree.rs` line, no flags, and the row gains `tmux_pane_id` +
-`cgroup_path`. Leases never expire, so an unadopted row stays un-`--clean`-able once its owner dies; a plain
-release without `--clean` still deregisters it, and only disk reclaim is blocked.
+`cgroup_path`. Versioned owner sidecars carry a TTL, but expiry is only eligibility: the canonical stale-clear
+still refuses a live or indeterminate ORC owner and runs the full process/domain/cleanliness/durability boundary.
+An exact live owner may request its own clean release; ownership authorizes the action while actual use remains a
+separate veto. The allocator reaps eligible expired leases before its next create, records the reclaimer, and
+generates a recovery handoff automatically; dirty or non-durable work is quarantined rather than removed. Legacy
+rows without versioned evidence remain unprovable; a plain release without `--clean` deregisters only the row.
 
 Seed caches with `cp -a --reflink=auto`, never writable symlinks. Sharing requires all agents/tasks/branches/paths registered
 with `--i-promise-this-agent-is-read-mostly`; files and branches remain single-writer.

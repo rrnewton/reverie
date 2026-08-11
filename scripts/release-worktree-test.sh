@@ -399,6 +399,85 @@ run_release_force() {
     --slot "$slot" --clean --force) >"$output" 2>&1
 }
 
+add_versioned_owner_lease() {
+  local slot=$1 now generation
+  now=$(date +%s)
+  generation=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  python3 - "$fixture_root/worktree-state.json" "$slot" "$now" "$generation" <<'PY'
+import json
+import sys
+
+path, slot, now, generation = sys.argv[1:]
+now = int(now)
+state = json.load(open(path, encoding="utf-8"))
+row = state["slots"][slot]
+owner = row["agents"][0]
+row["owner_sidecar"] = {
+    "schema_version": 1,
+    "source": "orc-tmux-pane-supervisor-v1",
+    "slot": slot,
+    "agent": owner["name"],
+    "task": row["task"],
+    "recorded_at": "2026-08-11T00:00:00Z",
+    "generation": generation,
+    "supervisor_pid": 424242,
+    "boot_id": "11111111-1111-1111-1111-111111111111",
+    "start_ticks": 123456,
+    "tmux_pane_id": owner["tmux_pane_id"],
+    "cgroup_path": owner["cgroup_path"],
+    "lease": {
+        "schema_version": 1,
+        "resource": f"slot/{slot}",
+        "generation": generation,
+        "issued_at": now,
+        "renewed_at": now,
+        "ttl_seconds": 86400,
+        "expires_at": now + 86400,
+        "state": "active",
+        "last_transition_actor": owner["name"],
+        "automatic_handoff": None,
+    },
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(state, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+PY
+}
+
+plant_versioned_live_owner() {
+  local slot=$1 cwd=$2 owner
+  owner="fixture-$slot"
+  add_versioned_owner_lease "$slot"
+  printf '%s\t%%lease-%s\t424242\n' "$owner" "$slot" >"$fixture_root/tmux-panes"
+  mkdir -p \
+    "$fixture_root/proc/424242/fd" \
+    "$fixture_root/proc/424242/map_files" \
+    "$fixture_root/cgroup/agent.slice/$owner.scope"
+  ln -s "$cwd" "$fixture_root/proc/424242/cwd"
+  ln -s /bin/sleep "$fixture_root/proc/424242/exe"
+  ln -s / "$fixture_root/proc/424242/root"
+  printf 'DG_AGENT_NAME=%s\0' "$owner" >"$fixture_root/proc/424242/environ"
+  printf '0::/agent.slice/%s.scope\n' "$owner" >"$fixture_root/proc/424242/cgroup"
+  : >"$fixture_root/proc/424242/maps"
+  printf '424242\n' >"$fixture_root/cgroup/agent.slice/$owner.scope/cgroup.procs"
+  printf 'populated 1\nfrozen 0\n' \
+    >"$fixture_root/cgroup/agent.slice/$owner.scope/cgroup.events"
+}
+
+run_self_release() {
+  local slot=$1 owner
+  owner="fixture-$slot"
+  (cd "$fixture_root" && env \
+    DG_AGENT_NAME="$owner" \
+    HERMIT_RELEASE_TEST_PROC_ROOT="$fixture_root/proc" \
+    HERMIT_RELEASE_TEST_CGROUP_ROOT="$fixture_root/cgroup" \
+    HERMIT_RELEASE_TEST_TMUX_PANES="$fixture_root/tmux-panes" \
+    HERMIT_RELEASE_TEST_PODMAN_BIN="$fixture_root/bin/podman" \
+    RELEASE_TEST_PODMAN_STATE="$fixture_root/podman.json" \
+    "$script_dir/release-worktree.rs" --slot "$slot" --clean \
+      --request-release --actor "$owner") >"$output" 2>&1
+}
+
 run_release_recover() {
   local slot=$1
   shift
@@ -1364,6 +1443,44 @@ fi
 grep -Fxq 'blocked' "$lock_result" \
   || fail 'release did not hold canonical registry lock across network proof'
 test ! -e "$target" || fail 'registry-lock positive target survived release'
+assert_unrelated_survives
+
+# SELF-RELEASE POSITIVE: ownership authorizes an exact live agent to act, but
+# liveness alone is not use. A clean live owner with no target references may
+# generate its handoff and release the slot while the owner process remains.
+make_fixture self-release-unused
+plant_versioned_live_owner self-release-unused /
+if ! run_self_release self-release-unused; then
+  cat "$output" >&2
+  fail 'exact live owner could not self-release an unused clean slot'
+fi
+grep -Fq '"authority": "exact-live-owner-self-release"' \
+  "$fixture_root/worktree-state.json" \
+  || fail 'successful self-release omitted attributable lease history'
+if grep -Fq '"self-release-unused"' "$fixture_root/worktree-state.json"; then
+  fail 'successful self-release left an active registry row'
+fi
+test ! -e "$target" || fail 'self-release positive target survived release'
+assert_unrelated_survives
+
+# SELF-RELEASE USE NEGATIVE: the same exact owner is not allowed to erase work
+# it still uses. The owner identity permits the request; cwd evidence remains a
+# separate, load-bearing veto.
+make_fixture self-release-in-use
+plant_versioned_live_owner self-release-in-use "$target"
+if run_self_release self-release-in-use; then
+  fail 'exact live owner released a slot it still actively used'
+fi
+grep -Eq 'live process ownership|live processes use the slot' "$output" \
+  || fail 'self-release did not keep actual-use liveness as a separate veto'
+assert_target_retained self-release-in-use
+rm "$fixture_root/proc/424242/cwd"
+ln -s / "$fixture_root/proc/424242/cwd"
+if ! run_self_release self-release-in-use; then
+  cat "$output" >&2
+  fail 'draining owner could not retry after ending its actual slot use'
+fi
+test ! -e "$target" || fail 'self-release retry target survived release'
 assert_unrelated_survives
 
 # PROCESS-OWNERSHIP NEGATIVE: a specifically captured child process has its cwd

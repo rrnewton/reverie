@@ -50,6 +50,18 @@ Options:
   --push              Before removal, push any unpushed slot feature branches to
                       their upstream (with-proxy) so removal is fully recoverable
                       (the "push-then-remove" safe reclaim protocol).
+  --request-release   Exact live owner records a draining lease and an automatic
+                      recovery handoff before attempting ordinary clean release.
+                      Requires --clean and --actor. Owner identity authorizes the
+                      action; actual process/path use remains a separate veto.
+  --stale-clear       Finalize one expired lease after exact owner-death and the
+                      ordinary process/domain/cleanliness/durability proofs.
+                      Requires --clean, --expected-generation, and --actor.
+  --stale-clear-all   Event-driven reaper used before allocation. Attempts every
+                      expired, non-quarantined slot lease through --stale-clear.
+  --expected-generation ID
+                      CAS identity required by --stale-clear.
+  --actor ID          Attributed requester/reclaimer identity.
   --recover-submodule-cleanup
                       Recover an interrupted normal cleanup: restore any exact
                       quarantined admin, reinitialize recursively, and repeat all
@@ -71,6 +83,8 @@ slot entry is dropped from state. Feature branches are NEVER deleted.
 
 Examples:
   ./scripts/release-worktree.rs --slot kvm
+  ./scripts/release-worktree.rs --slot kvm --clean --request-release --actor hermit-kvm
+  ./scripts/release-worktree.rs --stale-clear-all --actor allocator:hermit-kvm
   ./scripts/release-worktree.rs --slot slot01 --clean
   ./scripts/release-worktree.rs --slot kvm --agent hermit-ci   # drop one sharer
 "#;
@@ -1862,8 +1876,11 @@ fn live_process_users(
     container_fence_token: &str,
     owners: &OwnerAuthorities,
     targets: &[PathBuf],
+    allow_live_owner_identity: bool,
 ) -> Result<(Vec<String>, Value), String> {
-    verify_release_authority_absent(root, proc_root, cgroup_root, owners)?;
+    if !allow_live_owner_identity {
+        verify_release_authority_absent(root, proc_root, cgroup_root, owners)?;
+    }
     let container_observation =
         container_release_audit(root, container_fence_token, &owners.names, targets)?;
     let own_uid = fs::metadata("/proc/self")
@@ -1899,7 +1916,9 @@ fn live_process_users(
             continue;
         }
         let proc_path = entry.path();
-        if process_agent_name(&proc_path).is_some_and(|name| owners.names.contains(&name)) {
+        if !allow_live_owner_identity
+            && process_agent_name(&proc_path).is_some_and(|name| owners.names.contains(&name))
+        {
             return Err(format!(
                 "recorded owner process pid {pid} remains despite authoritative release-lease absence"
             ));
@@ -1948,6 +1967,7 @@ fn final_removal_boundary(
     expected_target: &CleanTarget,
     expected_repositories: &[RepoSnapshot],
     allow_dirty: bool,
+    allow_live_owner_identity: bool,
 ) -> Result<(), String> {
     verify_registry_slot(root, slot)?;
     let current_state = load_state(root);
@@ -1996,6 +2016,7 @@ fn final_removal_boundary(
         container_fence_token,
         owners,
         &[rebound.path.clone()],
+        allow_live_owner_identity,
     )?;
     if !users.is_empty() {
         return Err(format!(
@@ -2824,13 +2845,19 @@ fn clear_release_journal(
     slot: &str,
     crash_marker: Option<&Path>,
 ) -> Result<(), String> {
-    state["slots"][slot]["status"] = json!(if state["slots"][slot]
-        .get("coordinator_lease_revocation")
-        .is_some()
-    {
-        "owner-lease-revoked"
-    } else {
-        "active"
+    let lease_state = state["slots"][slot]["owner_sidecar"]["lease"]["state"]
+        .as_str()
+        .map(str::to_owned);
+    state["slots"][slot]["status"] = json!(match lease_state.as_deref() {
+        Some("quarantined") => "lease-quarantined",
+        Some("draining") => "release-requested",
+        _ if state["slots"][slot]
+            .get("coordinator_lease_revocation")
+            .is_some() =>
+        {
+            "owner-lease-revoked"
+        }
+        _ => "active",
     });
     state["slots"][slot]["updated"] = json!(now_iso());
     state["slots"][slot]
@@ -4797,6 +4824,7 @@ fn remove_target(
     container_fence_token: &str,
     owners: &OwnerAuthorities,
     allow_dirty: bool,
+    allow_live_owner_identity: bool,
 ) -> Result<(), String> {
     // Validate the test-only crash hook before creating a transaction marker or
     // deinitializing anything. A leaked test variable in production therefore
@@ -4888,6 +4916,7 @@ fn remove_target(
         container_fence_token,
         owners,
         &proof_paths,
+        allow_live_owner_identity,
     ) {
         Ok(users) => users,
         Err(error) => {
@@ -5001,6 +5030,383 @@ fn remove_target(
     Ok(())
 }
 
+const RELEASE_REQUEST_TTL_SECONDS: u64 = 60;
+
+fn epoch_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+#[derive(Clone, Debug)]
+struct SlotLeaseView {
+    generation: String,
+    state: String,
+    expires_at: u64,
+    source: String,
+}
+
+fn slot_lease_view(slot: &str, slot_state: &Value) -> Result<SlotLeaseView, String> {
+    let sidecar = slot_state
+        .get("owner_sidecar")
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("slot {slot} has no versioned owner_sidecar"))?;
+    let lease = sidecar
+        .get("lease")
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("slot {slot} has no TTL owner lease"))?;
+    let generation = sidecar
+        .get("generation")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("slot {slot} owner sidecar has no generation"))?;
+    let expected_resource = format!("slot/{slot}");
+    if lease.get("schema_version").and_then(Value::as_u64) != Some(1)
+        || lease.get("resource").and_then(Value::as_str) != Some(expected_resource.as_str())
+        || lease.get("generation").and_then(Value::as_str) != Some(generation)
+    {
+        return Err(format!("slot {slot} lease is not identity-bound"));
+    }
+    let ttl = lease
+        .get("ttl_seconds")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("slot {slot} lease has no positive TTL"))?;
+    let renewed = lease
+        .get("renewed_at")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("slot {slot} lease has no renewed_at"))?;
+    let expires_at = lease
+        .get("expires_at")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("slot {slot} lease has no expires_at"))?;
+    if renewed.checked_add(ttl) != Some(expires_at) {
+        return Err(format!(
+            "slot {slot} lease expiry does not equal renewed_at + TTL"
+        ));
+    }
+    let state = lease
+        .get("state")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "active" | "draining" | "quarantined"))
+        .ok_or_else(|| format!("slot {slot} lease has an unsupported state"))?;
+    let source = sidecar
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("slot {slot} owner sidecar has no source"))?;
+    Ok(SlotLeaseView {
+        generation: generation.to_string(),
+        state: state.to_string(),
+        expires_at,
+        source: source.to_string(),
+    })
+}
+
+fn valid_actor(actor: &str) -> bool {
+    !actor.is_empty()
+        && actor.len() <= 128
+        && actor.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/' | b'+')
+        })
+}
+
+fn owner_authority(root: &Path, slot: &str) -> Result<Value, String> {
+    let output = Command::new(root.join("scripts/slot-owner-authority.py"))
+        .args(["--slot", slot, "--json"])
+        .output()
+        .map_err(|error| format!("run slot-owner authority: {error}"))?;
+    serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!(
+            "slot-owner authority returned invalid JSON (exit {:?}): {error}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )
+    })
+}
+
+fn automatic_handoff(
+    root: &Path,
+    state: &Value,
+    slot: &str,
+    actor: &str,
+) -> Result<(Value, bool), String> {
+    let lease = slot_lease_view(slot, &state["slots"][slot])?;
+    let targets = clean_targets_from_state(root, state, slot)?;
+    let mut repositories = Vec::new();
+    let mut complete = true;
+    for target in targets {
+        for inspection in inspect_target_repositories(&target.path)? {
+            let clean = inspection.status.is_empty();
+            let durable = if clean {
+                remote_durable(&inspection.snapshot)?
+            } else {
+                false
+            };
+            complete &= clean && durable;
+            let branch = git_inspect(&inspection.snapshot.path, &["branch", "--show-current"])?;
+            repositories.push(json!({
+                "path": inspection.snapshot.path.to_string_lossy(),
+                "head": inspection.snapshot.head,
+                "origin_url": inspection.snapshot.origin_url,
+                "branch": branch,
+                "status": inspection.status,
+                "clean": clean,
+                "origin_durable": durable,
+            }));
+        }
+    }
+    repositories.sort_by(|left, right| {
+        left["path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(right["path"].as_str().unwrap_or(""))
+    });
+    let mut handoff = json!({
+        "schema_version": 1,
+        "resource": format!("slot/{slot}"),
+        "generation": lease.generation,
+        "recorded_at": now_iso(),
+        "actor": actor,
+        "complete": complete,
+        "repositories": repositories,
+        "continuation": format!(
+            "./scripts/release-worktree.rs --slot {slot} --clean --stale-clear --expected-generation {} --actor {}",
+            lease.generation, actor
+        ),
+    });
+    let digest = sha256_bytes(
+        &serde_json::to_vec(&handoff).map_err(|error| format!("serialize handoff: {error}"))?,
+    );
+    handoff["sha256"] = json!(digest);
+    Ok((handoff, complete))
+}
+
+fn mutating_owner(slot_state: &Value) -> Result<&str, String> {
+    let mut owners = slot_state["agents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|owner| owner["read_only"].as_bool() == Some(false));
+    let owner = owners
+        .next()
+        .and_then(|owner| owner["name"].as_str())
+        .ok_or_else(|| "slot has no mutating owner".to_string())?;
+    if owners.next().is_some() {
+        return Err("slot has multiple mutating owners".to_string());
+    }
+    Ok(owner)
+}
+
+fn handoff_state_matches(recorded: &Value, current: &Value) -> bool {
+    recorded["generation"] == current["generation"]
+        && recorded["complete"] == current["complete"]
+        && recorded["repositories"] == current["repositories"]
+}
+
+fn request_release(
+    root: &Path,
+    state: &mut Value,
+    slot: &str,
+    actor: &str,
+) -> Result<Value, String> {
+    let owner = mutating_owner(&state["slots"][slot])?;
+    let caller = std::env::var("DG_AGENT_NAME")
+        .map_err(|_| "release request requires DG_AGENT_NAME caller identity".to_string())?;
+    if actor != owner || caller != owner {
+        return Err(format!(
+            "release request actor/caller {actor:?}/{caller:?} does not equal exact owner {owner:?}"
+        ));
+    }
+    let lease = slot_lease_view(slot, &state["slots"][slot])?;
+    if !matches!(lease.state.as_str(), "active" | "draining") {
+        return Err(format!(
+            "slot {slot} lease is {}, expected active or draining",
+            lease.state
+        ));
+    }
+    let (current_handoff, complete) = automatic_handoff(root, state, slot, actor)?;
+    let handoff = if lease.state == "draining" {
+        let recorded = state["slots"][slot]["owner_sidecar"]["lease"]
+            .get("automatic_handoff")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .ok_or_else(|| "draining lease has no automatic handoff".to_string())?;
+        if !handoff_state_matches(&recorded, &current_handoff) {
+            state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("quarantined");
+            state["slots"][slot]["status"] = json!("lease-quarantined");
+            save_state(root, state);
+            regen_active_md(root, state);
+            return Err(
+                "automatic handoff changed after release request; lease quarantined".into(),
+            );
+        }
+        recorded
+    } else {
+        current_handoff
+    };
+    let now = epoch_now();
+    let slot_state = &mut state["slots"][slot];
+    slot_state["owner_sidecar"]["lease"]["renewed_at"] = json!(now);
+    slot_state["owner_sidecar"]["lease"]["ttl_seconds"] = json!(RELEASE_REQUEST_TTL_SECONDS);
+    slot_state["owner_sidecar"]["lease"]["expires_at"] = json!(now + RELEASE_REQUEST_TTL_SECONDS);
+    slot_state["owner_sidecar"]["lease"]["state"] =
+        json!(if complete { "draining" } else { "quarantined" });
+    slot_state["owner_sidecar"]["lease"]["last_transition_actor"] = json!(actor);
+    slot_state["owner_sidecar"]["lease"]["automatic_handoff"] = handoff;
+    slot_state["status"] = json!(if complete {
+        "release-requested"
+    } else {
+        "lease-quarantined"
+    });
+    slot_state["updated"] = json!(now_iso());
+    save_state(root, state);
+    regen_active_md(root, state);
+    if !complete {
+        return Err("automatic handoff found dirty or non-durable work; lease quarantined".into());
+    }
+    println!(
+        "✓ release requested for {slot}; generation={} expires_at={}",
+        lease.generation,
+        now + RELEASE_REQUEST_TTL_SECONDS
+    );
+    Ok(json!({
+        "schema_version": 1,
+        "resource": format!("slot/{slot}"),
+        "generation": lease.generation,
+        "actor": actor,
+        "authority": "exact-live-owner-self-release",
+        "handoff_sha256": state["slots"][slot]["owner_sidecar"]["lease"]
+            ["automatic_handoff"]["sha256"],
+    }))
+}
+
+fn prepare_stale_clear(
+    root: &Path,
+    state: &mut Value,
+    slot: &str,
+    expected_generation: &str,
+    actor: &str,
+) -> Result<Value, String> {
+    let lease = slot_lease_view(slot, &state["slots"][slot])?;
+    if lease.generation != expected_generation {
+        return Err(format!(
+            "slot {slot} generation changed: expected {expected_generation}, found {}",
+            lease.generation
+        ));
+    }
+    if lease.state == "quarantined" {
+        return Err(format!("slot {slot} lease is quarantined"));
+    }
+    if epoch_now() < lease.expires_at {
+        return Err(format!(
+            "slot {slot} lease is not expired (expires_at={})",
+            lease.expires_at
+        ));
+    }
+    let authority = owner_authority(root, slot)?;
+    let authority_state = authority["state"].as_str().unwrap_or("indeterminate");
+    let codex_sentinel = lease.source == "codex-systemd-sentinel-v1";
+    if authority_state == "indeterminate" {
+        return Err(format!(
+            "slot {slot} owner authority is INDETERMINATE; stale-clear is fail-closed"
+        ));
+    }
+    if authority_state != "dead" && !codex_sentinel {
+        return Err(format!(
+            "slot {slot} owner authority is {authority_state}; live ORC owner refuses stale-clear"
+        ));
+    }
+    let (current_handoff, complete) = automatic_handoff(root, state, slot, actor)?;
+    if !complete {
+        state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("quarantined");
+        state["slots"][slot]["owner_sidecar"]["lease"]["last_transition_actor"] = json!(actor);
+        state["slots"][slot]["owner_sidecar"]["lease"]["automatic_handoff"] = current_handoff;
+        state["slots"][slot]["status"] = json!("lease-quarantined");
+        save_state(root, state);
+        regen_active_md(root, state);
+        return Err("automatic handoff found dirty or non-durable work; lease quarantined".into());
+    }
+    let recorded = state["slots"][slot]["owner_sidecar"]["lease"]
+        .get("automatic_handoff")
+        .filter(|value| !value.is_null())
+        .cloned();
+    if let Some(recorded) = recorded {
+        if !handoff_state_matches(&recorded, &current_handoff) {
+            state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("quarantined");
+            state["slots"][slot]["status"] = json!("lease-quarantined");
+            save_state(root, state);
+            regen_active_md(root, state);
+            return Err(
+                "automatic handoff changed after release request; lease quarantined".into(),
+            );
+        }
+    } else {
+        state["slots"][slot]["owner_sidecar"]["lease"]["automatic_handoff"] = current_handoff;
+    }
+    state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("draining");
+    state["slots"][slot]["owner_sidecar"]["lease"]["last_transition_actor"] = json!(actor);
+    state["slots"][slot]["status"] = json!("release-requested");
+    save_state(root, state);
+    regen_active_md(root, state);
+    Ok(json!({
+        "schema_version": 1,
+        "resource": format!("slot/{slot}"),
+        "generation": lease.generation,
+        "actor": actor,
+        "authority": authority,
+        "handoff_sha256": state["slots"][slot]["owner_sidecar"]["lease"]
+            ["automatic_handoff"]["sha256"],
+    }))
+}
+
+fn stale_clear_all(root: &Path, actor: &str) -> Result<(), String> {
+    let candidates = {
+        let _lock = lock_registry(root);
+        let state = load_state(root);
+        state["slots"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(slot, row)| {
+                let lease = slot_lease_view(slot, row).ok()?;
+                (lease.state != "quarantined" && lease.expires_at <= epoch_now())
+                    .then_some((slot.clone(), lease.generation))
+            })
+            .collect::<Vec<_>>()
+    };
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("resolve release-worktree executable: {error}"))?;
+    let mut cleared = 0usize;
+    let mut refused = 0usize;
+    for (slot, generation) in &candidates {
+        let status = Command::new(&executable)
+            .args([
+                "--slot",
+                slot,
+                "--clean",
+                "--stale-clear",
+                "--expected-generation",
+                generation,
+                "--actor",
+                actor,
+            ])
+            .status()
+            .map_err(|error| format!("stale-clear slot {slot}: {error}"))?;
+        if status.success() {
+            cleared += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    println!(
+        "slot stale-clear census candidates={} cleared={} refused={}",
+        candidates.len(),
+        cleared,
+        refused
+    );
+    Ok(())
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut slot = String::new();
@@ -5011,6 +5417,11 @@ fn main() {
     let mut recover_submodules = false;
     let mut finalize_orphan_residue = false;
     let mut orphan_recovery_note = String::new();
+    let mut request_release_flag = false;
+    let mut stale_clear = false;
+    let mut stale_clear_all_flag = false;
+    let mut expected_generation = String::new();
+    let mut actor = String::new();
 
     let mut i = 0;
     let take = |i: &mut usize, argv: &[String], flag: &str| -> String {
@@ -5027,6 +5438,13 @@ fn main() {
             "--clean" => clean = true,
             "--force" => force = true,
             "--push" => push = true,
+            "--request-release" => request_release_flag = true,
+            "--stale-clear" => stale_clear = true,
+            "--stale-clear-all" => stale_clear_all_flag = true,
+            "--expected-generation" => {
+                expected_generation = take(&mut i, &argv, "--expected-generation")
+            }
+            "--actor" => actor = take(&mut i, &argv, "--actor"),
             "--recover-submodule-cleanup" => recover_submodules = true,
             "--coordinator-finalize-orphan-residue" => finalize_orphan_residue = true,
             "--orphan-recovery-note" => {
@@ -5041,6 +5459,23 @@ fn main() {
         i += 1;
     }
 
+    if stale_clear_all_flag {
+        if !slot.is_empty()
+            || clean
+            || force
+            || push
+            || recover_submodules
+            || request_release_flag
+            || stale_clear
+            || !valid_actor(&actor)
+        {
+            die("--stale-clear-all requires only a non-empty --actor");
+        }
+        let root = find_root();
+        stale_clear_all(&root, &actor)
+            .unwrap_or_else(|error| die(&format!("stale-clear-all refused: {error}")));
+        return;
+    }
     if slot.is_empty() {
         die(&format!("--slot is required\n\n{USAGE}"));
     }
@@ -5051,6 +5486,21 @@ fn main() {
     }
     if recover_submodules && (!clean || force) {
         die("--recover-submodule-cleanup requires --clean and is incompatible with --force");
+    }
+    if request_release_flag
+        && (!clean || force || push || recover_submodules || stale_clear || !valid_actor(&actor))
+    {
+        die("--request-release requires --slot, --clean, and a valid --actor; it is incompatible with --force/--push/--recover-submodule-cleanup/--stale-clear");
+    }
+    if stale_clear
+        && (!clean
+            || force
+            || push
+            || request_release_flag
+            || expected_generation.trim().is_empty()
+            || !valid_actor(&actor))
+    {
+        die("--stale-clear requires --clean, --expected-generation, and --actor; it is incompatible with --force/--push/--request-release");
     }
     if finalize_orphan_residue && (!clean || force || push || recover_submodules || agent.is_some())
     {
@@ -5100,6 +5550,29 @@ fn main() {
     }
     validate_owners(&slot, &state["slots"][&slot])
         .unwrap_or_else(|error| die(&format!("invalid slot ownership: {error}")));
+    let self_release = request_release_flag;
+    let self_release_record = if self_release {
+        Some(
+            request_release(&root, &mut state, &slot, &actor)
+                .unwrap_or_else(|error| die(&format!("release request refused: {error}"))),
+        )
+    } else {
+        None
+    };
+    let stale_clear_record = if stale_clear {
+        let record = prepare_stale_clear(&root, &mut state, &slot, &expected_generation, &actor)
+            .unwrap_or_else(|error| die(&format!("stale-clear refused: {error}")));
+        if state["slots"][&slot]
+            .get("coordinator_lease_revocation")
+            .is_some()
+        {
+            recover_submodules = true;
+        }
+        Some(record)
+    } else {
+        None
+    };
+    let release_record = self_release_record.or(stale_clear_record);
     if state["slots"][&slot]
         .get("coordinator_lease_intent")
         .is_some()
@@ -5263,6 +5736,7 @@ fn main() {
                     &container_fence_token,
                     &owners,
                     &recovery_paths,
+                    self_release,
                 )
                 .unwrap_or_else(|error| {
                     die(&format!("release journal owner proof failed: {error}"))
@@ -5314,6 +5788,7 @@ fn main() {
                     &container_fence_token,
                     &owners,
                     &preflight_target_paths,
+                    self_release,
                 )
                 .unwrap_or_else(|error| die(&format!("owner authority refused cleanup: {error}")));
                 if !preflight_users.is_empty() {
@@ -5337,6 +5812,7 @@ fn main() {
                 &container_fence_token,
                 &owners,
                 &preflight_target_paths,
+                self_release,
             )
             .unwrap_or_else(|error| die(&format!("owner authority refused cleanup: {error}")));
             if !preflight_users.is_empty() {
@@ -5518,6 +5994,7 @@ fn main() {
             &container_fence_token,
             &owners,
             &target_paths,
+            self_release,
         )
         .unwrap_or_else(|error| die(&format!("live-process inspection failed: {error}")));
         if !users.is_empty() {
@@ -5544,6 +6021,7 @@ fn main() {
                 target,
                 expected_repositories,
                 force,
+                self_release,
             )
             .unwrap_or_else(|error| {
                 die(&format!(
@@ -5571,6 +6049,7 @@ fn main() {
                 &container_fence_token,
                 &owners,
                 force,
+                self_release,
             )
             .unwrap_or_else(|error| die(&format!("{error}; registry state retained")));
             mark_git_removal_complete(&root, &mut state, &slot);
@@ -5604,6 +6083,18 @@ fn main() {
                     slot_dir.display()
                 ))
             });
+        }
+        if let Some(mut record) = release_record.clone() {
+            record["cleared_at"] = json!(now_iso());
+            let history = state
+                .as_object_mut()
+                .expect("registry state is an object")
+                .entry("lease_history")
+                .or_insert_with(|| json!([]));
+            history
+                .as_array_mut()
+                .unwrap_or_else(|| die("lease_history is not an array"))
+                .push(record);
         }
         state["slots"].as_object_mut().unwrap().remove(&slot);
         println!("✓ released and cleaned {slot} (removed from state)");

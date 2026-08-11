@@ -189,6 +189,28 @@ fn lock_registry(root: &Path) -> fs::File {
     file
 }
 
+/// Reap only leases whose canonical release adapter can prove eligible.
+/// Refusals are expected (for example, an expired TTL with a live holder) and
+/// never weaken allocation's own capacity checks.
+fn reap_expired_slot_leases(root: &Path, agent: &str) {
+    let actor = format!("allocator:{agent}");
+    let release = root.join("scripts/release-worktree.rs");
+    match Command::new(&release)
+        .args(["--stale-clear-all", "--actor", actor.as_str()])
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!(
+            "WARN: expired slot-lease reaper exited {:?}; allocation remains fail-closed on the recorded census",
+            status.code()
+        ),
+        Err(error) => eprintln!(
+            "WARN: expired slot-lease reaper unavailable at {}: {error}; allocation remains fail-closed on the recorded census",
+            release.display()
+        ),
+    }
+}
+
 fn now_iso() -> String {
     match Command::new("date")
         .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
@@ -1942,6 +1964,11 @@ fn main() {
     }
 
     let root = find_root();
+    // Event-driven cleanup mirrors the herdr pane lifecycle: every new create
+    // first offers expired leases to the canonical fail-closed reaper. The
+    // reaper acquires the registry lock per exact generation, so invoke it
+    // before this allocator takes its own single-writer lock.
+    reap_expired_slot_leases(&root, &agent);
     let _registry_lock = lock_registry(&root);
     let mut state = load_state(&root);
 

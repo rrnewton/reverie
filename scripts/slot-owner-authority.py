@@ -140,8 +140,16 @@ def _mutating_owner(slot_row: Mapping[str, object]) -> Mapping[str, object]:
 def _validated_sidecar(
     slot: str, slot_row: Mapping[str, object]
 ) -> tuple[Mapping[str, object], Mapping[str, object]]:
-    if slot_row.get("status") not in {"active", "held"}:
-        raise ValueError(f"slot status is {slot_row.get('status')!r}, expected active|held")
+    if slot_row.get("status") not in {
+        "active",
+        "held",
+        "release-requested",
+        "owner-lease-revoked",
+        "lease-quarantined",
+    }:
+        raise ValueError(
+            f"slot status is {slot_row.get('status')!r}, expected an owner-lease lifecycle state"
+        )
     owner = _mutating_owner(slot_row)
     sidecar = slot_row.get("owner_sidecar")
     if not isinstance(sidecar, Mapping):
@@ -428,7 +436,15 @@ def assess_all(
     selected = sorted(
         str(slot)
         for slot, row in slots.items()
-        if isinstance(row, Mapping) and row.get("status") in {"active", "held"}
+        if isinstance(row, Mapping)
+        and row.get("status")
+        in {
+            "active",
+            "held",
+            "release-requested",
+            "owner-lease-revoked",
+            "lease-quarantined",
+        }
     )
     authorities = {
         slot: assess_state(
