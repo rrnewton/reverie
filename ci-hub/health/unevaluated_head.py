@@ -62,6 +62,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import time
 import sys
@@ -240,6 +241,49 @@ def gh_json(args: list[str]) -> Any:
     return json.loads(out.stdout or "null")
 
 
+def canonical_head_sha(repo: str, pr: dict[str, Any]) -> str:
+    """Return a full exact PR-head SHA, resolving abbreviated reader output.
+
+    The Actions runs endpoint treats ``head_sha`` as an exact 40-hex filter: a
+    displayed 12-hex prefix returns an empty list rather than an error. Empty is
+    therefore not trustworthy until the input has been canonicalised.
+    """
+    claimed = str(pr.get("headRefOid") or "").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{40}", claimed):
+        return claimed
+
+    live = gh_json(["api", f"repos/{repo}/pulls/{pr['number']}"]) or {}
+    resolved = str(((live.get("head") or {}).get("sha") or "")).strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", resolved):
+        raise RuntimeError(
+            f"PR #{pr['number']} head is not a full SHA: "
+            f"listed={claimed or 'missing'} resolved={resolved or 'missing'}"
+        )
+    if claimed and not resolved.startswith(claimed):
+        raise RuntimeError(
+            f"PR #{pr['number']} head changed while collecting: "
+            f"listed={claimed} resolved={resolved}"
+        )
+    return resolved
+
+
+def exact_head_check_runs(repo: str, head: str) -> list[dict[str, Any]]:
+    """Read independent exact-commit evidence when run-listing is empty."""
+    payload = gh_json([
+        "api",
+        f"repos/{repo}/commits/{head}/check-runs?per_page=100&filter=all",
+    ]) or {}
+    checks = [
+        check for check in payload.get("check_runs", [])
+        if ((check.get("app") or {}).get("slug") == "github-actions")
+    ]
+    # Check-runs call this timestamp ``started_at`` while workflow runs call it
+    # ``created_at``. Normalise it so a fallback PENDING can still become stale.
+    for check in checks:
+        check.setdefault("created_at", check.get("started_at"))
+    return checks
+
+
 def collect_live(repo: str, limit: int) -> list[dict[str, Any]]:
     prs = gh_json(
         [
@@ -264,10 +308,14 @@ def collect_live(repo: str, limit: int) -> list[dict[str, Any]]:
     # than being treated as "no runs" -- absence of an answer must never read as
     # absence of runs.
     def one(pr: dict[str, Any]) -> dict[str, Any]:
-        head = pr["headRefOid"]
+        head = canonical_head_sha(repo, pr)
         runs = (
-            gh_json(["api", f"repos/{repo}/actions/runs?head_sha={head}"]) or {}
+            gh_json(["api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100"]) or {}
         ).get("workflow_runs", [])
+        # Two independent readers must agree on absence. A full-SHA Actions run
+        # query returning zero is cross-checked against exact-commit check-runs;
+        # dispatching another workflow would merely hide this reader bug.
+        check_runs = exact_head_check_runs(repo, head) if not runs else []
 
         def jobs_of(run: dict[str, Any]) -> int:
             # Only ever called for a `cancelled` run, so this stays rare.
@@ -280,6 +328,7 @@ def collect_live(repo: str, limit: int) -> list[dict[str, Any]]:
             "mergeable": pr.get("mergeable"),
             "draft": pr.get("isDraft"),
             "run_count": len(runs),
+            "check_run_count": len(check_runs),
         }
         def successor_of(run: dict[str, Any]):
             """Visible successor evidence: a LATER run of the SAME workflow on the
@@ -295,8 +344,21 @@ def collect_live(repo: str, limit: int) -> list[dict[str, Any]]:
                     return f"run {other.get('id')} created {other.get('created_at')}"
             return None
 
-        st, stale, ev = classify(runs, now=time.time(), jobs_of=jobs_of,
-                                 successor_of=successor_of)
+        if runs:
+            st, stale, ev = classify(runs, now=time.time(), jobs_of=jobs_of,
+                                     successor_of=successor_of)
+        else:
+            # Check-runs expose the status/conclusion/created_at fields consumed
+            # by the pure classifier. Cancellation remains UNVERIFIED because
+            # this fallback has no workflow-successor evidence.
+            st, stale, ev = classify(check_runs, now=time.time())
+            if check_runs:
+                ev = {
+                    **ev,
+                    "reader": "exact-commit-check-runs",
+                    "workflow_runs_endpoint_count": 0,
+                    "github_actions_check_runs": len(check_runs),
+                }
         row["state"], row["stale"], row["evidence"] = st, stale, ev
         row["reason"] = likely_reason(pr, st, stale, ev)
         return row
@@ -373,7 +435,8 @@ def main() -> int:
                 label = r["state"] + ("(stale)" if r.get("stale") else "")
                 print(
                     f"  {label:<16} PR {r['number']}  head {r['head'][:12]}  "
-                    f"runs={r['run_count']}  mergeable={r['mergeable']}  -- {r['reason']}"
+                    f"runs={r['run_count']}  checks={r.get('check_run_count', 0)}  "
+                    f"mergeable={r['mergeable']}  -- {r['reason']}"
                 )
         if not holes:
             print("  every inspected head carries a verdict")

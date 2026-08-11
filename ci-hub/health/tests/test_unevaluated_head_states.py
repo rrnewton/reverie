@@ -77,6 +77,97 @@ r_ver = uh.likely_reason({"mergeable": "MERGEABLE"}, st2, stale2, ev2)
 cases.append(("OBSERVED here rather than inferred" in r_ver and "run 999" in r_ver,
               "VERIFIED supersession names its successor evidence", r_ver[:60]))
 
+# --- live-reader brackets: absence requires TWO exact-head readers ------------
+FULL = "348a8b686262f6cb4aa4dc70c6a5e4613eb90361"
+
+def collect_with(fake):
+    old = uh.gh_json
+    uh.gh_json = fake
+    try:
+        return uh.collect_live("rrnewton/hermit", 1)[0]
+    finally:
+        uh.gh_json = old
+
+def pr_list(head=FULL):
+    return [{"number": 2123, "headRefOid": head, "mergeable": "MERGEABLE",
+             "isDraft": True, "title": "fixture"}]
+
+def abbreviated_reader(args):
+    target = args[-1]
+    if args[:2] == ["pr", "list"]:
+        return pr_list(FULL[:12])
+    if target.endswith("/pulls/2123"):
+        return {"head": {"sha": FULL}}
+    if "actions/runs?head_sha=" in target:
+        # Querying the displayed 12-hex prefix returns zero; canonicalising to
+        # the full SHA finds the terminal failure.
+        if f"head_sha={FULL}&" not in target:
+            return {"workflow_runs": []}
+        return {"workflow_runs": [{"id": 31469903248,
+                                    "status": "completed",
+                                    "conclusion": "failure"}]}
+    raise AssertionError(args)
+
+short_row = collect_with(abbreviated_reader)
+cases.append((short_row["head"] == FULL and short_row["run_count"] == 1
+              and short_row["state"] == uh.EVALUATED_FAIL,
+              "abbreviated listed head is canonicalised before querying runs",
+              str(short_row)))
+
+def missed_run_list(args):
+    target = args[-1]
+    if args[:2] == ["pr", "list"]:
+        return pr_list()
+    if "actions/runs?head_sha=" in target:
+        return {"workflow_runs": []}
+    if "/check-runs?" in target:
+        return {"check_runs": [{"id": 99, "status": "completed",
+                                 "conclusion": "failure",
+                                 "app": {"slug": "github-actions"}}]}
+    raise AssertionError(args)
+
+fallback_row = collect_with(missed_run_list)
+cases.append((fallback_row["run_count"] == 0
+              and fallback_row["check_run_count"] == 1
+              and fallback_row["state"] == uh.EVALUATED_FAIL
+              and fallback_row["evidence"].get("reader") == "exact-commit-check-runs",
+              "run-list zero plus exact-commit failure is EVALUATED_FAIL",
+              str(fallback_row)))
+
+def missed_pending_run(args):
+    target = args[-1]
+    if args[:2] == ["pr", "list"]:
+        return pr_list()
+    if "actions/runs?head_sha=" in target:
+        return {"workflow_runs": []}
+    if "/check-runs?" in target:
+        return {"check_runs": [{"id": 100, "status": "in_progress",
+                                 "conclusion": None,
+                                 "started_at": "2026-08-10T00:00:00Z",
+                                 "app": {"slug": "github-actions"}}]}
+    raise AssertionError(args)
+
+pending_row = collect_with(missed_pending_run)
+cases.append((pending_row["state"] == uh.PENDING and pending_row["stale"],
+              "fallback pending check preserves stale-window enforcement",
+              str(pending_row)))
+
+def genuinely_never_ran(args):
+    target = args[-1]
+    if args[:2] == ["pr", "list"]:
+        return pr_list()
+    if "actions/runs?head_sha=" in target:
+        return {"workflow_runs": []}
+    if "/check-runs?" in target:
+        return {"check_runs": []}
+    raise AssertionError(args)
+
+zero_row = collect_with(genuinely_never_ran)
+cases.append((zero_row["run_count"] == 0 and zero_row["check_run_count"] == 0
+              and zero_row["state"] == uh.NEVER_RAN,
+              "both exact-head readers empty remains NEVER_RAN",
+              str(zero_row)))
+
 p = sum(1 for ok,_,_ in cases if ok); f = len(cases)-p
 for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
 print(f"assertions: {p} passed, {f} failed")
