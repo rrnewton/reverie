@@ -64,6 +64,16 @@ this tool refuses every replacement instead of authorizing all of them. A
 liveness check whose failure mode is "everyone looks dead" is worse than no
 check at all when it is wired to a kill.
 
+That zero-agent self-check is necessary but not sufficient.  Measured
+2026-08-12: an agent sandbox exposed 4 same-uid processes and 1 healthy agent,
+omitted the live queried agent, and therefore passed the zero-agent guard.  The
+probe returned rc 0 VERIFIED-DEAD even though a full process view simultaneously
+found 481 same-uid processes, 25 agents, and 5 live processes for the queried
+name.  Hard Invariant 16 already assigns the right polarity: an incomplete
+view is rc 2 UNVERIFIABLE and refuses replacement.  The check below closes a
+hole in that existing zero-agent guard; it does not create a new authority or
+change policy.
+
 Blind spot is measured, not assumed: own-uid processes whose `environ` is
 unreadable and which are not zombies (a zombie cannot be a running agent). On
 2026-08-08 that was 5 of 1510 own-uid processes (0.3%). A nonzero blind spot
@@ -87,6 +97,15 @@ from typing import Sequence
 
 
 IDENTITY_VAR = "DG_AGENT_NAME"
+
+# Linux assigns this fixed inode to the initial PID namespace.  A process in a
+# nested PID namespace can read a perfectly healthy /proc containing only its
+# sandbox siblings; absence there says nothing about agents in the host
+# namespace.  The 2026-08-12 incident was exactly that shape: 4 visible
+# same-uid processes and 1 visible agent were incorrectly called a complete
+# fleet scan while the host view contained 481 processes and 25 agents.
+INITIAL_PID_NAMESPACE_LINK = "pid:[4026531836]"
+HOST_INIT_COMM = "systemd"
 
 # Exit codes deliberately mirror ci-hub/bin/close-task so the polarity is
 # familiar across destructive-action gates: 0 authorizes, nonzero refuses.
@@ -155,6 +174,9 @@ class Scan:
     unreadable_non_agent: int = 0
     """Unreadable-environ processes excluded because their comm cannot host an agent."""
     distinct_agents_seen: frozenset[str] = field(default_factory=frozenset)
+    process_view: str = "unverifiable"
+    """Whether /proc is proven to be the host PID namespace."""
+    process_view_reason: str = "process view was not inspected"
     scan_error: str | None = None
 
     @property
@@ -181,9 +203,56 @@ def _proc_comm(proc: Path) -> str:
         return "?"
 
 
+def _process_view(root: Path) -> tuple[str, str]:
+    """Classify whether ``root`` exposes the full host PID namespace.
+
+    Seeing one healthy bystander proves only that the probe can see *itself*.
+    It does not prove that another agent is absent.  Absence is authoritative
+    only from Linux's initial PID namespace with the real host init visible.
+    Any missing or contradictory marker is therefore UNVERIFIABLE rather than
+    a reason to guess.
+    """
+
+    namespace_path = root / "self" / "ns" / "pid"
+    try:
+        namespace = os.readlink(namespace_path)
+    except OSError as error:
+        return (
+            "unverifiable",
+            f"cannot establish PID namespace from {namespace_path}: {error}",
+        )
+
+    if namespace != INITIAL_PID_NAMESPACE_LINK:
+        return (
+            "restricted",
+            f"PID namespace is {namespace}, not host {INITIAL_PID_NAMESPACE_LINK}",
+        )
+
+    init_path = root / "1" / "comm"
+    try:
+        init_comm = init_path.read_text().strip()
+    except OSError as error:
+        return (
+            "unverifiable",
+            f"cannot establish host init from {init_path}: {error}",
+        )
+
+    if init_comm != HOST_INIT_COMM:
+        return (
+            "restricted",
+            f"PID 1 is {init_comm!r}, not host init {HOST_INIT_COMM!r}",
+        )
+
+    return (
+        "full",
+        f"initial PID namespace {namespace} with PID 1 {init_comm}",
+    )
+
+
 def scan_proc(name: str, *, root: Path = Path("/proc")) -> Scan:
     """Sweep /proc once, collecting both the matches AND the coverage facts."""
     me = os.getuid()
+    process_view, process_view_reason = _process_view(root)
     matches: list[Match] = []
     seen: set[str] = set()
     own = zombies = blind = excluded = 0
@@ -233,6 +302,8 @@ def scan_proc(name: str, *, root: Path = Path("/proc")) -> Scan:
         blind_spot=blind,
         unreadable_non_agent=excluded,
         distinct_agents_seen=frozenset(seen),
+        process_view=process_view,
+        process_view_reason=process_view_reason,
     )
 
 
@@ -276,11 +347,24 @@ def judge(name: str, scan: Scan) -> Verdict:
             scan,
         )
 
-    # SELF-CHECK, and the most important branch in this file. If the sweep
-    # found no agent identity whatsoever, the probe is not working -- and a
-    # broken probe must not be able to authorize a kill by reporting "nobody is
-    # there". Distinguishing a dead agent from a blind detector is exactly the
-    # confusion that makes an unverified alarm dangerous.
+    # A positive live match is safe even through a restricted view.  Absence
+    # is not: a sandbox can omit the live subject while still exposing itself
+    # as a healthy bystander.  This check must therefore precede every DEAD
+    # branch, including the zombie-only branch.
+    if scan.process_view != "full":
+        return Verdict(
+            "unverifiable",
+            f"RESTRICTED PROCESS VIEW ({scan.process_view}): "
+            f"{scan.process_view_reason}; cannot establish that {name} is absent "
+            "from the fleet. Run the registered liveness authority with a full "
+            "process view; refusing replacement.",
+            scan,
+        )
+
+    # SECOND SELF-CHECK.  Host-view proof above closes the partial-view hole;
+    # this branch retains the original zero-agent guard.  If the sweep found
+    # no agent identity whatsoever, the probe is not working -- and a broken
+    # probe must not authorize a kill by reporting "nobody is there".
     if not scan.distinct_agents_seen:
         return Verdict(
             "unverifiable",
@@ -345,6 +429,8 @@ def _render(name: str, verdict: Verdict, *, as_json: bool) -> str:
                 "blind_spot": scan.blind_spot,
                 "unreadable_non_agent": scan.unreadable_non_agent,
                 "distinct_agents_seen": len(scan.distinct_agents_seen),
+                "process_view": scan.process_view,
+                "process_view_reason": scan.process_view_reason,
             },
             sort_keys=True,
         )
@@ -358,7 +444,8 @@ def _render(name: str, verdict: Verdict, *, as_json: bool) -> str:
         f"coverage=own_uid:{scan.own_uid_total},zombies:{scan.zombies},"
         f"blind_spot:{scan.blind_spot},"
         f"unreadable_non_agent:{scan.unreadable_non_agent},"
-        f"agents_seen:{len(scan.distinct_agents_seen)} "
+        f"agents_seen:{len(scan.distinct_agents_seen)},"
+        f"process_view:{scan.process_view} "
         f"rc={verdict.rc}"
     )
 

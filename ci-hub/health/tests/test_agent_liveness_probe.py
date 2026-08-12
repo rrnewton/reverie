@@ -14,6 +14,11 @@ throwaway `DG_AGENT_NAME`, so nothing here can touch a real agent, and the
 probe itself never kills anything -- it reads /proc and prints. That is the
 same inert-fixture discipline used for the closure gateway: the artifact under
 test is not itself an authorization to do the dangerous thing.
+
+Hard Invariant 16 fixes the externally visible polarity: rc 0 may replace,
+rc 1 means alive/refuse, and rc 2 means unverifiable/refuse.  The restricted
+and full-view brackets below assert the literal return codes, not only module
+constants, so implementation and policy cannot drift together unnoticed.
 """
 
 from __future__ import annotations
@@ -59,10 +64,28 @@ def plant(
         (entry / "environ").write_bytes(payload.encode())
 
 
+def plant_process_view(root: Path, *, full_view: bool) -> None:
+    """Create the process-view markers the production authority requires."""
+
+    namespace = root / "self" / "ns"
+    namespace.mkdir(parents=True)
+    target = (
+        probe.INITIAL_PID_NAMESPACE_LINK if full_view else "pid:[4026539999]"
+    )
+    (namespace / "pid").symlink_to(target)
+    plant(
+        root,
+        1,
+        agent=None,
+        comm=probe.HOST_INIT_COMM if full_view else "sandbox-init",
+    )
+
+
 class SyntheticProcTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.root = Path(self._tmp.name)
+        plant_process_view(self.root, full_view=True)
         self.addCleanup(self._tmp.cleanup)
 
     # ---- FALSE KILL side: these must all refuse -------------------------
@@ -91,8 +114,52 @@ class SyntheticProcTest(unittest.TestCase):
         plant(self.root, 101, agent=None)
         verdict = probe.verify("victim", root=self.root)
         self.assertEqual("unverifiable", verdict.state)
-        self.assertEqual(probe.UNVERIFIABLE, verdict.rc)
+        self.assertEqual(2, verdict.rc, "Hard Invariant 16 requires rc 2 refusal")
         self.assertIn("this probe is", verdict.reason)
+
+    def test_restricted_process_view_cannot_prove_a_live_agent_dead(self) -> None:
+        """Exact 2026-08-12 failure: a partial view called itself complete.
+
+        The sandbox saw four same-uid processes and one healthy agent, but
+        omitted the live named agent in the host namespace.  Seeing a
+        bystander proves the detector runs; it does not prove fleet coverage.
+        """
+
+        restricted = self.root / "restricted"
+        restricted.mkdir()
+        plant_process_view(restricted, full_view=False)
+        plant(restricted, 10, agent="bystander")
+        plant(restricted, 11, agent=None, comm="python3")
+        plant(restricted, 12, agent=None, comm="bash")
+
+        verdict = probe.verify("live-elsewhere", root=restricted)
+        self.assertEqual(4, verdict.scan.own_uid_total)
+        self.assertEqual(frozenset({"bystander"}), verdict.scan.distinct_agents_seen)
+        self.assertEqual("restricted", verdict.scan.process_view)
+        self.assertEqual("unverifiable", verdict.state)
+        self.assertEqual(2, verdict.rc, "Hard Invariant 16 requires rc 2 refusal")
+        self.assertFalse(verdict.may_replace)
+        self.assertIn("RESTRICTED PROCESS VIEW", verdict.reason)
+        rendered = probe._render("live-elsewhere", verdict, as_json=False)
+        self.assertIn("UNVERIFIABLE", rendered)
+        self.assertIn("process_view:restricted", rendered)
+        import json
+
+        payload = json.loads(probe._render("live-elsewhere", verdict, as_json=True))
+        self.assertEqual("unverifiable", payload["state"])
+        self.assertFalse(payload["may_replace"])
+        self.assertEqual("restricted", payload["process_view"])
+        self.assertIn("RESTRICTED PROCESS VIEW", payload["reason"])
+
+    def test_full_process_view_still_proves_a_genuine_absence(self) -> None:
+        """Positive bracket: the safety guard must not disable healing."""
+
+        plant(self.root, 101, agent="bystander")
+        verdict = probe.verify("genuinely-absent", root=self.root)
+        self.assertEqual("full", verdict.scan.process_view)
+        self.assertEqual("verified-dead", verdict.state)
+        self.assertEqual(0, verdict.rc, "Hard Invariant 16 requires rc 0 for proven death")
+        self.assertTrue(verdict.may_replace)
 
     def test_unreadable_agent_comm_still_blocks(self) -> None:
         """Pins the NARROWNESS of the AGENT_COMMS exclusion.
@@ -200,6 +267,8 @@ class SyntheticProcTest(unittest.TestCase):
         scan = probe.Scan(
             own_uid_total=265,
             distinct_agents_seen=frozenset({"bystander"}),
+            process_view="full",
+            process_view_reason="synthetic full view",
         )
         verdict = probe.judge("", scan)
         self.assertEqual("unverifiable", verdict.state)
@@ -215,6 +284,8 @@ class SyntheticProcTest(unittest.TestCase):
         scan = probe.Scan(
             own_uid_total=265,
             distinct_agents_seen=frozenset({"bystander"}),
+            process_view="full",
+            process_view_reason="synthetic full view",
         )
         verdict = probe.judge("victim", scan)
         self.assertEqual("verified-dead", verdict.state)
