@@ -30,14 +30,17 @@
 # Usage:
 #   ci-hub/landing/land-pr.sh <PR> <BRANCH> [--union|--no-rebase] [--agent NAME]
 #                             [--gate-deadline SECS] [--child-deadline SECS]
-#                             [--foreground] [--gate-rotation]
+#                             [--checkout HERMIT_SLOT] [--team TEAM] [--foreground]
 #   --union          use the additive manifest union-rebase (union-rebase.sh);
 #                    default is a plain `git rebase origin/main`.
 #   --no-rebase      OPT-IN. Skip step 2 (the local rebase + force-push) and
 #                    merge the already-authorized head as it stands. Mutually
 #                    exclusive with --union. Rationale + how to re-verify it:
 #                    see the step-2 comment. Default behaviour is UNCHANGED.
-#   --agent NAME     lock holder + PR-comment role tag (default: hermit-lander).
+#   --agent NAME     reviewer + lock-holder identity (default: DG_AGENT_NAME).
+#   --team TEAM      reviewer disclosure team (default: hermit2).
+#   --checkout PATH  reviewer's Hermit slot. When omitted, use the current
+#                    directory only if it is an rrnewton/hermit checkout.
 #   --gate-deadline  compatibility bound retained for callers and for sizing the
 #                    default whole-child deadline; no GH Actions poll waits on it.
 #   --child-deadline hard ceiling for the whole land subtree (default: twice the
@@ -45,11 +48,6 @@
 #                    releases on breach. It must exceed the compatibility bound.
 #   --foreground     diagnostic escape hatch; default launches under nohup+setsid
 #                    with a durable timestamped log and returns immediately.
-#   --gate-rotation  independently verify an owner-recorded merge-gate definition
-#                    rotation at every mutation boundary. Requires --no-rebase.
-#                    This is an authority mode, not an exemption: the exact live
-#                    record, reviews, blobs, paths, receipt, and typed candidate
-#                    self-refusal are all re-derived by trusted current-main code.
 set -uo pipefail
 
 # The eligibility predicate binds landing to the validate ledger, but it honours
@@ -63,8 +61,10 @@ set -uo pipefail
 # this repo legitimately sets either for the lander.
 unset CI_HUB_VALIDATE_STATUS_BIN
 
-PR=""; BR=""; UNION=0; NO_REBASE=0; INNER=0; DETACHED_CHILD=0; FOREGROUND=0; GATE_ROTATION=0
-AGENT="hermit-lander"
+PR=""; BR=""; UNION=0; NO_REBASE=0; INNER=0; DETACHED_CHILD=0; FOREGROUND=0
+AGENT="${DG_AGENT_NAME:-hermit-lander}"
+TEAM="hermit2"
+CHECKOUT=""
 # Measured 2026-08-04 over 11 successful pull_request demo-hot-path runs created
 # since 2026-08-03T23:00Z: median=586s, p90=646s, p95/p99/max=864s. The default
 # is ceil(max * 1.25) = 1080s; the whole-child ceiling gets two gate windows.
@@ -75,10 +75,11 @@ while [ $# -gt 0 ]; do
     --union) UNION=1 ;;
     --no-rebase) NO_REBASE=1 ;;
     --agent) AGENT="$2"; shift ;;
+    --team) TEAM="$2"; shift ;;
+    --checkout) CHECKOUT="$2"; shift ;;
     --gate-deadline) GATE_DEADLINE="$2"; shift ;;
     --child-deadline) CHILD_DEADLINE="$2"; shift ;;
     --foreground) FOREGROUND=1 ;;
-    --gate-rotation) GATE_ROTATION=1 ;;
     --_detached) DETACHED_CHILD=1 ;;
     --_inner) INNER=1 ;;
     -h|--help) sed -n '1,50p' "$0"; exit 0 ;;
@@ -99,10 +100,6 @@ if [ "$UNION" -eq 1 ] && [ "$NO_REBASE" -eq 1 ]; then
   echo "land-pr: --union and --no-rebase are mutually exclusive (--union rebases by definition)" >&2
   exit 2
 fi
-if [ "$GATE_ROTATION" -eq 1 ] && [ "$NO_REBASE" -ne 1 ]; then
-  echo "land-pr: --gate-rotation requires --no-rebase; exact head/base approval cannot survive a rewrite" >&2
-  exit 2
-fi
 case "$GATE_DEADLINE" in ''|*[!0-9]*|0) echo "land-pr: gate deadline must be positive seconds" >&2; exit 2 ;; esac
 if [ -z "$CHILD_DEADLINE" ]; then
   CHILD_DEADLINE=$((GATE_DEADLINE * 2))
@@ -113,25 +110,32 @@ if [ "$CHILD_DEADLINE" -le "$GATE_DEADLINE" ]; then
   exit 2
 fi
 if [ -n "${CI_HUB_DOCS_PARSE_ONLY:-}" ]; then
-  printf 'DOCS PARSE OK: land-pr.sh pr=%s branch=%s union=%s no_rebase=%s gate_rotation=%s agent=%s\n' \
-    "$PR" "$BR" "$UNION" "$NO_REBASE" "$GATE_ROTATION" "$AGENT"
+  printf 'DOCS PARSE OK: land-pr.sh pr=%s branch=%s union=%s no_rebase=%s agent=%s team=%s checkout=%s\n' \
+    "$PR" "$BR" "$UNION" "$NO_REBASE" "$AGENT" "$TEAM" "${CHECKOUT:-current-directory}"
   exit 0
 fi
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
-WT="$ROOT/worktrees/lander/hermit"
+if [ -n "$CHECKOUT" ]; then
+  WT=$(cd -- "$CHECKOUT" 2>/dev/null && pwd) || {
+    echo "land-pr: --checkout is not a readable directory: $CHECKOUT" >&2
+    exit 2
+  }
+else
+  WT=$PWD
+fi
+remote_url=$(git -C "$WT" remote get-url origin 2>/dev/null || true)
+case "$remote_url" in
+  *github.com/rrnewton/hermit.git|*github.com/rrnewton/hermit|\
+  *github.com:rrnewton/hermit.git|*github.com:rrnewton/hermit) ;;
+  *)
+    echo "land-pr: reviewer must run from an rrnewton/hermit slot or pass --checkout" >&2
+    exit 2
+    ;;
+esac
 R=rrnewton/hermit
-TEAM=hermit2
 say(){ echo "[land#$PR] $*"; }
-verify_gate_rotation_checks(){
-  local expected_head="$1" detail rc
-  detail=$(python3 "$SCRIPT_DIR/gate_definition_rotation.py" --verify-live \
-    --pr "$PR" --checkout "$WT" --expected-head "$expected_head" 2>&1)
-  rc=$?
-  say "gate-rotation checks(head=$expected_head) rc=$rc: $detail"
-  [ "$rc" -eq 0 ] || return "$rc"
-}
 
 # BIND THE PR TO ITS REPOSITORY BEFORE DEREFERENCING ANY AUTHORITY.
 # `R` is hard-coded to rrnewton/hermit and there is no --repo option, so invoking
@@ -186,11 +190,10 @@ if [ "$INNER" -eq 0 ] && [ "$DETACHED_CHILD" -eq 0 ] && [ "$FOREGROUND" -eq 0 ];
   log_dir="${CI_HUB_LANDING_LOG_DIR:-$ROOT/ignored/ci-hub/landing}"
   log="$log_dir/land-pr${safe_pr}-${stamp}-$$.log"
   mkdir -p "$log_dir"
-  detached_args=(--_detached "$PR" "$BR" --agent "$AGENT" \
+  detached_args=(--_detached "$PR" "$BR" --agent "$AGENT" --team "$TEAM" --checkout "$WT" \
     --gate-deadline "$GATE_DEADLINE" --child-deadline "$CHILD_DEADLINE")
   [ "$UNION" -eq 1 ] && detached_args+=(--union)
   [ "$NO_REBASE" -eq 1 ] && detached_args+=(--no-rebase)
-  [ "$GATE_ROTATION" -eq 1 ] && detached_args+=(--gate-rotation)
   printf 'DETACHED LAND START pr=%s branch=%s agent=%s started_at=%s\n' \
     "$PR" "$BR" "$AGENT" "$stamp" >"$log"
   nohup setsid "$0" "${detached_args[@]}" </dev/null >>"$log" 2>&1 &
@@ -209,20 +212,9 @@ if [ "$INNER" -eq 0 ]; then
   # the obligation remains open until the repair SHA is explicitly resolved.
   "$ROOT/ci-hub/ci-hub" inherit-obligations --agent "$AGENT" \
     --session "${ORC_AGENT_SESSION_ID:-${HOSTNAME:-unknown}:$$}"
-  args=(--_inner "$PR" "$BR" --agent "$AGENT" --gate-deadline "$GATE_DEADLINE")
+  args=(--_inner "$PR" "$BR" --agent "$AGENT" --team "$TEAM" --checkout "$WT" --gate-deadline "$GATE_DEADLINE")
   [ "$UNION" -eq 1 ] && args+=(--union)
   [ "$NO_REBASE" -eq 1 ] && args+=(--no-rebase)
-  [ "$GATE_ROTATION" -eq 1 ] && args+=(--gate-rotation)
-  # Persist the exact-SHA verification obligation intent before the bounded
-  # child can merge. If this process dies after the merge, the ORC recovery
-  # watcher observes the merged SHA and arms both verifiers.
-  if ! "$ROOT/ci-hub/remediation/land_and_arm.py" prepare \
-      --repo "$R" --pr "$PR" --source "$ROOT/hermit" \
-      --land-mode speculative --actor "$AGENT"; then
-    say "ABANDON: could not prepare the post-land verification obligation"
-    comment_abandon "could not prepare the mandatory post-land verification obligation"
-    exit 2
-  fi
   "$ROOT/ci-hub/ci-hub" land-lock run --agent "$AGENT" --pr "$PR" \
     --child-deadline "$CHILD_DEADLINE" -- "$0" "${args[@]}"
   rc=$?
@@ -234,75 +226,37 @@ if [ "$INNER" -eq 0 ]; then
   esac
   [ "$rc" -eq 0 ] || exit "$rc"
 
-  # The bounded child has exited and `land-lock run` has proven its cleanup
-  # domain empty before returning. Arm the durable post-land obligation only
-  # NOW, outside that cleanup boundary. Starting the verifier/watchers inside
-  # `_inner` made their deliberately detached process groups descendants of
-  # the lock supervisor: successful landings then froze and quarantined live
-  # post-land work as if it were an escaped payload. We must not weaken the
-  # descendant census instead -- an arbitrary payload can use `setsid` too.
-  if "$ROOT/ci-hub/remediation/land_and_arm.py" complete --repo "$R" --pr "$PR"; then
-    intent_dir="${CI_HUB_LAND_INTENT_DIR:-$ROOT/ignored/ci-hub/land-intents}"
-    intent_path="$intent_dir/${R//\//-}-pr${PR}.json"
-    MC=$(jq -er '.landed_sha | select(test("^[0-9a-f]{40}$"))' "$intent_path" 2>/dev/null) || {
-      say "POST-LAND ARM PENDING: obligation armed, but exact landed SHA was unreadable from $intent_path"
-      exit 8
-    }
-
-    # Rotation registration is part of the normal lander composition, but it
-    # runs only after the bounded child returned: that proves its mergeCommit
-    # ancestry and lets land-lock finish its descendant census and release.
-    # register-only re-derives the nine immutable facts, refreshes main, proves
-    # ancestry again, reads the landed blob, then PATCHes and verifies the
-    # registration. A direct --gate-rotation invocation therefore cannot merge
-    # through the checked path while silently omitting post-ancestry registration.
-    if [ "$GATE_ROTATION" -eq 1 ]; then
-      python3 "$SCRIPT_DIR/gate_definition_rotation.py" --register-only \
-        --pr "$PR" --checkout "$WT" \
-        || {
-          say "POST-LAND REGISTRATION PENDING: main is fail-closed; retry --register-only"
-          exit 8
-        }
-    fi
-
-    # Wave-level pile reconciliation. The inner ancestry check proves THIS PR
-    # landed; it says nothing about the task pile, which is closed on ancestry
-    # only and therefore grows monotonically until something re-checks it. A
-    # one-off check on 2026-08-06 found 163 of 302 already on main.
-    #
-    # Detached and single-flight: a serial wave lands many PRs, and this must
-    # neither delay a land nor spawn one audit per PR. Wrapped so a defect in
-    # the audit can never fail a landing that already succeeded.
-    if [ "${CI_HUB_POST_LAND_AUDIT:-1}" = 1 ]; then
-      (
-        exec 9>"$ROOT/ignored/.ancestry-audit.lock" 2>/dev/null || exit 0
-        flock -n 9 || exit 0   # an audit is already running; it will see this land too
-        setsid "$ROOT/ci-hub/bin/ancestry-audit" --herdr-agent "${AGENT:-hermit-lander}" \
-          --json "$ROOT/ignored/ancestry/post-land-audit.json" \
-          >"$ROOT/ignored/ancestry/post-land-audit.log" 2>&1
-      ) >/dev/null 2>&1 &
-    fi
-    say "LANDED:$MC"; exit 0
+  # The merge and ancestry proof are already complete. Post-land remediation is
+  # useful bookkeeping, never retroactive authorization and never a reason to
+  # report a successful land as failed. Prepare and arm only after the merge.
+  MC=$(with-proxy gh pr view "$PR" -R "$R" --json mergeCommit -q .mergeCommit.oid 2>/dev/null || true)
+  if "$ROOT/ci-hub/remediation/land_and_arm.py" prepare \
+      --repo "$R" --pr "$PR" --source "$WT" \
+      --land-mode speculative --actor "$AGENT" >/dev/null 2>&1 \
+      && "$ROOT/ci-hub/remediation/land_and_arm.py" complete \
+        --repo "$R" --pr "$PR" >/dev/null 2>&1; then
+    say "post-land verification obligation armed"
+  else
+    say "WARN: post-land verification obligation was not armed; landing remains successful"
+    publish_landing_comment post-land-arm-failed \
+      "post-land verification arming returned no completed obligation; the merge remains landed" \
+      || say "POST-LAND COMMENT PUBLICATION FAILED: use the durable record printed above"
   fi
-  say "POST-LAND ARM PENDING: merge is landed; durable recovery will retry"
-  publish_landing_comment post-land-arm-failed \
-    "post-land verification arming returned no completed obligation" \
-    || say "POST-LAND COMMENT PUBLICATION FAILED: use the durable record printed above"
-  exit 8
+
+  # Detached and single-flight: this audit must never delay or veto a land.
+  if [ "${CI_HUB_POST_LAND_AUDIT:-1}" = 1 ]; then
+    (
+      exec 9>"$ROOT/ignored/.ancestry-audit.lock" 2>/dev/null || exit 0
+      flock -n 9 || exit 0
+      setsid "$ROOT/ci-hub/bin/ancestry-audit" --herdr-agent "${AGENT:-hermit-lander}" \
+        --json "$ROOT/ignored/ancestry/post-land-audit.json" \
+        >"$ROOT/ignored/ancestry/post-land-audit.log" 2>&1
+    ) >/dev/null 2>&1 &
+  fi
+  say "LANDED:${MC:-merge-commit-unavailable}"; exit 0
 fi
 
 # --- inner: we now hold the land-lock ----------------------------------------
-# ``--_inner`` is an implementation detail elsewhere in this lander, not a
-# rotation capability. A direct caller that supplies it must still prove this
-# process descends from the exact PID/start-ticks identity recorded by
-# ``land-lock run``. Thus the rotation mode cannot bypass serialization even if
-# every command-line flag is known.
-if [ "$GATE_ROTATION" -eq 1 ]; then
-  python3 "$SCRIPT_DIR/gate_definition_rotation.py" --assert-land-lock \
-    --pr "$PR" --agent "$AGENT" \
-    || { echo "land-pr: REFUSE: gate rotation is outside its recorded land-lock subtree" >&2; exit 2; }
-  say "GATE-ROTATION-EVENT enter_land_lock"
-fi
 # Visible terminal ABANDON signal: stderr + role-tagged PR comment, then exit.
 abandon(){
   local reason="$1" code="${2:-1}"
@@ -321,22 +275,7 @@ with-proxy git -C "$WT" fetch -q origin "$BR" 2>/dev/null || true
 # not restate hard/soft-green policy. Re-check after every SHA-changing rebase.
 verify_pr_belongs_to_repo
 ORIG=$(git -C "$WT" rev-parse "origin/$BR" 2>/dev/null) || abandon "cannot resolve origin/$BR head for eligibility gate" 4
-# A merge-gate-definition branch is not allowed to choose the ordinary
-# authority path. Detect from the branch's own merge-base delta (not the
-# mutable two-tip diff) so a caller cannot omit --gate-rotation and let a
-# branch-owned gate vouch for itself. A scripts/validate.rs change still uses
-# the same local ledger authority as every other Hermit change: changing the
-# test program does not reactivate the retired hosted producer.
-branch_base=$(git -C "$WT" merge-base origin/main "$ORIG") \
-  || abandon "cannot resolve PR merge-base for self-authorization check" 4
 authority_mode=local-only
-if git -C "$WT" diff --name-only "$branch_base" "$ORIG" -- \
-    .github/workflows/merge-gate.yml | grep -Fxq .github/workflows/merge-gate.yml; then
-  if [ "$GATE_ROTATION" -ne 1 ]; then
-    say "SELF_AUTHORIZATION_REFUSED: branch changes .github/workflows/merge-gate.yml without independent definition-change checks"
-    abandon "gate-definition change requires the sanctioned --gate-rotation checks" 4
-  fi
-fi
 validation_landability() {
   local candidate=$1 current_main=$2
   shift 2
@@ -344,52 +283,45 @@ validation_landability() {
     --repo "$R" --result "$candidate" --current-base "$current_main" \
     --authority-mode "$authority_mode" --repo-checkout "$WT" "$@"
 }
-if [ "$GATE_ROTATION" -eq 1 ]; then
-  verify_gate_rotation_checks "$ORIG" \
-    || abandon "independent gate-rotation checks refused PR head $ORIG" 4
-else
-  eligibility_base=$(git -C "$WT" rev-parse --verify origin/main) \
-    || abandon "cannot resolve current main for validation landability" 4
-  VS=$(validation_landability "$ORIG" "$eligibility_base" --json 2>&1); VRC=$?
-  say "validation landability(head=$ORIG) rc=$VRC: $VS"
-  # JUST-IN-TIME PR-HEAD CI.  A prepared, reviewed head whose exact commit has
-  # no accepted verdict gets one run through the same centralized producer as
-  # every other qualifying receipt.  Do not validate a stale base: the producer
-  # would (correctly) refuse it, and spending the queue wait first would turn a
-  # cheap rebase requirement into an expensive NO_RESULT.  The helper re-reads
-  # the live PR head after VALIDATE, so a concurrent push expires this result
-  # instead of inheriting it.
-  if [ "$VRC" -ne 0 ]; then
-    existing_status=$("$ROOT/ci-hub/ci-hub" validate-status --sha "$ORIG" --json 2>&1)
-    existing_rc=$?
-    if [ "$existing_rc" -eq 4 ] && \
-       git -C "$WT" merge-base --is-ancestor "$eligibility_base" "$ORIG"; then
-      git -C "$WT" checkout -q --detach "$ORIG" \
-        || abandon "cannot materialize exact PR head $ORIG for just-in-time validation" 4
-      jit_detail=$("$ROOT/ci-hub/bin/pr-head-ci" \
-        --repo "$R" --pr "$PR" --expected-head "$ORIG" \
-        --checkout "$WT" --agent "$AGENT" --execute 2>&1)
-      jit_rc=$?
-      git -C "$WT" checkout -q --detach origin/main \
-        || abandon "cannot restore lander checkout after just-in-time validation" 4
-      say "just-in-time exact-head CI(head=$ORIG) rc=$jit_rc: $jit_detail"
-      [ "$jit_rc" -eq 0 ] \
-        || abandon "just-in-time exact-head CI produced no qualifying verdict for $ORIG (rc=$jit_rc)" 4
-      with-proxy git -C "$WT" fetch -q origin main \
-        || abandon "could not refresh current main after just-in-time validation" 4
-      eligibility_base=$(git -C "$WT" rev-parse --verify origin/main) \
-        || abandon "cannot resolve current main after just-in-time validation" 4
-      VS=$(validation_landability "$ORIG" "$eligibility_base" --json 2>&1); VRC=$?
-      say "post-JIT validation landability(head=$ORIG) rc=$VRC: $VS"
-    elif [ "$existing_rc" -eq 4 ]; then
-      say "just-in-time exact-head CI not admitted: PR head lacks current origin/main; rebase before VALIDATE"
-    else
-      say "just-in-time exact-head CI not admitted: canonical exact-head status rc=$existing_rc: $existing_status"
-    fi
+eligibility_base=$(git -C "$WT" rev-parse --verify origin/main) \
+  || abandon "cannot resolve current main for validation landability" 4
+VS=$(validation_landability "$ORIG" "$eligibility_base" --json 2>&1); VRC=$?
+say "validation landability(head=$ORIG) rc=$VRC: $VS"
+# JUST-IN-TIME PR-HEAD CI. A prepared, reviewed head whose exact commit has no
+# accepted verdict gets one run through the same centralized producer as every
+# other qualifying receipt. Do not validate a stale base: the producer would
+# correctly refuse it. The helper re-reads the live PR head after VALIDATE, so a
+# concurrent push expires this result instead of inheriting it.
+if [ "$VRC" -ne 0 ]; then
+  existing_status=$("$ROOT/ci-hub/ci-hub" validate-status --sha "$ORIG" --json 2>&1)
+  existing_rc=$?
+  if [ "$existing_rc" -eq 4 ] && \
+     git -C "$WT" merge-base --is-ancestor "$eligibility_base" "$ORIG"; then
+    git -C "$WT" checkout -q --detach "$ORIG" \
+      || abandon "cannot materialize exact PR head $ORIG for just-in-time validation" 4
+    jit_detail=$("$ROOT/ci-hub/bin/pr-head-ci" \
+      --repo "$R" --pr "$PR" --expected-head "$ORIG" \
+      --checkout "$WT" --agent "$AGENT" --execute 2>&1)
+    jit_rc=$?
+    git -C "$WT" checkout -q --detach origin/main \
+      || abandon "cannot restore lander checkout after just-in-time validation" 4
+    say "just-in-time exact-head CI(head=$ORIG) rc=$jit_rc: $jit_detail"
+    [ "$jit_rc" -eq 0 ] \
+      || abandon "just-in-time exact-head CI produced no qualifying verdict for $ORIG (rc=$jit_rc)" 4
+    with-proxy git -C "$WT" fetch -q origin main \
+      || abandon "could not refresh current main after just-in-time validation" 4
+    eligibility_base=$(git -C "$WT" rev-parse --verify origin/main) \
+      || abandon "cannot resolve current main after just-in-time validation" 4
+    VS=$(validation_landability "$ORIG" "$eligibility_base" --json 2>&1); VRC=$?
+    say "post-JIT validation landability(head=$ORIG) rc=$VRC: $VS"
+  elif [ "$existing_rc" -eq 4 ]; then
+    say "just-in-time exact-head CI not admitted: PR head lacks current origin/main; rebase before VALIDATE"
+  else
+    say "just-in-time exact-head CI not admitted: canonical exact-head status rc=$existing_rc: $existing_status"
   fi
-  [ "$VRC" -eq 0 ] \
-    || abandon "validation landability refused PR head $ORIG (rc=$VRC)" 4
 fi
+[ "$VRC" -eq 0 ] \
+  || abandon "validation landability refused PR head $ORIG (rc=$VRC)" 4
 
 # 2. rebase onto latest main + push
 #
@@ -485,68 +417,35 @@ fi
 # append-safe finalizer so a real green is not stranded by a producer that
 # failed to inline its counts. Best-effort: never aborts landing — eligibility
 # below remains the authoritative fail-closed gate.
-if [ "$GATE_ROTATION" -eq 1 ]; then
-  # The independent record already requires a qualifying counted local receipt,
-  # but the branch-owned gate cannot authorize itself and no cache label is used
-  # as a substitute. Re-run all nine live checks at the exact head instead.
-  verify_gate_rotation_checks "$HEAD" \
-    || abandon "independent gate-rotation checks refused resolved head $HEAD" 4
+selected_row_sha256=$("$ROOT/ci-hub/validate/scan-finalize.sh" \
+  --select-candidate-sha256 --sha "$HEAD" --hermit-checkout "$WT" \
+  2>/dev/null) || selected_row_sha256=
+if [[ $selected_row_sha256 =~ ^[0-9a-f]{64}$ ]]; then
+  "$ROOT/ci-hub/validate/scan-finalize.sh" --hermit-checkout "$WT" \
+    --sha "$HEAD" --selected-row-sha256 "$selected_row_sha256" || true
 else
-  selected_row_sha256=$("$ROOT/ci-hub/validate/scan-finalize.sh" \
-    --select-candidate-sha256 --sha "$HEAD" --hermit-checkout "$WT" \
-    2>/dev/null) || selected_row_sha256=
-  if [[ $selected_row_sha256 =~ ^[0-9a-f]{64}$ ]]; then
-    "$ROOT/ci-hub/validate/scan-finalize.sh" --hermit-checkout "$WT" \
-      --sha "$HEAD" --selected-row-sha256 "$selected_row_sha256" || true
-  else
-    say "scan-finalize: no unique exact source row selected for $HEAD (best-effort)"
-  fi
-  # Capture the VERBATIM first_error_line of every surviving red log into the
-  # durable append-only sidecar before the /tmp log is evicted.
-  python3 "$ROOT/ci-hub/validate/attribute_reds.py" --last 0 --persist >/dev/null 2>&1 || true
-  with-proxy git -C "$WT" fetch -q origin main \
-    || abandon "could not refresh current main for post-push landability" 4
-  post_push_base=$(git -C "$WT" rev-parse --verify origin/main) \
-    || abandon "could not resolve current main for post-push landability" 4
-  VS=$(validation_landability "$HEAD" "$post_push_base" --json 2>&1); VRC=$?
-  say "post-push validation landability(head=$HEAD) rc=$VRC: $VS"
-  [ "$VRC" -eq 0 ] \
-    || abandon "pushed head $HEAD has no accepted validation landability (rc=$VRC)" 4
-  landability_state=$(jq -er .state <<<"$VS") \
-    || abandon "validation landability emitted no state for $HEAD" 4
-  if [ "$landability_state" = HARD_GREEN ]; then
-    # The label is a CACHE, not authority: step 4's exact-head check above is the
-    # fail-closed gate and it has already returned rc=0 for this head. So exactly
-    # one apply-local-label failure is survivable -- the receipt was produced on
-    # another host, whose validate log is simply not on this disk. Aborting there
-    # pinned landing to the validating machine (issue #2137): with receipts minted
-    # on one host, no other coordinator could land at all, however green the head.
-    #
-    # Every OTHER failure still abandons. This is narrowed by a stable token the
-    # publisher emits only for the cross-host case, never by exit status alone.
-    ALL_OUT=$("$ROOT/ci-hub/ci-hub" apply-local-label --pr "$PR" --repo "$R" 2>&1); ALRC=$?
-    [ -n "$ALL_OUT" ] && say "apply-local-label: $ALL_OUT"
-    if [ "$ALRC" -ne 0 ]; then
-      if grep -Fq "RECEIPT-ARTIFACT-FOREIGN-HOST" <<<"$ALL_OUT"; then
-        say "WARN: local cache label not applied -- the receipt's evidence lives on the producing host."
-        say "WARN: this does NOT weaken authorization; the exact-head authority for $HEAD returned rc=0."
-        say "WARN: proceeding to merge without the locally-validated cache label (issue #2137)."
-      else
-        abandon "ledger-guarded apply-local-label failed" 4
-      fi
-    else
-      sleep 4
-      LB=$(with-proxy gh pr view "$PR" -R "$R" --json labels -q '[.labels[].name]|join(",")')
-      grep -q locally-validated <<<"$LB" || abandon "locally-validated stripped immediately (labels=$LB)" 4
-      say "ledger-derived label present; labels=$LB"
-    fi
-  elif [ "$landability_state" = SOFT_GREEN ]; then
-    say "soft-green landability accepted; no exact-head cache label is minted at $HEAD"
-    "$ROOT/ci-hub/remediation/land_and_arm.py" mark-soft \
-      --repo "$R" --pr "$PR" --candidate "$HEAD" \
-      --source-rev "$ORIG" --base "$post_push_base" \
-      || abandon "could not bind the prepared land intent to exact soft-green provenance" 4
-  fi
+  say "scan-finalize: no unique exact source row selected for $HEAD (best-effort)"
+fi
+python3 "$ROOT/ci-hub/validate/attribute_reds.py" --last 0 --persist >/dev/null 2>&1 || true
+with-proxy git -C "$WT" fetch -q origin main \
+  || abandon "could not refresh current main for post-push landability" 4
+post_push_base=$(git -C "$WT" rev-parse --verify origin/main) \
+  || abandon "could not resolve current main for post-push landability" 4
+VS=$(validation_landability "$HEAD" "$post_push_base" --json 2>&1); VRC=$?
+say "post-push validation landability(head=$HEAD) rc=$VRC: $VS"
+[ "$VRC" -eq 0 ] \
+  || abandon "pushed head $HEAD has no accepted validation landability (rc=$VRC)" 4
+landability_state=$(jq -er .state <<<"$VS") \
+  || abandon "validation landability emitted no state for $HEAD" 4
+if [ "$landability_state" = HARD_GREEN ]; then
+  # The exact-head ledger result above is authority. Label reconciliation is a
+  # scanning convenience and cannot veto the approving reviewer's land.
+  ALL_OUT=$("$ROOT/ci-hub/ci-hub" apply-local-label --pr "$PR" --repo "$R" 2>&1); ALRC=$?
+  [ -n "$ALL_OUT" ] && say "apply-local-label: $ALL_OUT"
+  [ "$ALRC" -eq 0 ] \
+    || say "WARN: locally-validated cache reconciliation failed; exact-head authority remains valid"
+elif [ "$landability_state" = SOFT_GREEN ]; then
+  say "soft-green landability accepted; no exact-head cache label is minted at $HEAD"
 fi
 
 # 4b. A draft PR cannot be merged. Marking it ready may fire advisory GH Actions, but
@@ -604,43 +503,22 @@ say "exact-head review authority(head=$HEAD) rc=$review_rc: $review_detail"
 [ "$review_rc" -eq 0 ] \
   || abandon "exact-head review authority REFUSED for $HEAD: ${review_detail:-no result}" 5
 
-if [ "$GATE_ROTATION" -eq 1 ]; then
-  verify_gate_rotation_checks "$HEAD" \
-    || abandon "independent gate-rotation checks refused at final current-main boundary" 5
-  say "GATE-ROTATION-EVENT verify_final"
-else
-  receipt_comments=$(mktemp) \
-    || abandon "could not allocate the receipt-comment observation file" 5
-  if ! with-proxy gh api --paginate --slurp \
-      "repos/$R/issues/$PR/comments?per_page=100" >"$receipt_comments"; then
-    printf '[]\n' >"$receipt_comments"
-  fi
-  receipt_detail=$(validation_landability "$HEAD" "$current_base" \
-    --comments "$receipt_comments" \
-    --current-reverie-base "$current_reverie_base" \
-    --reverie-checkout "$ROOT/reverie" 2>&1)
-  receipt_rc=$?
-  rm -f -- "$receipt_comments"
-  if [ "$receipt_rc" -ne 0 ]; then
-    abandon "validation landability REFUSED for $HEAD: ${receipt_detail:-no result}" 5
-  fi
-  say "validation landability authorized: $receipt_detail"
+receipt_comments=$(mktemp) \
+  || abandon "could not allocate the receipt-comment observation file" 5
+if ! with-proxy gh api --paginate --slurp \
+    "repos/$R/issues/$PR/comments?per_page=100" >"$receipt_comments"; then
+  printf '[]\n' >"$receipt_comments"
 fi
-
-# An exact-head approval cannot inherit semantic coverage from a source PR.
-# A cherry-picked commit has a new base, neighbours, and stated intent even when
-# its patch is byte-identical.  Require the PR Summary to disclose each explicit
-# source trailer and require every relied-upon current approval lane to attest
-# the COMPLETE source-to-semantics digest in THIS head context.  Run this after
-# every other potentially slow boundary check because the PR body is mutable
-# without moving HEAD.  This is a review/disclosure gate, not a claim that
-# cherry-picked code is defective.
-cherry_pick_detail=$(python3 "$SCRIPT_DIR/cherry_pick_context.py" \
-  --repo "$R" --pr "$PR" --expected-head "$HEAD" --gate 2>&1)
-cherry_pick_rc=$?
-say "cherry-pick context authority(head=$HEAD) rc=$cherry_pick_rc: $cherry_pick_detail"
-[ "$cherry_pick_rc" -eq 0 ] \
-  || abandon "cherry-pick context contract REFUSED for $HEAD: ${cherry_pick_detail:-no result}" 5
+receipt_detail=$(validation_landability "$HEAD" "$current_base" \
+  --comments "$receipt_comments" \
+  --current-reverie-base "$current_reverie_base" \
+  --reverie-checkout "$ROOT/reverie" 2>&1)
+receipt_rc=$?
+rm -f -- "$receipt_comments"
+if [ "$receipt_rc" -ne 0 ]; then
+  abandon "validation landability REFUSED for $HEAD: ${receipt_detail:-no result}" 5
+fi
+say "validation landability authorized: $receipt_detail"
 
 # 6. The merge command is the mergeability arbiter. Make exactly one attempt
 # under the final-boundary verdict above. Retrying here would let an authorization
@@ -653,7 +531,6 @@ if [ -z "$merged" ] && grep -qi 'already merged' <<<"$out"; then
   merged=ok
 fi
 [ "$merged" = ok ] || abandon "gh pr merge --rebase refused after the fresh final-boundary check; rerun the gate (last: $(tr '\n' ' ' <<<"$out" | tail -c 160))" 6
-[ "$GATE_ROTATION" -eq 1 ] && say "GATE-ROTATION-EVENT normal_non_admin_merge"
 
 # 7. ancestry-verify: a PR-head hash is NOT a landing. Confirm the merge commit is
 # reachable from origin/main before declaring success.

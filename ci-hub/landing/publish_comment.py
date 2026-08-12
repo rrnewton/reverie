@@ -112,7 +112,7 @@ def _command(request: Request, body: str) -> list[str]:
         "--team",
         request.team,
         "--role",
-        "coordinator",
+        "reviewer",
         "--repo",
         request.repo,
         "--pr",
@@ -153,6 +153,7 @@ def _write_failure_record(
         "body": body,
         "agent": request.agent,
         "team": request.team,
+        "role": "reviewer",
         "comment_exit_code": process.returncode,
         "comment_error": _failure_detail(process),
     }

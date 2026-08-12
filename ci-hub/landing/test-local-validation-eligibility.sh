@@ -26,6 +26,7 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 root=$(cd -- "$script_dir/../.." && pwd)
 helper=$script_dir/local-validation-eligibility.sh
 lander=$script_dir/land-pr.sh
+publisher=$script_dir/publish_comment.py
 authority=$script_dir/exact-head-validation-authority.sh
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
@@ -313,13 +314,12 @@ else
   audit "landing frontier has no exact-head centralized JIT producer or skips its post-run authority recheck" bad
 fi
 
-if grep -Fq 'cherry_pick_context.py"' "$lander" &&
-   grep -Fq -- '--repo "$R" --pr "$PR" --expected-head "$HEAD" --gate' "$lander" &&
-   grep -Fq 'cherry_pick_rc=$?' "$lander" &&
-   grep -Fq 'cherry-pick context contract REFUSED' "$lander"; then
-  audit "final boundary re-derives cherry-pick disclosure and new-context review" ok
+if ! grep -Fq 'cherry_pick_context.py"' "$lander" &&
+   ! grep -Fq 'cherry-pick context contract REFUSED' "$lander" &&
+   grep -Fq 'health/approval_binding.py"' "$lander"; then
+  audit "final boundary relies on exact-head review, not cherry-pick digest ceremony" ok
 else
-  audit "final boundary can land a cherry-picked semantic unit on inherited review" bad
+  audit "cherry-pick digest ceremony still blocks an exact-head-approved PR" bad
 fi
 
 merge_prefix='gh pr '
@@ -354,6 +354,39 @@ if grep -Fq 'apply-local-label' "$lander"; then
   audit "land-pr.sh derives the label via ledger-guarded apply-local-label" ok
 else
   audit "land-pr.sh no longer routes the label through apply-local-label" bad
+fi
+if grep -Fq 'ledger-guarded apply-local-label failed' "$lander" ||
+   grep -Fq 'locally-validated stripped immediately' "$lander"; then
+  audit "derived locally-validated cache can still veto exact-head authority" bad
+else
+  audit "locally-validated cache reconciliation is non-blocking" ok
+fi
+
+# 3a. Owner checks remain while accumulated ceremony is absent.
+if grep -Eq 'gate[_-]definition[_-]rotation|--gate-rotation|GATE_ROTATION' "$lander"; then
+  audit "mandatory gate rotation remains in the reviewer landing path" bad
+else
+  audit "merge-gate.yml changes use the ordinary exact-review + receipt path" ok
+fi
+if grep -Fq 'authority_mode=hosted-only' "$lander" ||
+   grep -Fq 'producer-changing PR requires --no-rebase' "$lander"; then
+  audit "validate-producer changes still enter the Actions-off hosted dead end" bad
+else
+  audit "validate-producer changes use local-only authority like other PR heads" ok
+fi
+lock_line=$(grep -n '"$ROOT/ci-hub/ci-hub" land-lock run' "$lander" | tail -1 | cut -d: -f1)
+prepare_line=$(grep -n 'land_and_arm.py" prepare' "$lander" | tail -1 | cut -d: -f1)
+if [ -n "$lock_line" ] && [ -n "$prepare_line" ] && [ "$prepare_line" -gt "$lock_line" ] &&
+   ! grep -Fq 'mandatory post-land verification obligation' "$lander"; then
+  audit "post-land obligation is prepared after merge and cannot veto it" ok
+else
+  audit "post-land obligation still vetoes the pre-merge path" bad
+fi
+if grep -Fq -- '--checkout "$WT"' "$lander" &&
+   grep -Fq 'DG_AGENT_NAME' "$lander" && grep -Fq '"reviewer"' "$publisher"; then
+  audit "approving reviewer can land from their own identified slot" ok
+else
+  audit "lander still requires a separate activator identity or checkout" bad
 fi
 
 # 3b. The predicate's authority is only as strong as the environment it runs in:

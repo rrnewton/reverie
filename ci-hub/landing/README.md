@@ -218,39 +218,17 @@ The land sequence itself lives here too, not only in `scratch/`:
 
 | script | role |
 | --- | --- |
-| `ci-hub/landing/land-pr.sh <PR> <BRANCH> [--union\|--no-rebase]` | detached-by-default full single-PR lander: self-wraps in `land-lock run --child-deadline`, follows skill `hermit-validation-authority` for validation authority, performs a head-matched merge, and verifies ancestry. |
-| `ci-hub/landing/gate_definition_rotation.py --pr N --branch B --checkout WT --execute` | narrow self-authorization fallback: verifies exact head/base/blob/path checks, the normal required exact-head reviews, a counted receipt, and typed definition-only self-refusal; then composes through `land-pr.sh --gate-rotation --no-rebase` and registers `MERGE_GATE_V4_BLOB` only after mergeCommit ancestry |
+| `ci-hub/landing/land-pr.sh <PR> <BRANCH> --checkout <reviewer-hermit-slot> [--union\|--no-rebase]` | reviewer-owned, detached-by-default single-PR lander: self-wraps in `land-lock run --child-deadline`, follows skill `hermit-validation-authority`, verifies exact-head review authority, performs a head-matched merge, and proves ancestry. |
 | `ci-hub/landing/union-rebase.sh <hermit-wt> <BRANCH> [--push]` | authoritative additive union-rebase of the shared manifest registries (`*.toml` by `[[test]]` id, `test-files.json` by path, `matrix.tsv` by row); the derived `ci/expected-e2e-plan.json` is regenerated, never hand-unioned |
 
-### Merge-gate definition rotation
+### Reviewer lands or bounces
 
-The gate definition is intentionally unable to authorize a PR that replaces
-its own registered blob. That typed `SELF_AUTHORIZATION_REFUSED` result is a
-precondition for the narrow independent rotation path, not permission by
-itself. No special JSON approval comment and no separate class of
-"gate-rotation authority" exists. Review procedure follows skill
-`post-facto-review`; coordinators record completed family reviews through the
-typed `ci-hub review-attest` command.
-
-Trusted current-main code independently re-derives all identities, changed
-paths, the required current `APPROVED-AT` review set, absence of a current
-`REQUEST CHANGES AT`, the counted exact-head receipt, and the definition-only
-gate failure. A base move, head move, blob mismatch, extra path, stale or
-malformed review binding, current rejection, missing receipt, or non-definition
-gate failure refuses.
-
-Execution has one merge path: the normal non-admin
-`gh pr merge --rebase --match-head-commit` inside `land-pr.sh`. There is no
-second mutation entry point, gate-specific raw-FF primitive, or raw main refspec. Even a direct
-caller of the lander's rotation mode must prove it is a descendant of the exact
-PID/start-ticks identity recorded by `land-lock run`. After the inner lander
-proves the PR's `mergeCommit.oid` is on `origin/main` and the lock releases, the
-normal lander's outer process verifies that main contains the authorized
-workflow blob and only then updates and re-reads
-`MERGE_GATE_V4_BLOB`. A failed registration leaves the gate fail-closed; retry
-with `--register-only`, never weaken or roll back the gate.
-
-The normative event order is exact:
+The implementer runs VALIDATE and hands the conceptual landing responsibility
+to the reviewer. An approving reviewer invokes this lander from their own
+registered Hermit slot; a rejecting reviewer returns the change to the
+implementer. There is no separate activator handoff or token artifact. The
+reviewer supplies their process-resolved identity for comments, while exact-head
+review and LEDGER authority remain the merge predicates.
 
 `collect_outer -> verify_outer -> enter_land_lock -> verify_final -> normal_non_admin_merge -> refresh_main -> prove_ancestry -> read_main_gate_blob -> patch_registration -> verify_registration`
 

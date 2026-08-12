@@ -690,9 +690,9 @@ class OperationalBoundsTest(unittest.TestCase):
         complete = script.index(complete_command)
         lock_result = script.index("rc=$?", acquire)
         self.assertLess(detached, inherit)
-        self.assertLess(inherit, prepare)
-        self.assertLess(prepare, acquire)
+        self.assertLess(inherit, acquire)
         self.assertLess(acquire, lock_result)
+        self.assertLess(lock_result, prepare)
         self.assertLess(lock_result, complete)
         self.assertLess(complete, inner_marker)
         self.assertNotIn(complete_command, script[inner_marker:])
@@ -703,6 +703,12 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertIn("MERGED UNDER LOCK:", script[ancestry:])
         self.assertIn("124) comment_abandon", script)
         self.assertIn("publish_landing_comment abandoned", script)
+        self.assertIn("publish_landing_comment post-land-arm-failed", script)
+        self.assertIn('DG_AGENT_NAME', script)
+        self.assertIn('--checkout "$WT"', script)
+        publisher = (ROOT / "ci-hub/landing/publish_comment.py").read_text()
+        self.assertIn('"reviewer",', publisher)
+        self.assertNotIn('"coordinator",', publisher)
         self.assertIn("CI_HUB_LANDING_LOG_DIR", script)
         self.assertIn("DETACHED LAND: pid=%s log=%s", script)
         self.assertIn("GATE_DEADLINE=1080", script)
@@ -725,13 +731,12 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertNotIn("producer-changing PR requires --no-rebase", script)
         self.assertNotIn('scripts/validate.rs | grep -Fxq scripts/validate.rs', script)
         self.assertNotIn("producer_exception", script)
-        self.assertIn(
-            "A scripts/validate.rs change still uses\n"
-            "# the same local ledger authority",
-            script,
-        )
         self.assertNotIn("local-validation-eligibility.sh", script)
         self.assertIn("apply-local-label --pr", script)
+        self.assertIn(
+            'receipt_detail=$(validation_landability "$HEAD" "$current_base"',
+            script,
+        )
         self.assertIn('--comments "$receipt_comments"', script)
         self.assertIn('--current-reverie-base "$current_reverie_base"', script)
         self.assertIn('--reverie-checkout "$ROOT/reverie"', script)
@@ -740,6 +745,8 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertNotIn(
             'gh pr edit "$PR" -R "$R" --add-label locally-validated', script
         )
+        self.assertNotIn("ledger-guarded apply-local-label failed", script)
+        self.assertNotIn("locally-validated stripped immediately", script)
         authority = (
             ROOT / "ci-hub/landing/exact-head-validation-authority.sh"
         ).read_text()
@@ -848,25 +855,12 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertIn("hosted-only positive=1", result.stdout)
         self.assertIn("hosted-only negatives=4", result.stdout)
 
-    def test_gate_rotation_brackets_sanctioned_composition(self) -> None:
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "ci-hub/landing/test_gate_definition_rotation.py"),
-            ],
-            cwd=ROOT,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=RECEIPT_BRACKET_WALL_SECONDS,
-        )
-        self.assertIn("nine_classes=9/9", result.stdout)
-        self.assertIn("mutation_refusals=9/9", result.stdout)
-        self.assertIn("public_e2e=1/1", result.stdout)
-        self.assertIn("exact_events=10/10", result.stdout)
-        self.assertIn("direct_inner_refused=2/2", result.stdout)
-        self.assertIn("entry_points=3/3", result.stdout)
+    def test_gate_rotation_is_absent_from_reviewer_landing(self) -> None:
+        script = (ROOT / "ci-hub/landing/land-pr.sh").read_text()
+        self.assertNotRegex(script, r"gate[_-]definition[_-]rotation|--gate-rotation|GATE_ROTATION")
+        self.assertFalse((ROOT / "ci-hub/landing/gate_definition_rotation.py").exists())
+        self.assertIn("approval_binding.py", script)
+        self.assertIn("validation landability REFUSED", script)
 
     def test_skill_denylist_guards_validate_first_landing_authority(self) -> None:
         denylist = (

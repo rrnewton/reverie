@@ -74,7 +74,7 @@ class PublishCommentTest(unittest.TestCase):
                     "--team",
                     "hermit2",
                     "--role",
-                    "coordinator",
+                    "reviewer",
                 ],
                 [command[index : index + 6] for index in range(len(command) - 5)],
             )
@@ -98,6 +98,7 @@ class PublishCommentTest(unittest.TestCase):
             self.assertEqual(payload["repository"], "rrnewton/hermit")
             self.assertEqual(payload["pr"], 2144)
             self.assertEqual(payload["kind"], "abandoned")
+            self.assertEqual(payload["role"], "reviewer")
             self.assertEqual(payload["comment_exit_code"], 17)
             self.assertEqual(payload["comment_error"], "remote write rejected")
             self.assertIn("LANDING COMMENT PUBLICATION FAILED", error.getvalue())
