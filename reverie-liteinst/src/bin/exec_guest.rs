@@ -1,3 +1,4 @@
+#![deny(warnings)]
 use std::io;
 use std::process;
 use std::ptr;

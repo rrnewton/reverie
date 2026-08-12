@@ -1,3 +1,4 @@
+#![deny(warnings)]
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;

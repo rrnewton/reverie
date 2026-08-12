@@ -1,3 +1,4 @@
+#![deny(warnings)]
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-252): Review shared built-in spoof guest fixture.
 //! Guest fixture proving the LiteInst trap path can service and MUTATE a

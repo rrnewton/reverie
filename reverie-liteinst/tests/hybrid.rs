@@ -1,3 +1,4 @@
+#![deny(warnings)]
 use std::ffi::OsString;
 use std::fs;
 use std::path::PathBuf;

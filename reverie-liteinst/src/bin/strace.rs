@@ -1,3 +1,4 @@
+#![deny(warnings)]
 use std::env;
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;

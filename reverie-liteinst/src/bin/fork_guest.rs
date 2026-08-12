@@ -1,3 +1,4 @@
+#![deny(warnings)]
 use std::process;
 
 const CHILD_MESSAGE: &[u8] = b"fork child reached guest code\n";
