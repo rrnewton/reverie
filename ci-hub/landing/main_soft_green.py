@@ -153,17 +153,8 @@ def canonical_state(root: Path, sha: str) -> tuple[str, str]:
             continue
         matched += 1
         accepted, _reason = qualifying_receipt.row_qualification(row, sha, predicate)
-        if not accepted:
-            continue
-        try:
-            qualifying_receipt.resolve_producer_definition(
-                row, sha, repositories=[default_main_checkout(root)]
-            )
-        except qualifying_receipt.ProducerDefinitionUndereferenceable as error:
-            return "UNKNOWN", f"reader cannot dereference producer definition: {error}"
-        except qualifying_receipt.ProducerDefinitionError:
-            continue
-        return "HARD_GREEN", "canonical exact-SHA qualifying receipt found"
+        if accepted:
+            return "HARD_GREEN", "canonical exact-SHA qualifying receipt found"
     return "NO_RESULT", f"canonical ledger has {matched} row(s) for exact main without qualifying hard green"
 
 

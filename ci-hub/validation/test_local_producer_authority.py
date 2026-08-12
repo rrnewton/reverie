@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""End-to-end producer-map brackets for local ledger authority.
+"""The validator-file registry is not a validation-status gate.
 
-The fixtures are real commits descended from the parent-pinned Hermit history,
-so validate-status/newest-green derive blobs from git rather than trusting a
-row field.  Primary and candidate maps are whole-map positives; a crossed or
-unregistered commit is a full clean row that must still be refused.
+The fixtures change one or both formerly registered validator files while
+keeping the validation row itself qualifying.  Status and history must follow
+the completed run, regardless of registry contents.
 """
 
 from __future__ import annotations
@@ -199,21 +198,18 @@ class LocalProducerAuthorityTests(unittest.TestCase):
         if result.returncode != 0:
             raise AssertionError(result.stderr)
 
-    def test_validate_status_whole_map_and_versioned_reporting(self) -> None:
+    def test_validate_status_follows_the_run_not_the_file_registry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repo, registry, shas = self.fixture(root)
-            fixture_registry = json.loads(registry.read_text())
-            primary_path_count = len(fixture_registry["registered"])
-            candidate_path_count = len(fixture_registry["transition"]["candidate"])
             cases = [
-                ("primary", 0, "legacy-selected-paths", primary_path_count),
-                ("candidate", 0, "complete", candidate_path_count),
-                ("crossed_validate", 4, None, 0),
-                ("crossed_helper", 4, None, 0),
-                ("legacy_replay", 4, None, 0),
+                "primary",
+                "candidate",
+                "crossed_validate",
+                "crossed_helper",
+                "legacy_replay",
             ]
-            for index, (name, expected_rc, status, path_count) in enumerate(cases):
+            for index, name in enumerate(cases):
                 with self.subTest(name=name):
                     self.record(
                         root,
@@ -228,19 +224,13 @@ class LocalProducerAuthorityTests(unittest.TestCase):
                         "rrnewton/hermit",
                         "--json",
                     )
-                    self.assertEqual(result.returncode, expected_rc, result.stderr)
+                    self.assertEqual(result.returncode, 0, result.stderr)
                     report = json.loads(result.stdout)
-                    if expected_rc == 0:
-                        evidence = report["newest_qualifying"]["producer_definition"]
-                        self.assertEqual(evidence["coverage_status"], status)
-                        self.assertEqual(len(evidence["paths"]), path_count)
-                        self.assertEqual(evidence["paths"], sorted(evidence["definition"]))
-                        if name == "primary":
-                            self.assertEqual(evidence["valid_commits"], [shas["primary"]])
-                        else:
-                            self.assertNotIn("valid_commits", evidence)
-                    else:
-                        self.assertEqual(report["qualifying_count"], 0)
+                    self.assertEqual(report["verdict"], "VALIDATED")
+                    self.assertEqual(report["qualifying_count"], 1)
+                    self.assertIsNone(
+                        report["newest_qualifying"]["producer_definition"]
+                    )
 
             primary_only = json.loads(registry.read_text())
             primary_only.pop("transition")
@@ -250,7 +240,7 @@ class LocalProducerAuthorityTests(unittest.TestCase):
                 root,
                 self.row(repo, shas["candidate"], "2026-08-08T12:09:00Z"),
             )
-            refused = self.hub(
+            accepted = self.hub(
                 primary_only_registry,
                 "validate-status",
                 "--sha",
@@ -259,10 +249,10 @@ class LocalProducerAuthorityTests(unittest.TestCase):
                 "rrnewton/hermit",
                 "--json",
             )
-            self.assertEqual(refused.returncode, 4, refused.stderr)
-            self.assertEqual(json.loads(refused.stdout)["qualifying_count"], 0)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertEqual(json.loads(accepted.stdout)["verdict"], "VALIDATED")
 
-    def test_newest_green_rechecks_registry_and_expiry_key(self) -> None:
+    def test_newest_green_is_unchanged_when_the_registry_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             repo, registry, shas = self.fixture(root)
@@ -287,20 +277,18 @@ class LocalProducerAuthorityTests(unittest.TestCase):
             positive = self.hub(registry, *args)
             self.assertEqual(positive.returncode, 0, positive.stderr)
             report = json.loads(positive.stdout)["report"]
-            evidence = report["green"]["producer_definition"]
-            self.assertEqual(evidence["coverage_status"], "complete")
-            self.assertEqual(
-                len(evidence["paths"]),
-                len(json.loads(registry.read_text())["transition"]["candidate"]),
-            )
+            self.assertEqual(report["green"]["sha"], candidate)
+            self.assertIsNone(report["green"]["producer_definition"])
 
             tampered = json.loads(registry.read_text())
             tampered["transition"]["candidate"]["scripts/validate.rs"] = "0" * 40
             tampered_path = root / "tampered-registry.json"
             tampered_path.write_text(json.dumps(tampered))
-            refused = self.hub(tampered_path, *args)
-            self.assertEqual(refused.returncode, 4, refused.stderr)
-            self.assertEqual(json.loads(refused.stdout)["verdict"], "NOT-VALIDATED")
+            still_green = self.hub(tampered_path, *args)
+            self.assertEqual(still_green.returncode, 0, still_green.stderr)
+            self.assertEqual(
+                json.loads(still_green.stdout)["report"]["green"]["sha"], candidate
+            )
 
 
 if __name__ == "__main__":

@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Call-site audit for the one producer-definition semantic verifier.
+"""Keep the old validator-file registry out of validation decisions.
 
-The registry is landing authority, so sharing its JSON is not enough: every
-consumer must dereference it through the same shape/expiry/whole-map decision.
-This test fails when a second production reader or a bypass appears.
+Historical immutable-receipt tooling may still inspect the registry, but local
+status, history, finalization, and main state must follow the completed run.
 """
 
 from pathlib import Path
@@ -20,6 +19,7 @@ FINALIZER = CI_HUB / "validation" / "finalize_producer_transition.py"
 RECEIPT_FINALIZER = CI_HUB / "validate" / "finalize_receipt.py"
 ANCHOR = CI_HUB / "validate" / "anchor_select.py"
 HISTORY_QUERY = CI_HUB / "history" / "query.py"
+MAIN_SOFT_GREEN = CI_HUB / "landing" / "main_soft_green.py"
 RUST = CI_HUB / "ci-hub.rs"
 PROVISIONING = CI_HUB / "validation" / "test_verifier_provisioning.sh"
 
@@ -83,7 +83,7 @@ class ProducerDefinitionCallSiteAudit(unittest.TestCase):
         self.assertIn('"--producer-definition-primary"', adapter)
         self.assertIn('"--producer-definition-check"', adapter)
 
-    def test_receipt_and_reuse_paths_reach_same_verifier(self):
+    def test_historical_immutable_receipts_still_use_one_verifier(self):
         verifier = VERIFIER.read_text()
         self.assertEqual(verifier.count("load_producer_definitions || exit $?"), 2)
         self.assertIn('or (.valid_commits | index($sha) != null)', verifier)
@@ -98,15 +98,22 @@ class ProducerDefinitionCallSiteAudit(unittest.TestCase):
         self.assertIn("run_immutable_receipt_verifier", reuse.group(0))
         self.assertIn('root.join("ci-hub/validation/verify_receipt.sh")', rust)
         self.assertIn('root.join("ci-hub/validation/publish_receipt.py")', rust)
-        self.assertIn('root.join("ci-hub/qualifying_receipt.py")', rust)
-        self.assertIn("producer_definition_authority_key", rust)
-        self.assertIn('"--producer-definition-allowed"', rust)
+        self.assertNotIn("producer_definition_authority_key", rust)
+        self.assertNotIn("producer_authoritative_history_rows", rust)
+        self.assertNotIn("resolve_producer_definition_evidence", rust)
 
-    def test_status_newest_green_finalizer_and_label_selection_are_wired(self):
+    def test_status_history_and_finalization_do_not_use_the_registry(self):
         rust = RUST.read_text()
         self.assertIn("assess_canonical_receipts(root, &rows", rust)
-        self.assertIn("producer_authoritative_history_rows", rust)
-        self.assertIn("resolve_producer_definition_evidence(root, row, sha)", rust)
+        self.assertNotIn("producer_authoritative_history_rows", rust)
+        self.assertNotIn("resolve_producer_definition_evidence", rust)
+
+        for path in (RECEIPT_FINALIZER, ANCHOR, HISTORY_QUERY, MAIN_SOFT_GREEN):
+            self.assertNotIn(
+                "resolve_producer_definition(",
+                path.read_text(),
+                f"{path.name} must not freeze validation on registered file hashes",
+            )
 
         finalizer = FINALIZER.read_text()
         self.assertNotIn("producer-definition.json", finalizer)
@@ -124,7 +131,7 @@ class ProducerDefinitionCallSiteAudit(unittest.TestCase):
         ):
             self.assertIn(token, finalizer)
 
-    def test_every_python_semantic_green_consumer_has_a_producer_boundary(self):
+    def test_python_green_consumers_share_the_run_predicate(self):
         consumers = {
             path
             for path in production_sources()
@@ -133,11 +140,17 @@ class ProducerDefinitionCallSiteAudit(unittest.TestCase):
                 path.read_text(errors="replace"),
             )
         }
-        expected = {PUBLISHER, RECEIPT_FINALIZER, ANCHOR, HISTORY_QUERY}
+        expected = {
+            PUBLISHER,
+            RECEIPT_FINALIZER,
+            ANCHOR,
+            HISTORY_QUERY,
+            MAIN_SOFT_GREEN,
+        }
         self.assertEqual(
             consumers,
             expected,
-            "new semantic-green consumers must declare how they bind producer authority",
+            "new semantic-green consumers must use the shared run predicate",
         )
         self.assertIn("authoritative_row_qualification", ANCHOR.read_text())
         self.assertIn("authoritative_row_qualifies", HISTORY_QUERY.read_text())

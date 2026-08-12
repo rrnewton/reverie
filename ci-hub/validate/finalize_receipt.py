@@ -553,29 +553,6 @@ def scan_and_finalize(
             "appended": 0,
         }
 
-    try:
-        producer_definition = qualifying_receipt.resolve_producer_definition(
-            selected, sha, repositories=[hermit_checkout]
-        )
-    except qualifying_receipt.ProducerDefinitionError as error:
-        return {
-            "sha": sha,
-            "satisfied": False,
-            "reason": "unregistered-producer-definition",
-            "detail": str(error),
-            "exit_code": 1,
-            "appended": 0,
-        }
-    except RuntimeError as error:
-        return {
-            "sha": sha,
-            "satisfied": False,
-            "reason": "producer-definition-authority-unavailable",
-            "detail": str(error),
-            "exit_code": 2,
-            "appended": 0,
-        }
-
     fields: dict = {}
     if not _has_complete_schema5_measurement(selected):
         log = selected.get("log_file")
@@ -599,10 +576,6 @@ def scan_and_finalize(
                 "appended": 0,
             }
         fields.update(build_coverage(log_text, planned))
-    # Derived from the exact target commit, never self-reported by the source.
-    # Carry the condition with the minted row so status/reporting can expose
-    # legacy-selected-paths versus complete coverage without guessing.
-    fields["producer_definition"] = producer_definition
     # This finalizer is Hermit-specific (Hermit manifests, Hermit commit, Hermit
     # Cargo.lock). Older Hermit rows predate the repo column, so carry that
     # already-bound scope into the schema-5 clone rather than manufacturing it

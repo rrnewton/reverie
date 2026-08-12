@@ -69,6 +69,7 @@ use std::process::{Command, ExitCode, ExitStatus, Stdio};
 use thiserror::Error;
 
 const DEFAULT_MAIN_RUN_LIMIT: usize = 100;
+const DEFAULT_VALIDATE_HISTORY_LIMIT: usize = 10;
 const DEFAULT_WARN_THRESHOLD: usize = 10;
 const DEFAULT_GITHUB_WAIT_SECONDS: u64 = 120;
 const DEFAULT_POLL_SECONDS: u64 = 15;
@@ -86,45 +87,45 @@ START HERE
   health                  Combine current-main, open-PR, and remediation diagnostics
   active-work             Reconcile tasks, owners, and live ORC agents
 
-HISTORY & FORENSICS
-  Ask what is healthy, which branch commit was last green, and where failure began.
+READ-ONLY STATUS AND HISTORY
+  Inspect current and retained state without changing product source, labels, or queues.
   main-health             Query current main-branch GitHub workflow health
+  pr-status               Pull fresh open-PR GitHub status [alias: fresh]
+  runner-health           Summarize self-hosted runners and recent workflows
+  load-probe              Measure current CPU and memory pressure
+  validate-status         List recent validation runs or inspect one SHA/PR
+  local-history           List recent local validation runs [default: 10]
   newest-green            Find the newest ledger-qualified green commit [default: --branch main]
   first-bad               Find a retained PASS -> FAIL transition for a cell or gate
-  validate-status         Check whether one SHA has a clean full-validation receipt
   hosted-status           Check the registered exact-head GH Actions result
   receipt-digest          Recompute a HistoryRow's canonical exact-row digest
-  validate-run            Launch detached validation through ci-hub admission
-  validate-stop           Stop detached validate-* user units and verify termination
-  ledger                  Read canonical qualified views of the validate ledger
-  local-history           Inspect local validate receipts across slots and worktrees
   history                 Query the retained GitHub Actions timeline
   green-time              Estimate carried-forward green/red time and densification gaps
-  refresh-history         Ingest fresh GitHub and local history into the local store
   validate-worktrees      Show registered worktree validation runs
+  obligations             List open or actionable post-land obligations
+  verify-landing          Verify a PR replay SHA or commit SHA on a fetched target
 
-PR & RUNNER HEALTH
-  Inspect live pull-request admission, runner capacity, and host pressure.
-  pr-status               Pull fresh open-PR GH Actions status [alias: fresh]
-  runner-health           Summarize self-hosted runners and recent workflows
-  load-probe              Measure whether the host can safely start sensitive work
+VALIDATION ACTIONS
+  Start, stop, admit, or persist validation work.
+  validate-run            Launch detached validation through ci-hub admission
+  validate-stop           Stop detached validate-* user units and verify termination
+  validate-lock           Box-exclusive gate: one validate/bench at a time (GRANT/QUEUE/REFUSE)
+  ledger                  Read or update canonical validate-ledger views
+  refresh-history         Ingest fresh GitHub and local history into the local store
+
+LANDING AND COORDINATION ACTIONS
+  Mutate landing, review, GitHub, batch, or scheduled operational state.
   tick                    Run due scheduled operational-health gates
-
-LANDING & BATCH CONTROL
-  Serialize landings and manage the explicit policy state that gates them.
   land-lock               Acquire, renew, inspect, or release the fleet landing mutex
-  validate-lock            Box-exclusive gate: one validate/bench at a time (GRANT/QUEUE/REFUSE)
   apply-local-label       Reconcile the derived label with exact-head validation truth
   review-attest           Record a coordinator's typed exact-head review attestation
   ci-mode                 Inspect or change constrained GH Actions admission mode
   batch                   Inspect or edit the named current GH Actions batch
   ci-timeout              Cancel hosted runs starved waiting to start; reroute to local
 
-POST-LAND REMEDIATION
-  Arm, discover, watch, and resolve durable exact-SHA verification obligations.
+POST-LAND ACTIONS
+  Arm, watch, acknowledge, and resolve exact-SHA validation after landing.
   arm-land                Arm concurrent local and GitHub verification after a land
-  verify-landing          Verify a PR replay SHA or commit SHA on a fetched target
-  obligations             List open or actionable speculative-land obligations
   inherit-obligations     Let a fresh lander claim obligations from a recycled agent
   watch-obligations       Poll verifier state and trigger failure remediation
   cancel-watcher          Safely terminate one exact, durably identified watcher
@@ -232,7 +233,7 @@ enum HubCommand {
     /// Green-time over a linear branch history: sparse signal carried forward,
     /// plus the densification plan that shrinks the estimate's error.
     GreenTime(PassthroughArgs),
-    /// Query legacy and machine-wide validate-run records.
+    /// List recent machine-wide validation runs, or use --all for every record.
     LocalHistory(LocalHistoryArgs),
     /// Show validate runs currently registered by each worktree.
     ValidateWorktrees(ValidateWorktreesArgs),
@@ -240,7 +241,7 @@ enum HubCommand {
     RunnerHealth(RunnerHealthArgs),
     /// Gate timing-sensitive work on measured CPU and memory utilization.
     LoadProbe(LoadProbeArgs),
-    /// Query the local validate ledger for a commit and print the landing/cache verdict.
+    /// List recent validation runs, or inspect one commit/PR verdict.
     ValidateStatus(ValidateStatusArgs),
     /// Query the registered exact-head GH Actions result.
     HostedStatus(HostedStatusArgs),
@@ -505,6 +506,12 @@ struct RefreshHistoryArgs {
 
 #[derive(Args, Clone, Debug)]
 struct LocalHistoryArgs {
+    /// Show this many newest runs (newest first).
+    #[arg(long, default_value_t = DEFAULT_VALIDATE_HISTORY_LIMIT, conflicts_with = "all")]
+    limit: usize,
+    /// Show every retained run (the slower, complete view).
+    #[arg(long)]
+    all: bool,
     #[arg(long)]
     json: bool,
     #[arg(long)]
@@ -579,6 +586,9 @@ struct ValidateStatusArgs {
     /// A PR number; its head SHA is resolved via gh and assessed.
     #[arg(long, conflicts_with = "sha")]
     pr: Option<u64>,
+    /// Number of recent validation runs to show when no SHA or PR is supplied.
+    #[arg(long, default_value_t = DEFAULT_VALIDATE_HISTORY_LIMIT)]
+    limit: usize,
     /// Repository used to resolve --pr head SHAs.
     #[arg(long, default_value = "rrnewton/hermit")]
     repo: String,
@@ -3468,6 +3478,11 @@ fn pr_status_arguments(args: &PrStatusArgs) -> Vec<OsString> {
 
 fn run_local_history(root: &Path, args: LocalHistoryArgs) -> Result<i32, CiHubError> {
     let mut forwarded = Vec::new();
+    if args.all {
+        forwarded.push("--all".into());
+    } else {
+        push_option(&mut forwarded, "--limit", args.limit.to_string());
+    }
     if args.json {
         forwarded.push("--json".into());
     }
@@ -4123,112 +4138,8 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
     })
 }
 
-#[cfg(not(test))]
-fn resolve_producer_definition_evidence(
-    root: &Path,
-    row: &HistoryRow,
-    sha: &str,
-) -> Result<Option<ProducerDefinitionEvidence>, String> {
-    let verifier = root.join("ci-hub/qualifying_receipt.py");
-    let checkout = root.join("hermit");
-    let mut child = Command::new("python3")
-        .arg(verifier)
-        .args(["--producer-definition-row", "--sha", sha, "--repo-checkout"])
-        .arg(checkout)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("cannot launch producer-definition resolver: {error}"))?;
-    serde_json::to_writer(
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| "producer-definition resolver stdin unavailable".to_string())?,
-        row,
-    )
-    .map_err(|error| format!("cannot send row to producer-definition resolver: {error}"))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("cannot wait for producer-definition resolver: {error}"))?;
-    match output.status.code() {
-        Some(0) => {
-            let report: serde_json::Value =
-                serde_json::from_slice(&output.stdout).map_err(|error| {
-                    format!("producer-definition resolver returned invalid JSON: {error}")
-                })?;
-            if report.get("accepted").and_then(|value| value.as_bool()) != Some(true)
-                || report
-                    .get("producer_definition_status")
-                    .and_then(|value| value.as_str())
-                    != Some("satisfied")
-            {
-                return Err("producer-definition resolver returned inconsistent success".into());
-            }
-            let evidence = serde_json::from_value::<ProducerDefinitionEvidence>(
-                report
-                    .get("producer")
-                    .cloned()
-                    .ok_or_else(|| "producer-definition resolver omitted evidence".to_string())?,
-            )
-            .map_err(|error| format!("producer-definition evidence is malformed: {error}"))?;
-            let keys = evidence.definition.keys().cloned().collect::<Vec<_>>();
-            if evidence.paths != keys
-                || !matches!(
-                    evidence.coverage_status.as_str(),
-                    "legacy-selected-paths" | "complete"
-                )
-                || evidence.valid_commits.as_ref().is_some_and(|commits| {
-                    commits.is_empty()
-                        || !commits.iter().all(|commit| is_oid(commit))
-                        || !commits.iter().any(|commit| commit == sha)
-                })
-            {
-                return Err("producer-definition evidence carries inconsistent coverage".into());
-            }
-            Ok(Some(evidence))
-        }
-        // rc 1: the definition WAS readable and is not one currently allowed.
-        // That is a verdict about the evidence, so the row is disqualified.
-        Some(1) => Ok(None),
-        // rc 3: the definition could not be read AT ALL on this host, so no
-        // verdict about the receipt exists. This must never become a
-        // disqualified row -- that reports "the receipt is bad" when the true
-        // statement is "my checkout is incomplete". Fail loudly and closed so
-        // the reader fixes itself instead of disbelieving the whole fleet.
-        Some(3) => Err(format!(
-            "CANNOT DEREFERENCE PRODUCER DEFINITION for {sha} -- THIS CHECKOUT is \
-             incomplete, and the receipt has NOT been judged. Nothing is wrong with \
-             the evidence. Most often an uninitialized submodule: run `git submodule \
-             update --init --recursive` and retry. Resolver detail: {}",
-            String::from_utf8_lossy(&output.stdout).trim()
-        )),
-        _ => Err(format!(
-            "producer-definition resolver failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
-    }
-}
-
-#[cfg(test)]
-fn resolve_producer_definition_evidence(
-    _root: &Path,
-    _row: &HistoryRow,
-    _sha: &str,
-) -> Result<Option<ProducerDefinitionEvidence>, String> {
-    // Pure receipt-shape unit tests use synthetic commits. Production call-path
-    // brackets execute the non-test binary against real git fixture commits.
-    Ok(Some(ProducerDefinitionEvidence {
-        definition: BTreeMap::new(),
-        coverage_status: "legacy-selected-paths".into(),
-        paths: Vec::new(),
-        valid_commits: None,
-        resolved_from: "synthetic-unit-fixture".into(),
-    }))
-}
-
 fn assess_canonical_receipts(
-    root: &Path,
+    _root: &Path,
     rows: &[HistoryRow],
     sha: &str,
     repo: &str,
@@ -4253,18 +4164,13 @@ fn assess_canonical_receipts(
         } else {
             qualify_reverie_receipt(row, sha)
         };
-        if let Some(mut receipt) = receipt {
-            if repo == CANONICAL_VALIDATE_REPO {
-                match resolve_producer_definition_evidence(root, row, sha)? {
-                    Some(evidence) => {
-                        receipt.producer_definition = Some(evidence);
-                        qualifying.push(receipt);
-                    }
-                    None => disqualified.push(row.clone()),
-                }
-            } else {
-                qualifying.push(receipt);
-            }
+        if let Some(receipt) = receipt {
+            // A clean exact-commit full run is the validation authority. The
+            // former six-file allowlist made validator improvements unable to
+            // qualify until a second repository blessed their blob hashes.
+            // Keep any producer map as optional diagnostic data, never as a
+            // condition for accepting the run.
+            qualifying.push(receipt);
         } else {
             match validate_status::failure_disposition(row, sha) {
                 validate_status::FailureDisposition::Failed => saw_failed = true,
@@ -4661,66 +4567,6 @@ fn ledger_stamp(path: &Path) -> Result<(u64, u128), CiHubError> {
     Ok((metadata.len(), modified_ns))
 }
 
-fn producer_definition_authority_key(root: &Path) -> Result<String, CiHubError> {
-    let verifier = root.join("ci-hub/validation/verify_receipt.sh");
-    let output = Command::new(verifier)
-        .arg("--producer-definition-allowed")
-        .output()
-        .map_err(|source| CiHubError::Launch {
-            tool: "producer-definition authority".into(),
-            source,
-        })?;
-    if !output.status.success() {
-        return Err(CiHubError::HistoryQuery(format!(
-            "producer-definition authority unavailable: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
-    }
-    Ok(format!("{:x}", Sha256::digest(&output.stdout)))
-}
-
-/// Remove only would-be green rows whose exact target commit does not resolve
-/// to one currently registered producer map. Non-green rows remain available
-/// for failure attribution. Accepted rows carry the exact map and coverage
-/// status into newest-green's evidence record.
-fn producer_authoritative_history_rows(
-    root: &Path,
-    rows: Vec<HistoryRow>,
-) -> Result<Vec<HistoryRow>, CiHubError> {
-    let mut retained = Vec::with_capacity(rows.len());
-    for mut row in rows {
-        let Some(sha) = row.commit.clone() else {
-            retained.push(row);
-            continue;
-        };
-        if !crate::qualifying_receipt::row_qualifies(
-            &row,
-            &sha,
-            crate::qualifying_receipt::active(),
-        ) {
-            retained.push(row);
-            continue;
-        }
-        match resolve_producer_definition_evidence(root, &row, &sha)
-            .map_err(CiHubError::HistoryQuery)?
-        {
-            Some(evidence) => {
-                row.extra.insert(
-                    "producer_definition".into(),
-                    serde_json::to_value(evidence).map_err(|error| {
-                        CiHubError::HistoryQuery(format!(
-                            "cannot serialize producer-definition evidence: {error}"
-                        ))
-                    })?,
-                );
-                retained.push(row);
-            }
-            None => {}
-        }
-    }
-    Ok(retained)
-}
-
 fn read_newest_green_cache(path: &Path) -> Option<NewestGreenCache> {
     let raw = std::fs::read(path).ok()?;
     match serde_json::from_slice(&raw) {
@@ -4950,7 +4796,9 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
     let branch_tip = commits.first().expect("nonempty history");
     let ledger = ledger_path(root);
     let (ledger_len, ledger_modified_ns) = ledger_stamp(&ledger)?;
-    let producer_definition_authority = producer_definition_authority_key(root)?;
+    // Preserve the cache field for schema compatibility, but validator file
+    // hashes no longer decide whether a completed exact-commit run is green.
+    let producer_definition_authority = String::new();
     let cache_path = history_queries::cache_path(root, &args.cache);
     if !args.no_cache {
         if let Some(cache) = read_newest_green_cache(&cache_path) {
@@ -4971,7 +4819,7 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
         }
     }
 
-    let mut rows = producer_authoritative_history_rows(root, load_ledger_rows(&ledger)?)?;
+    let mut rows = load_ledger_rows(&ledger)?;
     retain_cell_evidence(root, &mut rows)?;
     match HistoryQueryEngine::new(commits, rows).newest_green(
         &args.query.branch,
@@ -5324,8 +5172,209 @@ fn probe_ledger_freshness(root: &Path, sha: &str, repo: &str) -> LedgerFreshness
     }
 }
 
-/// `ci-hub validate-status --sha <SHA> | --pr <N>` — the SHA-queryable local
-/// receipt/cache authority. Only a scripts/validate.rs change selects GH Actions.
+fn recent_row_verdict(row: &HistoryRow, repo: &str) -> &'static str {
+    let Some(sha) = row.commit.as_deref() else {
+        return "NO-COMMIT";
+    };
+    let qualifying = if repo == CANONICAL_VALIDATE_REPO {
+        qualify_canonical_receipt(row, sha).is_some()
+    } else {
+        qualify_reverie_receipt(row, sha).is_some()
+    };
+    if qualifying {
+        return "VALIDATED";
+    }
+    match validate_status::failure_disposition(row, sha) {
+        validate_status::FailureDisposition::Failed => "FAILED",
+        validate_status::FailureDisposition::NeedsRerun => "NEEDS-RERUN",
+        validate_status::FailureDisposition::Truncated => "TRUNCATED",
+        validate_status::FailureDisposition::NoResult => "NO-RESULT",
+        validate_status::FailureDisposition::NotFailure => "NOT-VALIDATED",
+    }
+}
+
+fn recent_row_summary(row: &HistoryRow, verdict: &str) -> String {
+    let failed = row
+        .gates
+        .iter()
+        .filter(|gate| {
+            matches!(gate.result.as_deref(), Some("fail" | "failed" | "timeout"))
+                || matches!(gate.kind.as_deref(), Some("fail" | "failed" | "timeout"))
+        })
+        .map(|gate| gate.name.as_str())
+        .collect::<Vec<_>>();
+    if !failed.is_empty() {
+        let shown = failed
+            .iter()
+            .take(2)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        return if failed.len() > 2 {
+            format!("failed: {shown} (+{} more)", failed.len() - 2)
+        } else {
+            format!("failed: {shown}")
+        };
+    }
+    match verdict {
+        "VALIDATED" => "passed".into(),
+        "FAILED" => "full run failed".into(),
+        "NEEDS-RERUN" => "failure needs an uncontended confirmation".into(),
+        "TRUNCATED" => "run ended before all planned work completed".into(),
+        "NO-RESULT" => "validation did not exercise the product".into(),
+        "NO-COMMIT" => "receipt has no commit".into(),
+        _ if row.concurrent_validates.is_some_and(|count| count > 0) => format!(
+            "ran with {} other validation(s)",
+            row.concurrent_validates.unwrap_or(0)
+        ),
+        _ if row.extra.get("admission").and_then(|value| value.as_str())
+            != Some("ci-hub-validate-lock") =>
+        {
+            "not launched through ci-hub validation admission".into()
+        }
+        _ if row.tree_dirty == Some(true) => "dirty tree".into(),
+        _ if row.commit_anchored != Some(true) => "not anchored to a commit".into(),
+        _ if row.profile.as_deref() != Some("full")
+            || row.selection_mode.as_deref() != Some("full") =>
+        {
+            format!(
+                "profile={} selection={}",
+                row.profile.as_deref().unwrap_or("?"),
+                row.selection_mode.as_deref().unwrap_or("?")
+            )
+        }
+        _ => "receipt is incomplete".into(),
+    }
+}
+
+fn short_wall(seconds: Option<f64>) -> String {
+    let Some(seconds) = seconds else {
+        return "-".into();
+    };
+    let seconds = seconds.max(0.0).round() as u64;
+    if seconds >= 3600 {
+        format!("{}h{:02}m", seconds / 3600, (seconds % 3600) / 60)
+    } else if seconds >= 60 {
+        format!("{}m{:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{seconds}s")
+    }
+}
+
+fn print_recent_validate_history(
+    rows: &[HistoryRow],
+    repo: &str,
+    limit: usize,
+    ledger: &Path,
+    json: bool,
+) -> Result<i32, CiHubError> {
+    if limit == 0 {
+        return Err(CiHubError::ValidateStatus(
+            "--limit must be greater than zero".into(),
+        ));
+    }
+    let mut recent = rows
+        .iter()
+        .filter(|row| row.commit.is_some())
+        .collect::<Vec<_>>();
+    recent.sort_by(|left, right| {
+        let left = left
+            .finished_at
+            .as_deref()
+            .or(left.started_at.as_deref())
+            .unwrap_or("");
+        let right = right
+            .finished_at
+            .as_deref()
+            .or(right.started_at.as_deref())
+            .unwrap_or("");
+        right.cmp(left)
+    });
+    recent.truncate(limit);
+
+    let entries = recent
+        .iter()
+        .map(|row| {
+            let verdict = recent_row_verdict(row, repo);
+            serde_json::json!({
+                "verdict": verdict,
+                "sha": row.commit,
+                "started_at": row.started_at,
+                "finished_at": row.finished_at,
+                "wall_seconds": row.real_seconds,
+                "nodes_run": row.gates_run.or(row.checks),
+                "nodes_expected": row.gates_expected,
+                "executed_tests": row.executed_tests,
+                "host": row.host,
+                "slot": row.slot,
+                "summary": recent_row_summary(row, verdict),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schema_version": 1,
+                "repo": repo,
+                "count": entries.len(),
+                "limit": limit,
+                "runs": entries,
+                "ledger": ledger.display().to_string(),
+            }))
+            .expect("serialize recent validation history")
+        );
+        return Ok(0);
+    }
+
+    if entries.is_empty() {
+        println!("No validation runs found for {repo}.");
+        return Ok(0);
+    }
+    println!(
+        "{:<13} {:<12} {:<20} {:>7} {:>7} {:>7} {:<24} SUMMARY",
+        "VERDICT", "SHA", "FINISHED", "NODES", "TESTS", "WALL", "HOST/SLOT"
+    );
+    for (row, entry) in recent.iter().zip(entries.iter()) {
+        let sha = row.commit.as_deref().unwrap_or("?");
+        let short_sha = sha.get(..12).unwrap_or(sha);
+        let finished = row
+            .finished_at
+            .as_deref()
+            .or(row.started_at.as_deref())
+            .unwrap_or("?");
+        let nodes = match (row.gates_run.or(row.checks), row.gates_expected) {
+            (Some(run), Some(expected)) => format!("{run}/{expected}"),
+            (Some(run), None) => run.to_string(),
+            _ => "-".into(),
+        };
+        let tests = row
+            .executed_tests
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "-".into());
+        let host_slot = format!(
+            "{}/{}",
+            row.host.as_deref().unwrap_or("?"),
+            row.slot.as_deref().unwrap_or("?")
+        );
+        println!(
+            "{:<13} {:<12} {:<20} {:>7} {:>7} {:>7} {:<24} {}",
+            entry["verdict"].as_str().unwrap_or("?"),
+            short_sha,
+            finished,
+            nodes,
+            tests,
+            short_wall(row.real_seconds),
+            host_slot,
+            entry["summary"].as_str().unwrap_or("?"),
+        );
+    }
+    Ok(0)
+}
+
+/// `ci-hub validate-status [<SHA> | --sha <SHA> | --pr <N>]` — list recent
+/// local validation runs by default, or inspect one exact commit when supplied.
 /// Exit 0 VALIDATED, 3 FAILED (known-bad), 4 for every
 /// re-measurement state (TRUNCATED, NEEDS-RERUN, NO-RESULT, NOT-VALIDATED, or
 /// LEDGER-LAGGING).
@@ -5355,16 +5404,15 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
     // A SHA may arrive as `--sha` or positionally; clap already forbids giving
     // both, or either together with `--pr`.
     let sha_input = args.sha.as_ref().or(args.sha_positional.as_ref());
+    if sha_input.is_none() && args.pr.is_none() {
+        return print_recent_validate_history(&repo_rows, repo, args.limit, &path, args.json);
+    }
     let sha = match (sha_input, args.pr) {
         (Some(input), None) => {
             validate_status::resolve_sha(&repo_rows, input).map_err(CiHubError::ValidateStatus)?
         }
         (None, Some(pr)) => gh_pr_head(root, &args.repo, pr)?,
-        _ => {
-            return Err(CiHubError::ValidateStatus(
-                "exactly one of a SHA (positional or --sha) or --pr is required".into(),
-            ))
-        }
+        _ => unreachable!("clap rejects conflicting validate-status targets"),
     };
     let assessment = assess_canonical_receipts(root, &repo_rows, &sha, repo)
         .map_err(CiHubError::ValidateStatus)?;
@@ -7748,6 +7796,48 @@ mod tests {
     }
 
     #[test]
+    fn validate_status_without_a_target_lists_recent_runs() {
+        let cli = Cli::try_parse_from(["ci-hub", "validate-status"]).unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert_eq!(args.sha_positional, None);
+        assert_eq!(args.sha, None);
+        assert_eq!(args.pr, None);
+        assert_eq!(args.limit, DEFAULT_VALIDATE_HISTORY_LIMIT);
+
+        let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--limit", "3"]).unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert_eq!(args.limit, 3);
+    }
+
+    #[test]
+    fn local_history_defaults_to_recent_and_requires_all_for_the_full_view() {
+        let cli = Cli::try_parse_from(["ci-hub", "local-history"]).unwrap();
+        let HubCommand::LocalHistory(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert_eq!(args.limit, DEFAULT_VALIDATE_HISTORY_LIMIT);
+        assert!(!args.all);
+
+        let cli = Cli::try_parse_from(["ci-hub", "local-history", "--all"]).unwrap();
+        let HubCommand::LocalHistory(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert!(args.all);
+        assert!(Cli::try_parse_from([
+            "ci-hub",
+            "local-history",
+            "--all",
+            "--limit",
+            "5"
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn passthrough_commands_accept_worker_flags() {
         let tick = Cli::try_parse_from(["ci-hub", "tick", "--flush", "--no-header"])
             .unwrap()
@@ -7976,10 +8066,10 @@ mod tests {
         let help = error.to_string();
         let headings = [
             "START HERE",
-            "HISTORY & FORENSICS",
-            "PR & RUNNER HEALTH",
-            "LANDING & BATCH CONTROL",
-            "POST-LAND REMEDIATION",
+            "READ-ONLY STATUS AND HISTORY",
+            "VALIDATION ACTIONS",
+            "LANDING AND COORDINATION ACTIONS",
+            "POST-LAND ACTIONS",
         ];
         let mut previous = 0;
         for heading in headings {
@@ -7990,7 +8080,7 @@ mod tests {
         assert!(help.contains("newest-green"));
         assert!(help.contains("[default: --branch main]"));
         assert!(help.contains("history                 Query the retained GitHub Actions timeline"));
-        assert!(help.contains("local-history           Inspect local validate receipts"));
+        assert!(help.contains("local-history           List recent local validation runs"));
         assert!(!help.contains(&["newest", "green", "main"].join("-")));
 
         let clap_commands: std::collections::BTreeSet<String> =

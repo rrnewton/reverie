@@ -1270,23 +1270,15 @@ def authoritative_row_qualification(
     *,
     repositories: list[str | Path] | None = None,
 ) -> tuple[bool, str]:
-    """Qualify one green row and bind it to an allowed producer whole map.
+    """Qualify one row using the validation result carried by that row.
 
-    ``row_qualification`` remains the one semantic clause authority and is
-    intentionally useful to focused predicate tests.  Any consumer that turns
-    its answer into green authority must use this stricter boundary: semantic
-    green without an exact registered producer definition is not corroboration.
-    Registry/verifier deploy defects propagate instead of becoming an ordinary
-    negative; an unregistered or unresolvable map is a clean refusal.
+    ``repositories`` remains accepted so existing callers do not break while
+    the former validator-file allowlist is disabled.  A completed clean,
+    exact-commit full run decides validation; changing validation code no
+    longer requires a second repository to register its blob hashes first.
     """
-    accepted, reason = row_qualification(row, sha, pred)
-    if not accepted:
-        return False, reason
-    try:
-        resolve_producer_definition(row, sha, repositories=repositories)
-    except ProducerDefinitionError as error:
-        return False, f"producer_definition unregistered-or-unresolvable: {error}"
-    return True, "qualifies"
+    del repositories
+    return row_qualification(row, sha, pred)
 
 
 def authoritative_row_qualifies(

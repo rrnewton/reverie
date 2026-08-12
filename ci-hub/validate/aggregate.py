@@ -17,9 +17,11 @@ This is the canonical validate ledger's machine-wide aggregation boundary and
 lives in the dev-hermit PARENT per the tracking-goes-outer principle.
 
 Usage:
-  ci-hub/validate/aggregate.py                 # table, newest last
-  ci-hub/validate/aggregate.py --json          # unified records as JSON
-  ci-hub/validate/aggregate.py --csv out.csv   # flat CSV
+  ci-hub/validate/aggregate.py                 # 10 newest runs, newest first
+  ci-hub/validate/aggregate.py --limit 25      # bounded recent view
+  ci-hub/validate/aggregate.py --all           # every retained run, newest last
+  ci-hub/validate/aggregate.py --all --json    # complete JSON dump
+  ci-hub/validate/aggregate.py --all --csv out.csv  # complete flat CSV
   ci-hub/validate/aggregate.py --since 2026-08-03  # filter by date
   ci-hub/validate/aggregate.py --profiling     # profiling coverage view
 """
@@ -495,7 +497,9 @@ def render_table(runs: list[dict]) -> str:
             fmt_secs(r.get("user_seconds")),
             fmt_secs(r.get("sys_seconds")),
             "L" if r.get("_source") == "ledger" else "R",
-            "y" if r.get("_profiling") else "-",
+            ("y" if r.get("_profiling") else "-")
+            if r.get("_profiling_checked")
+            else "?",
         ))
     widths = [len(h) for h in hdr]
     for row in rows:
@@ -509,7 +513,14 @@ def render_table(runs: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def summarize(runs, profiles, linked) -> str:
+def summarize(
+    runs,
+    profiles,
+    linked,
+    *,
+    total_matching: int | None = None,
+    profiles_scanned: bool = True,
+) -> str:
     by_result, by_slot, by_src, by_repo = {}, {}, {}, {}
     for r in runs:
         result = flake_class.effective_result(r)
@@ -528,7 +539,13 @@ def summarize(runs, profiles, linked) -> str:
         if flake_class.effective_result(r) in ("fail", "timeout")
     )
     out = ["", "=== Machine-wide validate-run summary ==="]
-    out.append(f"  total runs        : {len(runs)}")
+    total_matching = len(runs) if total_matching is None else total_matching
+    if len(runs) < total_matching:
+        out.append(
+            f"  shown runs        : {len(runs)} newest of {total_matching} matching"
+        )
+    else:
+        out.append(f"  total runs        : {len(runs)}")
     out.append(f"  by repo           : " +
                ", ".join(f"{k}={v}" for k, v in sorted(by_repo.items())))
     out.append(f"  by result         : " +
@@ -543,15 +560,38 @@ def summarize(runs, profiles, linked) -> str:
                "   (L=ledger, R=reconstructed-from-raw-log)")
     out.append(f"  by slot/worktree  : " +
                ", ".join(f"{k}={v}" for k, v in sorted(by_slot.items(), key=lambda x: -x[1])))
-    out.append(f"  profiling CSVs    : {len(profiles)} rows across "
-               f"{len({p['_checkout'] for p in profiles})} checkouts; "
-               f"{linked}/{len(runs)} runs linked to profiling by git_sha")
+    if profiles_scanned:
+        out.append(f"  profiling CSVs    : {len(profiles)} rows across "
+                   f"{len({p['_checkout'] for p in profiles})} checkouts; "
+                   f"{linked}/{len(runs)} runs linked to profiling by git_sha")
+    else:
+        out.append(
+            "  profiling CSVs    : not scanned in the recent view "
+            "(use --all or --profiling)"
+        )
     return "\n".join(out)
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def recent_runs(runs: list[dict], limit: int) -> list[dict]:
+    """Return a bounded newest-first view without mutating the full history."""
+    return list(reversed(runs[-limit:]))
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    view = ap.add_mutually_exclusive_group()
+    view.add_argument("--limit", type=positive_int, default=10,
+                      help="show N newest runs, newest first (default: 10)")
+    view.add_argument("--all", action="store_true",
+                      help="show every retained run (slower; newest last)")
     ap.add_argument("--json", action="store_true", help="emit unified records as JSON")
     ap.add_argument("--csv", metavar="FILE", help="write a flat CSV")
     ap.add_argument("--since", metavar="YYYY-MM-DD", help="only runs on/after this UTC date")
@@ -566,8 +606,24 @@ def main() -> int:
 
     parent = parent_root()
     runs = load_all_runs(parent)
-    profiles = discover_profiles(parent)
+    if args.since:
+        runs = [r for r in runs if (r.get("_sortkey") or "") >= args.since]
+    if args.slot:
+        runs = [r for r in runs if r.get("slot") == args.slot]
+    total_matching = len(runs)
+
+    complete_analysis = args.all or args.profiling or args.false_reds
+    if not complete_analysis:
+        runs = recent_runs(runs, args.limit)
+
+    # The retained profiling inventory walks every checkout. Keep that cost out
+    # of the default recent view; '?' in the PROF column means "not inspected",
+    # not "no profile exists".
+    profiles_scanned = complete_analysis
+    profiles = discover_profiles(parent) if profiles_scanned else []
     linked = link_profiling(runs, profiles)
+    for r in runs:
+        r["_profiling_checked"] = profiles_scanned
 
     # Resolve the -j width parent-side for profiled runs: the safe-ci-dag-runner
     # profiling CSV records `jobs` even though the ledger row does not yet (that
@@ -586,11 +642,6 @@ def main() -> int:
     flake_class.annotate(runs)
     for r in runs:
         r["effective_result"] = flake_class.effective_result(r)
-
-    if args.since:
-        runs = [r for r in runs if (r.get("_sortkey") or "") >= args.since]
-    if args.slot:
-        runs = [r for r in runs if r.get("slot") == args.slot]
 
     if args.profiling:
         by_ckt = {}
@@ -666,13 +717,20 @@ def main() -> int:
             clean = {k: v for k, v in r.items() if not k.startswith("_")}
             clean["source"] = r.get("_source")
             clean["profiling"] = r.get("_profiling")
+            clean["profiling_checked"] = profiles_scanned
             out.append(clean)
         print(json.dumps(out, indent=2))
         return 0
 
     if not args.csv:
         print(render_table(runs))
-    print(summarize(runs, profiles, linked))
+    print(summarize(
+        runs,
+        profiles,
+        linked,
+        total_matching=total_matching,
+        profiles_scanned=profiles_scanned,
+    ))
     return 0
 
 

@@ -508,7 +508,7 @@ def test_counted_schema5_source_without_admission_remains_refused(
     assert ledger.read_text() == before
 
 
-def test_unregistered_producer_definition_never_appends(tmp_path, monkeypatch):
+def test_file_registry_does_not_block_finalization(tmp_path, monkeypatch):
     sha = "f" * 40
     log = tmp_path / "run.log"
     log.write_text(_passing_node("test.only", 6))
@@ -525,9 +525,9 @@ def test_unregistered_producer_definition_never_appends(tmp_path, monkeypatch):
 
     monkeypatch.setattr(fr.qualifying_receipt, "resolve_producer_definition", refuse)
     result = fr.scan_and_finalize(str(ledger), str(tmp_path), sha, digest)
-    assert result["reason"] == "unregistered-producer-definition"
-    assert result["exit_code"] == 1 and result["appended"] == 0
-    assert ledger.read_text() == before
+    assert result["reason"] == "minted"
+    assert result["exit_code"] == 0 and result["appended"] == 1
+    assert ledger.read_text().startswith(before)
 
 
 def test_exact_row_finalization_is_idempotent(tmp_path, monkeypatch):

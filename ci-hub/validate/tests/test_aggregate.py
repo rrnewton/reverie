@@ -185,6 +185,14 @@ class RunLevelTest(unittest.TestCase):
 
 
 class RenderTest(unittest.TestCase):
+    def test_recent_view_is_bounded_and_newest_first(self):
+        runs = [{"id": number} for number in range(15)]
+        self.assertEqual(
+            [row["id"] for row in agg.recent_runs(runs, 3)],
+            [14, 13, 12],
+        )
+        self.assertEqual([row["id"] for row in runs[:3]], [0, 1, 2])
+
     def test_header_carries_second_units(self):
         out = agg.render_table([parse(HEADER + PASS)])
         head = out.splitlines()[0]
