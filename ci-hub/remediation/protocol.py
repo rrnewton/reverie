@@ -1067,7 +1067,30 @@ def bind_local_receipt_authority(
             store_path,
         )
     local = record.get("local")
-    if not isinstance(local, Mapping) or local.get("state") not in {"green", "red"}:
+    if not isinstance(local, Mapping):
+        return record
+    if local.get("state") == "no_result":
+        # no_result is an observation, not a terminal receipt verdict.  A
+        # validate can legitimately finish after the watcher's first poll, so
+        # consult the canonical exact-SHA authority again on every evaluation.
+        # Do not persist refusals here: doing so would append a new checked_at
+        # value on every poll while providing no new authoritative fact.
+        _accepted, current = _dereference_current_local_receipt(repo, sha)
+        if _persisted_local_receipt_problem(current, repo=repo, sha=sha) is not None:
+            return record
+        return obligations.transition(
+            obligation_id,
+            "local-late-receipt-bound",
+            {
+                "local": {
+                    "state": "green",
+                    "receipt_verification": current,
+                    "classification_reason": "canonical-receipt-validated",
+                }
+            },
+            store_path,
+        )
+    if local.get("state") not in {"green", "red"}:
         return record
     if local.get("state") == "red":
         # Pre-binding legacy rows may have no receipt observation at all.  This
@@ -1146,10 +1169,11 @@ def bind_local_receipt_authority(
 def _local_receipt_disposition(record: Mapping[str, Any]) -> dict[str, Any]:
     """Describe whether the local leg will consume a future receipt.
 
-    ``no_result`` says only that no verdict exists.  It does not say whether an
-    obligation-owned producer can still create one.  Keep the producer window
-    bounded by the existing redispatch limit and report the exhausted latch
-    explicitly instead of making it look like an active wait.
+    ``no_result`` says only that no verdict exists.  Canonical receipt polling
+    remains active even when the obligation-owned producer retry budget is
+    exhausted: another admitted producer can publish the exact-SHA receipt
+    later.  Keep producer retries bounded without misreporting receipt polling
+    as terminal.
     """
     local = record.get("local")
     if not isinstance(local, Mapping):
@@ -1195,20 +1219,23 @@ def _local_receipt_disposition(record: Mapping[str, Any]) -> dict[str, Any]:
     if remaining == 0:
         return {
             **common,
-            "state": "receipt_window_exhausted",
-            "will_consume_later_receipt": False,
+            "state": "awaiting_external_receipt",
+            "will_consume_later_receipt": True,
             "reason": (
-                "bounded local redispatches are exhausted; use the explicit "
-                "fix-forward/revert resolution path"
+                "bounded local redispatches are exhausted; canonical exact-SHA "
+                "receipt polling remains active"
             ),
         }
     source = local.get("source")
     if not isinstance(source, str) or not source or not Path(source).is_dir():
         return {
             **common,
-            "state": "receipt_window_unavailable",
-            "will_consume_later_receipt": False,
-            "reason": "no readable donor checkout exists for the remaining redispatch",
+            "state": "awaiting_external_receipt",
+            "will_consume_later_receipt": True,
+            "reason": (
+                "no readable donor checkout exists for an automatic redispatch; "
+                "canonical exact-SHA receipt polling remains active"
+            ),
         }
     return {
         **common,
@@ -4629,6 +4656,10 @@ def poll_obligation(obligation_id: str, store_path: Path) -> dict[str, Any]:
                 },
                 store_path,
             )
+    # A receipt can arrive after the first no_result observation. Bind the
+    # canonical exact-SHA answer before deciding whether another producer is
+    # needed, so a completed validation never causes a redundant redispatch.
+    record = bind_local_receipt_authority(obligation_id, store_path)
     record = _maybe_redispatch_local(obligation_id, record, store_path)
     return evaluate_obligation(obligation_id, store_path=store_path)
 

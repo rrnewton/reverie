@@ -314,6 +314,18 @@ class ProtocolTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def canonical_receipt_no_result(self) -> None:
+        self.current_local_receipt.side_effect = None
+        self.current_local_receipt.return_value = (
+            False,
+            {
+                "state": "refused",
+                "authority": "ci-hub-validate-status",
+                "repo": "rrnewton/hermit",
+                "reason": "canonical verifier reported no qualifying counted receipt",
+            },
+        )
+
     def typed_skip_report(self) -> dict:
         report = counted_receipt_report()
         row = report["newest_qualifying"]
@@ -2384,6 +2396,7 @@ class ProtocolTest(unittest.TestCase):
     def test_hosted_red_stays_loud_but_cannot_dispatch_remediation(
         self,
     ) -> None:
+        self.canonical_receipt_no_result()
         # A/B: every hosted failure class remains a loud remediation obligation,
         # but Hermit's demoted hosted leg cannot authorize a mutation of main.
         red_conclusions = ("failure", "timed_out", "error", "startup_failure")
@@ -2441,6 +2454,7 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(warned_without_dispatch, 4)
 
     def test_hosted_advisory_tombstones_a_legacy_revert_dispatch(self) -> None:
+        self.canonical_receipt_no_result()
         self.create()
         self.transition(
             {
@@ -2589,6 +2603,7 @@ class ProtocolTest(unittest.TestCase):
 
     def test_hosted_advisory_tick_preserves_triggered_fix_forward(self) -> None:
         """A hosted advisory refresh cannot revoke an active repair exit."""
+        self.canonical_receipt_no_result()
         self.create()
         triggered = self.transition(
             {
@@ -2622,6 +2637,7 @@ class ProtocolTest(unittest.TestCase):
 
     def test_hosted_advisory_fix_forward_resolves_and_stays_completed(self) -> None:
         """A new advisory red opens loudly and has a durable repair exit."""
+        self.canonical_receipt_no_result()
         self.create()
         self.transition(
             {
@@ -4910,7 +4926,7 @@ class LocalRedispatchTest(unittest.TestCase):
         self.assertEqual(record["local"]["redispatch_count"], 1)
         self.assertNotEqual(record["overall_state"], "remediation_required")
 
-    def test_no_result_reports_bounded_receipt_window_then_exhaustion(self) -> None:
+    def test_no_result_reports_bounded_producer_window_and_receipt_polling(self) -> None:
         self._seed(
             {
                 "local": {
@@ -4942,13 +4958,11 @@ class LocalRedispatchTest(unittest.TestCase):
         )
         exhausted = obligations.get_record("ob", self.store)
         disposition = protocol._local_receipt_disposition(exhausted)
-        self.assertEqual(disposition["state"], "receipt_window_exhausted")
-        self.assertFalse(disposition["will_consume_later_receipt"])
+        self.assertEqual(disposition["state"], "awaiting_external_receipt")
+        self.assertTrue(disposition["will_consume_later_receipt"])
         self.assertEqual(disposition["automatic_rechecks_remaining"], 0)
 
-    def test_exhausted_no_result_does_not_pretend_to_consume_late_receipt(
-        self,
-    ) -> None:
+    def test_late_exact_sha_receipt_closes_exhausted_no_result(self) -> None:
         self._seed(
             {
                 "local": {
@@ -4956,18 +4970,54 @@ class LocalRedispatchTest(unittest.TestCase):
                     "source": str(self.source),
                     "redispatch_count": protocol.DEFAULT_LOCAL_REDISPATCH_LIMIT,
                     "pid": None,
-                }
+                },
+                "github": {"state": "no_result"},
             }
         )
         with mock.patch.object(
-            protocol, "_dereference_current_local_receipt"
+            protocol,
+            "_dereference_current_local_receipt",
+            return_value=(True, verified_local_receipt(SHA)),
         ) as dereference:
-            record = protocol.bind_local_receipt_authority("ob", self.store)
-        dereference.assert_not_called()
+            record = protocol.poll_obligation("ob", self.store)
+        dereference.assert_called()
+        self.assertEqual(record["local"]["state"], "green")
+        self.assertEqual(record["overall_state"], "satisfied")
+        self.assertEqual(
+            record["local"]["receipt_verification"]["report"]["sha"], SHA
+        )
+        self.assertEqual(
+            protocol._local_receipt_disposition(record)["state"], "receipt_observed"
+        )
+
+    def test_late_different_sha_receipt_does_not_close_no_result(self) -> None:
+        self._seed(
+            {
+                "local": {
+                    "state": "no_result",
+                    "source": str(self.source),
+                    "redispatch_count": protocol.DEFAULT_LOCAL_REDISPATCH_LIMIT,
+                    "pid": None,
+                },
+                "github": {"state": "no_result"},
+            }
+        )
+        before = obligations.get_record("ob", self.store)
+        with mock.patch.object(
+            protocol,
+            "_dereference_current_local_receipt",
+            return_value=(True, verified_local_receipt(NEXT_SHA)),
+        ):
+            record = protocol.poll_obligation("ob", self.store)
+            event_after_policy_bind = record["event_id"]
+            record = protocol.poll_obligation("ob", self.store)
+        self.assertEqual(record["event_id"], event_after_policy_bind)
+        self.assertEqual(record["local"], before["local"])
         self.assertEqual(record["local"]["state"], "no_result")
+        self.assertNotEqual(record["overall_state"], "satisfied")
         self.assertEqual(
             protocol._local_receipt_disposition(record)["state"],
-            "receipt_window_exhausted",
+            "awaiting_external_receipt",
         )
 
     def test_provisional_local_red_re_dispatches_not_reverts(self) -> None:
@@ -5236,12 +5286,12 @@ def _report_record(*, state="open", remediation_state="none"):
     }
 
 
-def test_summary_distinguishes_exhausted_receipt_window():
+def test_summary_distinguishes_exhausted_producer_window_from_receipt_polling():
     record = _report_record()
     record["local"]["redispatch_count"] = protocol.DEFAULT_LOCAL_REDISPATCH_LIMIT
     rendered = protocol._summary_line(record)
     assert "local=no_result" in rendered
-    assert "local_receipt=receipt_window_exhausted" in rendered
+    assert "local_receipt=awaiting_external_receipt" in rendered
 
 
 def test_json_status_carries_receipt_window_disposition(tmp_path):
@@ -5260,8 +5310,8 @@ def test_json_status_carries_receipt_window_disposition(tmp_path):
         )
     reported = json.loads(output.getvalue())["obligations"][0]
     disposition = reported["local"]["receipt_disposition"]
-    assert disposition["state"] == "receipt_window_exhausted"
-    assert disposition["will_consume_later_receipt"] is False
+    assert disposition["state"] == "awaiting_external_receipt"
+    assert disposition["will_consume_later_receipt"] is True
 
 
 def _decision_wait_registry(path):
