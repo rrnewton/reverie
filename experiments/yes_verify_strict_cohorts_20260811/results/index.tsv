@@ -1,0 +1,60 @@
+A-01	rc=0	start=2026-08-11T23:56:03Z	end=2026-08-11T23:56:03Z	pkg_delta=0
+A-02	rc=0	start=2026-08-11T23:56:03Z	end=2026-08-11T23:56:04Z	pkg_delta=0
+A-03	rc=0	start=2026-08-11T23:56:04Z	end=2026-08-11T23:56:04Z	pkg_delta=0
+A-04	rc=0	start=2026-08-11T23:56:04Z	end=2026-08-11T23:56:04Z	pkg_delta=0
+A-05	rc=0	start=2026-08-11T23:56:04Z	end=2026-08-11T23:56:04Z	pkg_delta=0
+A-06	rc=0	start=2026-08-11T23:56:04Z	end=2026-08-11T23:56:04Z	pkg_delta=0
+A-07	rc=0	start=2026-08-11T23:56:04Z	end=2026-08-11T23:56:04Z	pkg_delta=0
+A-08	rc=0	start=2026-08-11T23:56:04Z	end=2026-08-11T23:56:04Z	pkg_delta=0
+A-09	rc=0	start=2026-08-11T23:56:04Z	end=2026-08-11T23:56:04Z	pkg_delta=0
+A-10	rc=0	start=2026-08-11T23:56:04Z	end=2026-08-11T23:56:05Z	pkg_delta=0
+A-11	rc=0	start=2026-08-11T23:56:05Z	end=2026-08-11T23:56:05Z	pkg_delta=0
+A-12	rc=0	start=2026-08-11T23:56:05Z	end=2026-08-11T23:56:05Z	pkg_delta=0
+A-13	rc=0	start=2026-08-11T23:56:05Z	end=2026-08-11T23:56:05Z	pkg_delta=0
+A-14	rc=0	start=2026-08-11T23:56:05Z	end=2026-08-11T23:56:05Z	pkg_delta=0
+A-15	rc=0	start=2026-08-11T23:56:05Z	end=2026-08-11T23:56:05Z	pkg_delta=0
+A-16	rc=0	start=2026-08-11T23:56:05Z	end=2026-08-11T23:56:05Z	pkg_delta=0
+A-17	rc=0	start=2026-08-11T23:56:05Z	end=2026-08-11T23:56:05Z	pkg_delta=0
+A-18	rc=0	start=2026-08-11T23:56:06Z	end=2026-08-11T23:56:06Z	pkg_delta=0
+A-19	rc=0	start=2026-08-11T23:56:06Z	end=2026-08-11T23:56:06Z	pkg_delta=0
+A-20	rc=0	start=2026-08-11T23:56:06Z	end=2026-08-11T23:56:06Z	pkg_delta=0
+B-01	rc=0	start=2026-08-11T23:56:06Z	end=2026-08-11T23:56:06Z	pkg_delta=0
+B-02	rc=0	start=2026-08-11T23:56:06Z	end=2026-08-11T23:56:06Z	pkg_delta=0
+B-03	rc=0	start=2026-08-11T23:56:06Z	end=2026-08-11T23:56:06Z	pkg_delta=0
+B-04	rc=0	start=2026-08-11T23:56:06Z	end=2026-08-11T23:56:06Z	pkg_delta=0
+B-05	rc=0	start=2026-08-11T23:56:06Z	end=2026-08-11T23:56:07Z	pkg_delta=0
+B-06	rc=0	start=2026-08-11T23:56:07Z	end=2026-08-11T23:56:07Z	pkg_delta=0
+B-07	rc=0	start=2026-08-11T23:56:07Z	end=2026-08-11T23:56:07Z	pkg_delta=0
+B-08	rc=0	start=2026-08-11T23:56:07Z	end=2026-08-11T23:56:07Z	pkg_delta=0
+B-09	rc=0	start=2026-08-11T23:56:07Z	end=2026-08-11T23:56:07Z	pkg_delta=0
+B-10	rc=0	start=2026-08-11T23:56:07Z	end=2026-08-11T23:56:07Z	pkg_delta=0
+B-11	rc=0	start=2026-08-11T23:56:07Z	end=2026-08-11T23:56:07Z	pkg_delta=0
+B-12	rc=0	start=2026-08-11T23:56:07Z	end=2026-08-11T23:56:07Z	pkg_delta=0
+B-13	rc=0	start=2026-08-11T23:56:07Z	end=2026-08-11T23:56:08Z	pkg_delta=0
+B-14	rc=0	start=2026-08-11T23:56:08Z	end=2026-08-11T23:56:08Z	pkg_delta=0
+B-15	rc=0	start=2026-08-11T23:56:08Z	end=2026-08-11T23:56:08Z	pkg_delta=0
+B-16	rc=0	start=2026-08-11T23:56:08Z	end=2026-08-11T23:56:08Z	pkg_delta=0
+B-17	rc=0	start=2026-08-11T23:56:08Z	end=2026-08-11T23:56:08Z	pkg_delta=0
+B-18	rc=0	start=2026-08-11T23:56:08Z	end=2026-08-11T23:56:08Z	pkg_delta=0
+B-19	rc=0	start=2026-08-11T23:56:08Z	end=2026-08-11T23:56:08Z	pkg_delta=0
+B-20	rc=0	start=2026-08-11T23:56:08Z	end=2026-08-11T23:56:09Z	pkg_delta=0
+C-01	rc=0	legacy-verify
+C-02	rc=0	legacy-verify
+C-03	rc=0	legacy-verify
+C-04	rc=0	legacy-verify
+C-05	rc=0	legacy-verify
+C-06	rc=0	legacy-verify
+C-07	rc=0	legacy-verify
+C-08	rc=0	legacy-verify
+C-09	rc=0	legacy-verify
+C-10	rc=0	legacy-verify
+C-11	rc=0	legacy-verify
+C-12	rc=0	legacy-verify
+C-13	rc=0	legacy-verify
+C-14	rc=0	legacy-verify
+C-15	rc=0	legacy-verify
+C-16	rc=0	legacy-verify
+C-17	rc=0	legacy-verify
+C-18	rc=0	legacy-verify
+C-19	rc=0	legacy-verify
+C-20	rc=0	legacy-verify

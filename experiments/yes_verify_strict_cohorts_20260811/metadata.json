@@ -1,0 +1,20 @@
+{
+  "question": "Does the inside-guest `yes | head` divergence reproduce under --verify-strict, and does it depend on max_timeslice?",
+  "date_utc": "2026-08-11",
+  "hermit_head": "069b532fdc11d1027f7d72f2dfe10352d71ced4c",
+  "binary_sha256": "03e426c84f1eb19b09daf5fb9e2806caa9fe0fba592e2ed4e2bc8c8a0658104a",
+  "build_command": "HERMIT_INSTALL_FORCE_RESTAGE=local-runtime ./ci/run-with-reverie-dbt-budget.sh cargo build --release --locked -p hermit --features third-party-backends -p detcore-dbt -p detcore-sabre -p hermit-install && install -m 755 target/release/hermit target/ci/hermit-strict",
+  "guest_argv": ["bash", "-c", "set -eu; yes hermit | head -n 3"],
+  "backend": "ptrace",
+  "host": "devbig014",
+  "host_cores": 316,
+  "host_load_at_start": 10.91,
+  "arms": {
+    "A": {"comparator": "--verify --verify-strict", "flags": "--no-virtualize-cpuid --max-timeslice=disabled", "effective_max_timeslice": "None", "n": 20, "divergent": 0},
+    "B": {"comparator": "--verify --verify-strict", "flags": "--no-virtualize-cpuid", "effective_max_timeslice": "Some(200000000)", "n": 20, "divergent": 0},
+    "C": {"comparator": "--verify (legacy)", "flags": "--no-virtualize-cpuid --max-timeslice=disabled", "effective_max_timeslice": "None", "n": 20, "divergent": 0}
+  },
+  "pooled": {"n": 60, "divergent": 0, "cp95_upper_bound": 0.049},
+  "package_activity_delta_all_samples": 0,
+  "result": "does-not-reproduce"
+}
