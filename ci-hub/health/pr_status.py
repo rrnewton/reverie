@@ -374,16 +374,26 @@ def _unavailable(
     repo: str,
     reason: str,
     mechanism_overlaps: tuple[MechanismOverlap, ...] = (),
+    *,
+    open_count: int = 0,
+    all_open: int | None = None,
+    drafts: int | None = None,
+    population_error: str = "",
+    population_age_secs: float | None = None,
 ) -> RepoStatus:
     return RepoStatus(
         repo=repo,
-        open=0,
+        open=open_count,
         green=0,
         red=0,
         pending=0,
         real_reds=0,
         outage_suspected=False,
         prs=(),
+        all_open=all_open,
+        drafts=drafts,
+        population_error=population_error,
+        population_age_secs=population_age_secs,
         mechanism_overlaps=mechanism_overlaps,
         available=False,
         reason=reason,
@@ -789,13 +799,16 @@ def banked_green_commits(
     Binding is by EXACT full commit SHA (an identity link, not a proxy). We do NOT
     re-derive the green predicate here: we dereference the ONE canonical verifier,
     ``ci-hub ledger qualified-rows`` (complete, nonempty PASS rows), and bucket by
-    repo. If the ledger/binary is unavailable (e.g. a 3pai host without the parent
-    ledger) we return the empty set — pr-status must ALWAYS report, never fail, so
-    a missing ledger degrades to the prior GitHub-only view, never to an error.
+    repo. A successful query with no qualifying rows returns the empty set. A
+    missing, failed, timed-out, or malformed reader raises ``RepoUnavailable``:
+    an unavailable authority and an authoritative empty answer are different
+    facts, and callers must not silently degrade to a GitHub-only verdict.
     """
     name = repo.rsplit("/", 1)[-1]
     if not Path(ci_hub_bin).exists():
-        return frozenset()
+        raise RepoUnavailable(
+            f"{repo}: local validation ledger unavailable: missing reader {ci_hub_bin}"
+        )
     try:
         result = subprocess.run(
             [str(ci_hub_bin), "ledger", "qualified-rows"],
@@ -804,10 +817,22 @@ def banked_green_commits(
             check=False,
             timeout=timeout,
         )
-    except (OSError, subprocess.TimeoutExpired):
-        return frozenset()
+    except subprocess.TimeoutExpired as error:
+        raise RepoUnavailable(
+            f"{repo}: local validation ledger unavailable: qualified-rows "
+            f"exceeded {timeout:.1f}s"
+        ) from error
+    except OSError as error:
+        raise RepoUnavailable(
+            f"{repo}: local validation ledger unavailable: qualified-rows "
+            f"could not run: {error}"
+        ) from error
     if result.returncode != 0:
-        return frozenset()
+        detail = (result.stderr or result.stdout or "no diagnostic").strip()[:300]
+        raise RepoUnavailable(
+            f"{repo}: local validation ledger unavailable: qualified-rows "
+            f"exited {result.returncode}: {detail}"
+        )
     commits: set[str] = set()
     for line in result.stdout.splitlines():
         line = line.strip()
@@ -815,16 +840,25 @@ def banked_green_commits(
             continue
         try:
             row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        except json.JSONDecodeError as error:
+            raise RepoUnavailable(
+                f"{repo}: local validation ledger unavailable: qualified-rows "
+                "returned malformed JSON"
+            ) from error
         if not isinstance(row, dict) or row.get("result") != "pass":
-            continue
+            raise RepoUnavailable(
+                f"{repo}: local validation ledger unavailable: qualified-rows "
+                "returned an unexpected row"
+            )
         cwd = str(row.get("cwd") or "")
         row_repo = row.get("repo") or ("reverie" if "/reverie" in cwd else "hermit")
-        if row_repo != name:
-            continue
         sha = row.get("commit")
-        if isinstance(sha, str) and sha:
+        if not isinstance(sha, str) or not sha:
+            raise RepoUnavailable(
+                f"{repo}: local validation ledger unavailable: qualified-rows "
+                "returned a row without a commit"
+            )
+        if row_repo == name:
             commits.add(sha)
     return frozenset(commits)
 
@@ -851,9 +885,10 @@ def banked_failure_tier_commits(repo: str) -> dict[str, str]:
     genuine named-gate failure). Binding is by
     EXACT full commit SHA — an identity link, not a proxy.
 
-    Degrades to an empty map when the ledger is absent/unreadable (a 3pai host, a
-    fresh clone), exactly like :func:`banked_green_commits`: pr-status must ALWAYS
-    report, never fail, so a missing ledger reverts to the prior GitHub-only view.
+    A successful read with no failure rows returns an empty map. An
+    absent/unreadable ledger raises ``RepoUnavailable``, matching
+    :func:`banked_green_commits`: neither side of the local authority may turn a
+    reader failure into evidence that no exact-head record exists.
 
     LIMITATION (stated by design): the ledger is machine-local — most PR heads have
     NO local row here, so this can only demote a red where a fail/timeout row
@@ -863,8 +898,10 @@ def banked_failure_tier_commits(repo: str) -> dict[str, str]:
     name = repo.rsplit("/", 1)[-1]
     try:
         rows = canonical_ledger.rows(root=ROOT)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return {}
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise RepoUnavailable(
+            f"{repo}: local validation failure ledger unavailable: {error}"
+        ) from error
     tiers: dict[str, str] = {}
     for row in rows:
         if not isinstance(row, dict) or row.get("result") not in ("fail", "timeout"):
@@ -1444,6 +1481,28 @@ def fetch_repo_status_gh(
     # The rare census is deliberately lightweight and uses REST. Only its draft
     # rows are appended: ready rows above carry the richer exact-head fields.
     raw = ready + [entry for entry in census if entry.get("isDraft") is True]
+
+    def population_only(reason: str) -> RepoStatus:
+        """Keep the completed GitHub count while refusing unavailable health."""
+        ready_count = sum(
+            isinstance(entry, dict) and entry.get("isDraft") is not True
+            for entry in raw
+        )
+        return _unavailable(
+            repo,
+            reason,
+            _mechanism_overlaps(raw),
+            open_count=ready_count,
+            all_open=len(census) if not population_error else None,
+            drafts=(
+                sum(entry.get("isDraft") is True for entry in census)
+                if not population_error
+                else None
+            ),
+            population_error=population_error,
+            population_age_secs=census_age,
+        )
+
     authority_deadline = repo_deadline
     setup_only_authority = GitHubActionsJobAuthority(
         repo,
@@ -1462,21 +1521,30 @@ def fetch_repo_status_gh(
     ]
     ledger_timeout = remaining()
     if ledger_timeout is not None and ledger_timeout <= 0:
-        raise RepoUnavailable(
+        return population_only(
             f"{repo}: time budget exhausted before local validation ledger"
         )
-    banked_green = (
-        banked_green_commits(repo)
-        if ledger_timeout is None
-        else banked_green_commits(repo, timeout=ledger_timeout)
-    )
+    try:
+        banked_green = (
+            banked_green_commits(repo)
+            if ledger_timeout is None
+            else banked_green_commits(repo, timeout=ledger_timeout)
+        )
+    except RepoUnavailable as error:
+        # GitHub already answered the independent population question. Preserve
+        # that evidence while refusing every health classification that depends
+        # on the unavailable local authority.
+        return population_only(str(error))
     if repo_deadline is not None and remaining() <= 0:
-        raise RepoUnavailable(
+        return population_only(
             f"{repo}: time budget exhausted during local validation ledger"
         )
-    banked_failure = banked_failure_tier_commits(repo)
+    try:
+        banked_failure = banked_failure_tier_commits(repo)
+    except RepoUnavailable as error:
+        return population_only(str(error))
     if repo_deadline is not None and remaining() <= 0:
-        raise RepoUnavailable(
+        return population_only(
             f"{repo}: time budget exhausted during local failure ledger"
         )
     return _classify_gh_prs(
@@ -1979,7 +2047,9 @@ def health_verdict(statuses: Sequence[RepoStatus]) -> dict[str, object]:
 
 
 def render_report(statuses: Sequence[RepoStatus], warn_threshold: int, engine: str) -> str:
-    total = sum(status.open for status in statuses if status.available)
+    # Ready-head population is independently known for a population-only result;
+    # health availability controls verdicts, not whether that count exists.
+    total = sum(status.open for status in statuses)
     unavailable = [status for status in statuses if not status.available]
     verdict = health_verdict(statuses)
     if verdict["state"] == "unhealthy":
@@ -2060,7 +2130,15 @@ def render_report(statuses: Sequence[RepoStatus], warn_threshold: int, engine: s
             )
     for status in statuses:
         if not status.available:
-            lines.append(f"  {status.repo}: UNAVAILABLE — {status.reason}")
+            population = ""
+            if status.all_open is not None:
+                population = (
+                    f"; population all_open={status.all_open} "
+                    f"ready_non_draft={status.open} drafts={status.drafts}"
+                )
+            lines.append(
+                f"  {status.repo}: UNAVAILABLE — {status.reason}{population}"
+            )
             _render_mechanism_overlaps(lines, status.mechanism_overlaps)
             continue
         undet = (

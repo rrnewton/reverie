@@ -701,6 +701,63 @@ class MechanismOverlapTests(unittest.TestCase):
         self.assertIn("#34", report)
 
 
+class BankedGreenCommitsTests(unittest.TestCase):
+    def test_successful_empty_ledger_is_authoritatively_empty(self) -> None:
+        """POSITIVE BRACKET: a successful reader may truthfully return EMPTY."""
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="", stderr=""
+        )
+        with mock.patch("pr_status.subprocess.run", return_value=completed):
+            commits = pr_status.banked_green_commits(
+                "rrnewton/hermit", ci_hub_bin=Path(__file__)
+            )
+        self.assertEqual(commits, frozenset())
+
+    def test_failed_ledger_reader_is_unavailable_not_empty(self) -> None:
+        """NEGATIVE BRACKET: reader failure must not become evidence of absence."""
+        failures = (
+            OSError("cannot execute"),
+            subprocess.TimeoutExpired(cmd="qualified-rows", timeout=1.0),
+            subprocess.CompletedProcess(
+                args=[], returncode=7, stdout="", stderr="ledger exploded"
+            ),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__), mock.patch(
+                "pr_status.subprocess.run",
+                side_effect=failure if isinstance(failure, BaseException) else None,
+                return_value=(
+                    failure
+                    if isinstance(failure, subprocess.CompletedProcess)
+                    else None
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    pr_status.RepoUnavailable,
+                    "local validation ledger unavailable",
+                ):
+                    pr_status.banked_green_commits(
+                        "rrnewton/hermit", ci_hub_bin=Path(__file__), timeout=1.0
+                    )
+
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "missing-ci-hub"
+            with self.assertRaisesRegex(pr_status.RepoUnavailable, "missing reader"):
+                pr_status.banked_green_commits(
+                    "rrnewton/hermit", ci_hub_bin=missing
+                )
+
+    def test_malformed_ledger_answer_is_unavailable_not_empty(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="not-json\n", stderr=""
+        )
+        with mock.patch("pr_status.subprocess.run", return_value=completed):
+            with self.assertRaisesRegex(pr_status.RepoUnavailable, "malformed JSON"):
+                pr_status.banked_green_commits(
+                    "rrnewton/hermit", ci_hub_bin=Path(__file__)
+                )
+
+
 class GhEngineLoudFailureTests(unittest.TestCase):
     """No output + zero exit must never look like 'no PRs'."""
 
@@ -1965,6 +2022,68 @@ class DraftCensusThrottleTests(unittest.TestCase):
         self.assertEqual(status.all_open, 3)
         self.assertEqual(status.drafts, 2)
         self.assertEqual(status.population_age_secs, 0.0)
+
+    def test_ledger_unavailable_retains_population_but_refuses_health(self) -> None:
+        ready = [_pr(1, _rollup(("COMPLETED", "SUCCESS")), head="a" * 40)]
+        census = [
+            {"number": 1, "title": "ready", "isDraft": False, "labels": []},
+            {"number": 2, "title": "draft", "isDraft": True, "labels": []},
+            {"number": 3, "title": "draft", "isDraft": True, "labels": []},
+        ]
+        with mock.patch.object(
+            pr_status, "_fetch_open_prs_gh", return_value=ready
+        ), mock.patch.object(
+            pr_status, "_cached_open_pr_census", return_value=(census, 4.0)
+        ), mock.patch.object(
+            pr_status,
+            "banked_green_commits",
+            side_effect=pr_status.RepoUnavailable("ledger exploded"),
+        ), mock.patch.object(
+            pr_status, "banked_failure_tier_commits"
+        ) as failure_rows, mock.patch.object(
+            pr_status, "hosted_authority_states"
+        ) as hosted:
+            status = pr_status.fetch_repo_status_gh(
+                "rrnewton/hermit", net_wrapper=[]
+            )
+
+        self.assertFalse(status.available)
+        self.assertEqual(status.open, 1)
+        self.assertEqual(status.all_open, 3)
+        self.assertEqual(status.drafts, 2)
+        self.assertEqual(status.population_age_secs, 4.0)
+        self.assertIn("ledger exploded", status.reason)
+        self.assertEqual((status.green, status.red, status.pending), (0, 0, 0))
+        failure_rows.assert_not_called()
+        hosted.assert_not_called()
+
+    def test_failure_ledger_unavailable_also_refuses_health(self) -> None:
+        ready = [_pr(1, _rollup(("COMPLETED", "SUCCESS")), head="a" * 40)]
+        census = [
+            {"number": 1, "title": "ready", "isDraft": False, "labels": []}
+        ]
+        with mock.patch.object(
+            pr_status, "_fetch_open_prs_gh", return_value=ready
+        ), mock.patch.object(
+            pr_status, "_cached_open_pr_census", return_value=(census, 1.0)
+        ), mock.patch.object(
+            pr_status, "banked_green_commits", return_value=frozenset()
+        ), mock.patch.object(
+            pr_status,
+            "banked_failure_tier_commits",
+            side_effect=pr_status.RepoUnavailable("failure ledger unreadable"),
+        ), mock.patch.object(
+            pr_status, "hosted_authority_states"
+        ) as hosted:
+            status = pr_status.fetch_repo_status_gh(
+                "rrnewton/hermit", net_wrapper=[]
+            )
+
+        self.assertFalse(status.available)
+        self.assertEqual(status.all_open, 1)
+        self.assertEqual(status.open, 1)
+        self.assertIn("failure ledger unreadable", status.reason)
+        hosted.assert_not_called()
 
     def test_failed_rare_census_does_not_discard_ready_health(self) -> None:
         ready = [_pr(1, _rollup(("COMPLETED", "SUCCESS")), head="a" * 40)]

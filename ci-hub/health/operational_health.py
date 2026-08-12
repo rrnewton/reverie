@@ -380,8 +380,11 @@ def pull_request_gate() -> int:
             time.monotonic() - started, len(repos) - index - 1
         )
         try:
-            statuses.append(pr_status.fetch_repo_status(repo, timeout=budget))
+            status = pr_status.fetch_repo_status(repo, timeout=budget)
+            statuses.append(status)
             measured_repos.append(repo)
+            if not getattr(status, "available", True):
+                unavailable.append((repo, _field(status.reason)))
         except RuntimeError as error:
             unavailable.append((repo, _field(error)))
 
@@ -417,17 +420,27 @@ def pull_request_gate() -> int:
         )
         return 1
 
-    counts = {
-        state: sum(getattr(status, state, 0) for status in statuses)
-        for state in (
-            "open",
-            "green",
-            "red",
-            "pending",
-            "real_reds",
-            "setup_only_no_result_checks",
-            "prerequisite_no_result_checks",
+    available_statuses = [
+        status for status in statuses if getattr(status, "available", True)
+    ]
+    health_fields = (
+        "green",
+        "red",
+        "pending",
+        "real_reds",
+        "setup_only_no_result_checks",
+        "prerequisite_no_result_checks",
+    )
+    # With zero health coverage, zero would assert a verdict that no authority
+    # produced. Partial coverage retains the measured subtotal and is labelled
+    # as partial below.
+    counts: dict[str, int | str] = {
+        state: (
+            sum(getattr(status, state, 0) for status in available_statuses)
+            if available_statuses
+            else "unknown"
         )
+        for state in health_fields
     }
     # The gh engine polls ready heads at normal cadence and carries the separate
     # cached all-open census when available. Never promote the ready count into
@@ -457,7 +470,7 @@ def pull_request_gate() -> int:
         if not population_unknown
         else "unknown"
     )
-    ready_non_draft = counts["open"]
+    ready_non_draft = sum(status.open for status in statuses)
     drafts: int | str = (
         all_open - ready_non_draft if isinstance(all_open, int) else "unknown"
     )
@@ -467,7 +480,7 @@ def pull_request_gate() -> int:
         f"census_age_s={round(census_age_by_repo[repo], 1) if isinstance(census_age_by_repo[repo], (int, float)) else 'unknown'}"
         for repo in measured_repos
     )
-    coverage = f"{len(statuses)}/{len(repos)}"
+    coverage = f"{len(available_statuses)}/{len(repos)}"
     known_census_ages = [
         age for age in census_age_by_repo.values() if isinstance(age, (int, float))
     ]
@@ -500,9 +513,11 @@ def pull_request_gate() -> int:
         # A fresh count retains the compact present-tense form.  The bracket
         # proves this branch and the stale branch use the same consumer.
         all_open_clause = f"all_open={all_open}"
-    outage = any(status.outage_suspected for status in statuses)
-    unhealthy = counts["real_reds"] > 0 or outage
-    coverage_degraded = bool(unavailable or population_unknown)
+    outage = any(status.outage_suspected for status in available_statuses)
+    unhealthy = any(status.real_reds > 0 for status in available_statuses) or outage
+    population_complete = len(statuses) == len(repos) and not population_unknown
+    health_coverage_degraded = len(available_statuses) != len(repos)
+    coverage_degraded = bool(health_coverage_degraded or not population_complete)
     degraded = bool(
         coverage_degraded or census_stale or census_freshness_unknown
     )
@@ -521,7 +536,8 @@ def pull_request_gate() -> int:
         f"freshness_bound_s={PR_CENSUS_VERDICT_FRESH_SECS},"
         f"cache_ttl_s={pr_status.DEFAULT_CENSUS_TTL_SECS:.0f},"
         f"population_coverage={population_coverage}; "
-        f"ready_non_draft={ready_non_draft}, with ready-head CI "
+        f"ready_non_draft={ready_non_draft}, verdict_coverage={coverage}, "
+        "with ready-head CI "
         f"red={counts['red']},pending={counts['pending']},green={counts['green']},"
         f"real_reds={counts['real_reds']},"
         f"setup_only_no_result={counts['setup_only_no_result_checks']},"
@@ -529,11 +545,13 @@ def pull_request_gate() -> int:
         f"outage={'yes' if outage else 'no'}"
     )
     if coverage_degraded:
+        if population_complete:
+            summary += "; POPULATION COMPLETE; VERDICTS UNAVAILABLE OR PARTIAL"
+        else:
+            summary += "; PARTIAL SAMPLE, NOT A FLEET CENSUS"
         summary += (
-            "; PARTIAL SAMPLE, NOT A FLEET CENSUS; unavailable="
-            + ("|".join(repo for repo, _ in unavailable) or "none")
-            + "; population_unknown="
-            + ("|".join(population_unknown) or "none")
+            "; unavailable=" + ("|".join(repo for repo, _ in unavailable) or "none")
+            + "; population_unknown=" + ("|".join(population_unknown) or "none")
         )
     if census_stale:
         summary += "; STALE CENSUS REPOS=" + "|".join(stale_census_repos)
@@ -543,7 +561,9 @@ def pull_request_gate() -> int:
         {
             "state": state,
             "total": all_open,
-            "total_scope": f"cached-all-open-prs-across-{coverage}-configured-repos",
+            "total_scope": (
+                f"cached-all-open-prs-across-{population_coverage}-configured-repos"
+            ),
             "census_max_age_secs": census_max_age,
             "census_freshness_bound_secs": PR_CENSUS_VERDICT_FRESH_SECS,
             "census_stale": "yes" if census_stale else "no",

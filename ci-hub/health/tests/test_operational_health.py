@@ -282,6 +282,51 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertIn("PARTIAL SAMPLE, NOT A FLEET CENSUS", output)
         self.assertIn("unavailable=b/two", output)
 
+    def test_ledger_unavailable_keeps_population_and_marks_verdicts_unknown(
+        self,
+    ) -> None:
+        population_only = [
+            SimpleNamespace(
+                repo="rrnewton/hermit",
+                available=False,
+                reason="local validation ledger unavailable",
+                all_open=23,
+                open=11,
+                drafts=12,
+                population_age_secs=2.0,
+            ),
+            SimpleNamespace(
+                repo="rrnewton/reverie",
+                available=False,
+                reason="local validation ledger unavailable",
+                all_open=8,
+                open=3,
+                drafts=5,
+                population_age_secs=3.0,
+            ),
+        ]
+        with mock.patch.object(
+            operational_health.pr_status,
+            "DEFAULT_REPOS",
+            ["rrnewton/hermit", "rrnewton/reverie"],
+        ), mock.patch.object(
+            operational_health.pr_status,
+            "fetch_repo_status",
+            side_effect=population_only,
+        ):
+            result, output = self.capture(operational_health.pull_request_gate)
+
+        self.assertEqual(result, 1)
+        self.assertIn("state=degraded", output)
+        self.assertIn("total=31", output)
+        self.assertIn("population_repo_coverage=2/2", output)
+        self.assertIn("repo_coverage=0/2", output)
+        self.assertIn("ready_non_draft=14", output)
+        self.assertIn("green=unknown", output)
+        self.assertIn("red=unknown", output)
+        self.assertIn("pending=unknown", output)
+        self.assertIn("POPULATION COMPLETE; VERDICTS UNAVAILABLE OR PARTIAL", output)
+
     def test_expired_census_refresh_failure_is_unavailable_not_last_value(self) -> None:
         status = SimpleNamespace(
             repo="a/one",
@@ -328,6 +373,7 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("state=unavailable", output)
         self.assertIn("population_repo_coverage=0/2", output)
+        self.assertIn("this is not zero open PRs", output)
         self.assertNotIn("state=ok", output)
 
     def test_pull_request_gate_bounds_each_repo_under_the_guillotine(self) -> None:
