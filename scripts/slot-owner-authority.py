@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -70,6 +71,10 @@ LEASE_EXACT_FIELDS = frozenset(
     }
 )
 NOT_RUNNING_STATES = frozenset({"Z", "X"})
+# residue_sweep's existing outer authority call is capped at 10 seconds. Leave
+# its final two seconds for process teardown and the typed indeterminate report.
+REGISTRY_LOCK_WAIT_SECONDS = 8.0
+REGISTRY_LOCK_POLL_SECONDS = 0.05
 
 
 @dataclass(frozen=True)
@@ -387,14 +392,30 @@ def assess(
     )
 
 
-def read_guarded_state(root: Path) -> tuple[Mapping[str, object], str | None]:
+def read_guarded_state(
+    root: Path,
+    *,
+    lock_wait_seconds: float = REGISTRY_LOCK_WAIT_SECONDS,
+) -> tuple[Mapping[str, object], str | None]:
     """Read one exact registry snapshot under the canonical shared lock."""
 
     lock_path = root / "worktree-state.lock"
     state_path = root / "worktree-state.json"
     try:
         with lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_SH)
+            deadline = time.monotonic() + max(0.0, lock_wait_seconds)
+            while True:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as error:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(
+                            "registry lock remained busy for "
+                            f"{lock_wait_seconds:.1f}s; owner authority is indeterminate"
+                        ) from error
+                    time.sleep(min(REGISTRY_LOCK_POLL_SECONDS, remaining))
             try:
                 state = json.loads(state_path.read_text(encoding="utf-8"))
             finally:

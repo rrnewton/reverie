@@ -5124,6 +5124,52 @@ fn owner_authority(root: &Path, slot: &str) -> Result<Value, String> {
     })
 }
 
+fn bind_owner_authority_to_locked_state(
+    state: &Value,
+    slot: &str,
+    authority: &Value,
+) -> Result<(), String> {
+    let slot_state = state["slots"]
+        .get(slot)
+        .ok_or_else(|| format!("slot {slot} disappeared before stale-clear lock acquisition"))?;
+    let sidecar = slot_state
+        .get("owner_sidecar")
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("slot {slot} has no versioned owner_sidecar"))?;
+    let owner = slot_state["agents"]
+        .as_array()
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent| agent["read_only"].as_bool() == Some(false))
+        })
+        .ok_or_else(|| format!("slot {slot} has no mutating owner"))?;
+    let bound_field = |name: &str| {
+        sidecar
+            .get(name)
+            .cloned()
+            .ok_or_else(|| format!("slot {slot} owner_sidecar has no {name}"))
+    };
+    let expected_identity = json!({
+        "source": bound_field("source")?,
+        "generation": bound_field("generation")?,
+        "supervisor_pid": bound_field("supervisor_pid")?,
+        "boot_id": bound_field("boot_id")?,
+        "start_ticks": bound_field("start_ticks")?,
+        "lease": bound_field("lease")?,
+    });
+    if authority["schema_version"].as_u64() != Some(1)
+        || authority["slot"].as_str() != Some(slot)
+        || authority["agent"] != owner["name"]
+        || authority["owner_identity"] != expected_identity
+    {
+        return Err(format!(
+            "slot {slot} owner authority changed before stale-clear lock acquisition"
+        ));
+    }
+    Ok(())
+}
+
 fn automatic_handoff(
     root: &Path,
     state: &Value,
@@ -5286,6 +5332,7 @@ fn prepare_stale_clear(
     slot: &str,
     expected_generation: &str,
     actor: &str,
+    authority: &Value,
 ) -> Result<Value, String> {
     let lease = slot_lease_view(slot, &state["slots"][slot])?;
     if lease.generation != expected_generation {
@@ -5303,7 +5350,6 @@ fn prepare_stale_clear(
             lease.expires_at
         ));
     }
-    let authority = owner_authority(root, slot)?;
     let authority_state = authority["state"].as_str().unwrap_or("indeterminate");
     let codex_sentinel = lease.source == "codex-systemd-sentinel-v1";
     if authority_state == "indeterminate" {
@@ -5311,6 +5357,7 @@ fn prepare_stale_clear(
             "slot {slot} owner authority is INDETERMINATE; stale-clear is fail-closed"
         ));
     }
+    bind_owner_authority_to_locked_state(state, slot, authority)?;
     if authority_state != "dead" && !codex_sentinel {
         return Err(format!(
             "slot {slot} owner authority is {authority_state}; live ORC owner refuses stale-clear"
@@ -5514,6 +5561,19 @@ fn main() {
     }
 
     let root = find_root();
+    // slot-owner-authority takes the registry's shared lock while reading the
+    // exact owner row. Run it before taking the writer lock below, then bind
+    // its identity and complete lease value to the freshly reloaded state
+    // under that writer lock. Calling it while holding the writer lock makes
+    // the parent wait on a child that can never acquire its shared lock.
+    let stale_clear_authority = if stale_clear {
+        Some(
+            owner_authority(&root, &slot)
+                .unwrap_or_else(|error| die(&format!("stale-clear refused: {error}"))),
+        )
+    } else {
+        None
+    };
     let _registry_lock = lock_registry(&root);
     let mut state = load_state(&root);
 
@@ -5560,8 +5620,17 @@ fn main() {
         None
     };
     let stale_clear_record = if stale_clear {
-        let record = prepare_stale_clear(&root, &mut state, &slot, &expected_generation, &actor)
-            .unwrap_or_else(|error| die(&format!("stale-clear refused: {error}")));
+        let record = prepare_stale_clear(
+            &root,
+            &mut state,
+            &slot,
+            &expected_generation,
+            &actor,
+            stale_clear_authority
+                .as_ref()
+                .expect("stale-clear authority is prepared before the writer lock"),
+        )
+        .unwrap_or_else(|error| die(&format!("stale-clear refused: {error}")));
         if state["slots"][&slot]
             .get("coordinator_lease_revocation")
             .is_some()

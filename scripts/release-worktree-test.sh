@@ -179,9 +179,71 @@ else:
     print(f"unsupported fake podman argv: {args}", file=sys.stderr)
     raise SystemExit(2)
 PY
+cat >"$suite_root/bin/slot-owner-authority.py" <<'PY'
+#!/usr/bin/env python3
+"""Fixture authority that takes the real shared registry lock."""
+
+import fcntl
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[1]
+slot = sys.argv[sys.argv.index("--slot") + 1]
+lock_path = root / "worktree-state.lock"
+state_path = root / "worktree-state.json"
+with lock_path.open("a+", encoding="utf-8") as lock:
+    fcntl.flock(lock, fcntl.LOCK_SH)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    row = state["slots"][slot]
+    marker = os.environ.get("RELEASE_TEST_AUTHORITY_LOCK_MARKER")
+    if marker:
+        Path(marker).write_text("shared-acquired\n", encoding="utf-8")
+    fcntl.flock(lock, fcntl.LOCK_UN)
+
+sidecar = row["owner_sidecar"]
+owner = next(agent for agent in row["agents"] if agent["read_only"] is False)
+identity = {
+    "source": sidecar["source"],
+    "generation": sidecar["generation"],
+    "supervisor_pid": sidecar["supervisor_pid"],
+    "boot_id": sidecar["boot_id"],
+    "start_ticks": sidecar["start_ticks"],
+    "lease": sidecar.get("lease"),
+}
+
+if os.environ.get("RELEASE_TEST_AUTHORITY_RENEW_LEASE") == "1":
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = json.loads(state_path.read_text(encoding="utf-8"))
+        lease = current["slots"][slot]["owner_sidecar"]["lease"]
+        lease["renewed_at"] += 1
+        lease["expires_at"] += 1
+        state_path.write_text(
+            json.dumps(current, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        fcntl.flock(lock, fcntl.LOCK_UN)
+
+authority_state = os.environ.get("RELEASE_TEST_OWNER_AUTHORITY_STATE", "dead")
+payload = {
+    "schema_version": 1,
+    "state": authority_state,
+    "reason_code": f"fixture-{authority_state}",
+    "detail": f"fixture owner is {authority_state}",
+    "slot": slot,
+    "agent": owner["name"],
+    "owner_identity": identity,
+    "may_recover": authority_state == "dead",
+}
+print(json.dumps(payload, sort_keys=True))
+raise SystemExit({"dead": 0, "alive": 1}.get(authority_state, 2))
+PY
 chmod +x "$suite_root/bin/with-proxy"
 chmod +x "$suite_root/bin/git"
 chmod +x "$suite_root/bin/podman"
+chmod +x "$suite_root/bin/slot-owner-authority.py"
 export PATH="$suite_root/bin:$PATH"
 
 configure_repo() {
@@ -275,6 +337,8 @@ make_fixture() {
   cp "$script_dir/check-worktree-registry.rs" "$fixture_root/scripts/"
   cp "$script_dir/agent-podman.rs" "$fixture_root/scripts/"
   cp "$suite_root/bin/podman" "$fixture_root/bin/podman"
+  cp "$suite_root/bin/slot-owner-authority.py" \
+    "$fixture_root/scripts/slot-owner-authority.py"
   printf 'must survive\n' >"$fixture_root/unrelated/sentinel.txt"
   cat >"$fixture_root/ignored/ci-hub/agent-snapshot.json" <<JSON
 {
@@ -444,6 +508,55 @@ with open(path, "w", encoding="utf-8") as handle:
 PY
 }
 
+plant_expired_owner_lease() {
+  local slot=$1 now
+  now=$(date +%s)
+  python3 - "$fixture_root/worktree-state.json" "$slot" "$now" <<'PY'
+import json
+import sys
+
+path, slot, now = sys.argv[1:]
+now = int(now)
+state = json.load(open(path, encoding="utf-8"))
+row = state["slots"][slot]
+owner = next(agent for agent in row["agents"] if agent["read_only"] is False)
+boot_id = "11111111-1111-1111-1111-111111111111"
+pid = 999999999
+start_ticks = 123456
+generation = f"{boot_id}:{pid}:{start_ticks}"
+row["owner_sidecar"] = {
+    "schema_version": 1,
+    "source": "orc-tmux-pane-supervisor-v1",
+    "slot": slot,
+    "agent": owner["name"],
+    "task": row["task"],
+    "recorded_at": "2026-08-11T00:00:00Z",
+    "generation": generation,
+    "supervisor_pid": pid,
+    "boot_id": boot_id,
+    "start_ticks": start_ticks,
+    "tmux_pane_id": owner["tmux_pane_id"],
+    "cgroup_path": owner["cgroup_path"],
+    "lease": {
+        "schema_version": 1,
+        "resource": f"slot/{slot}",
+        "generation": generation,
+        "issued_at": now - 120,
+        "renewed_at": now - 120,
+        "ttl_seconds": 30,
+        "expires_at": now - 90,
+        "state": "active",
+        "last_transition_actor": owner["name"],
+        "automatic_handoff": None,
+    },
+}
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(state, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+print(generation)
+PY
+}
+
 plant_versioned_live_owner() {
   local slot=$1 cwd=$2 owner
   owner="fixture-$slot"
@@ -476,6 +589,29 @@ run_self_release() {
     RELEASE_TEST_PODMAN_STATE="$fixture_root/podman.json" \
     "$script_dir/release-worktree.rs" --slot "$slot" --clean \
       --request-release --actor "$owner") >"$output" 2>&1
+}
+
+run_stale_clear() {
+  local slot=$1 generation
+  shift
+  generation=$(python3 - "$fixture_root/worktree-state.json" "$slot" <<'PY'
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+print(state["slots"][sys.argv[2]]["owner_sidecar"]["generation"])
+PY
+  )
+  (cd "$fixture_root" && timeout "${RELEASE_TEST_STALE_CLEAR_TIMEOUT:-60}s" env \
+    HERMIT_RELEASE_TEST_PROC_ROOT="$fixture_root/proc" \
+    HERMIT_RELEASE_TEST_CGROUP_ROOT="$fixture_root/cgroup" \
+    HERMIT_RELEASE_TEST_TMUX_PANES="$fixture_root/tmux-panes" \
+    HERMIT_RELEASE_TEST_PODMAN_BIN="$fixture_root/bin/podman" \
+    RELEASE_TEST_PODMAN_STATE="$fixture_root/podman.json" \
+    "$@" \
+    "$script_dir/release-worktree.rs" --slot "$slot" --clean \
+      --stale-clear --expected-generation "$generation" \
+      --actor allocator:test) >"$output" 2>&1
 }
 
 run_release_recover() {
@@ -532,6 +668,10 @@ assert_bad_owners_refused() {
     || fail "release did not expose malformed ownership: $name"
   assert_target_retained "$name"
 }
+
+# RELEASE_TEST_STALE_CLEAR_ONLY keeps a fast, explicit bracket for the lock
+# ordering without changing the default full-suite population.
+if [[ ${RELEASE_TEST_STALE_CLEAR_ONLY:-0} != 1 ]]; then
 
 # NAMED WATCHER POSITIVE: only an exact Watchman foreground process with a
 # stable O_RDONLY descriptor is tolerated. The exception must be disclosed in
@@ -1444,6 +1584,82 @@ grep -Fxq 'blocked' "$lock_result" \
   || fail 'release did not hold canonical registry lock across network proof'
 test ! -e "$target" || fail 'registry-lock positive target survived release'
 assert_unrelated_survives
+
+fi
+
+# STALE-CLEAR LOCK-ORDER POSITIVE: the owner verifier takes the canonical
+# shared registry lock. It must finish before release-worktree takes the writer
+# lock, while the later cleanup remains serialized against a second writer.
+make_fixture stale-clear-dead-owner
+plant_expired_owner_lease stale-clear-dead-owner >/dev/null
+authority_lock_result="$fixture_root/authority-lock-result"
+concurrent_lock_result="$fixture_root/concurrent-lock-result"
+if ! run_stale_clear stale-clear-dead-owner \
+    RELEASE_TEST_AUTHORITY_LOCK_MARKER="$authority_lock_result" \
+    RELEASE_TEST_LOCK_PATH="$fixture_root/worktree-state.lock" \
+    RELEASE_TEST_LOCK_RESULT="$concurrent_lock_result"; then
+  cat "$output" >&2
+  fail 'expired dead-owner stale-clear did not complete'
+fi
+grep -Fxq 'shared-acquired' "$authority_lock_result" \
+  || fail 'stale-clear owner authority never acquired the shared registry lock'
+grep -Fxq 'blocked' "$concurrent_lock_result" \
+  || fail 'stale-clear did not serialize its cleanup against a concurrent writer'
+test ! -e "$target" || fail 'successful dead-owner stale-clear retained its target'
+python3 - "$fixture_root/worktree-state.json" <<'PY' \
+  || fail 'successful dead-owner stale-clear retained its active registry row or lost its audit history'
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert "stale-clear-dead-owner" not in state["slots"]
+assert any(
+    row.get("resource") == "slot/stale-clear-dead-owner"
+    for row in state.get("lease_history", [])
+)
+PY
+assert_unrelated_survives
+
+# STALE-CLEAR GENERATION/LEASE RACE NEGATIVE: a writer renews the exact lease
+# after the guarded authority read and before release obtains the writer lock.
+# The old verdict must not authorize cleanup of the changed row.
+make_fixture stale-clear-renewed-race
+plant_expired_owner_lease stale-clear-renewed-race >/dev/null
+if run_stale_clear stale-clear-renewed-race \
+    RELEASE_TEST_AUTHORITY_RENEW_LEASE=1; then
+  fail 'pre-lock owner verdict authorized a changed lease'
+fi
+grep -Fq 'owner authority changed before stale-clear lock acquisition' "$output" \
+  || fail 'stale-clear did not bind the owner verdict to the complete lease'
+assert_target_retained stale-clear-renewed-race
+
+# STALE-CLEAR LIVENESS NEGATIVES: fixing the lock order must not reinterpret an
+# unavailable or live owner as dead. Both verdicts remain fail-closed and must
+# return within the same bounded fixture command rather than hanging.
+make_fixture stale-clear-indeterminate-owner
+plant_expired_owner_lease stale-clear-indeterminate-owner >/dev/null
+if run_stale_clear stale-clear-indeterminate-owner \
+    RELEASE_TEST_OWNER_AUTHORITY_STATE=indeterminate; then
+  fail 'indeterminate owner authority authorized stale-clear'
+fi
+grep -Fq 'owner authority is INDETERMINATE; stale-clear is fail-closed' "$output" \
+  || fail 'stale-clear did not retain the indeterminate-owner refusal'
+assert_target_retained stale-clear-indeterminate-owner
+
+make_fixture stale-clear-live-owner
+plant_expired_owner_lease stale-clear-live-owner >/dev/null
+if run_stale_clear stale-clear-live-owner \
+    RELEASE_TEST_OWNER_AUTHORITY_STATE=alive; then
+  fail 'live ORC owner authorized stale-clear'
+fi
+grep -Fq 'owner authority is alive; live ORC owner refuses stale-clear' "$output" \
+  || fail 'stale-clear did not retain the live-owner refusal'
+assert_target_retained stale-clear-live-owner
+
+if [[ ${RELEASE_TEST_STALE_CLEAR_ONLY:-0} == 1 ]]; then
+  echo 'release-worktree-test: PASS (4 stale-clear lock-order and fail-closed fixtures)'
+  exit 0
+fi
 
 # SELF-RELEASE POSITIVE: ownership authorizes an exact live agent to act, but
 # liveness alone is not use. A clean live owner with no target references may

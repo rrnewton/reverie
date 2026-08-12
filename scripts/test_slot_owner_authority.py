@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import fcntl
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -235,6 +237,27 @@ class SlotOwnerAuthorityTest(unittest.TestCase):
         self.assertEqual(result.state, "indeterminate")
         self.assertEqual(result.reason_code, "registry-unreadable")
         self.assertEqual(result.exit_code, 2)
+
+    def test_busy_registry_lock_is_bounded_and_indeterminate(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            lock_path = root / "worktree-state.lock"
+            lock_path.touch()
+            (root / "worktree-state.json").write_text(
+                json.dumps(state(sidecar())), encoding="utf-8"
+            )
+            with lock_path.open("a+", encoding="utf-8") as writer:
+                fcntl.flock(writer, fcntl.LOCK_EX)
+                started = time.monotonic()
+                document, error = authority.read_guarded_state(
+                    root, lock_wait_seconds=0.02
+                )
+                elapsed = time.monotonic() - started
+                fcntl.flock(writer, fcntl.LOCK_UN)
+        self.assertEqual(document, {})
+        self.assertIn("registry lock remained busy", error or "")
+        self.assertIn("owner authority is indeterminate", error or "")
+        self.assertLess(elapsed, 0.5)
 
     def test_bulk_assessment_binds_all_verdicts_to_one_registry_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
