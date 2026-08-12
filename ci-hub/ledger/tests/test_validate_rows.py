@@ -126,6 +126,61 @@ def test_recovery_shard_is_part_of_the_same_canonical_union(tmp_path: Path):
     }
 
 
+def acceptance_fixture(root: Path) -> dict:
+    source = row(root, record_id="accept-0000")
+    source["producer"] = "ledger-live-sync-acceptance"
+    return source
+
+
+def test_acceptance_fixture_is_not_canonical_but_real_validation_remains(
+    tmp_path: Path,
+):
+    """Fixture rejection must not silently empty the real population."""
+    fixture = acceptance_fixture(tmp_path)
+    real = row(tmp_path, record_id="real-validation")
+    shard = tmp_path / "ledger/hermit/hosta/2026-08.jsonl"
+    shard.parent.mkdir(parents=True)
+    shard.write_text(
+        json.dumps(validate_rows._event_for_row(fixture, tmp_path), sort_keys=True)
+        + "\n"
+        + json.dumps(validate_rows._event_for_row(real, tmp_path), sort_keys=True)
+        + "\n"
+    )
+
+    # Preserve the append-only bytes.  The authority view, not history, makes
+    # the distinction between acceptance data and a validation observation.
+    assert len(shard.read_text().splitlines()) == 2
+    assert [event["event_id"] for event in validate_rows.events(root=tmp_path)] == [
+        "real-validation"
+    ]
+    assert validate_rows.rows(root=tmp_path) == [real]
+
+
+def test_production_record_refuses_acceptance_fixture_before_spool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(validate_rows, "repository_root", lambda: tmp_path)
+
+    with pytest.raises(ValueError, match="acceptance fixture.*production ledger"):
+        validate_rows.record(acceptance_fixture(tmp_path), root=tmp_path)
+
+    assert not validate_rows.live_spool_dir(tmp_path).exists()
+
+
+def test_isolated_fixture_store_does_not_enter_canonical_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    production = tmp_path / "production"
+    isolated = tmp_path / "fixture-store"
+    monkeypatch.setattr(validate_rows, "repository_root", lambda: production)
+
+    report = validate_rows.record(acceptance_fixture(isolated), root=isolated)
+
+    assert (isolated / report["spool"]).is_file()
+    assert validate_rows.events(root=isolated) == []
+    assert validate_rows.rows(root=isolated) == []
+
+
 def test_ignored_ephemeral_checkout_is_redacted_without_weakening_guard(
     tmp_path: Path,
 ):

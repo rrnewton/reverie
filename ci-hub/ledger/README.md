@@ -72,6 +72,14 @@ state; the tracked shards are append-only published history; `validate_rows.py`
 is the only readable union. Test fixtures may redirect the parent only behind
 their explicit test-mode guard.
 
+Acceptance-test rows are not validation observations and are excluded from the
+canonical event and HistoryRow views. Historical
+`ledger-live-sync-acceptance` events remain byte-for-byte in the append-only
+tracked shard, but `validate_rows.py` does not serve them to authority consumers
+and refuses that producer at the production write boundary. An isolated test
+root may retain fixture events for its own assertions without making them
+canonical validation rows.
+
 Publication must run from a dedicated clean clone or slot. The operational
 driver refuses to use the shared producer parent, creates a commit with the
 required attribution, and delegates the push to `scripts/parent-main-write` so

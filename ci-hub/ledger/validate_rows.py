@@ -29,6 +29,31 @@ from publisher import retained, spool, spooled
 WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
 HOME_TOKEN = "{{HOME}}"
 LIVE_SPOOL_RELATIVE = Path("ignored/ci-hub/validate-ledger-spool")
+# This producer was used by a live-sync acceptance probe that accidentally
+# wrote 300 synthetic PASS rows into the production Hermit shard.  The shard is
+# append-only, so those bytes remain historical evidence, but they are test
+# data rather than validation observations and must never enter the canonical
+# authority view again.
+ACCEPTANCE_FIXTURE_PRODUCERS = frozenset({"ledger-live-sync-acceptance"})
+
+
+def _producer_tool(value: object) -> str:
+    if isinstance(value, dict):
+        return str(value.get("tool") or "")
+    return str(value or "")
+
+
+def _is_acceptance_fixture_row(row: object) -> bool:
+    return (
+        isinstance(row, dict)
+        and _producer_tool(row.get("producer")) in ACCEPTANCE_FIXTURE_PRODUCERS
+    )
+
+
+def _is_acceptance_fixture_event(event: dict) -> bool:
+    return _producer_tool(event.get("producer")) in ACCEPTANCE_FIXTURE_PRODUCERS or (
+        _is_acceptance_fixture_row(event.get("legacy_row"))
+    )
 
 
 def repository_root() -> Path:
@@ -163,7 +188,12 @@ def _event_for_row(row: dict, root: Path) -> dict:
 
 def record(row: dict, *, root: Path | None = None) -> dict:
     """Append one observed row before any Git operation can block or tear it."""
-    root = (root or repository_root()).resolve()
+    production_root = repository_root().resolve()
+    root = (root or production_root).resolve()
+    if root == production_root and _is_acceptance_fixture_row(row):
+        raise ValueError(
+            "acceptance fixture producer is not allowed in the production ledger"
+        )
     event = _event_for_row(row, root)
     target = spool(live_spool_dir(root), event["team"], event["host"], [event])
     return {
@@ -196,7 +226,12 @@ def _read_rows(path: Path) -> list[dict]:
 
 
 def events(*, root: Path | None = None) -> list[dict]:
-    """Canonical tracked-history plus not-yet-published live-event union."""
+    """Canonical validation events, excluding acceptance-test data.
+
+    Fixture bytes remain in their append-only shard or isolated test store.
+    They are deliberately absent from this authority view so ``result=pass``
+    cannot make an acceptance probe indistinguishable from a validation run.
+    """
     root = (root or repository_root()).resolve()
     gathered: list[dict] = []
     for path in shard_paths(root):
@@ -212,7 +247,11 @@ def events(*, root: Path | None = None) -> list[dict]:
     # event_id dedup makes the overlap with tracked shards free.
     for published in retained(live_spool_dir(root)).values():
         gathered.extend(published)
-    return union_events(gathered)
+    return [
+        event
+        for event in union_events(gathered)
+        if not _is_acceptance_fixture_event(event)
+    ]
 
 
 def rows(*, root: Path | None = None) -> list[dict]:
