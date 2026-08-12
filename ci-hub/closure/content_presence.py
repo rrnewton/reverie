@@ -58,6 +58,10 @@ import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "ci-hub" / "lib"))
+import git_env  # noqa: E402
+
 ABSENT = "ABSENT"
 PRESENT = "PRESENT"
 CONTENT_LOST = "CONTENT-LOST"
@@ -101,7 +105,11 @@ class Presence:
 
 def _git(repo: Path, *args: str, text: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=text, check=False
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=text,
+        check=False,
+        env=git_env.sanitized_git_env(),
     )
 
 
@@ -210,6 +218,7 @@ def check(repo: Path, sha: str, target: str) -> Presence:
                     capture_output=True,
                     text=True,
                     check=False,
+                    env=git_env.sanitized_git_env(),
                 )
                 if rev.returncode == 0:
                     present += 1

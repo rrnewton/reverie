@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT / "ci-hub/lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import fetch_ref
+import git_env
 import obligations
 from check_outcome import CheckOutcome, classify_check, select_latest_workflow_attempts
 from check_outcome import FAIL_CONCLUSIONS as _RED_CONCLUSIONS
@@ -1495,7 +1496,10 @@ def _run(
             check=check,
             capture_output=capture_output,
             text=True,
-            env=dict(env) if env is not None else None,
+            # Protocol commands are bound to explicit repository paths. An
+            # inherited in-flight index or object store would override those
+            # paths while leaving the command line looking correct.
+            env=git_env.sanitized_git_env(env),
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as error:

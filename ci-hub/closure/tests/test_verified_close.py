@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "verified_close.py"
@@ -17,6 +20,132 @@ assert SPEC and SPEC.loader
 verified_close = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = verified_close
 SPEC.loader.exec_module(verified_close)
+
+
+def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    return result.stdout.strip()
+
+
+def _fixture_repo(root: Path, name: str, value: str) -> tuple[Path, str, str]:
+    repo = root / name
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _git(repo, "config", "user.name", "Closure Environment Test")
+    _git(repo, "config", "user.email", "closure-env@example.invalid")
+    (repo / "tracked.txt").write_text(value + "\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-qm", value)
+    return repo, _git(repo, "rev-parse", "HEAD"), _git(repo, "rev-parse", ":tracked.txt")
+
+
+class GitEnvironmentBoundaryTest(unittest.TestCase):
+    """The argv must name the repository that Git actually reads."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.target, self.target_head, self.target_blob = _fixture_repo(
+            root, "target", "target"
+        )
+        self.wrong, self.wrong_head, self.wrong_blob = _fixture_repo(
+            root, "wrong", "wrong"
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def _ambient(self, **selectors: str) -> dict[str, str]:
+        env = dict(os.environ)
+        env.update(selectors)
+        return env
+
+    def _safe(self, args: tuple[str, ...], env: dict[str, str]) -> str:
+        with mock.patch.dict(os.environ, env, clear=True):
+            result = verified_close._run(
+                ("git", "-C", str(self.target), *args), cwd=self.target
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+        return result.stdout.strip()
+
+    def test_git_dir_wrong_object_store_is_observable_then_removed(self) -> None:
+        env = self._ambient(GIT_DIR=str(self.wrong / ".git"))
+        self.assertEqual(self.wrong_head, _git(self.target, "rev-parse", "HEAD", env=env))
+        self.assertEqual(self.target_head, self._safe(("rev-parse", "HEAD"), env))
+
+    def test_git_common_dir_wrong_object_store_is_observable_then_removed(self) -> None:
+        env = self._ambient(
+            GIT_DIR=str(self.target / ".git"),
+            GIT_COMMON_DIR=str(self.wrong / ".git"),
+        )
+        # HEAD may remain a per-worktree file, so ask Git which COMMON store it
+        # actually selected. The unsafe command names target on its argv while
+        # reporting wrong/.git as the ref/object authority.
+        self.assertEqual(
+            str(self.wrong / ".git"),
+            _git(self.target, "rev-parse", "--path-format=absolute", "--git-common-dir", env=env),
+        )
+        self.assertEqual(
+            str(self.target / ".git"),
+            self._safe(("rev-parse", "--path-format=absolute", "--git-common-dir"), env),
+        )
+
+    def test_git_index_file_wrong_state_is_observable_then_removed(self) -> None:
+        env = self._ambient(GIT_INDEX_FILE=str(self.wrong / ".git" / "index"))
+        self.assertEqual(
+            self.wrong_blob, _git(self.target, "rev-parse", ":tracked.txt", env=env)
+        )
+        self.assertEqual(
+            self.target_blob, self._safe(("rev-parse", ":tracked.txt"), env)
+        )
+
+    def test_git_work_tree_wrong_state_is_observable_then_removed(self) -> None:
+        env = self._ambient(GIT_WORK_TREE=str(self.wrong))
+        self.assertEqual(
+            str(self.wrong), _git(self.target, "rev-parse", "--show-toplevel", env=env)
+        )
+        self.assertEqual(
+            str(self.target), self._safe(("rev-parse", "--show-toplevel"), env)
+        )
+
+    def test_artifact_only_present_in_wrong_git_dir_is_refused(self) -> None:
+        """A wrong object store cannot manufacture parent-main artifact evidence."""
+
+        relative = "only-in-ambient-wrong-repository.txt"
+        (self.wrong / relative).write_text("not parent evidence\n", encoding="utf-8")
+        _git(self.wrong, "add", relative)
+        _git(self.wrong, "commit", "-qm", "wrong-only artifact")
+        _git(self.wrong, "update-ref", "refs/remotes/origin/main", "HEAD")
+        env = self._ambient(GIT_DIR=str(self.wrong / ".git"))
+
+        # The planted unsafe call succeeds, proving the fixture can create the
+        # false artifact result rather than merely testing an absent path.
+        self.assertEqual(
+            "blob",
+            _git(
+                verified_close.ROOT,
+                "cat-file",
+                "-t",
+                f"origin/main:{relative}",
+                env=env,
+            ),
+        )
+
+        def no_network_fetch(command, **kwargs):
+            if tuple(command[:2]) == ("with-proxy", "git") and "fetch" in command:
+                return completed(command)
+            return verified_close._run(command, **kwargs)
+
+        with mock.patch.dict(os.environ, env, clear=True):
+            evidence = verified_close.verify_artifact(relative, run=no_network_fetch)
+
+        self.assertEqual("refused", evidence.state)
+        self.assertIn("not on parent main", evidence.reason)
 
 
 def completed(command, rc=0, stdout="", stderr=""):

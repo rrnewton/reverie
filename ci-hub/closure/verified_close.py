@@ -19,6 +19,7 @@ import content_presence  # noqa: E402  (sibling module in ci-hub/closure)
 ROOT = Path(__file__).resolve().parents[2]
 # One resolver for the TaskGraph, shared with every other ci-hub consumer.
 sys.path.insert(0, str(ROOT / "ci-hub" / "lib"))
+import git_env  # noqa: E402
 import taskgraph_db  # noqa: E402
 PARENT_REPO = "rrnewton/dev-hermit"
 Run = Callable[..., subprocess.CompletedProcess[str]]
@@ -56,7 +57,12 @@ def _run(
     cwd: Path | None = None,
     timeout: float = 120,
 ) -> subprocess.CompletedProcess[str]:
-    env = None
+    # `git -C <repo>` does not bind a repository when the caller exported
+    # GIT_DIR/GIT_COMMON_DIR, and it does not bind the intended state when the
+    # caller exported GIT_INDEX_FILE/GIT_WORK_TREE. Start every verifier child
+    # from a clean repository environment. The code path's independent origin
+    # check remains the authority that binds the requested owner/repository.
+    env = git_env.sanitized_git_env()
     if command and command[0] == "tg":
         # This module WRITES: it is the only producer of CLOSURE-VERIFIED, and
         # it also runs `tg note` and `tg update --status closed`. An unbound
@@ -66,7 +72,8 @@ def _run(
         # refusing to write -- UNVERIFIABLE, never a claimed close. git/gh calls
         # through this helper are deliberately left unbound and unaffected.
         try:
-            env = taskgraph_db.child_env(taskgraph_db.resolve())
+            resolution = taskgraph_db.resolve(env=env)
+            env = taskgraph_db.child_env(resolution, env=env)
         except taskgraph_db.TaskGraphUnavailable as error:
             return subprocess.CompletedProcess(
                 list(command), UNVERIFIABLE, "", f"taskgraph-unavailable: {error}"

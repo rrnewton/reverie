@@ -1565,6 +1565,34 @@ class ProtocolTest(unittest.TestCase):
                 ):
                     protocol.resolve_repo_source("rrnewton/hermit", source)
 
+    def test_repo_source_keeps_independent_origin_binding_under_wrong_git_dir(
+        self,
+    ) -> None:
+        """Sanitation cannot replace or relax the exact owner/repository check."""
+
+        intended = self.repo_source("rrnewton/hermit", "intended-origin")
+        wrong = self.repo_source("rrnewton/reverie", "ambient-wrong-origin")
+        env = dict(os.environ)
+        env["GIT_DIR"] = str(wrong / ".git")
+
+        unsafe = subprocess.run(
+            ["git", "-C", str(intended), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+        )
+        self.assertIn("rrnewton/reverie", unsafe.stdout)
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(
+                intended.resolve(),
+                protocol.resolve_repo_source("rrnewton/hermit", intended),
+            )
+            with self.assertRaisesRegex(
+                protocol.ProtocolError, "not required repository"
+            ):
+                protocol.resolve_repo_source("rrnewton/reverie", intended)
+
     def test_land_intent_persists_policy_and_refuses_unsupported_repo(self) -> None:
         args = argparse.Namespace(
             repo="rrnewton/reverie",

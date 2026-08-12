@@ -22,6 +22,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import git_env
+
 ZERO_OID = "0" * 40
 OID_RE = re.compile(r"^[0-9a-f]{40}$")
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
@@ -59,7 +61,11 @@ def _git(
     argv.extend(("git", "-C", str(repo), *args))
     try:
         run = subprocess.run(
-            argv, capture_output=True, text=True, timeout=timeout_s
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            env=git_env.sanitized_git_env(),
         )
     except subprocess.TimeoutExpired as error:
         raise FetchRefError(

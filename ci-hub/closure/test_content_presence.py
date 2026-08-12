@@ -10,11 +10,13 @@ Everything runs in a throwaway repo under mktemp. Nothing touches real state.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import content_presence as cp  # noqa: E402
@@ -119,6 +121,36 @@ class ContentPresenceTests(unittest.TestCase):
         self.assertEqual(res.hunks_present, res.hunks_total)
         self.assertEqual(res.hunks_total, 2)
         self.assertEqual(res.exit_code(), cp.EXIT_OK)
+
+    def test_ambient_git_dir_cannot_redirect_content_check(self) -> None:
+        feature = self._two_hunk_commit()
+        git(self.r, "checkout", "-q", "-b", "ambient-clean", self.base)
+        git(self.r, "merge", "-q", "--no-ff", "--no-edit", feature)
+        target = git(self.r, "rev-parse", "HEAD")
+
+        wrong = Path(self.tmp.name) / "wrong"
+        subprocess.run(["git", "init", "-q", str(wrong)], check=True)
+        git(wrong, "config", "user.name", "Wrong Object Store")
+        git(wrong, "config", "user.email", "wrong@example.invalid")
+        (wrong / "wrong.txt").write_text("wrong\n")
+        git(wrong, "add", "wrong.txt")
+        git(wrong, "commit", "-qm", "wrong")
+        wrong_head = git(wrong, "rev-parse", "HEAD")
+
+        env = dict(os.environ)
+        env["GIT_DIR"] = str(wrong / ".git")
+        unsafe = subprocess.run(
+            ["git", "-C", str(self.r), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=env,
+        )
+        self.assertEqual(wrong_head, unsafe.stdout.strip())
+
+        with mock.patch.dict(os.environ, env, clear=True):
+            res = cp.check(self.r, feature, target)
+        self.assertEqual(cp.PRESENT, res.verdict, res.render())
 
     def test_unrelated_later_commit_does_not_trip_it(self) -> None:
         """Churn elsewhere in the repo must not read as loss."""

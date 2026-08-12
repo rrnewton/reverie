@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -97,6 +98,39 @@ def test_uncontended_fetch_advances_tracking_ref(tmp_path: Path) -> None:
     # FETCH_HEAD is repository-global across linked worktrees too.  The helper
     # must not trade the tracking-ref race for a second shared-file race.
     assert fetch_head.read_text() == "caller-owned sentinel\n"
+    fx.assert_no_temporary_refs()
+
+
+def test_ambient_git_dir_cannot_redirect_fetch(tmp_path: Path, monkeypatch) -> None:
+    fx = Fixture(tmp_path)
+    wrong = tmp_path / "wrong"
+    subprocess.run(["git", "init", "-q", str(wrong)], check=True)
+    git(wrong, "config", "user.name", "Wrong Object Store")
+    git(wrong, "config", "user.email", "wrong@example.invalid")
+    (wrong / "wrong.txt").write_text("wrong\n")
+    git(wrong, "add", "wrong.txt")
+    git(wrong, "commit", "-qm", "wrong")
+    wrong_head = git(wrong, "rev-parse", "HEAD")
+
+    ambient = dict(os.environ)
+    ambient["GIT_DIR"] = str(wrong / ".git")
+    unsafe = subprocess.run(
+        ["git", "-C", str(fx.consumer), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=ambient,
+    )
+    assert unsafe.stdout.strip() == wrong_head
+
+    new = fx.commit("ambient-safe")
+    fx.push_main()
+    monkeypatch.setenv("GIT_DIR", str(wrong / ".git"))
+    result = fx.fetch()
+    monkeypatch.delenv("GIT_DIR")
+
+    assert result.fetched_sha == new
+    assert result.tracking_sha == new == fx.tracking()
     fx.assert_no_temporary_refs()
 
 
