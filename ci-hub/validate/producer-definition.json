@@ -21,7 +21,8 @@
   "_rotation_2026_08_11_timeout_layers": "Promoted at fetched Hermit main 796565d21d123cf177b54e26e2176b695752aef3 after commits 3dc3a08a and 796565d2 moved executable test batches under named nextest timeouts and added a live bracket for the nested timeout ladder. Those already-landed commits change two previously registered producer paths, ci-portable.yml and scripts/validate.rs, and add the counted-nextest wrapper plus its automatically consumed timeout configuration to the complete full-profile definition. A clean descendant at dcec7e9566eb53a203580190101b82e9b15561eb resolved the same exact six-file map and completed schema-5 full validation with 56/56 nodes, all 19 declared test nodes, 1004 executed tests, and zero failures or skips; exact whole-map equality correctly refused its receipt before this rotation. The outgoing c881 map is version-bounded as legacy. The unrelated PR-2070 transition was removed because its registered head was superseded and its 2026-08-11T07:55:00Z expiry had passed; restaging that PR is a separate reviewed change.",
   "_transition_2026_08_11_pr2077_portable_names": "Coordinator codex-hermit4-014 staged this exact candidate on 2026-08-11 after PR #2077 head 6e9c5d3daaa824a0f02de3499e190d2e32508f8c completed schema-5 full validation: 56/56 nodes, all 19 planned test nodes, 1000 executed tests, zero failures or skips. The PR changes only the registered ci-portable.yml blob within the six-path producer map; all other producer blobs are byte-identical to the primary map. The transition expires at 2026-08-12T09:47:00Z and must be removed or replaced if this exact head does not land.",
   "_rotation_2026_08_12_reverie_pin_policy": "Promoted after fresh proof that fetched Hermit main c6c6d6958a8dc940419ead146c8283f06607a9df contains landed commit 16d47dfebcffdf73ff800a5cd8a71ef84b7d4a5b and resolves the exact six-file map below. That landed commit carries the ci-portable blob staged by the now-closed PR #2077 transition, so provenance is the landed commit rather than the closed PR head. The expired transition is removed rather than extended, and the outgoing 796565d2 map is bounded to that exact commit as legacy.",
-  "registered_at": "16d47dfebcffdf73ff800a5cd8a71ef84b7d4a5b",
+  "_rotation_2026_08_12_compatibility_scorecard": "Promoted after fresh proof that fetched Hermit main is exactly 1f4e430c135204591daa0c0cba84f77dae679a78 and resolves the six-file map below. The owner directed this infrastructure work straight to main without the ordinary pull-request path. Its clean exact-commit full validation completed 59/59 nodes, 1049 Rust tests, and 172/172 freshly selected manifest cells with zero failures. Only scripts/validate.rs changed within the registered producer map. The outgoing map is bounded to its original registered commit as legacy.",
+  "registered_at": "1f4e430c135204591daa0c0cba84f77dae679a78",
   "registered_coverage_status": "complete",
   "registered": {
     ".config/nextest.toml": "ec47795a8289a1f3ea62424b686217c942427b18",
@@ -29,9 +30,25 @@
     "ci/run-nextest-counted.sh": "5fcfc77bb7264f9631312ebb4f24f635e464364c",
     "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
     "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-    "scripts/validate.rs": "379a0f24374b562ccb2836726301034140b901b7"
+    "scripts/validate.rs": "4eb0538868c13f9d5545a09d31dbd80cbae7d6e0"
   },
   "legacy": [
+    {
+      "id": "pre-rrnewton-hermit-1f4e430c",
+      "registered_at": "16d47dfebcffdf73ff800a5cd8a71ef84b7d4a5b",
+      "coverage_status": "complete",
+      "valid_commits": [
+        "16d47dfebcffdf73ff800a5cd8a71ef84b7d4a5b"
+      ],
+      "definition": {
+        ".config/nextest.toml": "ec47795a8289a1f3ea62424b686217c942427b18",
+        ".github/workflows/ci-portable.yml": "8f56ca222078f831e85c86ec743cb3feacb0381a",
+        "ci/run-nextest-counted.sh": "5fcfc77bb7264f9631312ebb4f24f635e464364c",
+        "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
+        "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+        "scripts/validate.rs": "379a0f24374b562ccb2836726301034140b901b7"
+      }
+    },
     {
       "id": "pre-rrnewton-hermit-16d47dfe",
       "registered_at": "796565d21d123cf177b54e26e2176b695752aef3",

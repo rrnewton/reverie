@@ -52,15 +52,15 @@ export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 # transition is malformed.
 production_registry=$script_dir/../validate/producer-definition.json
 production_repo=$root/hermit
-production_registered_at=16d47dfebcffdf73ff800a5cd8a71ef84b7d4a5b
-production_rust=379a0f24374b562ccb2836726301034140b901b7
+production_registered_at=1f4e430c135204591daa0c0cba84f77dae679a78
+production_rust=4eb0538868c13f9d5545a09d31dbd80cbae7d6e0
 production_history=0255c492791fba04aa9000efb18ec3f57dd6a8ad
 production_receipt=465f6c7e1f027ba81daf09f5011f84ebdd08deb0
 production_portable=8f56ca222078f831e85c86ec743cb3feacb0381a
 production_nextest_config=ec47795a8289a1f3ea62424b686217c942427b18
 production_nextest_wrapper=5fcfc77bb7264f9631312ebb4f24f635e464364c
-outgoing_registered_at=796565d21d123cf177b54e26e2176b695752aef3
-outgoing_portable=3c6934be277a7261dfb8e4b5980f7ddbead1ddc5
+outgoing_registered_at=16d47dfebcffdf73ff800a5cd8a71ef84b7d4a5b
+outgoing_rust=379a0f24374b562ccb2836726301034140b901b7
 previous_rust=15879c97c0ddcfeafaed18deaab0cba2fab30312
 previous_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
 if ! jq -e \
@@ -306,8 +306,8 @@ PRODUCER_DEFINITION_REGISTRY=$production_registry \
 # erased, and the old map cannot authorize a newer commit.
 retarget_receipt "$tmp/production-current.json" \
     "$tmp/production-outgoing-retargeted.json" "$outgoing_registered_at"
-jq -cS --arg portable "$outgoing_portable" '
-  .producer.definition[".github/workflows/ci-portable.yml"] = $portable
+jq -cS --arg rust "$outgoing_rust" '
+  .producer.definition["scripts/validate.rs"] = $rust
 ' "$tmp/production-outgoing-retargeted.json" >"$tmp/production-outgoing.json"
 assert_mutated "$tmp/production-current.json" "$tmp/production-outgoing.json" \
     "PRODUCER outgoing definition at its bounded commit"
@@ -316,8 +316,8 @@ PRODUCER_DEFINITION_REGISTRY=$production_registry \
     "production rotation: outgoing definition qualifies at its bounded commit" \
     '[impl agent, ci-hub]' "$outgoing_registered_at" "$production_repo"
 
-jq -cS --arg portable "$outgoing_portable" '
-  .producer.definition[".github/workflows/ci-portable.yml"] = $portable
+jq -cS --arg rust "$outgoing_rust" '
+  .producer.definition["scripts/validate.rs"] = $rust
 ' "$tmp/production-current.json" >"$tmp/production-outgoing-at-current.json"
 assert_mutated "$tmp/production-current.json" \
     "$tmp/production-outgoing-at-current.json" \
