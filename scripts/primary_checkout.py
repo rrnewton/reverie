@@ -846,14 +846,15 @@ def publish_parent_snapshot(
         )
         return SNAPSHOT_PUBLISHED
 
-    # Yield BEFORE automatic sync when another coordinator has staged a gitlink.
-    # The writer can preserve staged entries, but automation has no authority to
-    # decide what that in-flight transaction means.
+    # Yield BEFORE automatic sync when a gitlink is already staged.  Index state
+    # carries no actor identity, so it is evidence of an in-flight transaction
+    # but never evidence that "another coordinator" owns it.  Preserve it and
+    # report the attribution honestly as unknown.
     staged = run_git(root, "diff", "--cached", "--quiet", "--", *PRODUCTS)
     if staged.returncode != 0:
         print(
-            "DEFERRED: product gitlinks are already staged by another coordinator "
-            "operation; yielding rather than overwriting it.",
+            "DEFERRED: product gitlinks are already staged with unknown ownership; "
+            "preserving them and yielding. Index state does not identify an actor.",
             file=out,
         )
         return SNAPSHOT_DEFERRED
@@ -925,50 +926,39 @@ def publish_parent_snapshot(
             )
             return SNAPSHOT_PUBLISHED
 
-    # Recheck after the sync boundary: a coordinator may stage a gitlink while
-    # the registered writer is active. Yield instead of absorbing it.
+    # Recheck after the sync boundary: something may stage a gitlink while the
+    # registered writer is active. Yield instead of absorbing it, without
+    # inventing an owner that the index cannot prove.
     staged = run_git(root, "diff", "--cached", "--quiet", "--", *PRODUCTS)
     if staged.returncode != 0:
         print(
-            "DEFERRED: product gitlinks became staged by another coordinator "
-            "operation; yielding rather than overwriting it.",
+            "DEFERRED: product gitlinks became staged with unknown ownership; "
+            "preserving them and yielding. Index state does not identify an actor.",
             file=out,
         )
         return SNAPSHOT_DEFERRED
 
-    add = run_git(root, "add", "--", *PRODUCTS)
-    if add.returncode != 0:
-        print_command_output(add, err)
-        return SNAPSHOT_BLOCKED
+    # DO NOT stage product gitlinks in the shared parent index here.  The
+    # serialized writer commits an explicit pathspec, for which git builds the
+    # commit index from HEAD plus those paths.  Eagerly running `git add` bought
+    # no stronger binding: a product could still move before the pathspec commit.
+    # It did, however, leave our entries in the shared index whenever the writer
+    # lost a race.  The next tick then treated our own residue as foreign work and
+    # could never retry.  Keeping the shared index byte-identical makes every
+    # DEFERRED return residue-free by construction.
     for product in PRODUCTS:
-        staged_head = run_git(root, "rev-parse", f":{product}").stdout.strip()
-        if staged_head != heads[product]:
-            # The primary advanced between validation and staging. Another moving
-            # reference: refusing to publish the mismatch is right, paging is not.
+        current_head = run_git(root / product, "rev-parse", "HEAD").stdout.strip()
+        if current_head != heads[product]:
+            # The primary advanced after validation. Another moving reference:
+            # refusing to publish the mismatch is right, paging is not.
             print(
-                f"DEFERRED: validated primary moved while staging parent gitlinks; "
-                f"{product} index={staged_head or 'missing'} validated={heads[product]}. "
+                f"DEFERRED: validated primary moved before parent publication; "
+                f"{product} current={current_head or 'missing'} "
+                f"validated={heads[product]}. "
                 "Re-validating next tick.",
                 file=out,
             )
             return SNAPSHOT_DEFERRED
-    changed = run_git(root, "diff", "--cached", "--quiet", "--", *PRODUCTS)
-    if changed.returncode == 0:
-        print(
-            "Parent product snapshot already current: "
-            + ", ".join(f"{name}={heads[name][:12]}" for name in PRODUCTS)
-            + (
-                "; known_dirty_exceptions="
-                + ",".join(f"{name}:{path}" for name, path in allowed_dirty.items())
-                if allowed_dirty
-                else "; known_dirty_exceptions=none"
-            ),
-            file=out,
-        )
-        return SNAPSHOT_PUBLISHED
-    if changed.returncode != 1:
-        print("ERROR: could not inspect staged product gitlinks.", file=err)
-        return SNAPSHOT_BLOCKED
 
     try:
         snapshot_message = machine_attributed_snapshot_message(root)

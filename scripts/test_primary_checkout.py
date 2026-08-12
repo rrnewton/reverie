@@ -1630,9 +1630,44 @@ class SnapshotMovingReferenceTests(_ParentWorkspaceFixture):
         code, out, err = self.snapshot()
 
         self.assertEqual(code, primary_checkout.SNAPSHOT_DEFERRED, err + out)
-        self.assertIn("already staged by another coordinator", out)
+        self.assertIn("already staged with unknown ownership", out)
+        self.assertNotIn("another coordinator", out)
         self.assertEqual(head_before, git(self.root, "rev-parse", "HEAD"))
         self.assertEqual(liteinst, git(self.root, "rev-parse", ":liteinst2"))
+
+    def test_failed_snapshot_publish_does_not_poison_the_shared_index(self) -> None:
+        """A lost publication race must not become a permanent self-refusal.
+
+        The snapshot used to stage every product in the shared index before
+        calling the serialized writer.  A writer refusal then returned DEFERRED
+        while leaving those entries staged, so the next tick blamed that exact
+        residue on "another coordinator" and could never retry.  The index tree
+        is the load-bearing assertion: a warning alone cannot prove cleanup.
+        """
+        self.install_parent_attribution_checker()
+        self.advance_product("liteinst2")
+        index_before = git(self.root, "write-tree")
+
+        refused = subprocess.CompletedProcess(
+            args=("scripts/parent-main-write", "commit"),
+            returncode=1,
+            stdout="",
+            stderr="simulated serialized-writer race\n",
+        )
+        with patch.object(primary_checkout, "run_parent_main_write", return_value=refused):
+            code, out, err = self.snapshot()
+
+        self.assertEqual(code, primary_checkout.SNAPSHOT_DEFERRED, err + out)
+        self.assertIn("serialized parent snapshot publication did not complete", out)
+        self.assertEqual(index_before, git(self.root, "write-tree"))
+        self.assertEqual("", git(self.root, "diff", "--cached", "--name-only"))
+
+        # A second poll reaches the writer again instead of refusing on residue.
+        with patch.object(primary_checkout, "run_parent_main_write", return_value=refused) as writer:
+            code, out, err = self.snapshot()
+        self.assertEqual(code, primary_checkout.SNAPSHOT_DEFERRED, err + out)
+        self.assertEqual(1, writer.call_count)
+        self.assertNotIn("already staged", out)
 
     def test_parent_behind_but_gitlinks_already_published_is_success(self) -> None:
         """The ordering bug, which is a false page with NO underlying defect.
