@@ -1467,12 +1467,42 @@ fn main() -> ExitCode {
         }
     }
 
+    // This is deliberately contact-time visibility, not authority and not an
+    // obligation. The exact-main classifier re-dereferences the canonical
+    // receipt and prints only when the current tip is recorded soft-green but
+    // is not yet hard-green. It is advisory: a broken warning probe must say
+    // UNKNOWN without changing the command the caller actually requested.
+    warn_if_main_is_soft_green(&root);
+
     match execute(&root, cli.command) {
         Ok(code) => to_exit_code(code),
         Err(error) => {
             eprintln!("{error}");
             to_exit_code(error.exit_code())
         }
+    }
+}
+
+fn warn_if_main_is_soft_green(root: &Path) {
+    if env::var_os("CI_HUB_SKIP_SOFT_MAIN_WARNING").is_some() {
+        return;
+    }
+    let output = Command::new("python3")
+        .arg(root.join("ci-hub/landing/main_soft_green.py"))
+        .arg("status")
+        .current_dir(root)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => {
+            let _ = io::stderr().write_all(&output.stderr);
+        }
+        Ok(output) => eprintln!(
+            "ci-hub: WARNING: current-main hard/soft state is UNKNOWN: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(error) => eprintln!(
+            "ci-hub: WARNING: current-main hard/soft state is UNKNOWN: {error}"
+        ),
     }
 }
 

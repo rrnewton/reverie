@@ -549,6 +549,10 @@ else
     fi
   elif [ "$landability_state" = SOFT_GREEN ]; then
     say "soft-green landability accepted; no exact-head cache label is minted at $HEAD"
+    "$ROOT/ci-hub/remediation/land_and_arm.py" mark-soft \
+      --repo "$R" --pr "$PR" --candidate "$HEAD" \
+      --source-rev "$ORIG" --base "$post_push_base" \
+      || abandon "could not bind the prepared land intent to exact soft-green provenance" 4
   fi
 fi
 

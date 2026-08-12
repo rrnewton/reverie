@@ -360,6 +360,52 @@ class LandAndArmTest(unittest.TestCase):
         self.assertEqual(self.intent()["state"], "armed")
         self.assertEqual(self.intent()["command"], ["external-bounded-lander"])
 
+    def test_soft_green_complete_launches_directly_without_obligation(self) -> None:
+        args = self.args()
+        self.assertEqual(land_and_arm.prepare(args), 0)
+        mark_args = Namespace(
+            repo=args.repo,
+            pr=args.pr,
+            candidate="b" * 40,
+            source_rev="c" * 40,
+            base="d" * 40,
+            intent_dir=args.intent_dir,
+        )
+        self.assertEqual(land_and_arm.mark_soft(mark_args), 0)
+        complete_args = Namespace(
+            repo=args.repo,
+            pr=args.pr,
+            intent_dir=args.intent_dir,
+            observe_timeout=1,
+        )
+        launched = {
+            "state": "SOFT_GREEN",
+            "commit": SHA,
+            "unit": "validate-soft-green-main-aaaaaaaaaaaa.service",
+            "launched": True,
+        }
+        with mock.patch.object(
+            land_and_arm, "observe_merged_sha", return_value=SHA
+        ), mock.patch.object(
+            land_and_arm.main_soft_green,
+            "record_and_launch",
+            return_value=launched,
+        ) as direct, mock.patch.object(land_and_arm, "arm_sha") as arm:
+            self.assertEqual(land_and_arm.complete(complete_args), 0)
+        arm.assert_not_called()
+        direct.assert_called_once_with(
+            root=land_and_arm.ROOT,
+            landed_sha=SHA,
+            candidate="b" * 40,
+            source_rev="c" * 40,
+            base="d" * 40,
+            agent=args.actor,
+        )
+        intent = self.intent()
+        self.assertEqual(intent["state"], "direct-validation-launched")
+        self.assertIsNone(intent["obligation_id"])
+        self.assertEqual(intent["direct_validation"], launched)
+
     def test_cross_repo_source_mismatch_is_refused_before_intent_or_land(self) -> None:
         args = self.args()
         args.repo = "rrnewton/reverie"

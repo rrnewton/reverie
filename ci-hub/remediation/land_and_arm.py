@@ -17,9 +17,11 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(ROOT / "ci-hub/history"))
+sys.path.insert(0, str(ROOT / "ci-hub/landing"))
 
 import obligations
 import protocol
+import main_soft_green
 
 DEFAULT_COMMAND_TIMEOUT = 20 * 60
 DEFAULT_OBSERVE_TIMEOUT = 60
@@ -357,6 +359,62 @@ def prepare(args: argparse.Namespace) -> int:
     return 0
 
 
+def mark_soft(args: argparse.Namespace) -> int:
+    """Bind a prepared land intent to the exact candidate soft-green provenance."""
+    path = _intent_path(args.intent_dir, args.repo, args.pr)
+    try:
+        intent = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise LandError(f"cannot read prepared land intent {path}: {error}") from error
+    if not isinstance(intent, dict) or intent.get("state") != "prepared":
+        raise LandError(f"land intent is not prepared for a soft-green binding: {path}")
+    if intent.get("repo") != protocol.DEFAULT_REPO:
+        raise LandError("direct soft-main validation is defined only for Hermit")
+    for name, value in (("candidate", args.candidate), ("source_rev", args.source_rev),
+                        ("base", args.base)):
+        if not main_soft_green.SHA_RE.fullmatch(value):
+            raise LandError(f"soft-green {name} must be exact lowercase 40-hex")
+    intent.update(
+        validation_class="soft-green",
+        validation_candidate=args.candidate,
+        validation_source_rev=args.source_rev,
+        validation_base=args.base,
+        validation_classified_at=obligations.utc_now(),
+    )
+    _atomic_json(path, intent)
+    print(
+        f"LAND INTENT SOFT-GREEN: {args.repo}#{args.pr} "
+        f"candidate={args.candidate}"
+    )
+    return 0
+
+
+def _launch_soft_main(path: Path, intent: dict[str, Any], sha: str) -> int | None:
+    """Launch exact-main validation directly; None selects legacy obligation arming."""
+    if intent.get("validation_class") != "soft-green":
+        return None
+    result = main_soft_green.record_and_launch(
+        root=ROOT,
+        landed_sha=sha,
+        candidate=str(intent.get("validation_candidate") or ""),
+        source_rev=str(intent.get("validation_source_rev") or ""),
+        base=str(intent.get("validation_base") or ""),
+        agent=str(intent["actor"]),
+    )
+    intent.update(
+        state="direct-validation-launched",
+        direct_validation=result,
+        armed_at=obligations.utc_now(),
+        error=None,
+    )
+    _atomic_json(path, intent)
+    print(
+        f"LAND DIRECT VALIDATE: {intent['repo']}#{intent['pr']} sha={sha} "
+        f"state={result['state']} launched={str(result.get('launched', False)).lower()}"
+    )
+    return 0
+
+
 def complete(args: argparse.Namespace) -> int:
     """Observe the merged SHA and complete a previously prepared arm."""
     path = _intent_path(args.intent_dir, args.repo, args.pr)
@@ -378,6 +436,9 @@ def complete(args: argparse.Namespace) -> int:
         state="merged-unarmed", landed_sha=sha, merged_at=obligations.utc_now()
     )
     _atomic_json(path, intent)
+    direct = _launch_soft_main(path, intent, sha)
+    if direct is not None:
+        return direct
     code, obligation_id = arm_sha(intent, sha)
     if obligation_id is None:
         intent.update(state="arm-failed", error=f"complete arm exited {code}")
@@ -402,6 +463,8 @@ def recover_intent(path: Path, *, observe_timeout: int) -> int:
     if not isinstance(intent, dict) or intent.get("schema_version") != 1:
         raise LandError(f"unsupported recovery intent: {path}")
     if intent.get("state") == "land-command-failed":
+        return 0
+    if intent.get("state") == "direct-validation-launched":
         return 0
     if intent.get("state") == "armed":
         obligation_id = intent.get("obligation_id")
@@ -447,6 +510,9 @@ def recover_intent(path: Path, *, observe_timeout: int) -> int:
             merged_at=obligations.utc_now(),
         )
         _atomic_json(path, intent)
+    direct = _launch_soft_main(path, intent, sha)
+    if direct is not None:
+        return direct
     # Recovery runs periodically and can overlap the original completer between
     # its durable launch claim and final armed transition. That owner is doing
     # exactly the work recovery exists to preserve. Treat the overlap as
@@ -576,6 +642,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--observe-timeout", type=int, default=DEFAULT_OBSERVE_TIMEOUT
     )
 
+    mark_parser = subparsers.add_parser(
+        "mark-soft", help="bind a prepared intent to exact soft-green candidate provenance"
+    )
+    mark_parser.add_argument("--repo", default=protocol.DEFAULT_REPO)
+    mark_parser.add_argument("--pr", type=int, required=True)
+    mark_parser.add_argument("--candidate", required=True)
+    mark_parser.add_argument("--source-rev", required=True)
+    mark_parser.add_argument("--base", required=True)
+    mark_parser.add_argument("--intent-dir", type=Path, default=default_intent_dir())
+
     recover_parser = subparsers.add_parser(
         "recover", help="arm any merged land whose wrapper died before arming"
     )
@@ -632,8 +708,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return prepare(args)
         if args.operation == "complete":
             return complete(args)
+        if args.operation == "mark-soft":
+            return mark_soft(args)
         return recover(args)
-    except (LandError, protocol.ProtocolError, obligations.StoreError) as error:
+    except (
+        LandError,
+        protocol.ProtocolError,
+        obligations.StoreError,
+        main_soft_green.SoftMainError,
+    ) as error:
         print(f"ci-hub land-and-arm: {error}", file=sys.stderr)
         return 2
 
