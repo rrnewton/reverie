@@ -2297,6 +2297,7 @@ impl ValidateLock {
         args: &RunArgs,
         owner: &ProcessOwner,
         attribution: &str,
+        consume_on_acquire: bool,
     ) -> Result<GlobalTurn, ValidateLockError> {
         let now = epoch_seconds()?;
         self.with_global_queue_guard(|| {
@@ -2359,7 +2360,9 @@ impl ValidateLock {
                 })?;
             match anchor {
                 Some(anchor) => {
-                    queue.remove(my_index);
+                    if consume_on_acquire {
+                        queue.remove(my_index);
+                    }
                     self.write_global_queue(&queue)?;
                     Ok(GlobalTurn::Acquired(anchor))
                 }
@@ -2392,11 +2395,12 @@ impl ValidateLock {
         args: &RunArgs,
         owner: &ProcessOwner,
         attribution: &str,
+        consume_on_acquire: bool,
     ) -> Result<Option<BoxExclusionAnchor>, ValidateLockError> {
         let started = Instant::now();
         let mut last = String::new();
         loop {
-            match self.try_global_turn(args, owner, attribution)? {
+            match self.try_global_turn(args, owner, attribution, consume_on_acquire)? {
                 GlobalTurn::Acquired(anchor) => return Ok(Some(anchor)),
                 GlobalTurn::WaitPriority {
                     head_agent,
@@ -4140,24 +4144,63 @@ impl ValidateLock {
         // cleanup quarantine, which is unchanged and still consulted below; ACROSS
         // repositories it is not. Closing that needs a box-global durable record,
         // which is a different change from this one.
-        let _box_anchor = match self.wait_for_global_turn(&args, &owner, &anchor_attribution)? {
-            Some(anchor) => anchor,
-            None => {
-                return Ok(REFUSED_EXIT_CODE);
-            }
-        };
-        eprintln!(
-            "validate-lock: box-global anchor held at {}",
-            _box_anchor.path().display()
-        );
+        let mut box_anchor =
+            match self.wait_for_global_turn(&args, &owner, &anchor_attribution, false)? {
+                Some(anchor) => anchor,
+                None => {
+                    return Ok(REFUSED_EXIT_CODE);
+                }
+            };
+        loop {
+            eprintln!(
+                "validate-lock: box-global anchor held at {}",
+                box_anchor.path().display()
+            );
 
-        // The anchor wait may have spanned a new background release. Re-check
-        // at the actual acquisition boundary and drop the anchor immediately on
-        // YIELD/UNKNOWN so the owner watch can take it.
-        let yield_status = self.wait_for_owner_watch_yield(&args.agent, 0, true)?;
-        if yield_status != 0 {
-            return Ok(yield_status);
+            // The anchor wait may have spanned a new background release. Keep
+            // this exact waiter in the global queue until the boundary is
+            // settled. On YIELD, drop only the anchor: the owner-watch agent
+            // ranks ahead of every queued priority and can acquire naturally,
+            // while this caller retains its position instead of being disposed
+            // and sent to the tail. UNKNOWN still refuses fail-closed.
+            let now = epoch_seconds()?;
+            let boundary = self.with_guard(|| Ok(self.yield_status_for_agent(&args.agent, now)))?;
+            match boundary.state {
+                YieldState::Allow => {
+                    self.remove_own_global_waiter(&args, &owner)?;
+                    break;
+                }
+                YieldState::Unknown => {
+                    drop(box_anchor);
+                    self.remove_own_global_waiter(&args, &owner)?;
+                    eprintln!(
+                        "REFUSED: validate yield state UNKNOWN ({}): {}; absence is not permission",
+                        boundary.reason_code, boundary.detail
+                    );
+                    return Ok(REFUSED_EXIT_CODE);
+                }
+                YieldState::Yield => {
+                    eprintln!("validate-lock: YIELD for owner watch: {}", boundary.detail);
+                    drop(box_anchor);
+                    let yield_status =
+                        self.wait_for_owner_watch_yield(&args.agent, args.wait, args.no_wait)?;
+                    if yield_status != 0 {
+                        self.remove_own_global_waiter(&args, &owner)?;
+                        return Ok(yield_status);
+                    }
+                    box_anchor = match self.wait_for_global_turn(
+                        &args,
+                        &owner,
+                        &anchor_attribution,
+                        false,
+                    )? {
+                        Some(anchor) => anchor,
+                        None => return Ok(REFUSED_EXIT_CODE),
+                    };
+                }
+            }
         }
+        let _box_anchor = box_anchor;
 
         // Durable half of box exclusion, checked WITH the anchor held so the
         // answer cannot change under us. The anchor proves no LIVE supervisor
@@ -7948,15 +7991,17 @@ exit 0
         let owner = current_process_owner().unwrap();
 
         assert!(matches!(
-            lock.try_global_turn(&low, &owner, "fixture=low").unwrap(),
+            lock.try_global_turn(&low, &owner, "fixture=low", true)
+                .unwrap(),
             GlobalTurn::Held(_)
         ));
         assert!(matches!(
-            lock.try_global_turn(&high, &owner, "fixture=high").unwrap(),
+            lock.try_global_turn(&high, &owner, "fixture=high", true)
+                .unwrap(),
             GlobalTurn::Held(_)
         ));
         assert!(matches!(
-            lock.try_global_turn(&low, &owner, "fixture=low").unwrap(),
+            lock.try_global_turn(&low, &owner, "fixture=low", true).unwrap(),
             GlobalTurn::WaitPriority {
                 head_agent,
                 head_priority: QueuePriority::OwnerDirective,
@@ -7975,7 +8020,10 @@ exit 0
         drop(live_holder);
         let deadline = Instant::now() + Duration::from_secs(5);
         let admitted = loop {
-            match lock.try_global_turn(&high, &owner, "fixture=high").unwrap() {
+            match lock
+                .try_global_turn(&high, &owner, "fixture=high", true)
+                .unwrap()
+            {
                 GlobalTurn::Acquired(anchor) => break anchor,
                 GlobalTurn::Held(_) if Instant::now() < deadline => {
                     thread::sleep(Duration::from_millis(10));
@@ -7990,6 +8038,72 @@ exit 0
             "admitted head must retain the anchor"
         );
         drop(admitted);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// SECOND-BOUNDARY YIELD BRACKET. A caller that has paid its queue wait can
+    /// retain that exact queue identity while dropping the anchor. The owner
+    /// watch still jumps ahead and acquires naturally; after it releases, the
+    /// original caller reacquires without being disposed or preempting anyone.
+    #[test]
+    fn owner_watch_jumps_retained_waiter_without_disposing_it() {
+        let paths = temp_paths("global-priority-owner-watch-jump");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let routine = global_queue_run_args("patient-pr-head", HEX_SHA);
+        let watch = global_queue_run_args(
+            OWNER_WATCH_AGENT,
+            "1111111111111111111111111111111111111111",
+        );
+        let owner = current_process_owner().unwrap();
+
+        let routine_anchor = match lock
+            .try_global_turn(&routine, &owner, "fixture=routine", false)
+            .unwrap()
+        {
+            GlobalTurn::Acquired(anchor) => anchor,
+            _ => panic!("routine waiter did not acquire the free boundary"),
+        };
+        assert!(lock
+            .read_global_queue()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.matches(&routine.agent, routine.kind, &routine.target)));
+
+        assert!(matches!(
+            lock.try_global_turn(&watch, &owner, "fixture=watch", true)
+                .unwrap(),
+            GlobalTurn::Held(_)
+        ));
+        let queue = lock.read_global_queue().unwrap();
+        assert_eq!(queue[0].agent, OWNER_WATCH_AGENT);
+        assert_eq!(queue[1].agent, routine.agent);
+
+        drop(routine_anchor);
+        let watch_anchor = match lock
+            .try_global_turn(&watch, &owner, "fixture=watch", true)
+            .unwrap()
+        {
+            GlobalTurn::Acquired(anchor) => anchor,
+            _ => panic!("owner watch did not jump the retained waiter"),
+        };
+        assert!(lock
+            .read_global_queue()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.matches(&routine.agent, routine.kind, &routine.target)));
+        drop(watch_anchor);
+
+        let resumed = match lock
+            .try_global_turn(&routine, &owner, "fixture=routine", true)
+            .unwrap()
+        {
+            GlobalTurn::Acquired(anchor) => anchor,
+            _ => panic!("retained waiter did not resume after owner watch release"),
+        };
+        assert!(lock.read_global_queue().unwrap().is_empty());
+        drop(resumed);
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
@@ -8015,12 +8129,12 @@ exit 0
         }
         let owner = current_process_owner().unwrap();
         assert!(matches!(
-            lock.try_global_turn(&first, &owner, "fixture=first")
+            lock.try_global_turn(&first, &owner, "fixture=first", true)
                 .unwrap(),
             GlobalTurn::Held(_)
         ));
         assert!(matches!(
-            lock.try_global_turn(&second, &owner, "fixture=second")
+            lock.try_global_turn(&second, &owner, "fixture=second", true)
                 .unwrap(),
             GlobalTurn::WaitPriority { head_agent, .. } if head_agent == first.agent
         ));
@@ -8103,17 +8217,17 @@ exit 0
         let holder = BoxExclusionAnchor::take(&paths.anchor, 0).unwrap().unwrap();
         let owner = current_process_owner().unwrap();
         assert!(matches!(
-            lock.try_global_turn(&routine, &owner, "fixture=routine")
+            lock.try_global_turn(&routine, &owner, "fixture=routine", true)
                 .unwrap(),
             GlobalTurn::Held(_)
         ));
         assert!(matches!(
-            lock.try_global_turn(&pending, &owner, "fixture=pending")
+            lock.try_global_turn(&pending, &owner, "fixture=pending", true)
                 .unwrap(),
             GlobalTurn::Held(_)
         ));
         assert!(matches!(
-            lock.try_global_turn(&routine, &owner, "fixture=routine")
+            lock.try_global_turn(&routine, &owner, "fixture=routine", true)
                 .unwrap(),
             GlobalTurn::WaitPriority {
                 head_agent,

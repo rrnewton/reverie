@@ -256,17 +256,17 @@ audit() { # audit <description> <ok|bad>
   else printf 'BAD  AUDIT %s\n' "$1"; audit_fail=1; fi
 }
 
-# 1. All three mutation boundaries invoke the ONE landability consumer: before
-# rebase, after push, and immediately before merge. The consumer, not this shell
-# entrypoint, selects hard- or soft-green under hermit-validation-authority.
+# 1. All mutation boundaries invoke the ONE landability consumer: before JIT,
+# after JIT, after push, and immediately before merge. The consumer, not this
+# shell entrypoint, selects hard- or soft-green under hermit-validation-authority.
 mapfile -t authority_lines < <(grep -n 'validation_landability "\$' "$lander" || true)
-if [ "${#authority_lines[@]}" -eq 3 ] &&
+if [ "${#authority_lines[@]}" -eq 4 ] &&
    [ "$(grep -c 'VRC=\$?' "$lander")" -ge 2 ] &&
    grep -Fq 'receipt_rc=$?' "$lander" &&
    grep -Fq 'rebase_wrapper.py" authorize' "$lander"; then
-  audit "land-pr.sh: 3 validation-landability boundaries capture their rc" ok
+  audit "land-pr.sh: 4 validation-landability boundaries include the post-JIT recheck" ok
 else
-  audit "land-pr.sh: expected 3 captured landability boundaries, found ${#authority_lines[@]}" bad
+  audit "land-pr.sh: expected 4 captured landability boundaries, found ${#authority_lines[@]}" bad
 fi
 if grep -Fq '[ "$plain_rebase" -eq 1 ] && [ "$HEAD" != "$ORIG" ]' "$lander" &&
    grep -Fq 'rebase_wrapper.py" record' "$lander"; then
@@ -301,6 +301,16 @@ if grep -Fq 'health/approval_binding.py"' "$lander" &&
   audit "final boundary re-derives passed-review cache authority from APPROVED-AT" ok
 else
   audit "final boundary can consume an unbound passed-review cache label" bad
+fi
+
+if grep -Fq 'bin/pr-head-ci"' "$lander" &&
+   grep -Fq -- '--expected-head "$ORIG"' "$lander" &&
+   grep -Fq -- '--checkout "$WT" --agent "$AGENT" --execute' "$lander" &&
+   grep -Fq 'merge-base --is-ancestor "$eligibility_base" "$ORIG"' "$lander" &&
+   grep -Fq 'post-JIT validation landability' "$lander"; then
+  audit "missing exact-head authority invokes centralized JIT only on a current-base head, then rechecks landability" ok
+else
+  audit "landing frontier has no exact-head centralized JIT producer or skips its post-run authority recheck" bad
 fi
 
 if grep -Fq 'cherry_pick_context.py"' "$lander" &&

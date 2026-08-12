@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-toplevel)
+estimate=(--estimate-unknown --basis "unknown: query-only or validation cost depends on --execute and the selected exact head")
+for arg in "$@"; do
+  if [ "$arg" = --execute ]; then
+    estimate=(--estimate-wall-seconds 911 --estimate-cpu-seconds 3318.488 \
+      --basis "measured full VALIDATE at CI_DAG_JOBS=16: 911s wall, 2681.187s user + 637.301s sys")
+    break
+  fi
+done
+exec "$ROOT/ci-hub/bin/tool-cost" --tool ci-hub/pr-head-ci "${estimate[@]}" -- \
+  python3 "$ROOT/ci-hub/landing/pr_head_ci.py" "$@"

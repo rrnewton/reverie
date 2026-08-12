@@ -357,6 +357,41 @@ else
     || abandon "cannot resolve current main for validation landability" 4
   VS=$(validation_landability "$ORIG" "$eligibility_base" --json 2>&1); VRC=$?
   say "validation landability(head=$ORIG) rc=$VRC: $VS"
+  # JUST-IN-TIME PR-HEAD CI.  A prepared, reviewed head whose exact commit has
+  # no accepted verdict gets one run through the same centralized producer as
+  # every other qualifying receipt.  Do not validate a stale base: the producer
+  # would (correctly) refuse it, and spending the queue wait first would turn a
+  # cheap rebase requirement into an expensive NO_RESULT.  The helper re-reads
+  # the live PR head after VALIDATE, so a concurrent push expires this result
+  # instead of inheriting it.
+  if [ "$VRC" -ne 0 ] && [ "$producer_exception" -ne 1 ]; then
+    existing_status=$("$ROOT/ci-hub/ci-hub" validate-status --sha "$ORIG" --json 2>&1)
+    existing_rc=$?
+    if [ "$existing_rc" -eq 4 ] && \
+       git -C "$WT" merge-base --is-ancestor "$eligibility_base" "$ORIG"; then
+      git -C "$WT" checkout -q --detach "$ORIG" \
+        || abandon "cannot materialize exact PR head $ORIG for just-in-time validation" 4
+      jit_detail=$("$ROOT/ci-hub/bin/pr-head-ci" \
+        --repo "$R" --pr "$PR" --expected-head "$ORIG" \
+        --checkout "$WT" --agent "$AGENT" --execute 2>&1)
+      jit_rc=$?
+      git -C "$WT" checkout -q --detach origin/main \
+        || abandon "cannot restore lander checkout after just-in-time validation" 4
+      say "just-in-time exact-head CI(head=$ORIG) rc=$jit_rc: $jit_detail"
+      [ "$jit_rc" -eq 0 ] \
+        || abandon "just-in-time exact-head CI produced no qualifying verdict for $ORIG (rc=$jit_rc)" 4
+      with-proxy git -C "$WT" fetch -q origin main \
+        || abandon "could not refresh current main after just-in-time validation" 4
+      eligibility_base=$(git -C "$WT" rev-parse --verify origin/main) \
+        || abandon "cannot resolve current main after just-in-time validation" 4
+      VS=$(validation_landability "$ORIG" "$eligibility_base" --json 2>&1); VRC=$?
+      say "post-JIT validation landability(head=$ORIG) rc=$VRC: $VS"
+    elif [ "$existing_rc" -eq 4 ]; then
+      say "just-in-time exact-head CI not admitted: PR head lacks current origin/main; rebase before VALIDATE"
+    else
+      say "just-in-time exact-head CI not admitted: canonical exact-head status rc=$existing_rc: $existing_status"
+    fi
+  fi
   [ "$VRC" -eq 0 ] \
     || abandon "validation landability refused PR head $ORIG (rc=$VRC)" 4
 fi
