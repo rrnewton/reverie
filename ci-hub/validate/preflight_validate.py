@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Fail-closed fixed-floor admission for a receipt-producing validation.
 
-Admission proves that the head contains every immutable producer/merge-gate
-floor in ``rebase-base-floors.json``. Mutable-tip currency is deliberately not
-asked here: schema-5 receipts record their exact base evidence, and the single
-receipt authority compares that evidence with freshly fetched main once,
-immediately before the merge it authorizes. Losing that race costs a gate rerun,
-not a full validation.
+Admission here proves that the head contains every immutable producer/merge-gate
+floor in ``rebase-base-floors.json``. The enclosing ``validate-lock run`` owns
+the separate moving boundary: it freshly fetches ``origin/main`` before queueing
+and repeats the ancestry check immediately before acquiring the validation
+lease. Schema-5 receipt authority checks that boundary again immediately before
+the merge it authorizes.
 
 Exit codes:
   0  OK       -- every immutable ancestry authority passes
@@ -82,7 +82,7 @@ def admission(
         "fixed_floors": floors,
         "moving_base": {
             "branch": base_branch,
-            "status": "deferred-to-merge-boundary",
+            "status": "checked-by-validate-lock",
         },
         "ok": floors["ok"],
     }
@@ -99,7 +99,7 @@ def render(result: dict) -> str:
     return (
         f"OK: head {_short(result['head'])} contains all "
         f"{floors['n_anchors']} fixed validation floors; mutable origin/"
-        f"{result['moving_base']['branch']} currency is deferred to the merge boundary."
+        f"{result['moving_base']['branch']} currency is checked by validate-lock."
     )
 
 

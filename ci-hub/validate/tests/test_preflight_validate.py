@@ -38,14 +38,14 @@ class AdmissionVerdictTest(unittest.TestCase):
                 base_branch="main",
             )
 
-    def test_mutable_tip_is_deferred_to_merge_boundary(self) -> None:
+    def test_mutable_tip_is_owned_by_validate_lock(self) -> None:
         result = self.evaluate(False)
 
         self.assertTrue(result["ok"])
-        self.assertEqual("deferred-to-merge-boundary", result["moving_base"]["status"])
+        self.assertEqual("checked-by-validate-lock", result["moving_base"]["status"])
         message = pv.render(result)
         self.assertIn("OK:", message)
-        self.assertIn("deferred to the merge boundary", message)
+        self.assertIn("checked by validate-lock", message)
 
         with mock.patch.object(pv, "admission", return_value=result), \
              contextlib.redirect_stdout(io.StringIO()):
@@ -57,7 +57,7 @@ class AdmissionVerdictTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertIn("OK:", pv.render(result))
-        self.assertIn("merge boundary", pv.render(result))
+        self.assertIn("validate-lock", pv.render(result))
 
     def test_fixed_floor_still_refuses_even_when_moving_base_passes(self) -> None:
         result = self.evaluate(True, fixed_ok=False)

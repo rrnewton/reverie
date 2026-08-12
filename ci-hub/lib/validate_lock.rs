@@ -83,8 +83,8 @@ const CHILD_POLL_MILLIS: u64 = 500;
 const EMPTY_DOMAIN_SETTLE_SECONDS: u64 = CHILD_TERM_GRACE_SECONDS;
 const EMPTY_DOMAIN_SETTLE_POLL_MILLIS: u64 = 20;
 /// Exit code reported when admission REFUSES a validate whose head predates an
-/// immutable fixed floor. Same 3 as an ownership refusal: a refusal, not a
-/// crash. Mutable-tip currency belongs only at the final merge boundary.
+/// immutable fixed floor or freshly fetched `origin/main`. Same 3 as an
+/// ownership refusal: a refusal, not a crash.
 const STALE_BASE_EXIT_CODE: i32 = 3;
 /// TEST-BUILD-ONLY override of the composite validation-admission command
 /// (space-split argv). The target head is appended as `--head <sha>`.
@@ -110,6 +110,10 @@ const OWNER_WATCH_AGENT: &str = "owner-checkout-watch";
 const OWNER_WATCH_YIELD_SECONDS: i64 = 90;
 const OWNER_WATCH_STATE_RELATIVE: &str = ".local/state/hermit-owner-validate";
 const OWNER_WATCH_VERIFIER_RELATIVE: &str = "scripts/owner-checkout-validate-watch.py";
+/// Bound the only network operation performed at the free admission boundary.
+/// A failed or timed-out fetch refuses freshness; it must not turn a stale-head
+/// optimization into an unbounded box-global anchor hold.
+const CURRENT_MAIN_FETCH_TIMEOUT_SECONDS: u64 = 30;
 
 /// Read a TEST-BUILD-ONLY environment override.
 ///
@@ -1800,10 +1804,11 @@ fn is_full_sha(target: &str) -> bool {
 /// absent here: the receipt records its exact base and the canonical verifier
 /// asserts currency once at the final merge boundary.
 ///
-/// Reverie has no Hermit producer-floor registry: its versioned product
-/// contract requires current `origin/main` ancestry, checked against the
-/// canonical Reverie object store. Bench kinds pass through. Validation targets that are not exact SHAs and
-/// the legacy `--skip-base-check` flag are refused: either would sever the
+/// Reverie has no Hermit producer-floor registry, so its exact-SHA check returns
+/// here and its moving-main boundary is enforced by
+/// [`current_main_freshness_check`]. Bench kinds pass through. Validation
+/// targets that are not exact SHAs and the legacy `--skip-base-check` flag are
+/// refused: either would sever the
 /// observable binding between the admission verdict and the validated commit.
 /// The predicate is shelled out to `preflight_validate.py`, the same composite
 /// authority used by all other ci-hub validation producers. THAT IS THE ONLY
@@ -1842,33 +1847,7 @@ fn base_admission_check(
     }
 
     if kind == Kind::ReverieValidate {
-        let checkout = root.join("reverie");
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&checkout)
-            .args([
-                "merge-base",
-                "--is-ancestor",
-                "refs/remotes/origin/main",
-                target,
-            ])
-            .output()
-            .map_err(|error| {
-                ValidateLockError::StaleBase(format!(
-                    "validate-lock: Reverie ancestry check could not run in {} ({error}); current-main ancestry for {target} is UNRESOLVED.",
-                    checkout.display()
-                ))
-            })?;
-        return match output.status.code() {
-            Some(0) => Ok(()),
-            Some(1) => Err(ValidateLockError::StaleBase(format!(
-                "REFUSE: Reverie validation target {target} does not contain current origin/main. Rebase before validating."
-            ))),
-            other => Err(ValidateLockError::StaleBase(format!(
-                "validate-lock: Reverie ancestry for {target} is UNRESOLVED (git exit {other:?}: {}).",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))),
-        };
+        return Ok(());
     }
 
     let override_argv = test_only_override(ADMIT_PREFLIGHT_CMD_ENV)
@@ -1934,6 +1913,153 @@ fn base_admission_check(
         }
     }
 }
+
+/// Fetch the product repository's current `origin/main`, then require it to be
+/// an ancestor of the exact validation target.
+///
+/// This is deliberately separate from [`base_admission_check`]. That check is
+/// the immutable producer-floor authority; this one is the moving boundary
+/// whose answer can change while a caller waits. Production `run` invokes this
+/// once before entering the box-global queue and again at the free boundary.
+/// The inner product driver retains its local-ref check as a defensive
+/// assertion, but it no longer discovers staleness only after consuming the
+/// validation lease.
+///
+/// Fail-CLOSED: a missing checkout, failed fetch, unresolved target, or
+/// indeterminate ancestry is a stale-base refusal. An unavailable freshness
+/// authority cannot authorize scarce box time.
+fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, ValidateLockError> {
+    if kind == Kind::Bench {
+        return Ok(None);
+    }
+
+    // A production run is launched with systemd's WorkingDirectory set to the
+    // exact source checkout. Use that repository rather than assuming every
+    // caller is a linked worktree of the parent's primary submodule. The test
+    // binary runs many lock-only cases from one process-wide cwd, so dedicated
+    // fixtures live below their isolated root instead.
+    #[cfg(not(test))]
+    {
+        let _ = root;
+        env::current_dir().map(Some).map_err(|error| {
+            ValidateLockError::StaleBase(format!(
+                "validate-lock: validation source checkout is UNRESOLVED ({error}); current-main freshness cannot be established."
+            ))
+        })
+    }
+    #[cfg(test)]
+    {
+        Ok(Some(root.join(match kind {
+            Kind::Validate => "hermit",
+            Kind::ReverieValidate => "reverie",
+            Kind::Bench => unreachable!("bench returned above"),
+        })))
+    }
+}
+
+fn current_main_freshness_check(
+    root: &Path,
+    target: &str,
+    kind: Kind,
+) -> Result<(), ValidateLockError> {
+    let Some(repository) = validation_repository(root, kind)? else {
+        return Ok(());
+    };
+
+    // Existing lock-only tests inject the immutable-floor command and do not
+    // construct a product checkout. Production cannot take this arm: the
+    // override is effective only in cfg(test), and the dedicated freshness
+    // brackets below exercise real repositories and real fetches.
+    #[cfg(test)]
+    if test_only_override(ADMIT_PREFLIGHT_CMD_ENV).is_some() && !repository.join(".git").exists() {
+        return Ok(());
+    }
+
+    let refspec = "refs/heads/main:refs/remotes/origin/main";
+    let fetch_timeout = format!("{CURRENT_MAIN_FETCH_TIMEOUT_SECONDS}s");
+    let mut fetch = Command::new("timeout");
+    fetch.args(["--signal=TERM", "--kill-after=1s"]);
+    fetch.arg(&fetch_timeout);
+    if crate::on_path("with-proxy") {
+        fetch.arg("with-proxy");
+    }
+    let output = fetch
+        .arg("git")
+        .arg("-C")
+        .arg(&repository)
+        .args(["fetch", "--quiet", "--no-tags", "origin", refspec])
+        .output()
+        .map_err(|error| {
+            ValidateLockError::StaleBase(format!(
+                "validate-lock: current origin/main fetch could not run in {} ({error}); freshness for {target} is UNRESOLVED.",
+                repository.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(ValidateLockError::StaleBase(format!(
+            "validate-lock: current origin/main fetch failed in {} (git exit {:?}: {}); freshness for {target} is UNRESOLVED.",
+            repository.display(),
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&repository)
+        .args([
+            "merge-base",
+            "--is-ancestor",
+            "refs/remotes/origin/main",
+            target,
+        ])
+        .output()
+        .map_err(|error| {
+            ValidateLockError::StaleBase(format!(
+                "validate-lock: current-main ancestry check could not run in {} ({error}); freshness for {target} is UNRESOLVED.",
+                repository.display()
+            ))
+        })?;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        Some(1) => Err(ValidateLockError::StaleBase(format!(
+            "REFUSE: validation target {target} does not contain freshly fetched origin/main. Rebase before validating."
+        ))),
+        other => Err(ValidateLockError::StaleBase(format!(
+            "validate-lock: current-main ancestry for {target} is UNRESOLVED in {} (git exit {other:?}: {}).",
+            repository.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))),
+    }
+}
+
+fn stale_base_refusal(error: ValidateLockError) -> Result<i32, ValidateLockError> {
+    match error {
+        ValidateLockError::StaleBase(message) => {
+            eprintln!("{message}");
+            Ok(STALE_BASE_EXIT_CODE)
+        }
+        other => Err(other),
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CURRENT_MAIN_BETWEEN_CHECKS_HOOK: RefCell<Option<Box<dyn FnOnce()>>> =
+        RefCell::new(None);
+}
+
+#[cfg(test)]
+fn run_current_main_between_checks_hook() {
+    CURRENT_MAIN_BETWEEN_CHECKS_HOOK.with(|slot| {
+        if let Some(hook) = slot.borrow_mut().take() {
+            hook();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn run_current_main_between_checks_hook() {}
 
 impl ValidateLock {
     fn holder_lease_record(
@@ -4107,18 +4233,16 @@ impl ValidateLock {
             io_error("enable child subreaper at", Path::new("/proc/self"), source)
         })?;
 
-        // Immutable producer-floor admission at the chokepoint. Refuse cleanly
-        // with STALE_BASE_EXIT_CODE (mirroring the --no-wait Held refusal) so a
-        // wrapper reads a distinct, non-crashing exit and can surface the remedy.
-        if let Err(err) = base_admission_check(root, &args.target, args.kind, args.skip_base_check)
+        // Refuse immutable-floor and current-main violations BEFORE this run
+        // enters the box-global queue. A stale head must not wait for scarce
+        // validation time it can never consume usefully.
+        if let Err(error) =
+            base_admission_check(root, &args.target, args.kind, args.skip_base_check)
         {
-            match err {
-                ValidateLockError::StaleBase(msg) => {
-                    eprintln!("{msg}");
-                    return Ok(STALE_BASE_EXIT_CODE);
-                }
-                other => return Err(other),
-            }
+            return stale_base_refusal(error);
+        }
+        if let Err(error) = current_main_freshness_check(root, &args.target, args.kind) {
+            return stale_base_refusal(error);
         }
 
         // Accountability is an admission predicate, not a post-hoc reporting
@@ -4195,6 +4319,18 @@ impl ValidateLock {
             let boundary = self.with_guard(|| Ok(self.yield_status_for_agent(&args.agent, now)))?;
             match boundary.state {
                 YieldState::Allow => {
+                    // `origin/main` may have advanced during the queue wait.
+                    // Re-fetch at the last boundary before this waiter is
+                    // removed and the repository lease is acquired. The
+                    // product driver's local-ref check remains a defensive
+                    // assertion against any later race.
+                    run_current_main_between_checks_hook();
+                    if let Err(error) = current_main_freshness_check(root, &args.target, args.kind)
+                    {
+                        drop(box_anchor);
+                        self.remove_own_global_waiter(&args, &owner)?;
+                        return stale_base_refusal(error);
+                    }
                     self.remove_own_global_waiter(&args, &owner)?;
                     break;
                 }
@@ -8567,51 +8703,231 @@ exit 0
     }
 
     #[test]
-    fn reverie_admission_brackets_current_main_ancestry() {
-        let root = env::temp_dir().join(format!(
-            "ci-hub-reverie-admission-{}-{}",
-            std::process::id(),
-            epoch_seconds().unwrap()
-        ));
-        let repo = root.join("reverie");
-        fs::create_dir_all(&repo).unwrap();
-        let git = |args: &[&str]| -> String {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&repo)
-                .args(args)
-                .env("GIT_AUTHOR_NAME", "test")
-                .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
-                .env("GIT_COMMITTER_NAME", "test")
-                .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "git {args:?}: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout).unwrap().trim().to_string()
-        };
-        git(&["init", "-q"]);
-        fs::write(repo.join("file"), "old\n").unwrap();
-        git(&["add", "file"]);
-        git(&["commit", "-qm", "old"]);
-        let old = git(&["rev-parse", "HEAD"]);
-        fs::write(repo.join("file"), "current\n").unwrap();
-        git(&["commit", "-qam", "current"]);
-        let current = git(&["rev-parse", "HEAD"]);
-        git(&["update-ref", "refs/remotes/origin/main", &current]);
-
-        assert!(base_admission_check(&root, &current, Kind::ReverieValidate, false).is_ok());
+    fn reverie_freshness_brackets_fetched_current_main_ancestry() {
+        let (paths, root, seed, target) = current_main_fixture("reverie-fresh-main", "reverie");
+        assert!(
+            current_main_freshness_check(&root, &target, Kind::ReverieValidate).is_ok(),
+            "a Reverie target containing fetched main must be admitted"
+        );
+        git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
         assert!(matches!(
-            base_admission_check(&root, &old, Kind::ReverieValidate, false),
-            Err(ValidateLockError::StaleBase(message)) if message.contains("does not contain current origin/main")
+            current_main_freshness_check(&root, &target, Kind::ReverieValidate),
+            Err(ValidateLockError::StaleBase(message))
+                if message.contains("does not contain freshly fetched origin/main")
         ));
         assert!(matches!(
             base_admission_check(&root, "not-a-sha", Kind::ReverieValidate, false),
             Err(ValidateLockError::StaleBase(_))
         ));
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    fn git_success(repo: Option<&Path>, args: &[&str]) -> String {
+        let mut command = Command::new("git");
+        if let Some(repo) = repo {
+            command.arg("-C").arg(repo);
+        }
+        let output = command.args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    fn current_main_fixture(
+        name: &str,
+        product_directory: &str,
+    ) -> (LockPaths, PathBuf, PathBuf, String) {
+        let paths = temp_paths(name);
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let remote = root.join("remote.git");
+        let seed = root.join("seed");
+        let checkout = root.join(product_directory);
+
+        git_success(
+            None,
+            &[
+                "init",
+                "--bare",
+                "--quiet",
+                "--initial-branch=main",
+                remote.to_str().unwrap(),
+            ],
+        );
+        git_success(
+            None,
+            &[
+                "init",
+                "--quiet",
+                "--initial-branch=main",
+                seed.to_str().unwrap(),
+            ],
+        );
+        git_success(Some(&seed), &["config", "user.name", "Test"]);
+        git_success(
+            Some(&seed),
+            &["config", "user.email", "test@example.invalid"],
+        );
+        fs::write(seed.join("base"), "base\n").unwrap();
+        git_success(Some(&seed), &["add", "base"]);
+        git_success(Some(&seed), &["commit", "--quiet", "-m", "base"]);
+        git_success(
+            Some(&seed),
+            &["remote", "add", "origin", remote.to_str().unwrap()],
+        );
+        git_success(Some(&seed), &["push", "--quiet", "-u", "origin", "main"]);
+        git_success(
+            None,
+            &[
+                "clone",
+                "--quiet",
+                remote.to_str().unwrap(),
+                checkout.to_str().unwrap(),
+            ],
+        );
+        git_success(Some(&checkout), &["config", "user.name", "Test"]);
+        git_success(
+            Some(&checkout),
+            &["config", "user.email", "test@example.invalid"],
+        );
+
+        fs::write(checkout.join("target"), "target\n").unwrap();
+        git_success(Some(&checkout), &["add", "target"]);
+        git_success(
+            Some(&checkout),
+            &["commit", "--quiet", "-m", "validation target"],
+        );
+        let target = git_success(Some(&checkout), &["rev-parse", "HEAD"]);
+
+        // Prepare, but do not publish, a main commit that the target lacks.
+        // The negative bracket publishes it between run's two checks.
+        fs::write(seed.join("advanced"), "advanced\n").unwrap();
+        git_success(Some(&seed), &["add", "advanced"]);
+        git_success(Some(&seed), &["commit", "--quiet", "-m", "main advances"]);
+        (paths, root, seed, target)
+    }
+
+    #[test]
+    fn current_main_freshness_refuses_an_unavailable_checkout() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let prior_override = env::var_os(ADMIT_PREFLIGHT_CMD_ENV);
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        let root = env::temp_dir().join(format!(
+            "ci-hub-current-main-unavailable-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let result = current_main_freshness_check(&root, HEX_SHA, Kind::Validate);
+        if let Some(value) = prior_override {
+            env::set_var(ADMIT_PREFLIGHT_CMD_ENV, value);
+        }
+        assert!(matches!(
+            result,
+            Err(ValidateLockError::StaleBase(message)) if message.contains("UNRESOLVED")
+        ));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_admits_target_containing_fetched_main_at_both_boundaries() {
+        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let stub = write_stub("fresh-main-admit", "#!/bin/sh\necho OK\nexit 0\n");
+        env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
+        let (paths, root, _seed, target) = current_main_fixture("fresh-main-positive", "hermit");
+        let marker = root.join("child-ran");
+        let code = ValidateLock {
+            paths: paths.clone(),
+        }
+        .run(
+            RunArgs {
+                agent: "fresh-main-positive".into(),
+                kind: Kind::Validate,
+                target,
+                run_record: None,
+                no_wait: false,
+                wait: 0,
+                hold: 30,
+                child_deadline: 30,
+                max: 1,
+                skip_base_check: false,
+                child: vec![
+                    OsString::from("/bin/sh"),
+                    OsString::from("-c"),
+                    OsString::from("printf ran > \"$1\""),
+                    OsString::from("fresh-main-child"),
+                    marker.clone().into_os_string(),
+                ],
+            },
+            &root,
+        )
+        .unwrap();
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        let _ = fs::remove_file(&stub);
+        assert_eq!(code, 0);
+        assert_eq!(fs::read_to_string(marker).unwrap(), "ran");
+        assert!(ValidateLock { paths }.read_holder().unwrap().is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn run_refuses_when_main_advances_during_wait_before_consuming_lease() {
+        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let stub = write_stub("advanced-main-admit", "#!/bin/sh\necho OK\nexit 0\n");
+        env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
+        let (paths, root, seed, target) = current_main_fixture("fresh-main-advanced", "hermit");
+        let marker = root.join("child-must-not-run");
+        CURRENT_MAIN_BETWEEN_CHECKS_HOOK.with(|slot| {
+            *slot.borrow_mut() = Some(Box::new(move || {
+                git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
+            }));
+        });
+
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let code = lock
+            .run(
+                RunArgs {
+                    agent: "fresh-main-advanced".into(),
+                    kind: Kind::Validate,
+                    target,
+                    run_record: None,
+                    no_wait: false,
+                    wait: 0,
+                    hold: 30,
+                    child_deadline: 30,
+                    max: 1,
+                    skip_base_check: false,
+                    child: vec![
+                        OsString::from("/bin/sh"),
+                        OsString::from("-c"),
+                        OsString::from("printf forbidden > \"$1\""),
+                        OsString::from("stale-main-child"),
+                        marker.clone().into_os_string(),
+                    ],
+                },
+                &root,
+            )
+            .unwrap();
+        CURRENT_MAIN_BETWEEN_CHECKS_HOOK.with(|slot| *slot.borrow_mut() = None);
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        let _ = fs::remove_file(&stub);
+
+        assert_eq!(code, STALE_BASE_EXIT_CODE);
+        assert!(!marker.exists(), "a stale target must not start its child");
+        assert!(lock.read_holder().unwrap().is_none());
+        assert!(
+            matches!(
+                BoxExclusionAnchor::observe(&paths.anchor),
+                BoxAnchorObservation::Free
+            ),
+            "a stale target must release the box-global anchor"
+        );
         let _ = fs::remove_dir_all(root);
     }
 
