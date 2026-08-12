@@ -680,10 +680,10 @@ class OperationalBoundsTest(unittest.TestCase):
         prepare = script.index('"$ROOT/ci-hub/remediation/land_and_arm.py" prepare')
         acquire = script.index('"$ROOT/ci-hub/ci-hub" land-lock run')
         receipt = script.index(
-            'receipt_detail=$("$SCRIPT_DIR/exact-head-validation-authority.sh"'
+            'receipt_detail=$(validation_landability "$HEAD" "$current_base"'
         )
         merge = script.index('gh pr merge "$PR"')
-        ancestry = script.index("merge-base --is-ancestor")
+        ancestry = script.index("merge-base --is-ancestor", merge)
         inner_marker = script.index("# --- inner: we now hold the land-lock")
         complete_command = '"$ROOT/ci-hub/remediation/land_and_arm.py" complete'
         complete = script.index(complete_command)
@@ -701,7 +701,7 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertLess(merge, ancestry)
         self.assertIn("MERGED UNDER LOCK:", script[ancestry:])
         self.assertIn("124) comment_abandon", script)
-        self.assertIn("[coordinator, $MODEL] ABANDONED", script)
+        self.assertIn("publish_landing_comment abandoned", script)
         self.assertIn("CI_HUB_LANDING_LOG_DIR", script)
         self.assertIn("DETACHED LAND: pid=%s log=%s", script)
         self.assertIn("GATE_DEADLINE=1080", script)
@@ -716,14 +716,24 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertIn('check_outcome=$(python3 "$outcome_helper"', script)
         self.assertNotIn("gh workflow run merge-gate.yml", script)
         self.assertNotIn("merge-gate remained NO_RESULT", script)
-        self.assertIn("exact-head-validation-authority.sh", script)
-        self.assertIn("authority_mode=(--local-only)", script)
-        self.assertIn("authority_mode=(--hosted-only)", script)
-        self.assertIn("producer-changing PR requires --no-rebase", script)
-        self.assertIn('scripts/validate.rs | grep -Fxq scripts/validate.rs', script)
+        self.assertIn("validation_landability() {", script)
+        self.assertIn('python3 "$SCRIPT_DIR/rebase_wrapper.py" authorize', script)
+        self.assertIn("authority_mode=local-only", script)
+        self.assertNotIn("authority_mode=hosted-only", script)
+        self.assertNotIn("authority_mode=(--hosted-only)", script)
+        self.assertNotIn("producer-changing PR requires --no-rebase", script)
+        self.assertNotIn('scripts/validate.rs | grep -Fxq scripts/validate.rs', script)
+        self.assertNotIn("producer_exception", script)
+        self.assertIn(
+            "A scripts/validate.rs change still uses\n"
+            "# the same local ledger authority",
+            script,
+        )
         self.assertNotIn("local-validation-eligibility.sh", script)
         self.assertIn("apply-local-label --pr", script)
-        self.assertIn('--repo "$R" --sha "$HEAD" --comments "$receipt_comments"', script)
+        self.assertIn('--comments "$receipt_comments"', script)
+        self.assertIn('--current-reverie-base "$current_reverie_base"', script)
+        self.assertIn('--reverie-checkout "$ROOT/reverie"', script)
         self.assertIn('rm -f -- "$receipt_comments"', script)
         self.assertIn('--match-head-commit "$HEAD"', script)
         self.assertNotIn(

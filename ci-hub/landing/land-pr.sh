@@ -321,22 +321,15 @@ with-proxy git -C "$WT" fetch -q origin "$BR" 2>/dev/null || true
 # not restate hard/soft-green policy. Re-check after every SHA-changing rebase.
 verify_pr_belongs_to_repo
 ORIG=$(git -C "$WT" rev-parse "origin/$BR" 2>/dev/null) || abandon "cannot resolve origin/$BR head for eligibility gate" 4
-# A gate-changing branch is not allowed to choose the ordinary authority path.
-# Detect from the branch's own merge-base delta (not the mutable two-tip diff)
-# so a caller cannot omit --gate-rotation and let a branch-owned producer vouch
-# for itself. The independent path below must emit and then supersede the typed
-# SELF_AUTHORIZATION_REFUSED with exact review, receipt, and blob checks.
+# A merge-gate-definition branch is not allowed to choose the ordinary
+# authority path. Detect from the branch's own merge-base delta (not the
+# mutable two-tip diff) so a caller cannot omit --gate-rotation and let a
+# branch-owned gate vouch for itself. A scripts/validate.rs change still uses
+# the same local ledger authority as every other Hermit change: changing the
+# test program does not reactivate the retired hosted producer.
 branch_base=$(git -C "$WT" merge-base origin/main "$ORIG") \
   || abandon "cannot resolve PR merge-base for self-authorization check" 4
-producer_exception=0
 authority_mode=local-only
-if git -C "$WT" diff --name-only "$branch_base" "$ORIG" -- \
-    scripts/validate.rs | grep -Fxq scripts/validate.rs; then
-  producer_exception=1
-  authority_mode=hosted-only
-  [ "$NO_REBASE" -eq 1 ] || abandon "producer-changing PR requires --no-rebase so exact-head hosted authority survives" 4
-  say "producer exception: selecting registered exact-head hosted authority"
-fi
 if git -C "$WT" diff --name-only "$branch_base" "$ORIG" -- \
     .github/workflows/merge-gate.yml | grep -Fxq .github/workflows/merge-gate.yml; then
   if [ "$GATE_ROTATION" -ne 1 ]; then
@@ -366,7 +359,7 @@ else
   # cheap rebase requirement into an expensive NO_RESULT.  The helper re-reads
   # the live PR head after VALIDATE, so a concurrent push expires this result
   # instead of inheriting it.
-  if [ "$VRC" -ne 0 ] && [ "$producer_exception" -ne 1 ]; then
+  if [ "$VRC" -ne 0 ]; then
     existing_status=$("$ROOT/ci-hub/ci-hub" validate-status --sha "$ORIG" --json 2>&1)
     existing_rc=$?
     if [ "$existing_rc" -eq 4 ] && \
@@ -499,20 +492,18 @@ if [ "$GATE_ROTATION" -eq 1 ]; then
   verify_gate_rotation_checks "$HEAD" \
     || abandon "independent gate-rotation checks refused resolved head $HEAD" 4
 else
-  if [ "$producer_exception" -ne 1 ]; then
-    selected_row_sha256=$("$ROOT/ci-hub/validate/scan-finalize.sh" \
-      --select-candidate-sha256 --sha "$HEAD" --hermit-checkout "$WT" \
-      2>/dev/null) || selected_row_sha256=
-    if [[ $selected_row_sha256 =~ ^[0-9a-f]{64}$ ]]; then
-      "$ROOT/ci-hub/validate/scan-finalize.sh" --hermit-checkout "$WT" \
-        --sha "$HEAD" --selected-row-sha256 "$selected_row_sha256" || true
-    else
-      say "scan-finalize: no unique exact source row selected for $HEAD (best-effort)"
-    fi
-    # Capture the VERBATIM first_error_line of every surviving red log into the
-    # durable append-only sidecar before the /tmp log is evicted.
-    python3 "$ROOT/ci-hub/validate/attribute_reds.py" --last 0 --persist >/dev/null 2>&1 || true
+  selected_row_sha256=$("$ROOT/ci-hub/validate/scan-finalize.sh" \
+    --select-candidate-sha256 --sha "$HEAD" --hermit-checkout "$WT" \
+    2>/dev/null) || selected_row_sha256=
+  if [[ $selected_row_sha256 =~ ^[0-9a-f]{64}$ ]]; then
+    "$ROOT/ci-hub/validate/scan-finalize.sh" --hermit-checkout "$WT" \
+      --sha "$HEAD" --selected-row-sha256 "$selected_row_sha256" || true
+  else
+    say "scan-finalize: no unique exact source row selected for $HEAD (best-effort)"
   fi
+  # Capture the VERBATIM first_error_line of every surviving red log into the
+  # durable append-only sidecar before the /tmp log is evicted.
+  python3 "$ROOT/ci-hub/validate/attribute_reds.py" --last 0 --persist >/dev/null 2>&1 || true
   with-proxy git -C "$WT" fetch -q origin main \
     || abandon "could not refresh current main for post-push landability" 4
   post_push_base=$(git -C "$WT" rev-parse --verify origin/main) \
@@ -523,7 +514,7 @@ else
     || abandon "pushed head $HEAD has no accepted validation landability (rc=$VRC)" 4
   landability_state=$(jq -er .state <<<"$VS") \
     || abandon "validation landability emitted no state for $HEAD" 4
-  if [ "$producer_exception" -ne 1 ] && [ "$landability_state" = HARD_GREEN ]; then
+  if [ "$landability_state" = HARD_GREEN ]; then
     # The label is a CACHE, not authority: step 4's exact-head check above is the
     # fail-closed gate and it has already returned rc=0 for this head. So exactly
     # one apply-local-label failure is survivable -- the receipt was produced on
