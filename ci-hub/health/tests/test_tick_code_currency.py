@@ -224,15 +224,31 @@ class LandedButNotDeployed(unittest.TestCase):
         tcc.ROOT = self.repo.root
         tcc.TICK_CONFIG = self.repo.config
 
-    def _land_only(self, relative: str, body: str) -> None:
+    def _land_only(self, relative: str, body: str, *, executable: bool = False) -> None:
         """Commit and push `relative`, then rewind local so it is unpulled."""
+        stale_head = git("rev-parse", "HEAD", cwd=self.repo.root)
+        subprocess.run(
+            ["git", "-C", str(self.repo.root), "merge", "-q", "--ff-only", "origin/main"],
+            check=True,
+        )
         target = self.repo.root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(body)
+        if executable:
+            target.chmod(0o755)
         self.repo._commit(f"land {relative}")
-        git("push", "-q", "origin", "main", cwd=self.repo.root)
-        git("reset", "-q", "--hard", "HEAD~1", cwd=self.repo.root)
-        git("fetch", "-q", "origin", cwd=self.repo.root)
+        subprocess.run(
+            ["git", "-C", str(self.repo.root), "push", "-q", "origin", "main"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo.root), "reset", "-q", "--hard", stale_head],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo.root), "fetch", "-q", "origin"],
+            check=True,
+        )
 
     def test_the_wiring_gap_this_closes(self) -> None:
         # new_tool.py landed on origin/main and no gate invokes it. That is the
@@ -252,6 +268,32 @@ class LandedButNotDeployed(unittest.TestCase):
         code, text = tcc.render(verdicts, "origin/main")
         self.assertEqual(code, tcc.DRIFTED, text)
         self.assertIn("ci-hub/health/new_tool.py", text)
+
+    def test_extensionless_executable_is_policed(self) -> None:
+        """Git mode, not a filename suffix, makes the tick launcher executable."""
+        launcher = "ci-hub/bin/health-tick"
+        self._land_only(launcher, "#!/bin/sh\nexit 0\n", executable=True)
+        self.assertTrue(
+            git("ls-tree", "origin/main", "--", launcher, cwd=self.repo.root)
+            .split()[0]
+            .endswith("755"),
+            "precondition: the landed extensionless path carries Git's executable bit",
+        )
+        self.assertIn(launcher, tcc.landed_but_unpulled("origin/main"))
+        self.assertIn(launcher, tcc.subject_paths(self.repo.config, "origin/main"))
+
+    def test_non_executable_data_file_is_not_policed(self) -> None:
+        """Broadening by Git mode must not turn arbitrary parent data into code."""
+        data = "ci-hub/health/reference-data"
+        self._land_only(data, "not executable data\n")
+        self.assertTrue(
+            git("ls-tree", "origin/main", "--", data, cwd=self.repo.root)
+            .split()[0]
+            .endswith("644"),
+            "precondition: the landed extensionless data file is not executable",
+        )
+        self.assertNotIn(data, tcc.landed_but_unpulled("origin/main"))
+        self.assertNotIn(data, tcc.subject_paths(self.repo.config, "origin/main"))
 
     def test_landed_and_deployed_reports_clean(self) -> None:
         # The other direction: once pulled, the same gate must go quiet. Without

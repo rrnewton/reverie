@@ -125,6 +125,32 @@ def policed_paths(config: Path = TICK_CONFIG) -> list[str]:
 #: the one failure mode a currency gate cannot survive.
 _EXECUTABLE_PREFIXES = ("ci-hub/", "scripts/", ".orc/")
 _EXECUTABLE_SUFFIXES = (".py", ".rs", ".sh", ".yaml", ".yml", ".ts", ".toml")
+_GIT_EXECUTABLE_MODE = "100755"
+
+
+def _changed_path_modes(ref: str) -> list[tuple[str, str, str]]:
+    """Return ``(path, old_mode, new_mode)`` for every working-tree difference.
+
+    Raw diff carries the fact the suffix-only scan threw away: Git's executable
+    bit. ``--no-renames`` keeps each record single-path, which makes additions,
+    removals, and replacements use the same predicate. Both modes matter: a
+    newly landed executable has only the old/ref mode here, while an executable
+    removed on main can remain live in the stale checkout's new mode.
+    """
+    out = _git("diff", "--raw", "--no-abbrev", "--no-renames", ref, "--")
+    if out.returncode != 0:
+        return []
+    changed: list[tuple[str, str, str]] = []
+    for line in out.stdout.splitlines():
+        try:
+            metadata, path = line.split("\t", 1)
+        except ValueError:
+            continue
+        fields = metadata.split()
+        if len(fields) < 5 or not fields[0].startswith(":"):
+            continue
+        changed.append((path, fields[0][1:], fields[1]))
+    return changed
 
 
 def landed_but_unpulled(ref: str = TARGET_REF) -> list[str]:
@@ -151,13 +177,14 @@ def landed_but_unpulled(ref: str = TARGET_REF) -> list[str]:
     it. That is precisely why it belongs in a periodic sampler and not in a
     report anyone has to think to run.
     """
-    out = _git("diff", "--name-only", ref)
-    if out.returncode != 0:
-        return []
     return sorted(
         path
-        for path in out.stdout.split()
-        if path.startswith(_EXECUTABLE_PREFIXES) and path.endswith(_EXECUTABLE_SUFFIXES)
+        for path, old_mode, new_mode in _changed_path_modes(ref)
+        if path.startswith(_EXECUTABLE_PREFIXES)
+        and (
+            path.endswith(_EXECUTABLE_SUFFIXES)
+            or _GIT_EXECUTABLE_MODE in (old_mode, new_mode)
+        )
     )
 
 
