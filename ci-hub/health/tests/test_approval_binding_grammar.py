@@ -23,8 +23,9 @@ The ambiguous-tag case is the real #1727 shape: a Codex-family reviewer tagged
 `gpt-5.6-sol`, which says neither "codex" nor "claude". The explicit lane makes
 the binding deterministic without guessing from that model-name prose.
 """
-import sys, importlib.util
-spec = importlib.util.spec_from_file_location("ab", "ci-hub/health/approval_binding.py")
+import os, sys, importlib.util
+tool = os.environ.get("APPROVAL_BINDING_TOOL", "ci-hub/health/approval_binding.py")
+spec = importlib.util.spec_from_file_location("ab", tool)
 ab = importlib.util.module_from_spec(spec); spec.loader.exec_module(ab)
 CUR="ef1392494c11911748dbfe0a42bf3635d1ccb3e0"; OLD="87f62930d3e24ab75b516d01cba106161e0cca2e"
 def C(b): return [{"body": b}]
@@ -89,6 +90,15 @@ cases.append((quoted_shas == [] and quoted == [],
               f"bound={quoted_shas} malformed={len(quoted)}"))
 case("bold REJECTION still does NOT bind",
      C(f"[adversarial-reviewer agent, CLAUDE]\n**REQUEST CHANGES AT {CUR}**\n"), "claude", ab.UNDETERMINED)
+case("current CHANGES-REQUESTED-AT revokes an earlier exact-head approval",
+     C(f"APPROVED-AT: codex {CUR}") + C(f"CHANGES-REQUESTED-AT: codex {CUR}"),
+     "codex", ab.UNDETERMINED)
+case("lane-specific CHANGES-REQUESTED-AT does not revoke the other lane",
+     C(f"APPROVED-AT: claude {CUR}") + C(f"CHANGES-REQUESTED-AT: codex {CUR}"),
+     "claude", ab.BOUND_CURRENT, CUR)
+case("a later exact-head approval resolves an earlier request for changes",
+     C(f"CHANGES-REQUESTED-AT: codex {CUR}") + C(f"APPROVED-AT: codex {CUR}"),
+     "codex", ab.BOUND_CURRENT, CUR)
 
 # --- LOUD ON THE UNKNOWN ------------------------------------------------------
 # A line plainly trying to be a binding, matching neither grammar, must be

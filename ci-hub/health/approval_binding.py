@@ -75,6 +75,10 @@ from typing import Any
 
 SHA40 = re.compile(r"\b[0-9a-f]{40}\b")
 LANES = ("claude", "codex")
+CRITICAL_CLASSES = frozenset(
+    {"hermit-syscall", "detcore-scheduling", "reverie-api"}
+)
+POST_FACTO_LABEL = "post-facto-human-review"
 
 BOUND_CURRENT = "BOUND_CURRENT"
 SUPERSEDED = "SUPERSEDED"
@@ -145,8 +149,9 @@ def lane_shas(
     # colon and explicit lane are mandatory. Historical lane-less variants are
     # intentionally ABSENT authority: inferring a lane from prose recreates the
     # cache-as-source defect this verifier exists to remove.
-    # and the rejection mirror introduced on #2026 (comment 5235451519):
-    #   REQUEST CHANGES AT <40-hex>
+    # and the rejection mirrors:
+    #   REQUEST CHANGES AT <40-hex>                 (historical, lane-less)
+    #   CHANGES-REQUESTED-AT: <lane> <40-hex>       (current fleet grammar)
     #
     # Markdown may wrap the canonical line. Decoration is not identity, so
     # `**APPROVED-AT: claude <sha>**` is normalized before the strict grammar is
@@ -176,7 +181,13 @@ def lane_shas(
             else:
                 return line
 
-    reject = re.compile(r"^REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}$", re.IGNORECASE)
+    reject_legacy = re.compile(
+        r"^REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}$", re.IGNORECASE
+    )
+    reject_current = re.compile(
+        r"^CHANGES-REQUESTED-AT:\s*(claude|codex)\s+[0-9a-f]{40}$",
+        re.IGNORECASE,
+    )
     approve = re.compile(
         r"^APPROVED-AT:\s*(claude|codex)\s+([0-9a-f]{40})$", re.IGNORECASE
     )
@@ -186,7 +197,7 @@ def lane_shas(
     # unrecognised variant is how variant three went unnoticed; the next one must
     # announce itself instead.
     suspect = re.compile(
-        r"^(?:APPROV|REQUEST\s+CHANGES|REJECT|LGTM|SIGN(?:ED)?[-\s]?OFF|ACK)[^\n]*\b[0-9a-f]{40}\b",
+        r"^(?:APPROV|CHANGES-REQUESTED|REQUEST\s+CHANGES|REJECT|LGTM|SIGN(?:ED)?[-\s]?OFF|ACK)[^\n]*\b[0-9a-f]{40}\b",
         re.IGNORECASE,
     )
 
@@ -197,12 +208,28 @@ def lane_shas(
         # A rejection contributes NOTHING, even if the same comment also carries
         # an APPROVED-AT-shaped line -- a comment quoting the convention, or
         # quoting the approval it supersedes, must not bind as a positive.
-        if any(reject.match(l) for l in lines):
+        relevant_rejection = any(reject_legacy.match(line) for line in lines)
+        relevant_rejection = relevant_rejection or any(
+            (match := reject_current.match(line)) is not None
+            and match.group(1).lower() == lane
+            for line in lines
+        )
+        if relevant_rejection:
+            # Verdicts are chronological. A later exact-head request for changes
+            # revokes this lane's earlier approval; a still-later approval can
+            # establish authority again. Clearing rather than merely skipping
+            # is load-bearing: otherwise APPROVED then CHANGES-REQUESTED reads
+            # as approved forever.
+            found.clear()
             continue
         for line in lines:
             m = approve.match(line)
             if not m:
-                if suspect.match(line) and not reject.match(line):
+                if (
+                    suspect.match(line)
+                    and not reject_legacy.match(line)
+                    and not reject_current.match(line)
+                ):
                     finding = (
                         c.get("html_url") or c.get("url") or "?",
                         line[:120],
@@ -221,12 +248,38 @@ def lane_shas(
     return found
 
 
+def critical_classes_at_head(
+    comments: list[dict[str, Any]], head: str
+) -> set[str]:
+    """Return coordinator-attested critical classes bound to ``head``.
+
+    ``review-attest --critical`` is the existing closed-enum classification
+    source.  Its durable comment carries the class and exact head together.
+    This parser deliberately does not infer criticality from paths or prose.
+    """
+    classes: set[str] = set()
+    for comment in comments:
+        lines = [line.strip() for line in (comment.get("body") or "").splitlines()]
+        if "REVIEW-DISPATCH-ATTESTATION" not in lines:
+            continue
+        fields: dict[str, str] = {}
+        for line in lines:
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            fields[key.strip().lower()] = value.strip().lower()
+        critical_class = fields.get("critical-class")
+        if fields.get("head") == head and critical_class in CRITICAL_CLASSES:
+            classes.add(critical_class)
+    return classes
+
+
 def collect_live(
     repo: str,
     malformed: list[tuple[str, str]],
     malformed_prs: dict[tuple[str, str], int],
     pr_number: int | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     if pr_number is None:
         prs = gh_json(
             ["pr", "list", "--repo", repo, "--state", "open", "--limit", "300",
@@ -246,7 +299,7 @@ def collect_live(
     def fetch(pr: dict[str, Any]) -> dict[str, Any] | None:
         labels = [l["name"] for l in pr.get("labels", [])]
         approvals = [l for l in labels if l.startswith("passed-review-")]
-        if not approvals:
+        if not approvals and pr_number is None:
             return None
         head = pr["headRefOid"]
         comments = gh_json(
@@ -282,7 +335,19 @@ def collect_live(
                     "mergeable": pr.get("mergeable"),
                 }
             )
-    return rows
+    selected = None
+    if pr_number is not None and fetched:
+        item = fetched[0]
+        labels = [label["name"] for label in item["pr"].get("labels", [])]
+        selected = {
+            "number": item["pr"]["number"],
+            "head": item["head"],
+            "labels": labels,
+            "critical_classes": sorted(
+                critical_classes_at_head(item["comments"], item["head"])
+            ),
+        }
+    return rows, selected
 
 
 def collect_fixture(
@@ -290,22 +355,35 @@ def collect_fixture(
     malformed: list[tuple[str, str]],
     malformed_prs: dict[tuple[str, str], int],
     pr_number: int | None = None,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     rows = []
+    selected = None
     for pr in json.load(open(path)):
         if pr_number is not None and pr["number"] != pr_number:
             continue
+        comments = [
+            {
+                "body": body,
+                "url": f"fixture://pr/{pr['number']}/comment/{index}",
+            }
+            for index, body in enumerate(pr.get("comments", []))
+        ]
+        if pr_number is not None:
+            selected = {
+                "number": pr["number"],
+                "head": pr["head"],
+                "labels": list(pr["labels"]),
+                "critical_classes": sorted(
+                    critical_classes_at_head(comments, pr["head"])
+                ),
+            }
         for label in pr["labels"]:
+            if not label.startswith("passed-review-"):
+                continue
             lane = label.rsplit("-", 1)[-1]
             if "comments" in pr:
                 shas = lane_shas(
-                    [
-                        {
-                            "body": body,
-                            "url": f"fixture://pr/{pr['number']}/comment/{index}",
-                        }
-                        for index, body in enumerate(pr["comments"])
-                    ],
+                    comments,
                     lane,
                     malformed,
                     pr["number"],
@@ -325,7 +403,7 @@ def collect_fixture(
                     "mergeable": pr.get("mergeable"),
                 }
             )
-    return rows
+    return rows, selected
 
 
 def main() -> int:
@@ -363,7 +441,7 @@ def main() -> int:
 
     malformed: list[tuple[str, str]] = []
     malformed_pr_by_source: dict[tuple[str, str], int] = {}
-    rows = (
+    rows, selected = (
         collect_fixture(a.fixture, malformed, malformed_pr_by_source, a.pr)
         if a.fixture
         else collect_live(a.repo, malformed, malformed_pr_by_source, a.pr)
@@ -375,6 +453,23 @@ def main() -> int:
     # they audit approval labels that exist and do not infer which open PRs
     # require review.
     approval_set_missing = a.pr is not None and not rows
+    selected_labels = set(selected["labels"]) if selected is not None else set()
+    selected_critical_classes = (
+        set(selected["critical_classes"]) if selected is not None else set()
+    )
+    # The post-facto label is not itself a critical classifier: a new
+    # determinization strategy may carry it while remaining single-review.
+    # Criticality comes from the existing closed-enum review-attest record.
+    critical_required = bool(selected_critical_classes)
+    critical_label_missing = critical_required and POST_FACTO_LABEL not in selected_labels
+    authoritative_lanes = {
+        str(row["lane"])
+        for row in rows
+        if row["state"] == BOUND_CURRENT
+    }
+    critical_lanes_missing = (
+        sorted(set(LANES) - authoritative_lanes) if critical_required else []
+    )
     bad = [r for r in rows if r["state"] != BOUND_CURRENT]
     authoritative = len(rows) - len(bad)
     malformed_prs = set(malformed_pr_by_source.values())
@@ -388,6 +483,10 @@ def main() -> int:
     if a.as_json:
         print(json.dumps({"approvals": len(rows), "authoritative": authoritative,
                           "approval_set_missing": approval_set_missing,
+                          "critical_required": critical_required,
+                          "critical_classes": sorted(selected_critical_classes),
+                          "critical_label_missing": critical_label_missing,
+                          "critical_lanes_missing": critical_lanes_missing,
                           "required_approval_sets": 1 if a.pr is not None else 0,
                           "approval_sets_missing": int(approval_set_missing),
                           "authority_absent": len(bad), "not_holding": len(bad),
@@ -417,6 +516,16 @@ def main() -> int:
                   f"bound-to {bound}  head {r['head'][:12]}  runs={r['runs_at_head']}{flag}")
         if approval_set_missing:
             print(f"  REQUIRED-APPROVAL-SET-MISSING  PR {a.pr} has zero passed-review labels")
+        if critical_label_missing:
+            print(
+                f"  CRITICAL-LABEL-MISSING  PR {a.pr} is classified "
+                f"{','.join(sorted(selected_critical_classes))}; missing {POST_FACTO_LABEL}"
+            )
+        if critical_lanes_missing:
+            print(
+                f"  CRITICAL-REVIEW-MISSING  PR {a.pr} lacks exact-head "
+                f"{','.join(critical_lanes_missing)} approval"
+            )
         elif not bad:
             print("  every approval label is bound to the current head")
         for where, line in malformed:
@@ -436,7 +545,17 @@ def main() -> int:
 
     if a.gate and not a.as_json:
         affected = ",".join(f"#{r['number']}" for r in gating[:8]) or "none"
-        if approval_set_missing:
+        if critical_label_missing or critical_lanes_missing:
+            state = "critical-review-incomplete"
+            problems = []
+            if critical_label_missing:
+                problems.append(f"missing {POST_FACTO_LABEL}")
+            if critical_lanes_missing:
+                problems.append(
+                    "missing exact-head " + ",".join(critical_lanes_missing) + " approval"
+                )
+            summary = f"PR #{a.pr} critical review protocol incomplete: {'; '.join(problems)}"
+        elif approval_set_missing:
             state = "absent"
             summary = (
                 f"PR #{a.pr} has zero passed-review labels; absence of review "
@@ -468,6 +587,13 @@ def main() -> int:
         else:
             print("malformed_state=none")
 
+    if a.gate and (critical_label_missing or critical_lanes_missing):
+        print(
+            f"GATE FAIL: PR #{a.pr} is critical but its owner-required review "
+            "protocol is incomplete.",
+            file=sys.stderr,
+        )
+        return 1
     if a.gate and approval_set_missing:
         print(
             f"GATE FAIL: PR #{a.pr} has zero passed-review labels. Zero approvals "

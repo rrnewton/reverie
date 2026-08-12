@@ -103,6 +103,49 @@ grep -q "authoritative at current head: 2; authority absent: 0" <<<"$out" \
 grep -qE "SUPERSEDED|UNDETERMINED" <<<"$out" && bad "a re-review (old SHA then current) was wrongly flagged" \
   || ok "a lane that re-reviewed at the new head holds, despite an older SHA in its history"
 
+# --- OWNER CRITICAL PROTOCOL ------------------------------------------------
+# review-attest is the existing closed-enum critical classifier. Its exact-head
+# comment makes criticality independent of the labels whose presence is being
+# checked here.
+cat >"$tmp/critical-missing-label.json" <<JSON
+[{"number":2201,"head":"$CUR","labels":["passed-review-codex"],
+  "comments":["REVIEW-DISPATCH-ATTESTATION\ncritical-class: hermit-syscall\nhead: $CUR\nAPPROVED-AT: codex $CUR"],
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/critical-missing-label.json" --pr 2201 --gate)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q "CRITICAL-LABEL-MISSING" <<<"$out" \
+  && ok "critical attestation without post-facto-human-review REFUSES" \
+  || bad "critical PR passed without post-facto-human-review (rc=$rc): $out"
+
+cat >"$tmp/critical-one-family.json" <<JSON
+[{"number":2202,"head":"$CUR","labels":["post-facto-human-review","passed-review-codex"],
+  "comments":["REVIEW-DISPATCH-ATTESTATION\ncritical-class: hermit-syscall\nhead: $CUR\nAPPROVED-AT: codex $CUR"],
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/critical-one-family.json" --pr 2202 --gate)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q "CRITICAL-REVIEW-MISSING.*claude" <<<"$out" \
+  && ok "critical PR with only codex exact-head approval REFUSES" \
+  || bad "critical PR passed without claude approval (rc=$rc): $out"
+
+cat >"$tmp/critical-complete.json" <<JSON
+[{"number":2203,"head":"$CUR","labels":["post-facto-human-review","passed-review-codex","passed-review-claude"],
+  "comments":["REVIEW-DISPATCH-ATTESTATION\ncritical-class: hermit-syscall\nhead: $CUR\nAPPROVED-AT: codex $CUR",
+              "REVIEW-DISPATCH-ATTESTATION\ncritical-class: hermit-syscall\nhead: $CUR\nAPPROVED-AT: claude $CUR"],
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/critical-complete.json" --pr 2203 --gate)"; rc=$?
+[[ $rc -eq 0 ]] && ok "critical PR with label plus codex+claude exact-head approvals PASSES" \
+  || bad "complete critical protocol refused (rc=$rc): $out"
+
+cat >"$tmp/post-facto-noncritical.json" <<JSON
+[{"number":2204,"head":"$CUR","labels":["post-facto-human-review","passed-review-codex"],
+  "comments":["APPROVED-AT: codex $CUR"],
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/post-facto-noncritical.json" --pr 2204 --gate)"; rc=$?
+[[ $rc -eq 0 ]] && ok "post-facto label alone does not invent a critical classification" \
+  || bad "noncritical post-facto trigger was incorrectly forced to dual review (rc=$rc): $out"
+
 # --- MALFORMED SYNTAX IS NOT LOST AUTHORITY ---------------------------------
 # Real #1847 shape: one comment says APPROVE using the historical synonym and
 # also carries the canonical exact-head binding.  The syntax debt stays loud,
@@ -226,6 +269,52 @@ if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
       ok "mutation control: full suite FAILS on #2132 when zero-approval guard is removed"
     else
       bad "mutation control did not fail on the #2132 guard (rc=$mutant_rc)"
+    fi
+  fi
+fi
+
+# Disable the current fleet rejection grammar. The suite must fail specifically
+# because an approval followed by CHANGES-REQUESTED-AT remains authoritative.
+if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
+  mutant="$tmp/approval_binding-without-current-rejection.py"
+  sed 's/found.clear()/pass  # MUTANT: current rejection no longer revokes approval/' \
+    "$tool" >"$mutant"
+  if ! grep -q 'MUTANT: current rejection no longer revokes approval' "$mutant"; then
+    bad "rejection mutation control could not locate the revocation"
+  else
+    APPROVAL_BINDING_TOOL="$mutant" APPROVAL_BINDING_MUTATION_CHILD=1 \
+      bash "$0" >"$tmp/rejection-mutant-suite.out" 2>&1
+    mutant_rc=$?
+    if [[ $mutant_rc -ne 0 ]] \
+      && grep -q 'FAIL  current CHANGES-REQUESTED-AT revokes an earlier exact-head approval' \
+        "$tmp/rejection-mutant-suite.out"; then
+      ok "mutation control: suite FAILS on the exact changes-requested case when revocation is removed"
+    else
+      bad "rejection mutation control did not fail for CHANGES-REQUESTED-AT (rc=$mutant_rc)"
+    fi
+  fi
+fi
+
+# Disable critical classification. The suite must identify the missing
+# post-facto label and second-family approval as the lost refusals.
+if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
+  mutant="$tmp/approval_binding-without-critical-policy.py"
+  sed 's/critical_required = bool(selected_critical_classes)/critical_required = False  # MUTANT: critical policy disabled/' \
+    "$tool" >"$mutant"
+  if ! grep -q 'MUTANT: critical policy disabled' "$mutant"; then
+    bad "critical mutation control could not locate the classifier"
+  else
+    APPROVAL_BINDING_TOOL="$mutant" APPROVAL_BINDING_MUTATION_CHILD=1 \
+      bash "$0" >"$tmp/critical-mutant-suite.out" 2>&1
+    mutant_rc=$?
+    if [[ $mutant_rc -ne 0 ]] \
+      && grep -q 'FAIL  critical PR passed without post-facto-human-review' \
+        "$tmp/critical-mutant-suite.out" \
+      && grep -q 'FAIL  critical PR passed without claude approval' \
+        "$tmp/critical-mutant-suite.out"; then
+      ok "mutation control: suite FAILS on both owner critical requirements when classification is removed"
+    else
+      bad "critical mutation control did not expose both missing owner checks (rc=$mutant_rc)"
     fi
   fi
 fi
