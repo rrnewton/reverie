@@ -1715,5 +1715,79 @@ for index in range(300):
         self.assertEqual(len(written_ids), len(union_ids), "event-id union must lose nothing")
         self.assertEqual("", git(self.repo, "status", "--short", "--untracked-files=no").stdout)
 
+
+class PrePushMainHealthBudgetTests(unittest.TestCase):
+    """The warning-only health query must fit inside parent publication."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.temp.name) / "repo"
+        git(Path(self.temp.name), "init", "--initial-branch=main", str(self.repo))
+        git(self.repo, "config", "user.name", "Pre-push Test")
+        git(self.repo, "config", "user.email", "pre-push@example.invalid")
+        (self.repo / "seed").write_text("seed\n")
+        git(self.repo, "add", "seed")
+        git(self.repo, "commit", "-m", "seed")
+        (self.repo / ".githooks").mkdir()
+        (self.repo / "ci-hub/bin").mkdir(parents=True)
+        shutil.copy2(SOURCE / ".githooks/pre-push", self.repo / ".githooks/pre-push")
+        self.hook = self.repo / ".githooks/pre-push"
+        self.checker = self.repo / "ci-hub/bin/main-health"
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def invoke(
+        self, body: str, *, timeout: float = 15.0
+    ) -> tuple[subprocess.CompletedProcess[str], float]:
+        self.checker.write_text("#!/usr/bin/env bash\nset -u\n" + body)
+        self.checker.chmod(0o755)
+        started = time.monotonic()
+        result = subprocess.run(
+            [str(self.hook), "origin", "fixture://origin"],
+            cwd=self.repo,
+            input="",
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+        return result, time.monotonic() - started
+
+    def assert_bound_arguments(self, output: str) -> None:
+        self.assertIn("--per-call-timeout 4 --overall-deadline 8", output)
+
+    def test_fast_green_preserves_output_and_arguments(self) -> None:
+        result, _ = self.invoke('printf "GREEN %s\\n" "$*"\nexit 0\n')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("GREEN", result.stderr)
+        self.assert_bound_arguments(result.stderr)
+        self.assertNotIn("Pre-push warning", result.stderr)
+
+    def test_red_remains_loud_but_does_not_block_repair_push(self) -> None:
+        result, _ = self.invoke('printf "RED %s\\n" "$*"\nexit 1\n')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assert_bound_arguments(result.stderr)
+        self.assertIn("GitHub reports RED main", result.stderr)
+
+    def test_unavailable_remains_unknown_not_green(self) -> None:
+        result, _ = self.invoke('printf "UNKNOWN %s\\n" "$*"\nexit 2\n')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assert_bound_arguments(result.stderr)
+        self.assertIn("could not be verified", result.stderr)
+        self.assertIn("Do not claim green", result.stderr)
+
+    def test_blocking_checker_is_stopped_by_ten_second_ceiling(self) -> None:
+        result, elapsed = self.invoke(
+            'echo checker-started\nexec python3 -c "import time; time.sleep(60)"\n'
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertGreaterEqual(elapsed, 9.0)
+        self.assertLess(elapsed, 13.0)
+        self.assertIn("checker-started", result.stderr)
+        self.assertIn("exceeded 10s pre-push budget", result.stderr)
+        self.assertIn("green is not established", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

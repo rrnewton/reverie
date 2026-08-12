@@ -24,7 +24,13 @@ if [ ! -f "$checker" ]; then
   exit 0
 fi
 
-output=$("$checker" 2>&1)
+# This hook runs inside the 20-second serialized parent publication phase.  The
+# health checker has a wider standalone envelope, so bind this call site to an
+# 8-second internal deadline and a 10-second process ceiling.  That leaves time
+# for the commit, push, fetch, and ancestry proof without turning an unavailable
+# diagnostic into green or suppressing the publication error.
+output=$(timeout --signal=TERM --kill-after=1s 10s \
+  "$checker" --per-call-timeout 4 --overall-deadline 8 2>&1)
 rc=$?
 if [ "$rc" -eq 0 ]; then
   printf '%s\n' "$output" >&2
@@ -36,6 +42,8 @@ fi
   printf '%s\n' "$output"
   if [ "$rc" -eq 1 ]; then
     echo "Pre-push warning: GitHub reports RED main. Push is allowed so fixes can land."
+  elif [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+    echo "Pre-push warning: GitHub main health unavailable: exceeded 10s pre-push budget; push continues, and green is not established."
   else
     echo "Pre-push warning: GitHub main health could not be verified. Do not claim green."
   fi

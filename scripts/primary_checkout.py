@@ -1224,10 +1224,10 @@ def checkout_fresh(
             else str(command)
         )
         phase = getattr(error, "primary_checkout_phase", None) or _COMMAND_PHASE.get()
-        published = _published_snapshot_after_timeout(root, phase)
-        if published:
+        snapshot_state, snapshot = _snapshot_state_after_timeout(root, phase)
+        if snapshot_state == "published":
             print(
-                f"SUCCESS: parent snapshot {published} was committed and published "
+                f"SUCCESS: parent snapshot {snapshot} was committed and published "
                 "before the wrapper deadline expired; no retry is required.",
                 file=out,
             )
@@ -1239,6 +1239,18 @@ def checkout_fresh(
             )
             _print_timed_child_output(error, err)
             return SNAPSHOT_PUBLISHED
+        if snapshot_state == "local-unpublished":
+            print(
+                "ERROR: LOCAL COMMIT EXISTS BUT origin/main DOES NOT CONTAIN IT.",
+                file=err,
+            )
+            print(
+                f"Snapshot {snapshot} was committed locally, but publication did not "
+                "complete before the serialized parent-main deadline.",
+                file=err,
+            )
+            _print_timed_child_output(error, err)
+            return SNAPSHOT_BLOCKED
         print(
             "ERROR: primary checkout snapshot inner deadline exhausted"
             + (f" in phase [{phase}]" if phase else "")
@@ -1252,18 +1264,18 @@ def checkout_fresh(
             _COMMAND_DEADLINE.reset(token)
 
 
-def _published_snapshot_after_timeout(root: Path, phase: str | None) -> str:
-    """Return the exact already-published snapshot SHA, or an empty string.
+def _snapshot_state_after_timeout(root: Path, phase: str | None) -> tuple[str, str]:
+    """Classify a timed-out snapshot as published, local-only, or unknown.
 
     This is deliberately local and read-only. A successful push updates the
-    remote-tracking ref; requiring it to equal the committed local main keeps a
-    preserved success transcript from becoming authority by itself. Clearing
-    the expired context only permits these bounded local observations -- it
-    does not extend or relaunch the child.
+    remote-tracking ref; requiring the committed local main to be its ancestor
+    keeps a preserved success transcript from becoming authority by itself.
+    Clearing the expired context only permits these bounded local observations
+    -- it does not extend or relaunch the child.
     """
 
     if phase != PARENT_MAIN_WRITE_PHASE:
-        return ""
+        return "unknown", ""
     token = _COMMAND_DEADLINE.set(None)
     try:
         branch = run_git(root, "branch", "--show-current")
@@ -1274,16 +1286,30 @@ def _published_snapshot_after_timeout(root: Path, phase: str | None) -> str:
         _COMMAND_DEADLINE.reset(token)
     observations = (branch, head, published, subject)
     if any(result.returncode != 0 for result in observations):
-        return ""
+        return "unknown", ""
     head_sha = head.stdout.strip()
     if (
         branch.stdout.strip() != "main"
         or not FULL_SHA.fullmatch(head_sha)
-        or published.stdout.strip() != head_sha
         or subject.stdout.strip() != SNAPSHOT_COMMIT_MESSAGE
     ):
-        return ""
-    return head_sha
+        return "unknown", ""
+    token = _COMMAND_DEADLINE.set(None)
+    try:
+        contains = run_git(
+            root,
+            "merge-base",
+            "--is-ancestor",
+            head_sha,
+            "refs/remotes/origin/main",
+        )
+    finally:
+        _COMMAND_DEADLINE.reset(token)
+    if contains.returncode == 0:
+        return "published", head_sha
+    if contains.returncode == 1:
+        return "local-unpublished", head_sha
+    return "unknown", ""
 
 
 def _print_timed_child_output(error: subprocess.TimeoutExpired, stream: TextIO) -> None:

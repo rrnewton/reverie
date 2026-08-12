@@ -501,7 +501,39 @@ class PrimaryCheckoutDeadlineTests(unittest.TestCase):
         self.assertNotIn("ERROR:", err.getvalue())
         self.assertIn("timed child stdout (preserved)", err.getvalue())
 
-    def test_timed_child_without_published_boundary_still_reports_error(self) -> None:
+    def test_snapshot_contained_by_newer_remote_is_still_published(self) -> None:
+        temp, root, head = self.snapshot_boundary(published=True)
+        self.addCleanup(temp.cleanup)
+        tree = git(root, "rev-parse", f"{head}^{{tree}}")
+        descendant = git(
+            root,
+            "commit-tree",
+            tree,
+            "-p",
+            head,
+            "-m",
+            "later serialized parent writer",
+        )
+        git(root, "update-ref", "refs/remotes/origin/main", descendant)
+        timeout = subprocess.TimeoutExpired(
+            ["scripts/parent-main-write", "commit"], 20.0
+        )
+        timeout.primary_checkout_phase = primary_checkout.PARENT_MAIN_WRITE_PHASE
+        out, err = StringIO(), StringIO()
+        with patch.object(
+            primary_checkout,
+            "_checkout_fresh_impl",
+            side_effect=timeout,
+        ):
+            result = primary_checkout.checkout_fresh(
+                root, deadline_secs=24.0, out=out, err=err
+            )
+
+        self.assertEqual(primary_checkout.SNAPSHOT_PUBLISHED, result)
+        self.assertIn(f"SUCCESS: parent snapshot {head}", out.getvalue())
+        self.assertNotIn("DOES NOT CONTAIN IT", err.getvalue())
+
+    def test_timed_child_with_local_only_snapshot_names_publication_gap(self) -> None:
         temp, root, head = self.snapshot_boundary(published=False)
         self.addCleanup(temp.cleanup)
         timeout = subprocess.TimeoutExpired(
@@ -524,7 +556,12 @@ class PrimaryCheckoutDeadlineTests(unittest.TestCase):
             )
 
         self.assertEqual(primary_checkout.SNAPSHOT_BLOCKED, result)
-        self.assertIn("ERROR: primary checkout snapshot inner deadline exhausted", err.getvalue())
+        self.assertIn(
+            "ERROR: LOCAL COMMIT EXISTS BUT origin/main DOES NOT CONTAIN IT.",
+            err.getvalue(),
+        )
+        self.assertIn(head, err.getvalue())
+        self.assertIn("publication did not complete", err.getvalue())
         self.assertNotIn("SUCCESS:", out.getvalue())
 
 
