@@ -30,42 +30,70 @@ unblocks. A status label, queue declaration, or old task note does not outrank c
 1. **Every task starts with an explicit write destination.** The dispatch names the repository,
    checkout or clone, directory tree, branch, and whether the agent may write. “No slot” is not
    permission to write somewhere else.
-2. **One agent owns a directory tree, not a file.** Never grant simultaneous writers different files or
+2. **Do not invent project terminology.** Use words established by the owner, the project vision, the
+   historical documentation state named below, or an actual source-code identity. Newer agent-written
+   prose does not authorize its own vocabulary. If those sources do not cover a fact, describe the fact
+   in plain language; do not give it a new name. A new name asserts that a new concept exists and
+   requires the owner. Every coordinator dispatch includes this literal rule: “Agents may not coin terms. Use the
+   project's existing vocabulary. If a concept has no existing word, describe it in plain language;
+   do not name it. A new name requires the owner.” To check earlier project language, inspect Hermit
+   commit `5c5c73f662dfaa15c5e256b1c9c7ce4ff861b6e8` (2026-07-22 13:28 PDT), the commit immediately
+   before the first documentation change authored by `hermit-agent@meta.com`.
+3. **Every adversarial review checks whether the change lowers the bar.** The coordinator applies the
+   same check before dispatching and includes this complete block in every adversarial-review prompt,
+   not a pointer to it:
+
+   > GOALPOST-MOVING REVIEW RULE
+   >
+   > Adversarial reviewers must look explicitly for goalpost moving. We are extremely skeptical of any goalpost moving. YOU DO NOT CLEAR THE BAR BY SIMPLY LOWERING THE BAR.
+   >
+   > Treat each of these as an explicit review target:
+   > - weakening an assertion so a test passes
+   > - widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
+   > - renaming or relabelling so a failure reads as a pass
+   > - deleting a check rather than satisfying it
+   >
+   > A passing test is not sufficient when the assertion no longer discriminates the prohibited behavior. Two live incidents from 2026-08-11 show why this must be in the dispatch prompt:
+   > - A harness fix PASSED DELETION-MUTATION AND STILL ADMITTED A BACKWARD PIN: the assertion existed but did not discriminate.
+   > - The strict-compat corpus kept the legacy comparator for SEVEN CALENDAR DAYS while labelled L2-bitwise.
+   >
+   > BOTH SURVIVED REVIEW.
+4. **One agent owns a directory tree, not a file.** Never grant simultaneous writers different files or
    subdirectories under the same tree. Observers are read-only. Ownership transfers explicitly; it is
    never inferred from inactivity.
-3. **The hazard is writes, not presence.** Reading the shared parent checkout is allowed. Writing it
+5. **The hazard is writes, not presence.** Reading the shared parent checkout is allowed. Writing it
    requires a task that names the owned parent paths, and any commit names only those explicit paths.
    Never use `git add -A` or `git add .` in shared state.
-4. **Treat unexpected changes as somebody else’s work.** Do not reset, clean, overwrite, stash, absorb,
+6. **Treat unexpected changes as somebody else’s work.** Do not reset, clean, overwrite, stash, absorb,
    switch over, or “tidy” them. Record the path and observed state, then stop or work around it.
-5. **Never remove a dirty slot without a documented recovery SHA.** A detector’s reclaim list is a set
+7. **Never remove a dirty slot without a documented recovery SHA.** A detector’s reclaim list is a set
    of candidates to inspect, never permission to release or delete one. A lease or owner-sidecar TTL
    expiring only makes reclaim eligible: a live or indeterminate owner, or a failed process-use,
    cleanliness, or durability proof, still refuses. A successful reclaim records the reclaimer and
    recovery handoff. Follow
    [worktree-provisioning](.claude/skills/worktree-provisioning/SKILL.md).
-6. **Do not repair live infrastructure in place.** Changes to coordinator-executed infrastructure such
+8. **Do not repair live infrastructure in place.** Changes to coordinator-executed infrastructure such
    as `ci-hub/` are made in a task-specific disposable clone, tested there, and landed as one complete
    commit before activation. Follow the
    [ci-hub out-of-place change protocol](ai_docs/ci-hub-change-clone-protocol.md).
-7. **An alarm is a trigger to check, never a warrant to act.** Before replacement or irreversible
+9. **An alarm is a trigger to check, never a warrant to act.** Before replacement or irreversible
    cleanup, verify the named subject at action time using a source independent of the alarm. For the
    [ORC liveness probe](ci-hub/health/agent_liveness_probe.py), rc 0 means verified dead; rc 1 means
    alive and rc 2 means unverifiable. Both rc 1 and rc 2 refuse replacement.
-8. **Never broad-kill on a shared box.** Do not use `pkill`, `killall`, a name or substring match, a
+10. **Never broad-kill on a shared box.** Do not use `pkill`, `killall`, a name or substring match, a
    user-wide signal, or a `ps | grep | kill` pipeline. Signal only a PID or process group you created and
    recorded. If ownership is not provable, do not signal it.
-9. **A note is one agent’s unverified belief.** Attribute second-hand claims and verify their premise
+11. **A note is one agent’s unverified belief.** Attribute second-hand claims and verify their premise
    before acting. “Premise refuted” is a valid result.
-10. **A number is unqualified until it names what it measures, its unit, and its denominator.** A count
+12. **A number is unqualified until it names what it measures, its unit, and its denominator.** A count
     is not a rate; a sampled value is not a recorded peak; `0/0` is not a passing population.
-11. **Verify a mechanism by the running thing, not its configuration.** A flag, label, declared owner,
+13. **Verify a mechanism by the running thing, not its configuration.** A flag, label, declared owner,
     exit code, or queue entry may be stale or inert. Observe the live process, authoritative record, or
     exact consumer that governs the decision.
-12. **Bracket both directions.** Prove that a qualifying case is accepted and a violating case is
+14. **Bracket both directions.** Prove that a qualifying case is accepted and a violating case is
     refused. Never plant a real approval, validation label, merge, or other authorization to test the
     refusal; use an inert fixture or isolated repository.
-13. **Closed does not mean landed; landed does not mean deployed.** After publication, evidence, and
+15. **Closed does not mean landed; landed does not mean deployed.** After publication, evidence, and
     adversarial confirmation, the owning agent closes its own task with
     `tg update <id> --status closed`; red, missing, or stale selected validation does not qualify.
     After landing, verify ancestry and activate the landed commit in the primary checkout; ancestry

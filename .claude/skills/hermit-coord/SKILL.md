@@ -56,7 +56,13 @@ is the operational summary of the coordinator role.
   [post-facto-review](../post-facto-review/SKILL.md). Cross-agent review is preferred for a
   single-review PR, not mandatory during API outages. Hermit syscall handling, DetCore scheduling,
   and Reverie API changes use two different review agents. The former Codex-only rate-limit measure
-  expired after 12 hours and is not standing policy.
+  expired after 12 hours and is not standing policy. Before dispatching any adversarial review, apply
+  the lowered-bar check yourself and paste the exact goalpost block from AGENTS.md rule 3 into the
+  review prompt. Require the reviewer to state whether the change weakened an assertion, widened a
+  tolerance, added an exemption, skipped a case, relaxed a comparator, renamed a failure as a pass, or
+  deleted a check instead of satisfying it. Two real misses show why a passing suite is insufficient:
+  a harness assertion still accepted a backward pin after the assertion was changed, and strict
+  compatibility used the legacy comparator for seven days while being described as L2-bitwise.
 - **PR ownership:** the author shepherds each new PR through review, validation
   under `hermit-validation-authority`, landing, and ancestry confirmation. Do not hand
   ordinary work to a dedicated lander; that role drains inherited backlog.
@@ -72,12 +78,15 @@ is the operational summary of the coordinator role.
   acknowledged handoff.
 - **Stable descriptive naming:** use a stable, descriptive, lowercase
   hyphenated slug for every option, wave, workstream, phase, task, and other
-  semantic unit of coordinated work (for example, `btrfs-flood-fix`). Never
-  use a bare identifier such as `Option-A`, `phase-1`, `round-N`, or `wave-X`.
-  In communications, task names and notes, dispatch instructions, and agent
-  messages, keep the slug across status updates; when enumerating variants or
-  actors, retain it and add a descriptive suffix, for example
-  `btrfs-flood-fix/claude-agent`. Infrastructure IDs do not replace the slug.
+  unit of coordinated work (for example, `btrfs-flood-fix`). An identifier may
+  combine existing project words; it may not name a new concept. If existing
+  project words do not describe the work, explain the work in a plain sentence
+  and ask the owner before introducing a name. Never use a bare identifier such
+  as `Option-A`, `phase-1`, `round-N`, or `wave-X`. In communications, task
+  names and notes, dispatch instructions, and agent messages, keep the slug
+  across status updates; when enumerating variants or actors, retain it and add
+  a descriptive suffix, for example `btrfs-flood-fix/claude-agent`.
+  Infrastructure IDs do not replace the slug.
 - Use `with-proxy` for all networked git/gh operations. Every PR comment starts
   with `[coordinator, <model>]`.
 
@@ -85,11 +94,38 @@ is the operational summary of the coordinator role.
 
 The coordinator is bound by AGENTS.md's
 [communication convention](../../../AGENTS.md#conventions)
-both as an author and as a relay. Define recurring terms when they are
-coined, but do not make a user resolve even a correctly linked definition to
-understand a status update. Lead with the observable consequence and the
-decision it creates; put field names, formulas, and implementation mechanisms
-afterward as supporting detail.
+both as an author and as a relay. Do not coin recurring terms. Existing
+vocabulary means language established by the owner, the project vision, the
+historical documentation state below, or an actual source-code identity; newer
+agent-written prose does not authorize its own vocabulary. If those sources do
+not cover a fact, describe the fact in plain language; do not name it. A new
+name asserts that a new concept exists and requires the owner. Lead with the
+observable consequence and the decision it creates; put field names, formulas,
+and implementation mechanisms afterward as supporting detail.
+
+Every coordinator dispatch includes this literal rule:
+
+> Agents may not coin terms. Use the project's existing vocabulary. If a
+> concept has no existing word, describe it in plain language; do not name it.
+> A new name requires the owner.
+
+This requirement is a convention backed by always-loaded policy, not a
+mechanism. Claude, Codex, and ORC do not share one mechanical dispatch composer,
+so no program currently inserts or checks the sentence for every dispatch.
+
+For a Git lookup point before agent-authored documentation changes, use Hermit
+commit `5c5c73f662dfaa15c5e256b1c9c7ce4ff861b6e8`, committed 2026-07-22 at
+13:28 PDT. It is the immediate parent of the first documentation commit authored
+by `hermit-agent@meta.com`. Check a proposed phrase without changing a checkout:
+
+```sh
+git -C hermit grep -in -F '<phrase>' \
+  5c5c73f662dfaa15c5e256b1c9c7ce4ff861b6e8 -- '*.md'
+```
+
+Absence from that commit makes a term suspect, not automatically forbidden. A
+later explicit owner instruction or a concrete product/source identity can
+establish newer language; record that source instead of inferring permission.
 
 **Before (mechanism without meaning):** "Whether a queued run should expose
 `now - created_at` as a lower-bound wait instead of showing `queue_s=0`."
