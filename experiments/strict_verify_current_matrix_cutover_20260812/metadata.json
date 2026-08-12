@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "recorded_at_utc": "2026-08-12T09:17:13Z",
+  "host": "devbig014",
+  "task": "lock-the-scorecard-then-upgrade-the-standard-record-both-counts",
+  "before": {
+    "hermit_sha": "c6c6d6958a8dc940419ead146c8283f06607a9df",
+    "reverie_sha": "c261050cfd41bec67e31bfd0cf6f56be008d0ebb",
+    "receipt_id": "devbig014-1786522425-2681754",
+    "receipt_digest": "10f4bbff88637ef51632b6d7f8d5a1d0eb1f525d856837d384b0e19d43cba79e",
+    "comparison_standard": "legacy-normalized-verify",
+    "declared_cells": 627,
+    "selected_cells": 172,
+    "green": 172,
+    "stable_fail": 0,
+    "unstable": 0,
+    "no_verdict": 0,
+    "evidence_granularity": "bucket",
+    "selected_by_backend": {
+      "ptrace": 151,
+      "sabre": 9,
+      "dbt": 9,
+      "liteinst": 3,
+      "kvm": 0
+    },
+    "selected_by_mode": {
+      "verify": 167,
+      "chaos": 2,
+      "custom": 2,
+      "replay": 1
+    }
+  },
+  "population_sources": {
+    "required_plan": "hermit/ci/expected-e2e-plan.json",
+    "required_plan_sha256": "b3bab743a8c6e1fec6113c4f124874041b94a6414aa0e9edfb96910edfdde5ef",
+    "declared_matrix_derivation": "experiments/manifest_backend_matrix_derivation/derive.py",
+    "derivation_sha256": "baab797535f01cd347d48b946f042ac03477e44a6402c9c49b5115c7e6340dd2"
+  },
+  "after": {
+    "recorded_at_utc": "2026-08-12T10:19:39Z",
+    "hermit_sha": "9b5dfe93804d89f58eb5e2634de505e050001c8d",
+    "reverie_sha": "c261050cfd41bec67e31bfd0cf6f56be008d0ebb",
+    "comparison_standard": "canonical-verify-strict",
+    "declared_cells": 627,
+    "selected_cells": 172,
+    "identity_set_sha256": "b3bab743a8c6e1fec6113c4f124874041b94a6414aa0e9edfb96910edfdde5ef",
+    "green": 149,
+    "stable_fail": 0,
+    "unstable": 1,
+    "no_verdict": 22,
+    "observed": {
+      "canonical_match": 150,
+      "canonical_divergence": 7,
+      "no_canonical_result": 9,
+      "not_run": 6
+    },
+    "by_backend": {
+      "ptrace": {"green": 144, "stable_fail": 0, "unstable": 0, "no_verdict": 7, "total": 151},
+      "sabre": {"green": 2, "stable_fail": 0, "unstable": 1, "no_verdict": 6, "total": 9},
+      "dbt": {"green": 0, "stable_fail": 0, "unstable": 0, "no_verdict": 9, "total": 9},
+      "liteinst": {"green": 3, "stable_fail": 0, "unstable": 0, "no_verdict": 0, "total": 3},
+      "kvm": {"green": 0, "stable_fail": 0, "unstable": 0, "no_verdict": 0, "total": 0}
+    },
+    "full_run_id": "validate-codex-tickgate-9b5dfe93804d-1786528397",
+    "full_log_sha256": "2618e020aee2931e0a75c518f857c2b7576ba7f0e6c56b81b0a2ea761c673f8d",
+    "runner_journal_sha256": "45a422e52705262c2a84279ced903bdb6cd58a4bff3a64a5464f8ef1760674c9",
+    "qualifying_receipt": false,
+    "qualifying_receipt_reason": "candidate changes registered producer scripts/validate.rs and cannot self-vouch"
+  },
+  "green_delta": -23,
+  "strict_flag_to_measurement_elapsed": "P7DT6H27M2S",
+  "strict_flag_to_measurement_utc_dates": 8
+}

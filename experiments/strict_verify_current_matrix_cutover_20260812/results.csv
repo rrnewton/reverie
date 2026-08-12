@@ -1,0 +1,13 @@
+phase,backend,green,stable_fail,unstable,no_verdict,total,canonical_match,canonical_divergence,no_canonical_result,not_run
+before,ptrace,151,0,0,0,151,,,,
+before,sabre,9,0,0,0,9,,,,
+before,dbt,9,0,0,0,9,,,,
+before,liteinst,3,0,0,0,3,,,,
+before,kvm,0,0,0,0,0,,,,
+before,total,172,0,0,0,172,,,,
+after,ptrace,144,0,0,7,151,144,1,0,6
+after,sabre,2,0,1,6,9,3,6,0,0
+after,dbt,0,0,0,9,9,0,0,9,0
+after,liteinst,3,0,0,0,3,3,0,0,0
+after,kvm,0,0,0,0,0,0,0,0,0
+after,total,149,0,1,22,172,150,7,9,6
