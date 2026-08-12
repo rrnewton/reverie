@@ -28,8 +28,10 @@ sys.path.insert(0, str(ROOT / "ci-hub"))
 sys.path.insert(0, str(ROOT / "ci-hub/history"))
 sys.path.insert(0, str(ROOT / "ci-hub/ledger"))
 sys.path.insert(0, str(ROOT / "ci-hub/validate"))
+sys.path.insert(0, str(ROOT / "ci-hub/lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import fetch_ref
 import obligations
 from check_outcome import CheckOutcome, classify_check, select_latest_workflow_attempts
 from check_outcome import FAIL_CONCLUSIONS as _RED_CONCLUSIONS
@@ -165,6 +167,11 @@ DEFAULT_NETWORK_TIMEOUT = float(
 DEFAULT_WATCH_GATE_BUDGET_SECS = float(
     os.environ.get("CI_HUB_WATCH_GATE_BUDGET", "20")
 )
+# Keep the reporting/persistence tail inside the unchanged gate allowance.  The
+# deadline is passed down to each GitHub subprocess; without this reserve a
+# subprocess timeout at the outer deadline still leaves no time to render the
+# typed NO-RESULT that makes the gate fail closed.
+WATCH_GATE_COMPLETION_RESERVE_SECS = 2.0
 DEFAULT_WATCH_CANCEL_WAIT_SECS = float(
     os.environ.get("CI_HUB_WATCH_CANCEL_WAIT", "10")
 )
@@ -537,6 +544,10 @@ def _read_local_output(log_path: Path, offset: int, *, cap: int = 64_000_000) ->
 
 class ProtocolError(RuntimeError):
     """The dual-verification protocol could not be armed or polled."""
+
+
+class WatchBudgetExhausted(ProtocolError):
+    """The bounded one-shot watcher ran out of time, not evidence."""
 
 
 def _local_receipt_problem(
@@ -1582,19 +1593,16 @@ def resolve_repo_source(repo: str, source: Path | None) -> Path:
 
 def _fetch_target(source: Path, target: str) -> str:
     target_ref = f"origin/{target}"
-    _run(
-        (
-            "with-proxy",
-            "git",
-            "-C",
-            str(source),
-            "fetch",
-            "origin",
-            f"refs/heads/{target}:refs/remotes/{target_ref}",
-        ),
-        check=True,
-        timeout=DEFAULT_NETWORK_TIMEOUT,
-    )
+    try:
+        fetch_ref.fetch_remote_tracking_branch(
+            source,
+            remote="origin",
+            branch=target,
+            use_proxy=True,
+            network_timeout_s=DEFAULT_NETWORK_TIMEOUT,
+        )
+    except fetch_ref.FetchRefError as error:
+        raise ProtocolError(f"cannot safely fetch {target_ref}: {error}") from error
     return target_ref
 
 
@@ -1683,11 +1691,7 @@ def resolve_landed_sha(
     """
     if not source.is_dir():
         raise ProtocolError(f"Hermit source checkout is missing: {source}")
-    _run(
-        ("with-proxy", "git", "-C", str(source), "fetch", "origin", "main"),
-        check=True,
-        timeout=DEFAULT_NETWORK_TIMEOUT,
-    )
+    _fetch_target(source, "main")
     if pr is not None:
         if not repo:
             raise ProtocolError("a repository is required with a PR number")
@@ -2190,6 +2194,7 @@ def github_runs(
     sha: str,
     *,
     policy: Mapping[str, Any] | None = None,
+    deadline: float | None = None,
 ) -> list[dict[str, Any]]:
     selected_policy = (
         verification_policy_for_repo(repo)
@@ -2202,27 +2207,25 @@ def github_runs(
         )
     if not obligations.SHA_RE.fullmatch(sha):
         raise ProtocolError(f"invalid exact-SHA GitHub query {sha!r}")
-    result = _run(
+    result = _github_run_with_deadline(
         (
             "with-proxy",
             "gh",
             "api",
             f"repos/{repo}/actions/runs?head_sha={sha}&per_page=100",
         ),
-        check=True,
-        timeout=DEFAULT_NETWORK_TIMEOUT,
+        deadline=deadline,
     )
     runs = _parse_github_runs(result.stdout, sha, selected_policy)
     for run in runs:
-        jobs_result = _run(
+        jobs_result = _github_run_with_deadline(
             (
                 "with-proxy",
                 "gh",
                 "api",
                 f"repos/{repo}/actions/runs/{run['databaseId']}/jobs?filter=latest&per_page=100",
             ),
-            check=True,
-            timeout=DEFAULT_NETWORK_TIMEOUT,
+            deadline=deadline,
         )
         run["jobs"] = _parse_github_jobs(
             jobs_result.stdout,
@@ -2232,11 +2235,38 @@ def github_runs(
     return runs
 
 
-def github_main_sha(repo: str) -> str:
-    result = _run(
+def _watch_network_timeout(deadline: float | None) -> float:
+    """Return an inner timeout that leaves the one-shot watcher time to report."""
+    if deadline is None:
+        return DEFAULT_NETWORK_TIMEOUT
+    remaining = deadline - time.monotonic() - WATCH_GATE_COMPLETION_RESERVE_SECS
+    if remaining <= 0:
+        raise WatchBudgetExhausted(
+            "watch budget exhausted before the next GitHub API call"
+        )
+    return min(DEFAULT_NETWORK_TIMEOUT, remaining)
+
+
+def _github_run_with_deadline(
+    command: Sequence[str], *, deadline: float | None
+) -> subprocess.CompletedProcess[str]:
+    timeout = _watch_network_timeout(deadline)
+    try:
+        return _run(command, check=True, timeout=timeout)
+    except ProtocolError as error:
+        if deadline is not None and isinstance(
+            error.__cause__, subprocess.TimeoutExpired
+        ):
+            raise WatchBudgetExhausted(
+                f"GitHub API call exhausted the watch budget after {timeout:.1f}s"
+            ) from error
+        raise
+
+
+def github_main_sha(repo: str, *, deadline: float | None = None) -> str:
+    result = _github_run_with_deadline(
         ("with-proxy", "gh", "api", f"repos/{repo}/commits/main", "--jq", ".sha"),
-        check=True,
-        timeout=DEFAULT_NETWORK_TIMEOUT,
+        deadline=deadline,
     )
     sha = result.stdout.strip().lower()
     if not obligations.SHA_RE.fullmatch(sha):
@@ -2926,6 +2956,7 @@ def evaluate_obligation(
     *,
     store_path: Path,
     main_sha: str | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     record = obligations.get_record(obligation_id, store_path)
     remediation = record.get("remediation")
@@ -3094,7 +3125,9 @@ def evaluate_obligation(
             source, summary = _failure_details(record)
         if main_sha is None:
             try:
-                main_sha = github_main_sha(record["repo"])
+                main_sha = github_main_sha(record["repo"], deadline=deadline)
+            except WatchBudgetExhausted:
+                raise
             except ProtocolError as error:
                 main_sha = None
                 main_error = str(error)
@@ -4557,7 +4590,12 @@ def _verification_state_needs_reconcile(record: Mapping[str, Any]) -> bool:
     return looks_active and not _verification_in_flight(record)
 
 
-def poll_obligation(obligation_id: str, store_path: Path) -> dict[str, Any]:
+def poll_obligation(
+    obligation_id: str,
+    store_path: Path,
+    *,
+    deadline: float | None = None,
+) -> dict[str, Any]:
     record = obligations.get_record(obligation_id, store_path)
     if record["overall_state"] in obligations.CLOSED_STATES and not (
         record["overall_state"] == "satisfied"
@@ -4586,7 +4624,11 @@ def poll_obligation(obligation_id: str, store_path: Path) -> dict[str, Any]:
         and not _verification_in_flight(record)
         and not _verification_state_needs_reconcile(record)
     ):
-        record = evaluate_obligation(obligation_id, store_path=store_path)
+        record = evaluate_obligation(
+            obligation_id,
+            store_path=store_path,
+            deadline=deadline,
+        )
         if record["overall_state"] == "satisfied":
             return record
     policy: dict[str, Any] | None = None
@@ -4599,7 +4641,12 @@ def poll_obligation(obligation_id: str, store_path: Path) -> dict[str, Any]:
         and record["github"]["state"] not in TERMINAL_VERIFICATION_STATES
     ):
         try:
-            runs = github_runs(record["repo"], record["landed_sha"], policy=policy)
+            runs = github_runs(
+                record["repo"],
+                record["landed_sha"],
+                policy=policy,
+                deadline=deadline,
+            )
             patch = _github_patch(runs, record["landed_sha"], policy)
             if record.get("github") != patch["github"]:
                 record = obligations.transition(
@@ -4608,6 +4655,8 @@ def poll_obligation(obligation_id: str, store_path: Path) -> dict[str, Any]:
                     patch,
                     store_path,
                 )
+        except WatchBudgetExhausted:
+            raise
         except ProtocolError as error:
             record = obligations.transition(
                 obligation_id,
@@ -4661,7 +4710,11 @@ def poll_obligation(obligation_id: str, store_path: Path) -> dict[str, Any]:
     # needed, so a completed validation never causes a redundant redispatch.
     record = bind_local_receipt_authority(obligation_id, store_path)
     record = _maybe_redispatch_local(obligation_id, record, store_path)
-    return evaluate_obligation(obligation_id, store_path=store_path)
+    return evaluate_obligation(
+        obligation_id,
+        store_path=store_path,
+        deadline=deadline,
+    )
 
 
 def _maybe_redispatch_local(
@@ -4874,7 +4927,26 @@ def _poll_within_budget(
             return updated, len(records), True
         op_wall = time.monotonic()
         op_cpu = time.process_time()
-        updated.append(poll_obligation(record["obligation_id"], store_path))
+        try:
+            updated.append(
+                poll_obligation(
+                    record["obligation_id"], store_path, deadline=deadline
+                )
+            )
+        except WatchBudgetExhausted as error:
+            # The attempt is part of the reported census even though it could
+            # not produce a verdict.  Re-read only the durable current row; do
+            # not manufacture a GitHub state from the timeout.
+            updated.append(
+                obligations.get_record(record["obligation_id"], store_path)
+            )
+            print(f"# poll {record['obligation_id']} budget-exhausted: {error}")
+            print(
+                f"# poll {record['obligation_id']} "
+                f"wall={time.monotonic() - op_wall:.2f}s "
+                f"cpu={time.process_time() - op_cpu:.2f}s"
+            )
+            return updated, len(records), True
         print(
             f"# poll {record['obligation_id']} "
             f"wall={time.monotonic() - op_wall:.2f}s "

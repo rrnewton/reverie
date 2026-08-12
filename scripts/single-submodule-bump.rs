@@ -355,7 +355,7 @@ fn inspect_transition(root: &Path, args: &CommonArgs) -> Result<Transition, Bump
         )));
     }
 
-    fetch_origin_main(&checkout)?;
+    fetch_origin_main(root, &checkout)?;
     let parent_pin = git(root, ["rev-parse", &format!("HEAD:{submodule_path}")])?;
     let checkout_head = git(&checkout, ["rev-parse", "HEAD"])?;
     if parent_pin != checkout_head {
@@ -591,12 +591,13 @@ fn run_bump(root: &Path, args: RunArgs, transition: Transition) -> Result<i32, B
     Ok(verification_exit)
 }
 
-fn fetch_origin_main(checkout: &Path) -> Result<(), BumpError> {
+fn fetch_origin_main(root: &Path, checkout: &Path) -> Result<(), BumpError> {
     run_checked(
-        Command::new("with-proxy")
-            .args(["git", "-C"])
+        Command::new("python3")
+            .arg(root.join("ci-hub/lib/fetch_ref.py"))
+            .args(["--repo"])
             .arg(checkout)
-            .args(["fetch", "origin", "main"]),
+            .args(["--remote", "origin", "--branch", "main"]),
     )
 }
 

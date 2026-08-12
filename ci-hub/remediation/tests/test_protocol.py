@@ -33,6 +33,33 @@ TREE = "c" * 40
 REVERIE_LANDED_SHA = "025d37800d347c32711038bd0a3889e8e4774c2b"
 
 
+class SharedTrackingRefFetchTests(unittest.TestCase):
+    def test_fetch_target_uses_unique_ref_then_bounded_cas_helper(self) -> None:
+        source = Path("/source")
+        with mock.patch.object(
+            protocol.fetch_ref, "fetch_remote_tracking_branch"
+        ) as safe_fetch:
+            self.assertEqual(protocol._fetch_target(source, "main"), "origin/main")
+        safe_fetch.assert_called_once_with(
+            source,
+            remote="origin",
+            branch="main",
+            use_proxy=True,
+            network_timeout_s=protocol.DEFAULT_NETWORK_TIMEOUT,
+        )
+
+    def test_fetch_target_preserves_fail_closed_refusal(self) -> None:
+        with (
+            mock.patch.object(
+                protocol.fetch_ref,
+                "fetch_remote_tracking_branch",
+                side_effect=protocol.fetch_ref.FetchRefError("CAS still moving"),
+            ),
+            self.assertRaisesRegex(protocol.ProtocolError, "CAS still moving"),
+        ):
+            protocol._fetch_target(Path("/source"), "main")
+
+
 def _producer_state(state: str) -> tuple[str, str | None]:
     return {
         "green": ("completed", "success"),
@@ -97,6 +124,33 @@ def hosted_evidence(
             run["status"] = "queued"
             run["conclusion"] = None
     return list(runs.values())
+
+
+def hosted_api_payloads(evidence: list[dict]) -> list[dict]:
+    """Render the run and job pages returned by the GitHub API fixture."""
+    runs = {
+        "total_count": len(evidence),
+        "workflow_runs": [
+            {
+                "id": run["databaseId"],
+                "head_sha": run["headSha"],
+                "path": run["workflowFile"],
+                "name": run["workflowName"],
+                "status": run["status"],
+                "conclusion": run["conclusion"],
+                "created_at": run["createdAt"],
+                "run_started_at": run["startedAt"],
+                "updated_at": run["updatedAt"],
+                "html_url": run["url"],
+                "event": run["event"],
+            }
+            for run in evidence
+        ],
+    }
+    return [runs, *(
+        {"total_count": len(run["jobs"]), "jobs": run["jobs"]}
+        for run in evidence
+    )]
 
 
 def counted_receipt_report(sha: str = SHA) -> dict:
@@ -476,7 +530,10 @@ class ProtocolTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 0, "", "")
             self.fail(f"unexpected command: {command}")
 
-        with mock.patch.object(protocol, "_run", side_effect=run):
+        with (
+            mock.patch.object(protocol, "_fetch_target", return_value="origin/main"),
+            mock.patch.object(protocol, "_run", side_effect=run),
+        ):
             landed = protocol.resolve_landed_sha(
                 source,
                 "pre-rebase-head-not-fetched",
@@ -500,7 +557,10 @@ class ProtocolTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 1, "", "")
             self.fail(f"unexpected command: {command}")
 
-        with mock.patch.object(protocol, "_run", side_effect=run):
+        with (
+            mock.patch.object(protocol, "_fetch_target", return_value="origin/main"),
+            mock.patch.object(protocol, "_run", side_effect=run),
+        ):
             with self.assertRaisesRegex(protocol.ProtocolError, "pass --pr"):
                 protocol.resolve_landed_sha(source, head)
 
@@ -525,7 +585,10 @@ class ProtocolTest(unittest.TestCase):
                 return subprocess.CompletedProcess(command, 1, "", "")
             self.fail(f"unexpected command: {command}")
 
-        with mock.patch.object(protocol, "_run", side_effect=run):
+        with (
+            mock.patch.object(protocol, "_fetch_target", return_value="origin/main"),
+            mock.patch.object(protocol, "_run", side_effect=run),
+        ):
             with self.assertRaisesRegex(protocol.ProtocolError, "orphaned"):
                 protocol.resolve_landed_sha(
                     source, head, repo="rrnewton/hermit", pr=1219
@@ -819,6 +882,239 @@ class ProtocolTest(unittest.TestCase):
                     ]["required_jobs"]
                 },
             )
+
+    def test_watch_deadline_rebounds_each_github_call(self) -> None:
+        """Every serial API call gets only the current remaining allowance."""
+        evidence = hosted_evidence("rrnewton/hermit")
+        raw_runs = {
+            "total_count": len(evidence),
+            "workflow_runs": [
+                {
+                    "id": run["databaseId"],
+                    "head_sha": run["headSha"],
+                    "path": run["workflowFile"],
+                    "name": run["workflowName"],
+                    "status": run["status"],
+                    "conclusion": run["conclusion"],
+                    "created_at": run["createdAt"],
+                    "run_started_at": run["startedAt"],
+                    "updated_at": run["updatedAt"],
+                    "html_url": run["url"],
+                    "event": run["event"],
+                }
+                for run in evidence
+            ],
+        }
+        responses = [raw_runs]
+        responses.extend(
+            {"total_count": len(run["jobs"]), "jobs": run["jobs"]}
+            for run in evidence
+        )
+        clock = {"now": 100.0}
+        observed_timeouts: list[float] = []
+
+        def fake_run(command, *, check, timeout):
+            del command, check
+            observed_timeouts.append(timeout)
+            clock["now"] += 3.0
+            return subprocess.CompletedProcess(
+                [], 0, json.dumps(responses.pop(0)), ""
+            )
+
+        with (
+            mock.patch.object(protocol.time, "monotonic", lambda: clock["now"]),
+            mock.patch.object(protocol, "_run", side_effect=fake_run),
+        ):
+            protocol.github_runs("rrnewton/hermit", SHA, deadline=120.0)
+        self.assertGreaterEqual(len(observed_timeouts), 2)
+        self.assertEqual(observed_timeouts[0], 18.0)
+        self.assertEqual(observed_timeouts[1], 15.0)
+        self.assertTrue(all(timeout < 20.0 for timeout in observed_timeouts))
+
+    def test_github_main_sha_keeps_default_timeout_without_watch_deadline(
+        self,
+    ) -> None:
+        with mock.patch.object(
+            protocol,
+            "_run",
+            return_value=subprocess.CompletedProcess([], 0, f"{SHA}\n", ""),
+        ) as run:
+            self.assertEqual(protocol.github_main_sha("rrnewton/reverie"), SHA)
+        self.assertEqual(run.call_args.kwargs["timeout"], protocol.DEFAULT_NETWORK_TIMEOUT)
+
+    def test_terminal_red_watch_bounds_main_sha_and_reports_no_result(self) -> None:
+        """A slow main-SHA query cannot consume the one-shot reporting tail."""
+        repo = "rrnewton/reverie"
+        obligation_id = "bounded-main-sha"
+        obligations.create_obligation(
+            repo=repo,
+            landed_sha=REVERIE_LANDED_SHA,
+            land_mode="speculative",
+            verification_policy=protocol.verification_policy_for_repo(repo),
+            actor="test",
+            obligation_id=obligation_id,
+            path=self.store,
+        )
+        evidence = hosted_evidence(
+            repo,
+            sha=REVERIE_LANDED_SHA,
+            job_states=("red", "red"),
+        )
+        responses = hosted_api_payloads(evidence)
+        clock = {"now": 0.0}
+        observed: list[tuple[tuple[str, ...], float]] = []
+
+        def fake_run(command, *, check, timeout):
+            del check
+            command = tuple(command)
+            observed.append((command, timeout))
+            if f"repos/{repo}/commits/main" in command:
+                clock["now"] += timeout
+                try:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                except subprocess.TimeoutExpired as error:
+                    raise protocol.ProtocolError("planted main query timeout") from error
+            clock["now"] += 3.0
+            return subprocess.CompletedProcess(
+                command, 0, json.dumps(responses.pop(0)), ""
+            )
+
+        output = io.StringIO()
+        with (
+            mock.patch.object(protocol.time, "monotonic", lambda: clock["now"]),
+            mock.patch.object(protocol, "_run", side_effect=fake_run),
+            redirect_stdout(output),
+        ):
+            rc = protocol.watch(
+                store_path=self.store,
+                obligation_id=obligation_id,
+                once=True,
+                poll_seconds=1,
+                budget_secs=25.0,
+            )
+        current = obligations.get_record(obligation_id, self.store)
+        self.assertEqual(rc, protocol.WATCH_EXIT_NO_RESULT)
+        self.assertEqual(current["github"]["state"], "red")
+        self.assertEqual(current["overall_state"], "open")
+        self.assertIn("watch_verdict=NO-RESULT", output.getvalue())
+        self.assertNotIn("watch_status=complete", output.getvalue())
+        self.assertEqual(len(observed), 3)
+        self.assertIn(f"repos/{repo}/actions/runs", observed[0][0][3])
+        self.assertIn("/jobs", observed[1][0][3])
+        self.assertIn(f"repos/{repo}/commits/main", observed[2][0])
+        self.assertEqual([timeout for _, timeout in observed], [23.0, 20.0, 17.0])
+        self.assertEqual(clock["now"], 23.0)
+
+    def test_terminal_red_poll_with_allowance_returns_normal_result(self) -> None:
+        repo = "rrnewton/reverie"
+        obligation_id = "main-sha-with-allowance"
+        store = self.root / "main-sha-with-allowance.jsonl"
+        obligations.create_obligation(
+            repo=repo,
+            landed_sha=REVERIE_LANDED_SHA,
+            land_mode="speculative",
+            verification_policy=protocol.verification_policy_for_repo(repo),
+            actor="test",
+            obligation_id=obligation_id,
+            path=store,
+        )
+        evidence = hosted_evidence(
+            repo,
+            sha=REVERIE_LANDED_SHA,
+            job_states=("red", "red"),
+        )
+        responses = hosted_api_payloads(evidence)
+        clock = {"now": 0.0}
+        observed: list[tuple[tuple[str, ...], float]] = []
+
+        def fake_run(command, *, check, timeout):
+            del check
+            command = tuple(command)
+            observed.append((command, timeout))
+            clock["now"] += 1.0
+            stdout = (
+                f"{REVERIE_LANDED_SHA}\n"
+                if f"repos/{repo}/commits/main" in command
+                else json.dumps(responses.pop(0))
+            )
+            return subprocess.CompletedProcess(command, 0, stdout, "")
+
+        with (
+            mock.patch.object(protocol.time, "monotonic", lambda: clock["now"]),
+            mock.patch.object(protocol, "_run", side_effect=fake_run),
+        ):
+            record = protocol.poll_obligation(
+                obligation_id,
+                store,
+                deadline=25.0,
+            )
+        self.assertEqual(record["overall_state"], "remediation_required")
+        self.assertEqual(record["remediation"]["state"], "awaiting_owner")
+        self.assertEqual(len(observed), 3)
+        self.assertIn(f"repos/{repo}/commits/main", observed[2][0])
+        self.assertEqual([timeout for _, timeout in observed], [23.0, 22.0, 21.0])
+
+    def test_hosted_green_fast_path_passes_watch_deadline_to_evaluation(self) -> None:
+        deadline = 25.0
+        record = {
+            "obligation_id": "hosted-green-fast-path",
+            "repo": "rrnewton/reverie",
+            "landed_sha": REVERIE_LANDED_SHA,
+            "overall_state": "open",
+            "local": {"state": "no_result"},
+            "github": {"state": "green"},
+        }
+        satisfied = {**record, "overall_state": "satisfied"}
+        with (
+            mock.patch.object(protocol.obligations, "get_record", return_value=record),
+            mock.patch.object(protocol, "_verification_in_flight", return_value=False),
+            mock.patch.object(
+                protocol, "_verification_state_needs_reconcile", return_value=False
+            ),
+            mock.patch.object(
+                protocol, "evaluate_obligation", return_value=satisfied
+            ) as evaluate,
+        ):
+            self.assertEqual(
+                protocol.poll_obligation(
+                    record["obligation_id"], self.store, deadline=deadline
+                ),
+                satisfied,
+            )
+        evaluate.assert_called_once_with(
+            record["obligation_id"],
+            store_path=self.store,
+            deadline=deadline,
+        )
+
+    def test_watch_deadline_refuses_call_without_completion_reserve(self) -> None:
+        with (
+            mock.patch.object(protocol.time, "monotonic", return_value=119.0),
+            mock.patch.object(protocol, "_run") as run,
+            self.assertRaisesRegex(
+                protocol.WatchBudgetExhausted, "before the next GitHub API call"
+            ),
+        ):
+            protocol.github_runs("rrnewton/hermit", SHA, deadline=120.0)
+        run.assert_not_called()
+
+    def test_inner_subprocess_timeout_becomes_watch_no_result(self) -> None:
+        def planted_timeout(*args, **kwargs):
+            del args, kwargs
+            try:
+                raise subprocess.TimeoutExpired(["gh", "api"], 18.0)
+            except subprocess.TimeoutExpired as error:
+                raise protocol.ProtocolError("planted command timeout") from error
+
+        with (
+            mock.patch.object(protocol.time, "monotonic", return_value=100.0),
+            mock.patch.object(protocol, "_run", side_effect=planted_timeout),
+            self.assertRaisesRegex(
+                protocol.WatchBudgetExhausted,
+                "GitHub API call exhausted the watch budget",
+            ),
+        ):
+            protocol.github_runs("rrnewton/hermit", SHA, deadline=120.0)
 
     def test_repo_policy_routes_workflow_dispatch(self) -> None:
         for index, repo in enumerate(("rrnewton/hermit", "rrnewton/reverie")):
@@ -3802,7 +4098,13 @@ class ProtocolTest(unittest.TestCase):
             for i in range(count)
         ]
 
-        def fake_poll(obligation_id: str, store_path: Path) -> dict:
+        def fake_poll(
+            obligation_id: str,
+            store_path: Path,
+            *,
+            deadline: float | None = None,
+        ) -> dict:
+            del deadline
             clock["t"] += seconds_per_poll
             return next(r for r in records if r["obligation_id"] == obligation_id)
 
@@ -3845,8 +4147,21 @@ class ProtocolTest(unittest.TestCase):
         self.assertEqual(rc, protocol.WATCH_EXIT_NO_RESULT)
 
     def test_only_blocking_poll_crossing_bound_is_no_result(self) -> None:
-        """Plant one remote-call timeout; no next iteration may be required."""
-        clock, records, fake_poll = self._budget_fixture(1, seconds_per_poll=30.0)
+        """An inner timeout leaves reporting time inside the unchanged bound."""
+        clock, records, _ = self._budget_fixture(1, seconds_per_poll=0.0)
+
+        def exhaust_budget(
+            obligation_id: str,
+            store_path: Path,
+            *,
+            deadline: float | None = None,
+        ) -> dict:
+            self.assertEqual(obligation_id, "ob-0")
+            self.assertEqual(store_path, self.store)
+            self.assertIsNotNone(deadline)
+            clock["t"] = deadline - protocol.WATCH_GATE_COMPLETION_RESERVE_SECS
+            raise protocol.WatchBudgetExhausted("planted inner timeout")
+
         output = io.StringIO()
         with mock.patch.object(protocol.time, "monotonic", lambda: clock["t"]), \
              mock.patch.object(
@@ -3854,7 +4169,7 @@ class ProtocolTest(unittest.TestCase):
                  "latest_records",
                  return_value={record["obligation_id"]: record for record in records},
              ), \
-             mock.patch.object(protocol, "poll_obligation", fake_poll), \
+             mock.patch.object(protocol, "poll_obligation", exhaust_budget), \
              redirect_stdout(output):
             rc = protocol.watch(
                 store_path=self.store,
@@ -3868,8 +4183,9 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn("WATCH OBLIGATIONS: NO-RESULT", printed)
         self.assertIn("watch_checked=1", printed)
         self.assertIn("watch_planned=1", printed)
-        self.assertIn("elapsed_ms=30000", printed)
+        self.assertIn("elapsed_ms=23000", printed)
         self.assertIn("bound_ms=25000", printed)
+        self.assertLess(clock["t"], 25.0)
         self.assertNotIn("watch_status=complete", printed)
         self.assertNotIn("watch_verdict=CLEAR", printed)
 
