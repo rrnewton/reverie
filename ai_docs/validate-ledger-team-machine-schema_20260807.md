@@ -382,3 +382,91 @@ machine and **one** team. The shard/union/conflict design is therefore reasoned 
 mechanism, not validated against real multi-machine data, because none exists on this box. The
 first real second machine is the test that matters, and it should be treated as such rather
 than as a rollout.
+
+---
+
+# What a reader may rely on (measured 2026-08-12, n=1491)
+
+## The version string is not a contract, and must not be read as one
+
+Every record ever written carries the same envelope value:
+
+```
+"schema": "validate-ledger/v1"      1491 of 1491 records
+```
+
+**Under that one string there are FIVE distinct envelope key sets.** Eleven envelope keys
+appear in every record; four (`enriches`, `legacy_index`, `started_at`, `workspace`) appear in
+some only. So `validate-ledger/v1` constrains nothing about the record's shape. A consumer that
+checks the version and then assumes a field is reasoning from a string that permits five layouts.
+
+The payload version is real but weak. `legacy_row.schema_version` genuinely spans 1..5
+(94 / 22 / 549 / 262 / 534 in the largest shard), yet **`schema_version == 5` guarantees only
+seven payload fields across 550 records** — barely more than the all-history six. Neither version
+is a useful predictor of shape.
+
+**What predicts shape is ROLE AND RECENCY, not version.** See the table.
+
+## GUARANTEE YOUR OWN DENOMINATOR
+
+There is no single answer to "which fields are always present". The honest answer is per scope,
+and the spread is large enough that a global answer would mislead every reader:
+
+| scope | n | guaranteed `legacy_row` fields |
+|---|---|---|
+| ALL HISTORY | 1491 | **6** |
+| `schema_version == 5` | 550 | **7** |
+| CURRENT validate receipts (`finished_at >= 2026-08-10` AND carries `gates[]`) | 182 | **27** |
+
+**Guaranteed across ALL HISTORY (6):**
+`commit`, `finished_at`, `host`, `result`, `schema_version`, `started_at`
+
+**`schema_version == 5` adds exactly one:** `cwd`
+
+**CURRENT validate receipts add 21 more**, and these are the ones that decide validation
+authority: `cache_state`, `checks`, `commit_anchored`, `cwd`, `executed_tests`, `exit_code`,
+`failures`, `filtered_tests`, `gates`, `git_ahead`, `git_behind`, `log_file`, `producer`,
+`profile`, `real_seconds`, `repo`, `selection_mode`, `slot`, `sys_seconds`, `tree_dirty`,
+`user_seconds`.
+
+Read that table as the rule it encodes: **a consumer restricted to current receipts may rely on
+27 fields; one that scans all history may rely on 6.** State which scope you are reading before
+claiming a field is present, and never generalise a guarantee measured on one scope to another.
+`profile`, `executed_tests`, `gates` and `coverage` are all in the second group — absent from the
+all-history guarantee — so an all-history scan must treat every authority-deciding field as
+optional.
+
+Envelope keys guaranteed in all 1491: `commit`, `emitted_at`, `event_id`, `event_type`, `host`,
+`legacy_row`, `outcome`, `producer`, `run_id`, `schema`, `team`.
+
+## `git_depth`: the bash producer is gone
+
+`git_depth` was written by the BASH producer (`validate.sh`) and is not written by the Rust
+producer (`scripts/validate.rs`). Its disappearance is a producer retirement, not a conditional
+field, and the daily curve shows the cutover cleanly:
+
+```
+08-03..08-06  100%      08-08   23.6%   <- bash -> Rust cutover
+08-07          96.2%    08-10..  0.0%
+```
+
+Presence also varies WITHIN a single `schema_version` (v3: 437/549, v5: 58/534), so
+`schema_version` does not predict it either.
+
+**Do not backfill it.** No consumer reads `git_depth` — a whole-tree grep finds zero readers, so
+nothing refuses on it and nothing silently defaults. Writing values for it now would manufacture
+data no producer ever measured, which is strictly worse than an absent field with no readers.
+
+## What would make the version mean something
+
+Two options; either is honest, and the current state is neither:
+
+1. **Bind it.** `validate-ledger/v1` asserts an exact envelope key set, the writer refuses to emit
+   a record that does not match, and any shape change takes a new version string.
+2. **Rename it.** If the envelope is intended to be extensible, call the field something that does
+   not read as a contract (`format_family`, say) so no consumer treats it as a guarantee.
+
+Leaving a field named `schema` that permits five shapes is the defect — not the shape variance
+itself. This matters more since GitHub Actions was turned off: the ledger is now the sole
+validation authority, and a version string that constrains nothing is the weakest link in the
+thing everything else trusts.
