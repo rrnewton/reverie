@@ -83,6 +83,7 @@ use crate::error::LiteinstActivationFailureReason;
 use crate::error::LiteinstActivationOperation;
 use crate::error::LiteinstActivationStage;
 use crate::error::TraceResultExt;
+use crate::error::liteinst_activation_failure_reason;
 use crate::gdbstub::BreakpointType;
 use crate::gdbstub::CoreRegs;
 use crate::gdbstub::GdbRequest;
@@ -2619,7 +2620,7 @@ impl<L: Tool + 'static> TracedTask<L> {
             | LiteinstRuntimePhase::Bootstrap => LiteinstActivationStage::PreReady,
         };
         let failure = LiteinstActivationFailure::new(stage, reason, error);
-        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
+        if let Some(runtime) = self.global_state.liteinst_runtime.clone() {
             let mut slot = runtime.session_failure.lock().unwrap();
             if slot.is_none() {
                 *slot = Some(format!("tracee {}: {failure}", self.tid()));
@@ -4204,26 +4205,88 @@ impl<L: Tool + 'static> TracedTask<L> {
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Wait, TraceError> {
-        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
+        if let Some(runtime) = self.global_state.liteinst_runtime.clone() {
             runtime.multi_task.store(true, Ordering::Release);
             let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
             let child_pid = child.pid();
-            if let Some(error) = newborn_tracees
-                .lock()
-                .unwrap()
-                .get(&child_pid)
-                .expect("stored child event ownership must remain registered")
-                .registration_error()
-            {
+            let registration_error = {
+                let newborns = newborn_tracees.lock().unwrap();
+                let Some(newborn) = newborns.get(&child_pid) else {
+                    drop(newborns);
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::NewbornRegistration,
+                        Error::runtime(
+                            self.tid(),
+                            "register LiteInst newborn tracee",
+                            format!("newborn {child_pid} event ownership is absent"),
+                        ),
+                    );
+                    return Err(Errno::ESRCH.into());
+                };
+                newborn.registration_error()
+            };
+            if let Some(error) = registration_error {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::NewbornRegistration,
+                    Error::runtime(
+                        self.tid(),
+                        "register LiteInst newborn tracee",
+                        format!("newborn {child_pid} registration failed: {error}"),
+                    ),
+                );
                 return Err(error.into());
             }
-            let child_identity = TraceeIdentity::capture_event_child(child_pid, parent.pid(), op)?;
-            newborn_tracees
-                .lock()
-                .unwrap()
-                .get_mut(&child_pid)
-                .expect("stored child event ownership must remain registered")
-                .set_identity(child_identity);
+            let child_identity =
+                match TraceeIdentity::capture_event_child(child_pid, parent.pid(), op) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        self.record_liteinst_failure(
+                            LiteinstActivationFailureReason::NewbornIdentity,
+                            Error::runtime(
+                                self.tid(),
+                                "capture LiteInst newborn identity",
+                                format!("newborn {child_pid} identity capture failed: {error}"),
+                            ),
+                        );
+                        return Err(error.into());
+                    }
+                };
+            if op == ChildOp::Vfork {
+                // A vfork child borrows the parent's memory and suspends it
+                // until the child execs or exits. Bind and terminate this exact
+                // child generation before returning the refusal; otherwise the
+                // parent remains kernel-frozen and orderly task cleanup cannot
+                // reach the session-level guard.
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::VforkUnsupported,
+                    Error::runtime(
+                        self.tid(),
+                        "refuse vfork under the LiteInst hybrid",
+                        format!(
+                            "vfork child of {} refused: exec cannot preserve the preload runtime",
+                            parent.pid()
+                        ),
+                    ),
+                );
+            }
+            {
+                let mut newborns = newborn_tracees.lock().unwrap();
+                let Some(newborn) = newborns.get_mut(&child_pid) else {
+                    drop(newborns);
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::NewbornRegistration,
+                        Error::runtime(
+                            self.tid(),
+                            "store LiteInst newborn identity",
+                            format!(
+                                "newborn {child_pid} event ownership disappeared before identity storage"
+                            ),
+                        ),
+                    );
+                    return Err(Errno::ESRCH.into());
+                };
+                newborn.set_identity(child_identity);
+            }
             #[cfg(test)]
             if let Some(sender) = self
                 .global_state
@@ -4246,12 +4309,13 @@ impl<L: Tool + 'static> TracedTask<L> {
                 return Err(Errno::ENOTSUPP.into());
             }
             if op == ChildOp::Vfork {
-                // A vfork child borrows the parent's memory and suspends it
-                // until the child execs or exits, and exec cannot preserve the
-                // preload runtime (see `handle_exec_event`). Refusing here
-                // keeps the refusal on the root, where the cleanup guard owns
-                // teardown; letting the child through only moves the same
-                // refusal into a task whose parent is frozen behind it.
+                let termination = newborn_tracees
+                    .lock()
+                    .unwrap()
+                    .get(&child_pid)
+                    .ok_or(Errno::ESRCH)?
+                    .terminate_vfork_child();
+                termination?;
                 return Err(Errno::ENOTSUPP.into());
             }
             // Any other new task proceeds under the ordinary ptrace lifecycle.
@@ -4387,6 +4451,19 @@ impl<L: Tool + 'static> TracedTask<L> {
             match child_task.run(child).await {
                 Err(err) => {
                     tracing::error!("Error in tracee tid {}: {}", tid, err);
+
+                    if liteinst_activation_failure_reason(&err)
+                        == Some(LiteinstActivationFailureReason::VforkUnsupported)
+                    {
+                        // LiteInst's session-level cleanup guard owns the exact
+                        // pidfd and notifier generation for every descendant.
+                        // In particular, a failed vfork parent is kernel-frozen
+                        // behind its child, so trying to detach/wait here cannot
+                        // make progress. Return to the root instead: its shared
+                        // failure slot rejects the session, and the outer guard
+                        // terminates and reaps the entire bound tree.
+                        return ExitStatus::Exited(1);
+                    }
 
                     // We assume the tracee is stopped since this error likely
                     // originated from the tool itself when the tracee is
@@ -4579,9 +4656,20 @@ impl<L: Tool + 'static> TracedTask<L> {
             // and get their final exit code. Normally, when not running under
             // ptrace, orphans are adopted by the init process who should
             // automatically reap them by waiting for the final exit status.
-            let (orphans, _) = {
-                let mut child_procs = self.child_procs.lock().await;
-                child_procs.deref_mut().await
+            let orphans = if self.global_state.liteinst_runtime.is_some() {
+                // A LiteInst session follows process children as part of one
+                // fail-closed instrumentation domain. Do not let root exit end
+                // the LocalSet while a child can still publish a session
+                // failure: join those exact followed tasks first.
+                let children = self.child_procs.lock().await.take_inner();
+                future::join_all(children).await;
+                Children::new()
+            } else {
+                let (orphans, _) = {
+                    let mut child_procs = self.child_procs.lock().await;
+                    child_procs.deref_mut().await
+                };
+                orphans
             };
 
             for orphan in orphans.into_inner() {
@@ -4795,6 +4883,25 @@ impl<L: Tool + 'static> TracedTask<L> {
                 exit_status = run_loop => exit_status,
             }
         };
+        if outcome.is_ok() && self.global_state.liteinst_runtime.is_some() {
+            let phase = self.liteinst_runtime.lock().unwrap().phase;
+            if phase != LiteinstRuntimePhase::Ready {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::TerminatedBeforeHandshake,
+                    Error::runtime(
+                        self.tid(),
+                        "verify LiteInst runtime activation",
+                        format!(
+                            "tracee terminated before the required preload handshake completed (phase {phase:?})"
+                        ),
+                    ),
+                );
+            }
+        }
+        let local_failure_reason = self
+            .liteinst_failure
+            .as_ref()
+            .map(LiteinstActivationFailure::reason);
         let (exit_status, failure) = match (outcome, self.liteinst_failure.take()) {
             (_, Some(original)) => (
                 None,
@@ -4804,16 +4911,11 @@ impl<L: Tool + 'static> TracedTask<L> {
             (Err(error), _) => (None, Some(error)),
         };
         if let Some(failure) = failure {
-            // A failed task skips the normal `tool_exit` bookkeeping below, so
-            // a deterministic scheduler keeps waiting for a thread whose tracee
-            // the error path has already detached and the session makes no
-            // further progress. Release a failed NON-ROOT task from the tool so
-            // the error can surface; the root must not do this, because its
-            // error is the session's error and its outer guard owns teardown.
-            //
-            // Only reachable under the LiteInst runtime today, where a child
-            // task can hit a fail-closed refusal (post-start exec) of its own.
-            if self.global_state.liteinst_runtime.is_some() && self.liteinst_root_config().is_none()
+            let vfork_failure =
+                local_failure_reason == Some(LiteinstActivationFailureReason::VforkUnsupported);
+            if self.global_state.liteinst_runtime.is_some()
+                && self.liteinst_root_config().is_none()
+                && !vfork_failure
             {
                 let tid = self.tid();
                 if let Err(error) = self.tool_exit(ExitStatus::Exited(1)).await {
@@ -4824,33 +4926,26 @@ impl<L: Tool + 'static> TracedTask<L> {
                     );
                 }
             }
+            // A vfork parent returns directly to the session-level cleanup
+            // guard because orderly per-task exit cannot advance while the
+            // kernel has it frozen behind that child. Other non-root failures
+            // complete the existing tool-exit bookkeeping first.
             return Err(failure);
         }
         let exit_status = exit_status.expect("a task without a failure has an exit status");
-        if self.global_state.liteinst_runtime.is_some() {
-            let phase = self.liteinst_runtime.lock().unwrap().phase;
-            if phase != LiteinstRuntimePhase::Ready {
-                return Err(anyhow::Error::new(LiteinstActivationFailure::new(
-                    LiteinstActivationStage::PreReady,
-                    LiteinstActivationFailureReason::TerminatedBeforeHandshake,
-                    Error::runtime(
-                        self.tid(),
-                        "verify LiteInst runtime activation",
-                        format!(
-                            "tracee terminated before the required preload handshake completed (phase {phase:?})"
-                        ),
-                    ),
-                ))
-                .into());
-            }
-        }
+        let root_session_failure = self.liteinst_root_config().and_then(|_| {
+            self.global_state
+                .liteinst_runtime
+                .as_ref()
+                .map(|runtime| Arc::clone(&runtime.session_failure))
+        });
 
         // A fail-closed refusal raised by a non-root task cannot reach the
         // root's cleanup guard, and that task's tracee was released so the rest
         // of the guest could finish. Refuse to report success over it.
-        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref()
-            && self.liteinst_root_config().is_some()
-            && let Some(message) = runtime.session_failure.lock().unwrap().clone()
+        if let Some(message) = root_session_failure
+            .as_ref()
+            .and_then(|slot| slot.lock().unwrap().clone())
         {
             return Err(anyhow::anyhow!(
                 "LiteInst session failed closed in a non-root task: {message}"
@@ -4863,6 +4958,19 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         log_guest_exit(self.tid(), self.pid(), exit_status);
         self.tool_exit(exit_status).await?;
+
+        // A child can fail while the root is joining it in `tool_exit`, after
+        // the fast-path check above.  The join is the final ordering boundary:
+        // re-read the shared slot before allowing the root's success to escape.
+        if let Some(message) = root_session_failure
+            .as_ref()
+            .and_then(|slot| slot.lock().unwrap().clone())
+        {
+            return Err(anyhow::anyhow!(
+                "LiteInst session failed closed in a non-root task: {message}"
+            )
+            .into());
+        }
 
         Ok(exit_status)
     }

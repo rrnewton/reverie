@@ -64,6 +64,9 @@ pub(crate) enum LiteinstActivationFailureReason {
     UnexpectedPostExecEvent,
     ExitedBeforePostExecTrap,
     InstallExecutableEntryGuard,
+    NewbornRegistration,
+    NewbornIdentity,
+    VforkUnsupported,
     TerminatedBeforeHandshake,
 }
 
@@ -117,7 +120,6 @@ impl LiteinstActivationFailure {
         }
     }
 
-    #[cfg(test)]
     pub(crate) const fn reason(&self) -> LiteinstActivationFailureReason {
         self.reason
     }
@@ -134,7 +136,6 @@ impl LiteinstActivationFailure {
     }
 }
 
-#[cfg(test)]
 pub(crate) fn liteinst_activation_failure_reason(
     error: &reverie::Error,
 ) -> Option<LiteinstActivationFailureReason> {

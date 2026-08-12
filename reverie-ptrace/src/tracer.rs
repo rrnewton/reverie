@@ -372,6 +372,40 @@ impl NewbornTracee {
     pub(crate) fn registration_error(&self) -> Option<Errno> {
         self.terminal.registration_error()
     }
+
+    pub(crate) fn terminate_vfork_child(&self) -> Result<(), TraceError> {
+        let identity = self.identity.as_ref().ok_or(Errno::ESRCH)?;
+        match identity.send_signal(Signal::SIGKILL) {
+            Ok(()) | Err(Errno::ESRCH) => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self.terminal.wait(Duration::ZERO) {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(reservation) = self.terminal.reserve_pending_for_cleanup(remaining) else {
+                if self.terminal.wait(Duration::ZERO) {
+                    return Ok(());
+                }
+                return Err(Errno::ETIMEDOUT.into());
+            };
+            let state = reservation.decode()?;
+            let Wait::Stopped(stopped, _) = state else {
+                reservation.commit();
+                continue;
+            };
+            reservation.commit();
+            match stopped.resume(None) {
+                Ok(_) | Err(TraceError::Died(_)) | Err(TraceError::Errno(Errno::ESRCH)) => {
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
 }
 
 impl TraceeIdentity {
@@ -791,7 +825,19 @@ impl LiteinstTraceeCleanup {
             return Ok(());
         }
 
-        self.freeze_root_generation()?;
+        if self.identity.same_process() {
+            self.freeze_root_generation()?;
+        } else {
+            // The exact root generation is already gone, so it cannot create
+            // another descendant. Drain any child event the notifier published
+            // before terminal acknowledgment and continue with the retained
+            // generation-bound descendants; trying to freeze a completed root
+            // would only collide with its consumed exit capability.
+            if let Some(terminal) = self.terminal.as_ref() {
+                self.capture_pending_children(terminal)?;
+            }
+            self.root_frozen = true;
+        }
         #[cfg(test)]
         if self
             .force_task_scan_once
