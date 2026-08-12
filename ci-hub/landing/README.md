@@ -216,7 +216,7 @@ The land sequence itself lives here too, not only in `scratch/`:
 | script | role |
 | --- | --- |
 | `ci-hub/landing/land-pr.sh <PR> <BRANCH> [--union\|--no-rebase]` | detached-by-default full single-PR lander: self-wraps in `land-lock run --child-deadline`, follows skill `hermit-validation-authority` for validation authority, performs a head-matched merge, and verifies ancestry. |
-| `ci-hub/landing/gate_definition_rotation.py --pr N --branch B --checkout WT --execute` | narrow self-authorization fallback: verifies an owner-authored exact head/base/blob/path record, dual exact-head reviews, counted receipt, and typed definition-only self-refusal; then composes through `land-pr.sh --gate-rotation --no-rebase` and registers `MERGE_GATE_V4_BLOB` only after mergeCommit ancestry |
+| `ci-hub/landing/gate_definition_rotation.py --pr N --branch B --checkout WT --execute` | narrow self-authorization fallback: verifies exact head/base/blob/path checks, the normal required exact-head reviews, a counted receipt, and typed definition-only self-refusal; then composes through `land-pr.sh --gate-rotation --no-rebase` and registers `MERGE_GATE_V4_BLOB` only after mergeCommit ancestry |
 | `ci-hub/landing/union-rebase.sh <hermit-wt> <BRANCH> [--push]` | authoritative additive union-rebase of the shared manifest registries (`*.toml` by `[[test]]` id, `test-files.json` by path, `matrix.tsv` by row); the derived `ci/expected-e2e-plan.json` is regenerated, never hand-unioned |
 
 ### Merge-gate definition rotation
@@ -224,19 +224,17 @@ The land sequence itself lives here too, not only in `scratch/`:
 The gate definition is intentionally unable to authorize a PR that replaces
 its own registered blob. That typed `SELF_AUTHORIZATION_REFUSED` result is a
 precondition for the narrow independent rotation path, not permission by
-itself. The newest owner-authored PR comment must contain this marker on its own
-line followed by one JSON object:
-
-```text
-GATE-DEFINITION-ROTATION-AUTHORIZED
-{"repo":"rrnewton/hermit","pr":2071,"base":"<40-hex>","head":"<40-hex>","old_blob":"<40-hex>","new_blob":"<40-hex>","allowed_paths":[".github/workflows/merge-gate.yml"],"reason":"...","expires_at":"2026-08-10T17:00:00Z","authorized_by":"rrnewton"}
-```
+itself. No special JSON approval comment and no separate class of
+"gate-rotation authority" exists. Review procedure follows skill
+`post-facto-review`; coordinators record completed family reviews through the
+typed `ci-hub review-attest` command.
 
 Trusted current-main code independently re-derives all identities, changed
-paths, both `APPROVED-AT` lanes, absence of a current `REQUEST CHANGES AT`, the
-counted exact-head receipt, and the definition-only gate failure. A base move,
-head move, blob mismatch, extra path, malformed or expired record, stale review,
-current rejection, missing receipt, or non-definition gate failure refuses.
+paths, the required current `APPROVED-AT` review set, absence of a current
+`REQUEST CHANGES AT`, the counted exact-head receipt, and the definition-only
+gate failure. A base move, head move, blob mismatch, extra path, stale or
+malformed review binding, current rejection, missing receipt, or non-definition
+gate failure refuses.
 
 Execution has one merge path: the normal non-admin
 `gh pr merge --rebase --match-head-commit` inside `land-pr.sh`. There is no

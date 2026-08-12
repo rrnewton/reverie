@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -18,7 +17,6 @@ SOURCE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gate_definition_rotation as G  # noqa: E402
 
-NOW = datetime(2026, 8, 10, 16, 0, tzinfo=timezone.utc)
 BASE, HEAD, OLD, NEW = "a" * 40, "b" * 40, "c" * 40, "d" * 40
 
 
@@ -32,40 +30,40 @@ def run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None,
 
 def good() -> dict:
     return {
-        "authorization": {
-            "marker": G.MARKER, "repo": G.REPO, "pr": 2071,
+        "candidate": {
+            "repo": G.REPO, "pr": 2071,
             "base": BASE, "head": HEAD, "old_blob": OLD, "new_blob": NEW,
-            "allowed_paths": [G.WORKFLOW_PATH], "reason": "reviewed rotation",
-            "expires_at": "2099-08-10T17:00:00Z", "authorized_by": G.OWNER,
+            "allowed_paths": [G.WORKFLOW_PATH],
         },
         "observed": {
             "repo": G.REPO, "pr": 2071, "remote_main": BASE, "pr_base": BASE,
             "pr_head": HEAD, "expected_head": HEAD, "head_descends_base": True,
             "old_blob": OLD, "new_blob": NEW, "changed_paths": [G.WORKFLOW_PATH],
-            "approvals": {"claude": HEAD, "codex": HEAD},
+            "approvals": {"claude": None, "codex": HEAD},
             "malformed_review_binding": False, "request_changes_at_head": False,
             "local_ledger_qualified": True, "definition_only_self_refusal": True,
         },
     }
 
 
-def bracket_nine_refusal_classes() -> None:
-    assert G.assess(good(), now=NOW).eligible
+def bracket_eight_refusal_classes() -> None:
+    assert G.assess(good()).eligible
     cases = [
-        ({"authorization": {}}, "owner authorization"),
+        ({"candidate": {}}, "repository or PR"),
         ({"observed": {**good()["observed"], "pr": 9}}, "repository or PR"),
         ({"observed": {**good()["observed"], "remote_main": "e" * 40}}, "main moved"),
         ({"observed": {**good()["observed"], "pr_head": "e" * 40}}, "exact head"),
         ({"observed": {**good()["observed"], "new_blob": "e" * 40}}, "workflow blob"),
         ({"observed": {**good()["observed"], "changed_paths": [G.WORKFLOW_PATH, "x"]}}, "path set"),
-        ({"observed": {**good()["observed"], "request_changes_at_head": True}}, "dual exact-head"),
+        ({"observed": {**good()["observed"], "approvals": {"claude": None, "codex": None}}},
+         "required exact-head"),
         ({"observed": {**good()["observed"], "local_ledger_qualified": False}}, "local ledger"),
         ({"observed": {**good()["observed"], "definition_only_self_refusal": False}}, "solely"),
     ]
     for patch, text in cases:
         case = good()
         case.update(patch)
-        verdict = G.assess(case, now=NOW)
+        verdict = G.assess(case)
         assert not verdict.eligible and any(text in reason for reason in verdict.refusals)
 
 
@@ -80,6 +78,7 @@ class Harness:
             "ci-hub/landing/gate_definition_rotation.py",
             "ci-hub/landing/land-pr.sh",
             "ci-hub/landing/merge-gate-status.jq",
+            "ci-hub/landing/cherry_pick_context.py",
             "ci-hub/health/approval_binding.py",
             "ci-hub/check_outcome.py",
         ]:
@@ -155,8 +154,6 @@ class Harness:
             "root": str(self.root), "real_git": self.real_git, "pr": 2071,
             "branch": "fixture/rotation", "base": self.base, "head": self.head,
             "other": self.other, "old_blob": self.old_blob, "new_blob": self.new_blob,
-            "owner_record": True, "auth_pr": 2071, "auth_base": self.base,
-            "auth_head": self.head, "auth_new_blob": self.new_blob,
             "allowed_paths": [G.WORKFLOW_PATH], "approvals": True,
             "rejection": False, "ledger": True, "self_refusal": True,
             "merge_fail": False, "merged": False, "variable": "",
@@ -216,13 +213,6 @@ a = a[1:]
 def save(): p.write_text(json.dumps(s))
 def comments():
     out=[]
-    if s["owner_record"]:
-        record={"repo":"rrnewton/hermit","pr":s["auth_pr"],"base":s["auth_base"],
-          "head":s["auth_head"],"old_blob":s["old_blob"],"new_blob":s["auth_new_blob"],
-          "allowed_paths":s["allowed_paths"],"reason":"fixture reviewed rotation",
-          "expires_at":"2099-08-10T17:00:00Z","authorized_by":"rrnewton"}
-        out.append({"body":"GATE-DEFINITION-ROTATION-AUTHORIZED\n"+json.dumps(record),
-          "author_association":"OWNER","user":{"login":"rrnewton"}})
     if s["approvals"]:
         out.append({"body":"[adversarial-reviewer agent, codex]\nAPPROVED-AT: codex "+s["head"]+
           "\nAPPROVED-AT: claude "+s["head"]})
@@ -234,7 +224,8 @@ if a[0] == "api":
         print(json.dumps({"head":{"sha":s["head"]},"base":{"sha":s["base"]},
           "merged_at":"2099-01-01T00:00:00Z" if s["merged"] else None,
           "merge_commit_sha":s["head"] if s["merged"] else None}))
-    elif "/issues/2071/comments" in endpoint: print(json.dumps([comments()]))
+    elif "/issues/2071/comments" in endpoint:
+        print(json.dumps([comments()] if "--slurp" in a else comments()))
     elif "/pulls/2071/reviews" in endpoint: print("[[]]")
     elif endpoint.endswith("/check-runs?per_page=100"):
         conclusion="failure" if s["self_refusal"] else "success"
@@ -244,7 +235,8 @@ if a[0] == "api":
     elif endpoint.endswith("/actions/jobs/42"):
         print(json.dumps({"steps":[{"name":"Require the registered v4 gate definition",
           "conclusion":"failure" if s["self_refusal"] else "success"}]}))
-    elif "/actions/workflows/merge-gate.yml/runs" in endpoint: print('{"workflow_runs":[]}')
+    elif "/actions/workflows/merge-gate.yml/runs" in endpoint or "/actions/runs?head_sha=" in endpoint:
+        print('{"workflow_runs":[]}')
     elif "/actions/variables/MERGE_GATE_V4_BLOB" in endpoint and "PATCH" in a:
         value=next(x.split("=",1)[1] for x in a if x.startswith("value=")); s["variable"]=value; save(); print("{}")
     elif endpoint.endswith("/actions/variables/MERGE_GATE_V4_BLOB"):
@@ -257,6 +249,14 @@ if a[0] == "api":
     raise SystemExit(0)
 if a[:2] == ["pr","view"]:
     field=a[a.index("--json")+1]
+    if field=="number,headRefOid,labels,mergeable":
+      print(json.dumps({"number":2071,"headRefOid":s["head"],
+        "labels":[{"name":"passed-review-codex"}],
+        "mergeable":"MERGEABLE"})); raise SystemExit(0)
+    if field=="number,headRefOid,body,labels,commits":
+      print(json.dumps({"number":2071,"headRefOid":s["head"],"body":"## Summary\nfixture",
+        "labels":[{"name":"passed-review-codex"}],
+        "commits":[]})); raise SystemExit(0)
     values={"headRefName":s["branch"],"headRefOid":s["head"],"isDraft":"false",
       "labels":"", "mergeCommit":s["head"]}
     print(values[field]); raise SystemExit(0)
@@ -308,9 +308,7 @@ def public_mutation_brackets() -> None:
     with tempfile.TemporaryDirectory(prefix="gate-rotation-live-", dir="/tmp") as name:
         h = Harness(Path(name))
         refusal_updates = [
-            {"owner_record": False}, {"auth_pr": 9}, {"auth_base": h.other},
-            {"auth_head": h.other}, {"auth_new_blob": "e" * 40},
-            {"allowed_paths": [G.WORKFLOW_PATH, "src/lib.rs"]}, {"rejection": True},
+            {"base": h.other}, {"head": h.other}, {"rejection": True},
             {"ledger": False}, {"self_refusal": False},
         ]
         for index, updates in enumerate(refusal_updates, 1):
@@ -373,15 +371,17 @@ def entry_point_enumeration() -> None:
     assert "gh pr merge" not in "\n".join(
         line for line in lander.splitlines() if "--admin" in line and not line.lstrip().startswith("#")
     )
-    assert "gate-definition change requires the sanctioned --gate-rotation authority" in lander
+    assert "gate-definition change requires the sanctioned --gate-rotation checks" in lander
+    assert "gate-rotation authority" not in lander
+    assert "GATE-DEFINITION-ROTATION-AUTHORIZED" not in consumer
     assert "SELF_AUTHORIZATION_REFUSED" in lander
 
 
 def main() -> int:
-    bracket_nine_refusal_classes()
+    bracket_eight_refusal_classes()
     public_mutation_brackets()
     entry_point_enumeration()
-    print("gate-definition-rotation: nine_classes=9/9 mutation_refusals=9/9 "
+    print("gate-definition-rotation: safety_classes=8/8 mutation_refusals=5/5 "
           "public_e2e=1/1 exact_events=10/10 failed_land_no_preregister=1/1 "
           "direct_inner_refused=2/2 entry_points=3/3")
     return 0

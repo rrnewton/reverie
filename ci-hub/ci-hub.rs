@@ -115,6 +115,7 @@ LANDING & BATCH CONTROL
   land-lock               Acquire, renew, inspect, or release the fleet landing mutex
   validate-lock            Box-exclusive gate: one validate/bench at a time (GRANT/QUEUE/REFUSE)
   apply-local-label       Reconcile the derived label with exact-head validation truth
+  review-attest           Record a coordinator's typed exact-head review attestation
   ci-mode                 Inspect or change constrained GH Actions admission mode
   batch                   Inspect or edit the named current GH Actions batch
   ci-timeout              Cancel hosted runs starved waiting to start; reroute to local
@@ -257,6 +258,8 @@ enum HubCommand {
     FirstBad(FirstBadArgs),
     /// Reconcile `locally-validated` with each PR's exact-head validation record.
     ApplyLocalLabel(ApplyLocalLabelArgs),
+    /// Record a coordinator's exact-head review-dispatch attestation and cache labels.
+    ReviewAttest(ReviewAttestArgs),
     /// Operate the shared-file landing mutex.
     LandLock(landing_lock::LandLockArgs),
     /// Operate the box-exclusive-compute admission gate (one validate/bench at a time).
@@ -725,6 +728,72 @@ struct ApplyLocalLabelArgs {
     /// Emit the machine-readable per-PR action report.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum ReviewFamily {
+    Codex,
+    Claude,
+}
+
+impl ReviewFamily {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum CriticalReviewClass {
+    HermitSyscall,
+    DetcoreScheduling,
+    ReverieApi,
+}
+
+impl CriticalReviewClass {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::HermitSyscall => "hermit-syscall",
+            Self::DetcoreScheduling => "detcore-scheduling",
+            Self::ReverieApi => "reverie-api",
+        }
+    }
+}
+
+#[derive(Args, Clone, Debug)]
+struct ReviewAttestArgs {
+    /// Positive pull-request number whose live head is re-read before mutation.
+    #[arg(long)]
+    pr: u64,
+    /// Supported fork repository carrying the PR and existing review labels.
+    #[arg(long, default_value = "rrnewton/hermit")]
+    repo: String,
+    /// Exact lowercase 40-hex head approved by the dispatched reviewer.
+    #[arg(long)]
+    head: String,
+    /// Coordinator-selected reviewer family; unknown values fail before mutation.
+    #[arg(long, value_enum)]
+    family: ReviewFamily,
+    /// Exact dispatched reviewer agent name.
+    #[arg(long)]
+    reviewer: String,
+    /// Durable task id through which the review was dispatched and returned.
+    #[arg(long)]
+    task: String,
+    /// Numbered review round whose existing activity label is applied.
+    #[arg(long, default_value_t = 1)]
+    round: u8,
+    /// Existing critical-change class; also applies post-facto-human-review.
+    #[arg(long, value_enum)]
+    critical: Option<CriticalReviewClass>,
+    /// Coordinator identity checked by the GitHub disclosure boundary.
+    #[arg(long)]
+    who: String,
+    /// Coordinator team slug emitted by the GitHub disclosure boundary.
+    #[arg(long)]
+    team: String,
 }
 
 /// Name of the committed source-of-truth mode file, relative to the workspace root.
@@ -1218,6 +1287,10 @@ impl HubCommand {
             Self::CiTimeout(_) => CostSpec {
                 tool: "ci-hub/ci-timeout",
                 basis: "not measured: bounded gh queries per open PR plus optional label/cancel mutations; no tests executed here (local validate is enqueued separately under the validate-lock)".into(),
+            },
+            Self::ReviewAttest(_) => CostSpec {
+                tool: "ci-hub/review-attest",
+                basis: "not measured: bounded live-head and existing-label GitHub reads plus one comment and optional cache-label mutation".into(),
             },
             Self::Obligations(_)
             | Self::InheritObligations(_)
@@ -1839,6 +1912,22 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
         HubCommand::NewestGreen(args) => run_newest_green(root, args),
         HubCommand::FirstBad(args) => run_first_bad(root, args),
         HubCommand::ApplyLocalLabel(args) => run_apply_local_label(root, args),
+        HubCommand::ReviewAttest(args) => {
+            let mut forwarded = Vec::new();
+            push_option(&mut forwarded, "--pr", args.pr.to_string());
+            push_option(&mut forwarded, "--repo", args.repo);
+            push_option(&mut forwarded, "--head", args.head);
+            push_option(&mut forwarded, "--family", args.family.as_str());
+            push_option(&mut forwarded, "--reviewer", args.reviewer);
+            push_option(&mut forwarded, "--task", args.task);
+            push_option(&mut forwarded, "--round", args.round.to_string());
+            if let Some(critical) = args.critical {
+                push_option(&mut forwarded, "--critical", critical.as_str());
+            }
+            push_option(&mut forwarded, "--who", args.who);
+            push_option(&mut forwarded, "--team", args.team);
+            run_python(root, "ci-hub/bin/review-attest", forwarded)
+        }
         HubCommand::LandLock(args) => landing_lock::execute(root, args).map_err(Into::into),
         HubCommand::ValidateLock(args) => validate_lock::execute(root, args).map_err(Into::into),
         HubCommand::CiMode(args) => match args.command {
@@ -7917,6 +8006,55 @@ mod tests {
         assert!(AGENT_QUICKSTART.contains("hermit-validation-authority"));
         assert!(!AGENT_QUICKSTART.contains("modifying scripts/validate.rs"));
         assert!(AGENT_QUICKSTART.lines().count() < 45);
+    }
+
+    #[test]
+    fn review_attest_family_and_critical_class_are_closed_enums() {
+        let command = Cli::try_parse_from([
+            "ci-hub",
+            "review-attest",
+            "--pr",
+            "42",
+            "--head",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--family",
+            "codex",
+            "--reviewer",
+            "codex-2",
+            "--task",
+            "review-pr-42",
+            "--critical",
+            "hermit-syscall",
+            "--who",
+            "hermit-coord",
+            "--team",
+            "hermit2",
+        ])
+        .unwrap()
+        .command;
+        assert!(matches!(&command, HubCommand::ReviewAttest(_)));
+        assert!(command.cost_spec().is_some());
+
+        let error = Cli::try_parse_from([
+            "ci-hub",
+            "review-attest",
+            "--pr",
+            "42",
+            "--head",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--family",
+            "codxe",
+            "--reviewer",
+            "codex-2",
+            "--task",
+            "review-pr-42",
+            "--who",
+            "hermit-coord",
+            "--team",
+            "hermit2",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
     }
 
     #[test]

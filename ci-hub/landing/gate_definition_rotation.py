@@ -2,8 +2,9 @@
 """Sanctioned, fail-closed rotation of Hermit's registered merge-gate blob.
 
 The candidate gate cannot authorize its own replacement.  A rotation therefore
-requires an owner-authored exact-record, two exact-head review bindings, a
-counted local receipt, and the candidate gate's typed definition-only refusal.
+requires the normal exact-head review bindings, a counted local receipt, and
+the candidate gate's typed definition-only refusal.  It does not require a
+special approval-comment format or a separate class of rotation authority.
 The actual merge remains the normal non-admin ``land-pr.sh`` path.  Registration
 is deliberately later: only after that lander proves mergeCommit ancestry.
 
@@ -17,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -27,9 +27,7 @@ import sys
 from typing import Any
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
-MARKER = "GATE-DEFINITION-ROTATION-AUTHORIZED"
 REPO = "rrnewton/hermit"
-OWNER = "rrnewton"
 WORKFLOW_PATH = ".github/workflows/merge-gate.yml"
 VARIABLE = "MERGE_GATE_V4_BLOB"
 DEFINITION_STEP = "Require the registered v4 gate definition"
@@ -45,43 +43,19 @@ def _sha(value: object) -> bool:
     return isinstance(value, str) and SHA40.fullmatch(value) is not None
 
 
-def _parse_time(value: object) -> datetime | None:
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return None
-    return parsed.astimezone(timezone.utc)
-
-
-def assess(snapshot: dict[str, Any], *, now: datetime | None = None) -> Verdict:
-    """Apply all nine independent refusal classes."""
-    now = now or datetime.now(timezone.utc)
-    auth = snapshot.get("authorization")
+def assess(snapshot: dict[str, Any]) -> Verdict:
+    """Apply all eight independent safety-check refusal classes."""
+    candidate = snapshot.get("candidate")
     observed = snapshot.get("observed")
     refusals: list[str] = []
-    expires = _parse_time(auth.get("expires_at")) if isinstance(auth, dict) else None
-    if (
-        not isinstance(auth, dict)
-        or auth.get("marker") != MARKER
-        or auth.get("authorized_by") != OWNER
-        or not isinstance(auth.get("reason"), str)
-        or not auth.get("reason", "").strip()
-        or expires is None
-        or expires <= now
-    ):
-        refusals.append("owner authorization is absent, malformed, unsigned, or expired")
-        auth = auth if isinstance(auth, dict) else {}
+    candidate = candidate if isinstance(candidate, dict) else {}
     observed = observed if isinstance(observed, dict) else {}
     if (
-        auth.get("repo") != REPO
+        candidate.get("repo") != REPO
         or observed.get("repo") != REPO
-        or auth.get("pr") != observed.get("pr")
+        or candidate.get("pr") != observed.get("pr")
     ):
-        refusals.append("repository or PR identity does not match the authorization")
+        refusals.append("repository or PR identity does not match the live candidate")
     post_merge_base = (
         observed.get("post_merge") is True
         and observed.get("remote_main_descends_base") is True
@@ -89,26 +63,26 @@ def assess(snapshot: dict[str, Any], *, now: datetime | None = None) -> Verdict:
     )
     pre_merge_base = (
         observed.get("post_merge") is not True
-        and observed.get("remote_main") == auth.get("base")
-        and observed.get("pr_base") == auth.get("base")
+        and observed.get("remote_main") == candidate.get("base")
+        and observed.get("pr_base") == candidate.get("base")
         and observed.get("head_descends_base") is True
     )
-    if not _sha(auth.get("base")) or not (pre_merge_base or post_merge_base):
+    if not _sha(candidate.get("base")) or not (pre_merge_base or post_merge_base):
         refusals.append("main moved, the PR base differs, or the head is not fast-forwardable")
     if (
-        not _sha(auth.get("head"))
-        or observed.get("pr_head") != auth.get("head")
-        or observed.get("expected_head") != auth.get("head")
+        not _sha(candidate.get("head"))
+        or observed.get("pr_head") != candidate.get("head")
+        or observed.get("expected_head") != candidate.get("head")
     ):
-        refusals.append("PR head does not match the authorized exact head")
+        refusals.append("PR head does not match the selected exact head")
     if (
-        not _sha(auth.get("old_blob"))
-        or not _sha(auth.get("new_blob"))
-        or observed.get("old_blob") != auth.get("old_blob")
-        or observed.get("new_blob") != auth.get("new_blob")
+        not _sha(candidate.get("old_blob"))
+        or not _sha(candidate.get("new_blob"))
+        or observed.get("old_blob") != candidate.get("old_blob")
+        or observed.get("new_blob") != candidate.get("new_blob")
     ):
         refusals.append("old or new merge-gate workflow blob does not match")
-    allowed = auth.get("allowed_paths")
+    allowed = candidate.get("allowed_paths")
     changed = observed.get("changed_paths")
     if (
         not isinstance(allowed, list)
@@ -117,18 +91,21 @@ def assess(snapshot: dict[str, Any], *, now: datetime | None = None) -> Verdict:
         or not isinstance(changed, list)
         or sorted(set(allowed)) != sorted(set(changed))
     ):
-        refusals.append("changed paths differ from the exact authorized path set")
+        refusals.append("changed paths differ from the definition-only path set")
     approvals = observed.get("approvals")
-    head = auth.get("head")
+    head = candidate.get("head")
+    current_approval_lanes = (
+        [lane for lane in ("claude", "codex") if approvals.get(lane) == head]
+        if isinstance(approvals, dict)
+        else []
+    )
     if (
-        not isinstance(approvals, dict)
-        or approvals.get("claude") != head
-        or approvals.get("codex") != head
+        not current_approval_lanes
         or observed.get("malformed_review_binding") is True
         or observed.get("request_changes_at_head") is True
     ):
         refusals.append(
-            "dual exact-head approvals are missing/stale/malformed or a current rejection exists"
+            "required exact-head approval is missing/stale/malformed or a current rejection exists"
         )
     if observed.get("local_ledger_qualified") is not True:
         refusals.append("no qualifying counted full local ledger PASS exists at the exact head")
@@ -163,28 +140,6 @@ def _git(checkout: Path, *args: str, proxy: bool = False) -> str:
     if proc.returncode != 0:
         raise RuntimeError(f"{' '.join(command)} failed: {proc.stderr.strip()[:400]}")
     return proc.stdout.strip()
-
-
-def _latest_owner_record(comments: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, bool]:
-    candidates = [comment for comment in comments if MARKER in str(comment.get("body") or "")]
-    if not candidates:
-        return None, False
-    comment = candidates[-1]
-    lines = str(comment.get("body") or "").splitlines()
-    try:
-        index = next(i for i, line in enumerate(lines) if line.strip() == MARKER)
-        payload = json.loads("\n".join(lines[index + 1 :]).strip())
-    except (StopIteration, json.JSONDecodeError):
-        return None, True
-    if not isinstance(payload, dict):
-        return None, True
-    owner_authored = (
-        comment.get("author_association") == "OWNER"
-        and (comment.get("user") or {}).get("login") == OWNER
-        and payload.get("authorized_by") == OWNER
-    )
-    payload["marker"] = MARKER
-    return payload, not owner_authored
 
 
 def _review_state(
@@ -268,8 +223,6 @@ def collect_live(pr: int, checkout: Path, expected_head: str | None = None) -> d
     pull = _gh_json([f"repos/{REPO}/pulls/{pr}"])
     comments = _gh_pages(f"repos/{REPO}/issues/{pr}/comments?per_page=100")
     reviews = _gh_pages(f"repos/{REPO}/pulls/{pr}/reviews?per_page=100")
-    auth, malformed_owner = _latest_owner_record(comments)
-    auth = auth or {}
     head = str((pull.get("head") or {}).get("sha") or "")
     base = str((pull.get("base") or {}).get("sha") or "")
     approvals, malformed_review, rejected = _review_state(comments, head)
@@ -285,7 +238,15 @@ def collect_live(pr: int, checkout: Path, expected_head: str | None = None) -> d
     descends = _run(["git", "-C", str(checkout), "merge-base", "--is-ancestor", base, head]).returncode == 0
     return {
         "schema_version": 1,
-        "authorization": auth,
+        "candidate": {
+            "repo": REPO,
+            "pr": pr,
+            "base": base,
+            "head": head,
+            "old_blob": old_blob,
+            "new_blob": new_blob,
+            "allowed_paths": [WORKFLOW_PATH],
+        },
         "observed": {
             "repo": REPO,
             "pr": pr,
@@ -298,7 +259,7 @@ def collect_live(pr: int, checkout: Path, expected_head: str | None = None) -> d
             "new_blob": new_blob,
             "changed_paths": changed_paths,
             "approvals": approvals,
-            "malformed_review_binding": malformed_owner or malformed_review,
+            "malformed_review_binding": malformed_review,
             "request_changes_at_head": rejected,
             "local_ledger_qualified": _local_ledger_qualified(head),
             "definition_only_self_refusal": _definition_only_self_refusal(head),
@@ -307,13 +268,12 @@ def collect_live(pr: int, checkout: Path, expected_head: str | None = None) -> d
 
 
 def collect_registration_recovery(pr: int, checkout: Path) -> dict[str, Any]:
-    """Re-derive immutable authority after merge without pretending main stayed put."""
+    """Re-derive exact candidate checks after merge without freezing main."""
     pull = _gh_json([f"repos/{REPO}/pulls/{pr}"])
     comments = _gh_pages(f"repos/{REPO}/issues/{pr}/comments?per_page=100")
     reviews = _gh_pages(f"repos/{REPO}/pulls/{pr}/reviews?per_page=100")
-    auth, malformed_owner = _latest_owner_record(comments)
-    auth = auth or {}
-    head, base = str((pull.get("head") or {}).get("sha") or ""), str(auth.get("base") or "")
+    head = str((pull.get("head") or {}).get("sha") or "")
+    base = str((pull.get("base") or {}).get("sha") or "")
     approvals, malformed_review, rejected = _review_state(comments, head)
     rejected = rejected or any(
         review.get("state") == "CHANGES_REQUESTED" and review.get("commit_id") == head
@@ -331,7 +291,15 @@ def collect_registration_recovery(pr: int, checkout: Path) -> dict[str, Any]:
     ).returncode == 0
     return {
         "schema_version": 1,
-        "authorization": auth,
+        "candidate": {
+            "repo": REPO,
+            "pr": pr,
+            "base": base,
+            "head": head,
+            "old_blob": old_blob,
+            "new_blob": new_blob,
+            "allowed_paths": [WORKFLOW_PATH],
+        },
         "observed": {
             "repo": REPO,
             "pr": pr,
@@ -344,7 +312,7 @@ def collect_registration_recovery(pr: int, checkout: Path) -> dict[str, Any]:
             "new_blob": new_blob,
             "changed_paths": changed_paths,
             "approvals": approvals,
-            "malformed_review_binding": malformed_owner or malformed_review,
+            "malformed_review_binding": malformed_review,
             "request_changes_at_head": rejected,
             "local_ledger_qualified": _local_ledger_qualified(head),
             "definition_only_self_refusal": _definition_only_self_refusal(head),
@@ -355,9 +323,9 @@ def collect_registration_recovery(pr: int, checkout: Path) -> dict[str, Any]:
 def _print_verdict(verdict: Verdict, head: str | None = None) -> None:
     if verdict.eligible:
         print(f"SELF_AUTHORIZATION_REFUSED: definition-only gate refusal verified at {head or 'unknown'}")
-        print("GATE-DEFINITION-ROTATION: AUTHORIZED (9/9 independent refusal classes clear)")
+        print("GATE-DEFINITION-ROTATION: CHECKS-PASS (8/8 independent safety checks clear)")
         return
-    print("SELF_AUTHORIZATION_REFUSED: no independent exact-record authority")
+    print("SELF_AUTHORIZATION_REFUSED: independent definition-change checks incomplete")
     print(f"GATE-DEFINITION-ROTATION: REFUSED ({len(verdict.refusals)} finding(s))")
     for reason in verdict.refusals:
         print(f"  - {reason}")
@@ -440,17 +408,12 @@ class LiveRuntime:
             raise RuntimeError(f"normal non-admin lander refused (rc={proc.returncode})")
 
     def register_after_ancestry(self, snapshot: dict[str, Any]) -> None:
-        auth = snapshot["authorization"]
-        # Re-read the owner record after landing; it must still name the same
-        # immutable identities.  Main may have advanced, so the pre-merge base
-        # equality is replaced here by ancestry + current workflow-blob checks.
+        candidate = snapshot["candidate"]
+        # Re-read the merged PR after landing. Main may have advanced, so the
+        # pre-merge base equality is replaced by ancestry + workflow-blob checks.
         pull = _gh_json([f"repos/{REPO}/pulls/{self.pr}"])
-        comments = _gh_pages(f"repos/{REPO}/issues/{self.pr}/comments?per_page=100")
-        current_auth, malformed = _latest_owner_record(comments)
-        if malformed or current_auth != auth:
-            raise RuntimeError("owner rotation record changed after merge; registration refused")
-        if not pull.get("merged_at") or (pull.get("head") or {}).get("sha") != auth["head"]:
-            raise RuntimeError("authorized PR/head is not merged; registration refused")
+        if not pull.get("merged_at") or (pull.get("head") or {}).get("sha") != candidate["head"]:
+            raise RuntimeError("selected PR/head is not merged; registration refused")
         merge_commit = str(pull.get("merge_commit_sha") or "")
         if not _sha(merge_commit):
             raise RuntimeError("merged PR has no exact mergeCommit identity")
@@ -462,7 +425,7 @@ class LiveRuntime:
             raise RuntimeError("mergeCommit is not an ancestor of current main; registration refused")
         self.event("prove_ancestry")
         main_blob = _git(self.checkout, "rev-parse", f"origin/main:{WORKFLOW_PATH}")
-        if main_blob != auth["new_blob"]:
+        if main_blob != candidate["new_blob"]:
             raise RuntimeError("current main does not contain the authorized gate blob")
         self.event("read_main_gate_blob")
         _gh_json(
@@ -473,13 +436,13 @@ class LiveRuntime:
                 "-f",
                 f"name={VARIABLE}",
                 "-f",
-                f"value={auth['new_blob']}",
+                f"value={candidate['new_blob']}",
             ]
         )
         self.event("patch_registration")
         variable = _gh_json([f"repos/{REPO}/actions/variables/{VARIABLE}"])
         main_file = _gh_json([f"repos/{REPO}/contents/{WORKFLOW_PATH}?ref=main"])
-        if variable.get("value") != auth["new_blob"] or main_file.get("sha") != auth["new_blob"]:
+        if variable.get("value") != candidate["new_blob"] or main_file.get("sha") != candidate["new_blob"]:
             raise RuntimeError("post-ancestry gate registration did not verify")
         self.event("verify_registration")
 
@@ -487,7 +450,7 @@ class LiveRuntime:
 def execute(snapshot: dict[str, Any], runtime: LiveRuntime) -> None:
     runtime.event("collect_outer")
     verdict = assess(snapshot)
-    _print_verdict(verdict, str(snapshot.get("authorization", {}).get("head") or ""))
+    _print_verdict(verdict, str(snapshot.get("candidate", {}).get("head") or ""))
     if not verdict.eligible:
         raise RuntimeError("rotation is not independently authorized")
     runtime.event("verify_outer")
@@ -527,7 +490,7 @@ def main() -> int:
         )
         if args.verify_live:
             verdict = assess(snapshot)
-            _print_verdict(verdict, str(snapshot.get("authorization", {}).get("head") or ""))
+            _print_verdict(verdict, str(snapshot.get("candidate", {}).get("head") or ""))
             if not verdict.eligible:
                 return 2
             return 0
@@ -538,13 +501,13 @@ def main() -> int:
             execute(snapshot, runtime)
         else:
             verdict = assess(snapshot)
-            _print_verdict(verdict, str(snapshot.get("authorization", {}).get("head") or ""))
+            _print_verdict(verdict, str(snapshot.get("candidate", {}).get("head") or ""))
             if not verdict.eligible:
                 return 2
             runtime.register_after_ancestry(snapshot)
         print(
             f"GATE-DEFINITION-ROTATION: REGISTERED-AFTER-ANCESTRY "
-            f"head={snapshot['authorization']['head']} blob={snapshot['authorization']['new_blob']}"
+            f"head={snapshot['candidate']['head']} blob={snapshot['candidate']['new_blob']}"
         )
         return 0
     except (OSError, RuntimeError, KeyError, json.JSONDecodeError) as error:

@@ -124,12 +124,12 @@ ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 WT="$ROOT/worktrees/lander/hermit"
 R=rrnewton/hermit
 say(){ echo "[land#$PR] $*"; }
-verify_rotation_authority(){
+verify_gate_rotation_checks(){
   local expected_head="$1" detail rc
   detail=$(python3 "$SCRIPT_DIR/gate_definition_rotation.py" --verify-live \
     --pr "$PR" --checkout "$WT" --expected-head "$expected_head" 2>&1)
   rc=$?
-  say "gate-rotation authority(head=$expected_head) rc=$rc: $detail"
+  say "gate-rotation checks(head=$expected_head) rc=$rc: $detail"
   [ "$rc" -eq 0 ] || return "$rc"
 }
 
@@ -323,7 +323,7 @@ ORIG=$(git -C "$WT" rev-parse "origin/$BR" 2>/dev/null) || abandon "cannot resol
 # Detect from the branch's own merge-base delta (not the mutable two-tip diff)
 # so a caller cannot omit --gate-rotation and let a branch-owned producer vouch
 # for itself. The independent path below must emit and then supersede the typed
-# SELF_AUTHORIZATION_REFUSED with the exact owner/review/blob record.
+# SELF_AUTHORIZATION_REFUSED with exact review, receipt, and blob checks.
 branch_base=$(git -C "$WT" merge-base origin/main "$ORIG") \
   || abandon "cannot resolve PR merge-base for self-authorization check" 4
 producer_exception=0
@@ -338,8 +338,8 @@ fi
 if git -C "$WT" diff --name-only "$branch_base" "$ORIG" -- \
     .github/workflows/merge-gate.yml | grep -Fxq .github/workflows/merge-gate.yml; then
   if [ "$GATE_ROTATION" -ne 1 ]; then
-    say "SELF_AUTHORIZATION_REFUSED: branch changes .github/workflows/merge-gate.yml without an independent rotation record"
-    abandon "gate-definition change requires the sanctioned --gate-rotation authority" 4
+    say "SELF_AUTHORIZATION_REFUSED: branch changes .github/workflows/merge-gate.yml without independent definition-change checks"
+    abandon "gate-definition change requires the sanctioned --gate-rotation checks" 4
   fi
 fi
 validation_landability() {
@@ -350,8 +350,8 @@ validation_landability() {
     --authority-mode "$authority_mode" --repo-checkout "$WT" "$@"
 }
 if [ "$GATE_ROTATION" -eq 1 ]; then
-  verify_rotation_authority "$ORIG" \
-    || abandon "independent gate-rotation authority refused PR head $ORIG" 4
+  verify_gate_rotation_checks "$ORIG" \
+    || abandon "independent gate-rotation checks refused PR head $ORIG" 4
 else
   eligibility_base=$(git -C "$WT" rev-parse --verify origin/main) \
     || abandon "cannot resolve current main for validation landability" 4
@@ -459,8 +459,8 @@ if [ "$GATE_ROTATION" -eq 1 ]; then
   # The independent record already requires a qualifying counted local receipt,
   # but the branch-owned gate cannot authorize itself and no cache label is used
   # as a substitute. Re-run all nine live checks at the exact head instead.
-  verify_rotation_authority "$HEAD" \
-    || abandon "independent gate-rotation authority refused resolved head $HEAD" 4
+  verify_gate_rotation_checks "$HEAD" \
+    || abandon "independent gate-rotation checks refused resolved head $HEAD" 4
 else
   if [ "$producer_exception" -ne 1 ]; then
     selected_row_sha256=$("$ROOT/ci-hub/validate/scan-finalize.sh" \
@@ -573,8 +573,8 @@ say "exact-head review authority(head=$HEAD) rc=$review_rc: $review_detail"
   || abandon "exact-head review authority REFUSED for $HEAD: ${review_detail:-no result}" 5
 
 if [ "$GATE_ROTATION" -eq 1 ]; then
-  verify_rotation_authority "$HEAD" \
-    || abandon "independent gate-rotation authority refused at final current-main boundary" 5
+  verify_gate_rotation_checks "$HEAD" \
+    || abandon "independent gate-rotation checks refused at final current-main boundary" 5
   say "GATE-ROTATION-EVENT verify_final"
 else
   receipt_comments=$(mktemp) \

@@ -57,13 +57,17 @@ the owner still reviews the already-landed change after the fact.
 
 ## 2. Adversarial-review policy and evidence
 
-The owner-set policy (2026-08-10) is authoritative verbatim:
+The owner-set critical-change procedure (2026-08-11) is authoritative
+verbatim:
 
-> FOR SINGLE-REVIEW PRs CROSS-AGENT REVIEW IS PREFERRED (NOT MANDATORY, PENDING API OUTAGES ETC ETC). FOR CRITICAL CHANGES AS I DEFINED THEM DOUBLE-REVIEW PRs IT'S GOOD TO HAVE TWO DIFFERENT AGENTS (CLAUDE, CODEX, OR METAMATE IF NEEDED).
+> ALL CRITICAL CHANGES SHOULD HAVE A CODEX AND A CLAUDE REVIEWER.
+
+> If it falls into a critical change category, IT GETS MARKED WITH THE
+> POST-FACTO HUMAN REVIEW LABEL. THAT IS THE PROCEDURE THAT I ASKED FOR.
 
 Critical means Hermit syscall handling (trigger 1), a Reverie API change
-(trigger 2), or DetCore scheduling (trigger 4). Those PRs use two different
-review agents; Claude, Codex, or Metamate may fill either review. Trigger 3, a
+(trigger 2), or DetCore scheduling (trigger 4). Those PRs use one dispatched
+Codex reviewer and one dispatched Claude reviewer. Trigger 3, a
 new determinization strategy, still requires `post-facto-human-review`, but is
 a single-review PR unless it also enters one of those three critical domains.
 For single-review PRs, prefer a reviewer other than the author, but do not turn
@@ -85,6 +89,29 @@ are caches for routing and activity, not the approval authority:
   round `N`; they do not mean approval.
 - `passed-review-codex` and `passed-review-claude` may cache the corresponding
   exact-head approvals. The role-tagged comments and SHA remain authoritative.
+
+The coordinator, never the reviewer, records a completed family review with
+the typed front door:
+
+```text
+./ci-hub/ci-hub review-attest --repo rrnewton/hermit --pr PR \
+  --head 40_HEX_HEAD --family codex|claude --reviewer AGENT --task TASK \
+  --round N [--critical hermit-syscall|detcore-scheduling|reverie-api] \
+  --who COORDINATOR_AGENT --team TEAM_SLUG
+```
+
+`--family` and `--critical` are closed enums: a typo refuses before any GitHub
+mutation, and the command never creates a label. It re-reads the live PR head,
+posts the exact `APPROVED-AT` binding through the attributed GitHub boundary,
+rechecks the head, and then applies the existing numbered activity and
+`passed-review-*` cache labels. A critical class also applies the existing
+`post-facto-human-review` label.
+
+**This is dispatch attestation, not process-family proof.** It binds the label
+and exact-head comment to the coordinator's knowledge of which reviewer it
+dispatched. It does not prove that the process that executed the review was
+Codex or Claude. The CLI refuses when the validated `--who` and dispatched
+`--reviewer` are the same agent; reviewers never apply their own family labels.
 
 Do not land until the required reviewer set has approved the exact current
 head and every finding is resolved. A head change invalidates those approvals:

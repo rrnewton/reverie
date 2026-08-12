@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""Record a coordinator's exact-head review-dispatch attestation.
+
+This command does not identify the process that performed a review.  It records
+the coordinator's knowledge that a reviewer from the selected dispatch family
+returned an approval for one exact PR head.  The family is a closed CLI enum;
+unknown values fail during argument parsing before any GitHub command runs.
+
+The exact-head comment is authority.  Labels are routing/activity caches.  The
+comment is posted first, the live head is checked again, and labels are applied
+only while that head remains current.  No label is created by this command.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+from typing import Callable, Sequence
+
+
+ROOT = Path(__file__).resolve().parents[2]
+GH = ROOT / "ci-hub/bin/gh"
+SHA40 = re.compile(r"^[0-9a-f]{40}$")
+SUPPORTED_REPOS = frozenset({"rrnewton/hermit", "rrnewton/reverie"})
+FAMILY_LABELS = {
+    "codex": "passed-review-codex",
+    "claude": "passed-review-claude",
+}
+CRITICAL_CLASSES = (
+    "hermit-syscall",
+    "detcore-scheduling",
+    "reverie-api",
+)
+HUMAN_REVIEW_LABEL = "post-facto-human-review"
+
+Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+def _positive_round(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("review round must be an integer") from error
+    if not 1 <= value <= 99:
+        raise argparse.ArgumentTypeError("review round must be in 1..99")
+    return value
+
+
+def _exact_sha(raw: str) -> str:
+    if SHA40.fullmatch(raw) is None:
+        raise argparse.ArgumentTypeError("--head must be one lowercase 40-hex SHA")
+    return raw
+
+
+def _repo(raw: str) -> str:
+    if raw not in SUPPORTED_REPOS:
+        raise argparse.ArgumentTypeError(
+            "--repo must be rrnewton/hermit or rrnewton/reverie"
+        )
+    return raw
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(
+        description=(
+            "Coordinator-only exact-head review-dispatch attestation; "
+            "does not prove the executing process family."
+        )
+    )
+    result.add_argument("--pr", type=int, required=True)
+    result.add_argument("--repo", type=_repo, default="rrnewton/hermit")
+    result.add_argument("--head", type=_exact_sha, required=True)
+    result.add_argument("--family", choices=tuple(FAMILY_LABELS), required=True)
+    result.add_argument("--reviewer", required=True)
+    result.add_argument("--task", required=True)
+    result.add_argument("--round", type=_positive_round, default=1)
+    result.add_argument("--critical", choices=CRITICAL_CLASSES)
+    result.add_argument("--who", required=True)
+    result.add_argument("--team", required=True)
+    return result
+
+
+def _run(
+    runner: Runner,
+    args: Sequence[str],
+    *,
+    context: str,
+) -> subprocess.CompletedProcess[str]:
+    proc = runner(list(args), text=True, capture_output=True)
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).strip()[:800]
+        raise RuntimeError(f"{context} failed rc={proc.returncode}: {detail}")
+    return proc
+
+
+def _read_pr(runner: Runner, repo: str, pr: int) -> dict[str, object]:
+    proc = _run(
+        runner,
+        [
+            str(GH),
+            "pr",
+            "view",
+            str(pr),
+            "--repo",
+            repo,
+            "--json",
+            "headRefOid,state,labels",
+        ],
+        context="read live PR",
+    )
+    try:
+        value = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("read live PR returned malformed JSON") from error
+    if not isinstance(value, dict):
+        raise RuntimeError("read live PR returned a non-object")
+    return value
+
+
+def _label_names(value: object) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {
+        str(item["name"])
+        for item in value
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+
+
+def _available_labels(runner: Runner, repo: str) -> set[str]:
+    proc = _run(
+        runner,
+        [str(GH), "label", "list", "--repo", repo, "--limit", "200", "--json", "name"],
+        context="read repository labels",
+    )
+    try:
+        return _label_names(json.loads(proc.stdout))
+    except json.JSONDecodeError as error:
+        raise RuntimeError("repository label list returned malformed JSON") from error
+
+
+def _required_labels(family: str, round_number: int, critical: str | None) -> list[str]:
+    labels = [
+        f"adversarial-review-{family}{round_number}",
+        FAMILY_LABELS[family],
+    ]
+    if critical is not None:
+        labels.append(HUMAN_REVIEW_LABEL)
+    return labels
+
+
+def _comment_body(args: argparse.Namespace) -> str:
+    critical = args.critical or "none"
+    return "\n".join(
+        [
+            "REVIEW-DISPATCH-ATTESTATION",
+            f"family: {args.family}",
+            f"reviewer: {args.reviewer}",
+            f"task: {args.task}",
+            f"review-round: {args.round}",
+            f"critical-class: {critical}",
+            f"head: {args.head}",
+            "basis: coordinator dispatched this reviewer and received an approval for this exact head",
+            "limitation: dispatch attestation does not prove the executing process family",
+            f"APPROVED-AT: {args.family} {args.head}",
+        ]
+    )
+
+
+def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:
+    if args.pr <= 0:
+        raise RuntimeError("--pr must be positive")
+    if args.who.casefold() == args.reviewer.casefold():
+        raise RuntimeError(
+            "the dispatched reviewer cannot record its own family attestation"
+        )
+
+    labels = _required_labels(args.family, args.round, args.critical)
+    available = _available_labels(runner, args.repo)
+    missing = [label for label in labels if label not in available]
+    if missing:
+        raise RuntimeError(
+            "required existing label(s) absent; refusing to create or mutate: "
+            + ", ".join(missing)
+        )
+
+    before = _read_pr(runner, args.repo, args.pr)
+    if before.get("state") != "OPEN":
+        raise RuntimeError(f"PR #{args.pr} is not OPEN")
+    if before.get("headRefOid") != args.head:
+        raise RuntimeError(
+            f"PR head mismatch before comment: expected {args.head}, "
+            f"observed {before.get('headRefOid') or 'missing'}"
+        )
+
+    _run(
+        runner,
+        [
+            str(GH),
+            "--who",
+            args.who,
+            "--team",
+            args.team,
+            "--role",
+            "coordinator",
+            "pr",
+            "comment",
+            str(args.pr),
+            "--repo",
+            args.repo,
+            "--body",
+            _comment_body(args),
+        ],
+        context="post exact-head dispatch attestation",
+    )
+
+    after_comment = _read_pr(runner, args.repo, args.pr)
+    if after_comment.get("headRefOid") != args.head:
+        raise RuntimeError(
+            "PR head moved after the exact-head comment; no labels were applied"
+        )
+
+    edit = [str(GH), "pr", "edit", str(args.pr), "--repo", args.repo]
+    existing = _label_names(after_comment.get("labels"))
+    additions = [label for label in labels if label not in existing]
+    for label in additions:
+        edit.extend(["--add-label", label])
+    if additions:
+        _run(runner, edit, context="apply review cache labels")
+
+    final = _read_pr(runner, args.repo, args.pr)
+    if final.get("headRefOid") != args.head:
+        raise RuntimeError(
+            "PR head moved after cache-label application; exact-head consumers must treat the labels as stale"
+        )
+    print(
+        "REVIEW-ATTESTED "
+        f"repo={args.repo} pr={args.pr} head={args.head} family={args.family} "
+        f"reviewer={args.reviewer} labels={','.join(labels)} "
+        "basis=coordinator-dispatch limitation=process-family-not-proven"
+    )
+    return 0
+
+
+def main(argv: Sequence[str] | None = None, runner: Runner = subprocess.run) -> int:
+    try:
+        args = parser().parse_args(argv)
+        return execute(args, runner)
+    except RuntimeError as error:
+        print(f"review-attest: REFUSED: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
