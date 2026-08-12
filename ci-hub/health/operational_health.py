@@ -1328,20 +1328,27 @@ def active_work_gate(
     return 1 if report.actionable_count else 0
 
 
-def active_work_command(args: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(
-        prog="operational_health.py active-work",
-        description="Reconcile TaskGraph state, task ownership, and live ORC agents.",
+def _add_active_work_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--agent-snapshot",
+        type=Path,
+        help="read the ORC agent snapshot from this file",
     )
-    parser.add_argument("--agent-snapshot", type=Path)
     parser.add_argument(
         "--max-snapshot-age",
         type=int,
         default=DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECS,
+        help="maximum snapshot age in seconds (default: %(default)s)",
     )
-    parser.add_argument("--json", action="store_true")
-    parser.add_argument("--gate", action="store_true")
-    parsed = parser.parse_args(args)
+    parser.add_argument("--json", action="store_true", help="emit JSON")
+    parser.add_argument(
+        "--gate", action="store_true", help="emit fields for the health gate"
+    )
+
+
+def _run_active_work(
+    parsed: argparse.Namespace, parser: argparse.ArgumentParser
+) -> int:
     if parsed.max_snapshot_age < 0:
         parser.error("--max-snapshot-age must be non-negative")
     snapshot = None
@@ -1371,6 +1378,15 @@ def active_work_command(args: Sequence[str]) -> int:
         # `HERMIT_AGENT_SNAPSHOT_JSON`, which is a separate and explicit path.
         persist=False,
     )
+
+
+def active_work_command(args: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="operational_health.py active-work",
+        description="Reconcile TaskGraph state, task ownership, and live ORC agents.",
+    )
+    _add_active_work_options(parser)
+    return _run_active_work(parser.parse_args(args), parser)
 
 
 MEMORY_SKILL_LINTER = ROOT / "scripts" / "lint-memory-skill-sync.rs"
@@ -1600,33 +1616,54 @@ def memory_skill_sync_gate() -> int:
     return 0 if healthy else 1
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = list(argv if argv is not None else sys.argv[1:])
-    if args and args[0] == "active-work":
-        return active_work_command(args[1:])
-    if args == ["cache-agents"]:
-        return cache_agent_snapshot()
-    if args == ["github-main"]:
-        return github_main_gate()
-    if args == ["pull-requests"]:
-        return pull_request_gate()
-    if args == ["primary-snapshot"]:
-        return primary_snapshot_gate()
-    if args == ["agents"]:
-        return agent_gate()
-    if args == ["queue-health"]:
-        return queue_health_gate()
-    if args == ["memory-skill-sync"]:
-        return memory_skill_sync_gate()
-    if args == ["merge-gate-authority"]:
-        return merge_gate_authority_gate()
-    print(
-        "usage: operational_health.py "
-        "<active-work|cache-agents|github-main|pull-requests|primary-snapshot|agents|queue-health|"
-        "memory-skill-sync|merge-gate-authority>",
-        file=sys.stderr,
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run one dev-hermit operational health check."
     )
-    return 2
+    subparsers = parser.add_subparsers(
+        dest="command", required=True, metavar="COMMAND"
+    )
+    active_work = subparsers.add_parser(
+        "active-work",
+        help="reconcile TaskGraph state, task ownership, and live ORC agents",
+        description="Reconcile TaskGraph state, task ownership, and live ORC agents.",
+    )
+    _add_active_work_options(active_work)
+    active_work.set_defaults(_command_parser=active_work)
+
+    commands = (
+        ("cache-agents", "cache the current ORC agent snapshot"),
+        ("github-main", "report hosted workflow state for current main"),
+        ("pull-requests", "report pull-request validation and queue health"),
+        ("primary-snapshot", "refresh the primary checkout snapshot when safe"),
+        ("agents", "report stuck or broken agents from the ORC snapshot"),
+        ("queue-health", "report runner queue depth, waits, and stale runs"),
+        ("memory-skill-sync", "check local memory skill mirrors for contradictions"),
+        (
+            "merge-gate-authority",
+            "check whether merge-gate rules match the required authority",
+        ),
+    )
+    for name, description in commands:
+        subparsers.add_parser(name, help=description, description=description)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parsed = build_parser().parse_args(argv)
+    if parsed.command == "active-work":
+        return _run_active_work(parsed, parsed._command_parser)
+    commands = {
+        "cache-agents": cache_agent_snapshot,
+        "github-main": github_main_gate,
+        "pull-requests": pull_request_gate,
+        "primary-snapshot": primary_snapshot_gate,
+        "agents": agent_gate,
+        "queue-health": queue_health_gate,
+        "memory-skill-sync": memory_skill_sync_gate,
+        "merge-gate-authority": merge_gate_authority_gate,
+    }
+    return commands[parsed.command]()
 
 
 if __name__ == "__main__":

@@ -1276,7 +1276,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--store", default=default_store())
         p.add_argument("--json", action="store_true")
 
-    pr = sub.add_parser("record", help="record a completed rebase outcome")
+    pr = sub.add_parser("record", description="record a completed rebase outcome", help="record a completed rebase outcome")
     common(pr)
     pr.add_argument("--source", required=True, help="revision X (pre-rebase sha)")
     pr.add_argument("--base", required=True, help="main base Y rebased onto")
@@ -1300,7 +1300,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--no-fetch", action="store_true")
     pr.set_defaults(func=do_record)
 
-    rb = sub.add_parser("rebase", help="own the mechanical rebase in a checkout")
+    rb = sub.add_parser("rebase", description="own the mechanical rebase in a checkout", help="own the mechanical rebase in a checkout")
     common(rb)
     rb.add_argument("--source", required=True, help="revision/branch X to rebase")
     rb.add_argument("--onto", required=True,
@@ -1324,8 +1324,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     au = sub.add_parser(
         "authorize",
-        help=("answer whether a head is landable under the tracked "
-              "hermit-validation-authority skill"))
+        help=(
+            "answer whether a head is landable under the tracked "
+            "hermit-validation-authority skill"
+        ),
+        description=(
+            "answer whether a head is landable under the tracked "
+            "hermit-validation-authority skill"
+        ),
+    )
     common(au)
     au.add_argument("--result", required=True, help="candidate head Z")
     au.add_argument("--repo", default=DEFAULT_PR_REPO)
@@ -1339,7 +1346,7 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--reverie-checkout")
     au.set_defaults(func=do_authorize)
 
-    el = sub.add_parser("eligible", help="query heads eligible to land now")
+    el = sub.add_parser("eligible", description="query heads eligible to land now", help="query heads eligible to land now")
     common(el)
     el.add_argument("--result", help="test whether this result sha Z is eligible")
     el.add_argument("--source", help="filter eligible heads by source rev X")

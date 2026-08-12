@@ -453,7 +453,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    pc = sub.add_parser("check", help="ratchet a run against its trailing baseline")
+    pc = sub.add_parser("check", description="ratchet a run against its trailing baseline", help="ratchet a run against its trailing baseline")
     pc.add_argument("--profile", default="full", help="validate profile to ratchet (default: full)")
     pc.add_argument("--commit", default=None, help="target commit (prefix ok); default = latest passing run")
     pc.add_argument("--min-baseline", type=int, default=DEFAULT_MIN_BASELINE)
@@ -463,7 +463,7 @@ def build_parser() -> argparse.ArgumentParser:
     pc.add_argument("--json", action="store_true")
     pc.set_defaults(func=cmd_check)
 
-    pr = sub.add_parser("report", help="print current baselines + budget-met per bucket")
+    pr = sub.add_parser("report", description="print current baselines + budget-met per bucket", help="print current baselines + budget-met per bucket")
     pr.set_defaults(func=cmd_report)
     return p
 

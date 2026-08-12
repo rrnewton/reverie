@@ -499,22 +499,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    w = sub.add_parser("worktrees", help="scan every checkout for T1/T2 stranded work")
+    w = sub.add_parser("worktrees", description="scan every checkout for T1/T2 stranded work", help="scan every checkout for T1/T2 stranded work")
     w.add_argument("--json", action="store_true")
     w.set_defaults(func=_cmd_worktrees)
 
-    a = sub.add_parser("artifacts", help="check closed-task artifacts against origin/main")
+    a = sub.add_parser("artifacts", description="check closed-task artifacts against origin/main", help="check closed-task artifacts against origin/main")
     a.add_argument("--input", required=True, help="JSON [{task, paths:[...]}]")
     a.add_argument("--fresh-hours", type=float, default=DEFAULT_FRESH_HOURS)
     a.add_argument("--json", action="store_true")
     a.set_defaults(func=_cmd_artifacts)
 
-    r = sub.add_parser("rescue", help="NON-DESTRUCTIVE copy-out of one checkout")
+    r = sub.add_parser("rescue", description="NON-DESTRUCTIVE copy-out of one checkout", help="NON-DESTRUCTIVE copy-out of one checkout")
     r.add_argument("checkout", help="path relative to the parent, or '.'")
     r.add_argument("--quarantine", required=True)
     r.set_defaults(func=_cmd_rescue)
 
-    s = sub.add_parser("selftest", help="run the decision-table tests")
+    s = sub.add_parser("selftest", description="run the decision-table tests", help="run the decision-table tests")
     s.set_defaults(func=_cmd_selftest)
 
     args = ap.parse_args(argv)

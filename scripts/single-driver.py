@@ -238,13 +238,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="verb", required=True)
 
-    r = sub.add_parser("run", help="run CMD as the sole driver of --ledger")
+    r = sub.add_parser("run", description="run CMD as the sole driver of --ledger", help="run CMD as the sole driver of --ledger")
     r.add_argument("--ledger", required=True)
     r.add_argument("--name", default=os.environ.get("HERMIT_AGENT", "unnamed-driver"))
     r.add_argument("cmd", nargs=argparse.REMAINDER)
 
     for verb in ("status", "check"):
-        s = sub.add_parser(verb, help="report whether a driver holds --ledger")
+        s = sub.add_parser(verb, description="report whether a driver holds --ledger", help="report whether a driver holds --ledger")
         s.add_argument("--ledger", required=True)
 
     a = ap.parse_args(argv)

@@ -368,9 +368,17 @@ def _run_validate(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    status = commands.add_parser("status")
+    status = commands.add_parser(
+        "status",
+        help="show whether current main is still soft green",
+        description="Show whether current main is still soft green.",
+    )
     status.add_argument("--json", action="store_true")
-    run = commands.add_parser("_run", help=argparse.SUPPRESS)
+    run = commands.add_parser(
+        "_run",
+        help="run the exact-main validation worker (internal)",
+        description="Run the exact-main validation worker used by the launcher.",
+    )
     run.add_argument("--root", type=Path, required=True)
     run.add_argument("--sha", required=True)
     run.add_argument("--source", type=Path, required=True)

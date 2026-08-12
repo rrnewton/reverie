@@ -374,26 +374,26 @@ def command_status(args: argparse.Namespace) -> None:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     commands = result.add_subparsers(dest="command", required=True)
-    create = commands.add_parser("create", help="create one fresh per-change clone")
+    create = commands.add_parser("create", description="create one fresh per-change clone", help="create one fresh per-change clone")
     create.add_argument("--task", required=True)
     create.add_argument("--path", action="append", default=[])
     create.add_argument("--clone", default="~/temp/dev-hermit")
     create.add_argument("--remote", default="https://github.com/rrnewton/dev-hermit.git")
     create.set_defaults(func=command_create)
-    seal = commands.add_parser("seal", help="test and seal one exact candidate commit")
+    seal = commands.add_parser("seal", description="test and seal one exact candidate commit", help="test and seal one exact candidate commit")
     seal.add_argument("--clone")
     seal.add_argument("--test", action="append", default=[])
     seal.set_defaults(func=command_seal)
-    publish = commands.add_parser("publish", help="publish a still-current sealed commit")
+    publish = commands.add_parser("publish", description="publish a still-current sealed commit", help="publish a still-current sealed commit")
     publish.add_argument("--clone")
     publish.set_defaults(func=command_publish)
     activate = commands.add_parser(
-        "activate", help="sync the published commit into a clean primary"
+        "activate", description="sync the published commit into a clean primary", help="sync the published commit into a clean primary"
     )
     activate.add_argument("--clone", required=True)
     activate.add_argument("--primary", default="/home/newton/work/dev-hermit")
     activate.set_defaults(func=command_activate)
-    status = commands.add_parser("status", help="show manifest and seal state")
+    status = commands.add_parser("status", description="show manifest and seal state", help="show manifest and seal state")
     status.add_argument("--clone")
     status.set_defaults(func=command_status)
     return result

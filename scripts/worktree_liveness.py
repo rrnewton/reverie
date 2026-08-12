@@ -406,7 +406,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--root", help="repo root (default: discovered from this script)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("report", help="classify every slot (read-only)")
+    r = sub.add_parser("report", description="classify every slot (read-only)", help="classify every slot (read-only)")
     r.add_argument("--json", action="store_true")
     r.add_argument("--stale-hours", type=float, default=6.0)
     r.add_argument("--fail-on-dead", action="store_true",
@@ -419,7 +419,7 @@ def main(argv: list[str] | None = None) -> int:
                    help="delta state file (default .tick-hub/worktree-liveness-state.json)")
     r.set_defaults(func=cmd_report)
 
-    t = sub.add_parser("touch", help="record owner_pid+heartbeat for a slot")
+    t = sub.add_parser("touch", description="record owner_pid+heartbeat for a slot", help="record owner_pid+heartbeat for a slot")
     t.add_argument("--slot", required=True)
     t.add_argument("--pid", type=int, default=None)
     t.set_defaults(func=cmd_touch)

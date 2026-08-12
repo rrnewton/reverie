@@ -1870,7 +1870,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=default_root())
     subparsers = parser.add_subparsers(dest="command", required=True)
-    fresh = subparsers.add_parser("fresh", help="refresh every clean primary checkout")
+    fresh = subparsers.add_parser("fresh", description="refresh every clean primary checkout", help="refresh every clean primary checkout")
     fresh.add_argument(
         "--publish-parent",
         action="store_true",
@@ -1881,10 +1881,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="return nonzero when a dirty primary must be skipped",
     )
-    check = subparsers.add_parser("check", help="warn about detached or stale primaries")
+    check = subparsers.add_parser("check", description="warn about detached or stale primaries", help="warn about detached or stale primaries")
     check.add_argument("--strict", action="store_true", help="return nonzero on warnings")
     freshness = subparsers.add_parser(
         "freshness",
+        description="one invariant over every primary (parent included): not bare, on main, "
+        "not detached, equal to origin, clean. Fails loudly by default.",
         help="one invariant over every primary (parent included): not bare, on main, "
         "not detached, equal to origin, clean. Fails loudly by default.",
     )
@@ -1906,6 +1908,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     subparsers.add_parser(
         "check-pins",
+        description="offline: block on Reverie pin drift across manifests and Cargo.lock sources",
         help="offline: block on Reverie pin drift across manifests and Cargo.lock sources",
     )
     args = parser.parse_args(argv)

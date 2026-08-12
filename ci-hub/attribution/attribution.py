@@ -1040,6 +1040,7 @@ def build_parser() -> argparse.ArgumentParser:
     cap = sub.add_parser(
         "capture",
         help="run a command once; preserve full evidence on failure (exit 1 if failed)",
+        description="run a command once; preserve full evidence on failure (exit 1 if failed)",
     )
     cap.add_argument("--label", default="run")
     cap.add_argument("--timeout", type=float, default=None)
@@ -1051,7 +1052,7 @@ def build_parser() -> argparse.ArgumentParser:
                      help="-- <command...> to run")
     cap.set_defaults(func=_cmd_capture)
 
-    att = sub.add_parser("attribute", help="attribute a preserved failure bundle")
+    att = sub.add_parser("attribute", help="attribute a preserved failure bundle", description="attribute a preserved failure bundle")
     att.add_argument("bundle", help="a bundle directory containing meta.json")
     att.add_argument("--low-load-control", type=int, default=0, metavar="K",
                      help="re-run the same command K times (decisive quiet-host test)")
@@ -1061,11 +1062,11 @@ def build_parser() -> argparse.ArgumentParser:
     att.add_argument("--json", action="store_true")
     att.set_defaults(func=_cmd_attribute)
 
-    rep = sub.add_parser("report", help="attribute every bundle under a root dir")
+    rep = sub.add_parser("report", help="attribute every bundle under a root dir", description="attribute every bundle under a root dir")
     rep.add_argument("bundle_root")
     rep.set_defaults(func=_cmd_report)
 
-    st = sub.add_parser("selftest", help="run the classifier decision-table tests")
+    st = sub.add_parser("selftest", help="run the classifier decision-table tests", description="run the classifier decision-table tests")
     st.set_defaults(func=_cmd_selftest)
     return p
 

@@ -239,9 +239,9 @@ def emit_jsonl(items: Iterable[dict]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("rows", help="emit the canonical HistoryRow compatibility view")
-    commands.add_parser("events", help="emit the canonical event union")
-    commands.add_parser("record", help="read one HistoryRow JSON object from stdin and journal it")
+    commands.add_parser("rows", description="emit the canonical HistoryRow compatibility view", help="emit the canonical HistoryRow compatibility view")
+    commands.add_parser("events", description="emit the canonical event union", help="emit the canonical event union")
+    commands.add_parser("record", description="read one HistoryRow JSON object from stdin and journal it", help="read one HistoryRow JSON object from stdin and journal it")
     args = parser.parse_args(argv)
     if args.command == "record":
         try:

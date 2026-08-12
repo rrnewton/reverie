@@ -601,12 +601,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     stage = commands.add_parser(
-        "stage-tracked", help="copy tracked shards into the spool without changing them"
+        "stage-tracked", description="copy tracked shards into the spool without changing them", help="copy tracked shards into the spool without changing them"
     )
     stage.add_argument("--source-root", type=Path, required=True)
     stage.add_argument("--spool-dir", type=Path, required=True)
     send = commands.add_parser(
-        "publish", help="publish a live spool from an isolated checkout"
+        "publish", description="publish a live spool from an isolated checkout", help="publish a live spool from an isolated checkout"
     )
     send.add_argument("--source-root", type=Path, required=True)
     send.add_argument("--repo", type=Path, required=True)
@@ -616,6 +616,7 @@ def main(argv: list[str] | None = None) -> int:
     send.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS)
     split = commands.add_parser(
         "split-published-shard",
+        description="preserve divergent remote bytes and make the primary match the source",
         help="preserve divergent remote bytes and make the primary match the source",
     )
     split.add_argument("--source-root", type=Path, required=True)

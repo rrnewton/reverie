@@ -326,7 +326,9 @@ def publish(repo: str, branch: str, path: str, body: bytes) -> str:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Publish one validated receipt and its preserved evidence."
+    )
     parser.add_argument("--repo", required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--selected-receipt-sha256", required=True)

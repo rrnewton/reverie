@@ -325,7 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    r = sub.add_parser("record", help="record a burst CSV as one stress run (exit 2 if RED)")
+    r = sub.add_parser("record", description="record a burst CSV as one stress run (exit 2 if RED)", help="record a burst CSV as one stress run (exit 2 if RED)")
     r.add_argument("--csv", default="-", help="burst CSV path, or - for stdin")
     r.add_argument("--repo", default="rrnewton/hermit")
     r.add_argument("--sha", required=True, help="main HEAD SHA the burst ran at")
@@ -338,13 +338,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--store", default=None)
     r.set_defaults(func=_cmd_record)
 
-    s = sub.add_parser("summary", help="print recorded stress runs (exit 2 if latest RED)")
+    s = sub.add_parser("summary", description="print recorded stress runs (exit 2 if latest RED)", help="print recorded stress runs (exit 2 if latest RED)")
     s.add_argument("--store", default=None)
     s.add_argument("--since", default=None, help="ISO timestamp lower bound")
     s.add_argument("--limit", type=int, default=30)
     s.set_defaults(func=_cmd_summary)
 
-    t = sub.add_parser("selftest", help="verify flaky-is-red verdict logic")
+    t = sub.add_parser("selftest", description="verify flaky-is-red verdict logic", help="verify flaky-is-red verdict logic")
     t.set_defaults(func=_cmd_selftest)
 
     args = p.parse_args(argv)

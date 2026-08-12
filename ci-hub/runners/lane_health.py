@@ -455,7 +455,7 @@ def main(argv=None) -> int:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    t = sub.add_parser("tick", help="observe + record saturation (producer)")
+    t = sub.add_parser("tick", description="observe + record saturation (producer)", help="observe + record saturation (producer)")
     t.add_argument("--repo", default=DEFAULT_REPO)
     t.add_argument("--gh", default=None, help="gh command (default $GH or "
                                               "'with-proxy gh')")
@@ -469,6 +469,7 @@ def main(argv=None) -> int:
     t.set_defaults(func=_cmd_tick)
 
     c = sub.add_parser("throttle-check",
+                       description="read-only throttle predicate (exit 3 if engaged)",
                        help="read-only throttle predicate (exit 3 if engaged)")
     c.add_argument("--repo", default=DEFAULT_REPO)
     c.add_argument("--stale-after", type=float, default=DEFAULT_STALE_AFTER_SECS)
@@ -477,7 +478,7 @@ def main(argv=None) -> int:
     c.add_argument("--json", action="store_true")
     c.set_defaults(func=_cmd_throttle_check)
 
-    s = sub.add_parser("status", help="human dump of the latest observation")
+    s = sub.add_parser("status", description="human dump of the latest observation", help="human dump of the latest observation")
     s.add_argument("--repo", default=DEFAULT_REPO)
     s.add_argument("--all", action="store_true")
     s.add_argument("--store", default=None)

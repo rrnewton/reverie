@@ -388,11 +388,11 @@ def _cmd_selftest(_a: argparse.Namespace) -> int:
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    g = sub.add_parser("gate", help="run the port-time checklist over the DAG manifests")
+    g = sub.add_parser("gate", description="run the port-time checklist over the DAG manifests", help="run the port-time checklist over the DAG manifests")
     g.add_argument("--only", nargs="*", help="restrict to these node names (the porting set)")
     g.add_argument("--json", action="store_true")
     g.set_defaults(func=_cmd_gate)
-    s = sub.add_parser("selftest", help="run the decision-table tests")
+    s = sub.add_parser("selftest", description="run the decision-table tests", help="run the decision-table tests")
     s.set_defaults(func=_cmd_selftest)
     args = ap.parse_args(argv)
     return int(args.func(args))

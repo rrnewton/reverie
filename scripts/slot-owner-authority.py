@@ -468,7 +468,9 @@ def repository_root() -> Path:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Report whether registered slot owners are alive, dead, or indeterminate."
+    )
     subject = parser.add_mutually_exclusive_group(required=True)
     subject.add_argument("--slot")
     subject.add_argument("--all", action="store_true")

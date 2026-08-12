@@ -1457,6 +1457,7 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd")
 
     p_nb = sub.add_parser("node-cpu-budgets",
+                          description="per-DAG-node CPU budgets for cpu_timeout",
                           help="per-DAG-node CPU budgets for cpu_timeout")
     p_nb.add_argument("--repo")
     p_nb.add_argument("--since", help="git SHA prefix or YYYY-MM-DD")
@@ -1469,6 +1470,8 @@ def main() -> int:
     p_nb.add_argument("--format", choices=["text", "csv", "json"], default="text")
 
     p_gt = sub.add_parser("green-time",
+                          description="%% conclusive authoritative-run wall-clock "
+                               "green (NO-RESULT/gap excluded)",
                           help="%% conclusive authoritative-run wall-clock "
                                "green (NO-RESULT/gap excluded)")
     p_gt.add_argument("--repo", default="rrnewton/hermit")
@@ -1484,6 +1487,8 @@ def main() -> int:
                            "hourly runs build a durable trend")
 
     p_kt = sub.add_parser("kill-taxonomy",
+                          description="split wall/cpu kills into livelock vs "
+                               "contention via the cpu/wall ratio",
                           help="split wall/cpu kills into livelock vs "
                                "contention via the cpu/wall ratio")
     p_kt.add_argument("--repo")
@@ -1491,6 +1496,7 @@ def main() -> int:
     p_kt.add_argument("--format", choices=["text", "json"], default="text")
 
     p_ru = sub.add_parser("runs",
+                          description="summary + recent-runs listing (alias of default)",
                           help="summary + recent-runs listing (alias of default)")
     p_ru.add_argument("--repo")
     p_ru.add_argument("--since", help="YYYY-MM-DD")

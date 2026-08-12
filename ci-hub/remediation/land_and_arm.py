@@ -564,7 +564,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="operation", required=True)
 
-    run_parser = subparsers.add_parser("run", help="run a land and arm its merged SHA")
+    run_parser = subparsers.add_parser("run", description="run a land and arm its merged SHA", help="run a land and arm its merged SHA")
     run_parser.add_argument("--repo", default=protocol.DEFAULT_REPO)
     run_parser.add_argument("--pr", type=int, required=True)
     run_parser.add_argument(
@@ -598,7 +598,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     run_parser.add_argument("command", nargs=argparse.REMAINDER)
 
     prepare_parser = subparsers.add_parser(
-        "prepare", help="persist intent before a self-wrapped lander can merge"
+        "prepare", description="persist intent before a self-wrapped lander can merge", help="persist intent before a self-wrapped lander can merge"
     )
     prepare_parser.add_argument("--repo", default=protocol.DEFAULT_REPO)
     prepare_parser.add_argument("--pr", type=int, required=True)
@@ -631,7 +631,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
 
     complete_parser = subparsers.add_parser(
-        "complete", help="arm the merge recorded by a prepared intent"
+        "complete", description="arm the merge recorded by a prepared intent", help="arm the merge recorded by a prepared intent"
     )
     complete_parser.add_argument("--repo", default=protocol.DEFAULT_REPO)
     complete_parser.add_argument("--pr", type=int, required=True)
@@ -643,7 +643,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
 
     mark_parser = subparsers.add_parser(
-        "mark-soft", help="bind a prepared intent to exact soft-green candidate provenance"
+        "mark-soft",
+        help="bind a prepared intent to exact soft-green candidate provenance",
+        description="bind a prepared intent to exact soft-green candidate provenance",
     )
     mark_parser.add_argument("--repo", default=protocol.DEFAULT_REPO)
     mark_parser.add_argument("--pr", type=int, required=True)
@@ -653,7 +655,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     mark_parser.add_argument("--intent-dir", type=Path, default=default_intent_dir())
 
     recover_parser = subparsers.add_parser(
-        "recover", help="arm any merged land whose wrapper died before arming"
+        "recover", description="arm any merged land whose wrapper died before arming", help="arm any merged land whose wrapper died before arming"
     )
     recover_parser.add_argument("--intent-dir", type=Path, default=default_intent_dir())
     recover_parser.add_argument(

@@ -5744,7 +5744,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     arm_parser = subparsers.add_parser(
-        "arm", help="arm dual verification for a landed SHA"
+        "arm", description="arm dual verification for a landed SHA", help="arm dual verification for a landed SHA"
     )
     arm_parser.add_argument("sha")
     arm_parser.add_argument("--repo", default=DEFAULT_REPO)
@@ -5781,6 +5781,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     verify_landing_parser = subparsers.add_parser(
         "verify-landing",
         aliases=["verify-landed-pr"],
+        description="verify a PR replay SHA or commit SHA against a freshly fetched target",
         help="verify a PR replay SHA or commit SHA against a freshly fetched target",
     )
     verify_landing_parser.add_argument(
@@ -5805,6 +5806,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     hosted_status_parser = subparsers.add_parser(
         "hosted-status",
+        description="verify the registered exact-head GitHub job authority",
         help="verify the registered exact-head GitHub job authority",
     )
     hosted_status_parser.add_argument("--repo", default=DEFAULT_REPO)
@@ -5812,7 +5814,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     hosted_status_parser.add_argument("--json", action="store_true")
 
     watch_parser = subparsers.add_parser(
-        "watch", help="poll open obligations and record transitions"
+        "watch", description="poll open obligations and record transitions", help="poll open obligations and record transitions"
     )
     watch_parser.add_argument("--id")
     watch_parser.add_argument("--launch-token", help=argparse.SUPPRESS)
@@ -5833,7 +5835,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--store", type=Path, default=obligations.default_store_path()
     )
 
-    status_parser = subparsers.add_parser("status", help="show unresolved obligations")
+    status_parser = subparsers.add_parser("status", description="show unresolved obligations", help="show unresolved obligations")
     status_parser.add_argument("--all", action="store_true")
     status_parser.add_argument(
         "--actionable", action="store_true", help="show only remediation still owed"
@@ -5856,7 +5858,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
 
     wake_parser = subparsers.add_parser(
-        "wake-sent", help="record a best-effort wake as sent but unacknowledged"
+        "wake-sent", description="record a best-effort wake as sent but unacknowledged", help="record a best-effort wake as sent but unacknowledged"
     )
     wake_parser.add_argument("--target", required=True)
     wake_parser.add_argument("--source", default="unknown")
@@ -5865,7 +5867,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
 
     inherit_parser = subparsers.add_parser(
-        "inherit", help="discover and acknowledge inherited remediation"
+        "inherit", description="discover and acknowledge inherited remediation", help="discover and acknowledge inherited remediation"
     )
     inherit_parser.add_argument("--agent", required=True)
     inherit_parser.add_argument(
@@ -5889,6 +5891,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     cancel_parser = subparsers.add_parser(
         "cancel-watcher",
+        description="pidfd-cancel one durably identified watcher without closing its obligation",
         help="pidfd-cancel one durably identified watcher without closing its obligation",
     )
     cancel_parser.add_argument("id")
@@ -5904,7 +5907,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
 
     resolve_parser = subparsers.add_parser(
-        "resolve", help="record completed remediation"
+        "resolve", description="record completed remediation", help="record completed remediation"
     )
     resolve_parser.add_argument("id")
     resolve_parser.add_argument(
@@ -5941,7 +5944,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--store", type=Path, default=obligations.default_store_path()
     )
 
-    local_parser = subparsers.add_parser("_local-run", help=argparse.SUPPRESS)
+    local_parser = subparsers.add_parser("_local-run", description="run one validation obligation in a detached worker", help="run one validation obligation in a detached worker")
     local_parser.add_argument("id")
     local_parser.add_argument("--launch-token", help=argparse.SUPPRESS)
     local_parser.add_argument("--source", type=Path, required=True)
