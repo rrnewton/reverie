@@ -147,7 +147,7 @@ ci-hub/ci-hub land-lock run --agent hermit-ci --pr 1533 \
 | `renew --agent NAME [--hold S]` | heartbeat — extend your lease during a long land |
 | `release --agent NAME` | free the lock (owner only); signals the next waiter |
 | `status` | print holder metadata, process liveness, seconds left, and the FIFO queue |
-| `reclaim-dead` | release only when the supervised owner process is proven gone |
+| `reclaim-dead` | release only when the supervised lock-holder process is proven gone |
 | `run --agent NAME --pr N [--child-deadline S] [...] -- CMD...` | acquire → run CMD (auto-heartbeat, hard child-deadline) → release after complete cleanup proof, otherwise quarantine |
 
 Defaults: `--wait 1800` (give up after 30 min), `--hold 900` (lease lapses after
@@ -190,20 +190,23 @@ nonzero exit, and hard deadline clear the authority only after both the process
 group and residual census prove the domain empty.
 
 SIGKILL and machine loss cannot finish that census. `status` therefore reports
-the lease as `QUARANTINED`, not merely `ORPHANED`, and every ordinary acquire,
-renew, release, and dead-owner reclaim refuses. While recorded identities are
+the lease as `QUARANTINED`, not merely process-exited, and every ordinary acquire,
+renew, release, and exited-holder reclaim refuses. While recorded identities are
 live, even explicit recovery is refused. A complete residual record becomes
 recoverable only after every exact PID/start-ticks identity and its group are
-absent; `reclaim-dead` must additionally prove the supervisor owner dead. A
+absent; `reclaim-dead` must additionally prove the lock-holder process exited. A
 same-boot `published`/`census-pending` record with no final census remains
 unrecoverable even after its leader disappears, because an escaped descendant
 may be unrecorded. A host reboot (different boot ID) is the stronger proof that
 such a process domain is gone. This preserves the rule that one lander never
 force-releases another lander's payload.
 
-The owner sidecar still reports `owner_process=alive`, `dead:...`, or
-`unknown:...`. A proven-dead supervised lease with **no** cleanup authority is
-shown as `ORPHANED (reclaimable)` for backward-compatible/manual cases.
+The owner sidecar reports `lock_holder_process=alive`, `exited:...`, or
+`unknown:...`. The field describes the exact PID/boot/start-ticks process that
+held the landing lock; it does not describe the liveness of the named agent. A
+supervised lease whose lock-holder process has exited with **no** cleanup
+authority is shown as `LOCK-HOLDER PROCESS EXITED (reclaimable)` for
+backward-compatible/manual cases.
 
 The holder file format is byte-compatible with pre-sidecar landers. A legacy
 bare `acquire` has no process evidence and therefore remains lease-only: it is

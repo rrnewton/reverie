@@ -182,7 +182,7 @@ pub enum ValidateLockCommand {
     /// Report whether a background acquirer must yield to the owner's watch.
     /// Exit 0=ALLOW, 1=YIELD, 2=UNKNOWN (fail closed).
     YieldStatus(YieldStatusArgs),
-    /// Reclaim a lease only when its recorded owner process is proven dead.
+    /// Reclaim a lease only when its recorded validation supervisor process has exited.
     ReclaimDead,
     /// Standard fail-closed stale-clear path. `reclaim-dead` is retained as a
     /// compatibility alias; both call the same lease verifier.
@@ -2988,7 +2988,11 @@ impl ValidateLock {
 
         let reclaimed = holder.map(|holder| match clear_decision {
             Some(LeaseDecision::Clear { evidence }) => {
-                format!("{} ({evidence})", holder.agent)
+                format!(
+                    "{} ({})",
+                    holder.agent,
+                    render_supervisor_clear_evidence(&evidence)
+                )
             }
             _ => holder.agent,
         });
@@ -3680,18 +3684,24 @@ impl ValidateLock {
         }
         if quarantined {
             print_owner_identity(process_owner.as_ref());
-            println!("  owner_process={}", render_liveness(&liveness));
+            println!(
+                "  validation_supervisor_process={}",
+                render_supervisor_liveness(&liveness)
+            );
         } else {
             match holder {
                 Some(holder)
                     if holder.live_at(now) && matches!(liveness, OwnerLiveness::Dead(_)) =>
                 {
-                    println!("ORPHANED (reclaimable):");
+                    println!("VALIDATION SUPERVISOR EXITED (reclaimable):");
                     for line in holder.render().lines() {
                         println!("  {line}");
                     }
                     print_owner_identity(process_owner.as_ref());
-                    println!("  owner_process={}", render_liveness(&liveness));
+                    println!(
+                        "  validation_supervisor_process={}",
+                        render_supervisor_liveness(&liveness)
+                    );
                     println!("  secs_left={}", holder.expires_at - now);
                 }
                 Some(holder) if holder.live_at(now) => {
@@ -3700,7 +3710,10 @@ impl ValidateLock {
                         println!("  {line}");
                     }
                     print_owner_identity(process_owner.as_ref());
-                    println!("  owner_process={}", render_liveness(&liveness));
+                    println!(
+                        "  validation_supervisor_process={}",
+                        render_supervisor_liveness(&liveness)
+                    );
                     println!("  secs_left={}", holder.expires_at - now);
                 }
                 Some(holder) => {
@@ -3709,7 +3722,10 @@ impl ValidateLock {
                         println!("  {line}");
                     }
                     print_owner_identity(process_owner.as_ref());
-                    println!("  owner_process={}", render_liveness(&liveness));
+                    println!(
+                        "  validation_supervisor_process={}",
+                        render_supervisor_liveness(&liveness)
+                    );
                 }
                 None => println!("FREE"),
             }
@@ -3820,7 +3836,8 @@ impl ValidateLock {
         })?;
         match reclaimed {
             Some((agent, kind, target, reason)) => eprintln!(
-                "validate-lock: evidence-reclaimed dead owner agent={agent} kind={kind} target={target}: {reason}"
+                "validate-lock: evidence-reclaimed holder_agent={agent} kind={kind} target={target}: {}",
+                render_supervisor_clear_evidence(&reason)
             ),
             None => eprintln!("validate-lock: reclaim-dead: no lock held"),
         }
@@ -4800,11 +4817,18 @@ fn current_process_owner() -> Result<ProcessOwner, ValidateLockError> {
     })
 }
 
-fn render_liveness(liveness: &OwnerLiveness) -> String {
+fn render_supervisor_liveness(liveness: &OwnerLiveness) -> String {
     match liveness {
         OwnerLiveness::Alive => "alive".into(),
-        OwnerLiveness::Dead(reason) => format!("dead:{reason}"),
+        OwnerLiveness::Dead(reason) => format!("exited:{reason}"),
         OwnerLiveness::Unknown(reason) => format!("unknown:{reason}"),
+    }
+}
+
+fn render_supervisor_clear_evidence(evidence: &str) -> String {
+    match evidence.strip_prefix("owner dead: ") {
+        Some(rest) => format!("validation supervisor exited: {rest}"),
+        None => evidence.to_string(),
     }
 }
 
@@ -7708,9 +7732,31 @@ exit 0
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
-    // 6. A proven-dead owner is retained until TTL expiry, then reclaimed.
     #[test]
-    fn dead_owner_waits_for_expiry_then_reclaims() {
+    fn live_named_agent_and_exited_validation_supervisor_are_reported_separately() {
+        let named_agent = "codex-lsm";
+        let named_agent_process = current_process_owner().unwrap();
+        assert_eq!(
+            process_start_ticks(named_agent_process.pid).unwrap(),
+            named_agent_process.start_ticks,
+            "the named-agent stand-in must be live while the supervisor is reported exited"
+        );
+
+        let report = format!(
+            "agent={named_agent}\nvalidation_supervisor_process={}",
+            render_supervisor_liveness(&OwnerLiveness::Dead("pid 2884548 is absent".into()))
+        );
+        assert_eq!(
+            report,
+            "agent=codex-lsm\nvalidation_supervisor_process=exited:pid 2884548 is absent"
+        );
+        assert!(!report.contains("owner_process=dead"));
+        assert!(!report.contains("agent=codex-lsm dead"));
+    }
+
+    // 6. An exited validation supervisor is retained until TTL expiry, then reclaimed.
+    #[test]
+    fn exited_validation_supervisor_waits_for_expiry_then_reclaims() {
         let paths = temp_paths("dead-owner");
         let lock = ValidateLock {
             paths: paths.clone(),
@@ -7747,7 +7793,10 @@ exit 0
         );
         let holder = lock.read_holder().unwrap().unwrap();
         assert_eq!(holder.agent, "replacement-validate");
-        assert!(holder.reclaimed_from.unwrap().contains("owner dead"));
+        assert!(holder
+            .reclaimed_from
+            .unwrap()
+            .contains("validation supervisor exited"));
         lock.release("replacement-validate", false).unwrap();
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }

@@ -597,7 +597,7 @@ class OperationalBoundsTest(unittest.TestCase):
                 )
             )
             live = self.run_bounded("land-lock", "status", env=env)
-            self.assertIn("owner_process=alive", live.stdout)
+            self.assertIn("lock_holder_process=alive", live.stdout)
 
             os.kill(owner_pid, signal.SIGKILL)
             process.wait(timeout=5)
@@ -605,7 +605,8 @@ class OperationalBoundsTest(unittest.TestCase):
             quarantined = self.run_bounded("land-lock", "status", env=env)
             self.assertIn("QUARANTINED (cleanup active)", quarantined.stdout)
             self.assertIn("phase=published", quarantined.stdout)
-            self.assertIn("owner_process=dead:", quarantined.stdout)
+            self.assertIn("lock_holder_process=exited:", quarantined.stdout)
+            self.assertNotIn("owner_process=dead:", quarantined.stdout)
             refused = self.run_bounded(
                 "land-lock",
                 "acquire",
@@ -643,7 +644,7 @@ class OperationalBoundsTest(unittest.TestCase):
             child_pid = None
             uncensused = self.run_bounded("land-lock", "status", env=env)
             self.assertIn(
-                "QUARANTINED (published domain lacks final census)",
+                "QUARANTINED (payload domain lacks final census)",
                 uncensused.stdout,
             )
             # Leader/group absence is necessary but not sufficient after the
