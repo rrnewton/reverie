@@ -127,9 +127,7 @@ class Pattern:
     def all_opnds(self) -> list[str]:
         if isinstance(self.opndset, tuple):
             return self.opndset[0] + self.opndset[1]
-        if isinstance(self.opndset, str):
-            return [self.opndset]
-        return self.opndset
+        return [self.opndset]
 
     def ignored_bit_mask(self) -> int:
         return ~(self.opnd_bits | self.high_soft_bits)
