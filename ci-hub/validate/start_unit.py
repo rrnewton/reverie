@@ -597,66 +597,6 @@ def validate_checkout(
     return checkout
 
 
-def refuse_canonical_terminal_readmission(
-    root: Path, target: str, *, repo: str, run: Runner
-) -> str:
-    """Refuse a blind rerun once the canonical authority has judged ``target``.
-
-    A terminal receipt is the decision for this immutable commit. Re-admitting
-    the same SHA cannot add a new product state; it can only consume the one
-    box-exclusive validation lane again. Conversely, NEEDS-RERUN, TRUNCATED,
-    NO-RESULT and NOT-VALIDATED are deliberately *not* terminal: those states
-    explicitly say that a qualifying measurement is still missing.
-
-    This check is at the producer boundary and runs before a temp worktree,
-    observer pane, run-registry row or systemd unit is created. An unreadable or
-    internally inconsistent authority fails closed rather than launching while
-    the guard is blind.
-    """
-    status = run(
-        [
-            str(root / "ci-hub/ci-hub"),
-            "validate-status",
-            "--sha",
-            target,
-            "--repo",
-            repo,
-            "--json",
-        ],
-        cwd=root,
-        check=False,
-    )
-    try:
-        report = json.loads(status.stdout)
-        verdict = str(report["verdict"])
-        reported_sha = str(report["sha"])
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
-        detail = status.stderr.strip() or status.stdout.strip() or f"exit {status.returncode}"
-        raise RuntimeError(
-            f"canonical validate-status unreadable before admission ({detail}; {error})"
-        ) from error
-    if reported_sha != target:
-        raise RuntimeError(
-            f"canonical validate-status reported SHA {reported_sha}, not requested {target}"
-        )
-    terminal_rc = CANONICAL_TERMINAL_VERDICTS.get(verdict)
-    if terminal_rc is not None:
-        if status.returncode != terminal_rc:
-            raise RuntimeError(
-                f"canonical validate-status is inconsistent: verdict={verdict} "
-                f"requires exit {terminal_rc}, got {status.returncode}"
-            )
-        raise ValueError(
-            f"canonical validate-status already has terminal verdict {verdict} for "
-            f"unchanged SHA {target}; refusing blind re-admission. Advance HEAD for "
-            "a new product state."
-        )
-    if verdict in CANONICAL_REMEASUREMENT_VERDICTS and status.returncode == 4:
-        return verdict
-    detail = status.stderr.strip() or f"exit {status.returncode}, verdict={verdict}"
-    raise RuntimeError(f"canonical validate-status refused admission ({detail})")
-
-
 def preflight(
     root: Path, checkout: Path, target: str, *, repo: str, run: Runner
 ) -> None:
@@ -1287,9 +1227,6 @@ def main(
             repo=repo,
             run=run,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
-        )
-        refuse_canonical_terminal_readmission(
-            root.resolve(), args.target, repo=repo, run=run
         )
         if args.in_place:
             checkout = source_checkout

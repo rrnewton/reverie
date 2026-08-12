@@ -18,6 +18,12 @@ Two consumers live here:
 Both are read-only. The front door exposes them as `ci-hub local-history` and
 `ci-hub validate-worktrees`.
 
+Running `ci-hub validate-run` again for an unchanged commit starts a fresh
+measurement. This is intentional: repeated runs expose intermittent failures
+and provide the independent observations used by the basic-sanity scorecard.
+The newest run does not erase older receipts; `validate-status` and
+`local-history` retain the run history.
+
 ## Per-run output that survives the fresh checkout
 
 `ci-hub validate-run` prints `E2E_RESULTS` and `RUNNER_LOGS` paths for Hermit
