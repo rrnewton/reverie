@@ -9,10 +9,16 @@ description: "Land changes after validation qualifies under hermit-validation-au
 
 ## PR description and GitHub comment disclosure
 
-Write the five-field disclosure required by `AGENTS.md` in a bot-authored PR
-description. Do not write that prefix in a GitHub comment or review body. From
-the `dev-hermit` parent, send the unprefixed body through the registered
-boundary:
+Before writing a bot-authored PR description, run this command from the
+`dev-hermit` parent and paste its exact output at the start:
+
+```bash
+./ci-hub/bin/who-am-i --tag --role ROLE
+```
+
+Do not type, reconstruct, or normalize the output. The command resolves the
+caller and refuses unresolved identity. Do not write a prefix in a GitHub
+comment or review body. Send the unprefixed body through the registered boundary:
 
 ```bash
 with-proxy ./ci-hub/bin/gh --who AGENT --team TEAM --role ROLE \

@@ -150,10 +150,11 @@ These files are the single sources of truth for their action. Do not restate the
 
 # Disclosure and evidence
 
-Every commit subject, pull-request description, and GitHub comment starts with
-`[team-slug, agent-name, model-slug, machine-shortname, role=impl|debugger|reviewer|relay|coordinator|human]`.
-The model slug is the CLI-reported value verbatim or `unresolved`; do not normalize it. GitHub writes use
-the [registered boundary](ci-hub/bin/gh), which validates the caller context and prepends the disclosure.
+Before inserting the disclosure in a commit subject or pull-request description, run
+`./ci-hub/bin/who-am-i --tag --role <artifact-role>` from the `dev-hermit` parent and paste its exact output
+at the start. Do not type, reconstruct, or normalize the output; the command resolves the caller and refuses
+when it cannot. GitHub comments use the [registered boundary](ci-hub/bin/gh), which validates the caller
+context and prepends the disclosure, so their bodies remain unprefixed.
 The prefix is disclosure, not authentication, and never proves reviewer independence. Install the
 [repository hooks](scripts/setup-hooks.sh) before committing. Immediately after the subject/body, record
 the stable task with `Task: <task-id>` when the commit implements task work.

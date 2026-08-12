@@ -61,10 +61,12 @@ For each selected strategy:
 2. Tell the agent explicitly: **SPECULATIVE competing draft; do not land.** Give
    it the same problem statement and evidence, but only its own candidate brief,
    validation target, timebox, and kill criterion.
-3. Require an early draft PR once the approach is coherent. The author writes
-   the five-field disclosure required by `AGENTS.md` at the start of the PR
-   description, names the strategy slug, links the umbrella task, and reports
-   exact SHAs and validation without claiming selection.
+3. Require an early draft PR once the approach is coherent. Before writing the
+   PR description, the author runs
+   `./ci-hub/bin/who-am-i --tag --role impl` from the `dev-hermit` parent and
+   pastes its exact output at the start without typing or reconstructing it.
+   The description names the strategy slug, links the umbrella task, and
+   reports exact SHAs and validation without claiming selection.
 4. Apply the `speculative` label immediately:
 
    ```bash
