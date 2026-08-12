@@ -153,6 +153,11 @@ def default_unit(agent: str, target: str) -> str:
     return sanitize_unit(f"validate-{safe_agent}-{target[:12]}-{int(time.time())}")
 
 
+def _validate_output_paths(root: Path, unit: str) -> tuple[Path, Path]:
+    base = root / "ignored/validate/artifacts" / unit
+    return base / "e2e", base / "safe-ci-dag-runner"
+
+
 # The row lookup below goes through the canonical union command. This module
 # never opens a ledger shard itself.
 
@@ -789,6 +794,16 @@ def build_systemd_command(
         # state.  Without it KVM tests silently skip on a host where /dev/kvm
         # is absent or unusable, and a partial suite can look green.
         build_budget_env.extend(["--setenv", "REVERIE_REQUIRE_KVM=1"])
+    else:
+        e2e_result_root, runner_log_dir = _validate_output_paths(root, unit)
+        build_budget_env.extend(
+            [
+                "--setenv",
+                f"E2E_RESULT_ROOT={e2e_result_root}",
+                "--setenv",
+                f"SAFE_CI_DAG_RUNNER_LOG_DIR={runner_log_dir}",
+            ]
+        )
 
     child = ["/usr/bin/env"]
     if pr is not None:
@@ -1027,6 +1042,10 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
         )
     if report.get("log"):
         print(f"LOG {report['log']}", flush=True)
+    if report.get("e2e_result_root"):
+        print(f"E2E_RESULTS {report['e2e_result_root']}", flush=True)
+    if report.get("safe_ci_dag_runner_log_dir"):
+        print(f"RUNNER_LOGS {report['safe_ci_dag_runner_log_dir']}", flush=True)
 
 
 def attach(
@@ -1293,6 +1312,15 @@ def main(
         unit = sanitize_unit(args.unit) if args.unit else default_unit(args.agent, args.target)
         log = (args.log or root / "ignored/validate" / f"{unit}.log").resolve()
         record_path = run_registry.record_path(root.resolve(), unit)
+        e2e_result_root, runner_log_dir = _validate_output_paths(root.resolve(), unit)
+        output_fields = (
+            {
+                "e2e_result_root": str(e2e_result_root),
+                "safe_ci_dag_runner_log_dir": str(runner_log_dir),
+            }
+            if repo == "rrnewton/hermit"
+            else {}
+        )
         started_at = datetime.now(timezone.utc).isoformat()
         command = build_systemd_command(
             root=root.resolve(),
@@ -1334,6 +1362,7 @@ def main(
                     "producer": "systemd-user-v1",
                     "admission": "ci-hub validate-lock",
                     "pane_role": "observer-only",
+                    **output_fields,
                     **(
                         {"dag_jobs": args.ci_dag_jobs}
                         if args.ci_dag_jobs is not None
@@ -1412,6 +1441,7 @@ def main(
         "admission": "ci-hub validate-lock",
         "producer": "systemd-user-v1",
         "pane_role": "observer-only",
+        **output_fields,
         "workspace_id": pane.workspace_id if pane else pane_owner.WORKSPACE_LABEL,
         "tab_id": pane.tab_id if pane else None,
         "pane_id": pane.pane_id if pane else None,

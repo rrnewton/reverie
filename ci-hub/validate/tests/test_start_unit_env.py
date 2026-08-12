@@ -22,6 +22,8 @@ message:
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -201,6 +203,47 @@ class StartUnitEnvTest(unittest.TestCase):
         self.assertEqual(env["HOME"], "/home/test")
         self.assertEqual(env["PATH"], "/usr/bin")
         self.assertEqual(env["CI_HUB_VALIDATE_PRODUCER"], "systemd-user-v1")
+
+    def test_e2e_results_and_runner_logs_survive_checkout_removal(self) -> None:
+        ambient = {
+            **self.base_env,
+            "E2E_RESULT_ROOT": "/tmp/caller-chosen-results",
+            "SAFE_CI_DAG_RUNNER_LOG_DIR": "/tmp/caller-chosen-logs",
+        }
+        env = setenvs(build(self.root, ambient))
+        artifact_root = self.root / "ignored/validate/artifacts/validate-test.service"
+        self.assertEqual(env["E2E_RESULT_ROOT"], str(artifact_root / "e2e"))
+        self.assertEqual(
+            env["SAFE_CI_DAG_RUNNER_LOG_DIR"],
+            str(artifact_root / "safe-ci-dag-runner"),
+        )
+        self.assertFalse(Path(env["E2E_RESULT_ROOT"]).is_relative_to(self.root / "hermit"))
+        self.assertFalse(
+            Path(env["SAFE_CI_DAG_RUNNER_LOG_DIR"]).is_relative_to(self.root / "hermit")
+        )
+
+    def test_console_report_names_both_retained_paths(self) -> None:
+        artifact_root = self.root / "ignored/validate/artifacts/validate-test"
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            su.emit_report(
+                {
+                    "event": "handle",
+                    "unit": "validate-test.service",
+                    "target": TARGET,
+                    "state": "running",
+                    "e2e_result_root": str(artifact_root / "e2e"),
+                    "safe_ci_dag_runner_log_dir": str(
+                        artifact_root / "safe-ci-dag-runner"
+                    ),
+                },
+                json_output=False,
+            )
+        self.assertIn(f"E2E_RESULTS {artifact_root / 'e2e'}", output.getvalue())
+        self.assertIn(
+            f"RUNNER_LOGS {artifact_root / 'safe-ci-dag-runner'}",
+            output.getvalue(),
+        )
 
     def test_canonical_run_record_is_passed_to_validate_lock(self) -> None:
         self.plant_libunwind()

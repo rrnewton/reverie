@@ -18,6 +18,21 @@ Two consumers live here:
 Both are read-only. The front door exposes them as `ci-hub local-history` and
 `ci-hub validate-worktrees`.
 
+## Per-run output that survives the fresh checkout
+
+`ci-hub validate-run` prints `E2E_RESULTS` and `RUNNER_LOGS` paths for Hermit
+runs and records the same paths as `e2e_result_root` and
+`safe_ci_dag_runner_log_dir` in `ignored/validate/runs/<unit>.json`. They live
+under `ignored/validate/artifacts/<unit>/`, outside the fresh checkout that is
+removed after validation.
+
+`E2E_RESULTS` contains the harness's per-cell JSONL and JUnit output, including
+failure reasons. Compare its per-category cells with Hermit's existing
+`ci/expected-e2e-plan.json`; that committed plan is the denominator that
+distinguishes a complete run from a passing subset. `RUNNER_LOGS` contains the
+incrementally flushed per-step logs and `journal.jsonl`, so a killed runner
+still leaves the last observed step and test boundaries.
+
 ## Reverie centralized producer
 
 `ci-hub validate-run --repo rrnewton/reverie --checkout <reverie> --agent
