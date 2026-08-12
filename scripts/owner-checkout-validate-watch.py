@@ -500,24 +500,32 @@ def lock_block_evidence(log: Path) -> dict[str, Any] | None:
     if not log.is_file():
         return None
     text = log.read_text(encoding="utf-8", errors="replace")
-    refusal_line = next(
+    lines = text.splitlines()
+    anchor_refusal_line = next(
         (
             line
-            for line in text.splitlines()
+            for line in lines
             if "REFUSED: box-exclusive anchor held" in line
         ),
         None,
     )
+    direct_refusal_line = next(
+        (line for line in lines if line.startswith("REFUSED: ")),
+        None,
+    )
+    acquired = any(ACQUIRED_PATTERN.match(line) for line in lines)
     markers = [
         marker
         for marker in ("quarantine: ACTIVE", "QUARANTINED")
         if marker in text
     ]
-    if refusal_line is not None:
+    if anchor_refusal_line is not None:
         markers.append("REFUSED: box-exclusive anchor held")
+    elif direct_refusal_line is not None and not acquired:
+        markers.append("REFUSED: validate-lock refused before acquisition")
     exit_three = any(
         "validate-lock" in line and "exit=3" in line
-        for line in text.splitlines()
+        for line in lines
     )
     if not (markers and exit_three):
         return None
@@ -528,18 +536,20 @@ def lock_block_evidence(log: Path) -> dict[str, Any] | None:
         "log": str(log),
         "interpretation": "validation was refused before product work executed",
     }
+    refusal_line = anchor_refusal_line or direct_refusal_line
     if refusal_line is not None:
         evidence["refusal_line"] = refusal_line
+    if anchor_refusal_line is not None:
         anchor: dict[str, Any] = {}
         for key in ("pid", "start_ticks"):
-            match = re.search(rf"\b{key}=(\d+)\b", refusal_line)
+            match = re.search(rf"\b{key}=(\d+)\b", anchor_refusal_line)
             if match:
                 anchor[key] = int(match.group(1))
         for key in ("boot_id", "agent", "target", "unit", "record"):
             # The refusal is prose after the key/value identity and terminates
             # record=PATH with ';'.  Treating that delimiter as part of PATH
             # makes a complete PID/start-ticks/boot-id tuple look unattributed.
-            match = re.search(rf"\b{key}=([^\s;]+)", refusal_line)
+            match = re.search(rf"\b{key}=([^\s;]+)", anchor_refusal_line)
             if match:
                 anchor[key] = match.group(1)
         if "pid" in anchor:

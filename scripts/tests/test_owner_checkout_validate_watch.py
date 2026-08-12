@@ -253,6 +253,48 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
             watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
         )
 
+    def test_queue_refusal_before_acquisition_is_blocked_not_fail(self) -> None:
+        """An exact lock refusal cannot become a product failure via wrapper rc 2."""
+        rc, result, _ = self._run(
+            returncode=2,
+            canonical=unvalidated_status,
+            write_log=lambda log, sha: log.write_text(
+                "validate-lock: waiting in declared-priority queue; live holder retained\n"
+                "REFUSED: declared-priority queue did not grant "
+                f"agent=owner-checkout-watch target={sha} within 3s\n"
+                "# ci-hub/validate-lock tool COST ACTUAL wall=5.2s exit=3\n"
+                "validate-run: CANONICAL-VERDICT-UNAVAILABLE: no receipt\n",
+                encoding="utf-8",
+            ),
+        )
+
+        self.assertEqual(rc, watch.BLOCKED_ON_LOCK)
+        self.assertEqual(result["state"], "BLOCKED_ON_LOCK")
+        self.assertEqual(result["lock_admission"]["state"], "NOT_ADMITTED")
+        self.assertIsNone(result["executed_tests"])
+        self.assertFalse(result["ledger_row_found"])
+        self.assertIn("before product work", result["reason"])
+        self.assertNotIn("make validate exit=2", result["reason"])
+
+    def test_exit_two_after_acquisition_remains_fail_without_a_row(self) -> None:
+        """Do not turn a post-admission producer failure into lock contention."""
+        rc, result, _ = self._run(
+            returncode=2,
+            canonical=unvalidated_status,
+            write_log=lambda log, sha: log.write_text(
+                "validate-lock: ACQUIRED by owner-checkout-watch running validate "
+                f"{sha} (lease 1200s)\n"
+                "REFUSED: producer setup failed after acquisition\n"
+                "# ci-hub/validate-lock tool COST ACTUAL wall=5.2s exit=3\n",
+                encoding="utf-8",
+            ),
+        )
+
+        self.assertEqual(rc, watch.FAIL)
+        self.assertEqual(result["state"], "FAIL")
+        self.assertIsNone(result.get("lock_block_evidence"))
+        self.assertIn("make validate exit=2", result["reason"])
+
     def test_a_real_failing_node_is_still_fail(self) -> None:
         """A genuine product failure keeps reporting FAIL, counts and all."""
         rc, result, _ = self._run(
@@ -715,6 +757,32 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             self.assertEqual(evidence["anchor_identity"]["start_ticks"], 456)
             self.assertEqual(evidence["anchor_identity"]["boot_id"], "boot-fixture")
             self.assertEqual(evidence["anchor_identity"]["record"], str(record))
+
+    def test_declared_priority_queue_refusal_is_lock_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text(
+                "validate-lock: waiting in declared-priority queue; live holder retained\n"
+                "REFUSED: declared-priority queue did not grant "
+                "agent=owner-checkout-watch target=" + ("d" * 40) + " within 3s\n"
+                "# ci-hub/validate-lock tool COST ACTUAL exit=3\n"
+            )
+            evidence = watch.lock_block_evidence(log)
+            self.assertIsNotNone(evidence)
+            self.assertEqual(evidence["validate_lock_exit"], 3)
+            self.assertIn("declared-priority queue", evidence["refusal_line"])
+
+    def test_direct_refusal_after_acquisition_is_not_called_lock_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            target = "d" * 40
+            log.write_text(
+                "validate-lock: ACQUIRED by owner-checkout-watch running validate "
+                f"{target} (lease 1200s)\n"
+                "REFUSED: producer setup failed after acquisition\n"
+                "# ci-hub/validate-lock tool COST ACTUAL exit=3\n"
+            )
+            self.assertIsNone(watch.lock_block_evidence(log))
 
     def test_acquired_marker_binds_agent_kind_and_exact_target(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
