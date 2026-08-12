@@ -44,11 +44,13 @@ Usage:
   unevaluated_head.py --repo rrnewton/hermit [--limit N] [--gate] [--json]
   unevaluated_head.py --from-json FIXTURE [--gate]   # offline, for the bracket
 
---gate exits 1 when any inspected head carries NO VERDICT -- NEVER_RAN,
-SUPERSEDED, CANCELLED_UNVERIFIED, or a PENDING past the stale window. It is
-deliberately silent about EVALUATED_FAIL (a red gate is another check's job) and
-about a FRESH pending (alarming on every push is an alarm no coordinator can
-satisfy).
+--gate exits 1 when any inspected head carries an actionable NO VERDICT --
+NEVER_RAN, SUPERSEDED, CANCELLED_UNVERIFIED, or a PENDING past the stale window.
+When GitHub Actions are deactivated by a standing owner directive, NEVER_RAN is
+reported as expected rather than actionable. It is still not a pass or failure.
+The gate is deliberately silent about EVALUATED_FAIL (a red gate is another
+check's job) and about a FRESH pending (alarming on every push is an alarm no
+coordinator can satisfy).
 
 A CAUSE IS ONLY EVER STATED AS FACT WHEN IT WAS OBSERVED. `SUPERSEDED` requires
 a visible successor run; everything else cancelled is `CANCELLED_UNVERIFIED`
@@ -115,6 +117,11 @@ EVALUATED_PASS = "EVALUATED_PASS"
 EVALUATED_FAIL = "EVALUATED_FAIL"
 
 DEFAULT_PENDING_STALE_SECS = 900
+
+OWNER_DISABLED_ACTIONS = {
+    "rrnewton/hermit": "deactivate-gh-actions-on-hermit-main-and-dev-hermit-parent",
+    "rrnewton/dev-hermit": "deactivate-gh-actions-on-hermit-main-and-dev-hermit-parent",
+}
 
 # Conclusions that are a genuine negative VERDICT. `cancelled` is deliberately
 # NOT here: it is split by whether any job ran (see above).
@@ -200,13 +207,55 @@ def classify(
 
 
 def likely_reason(pr: dict[str, Any], state: str, stale: bool,
-                  ev: dict[str, Any] | None = None) -> str:
+                  ev: dict[str, Any] | None = None,
+                  actions_enabled: bool = True,
+                  actions_disabled_directive: str | None = None) -> str:
     """Named state -> cause -> remedy, with the CAUSE GRADED BY EVIDENCE.
 
     Shape copied from github_main_health's `stale-pending` emitter. The grading
     is the correction: a cause may only be stated as fact when it was observed.
     """
     ev = ev or {}
+    if not actions_enabled and state == NEVER_RAN:
+        if actions_disabled_directive:
+            explanation = (
+                "no run was created; GitHub Actions are deactivated by owner directive "
+                f"{actions_disabled_directive}, so NEVER_RAN is EXPECTED and is neither "
+                "a pass nor a failure"
+            )
+        else:
+            explanation = (
+                "no run was created and GitHub Actions are disabled, but no standing "
+                "owner directive was found to establish that this absence is expected"
+            )
+        if (pr.get("mergeable") or "").upper() == "CONFLICTING":
+            return (
+                explanation
+                + ". Independently, the PR conflicts with its base. "
+                "REMEDY: resolve the conflict"
+            )
+        return explanation
+
+    if not actions_enabled and state == SUPERSEDED:
+        return (
+            f"cancelled before any job started, and a successor run IS VISIBLE "
+            f"({ev.get('successor')}), so supersession is OBSERVED here rather than "
+            "inferred. GitHub Actions are currently deactivated; no Actions dispatch "
+            "is permitted"
+        )
+    if not actions_enabled and state == CANCELLED_UNVERIFIED:
+        return (
+            "the run was cancelled and produced no verdict, and THE CAUSE IS NOT "
+            f"ESTABLISHED ({ev.get('why_unverified')}). GitHub Actions are currently "
+            "deactivated; no Actions dispatch is permitted"
+        )
+    if not actions_enabled and state == PENDING and stale:
+        return (
+            "a run has not resolved within the stale window. GitHub Actions are "
+            "currently deactivated; inspect the exact run because no Actions dispatch "
+            "is permitted"
+        )
+
     if state == NEVER_RAN:
         if (pr.get("mergeable") or "").upper() == "CONFLICTING":
             return ("no run was ever created; the PR conflicts with its base so GitHub cannot "
@@ -239,6 +288,18 @@ def gh_json(args: list[str]) -> Any:
     if out.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args)} failed: {out.stderr.strip()[:300]}")
     return json.loads(out.stdout or "null")
+
+
+def actions_policy(repo: str) -> tuple[bool, str | None]:
+    """Read live Actions state; bind expected absence only to a known directive."""
+    payload = gh_json(["api", f"repos/{repo}/actions/permissions"]) or {}
+    enabled = payload.get("enabled")
+    if type(enabled) is not bool:
+        raise RuntimeError(
+            f"repos/{repo}/actions/permissions did not return a boolean enabled field"
+        )
+    directive = OWNER_DISABLED_ACTIONS.get(repo) if not enabled else None
+    return enabled, directive
 
 
 def canonical_head_sha(repo: str, pr: dict[str, Any]) -> str:
@@ -284,7 +345,11 @@ def exact_head_check_runs(repo: str, head: str) -> list[dict[str, Any]]:
     return checks
 
 
-def collect_live(repo: str, limit: int) -> list[dict[str, Any]]:
+def collect_live(repo: str, limit: int,
+                 actions_enabled: bool | None = None,
+                 actions_disabled_directive: str | None = None) -> list[dict[str, Any]]:
+    if actions_enabled is None:
+        actions_enabled, actions_disabled_directive = actions_policy(repo)
     prs = gh_json(
         [
             "pr", "list", "--repo", repo, "--state", "open", "--limit", str(limit),
@@ -329,6 +394,8 @@ def collect_live(repo: str, limit: int) -> list[dict[str, Any]]:
             "draft": pr.get("isDraft"),
             "run_count": len(runs),
             "check_run_count": len(check_runs),
+            "actions_enabled": actions_enabled,
+            "actions_disabled_directive": actions_disabled_directive,
         }
         def successor_of(run: dict[str, Any]):
             """Visible successor evidence: a LATER run of the SAME workflow on the
@@ -360,7 +427,9 @@ def collect_live(repo: str, limit: int) -> list[dict[str, Any]]:
                     "github_actions_check_runs": len(check_runs),
                 }
         row["state"], row["stale"], row["evidence"] = st, stale, ev
-        row["reason"] = likely_reason(pr, st, stale, ev)
+        row["reason"] = likely_reason(
+            pr, st, stale, ev, actions_enabled, actions_disabled_directive
+        )
         return row
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -373,8 +442,22 @@ def collect_live(repo: str, limit: int) -> list[dict[str, Any]]:
 
 def collect_fixture(path: str) -> list[dict[str, Any]]:
     data = json.load(open(path))
+    if isinstance(data, list):
+        prs = data
+        actions_enabled = True
+        actions_disabled_directive = None
+    elif isinstance(data, dict):
+        prs = data.get("prs")
+        actions_enabled = data.get("actions_enabled")
+        actions_disabled_directive = data.get("actions_disabled_directive")
+        if not isinstance(prs, list) or type(actions_enabled) is not bool:
+            raise RuntimeError(
+                "fixture object requires prs list and boolean actions_enabled"
+            )
+    else:
+        raise RuntimeError("fixture must be a PR list or a repository-state object")
     rows = []
-    for pr in data:
+    for pr in prs:
         runs = pr.get("runs", [])
         row = {
             "number": pr["number"],
@@ -382,11 +465,15 @@ def collect_fixture(path: str) -> list[dict[str, Any]]:
             "mergeable": pr.get("mergeable"),
             "draft": pr.get("draft", False),
             "run_count": len(runs),
+            "actions_enabled": actions_enabled,
+            "actions_disabled_directive": actions_disabled_directive,
         }
         st, stale, ev = classify(runs, now=pr.get("now"), jobs_of=pr.get("jobs_of"),
                                  successor_of=pr.get("successor_of"))
         row["state"], row["stale"], row["evidence"] = st, stale, ev
-        row["reason"] = likely_reason(pr, st, stale, ev)
+        row["reason"] = likely_reason(
+            pr, st, stale, ev, actions_enabled, actions_disabled_directive
+        )
         rows.append(row)
     return rows
 
@@ -401,53 +488,92 @@ def main() -> int:
     a = ap.parse_args()
 
     rows = collect_fixture(a.fixture) if a.fixture else collect_live(a.repo, a.limit)
-    # HOLES: no verdict exists. A fresh PENDING is deliberately NOT a hole --
+    # NO VERDICT: a fresh PENDING is deliberately excluded --
     # alarming on it fires after every push and is an alarm no coordinator can
     # satisfy. EVALUATED_FAIL is deliberately not here either: a red gate is a
     # RESULT and another check's job.
-    holes = [r for r in rows
-             if r["state"] in (NEVER_RAN, SUPERSEDED, CANCELLED_UNVERIFIED)
-             or (r["state"] == PENDING and r.get("stale"))]
-    unevaluated = holes
+    no_verdict = [r for r in rows
+                  if r["state"] in (NEVER_RAN, SUPERSEDED, CANCELLED_UNVERIFIED)
+                  or (r["state"] == PENDING and r.get("stale"))]
+    expected_no_verdict = [
+        r for r in no_verdict
+        if (r["state"] == NEVER_RAN
+            and r.get("actions_enabled") is False
+            and r.get("actions_disabled_directive"))
+    ]
+    holes = [r for r in no_verdict if r not in expected_no_verdict]
+    unevaluated = no_verdict
 
     # tick-hub capture consumes key=value fields. Keep the human table below,
     # but also give the scheduled emitter a fully rendered one-line summary so
     # a finding can never degrade into a literal ``{summary}`` placeholder.
-    hole_prs = ",".join(f"#{r['number']}" for r in holes[:8]) or "none"
-    tick_summary = (
-        f"{len(holes)}/{len(rows)} inspected open PR heads carry NO VERDICT; "
-        f"affected={hole_prs}; this is a hole, not green; remedy: dispatch the "
-        "authority at each current head and resolve base conflicts where named"
-    )
+    affected_prs = ",".join(f"#{r['number']}" for r in no_verdict[:8]) or "none"
+    if holes:
+        remedies = []
+        if any(r.get("actions_enabled") is True for r in holes):
+            remedies.append("dispatch the authority only where Actions are enabled")
+        if any((r.get("mergeable") or "").upper() == "CONFLICTING" for r in holes):
+            remedies.append("resolve base conflicts where named")
+        if any(r.get("actions_enabled") is False for r in holes):
+            remedies.append(
+                "inspect the unresolved run or verify why Actions are disabled; no "
+                "Actions dispatch is permitted while disabled"
+            )
+        tick_summary = (
+            f"{len(no_verdict)}/{len(rows)} inspected open PR heads carry NO VERDICT; "
+            f"affected={affected_prs}; actionable holes={len(holes)}; "
+            f"expected under owner directive={len(expected_no_verdict)}; this is a "
+            f"hole, not green; remedy: {'; '.join(remedies)}"
+        )
+    elif expected_no_verdict:
+        tick_summary = (
+            f"{len(no_verdict)}/{len(rows)} inspected open PR heads carry NO VERDICT; "
+            f"affected={affected_prs}; NEVER_RAN is expected because GitHub Actions "
+            "are deactivated by owner directive; no Actions dispatch is permitted; "
+            "absence is neither pass nor failure"
+        )
+    else:
+        tick_summary = (
+            f"0/{len(rows)} inspected open PR heads carry NO VERDICT; affected=none; "
+            "every inspected head carries a verdict"
+        )
 
     if a.as_json:
         print(json.dumps({"inspected": len(rows), "not_evaluated": len(unevaluated),
+                          "actionable_not_evaluated": len(holes),
+                          "expected_not_evaluated": len(expected_no_verdict),
                           "rows": rows}, indent=2))
     else:
         # Both terms, always: a bare count of unevaluated heads is not a
         # measurement without the population it came from.
         import collections as _c
         tally = _c.Counter(r["state"] for r in rows)
-        print(f"inspected {len(rows)} open PR head(s); NO VERDICT: {len(holes)}  "
+        print(f"inspected {len(rows)} open PR head(s); NO VERDICT: {len(no_verdict)}  "
               + "  ".join(f"{k}={v}" for k, v in sorted(tally.items())))
         for r in rows:
-            if r in holes:
-                label = r["state"] + ("(stale)" if r.get("stale") else "")
+            if r in no_verdict:
+                if r in expected_no_verdict:
+                    label = r["state"] + "(expected)"
+                else:
+                    label = r["state"] + ("(stale)" if r.get("stale") else "")
                 print(
                     f"  {label:<16} PR {r['number']}  head {r['head'][:12]}  "
                     f"runs={r['run_count']}  checks={r.get('check_run_count', 0)}  "
                     f"mergeable={r['mergeable']}  -- {r['reason']}"
                 )
-        if not holes:
+        if not no_verdict:
             print("  every inspected head carries a verdict")
 
         if a.gate:
-            print(f"state={'hole' if holes else 'ok'}")
+            state = "hole" if holes else ("expected" if expected_no_verdict else "ok")
+            print(f"state={state}")
             print(f"inspected={len(rows)}")
-            print(f"not_evaluated={len(holes)}")
+            print(f"not_evaluated={len(no_verdict)}")
+            print(f"actionable_not_evaluated={len(holes)}")
+            print(f"expected_not_evaluated={len(expected_no_verdict)}")
             print(f"summary={tick_summary}")
 
-    if a.gate and unevaluated:
+    if a.gate and holes:
         print(
             f"GATE FAIL: {len(holes)} of {len(rows)} open PR head(s) carry NO VERDICT "
             "(never ran, superseded, or pending past the stale window). None of these is "

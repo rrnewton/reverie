@@ -77,6 +77,58 @@ r_ver = uh.likely_reason({"mergeable": "MERGEABLE"}, st2, stale2, ev2)
 cases.append(("OBSERVED here rather than inferred" in r_ver and "run 999" in r_ver,
               "VERIFIED supersession names its successor evidence", r_ver[:60]))
 
+# --- owner directive awareness changes reporting, never the classifier -------
+DIRECTIVE = "deactivate-gh-actions-on-hermit-main-and-dev-hermit-parent"
+disabled_conflict = uh.likely_reason(
+    {"mergeable": "CONFLICTING"}, uh.NEVER_RAN, False,
+    actions_enabled=False, actions_disabled_directive=DIRECTIVE,
+)
+cases.append(("NEVER_RAN is EXPECTED" in disabled_conflict
+              and "REMEDY: resolve the conflict" in disabled_conflict
+              and "REMEDY: dispatch" not in disabled_conflict,
+              "Actions off: NEVER_RAN is expected, while conflict keeps its remedy",
+              disabled_conflict))
+disabled_mergeable = uh.likely_reason(
+    {"mergeable": "MERGEABLE"}, uh.NEVER_RAN, False,
+    actions_enabled=False, actions_disabled_directive=DIRECTIVE,
+)
+cases.append(("NEVER_RAN is EXPECTED" in disabled_mergeable
+              and "REMEDY:" not in disabled_mergeable,
+              "Actions off: mergeable NEVER_RAN emits no contradictory remedy",
+              disabled_mergeable))
+enabled_mergeable = uh.likely_reason(
+    {"mergeable": "MERGEABLE"}, uh.NEVER_RAN, False,
+    actions_enabled=True,
+)
+cases.append(("cause is NOT established" in enabled_mergeable
+              and "REMEDY: dispatch" in enabled_mergeable,
+              "Actions on: mergeable NEVER_RAN remains actionable",
+              enabled_mergeable))
+
+old_gh_json = uh.gh_json
+try:
+    uh.gh_json = lambda args: {"enabled": False}
+    disabled_policy = uh.actions_policy("rrnewton/hermit")
+    cases.append((disabled_policy == (False, DIRECTIVE),
+                  "live disabled permission binds to the standing directive",
+                  str(disabled_policy)))
+    disabled_without_directive = uh.actions_policy("rrnewton/reverie")
+    cases.append((disabled_without_directive == (False, None),
+                  "disabled permission without a named directive stays actionable",
+                  str(disabled_without_directive)))
+
+    uh.gh_json = lambda args: {}
+    try:
+        uh.actions_policy("rrnewton/hermit")
+        permission_failed_closed = False
+    except RuntimeError:
+        permission_failed_closed = True
+    cases.append((permission_failed_closed,
+                  "missing live permission cannot be treated as Actions off",
+                  str(permission_failed_closed)))
+finally:
+    uh.gh_json = old_gh_json
+
 # --- live-reader brackets: absence requires TWO exact-head readers ------------
 FULL = "348a8b686262f6cb4aa4dc70c6a5e4613eb90361"
 
@@ -84,7 +136,7 @@ def collect_with(fake):
     old = uh.gh_json
     uh.gh_json = fake
     try:
-        return uh.collect_live("rrnewton/hermit", 1)[0]
+        return uh.collect_live("rrnewton/hermit", 1, actions_enabled=True)[0]
     finally:
         uh.gh_json = old
 

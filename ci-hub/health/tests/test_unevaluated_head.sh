@@ -48,6 +48,42 @@ grep -q "cannot build refs/pull" <<<"$out" && ok "states the known cause (confli
 grep -q "^summary=1/1 inspected open PR heads carry NO VERDICT; affected=#1864;" <<<"$out" \
   && ok "gate emits a concrete scheduled-tick summary" \
   || bad "scheduled-tick summary missing or unrendered: $out"
+grep -q "^state=hole$" <<<"$out" && grep -q "this is a hole, not green" <<<"$out" \
+  && ok "Actions-on NEVER_RAN remains an actionable hole" \
+  || bad "Actions-on NEVER_RAN was weakened: $out"
+grep -q "REMEDY:.*dispatch\|remedy:.*dispatch" <<<"$out" \
+  && ok "Actions-on NEVER_RAN retains its dispatch remedy" \
+  || bad "Actions-on NEVER_RAN lost its dispatch remedy: $out"
+
+# --- DIRECTIVE-AWARE: Actions off makes NEVER_RAN expected, never green ------
+cat >"$tmp/disabled.json" <<'JSON'
+{"actions_enabled": false,
+ "actions_disabled_directive": "deactivate-gh-actions-on-hermit-main-and-dev-hermit-parent",
+ "prs": [
+   {"number": 2108, "head": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "mergeable": "CONFLICTING", "runs": []},
+   {"number": 2110, "head": "ffffffffffffffffffffffffffffffffffffffff",
+    "mergeable": "MERGEABLE", "runs": []}
+ ]}
+JSON
+out="$(python3 "$tool" --from-json "$tmp/disabled.json" --gate 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]]; then ok "Actions-off NEVER_RAN is expected (rc=0)"; else bad "Actions-off NEVER_RAN expected rc=0, got $rc: $out"; fi
+grep -qE "^  NEVER_RAN\(expected\) +PR 2108" <<<"$out" \
+  && grep -qE "^  NEVER_RAN\(expected\) +PR 2110" <<<"$out" \
+  && ok "Actions-off no-run heads are explicitly reported EXPECTED" \
+  || bad "Actions-off no-run heads were not reported expected: $out"
+grep -q "REMEDY: resolve the conflict" <<<"$out" \
+  && ok "Actions-off CONFLICTING retains the real conflict remedy" \
+  || bad "Actions-off CONFLICTING lost its remedy: $out"
+grep -q "REMEDY: dispatch" <<<"$out" \
+  && bad "Actions-off output emitted the forbidden dispatch remedy: $out" \
+  || ok "Actions-off output emits no dispatch remedy"
+grep -q "^state=expected$" <<<"$out" \
+  && grep -q "^not_evaluated=2$" <<<"$out" \
+  && grep -q "^actionable_not_evaluated=0$" <<<"$out" \
+  && grep -q "^expected_not_evaluated=2$" <<<"$out" \
+  && ok "expected absence remains counted and is not presented as green" \
+  || bad "Actions-off counts collapsed absence into green or a hole: $out"
 
 # --- NEGATIVE 1: a genuinely passing head MUST NOT be flagged ----------------
 cat >"$tmp/pass.json" <<'JSON'
