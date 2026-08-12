@@ -107,6 +107,26 @@ class BoundedGateBracket(unittest.TestCase):
 
 
 class ProductionWiring(unittest.TestCase):
+    def test_activation_obligations_are_registered_without_age_out(self) -> None:
+        config = config_from_yaml(CONFIG.read_text(encoding="utf-8"))
+        reminder = {item.name: item for item in config.reminders}[
+            "activation_obligations"
+        ]
+        self.assertIsNotNone(reminder.gate)
+        assert reminder.gate is not None
+        self.assertEqual(
+            reminder.gate.cmd,
+            "python3 scripts/ci-hub-clone-change.py activation-obligations "
+            "--primary /home/newton/work/dev-hermit",
+        )
+        self.assertTrue(reminder.gate.capture)
+        self.assertNotIn("--max-age", reminder.gate.cmd)
+        self.assertNotIn("--older-than", reminder.gate.cmd)
+        self.assertEqual(
+            reminder.emit.fields["summary"],
+            "NO-SIGNAL gate=activation_obligations reason=missing-captured-summary",
+        )
+
     def test_both_slow_gates_have_inner_and_outer_bounds(self) -> None:
         config = config_from_yaml(CONFIG.read_text(encoding="utf-8"))
         reminders = {item.name: item for item in config.reminders}

@@ -48,9 +48,21 @@ class Fixture(unittest.TestCase):
         (self.seed / "scripts/parent-main-write").write_text(
             "#!/bin/sh\n"
             "set -eu\n"
-            "test \"$1\" = sync\n"
-            "git fetch origin main\n"
-            "git merge --ff-only origin/main\n"
+            "case \"$1\" in\n"
+            "  publish)\n"
+            "    if [ \"${FIXTURE_REFUSE_BEFORE_PUSH:-0}\" = 1 ]; then\n"
+            "      echo 'fixture refused before push' >&2\n"
+            "      exit 17\n"
+            "    fi\n"
+            "    git push origin \"${2:-HEAD}:main\"\n"
+            "    if [ \"${FIXTURE_REFUSE_AFTER_PUSH:-0}\" = 1 ]; then\n"
+            "      echo 'fixture refused after push' >&2\n"
+            "      exit 18\n"
+            "    fi\n"
+            "    ;;\n"
+            "  sync) git fetch origin main && git merge --ff-only origin/main ;;\n"
+            "  *) exit 64 ;;\n"
+            "esac\n"
         )
         (self.seed / "scripts/parent-main-write").chmod(0o755)
         git(
@@ -121,6 +133,63 @@ class Fixture(unittest.TestCase):
         git(repo, "push", "origin", "HEAD:main")
         with self.assertRaisesRegex(TOOL.Refusal, "sealed base is stale"):
             TOOL.verified_seal(repo, require_unpublished_base=True)
+
+    def test_publish_refusal_before_push_cancels_obligation(self) -> None:
+        repo = self.clone()
+        candidate = self.commit(repo, "ci-hub/bin/tool", "candidate\n")
+        sealed = command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        self.assertEqual(sealed.returncode, 0, sealed.stderr)
+        primary = self.root / "primary"
+        self.assertEqual(command("git", "clone", str(self.remote), str(primary)).returncode, 0)
+        store = self.root / "activation-obligations.jsonl"
+
+        refused = command(
+            "env",
+            "FIXTURE_REFUSE_BEFORE_PUSH=1",
+            str(SOURCE),
+            "publish",
+            "--clone",
+            str(repo),
+            "--primary",
+            str(primary),
+            "--store",
+            str(store),
+        )
+        self.assertEqual(refused.returncode, 2)
+        record = next(iter(TOOL.activation_latest(store).values()))
+        self.assertEqual(record["candidate"], candidate)
+        self.assertEqual(record["overall_state"], "cancelled")
+        self.assertEqual(record["activation"]["state"], "publication_refused")
+        self.assertEqual(record["event_type"], "publication_refused")
+
+    def test_publish_refusal_after_push_keeps_obligation_open(self) -> None:
+        repo = self.clone()
+        candidate = self.commit(repo, "ci-hub/bin/tool", "candidate\n")
+        sealed = command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        self.assertEqual(sealed.returncode, 0, sealed.stderr)
+        primary = self.root / "primary"
+        self.assertEqual(command("git", "clone", str(self.remote), str(primary)).returncode, 0)
+        store = self.root / "activation-obligations.jsonl"
+
+        refused = command(
+            "env",
+            "FIXTURE_REFUSE_AFTER_PUSH=1",
+            str(SOURCE),
+            "publish",
+            "--clone",
+            str(repo),
+            "--primary",
+            str(primary),
+            "--store",
+            str(store),
+        )
+        self.assertEqual(refused.returncode, 2)
+        git(repo, "fetch", "origin", "main")
+        self.assertEqual(git(repo, "rev-parse", "origin/main"), candidate)
+        record = next(iter(TOOL.activation_latest(store).values()))
+        self.assertEqual(record["overall_state"], "open")
+        self.assertEqual(record["activation"]["state"], "pending")
+        self.assertEqual(record["event_type"], "publication_confirmed_after_refusal")
 
     def test_negative_unclaimed_path_refuses(self) -> None:
         repo = self.clone()
@@ -224,6 +293,157 @@ class Fixture(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("current main to contain candidate", result.stderr)
+
+    def test_deferred_activation_remains_open_until_primary_contains_it(self) -> None:
+        """A correct refusal is durable, and later completion closes it."""
+        repo = self.clone()
+        candidate = self.commit(repo, "ci-hub/bin/tool", "candidate\n")
+        result = command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        primary = self.root / "primary"
+        self.assertEqual(command("git", "clone", str(self.remote), str(primary)).returncode, 0)
+        store = self.root / "activation-obligations.jsonl"
+
+        published = command(
+            str(SOURCE),
+            "publish",
+            "--clone",
+            str(repo),
+            "--primary",
+            str(primary),
+            "--store",
+            str(store),
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        records = TOOL.activation_latest(store)
+        self.assertEqual(len(records), 1)
+        opened = next(iter(records.values()))
+        self.assertEqual(opened["candidate"], candidate)
+        self.assertEqual(opened["overall_state"], "open")
+
+        # Model parent-main-write's correct dirty-tree refusal without weakening
+        # that separately-tested guard. The activation wrapper must retain it.
+        writer = primary / "scripts/parent-main-write"
+        writer.write_text(
+            "#!/bin/sh\n"
+            "echo 'parent-main-write: REFUSED: automatic sync refuses unrelated dirt' >&2\n"
+            "exit 1\n"
+        )
+        writer.chmod(0o755)
+        deferred = command(
+            str(SOURCE),
+            "activate",
+            "--clone",
+            str(repo),
+            "--primary",
+            str(primary),
+            "--store",
+            str(store),
+        )
+        self.assertEqual(deferred.returncode, 2)
+        retained = next(iter(TOOL.activation_latest(store).values()))
+        self.assertEqual(retained["overall_state"], "open")
+        self.assertEqual(retained["activation"]["state"], "deferred")
+        self.assertIn("automatic sync refuses unrelated dirt", retained["activation"]["last_reason"])
+
+        visible = command(
+            str(SOURCE),
+            "activation-obligations",
+            "--primary",
+            str(primary),
+            "--store",
+            str(store),
+        )
+        self.assertEqual(visible.returncode, 1)
+        self.assertIn("open=1", visible.stdout)
+        self.assertIn(candidate, visible.stdout)
+
+        # A coordinator later advances the primary through the authority. The
+        # watcher, not that particular process, proves completion and closes.
+        git(primary, "fetch", "origin", "main")
+        git(primary, "merge", "--ff-only", "origin/main")
+        closed = command(
+            str(SOURCE),
+            "activation-obligations",
+            "--primary",
+            str(primary),
+            "--store",
+            str(store),
+        )
+        self.assertEqual(closed.returncode, 0, closed.stderr)
+        self.assertIn("newly_satisfied=1", closed.stdout)
+        satisfied = next(iter(TOOL.activation_latest(store).values()))
+        self.assertEqual(satisfied["overall_state"], "satisfied")
+        self.assertEqual(satisfied["activation"]["activated_head"], candidate)
+
+    def test_watcher_does_not_close_over_dirty_candidate_path(self) -> None:
+        """Containment alone is not deployment while executing bytes differ."""
+        repo = self.clone()
+        candidate = self.commit(repo, "ci-hub/bin/tool", "candidate\n")
+        result = command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        primary = self.root / "primary"
+        self.assertEqual(command("git", "clone", str(self.remote), str(primary)).returncode, 0)
+        store = self.root / "activation-obligations.jsonl"
+        published = command(
+            str(SOURCE), "publish", "--clone", str(repo), "--primary", str(primary),
+            "--store", str(store),
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        git(primary, "fetch", "origin", "main")
+        git(primary, "merge", "--ff-only", "origin/main")
+        (primary / "ci-hub/bin/tool").write_text("different live bytes\n")
+
+        watched = command(
+            str(SOURCE), "activation-obligations", "--primary", str(primary),
+            "--store", str(store),
+        )
+        self.assertEqual(watched.returncode, 1)
+        self.assertIn("candidate paths differ", watched.stdout)
+        retained = next(iter(TOOL.activation_latest(store).values()))
+        self.assertEqual(retained["overall_state"], "open")
+
+    def test_old_deferred_obligation_does_not_age_out(self) -> None:
+        """Elapsed time cannot turn an unresolved deferral into completion."""
+        primary = self.root / "primary"
+        self.assertEqual(command("git", "clone", str(self.remote), str(primary)).returncode, 0)
+        store = self.root / "activation-obligations.jsonl"
+        original_utc_now = TOOL.utc_now
+        TOOL.utc_now = lambda: "2026-01-01T00:00:00Z"
+        try:
+            opened = TOOL.create_activation_obligation(
+                store=store,
+                task="old-deferred-activation",
+                candidate="f" * 40,
+                primary=primary.resolve(),
+                changed_paths=["scripts/ci-hub-clone-change.py"],
+                diff_sha256="0" * 64,
+            )
+            TOOL.transition_activation_obligation(
+                store,
+                opened["obligation_id"],
+                "activation_deferred",
+                {
+                    "activation": {
+                        "state": "deferred",
+                        "attempts": 1,
+                        "last_attempt_at": "2026-01-01T00:00:00Z",
+                        "last_reason": "legitimate unrelated dirt blocks fast-forward",
+                    }
+                },
+            )
+        finally:
+            TOOL.utc_now = original_utc_now
+
+        watched = command(
+            str(SOURCE), "activation-obligations", "--primary", str(primary),
+            "--store", str(store),
+        )
+        self.assertEqual(watched.returncode, 1)
+        self.assertIn("open=1", watched.stdout)
+        retained = next(iter(TOOL.activation_latest(store).values()))
+        self.assertEqual(retained["opened_at"], "2026-01-01T00:00:00Z")
+        self.assertEqual(retained["overall_state"], "open")
 
 
 if __name__ == "__main__":
