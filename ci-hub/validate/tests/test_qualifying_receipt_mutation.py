@@ -172,6 +172,61 @@ def _zero_exec_row(sha: str) -> dict:
     return row
 
 
+def _schema6_cell_row(sha: str, state: str) -> dict:
+    """A schema-6 row with exactly one identified cell and one closed verdict."""
+    row = _green_row(sha)
+    row["schema_version"] = 6
+    row["record_id"] = "schema6-test"
+    row["run_id"] = "schema6-test"
+    identity = {
+        "lane": "strict",
+        "category": "record-replay",
+        "test": "hello",
+        "mode": "verify",
+        "backend": "ptrace",
+    }
+    if state in {"performs-no-comparison-by-design", "unavailable-with-reason"}:
+        verdict = {
+            "state": state,
+            "comparison_tier": "unqualified-no-comparison",
+            "reason": "exit-status gate" if state.startswith("performs") else "raw no_result: comparator output absent",
+        }
+    else:
+        verdict = {
+            "state": state,
+            "comparison_tier": "full-stdout-info-stack-heap",
+            "comparison": {
+                "strictness": "canonical",
+                "compare_logs": True,
+                "log_scope": "full_trace",
+                "strip_lines": False,
+                "canonicalize_addresses": True,
+                "full_trace": True,
+                "exact_remainder": True,
+                "stripped_prefixes": [],
+                "canonicalizations": [],
+                "ignore_lines": False,
+                "skip_commit": False,
+                "skip_detlog": False,
+            },
+            "bitwise_parity": state == "compared-and-matched",
+            "compared_log_messages": {"left": 1, "right": 1},
+        }
+    selected = [identity]
+    row["cell_results"] = {
+        "run_id": "schema6-test",
+        "hermit_sha": sha,
+        "source_tree_dirty": False,
+        "selected_count": 1,
+        "recorded_count": 1,
+        "population_sha256": qualifying_receipt.cell_population_sha256(selected),
+        "artifact": {"path": "target/cells.jsonl", "sha256": "0" * 64, "row_count": 1},
+        "selected": selected,
+        "cells": [{**identity, "cell_verdict": verdict}],
+    }
+    return row
+
+
 def _missing_coverage_list_row(sha: str, field: str) -> dict:
     """A schema-5 row that omits one condition rather than reporting []."""
     row = _green_row(sha)
@@ -865,6 +920,104 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                     any(panel.values()),
                     f"explicit-null {field} must be refused everywhere: {panel}",
                 )
+
+    def test_cell_verdict_is_exactly_the_four_closed_states(self) -> None:
+        predicate = qualifying_receipt.active()
+        for state in (
+            "compared-and-matched",
+            "compared-and-diverged",
+            "performs-no-comparison-by-design",
+            "unavailable-with-reason",
+        ):
+            with self.subTest(state=state):
+                self.assertIs(
+                    qualifying_receipt.cell_results_verdict(
+                        _schema6_cell_row(SHA, state), predicate
+                    ),
+                    qualifying_receipt.CellResultsVerdict.SATISFIED,
+                )
+
+    def test_raw_no_result_is_cause_evidence_not_a_fifth_verdict(self) -> None:
+        row = _schema6_cell_row(SHA, "unavailable-with-reason")
+        row["cell_results"]["cells"][0]["cell_verdict"]["state"] = "no_result"
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(
+                row, qualifying_receipt.active()
+            ),
+            qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+        )
+
+    def test_compared_verdict_requires_nullable_log_count_key(self) -> None:
+        row = _schema6_cell_row(SHA, "compared-and-matched")
+        del row["cell_results"]["cells"][0]["cell_verdict"]["compared_log_messages"]
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(
+                row, qualifying_receipt.active()
+            ),
+            qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+        )
+
+    def test_week_one_cell_evidence_projects_to_scorecard_without_exit_defaults(self) -> None:
+        predicate = qualifying_receipt.active()
+        expected = {
+            "compared-and-matched": True,
+            "compared-and-diverged": False,
+            "performs-no-comparison-by-design": False,
+            "unavailable-with-reason": False,
+        }
+        for state, green in expected.items():
+            with self.subTest(state=state):
+                row = _schema6_cell_row(SHA, state)
+                projection = qualifying_receipt.cell_scorecard_projection(row, predicate)
+                self.assertTrue(projection["eligible"])
+                self.assertIs(projection["cell_results_satisfied"], True)
+                self.assertEqual(projection["cells"][0]["state"], state)
+                self.assertIs(projection["cells"][0]["scorecard_green"], green)
+                self.assertEqual(projection["green_count"], int(green))
+
+        unqualified = _schema6_cell_row(SHA, "compared-and-matched")
+        unqualified["cell_results"]["cells"][0]["cell_verdict"][
+            "comparison_tier"
+        ] = "unqualified-self-verify-only"
+        projection = qualifying_receipt.cell_scorecard_projection(unqualified, predicate)
+        self.assertTrue(projection["eligible"])
+        self.assertFalse(projection["cells"][0]["scorecard_green"])
+
+        missing = _schema6_cell_row(SHA, "compared-and-matched")
+        missing["exit_code"] = 0
+        del missing["cell_results"]["cells"][0]["cell_verdict"]
+        projection = qualifying_receipt.cell_scorecard_projection(missing, predicate)
+        self.assertFalse(projection["eligible"])
+        self.assertIs(projection["cell_results_satisfied"], False)
+        self.assertIsNone(projection["cells"])
+
+    def test_grandfathered_whole_run_never_satisfies_a_scorecard_cell(self) -> None:
+        legacy = _green_row(SHA)
+        proc = subprocess.run(
+            [sys.executable, str(CI_HUB / "qualifying_receipt.py"), "--sha", SHA, "--json"],
+            input=json.dumps(legacy),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        report = json.loads(proc.stdout)
+        self.assertTrue(report["accepted"])
+        self.assertIsNone(report["cell_results_satisfied"])
+        projection = report["cell_scorecard"]
+        self.assertFalse(projection["eligible"])
+        self.assertIsNone(projection["cell_results_satisfied"])
+        self.assertEqual(projection["status"], "grandfathered-unknown")
+        self.assertIsNone(projection["green_count"])
+        self.assertIsNone(projection["cells"])
+
+        genuine = qualifying_receipt.cell_scorecard_projection(
+            _schema6_cell_row(SHA, "compared-and-matched"),
+            qualifying_receipt.active(),
+        )
+        self.assertTrue(genuine["eligible"])
+        self.assertIs(genuine["cell_results_satisfied"], True)
+        self.assertTrue(genuine["cells"][0]["scorecard_green"])
 
 
 if __name__ == "__main__":

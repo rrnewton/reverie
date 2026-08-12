@@ -185,6 +185,58 @@ def test_realistic_run_executed_positive():
     assert _satisfied(row["coverage"])
 
 
+def test_schema6_clone_preserves_cell_results_without_downgrade():
+    selected = [{
+        "lane": "strict",
+        "category": "record-replay",
+        "test": "hello",
+        "mode": "verify",
+        "backend": "ptrace",
+    }]
+    cells = {
+        "run_id": "run-1",
+        "hermit_sha": "a" * 40,
+        "source_tree_dirty": False,
+        "selected_count": 1,
+        "recorded_count": 1,
+        "population_sha256": fr.qualifying_receipt.cell_population_sha256(selected),
+        "artifact": {"path": "ignored/validate/artifacts/run-1/e2e-results.jsonl", "sha256": "c" * 64, "row_count": 1},
+        "selected": selected,
+        "cells": [{
+            "lane": "strict", "category": "record-replay", "test": "hello", "mode": "verify", "backend": "ptrace",
+            "cell_verdict": {"state": "unavailable-with-reason", "comparison_tier": "unqualified-no-comparison", "reason": "raw no_result"},
+        }],
+    }
+    base = {
+        "schema_version": 6,
+        "record_id": "source-row",
+        "run_id": "run-1",
+        "commit": "a" * 40,
+        "producer": "hermit-validate-rs",
+        "cell_results": cells,
+    }
+    encoded = json.dumps(cells, sort_keys=True, separators=(",", ":"))
+
+    clone = fr._clone_upgraded(
+        base,
+        {
+            "schema_version": 5,
+            "executed_tests": 1,
+            "filtered_tests": 0,
+            "coverage": {"planned_test_nodes": 1, "executed_test_nodes": 1, "zero_executed_nodes": [], "absent_nodes": []},
+        },
+        "d" * 64,
+    )
+
+    assert clone["schema_version"] == 6
+    assert clone["record_id"] != base["record_id"]
+    assert clone["run_id"] == base["run_id"] == cells["run_id"]
+    assert json.dumps(clone["cell_results"], sort_keys=True, separators=(",", ":")) == encoded
+    assert fr.qualifying_receipt.cell_results_verdict(
+        clone, fr.qualifying_receipt.active()
+    ) is fr.qualifying_receipt.CellResultsVerdict.SATISFIED
+
+
 def test_writer_records_exact_base_and_reverie_tree(tmp_path):
     env = {
         **os.environ,

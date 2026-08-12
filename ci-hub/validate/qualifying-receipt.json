@@ -20,6 +20,10 @@
     "applies_at_schema_min": 5,
     "per_node": true
   },
+  "_cell_results_are_closed_typed_evidence": "Schema-6+ receipts require a stable top-level row.run_id, bind cell_results.run_id to it, bind the exact selected cell population, and bind a parent-root-relative retained results artifact strictly below ignored/validate/artifacts/. record_id is an event identity and may change when finalization creates a correction; run_id and cell_results remain unchanged. Checkout-local artifacts are refused because production removes the fresh validation checkout. Every selected cell carries exactly one of compared-and-matched, compared-and-diverged, performs-no-comparison-by-design, or unavailable-with-reason. Process exit never supplies a default. Historical schema-5 rows remain readable but make no per-cell comparison claim and retain their existing record_id-derived event run identity.",
+  "cell_results": {
+    "applies_at_schema_min": 6
+  },
   "_base_evidence_is_load_bearing": "Schema-5+ receipts carry the exact Hermit main base they contain, that base's tree, and the exact pinned Reverie SHA and tree. Mutable-tip currency and actual Hermit containment are asserted once by this same semantic authority at the final merge boundary. Schema-4 remains grandfathered-unknown; ancestry-within-a-budget is deliberately unsupported. Build-subtree reuse is deliberately absent: review measured only 1/48 landed pin transitions reusable, while sound guards would require tracing arbitrary build-script filesystem access.",
   "base": {
     "applies_at_schema_min": 5,

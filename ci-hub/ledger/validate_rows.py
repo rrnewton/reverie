@@ -20,12 +20,17 @@ import json
 import os
 import hashlib
 import socket
+import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable
 
 from ledger import read_shard, union_events, validate_event
 from publisher import retained, spool, spooled
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import qualifying_receipt  # noqa: E402
+
 WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
 HOME_TOKEN = "{{HOME}}"
 LIVE_SPOOL_RELATIVE = Path("ignored/ci-hub/validate-ledger-spool")
@@ -139,11 +144,127 @@ def _ledger_team(repo: object) -> str:
     return value
 
 
+def _require_local_commit(row: dict) -> Path:
+    """Refuse before classification unless ``commit`` is real in ``cwd``.
+
+    A syntactically plausible SHA is not authority. In particular, an object
+    from a different repository must not acquire a verdict merely because Git
+    can resolve it somewhere else on the machine.
+    """
+    commit = row.get("commit")
+    checkout_value = row.get("cwd")
+    if not (
+        isinstance(commit, str)
+        and len(commit) == 40
+        and commit == commit.lower()
+        and all(character in "0123456789abcdef" for character in commit)
+    ):
+        raise ValueError("validation row commit is not an exact lowercase SHA")
+    if not isinstance(checkout_value, str) or not checkout_value:
+        raise ValueError("validation row has no checkout cwd")
+    checkout = Path(checkout_value).resolve()
+    if not checkout.is_dir():
+        raise ValueError(f"validation row checkout does not exist: {checkout}")
+    git_env = {
+        name: value for name, value in os.environ.items() if not name.startswith("GIT_")
+    }
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    git_env["GIT_CONFIG_GLOBAL"] = os.devnull
+    try:
+        resolved = subprocess.run(
+            ["git", "--no-replace-objects", "-C", str(checkout), "cat-file", "-t", commit],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=git_env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f"cannot resolve validation row commit in row.cwd: {error}") from error
+    if resolved.returncode != 0 or resolved.stdout.strip() != "commit":
+        raise ValueError("validation row commit is not a commit object in row.cwd")
+    return checkout
+
+
+def _artifact_path(root: Path, value: object) -> Path:
+    if not isinstance(value, str) or not value or Path(value).is_absolute():
+        raise ValueError("cell_results artifact path must be parent-root-relative")
+    retained_root = (root / "ignored" / "validate" / "artifacts").resolve()
+    artifact = (root / value).resolve()
+    try:
+        artifact.relative_to(retained_root)
+    except ValueError as error:
+        raise ValueError(
+            "cell_results artifact is not in retained ignored/validate/artifacts"
+        ) from error
+    if not artifact.is_file():
+        raise ValueError("cell_results artifact is not a retained regular file")
+    return artifact
+
+
+def _artifact_cell(record: dict) -> dict:
+    identity_keys = ("lane", "category", "test", "mode", "backend")
+    expected = {"run_id", "hermit_sha", "source_tree_dirty", *identity_keys, "cell_verdict"}
+    if set(record) != expected:
+        raise ValueError("cell_results artifact row has missing or unknown keys")
+    return {**{key: record[key] for key in identity_keys}, "cell_verdict": record["cell_verdict"]}
+
+
+def _require_cell_results(row: dict, root: Path) -> None:
+    """Bind schema-6 summary evidence to its retained per-cell artifact."""
+    predicate = qualifying_receipt.active()
+    verdict = qualifying_receipt.cell_results_verdict(row, predicate)
+    if verdict is qualifying_receipt.CellResultsVerdict.GRANDFATHERED_UNKNOWN:
+        return
+    if verdict is not qualifying_receipt.CellResultsVerdict.SATISFIED:
+        raise ValueError(f"cell_results {verdict.value}")
+
+    evidence = row["cell_results"]
+    artifact_spec = evidence["artifact"]
+    artifact = _artifact_path(root, artifact_spec["path"])
+    raw = artifact.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != artifact_spec["sha256"]:
+        raise ValueError("cell_results artifact sha256 mismatch")
+    if not raw or not raw.endswith(b"\n"):
+        raise ValueError("cell_results artifact is empty or has a truncated final line")
+    records: list[dict] = []
+    for number, line in enumerate(raw.splitlines(), 1):
+        try:
+            value = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"cell_results artifact line {number} is malformed") from error
+        if not isinstance(value, dict):
+            raise ValueError(f"cell_results artifact line {number} is not an object")
+        if value.get("run_id") != evidence["run_id"]:
+            raise ValueError("cell_results artifact run_id mismatch")
+        if value.get("hermit_sha") != row["commit"]:
+            raise ValueError("cell_results artifact hermit_sha mismatch")
+        if value.get("source_tree_dirty") is not False:
+            raise ValueError("cell_results artifact source_tree_dirty is not false")
+        records.append(_artifact_cell(value))
+    if len(records) != artifact_spec["row_count"]:
+        raise ValueError("cell_results artifact row_count mismatch")
+    sort_key = lambda cell: tuple(
+        cell[key] for key in ("lane", "category", "test", "mode", "backend")
+    )
+    if sorted(records, key=sort_key) != sorted(evidence["cells"], key=sort_key):
+        raise ValueError("cell_results artifact cells differ from receipt summary")
+
+
 def _event_for_row(row: dict, root: Path) -> dict:
     record_id = str(row.get("record_id") or "")
     if not record_id:
         body = json.dumps(row, sort_keys=True, separators=(",", ":")).encode()
         record_id = "legacy-row-" + hashlib.sha256(body).hexdigest()
+    schema = row.get("schema_version")
+    if isinstance(schema, int) and not isinstance(schema, bool) and schema >= 6:
+        run_id = row.get("run_id")
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValueError("schema-6 validation row has no stable run_id")
+    else:
+        # Historical rows predate the stable run identity. Preserve their
+        # existing one-event/one-run projection without manufacturing history.
+        run_id = record_id
     host = str(row.get("host") or short_hostname()).split(".", 1)[0]
     emitted_at = str(row.get("finished_at") or "")
     if len(emitted_at) < 7:
@@ -164,7 +285,7 @@ def _event_for_row(row: dict, root: Path) -> dict:
         "schema": "validate-ledger/v1",
         "event_id": record_id,
         "event_type": "run.result",
-        "run_id": record_id,
+        "run_id": run_id,
         "emitted_at": emitted_at,
         "team": team,
         "host": host,
@@ -194,6 +315,8 @@ def record(row: dict, *, root: Path | None = None) -> dict:
         raise ValueError(
             "acceptance fixture producer is not allowed in the production ledger"
         )
+    _require_local_commit(row)
+    _require_cell_results(row, root)
     event = _event_for_row(row, root)
     target = spool(live_spool_dir(root), event["team"], event["host"], [event])
     return {

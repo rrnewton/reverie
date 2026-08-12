@@ -196,6 +196,11 @@ pub struct DispatchAcknowledgement {
 pub struct HistoryRow {
     #[serde(default)]
     pub schema_version: Option<u32>,
+    /// Stable validation-run identity. Schema-6 rows require this separately
+    /// from `record_id`, because finalization mints a correction record while
+    /// preserving the run and its per-cell evidence.
+    #[serde(default)]
+    pub run_id: Option<String>,
     #[serde(default)]
     pub started_at: Option<String>,
     #[serde(default)]
@@ -287,6 +292,11 @@ pub struct HistoryRow {
     pub log_file: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+    /// Receipt-bound per-cell comparison evidence. Historical rows predate this
+    /// field and remain readable as `None`; schema-6 rows are required to carry
+    /// a complete value by the shared qualifying-receipt predicate.
+    #[serde(default)]
+    pub cell_results: Option<CellResultsEvidence>,
     #[serde(default)]
     pub gates: Vec<GateHistoryRow>,
     #[serde(flatten)]
@@ -361,6 +371,139 @@ pub struct GateHistoryRow {
     pub failed_substeps: Vec<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparisonStrictness {
+    Stripped,
+    Canonical,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparedLogScope {
+    Deterministic,
+    Info,
+    FullTrace,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ComparisonTier {
+    FullStdoutInfoStackHeap,
+    StdoutInfoStackHeapSpotCheck,
+    LegacyUnqualified,
+    UnqualifiedNoComparison,
+    UnqualifiedStdoutOnly,
+    UnqualifiedSelfVerifyOnly,
+    UnqualifiedToolCountOnly,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ComparisonSpec {
+    pub strictness: ComparisonStrictness,
+    pub compare_logs: bool,
+    pub log_scope: ComparedLogScope,
+    pub strip_lines: bool,
+    pub canonicalize_addresses: bool,
+    pub full_trace: bool,
+    pub exact_remainder: bool,
+    pub stripped_prefixes: Vec<String>,
+    pub canonicalizations: Vec<String>,
+    pub ignore_lines: bool,
+    pub skip_commit: bool,
+    pub skip_detlog: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ComparedLogCounts {
+    pub left: u64,
+    pub right: u64,
+}
+
+/// A required key whose JSON value may be null. A plain `Option<T>` would make
+/// an omitted key deserialize exactly like an explicit null, recreating the
+/// evidence collapse this schema exists to prevent.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum RequiredNullable<T> {
+    Null,
+    Value(T),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum CellVerdict {
+    ComparedAndMatched {
+        comparison_tier: ComparisonTier,
+        comparison: ComparisonSpec,
+        bitwise_parity: bool,
+        compared_log_messages: RequiredNullable<ComparedLogCounts>,
+    },
+    ComparedAndDiverged {
+        comparison_tier: ComparisonTier,
+        comparison: ComparisonSpec,
+        bitwise_parity: bool,
+        compared_log_messages: RequiredNullable<ComparedLogCounts>,
+    },
+    PerformsNoComparisonByDesign {
+        comparison_tier: ComparisonTier,
+        reason: String,
+    },
+    UnavailableWithReason {
+        comparison_tier: ComparisonTier,
+        reason: String,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(deny_unknown_fields)]
+pub struct CellIdentity {
+    pub lane: String,
+    pub category: String,
+    pub test: String,
+    pub mode: String,
+    pub backend: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CellResult {
+    pub lane: String,
+    pub category: String,
+    pub test: String,
+    pub mode: String,
+    pub backend: String,
+    pub cell_verdict: CellVerdict,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CellResultsArtifact {
+    /// Parent-root-relative JSONL path below `ignored/validate/artifacts/`.
+    /// The validation checkout is disposable; binding there would leave a
+    /// receipt whose evidence vanishes when the unit is removed.
+    pub path: String,
+    pub sha256: String,
+    pub row_count: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CellResultsEvidence {
+    pub run_id: String,
+    pub hermit_sha: String,
+    pub source_tree_dirty: bool,
+    pub selected_count: u64,
+    pub recorded_count: u64,
+    /// SHA-256 over canonical JSON of the sorted `selected` identities.
+    pub population_sha256: String,
+    pub artifact: CellResultsArtifact,
+    pub selected: Vec<CellIdentity>,
+    pub cells: Vec<CellResult>,
 }
 
 #[cfg(test)]
@@ -439,5 +582,74 @@ mod tests {
         assert_eq!(row.checks, Some(36));
         assert_eq!(row.real_seconds, Some(123.0));
         assert_eq!(row.user_seconds, None);
+    }
+
+    #[test]
+    fn cell_verdict_schema_keeps_all_four_states_distinct() {
+        let compared = r#"{
+            "state":"compared-and-matched",
+            "comparison_tier":"unqualified-self-verify-only",
+            "comparison":{
+                "strictness":"canonical","compare_logs":true,"log_scope":"info",
+                "strip_lines":false,"canonicalize_addresses":true,"full_trace":true,
+                "exact_remainder":true,"stripped_prefixes":["real-wall-clock-prefix/v1"],
+                "canonicalizations":["host-address-to-first-appearance-ordinal/v1"],
+                "ignore_lines":false,"skip_commit":false,"skip_detlog":false
+            },
+            "bitwise_parity":true,
+            "compared_log_messages":{"left":7,"right":7}
+        }"#;
+        assert!(matches!(
+            serde_json::from_str::<CellVerdict>(compared).unwrap(),
+            CellVerdict::ComparedAndMatched { .. }
+        ));
+        for (state, expected) in [
+            ("compared-and-diverged", "diverged"),
+            ("performs-no-comparison-by-design", "by-design"),
+            ("unavailable-with-reason", "unavailable"),
+        ] {
+            let value = if state == "compared-and-diverged" {
+                compared
+                    .replace("compared-and-matched", state)
+                    .replace("\"bitwise_parity\":true", "\"bitwise_parity\":false")
+            } else {
+                format!(
+                    r#"{{"state":"{state}","comparison_tier":"unqualified-no-comparison","reason":"fixture reason"}}"#
+                )
+            };
+            let verdict: CellVerdict = serde_json::from_str(&value).unwrap();
+            assert_eq!(
+                match verdict {
+                    CellVerdict::ComparedAndDiverged { .. } => "diverged",
+                    CellVerdict::PerformsNoComparisonByDesign { .. } => "by-design",
+                    CellVerdict::UnavailableWithReason { .. } => "unavailable",
+                    CellVerdict::ComparedAndMatched { .. } => "matched",
+                },
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn compared_log_messages_key_is_required_but_explicit_null_is_retained() {
+        let base = r#"{
+            "state":"compared-and-matched",
+            "comparison_tier":"unqualified-self-verify-only",
+            "comparison":{
+                "strictness":"stripped","compare_logs":false,"log_scope":"deterministic",
+                "strip_lines":true,"canonicalize_addresses":false,"full_trace":false,
+                "exact_remainder":false,"stripped_prefixes":[],"canonicalizations":[],
+                "ignore_lines":false,"skip_commit":false,"skip_detlog":false
+            },
+            "bitwise_parity":false,
+            "compared_log_messages":null
+        }"#;
+        assert!(serde_json::from_str::<CellVerdict>(base).is_ok());
+        let mut missing: serde_json::Value = serde_json::from_str(base).unwrap();
+        missing
+            .as_object_mut()
+            .unwrap()
+            .remove("compared_log_messages");
+        assert!(serde_json::from_value::<CellVerdict>(missing).is_err());
     }
 }

@@ -31,6 +31,7 @@ zero-execution floor. See the JSON `_completeness_is_coverage_not_count` note.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -355,7 +356,14 @@ def load() -> dict[str, Any]:
         raise RuntimeError(f"{path}: malformed qualifying predicate: {error}")
     # Fail loud if a required key is missing -- a partial predicate would let a
     # consumer become quietly more lenient than its peers.
-    for key in ("counts_schema", "require", "coverage", "base", "admission"):
+    for key in (
+        "counts_schema",
+        "require",
+        "coverage",
+        "cell_results",
+        "base",
+        "admission",
+    ):
         if key not in pred:
             raise RuntimeError(f"{path}: qualifying predicate missing key '{key}'")
     for key in (
@@ -372,6 +380,9 @@ def load() -> dict[str, Any]:
     for key in ("applies_at_schema_min", "per_node"):
         if key not in pred["coverage"]:
             raise RuntimeError(f"{path}: qualifying predicate missing coverage.{key}")
+    for key in ("applies_at_schema_min",):
+        if key not in pred["cell_results"]:
+            raise RuntimeError(f"{path}: qualifying predicate missing cell_results.{key}")
     for key in ("applies_at_schema_min", "branch"):
         if key not in pred["base"]:
             raise RuntimeError(f"{path}: qualifying predicate missing base.{key}")
@@ -499,6 +510,319 @@ def coverage_schema_accepted(verdict: CoverageSchemaVerdict) -> bool:
         CoverageSchemaVerdict.SATISFIED,
         CoverageSchemaVerdict.GRANDFATHERED_UNKNOWN,
     )
+
+
+class CellResultsVerdict(Enum):
+    """Typed outcome of the receipt-bound selected-cell evidence obligation."""
+
+    SATISFIED = "satisfied"
+    GRANDFATHERED_UNKNOWN = "grandfathered-unknown"
+    SCHEMA_UNAVAILABLE = "schema-unavailable"
+    POLICY_UNAVAILABLE = "policy-unavailable"
+    LEGACY_CLAIMS_CELL_RESULTS = "legacy-schema-claims-cell-results"
+    MISSING = "missing"
+    MALFORMED = "malformed"
+    EMPTY = "empty"
+    RUN_MISMATCH = "run-mismatch"
+    WRONG_SHA = "wrong-sha"
+    DIRTY_SOURCE = "dirty-source"
+    POPULATION_MISMATCH = "population-mismatch"
+    VERDICT_INVALID = "cell-verdict-invalid"
+
+
+_CELL_IDENTITY_KEYS = ("lane", "category", "test", "mode", "backend")
+_COMPARISON_KEYS = {
+    "strictness",
+    "compare_logs",
+    "log_scope",
+    "strip_lines",
+    "canonicalize_addresses",
+    "full_trace",
+    "exact_remainder",
+    "stripped_prefixes",
+    "canonicalizations",
+    "ignore_lines",
+    "skip_commit",
+    "skip_detlog",
+}
+_COMPARED_STATES = {"compared-and-matched", "compared-and-diverged"}
+_REASONED_STATES = {
+    "performs-no-comparison-by-design",
+    "unavailable-with-reason",
+}
+_KNOWN_COMPARISON_TIERS = {
+    "full-stdout-info-stack-heap",
+    "stdout-info-stack-heap-spot-check",
+    "legacy-unqualified",
+    "unqualified-no-comparison",
+    "unqualified-stdout-only",
+    "unqualified-self-verify-only",
+    "unqualified-tool-count-only",
+}
+
+
+def _nonblank(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _u64(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= U64_MAX
+
+
+def _sha256(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _cell_identity(value: Any) -> tuple[str, ...] | None:
+    if not isinstance(value, dict) or set(value) != set(_CELL_IDENTITY_KEYS):
+        return None
+    parts = tuple(value[key] for key in _CELL_IDENTITY_KEYS)
+    if not all(_nonblank(part) for part in parts):
+        return None
+    return parts
+
+
+def cell_population_sha256(selected: list[dict[str, Any]]) -> str:
+    """Digest the sorted selected identities using one canonical JSON shape."""
+    ordered = sorted(selected, key=lambda item: tuple(item[key] for key in _CELL_IDENTITY_KEYS))
+    body = json.dumps(ordered, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(body).hexdigest()
+
+
+def _comparison_spec_valid(value: Any) -> bool:
+    if not isinstance(value, dict) or set(value) != _COMPARISON_KEYS:
+        return False
+    if value["strictness"] not in {"canonical", "stripped"}:
+        return False
+    if value["log_scope"] not in {"deterministic", "info", "full_trace"}:
+        return False
+    for key in (
+        "compare_logs",
+        "strip_lines",
+        "canonicalize_addresses",
+        "full_trace",
+        "exact_remainder",
+        "ignore_lines",
+        "skip_commit",
+        "skip_detlog",
+    ):
+        if not isinstance(value[key], bool):
+            return False
+    for key in ("stripped_prefixes", "canonicalizations"):
+        if not isinstance(value[key], list) or not all(_nonblank(item) for item in value[key]):
+            return False
+    return True
+
+
+def cell_verdict_valid(value: Any) -> bool:
+    """Validate one of the four closed states without consulting process exit."""
+    if not isinstance(value, dict):
+        return False
+    state = value.get("state")
+    if state in _REASONED_STATES:
+        return (
+            set(value) == {"state", "comparison_tier", "reason"}
+            and value.get("comparison_tier") == "unqualified-no-comparison"
+            and _nonblank(value.get("reason"))
+        )
+    if state not in _COMPARED_STATES:
+        return False
+    if set(value) != {
+        "state",
+        "comparison_tier",
+        "comparison",
+        "bitwise_parity",
+        "compared_log_messages",
+    }:
+        return False
+    if value.get("comparison_tier") not in _KNOWN_COMPARISON_TIERS:
+        return False
+    comparison = value.get("comparison")
+    if not _comparison_spec_valid(comparison) or not isinstance(value.get("bitwise_parity"), bool):
+        return False
+    counts = value.get("compared_log_messages")
+    if counts is not None:
+        if (
+            not isinstance(counts, dict)
+            or set(counts) != {"left", "right"}
+            or not _u64(counts.get("left"))
+            or not _u64(counts.get("right"))
+        ):
+            return False
+    if comparison["compare_logs"] and counts is None:
+        return False
+    if state == "compared-and-diverged" and value["bitwise_parity"]:
+        return False
+    if value["bitwise_parity"]:
+        return (
+            state == "compared-and-matched"
+            and comparison["strictness"] == "canonical"
+            and comparison["compare_logs"] is True
+            and comparison["strip_lines"] is False
+            and comparison["canonicalize_addresses"] is True
+            and comparison["full_trace"] is True
+            and comparison["exact_remainder"] is True
+            and comparison["ignore_lines"] is False
+            and comparison["skip_commit"] is False
+            and comparison["skip_detlog"] is False
+            and counts is not None
+            and counts["left"] > 0
+            and counts["right"] > 0
+        )
+    return True
+
+
+def cell_results_verdict(
+    row: dict[str, Any], pred: dict[str, Any]
+) -> CellResultsVerdict:
+    """Require complete schema-6 evidence; older rows make no cell claim."""
+    clause = pred.get("cell_results")
+    if not isinstance(clause, dict):
+        return CellResultsVerdict.POLICY_UNAVAILABLE
+    schema_min = clause.get("applies_at_schema_min")
+    if not isinstance(schema_min, int) or isinstance(schema_min, bool) or schema_min < 0:
+        return CellResultsVerdict.POLICY_UNAVAILABLE
+    schema = row.get("schema_version")
+    if not isinstance(schema, int) or isinstance(schema, bool) or schema < 0:
+        return CellResultsVerdict.SCHEMA_UNAVAILABLE
+    evidence = row.get("cell_results")
+    if schema < schema_min:
+        return (
+            CellResultsVerdict.GRANDFATHERED_UNKNOWN
+            if evidence is None
+            else CellResultsVerdict.LEGACY_CLAIMS_CELL_RESULTS
+        )
+    if evidence is None:
+        return CellResultsVerdict.MISSING
+    if not isinstance(evidence, dict) or set(evidence) != {
+        "run_id",
+        "hermit_sha",
+        "source_tree_dirty",
+        "selected_count",
+        "recorded_count",
+        "population_sha256",
+        "artifact",
+        "selected",
+        "cells",
+    }:
+        return CellResultsVerdict.MALFORMED
+    if (
+        not _nonblank(row.get("run_id"))
+        or not _nonblank(evidence.get("run_id"))
+        or evidence["run_id"] != row["run_id"]
+    ):
+        return CellResultsVerdict.RUN_MISMATCH
+    if evidence.get("hermit_sha") != row.get("commit"):
+        return CellResultsVerdict.WRONG_SHA
+    if evidence.get("source_tree_dirty") is not False:
+        return CellResultsVerdict.DIRTY_SOURCE
+    selected_count = evidence.get("selected_count")
+    recorded_count = evidence.get("recorded_count")
+    selected = evidence.get("selected")
+    cells = evidence.get("cells")
+    if (
+        not _u64(selected_count)
+        or not _u64(recorded_count)
+        or selected_count == 0
+        or recorded_count == 0
+        or not isinstance(selected, list)
+        or not isinstance(cells, list)
+    ):
+        return CellResultsVerdict.EMPTY
+    artifact = evidence.get("artifact")
+    if (
+        not isinstance(artifact, dict)
+        or set(artifact) != {"path", "sha256", "row_count"}
+        or not _nonblank(artifact.get("path"))
+        or not _sha256(artifact.get("sha256"))
+        or artifact.get("row_count") != recorded_count
+    ):
+        return CellResultsVerdict.MALFORMED
+    identities = [_cell_identity(item) for item in selected]
+    cell_identities = []
+    for cell in cells:
+        if not isinstance(cell, dict) or set(cell) != set(_CELL_IDENTITY_KEYS) | {"cell_verdict"}:
+            return CellResultsVerdict.MALFORMED
+        identity = _cell_identity({key: cell.get(key) for key in _CELL_IDENTITY_KEYS})
+        if identity is None or not cell_verdict_valid(cell.get("cell_verdict")):
+            return CellResultsVerdict.VERDICT_INVALID
+        cell_identities.append(identity)
+    if any(identity is None for identity in identities):
+        return CellResultsVerdict.MALFORMED
+    if (
+        len(selected) != selected_count
+        or len(cells) != recorded_count
+        or len(set(identities)) != len(identities)
+        or len(set(cell_identities)) != len(cell_identities)
+        or sorted(identities) != sorted(cell_identities)
+        or not _sha256(evidence.get("population_sha256"))
+        or cell_population_sha256(selected) != evidence["population_sha256"]
+    ):
+        return CellResultsVerdict.POPULATION_MISMATCH
+    return CellResultsVerdict.SATISFIED
+
+
+def cell_results_accepted(verdict: CellResultsVerdict) -> bool:
+    return verdict in (
+        CellResultsVerdict.SATISFIED,
+        CellResultsVerdict.GRANDFATHERED_UNKNOWN,
+    )
+
+
+_SCORECARD_GREEN_TIERS = {
+    "full-stdout-info-stack-heap",
+    "stdout-info-stack-heap-spot-check",
+}
+
+
+def cell_scorecard_green(cell: Any) -> bool:
+    """Project one admitted cell without treating process success as parity."""
+    if not isinstance(cell, dict) or not cell_verdict_valid(cell.get("cell_verdict")):
+        return False
+    verdict = cell["cell_verdict"]
+    return (
+        verdict["state"] == "compared-and-matched"
+        and verdict["comparison_tier"] in _SCORECARD_GREEN_TIERS
+        and verdict["bitwise_parity"] is True
+    )
+
+
+def cell_scorecard_projection(
+    row: dict[str, Any], pred: dict[str, Any]
+) -> dict[str, Any]:
+    """Expose per-cell eligibility separately from whole-run acceptance.
+
+    Historical whole-run rows deliberately return ``cells: null`` and
+    ``green_count: null``. An empty list would let an unavailable historical
+    population masquerade as a measured population containing zero greens.
+    """
+    status = cell_results_verdict(row, pred)
+    if status is not CellResultsVerdict.SATISFIED:
+        return {
+            "eligible": False,
+            "cell_results_satisfied": (
+                None if status is CellResultsVerdict.GRANDFATHERED_UNKNOWN else False
+            ),
+            "status": status.value,
+            "green_count": None,
+            "cells": None,
+        }
+    cells = [
+        {
+            **{key: cell[key] for key in _CELL_IDENTITY_KEYS},
+            "state": cell["cell_verdict"]["state"],
+            "comparison_tier": cell["cell_verdict"]["comparison_tier"],
+            "scorecard_green": cell_scorecard_green(cell),
+        }
+        for cell in row["cell_results"]["cells"]
+    ]
+    return {
+        "eligible": True,
+        "cell_results_satisfied": True,
+        "status": status.value,
+        "green_count": sum(cell["scorecard_green"] for cell in cells),
+        "cells": cells,
+    }
 
 
 class AdmissionVerdict(Enum):
@@ -923,6 +1247,9 @@ def row_qualification(
     admission = admission_verdict(row, pred)
     if not admission_accepted(admission):
         return False, f"admission {admission.value}"
+    cell_results = cell_results_verdict(row, pred)
+    if not cell_results_accepted(cell_results):
+        return False, f"cell_results {cell_results.value}"
     green_class, class_reason = _green_class.derive_class(row)
     if green_class not in _green_class.accepted_classes(pred):
         return False, f"green_class={green_class!r}: {class_reason}"
@@ -1065,10 +1392,12 @@ def main(argv: list[str] | None = None) -> int:
                 "producer": request.get("producer"),
                 "base": request.get("base"),
                 "coverage": request.get("coverage"),
+                "cell_results": request.get("cell_results"),
             }
             verdict = admission_verdict(request["row"], pred)
             base = base_evidence_verdict(request["row"], pred)
             coverage_schema = coverage_schema_verdict(request["row"], pred)
+            cell_results = cell_results_verdict(request["row"], pred)
         except (ValueError, json.JSONDecodeError) as error:
             print(f"qualifying-receipt: {error}", file=sys.stderr)
             return 2
@@ -1080,6 +1409,7 @@ def main(argv: list[str] | None = None) -> int:
             admission_accepted(verdict)
             and base_accepted(base)
             and coverage_schema_accepted(coverage_schema)
+            and cell_results_accepted(cell_results)
         )
         print(json.dumps({
             "accepted": accepted,
@@ -1095,6 +1425,12 @@ def main(argv: list[str] | None = None) -> int:
                 None if coverage_schema is CoverageSchemaVerdict.GRANDFATHERED_UNKNOWN else False
             ),
             "coverage_schema_status": coverage_schema.value,
+            "cell_results_satisfied": (
+                True if cell_results is CellResultsVerdict.SATISFIED else
+                None if cell_results is CellResultsVerdict.GRANDFATHERED_UNKNOWN else False
+            ),
+            "cell_results_status": cell_results.value,
+            "cell_scorecard": cell_scorecard_projection(request["row"], pred),
         }, sort_keys=True))
         return 0 if accepted else 1
     if args.merge_boundary:
@@ -1155,6 +1491,7 @@ def main(argv: list[str] | None = None) -> int:
     admission = admission_verdict(row, pred)
     base = base_evidence_verdict(row, pred)
     coverage_schema = coverage_schema_verdict(row, pred)
+    cell_results = cell_results_verdict(row, pred)
     report = {
         "schema_version": 1,
         "sha": args.sha,
@@ -1185,6 +1522,12 @@ def main(argv: list[str] | None = None) -> int:
             None if coverage_schema is CoverageSchemaVerdict.GRANDFATHERED_UNKNOWN else False
         ),
         "coverage_schema_status": coverage_schema.value,
+        "cell_results_satisfied": (
+            True if cell_results is CellResultsVerdict.SATISFIED else
+            None if cell_results is CellResultsVerdict.GRANDFATHERED_UNKNOWN else False
+        ),
+        "cell_results_status": cell_results.value,
+        "cell_scorecard": cell_scorecard_projection(row, pred),
     }
     if args.json:
         print(json.dumps(report, sort_keys=True))

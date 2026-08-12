@@ -106,6 +106,22 @@ pub struct AdmissionClause {
     pub require_registered_producer: bool,
 }
 
+/// Receipt-bound per-cell evidence and the schema at which it becomes
+/// mandatory. Semantics live in `qualifying_receipt.py`; Rust only transports
+/// this versioned policy to that single verifier.
+#[derive(Clone, Debug, Deserialize)]
+pub struct CellResultsClause {
+    pub applies_at_schema_min: u32,
+}
+
+impl Default for CellResultsClause {
+    fn default() -> Self {
+        Self {
+            applies_at_schema_min: u32::MAX,
+        }
+    }
+}
+
 /// WHO WROTE THE ROW, and from when that must be declared.
 ///
 /// The provenance twin of [`CoverageClause`]: same shape of obligation, but
@@ -243,6 +259,10 @@ pub struct QualifyingPredicate {
     /// Canonical admission/owner-ancestry obligation. Semantics live only in
     /// `qualifying_receipt.py::admission_verdict`.
     pub admission: AdmissionClause,
+    /// Per-cell comparison evidence. Defaulted inert only for historical test
+    /// predicates; the canonical JSON is mutation-tested to declare it.
+    #[serde(default)]
+    pub cell_results: CellResultsClause,
     /// Provenance obligation. Defaulted inert so an older override fixture that
     /// predates the key still parses; the live file declares it explicitly.
     #[serde(default)]
@@ -431,6 +451,8 @@ struct AdmissionReport {
     base_status: String,
     coverage_schema_satisfied: Option<bool>,
     coverage_schema_status: String,
+    cell_results_satisfied: Option<bool>,
+    cell_results_status: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -516,6 +538,9 @@ fn shared_evidence_accepts(row: &HistoryRow, pred: &QualifyingPredicate) -> bool
             "applies_at_schema_min": pred.coverage.applies_at_schema_min,
             "per_node": pred.coverage.per_node,
         },
+        "cell_results": {
+            "applies_at_schema_min": pred.cell_results.applies_at_schema_min,
+        },
         "producer": {
             "required": pred.producer.required,
             "applies_from_finished_at": pred.producer.applies_from_finished_at,
@@ -566,10 +591,16 @@ fn shared_evidence_accepts(row: &HistoryRow, pred: &QualifyingPredicate) -> bool
         "grandfathered-unknown" => report.coverage_schema_satisfied.is_none(),
         _ => report.coverage_schema_satisfied == Some(false),
     };
+    let cell_results_status_matches = match report.cell_results_status.as_str() {
+        "satisfied" => report.cell_results_satisfied == Some(true),
+        "grandfathered-unknown" => report.cell_results_satisfied.is_none(),
+        _ => report.cell_results_satisfied == Some(false),
+    };
     exit_matches
         && status_matches
         && base_status_matches
         && coverage_schema_status_matches
+        && cell_results_status_matches
         && report.accepted
 }
 

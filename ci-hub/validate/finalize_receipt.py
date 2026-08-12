@@ -333,7 +333,17 @@ def _clone_upgraded(
     selection, result, log_file, ...) is preserved so the appended row still
     satisfies `is_clean_full_coverage` on the consumer side."""
     row = dict(base_row)
+    base_schema = base_row.get("schema_version")
     row.update(fields)
+    # Coverage finalization may enrich a newer row. Never downgrade a schema-6
+    # row to this module's schema-5 coverage version: doing so would preserve
+    # `cell_results` bytes while reclassifying them as an illegal legacy claim.
+    if (
+        isinstance(base_schema, int)
+        and not isinstance(base_schema, bool)
+        and base_schema > row.get("schema_version", 0)
+    ):
+        row["schema_version"] = base_schema
     # Carry the source identity and claimed writer into the clone. The clone's
     # own producer must truthfully name this finalizer, while ``finalized_from``
     # preserves which exact producer row supplied every inherited condition.
