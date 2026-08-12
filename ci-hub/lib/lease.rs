@@ -12,7 +12,6 @@ pub(crate) const LEASE_SCHEMA_VERSION: u32 = 1;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum LeaseState {
     Active,
-    Draining,
     Expired,
     Quarantined,
     Cleared,
@@ -22,7 +21,6 @@ impl LeaseState {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Active => "active",
-            Self::Draining => "draining",
             Self::Expired => "expired",
             Self::Quarantined => "quarantined",
             Self::Cleared => "cleared",
@@ -141,7 +139,6 @@ impl LeaseRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum LeaseDecision {
-    ReleaseRequested,
     Clear { evidence: String },
     Refuse { reason: String },
     Quarantine { reason: String },
@@ -151,7 +148,6 @@ pub(crate) enum LeaseDecision {
 impl fmt::Display for LeaseDecision {
     fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ReleaseRequested => write!(output, "release-requested"),
             Self::Clear { evidence } => write!(output, "clear: {evidence}"),
             Self::Refuse { reason } => write!(output, "refused: {reason}"),
             Self::Quarantine { reason } => write!(output, "quarantine: {reason}"),
@@ -160,40 +156,7 @@ impl fmt::Display for LeaseDecision {
     }
 }
 
-/// Decide whether the exact holder may begin a two-phase release.
-///
-/// Ownership authorizes the request.  Liveness is intentionally absent: a
-/// holder is expected to be alive when it records its handoff and stops
-/// renewing.  Final clearing is a separate decision below.
-pub(crate) fn release_request(
-    lease: &LeaseRecord,
-    expected_generation: &str,
-    actor_owner_generation: &str,
-    handoff: &HandoffState,
-) -> LeaseDecision {
-    if let Err(reason) = lease.validate() {
-        return LeaseDecision::Refuse { reason };
-    }
-    if lease.generation != expected_generation {
-        return LeaseDecision::Refuse {
-            reason: "lease generation changed before release request".into(),
-        };
-    }
-    if lease.owner_generation != actor_owner_generation {
-        return LeaseDecision::Refuse {
-            reason: "release requester is not the exact holder generation".into(),
-        };
-    }
-    if lease.state == LeaseState::Cleared {
-        return LeaseDecision::AlreadyCleared;
-    }
-    if let Some(reason) = handoff.refusal_reason() {
-        return LeaseDecision::Quarantine { reason };
-    }
-    LeaseDecision::ReleaseRequested
-}
-
-/// Decide whether a draining or expired lease may be cleared.
+/// Decide whether an expired or quarantined lease may be cleared.
 ///
 /// TTL is eligibility, never death proof.  A live owner refuses even after
 /// expiry; an unreadable owner is quarantined rather than reinterpreted as
@@ -219,10 +182,7 @@ pub(crate) fn stale_clear(
     if state == LeaseState::Cleared {
         return LeaseDecision::AlreadyCleared;
     }
-    if !matches!(
-        state,
-        LeaseState::Draining | LeaseState::Expired | LeaseState::Quarantined
-    ) {
+    if !matches!(state, LeaseState::Expired | LeaseState::Quarantined) {
         return LeaseDecision::Refuse {
             reason: format!(
                 "lease state {} is not eligible for stale clear",
@@ -305,30 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn exact_live_holder_can_request_release() {
-        assert_eq!(
-            release_request(
-                &lease(LeaseState::Active),
-                "lease-generation-1",
-                "boot:42:100",
-                &handoff()
-            ),
-            LeaseDecision::ReleaseRequested
-        );
-    }
-
-    #[test]
-    fn foreign_or_restarted_holder_cannot_request_release() {
-        let decision = release_request(
-            &lease(LeaseState::Active),
-            "lease-generation-1",
-            "boot:42:101",
-            &handoff(),
-        );
-        assert!(matches!(decision, LeaseDecision::Refuse { .. }));
-    }
-
-    #[test]
     fn expired_dead_empty_complete_clears() {
         assert!(matches!(
             stale_clear(
@@ -367,7 +303,7 @@ mod tests {
     fn unreadable_liveness_is_not_dead() {
         assert!(matches!(
             stale_clear(
-                &lease(LeaseState::Draining),
+                &lease(LeaseState::Expired),
                 "lease-generation-1",
                 110,
                 OwnerLiveness::Unknown {
@@ -441,10 +377,14 @@ mod tests {
         orphaned.dirty = true;
         orphaned.task_closed = true;
         orphaned.recovery_sha = None;
-        let decision = release_request(
-            &lease(LeaseState::Active),
+        let decision = stale_clear(
+            &lease(LeaseState::Expired),
             "lease-generation-1",
-            "boot:42:100",
+            131,
+            OwnerLiveness::Dead {
+                evidence: "pid is absent".into(),
+            },
+            empty(),
             &orphaned,
         );
         assert!(matches!(decision, LeaseDecision::Quarantine { .. }));
