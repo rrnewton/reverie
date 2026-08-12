@@ -14,6 +14,8 @@ use std::fs::File;
 use std::future::Future;
 use std::io;
 use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
@@ -50,6 +52,13 @@ const DIAGNOSTIC_FD: libc::c_int = 198;
 // TODO-HUMAN-REVIEW(PR-134): Review the native bootstrap failure ABI.
 /// Exit code used when DynamoRIO cannot start the sideline runtime thread before guest code runs.
 pub const CLIENT_THREAD_START_FAILURE_EXIT_CODE: i32 = 125;
+
+/// Captured guest output and the bytes emitted through the DBT diagnostic fd.
+#[derive(Debug)]
+pub struct OutputWithDiagnostics {
+    pub output: Output,
+    pub diagnostics: Vec<u8>,
+}
 
 /// Launches Linux programs under the Reverie DynamoRIO client.
 ///
@@ -181,6 +190,30 @@ impl DbtRunner {
         self.wait_with_output(child)
     }
 
+    /// Captures guest output and DBT diagnostics separately while preserving
+    /// inherited terminal stdin.
+    pub fn output_with_inherited_stdin_and_diagnostics(
+        &self,
+        guest: &Command,
+    ) -> io::Result<OutputWithDiagnostics> {
+        let mut diagnostics = tempfile::tempfile()?;
+        let diagnostic_writer = diagnostics.try_clone()?;
+        let child = self
+            .command_with_diagnostic_fd(guest, None, Some(diagnostic_writer.as_raw_fd()))
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let output = self.wait_with_output(child)?;
+        diagnostics.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        diagnostics.read_to_end(&mut bytes)?;
+        Ok(OutputWithDiagnostics {
+            output,
+            diagnostics: bytes,
+        })
+    }
+
     /// Runs `guest` with captured output and supplies `input` on standard input.
     pub fn output_with_input(&self, guest: &Command, input: &[u8]) -> io::Result<Output> {
         self.output_with_reader(guest, io::Cursor::new(input))
@@ -232,6 +265,34 @@ impl DbtRunner {
             .stderr(Stdio::piped())
             .spawn()?;
         self.wait_with_output_and_detached_reader(child, input)
+    }
+
+    /// Streams owned stdin and captures guest output and DBT diagnostics in
+    /// separate byte buffers.
+    pub fn output_with_detached_reader_and_diagnostics<R>(
+        &self,
+        guest: &Command,
+        input: R,
+    ) -> io::Result<OutputWithDiagnostics>
+    where
+        R: Read + Send + 'static,
+    {
+        let mut diagnostics = tempfile::tempfile()?;
+        let diagnostic_writer = diagnostics.try_clone()?;
+        let child = self
+            .command_with_diagnostic_fd(guest, None, Some(diagnostic_writer.as_raw_fd()))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let output = self.wait_with_output_and_detached_reader(child, input)?;
+        diagnostics.seek(SeekFrom::Start(0))?;
+        let mut bytes = Vec::new();
+        diagnostics.read_to_end(&mut bytes)?;
+        Ok(OutputWithDiagnostics {
+            output,
+            diagnostics: bytes,
+        })
     }
 
     /// Captures `guest` output while supplying an exact guest environment.
@@ -719,6 +780,15 @@ impl DbtRunner {
         guest: &Command,
         environment: Option<&BTreeMap<OsString, OsString>>,
     ) -> Command {
+        self.command_with_diagnostic_fd(guest, environment, None)
+    }
+
+    fn command_with_diagnostic_fd(
+        &self,
+        guest: &Command,
+        environment: Option<&BTreeMap<OsString, OsString>>,
+        diagnostic_fd: Option<libc::c_int>,
+    ) -> Command {
         let mut command = Command::new(&self.drrun);
         command
             .arg("-quiet")
@@ -775,8 +845,8 @@ impl DbtRunner {
         // SAFETY: personality(2) and dup2(2) are async-signal-safe and the closure
         // captures no process state. Both settings survive drrun and guest execs.
         unsafe {
-            command.pre_exec(|| {
-                if libc::dup2(libc::STDERR_FILENO, DIAGNOSTIC_FD) == -1 {
+            command.pre_exec(move || {
+                if libc::dup2(diagnostic_fd.unwrap_or(libc::STDERR_FILENO), DIAGNOSTIC_FD) == -1 {
                     return Err(io::Error::last_os_error());
                 }
                 let current = libc::personality(0xffff_ffff);
@@ -1488,6 +1558,31 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"captured=<guest-stderr>\n");
         assert_eq!(output.stderr, b"backend-diagnostic");
+    }
+
+    #[test]
+    fn captures_diagnostics_separately_from_guest_stderr() {
+        let root = tempfile::tempdir().unwrap();
+        let drrun = root.path().join("drrun");
+        let client = root.path().join("client.so");
+        write_executable_script(
+            &drrun,
+            b"#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+        );
+        std::fs::write(&client, b"placeholder").unwrap();
+
+        let script =
+            format!("printf guest-stderr >&2; printf backend-diagnostic >&{DIAGNOSTIC_FD}");
+        let mut guest = Command::new("/bin/bash");
+        guest.args(["-c", &script]);
+
+        let captured = DbtRunner::new(drrun, client)
+            .unwrap()
+            .output_with_detached_reader_and_diagnostics(&guest, io::empty())
+            .unwrap();
+        assert!(captured.output.status.success());
+        assert_eq!(captured.output.stderr, b"guest-stderr");
+        assert_eq!(captured.diagnostics, b"backend-diagnostic");
     }
 
     #[test]
