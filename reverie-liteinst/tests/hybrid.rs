@@ -844,11 +844,8 @@ where
 
 /// The hybrid follows a forked child instead of refusing at the clone boundary.
 ///
-/// REGRESSION COVERAGE: reverting the root-TID identity fix makes the forked
-/// child -- its own thread-group leader -- take the root's shared root-stop
-/// lease, and every transition then fails `EINVAL`. Reverting the root-stop
-/// lease re-arm after the nested parent step leaves the slot empty and both
-/// tracees wedge in `ptrace_stop`.
+/// This exercises the supported fork path end-to-end. It does not independently
+/// isolate the root-TID identity and root-stop lease re-arm mechanisms.
 #[tokio::test(flavor = "current_thread")]
 async fn hybrid_follows_a_forked_child() {
     run_multi_task_fixture::<PassthroughGetpid>("hybrid_fork.c", "fork-followed\n").await;
@@ -856,8 +853,8 @@ async fn hybrid_follows_a_forked_child() {
 
 /// The hybrid follows a second thread created with `clone3(CLONE_THREAD)`.
 ///
-/// REGRESSION COVERAGE: patching a task-creating syscall site makes the new
-/// thread resume at an address that is no longer an instruction boundary.
+/// This exercises the supported thread-creation path end-to-end. It does not
+/// independently isolate the task-creating-site patch guard.
 #[tokio::test(flavor = "current_thread")]
 async fn hybrid_follows_a_created_thread() {
     run_multi_task_fixture::<PassthroughGetpid>("hybrid_thread.c", "thread-followed\n").await;
@@ -928,8 +925,8 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
     };
     let text = error.to_string();
     assert!(
-        text.contains("exec") || text.contains("ENOTSUPP"),
-        "session failure did not name the unsupported exec: {text}"
+        text.contains("LiteInst session failed closed in a non-root task") && text.contains("exec"),
+        "session failure did not name the unsupported non-root exec: {text}"
     );
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
@@ -937,9 +934,64 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
         .parse()
         .unwrap();
     assert_pid_reaped(root_pid);
+    let remaining = processes_named(&name);
+    let remaining_status = remaining
+        .iter()
+        .map(|pid| fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default())
+        .collect::<Vec<_>>();
     assert!(
-        processes_named(&name).is_empty(),
-        "failed LiteInst root/child remains stopped or as a zombie"
+        remaining.is_empty(),
+        "failed LiteInst root/child remains stopped or as a zombie: {remaining:?} {remaining_status:?}"
+    );
+}
+
+/// A vfork refusal in a non-root task fails the whole session even when it is
+/// recorded only after the root has reached its own clean exit.
+#[tokio::test(flavor = "current_thread")]
+async fn vfork_in_a_forked_child_fails_the_session_after_root_exit() {
+    let (_directory, guest) = compile_fixture("hybrid_fork_vfork.c");
+    let name = format!("li{:x}", std::process::id());
+    let pid_directory = tempfile::tempdir().unwrap();
+    let pid_file = pid_directory.path().join("root.pid");
+    let mut command = Command::new(guest);
+    command.arg(&name).arg(&pid_file);
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+            command,
+            (),
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("a refused non-root vfork was never released from the tool: the session hung");
+
+    let error = match result {
+        Ok((output, _global)) => panic!(
+            "SILENT GREEN: the session reported success before a non-root vfork refusal: {output:?}"
+        ),
+        Err(error) => error,
+    };
+    let text = error.to_string();
+    assert!(
+        text.contains("LiteInst session failed closed in a non-root task")
+            && text.contains("vfork"),
+        "session failure did not name the non-root vfork refusal: {text}"
+    );
+    let root_pid: u32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_pid_reaped(root_pid);
+    let remaining = processes_named(&name);
+    let remaining_status = remaining
+        .iter()
+        .map(|pid| fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(
+        remaining.is_empty(),
+        "failed LiteInst root/child remains stopped or as a zombie: {remaining:?} {remaining_status:?}"
     );
 }
 

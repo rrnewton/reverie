@@ -205,8 +205,9 @@ impl LiteinstBackend {
     ///
     /// Ptrace owns the sole Tool and GlobalTool from exec onward; the preload
     /// contributes only dynamic site installation and injected hot-site traps.
-    /// This initial hybrid contract supports one tracee process with one thread;
-    /// fork, vfork, and clone fail closed before either side is resumed.
+    /// The hybrid may follow threads and child processes through `clone` and
+    /// `fork`. `vfork` remains fail-closed before either side is resumed because
+    /// exec cannot preserve the preload runtime in its shared address space.
     ///
     /// Trap markers, exact DSO addresses, mapping state, and an inner runtime
     /// call site provide strong accidental-collision resistance. They are not a
