@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import configparser
 import os
 import re
 import subprocess
 import sys
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -41,20 +43,6 @@ MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 FENCED_CODE = re.compile(r"(?:```|~~~)[^\n]*\n.*?(?:```|~~~)", re.DOTALL)
 INLINE_CODE = re.compile(r"`[^`\n]*`")
 WIKI_LINK = re.compile(r"\[\[[^\]\n]+\]\]")
-INSTRUCTION_SCAN_SKIP = {
-    ".git",
-    ".agents",
-    ".claude",
-    ".codex",
-    ".llms",
-    "ignored",
-    "node_modules",
-    "scratch",
-    "target",
-    "worktrees",
-}
-
-
 class SetupError(Exception):
     """A repository-local Codex setup invariant failed."""
 
@@ -370,32 +358,151 @@ def configured_doc_limit(root: Path) -> int:
     return value
 
 
-def instruction_chain_bytes(root: Path) -> int:
+@dataclass(frozen=True)
+class InstructionChainMeasurement:
+    byte_count: int
+    max_scope: str
+    materialized_roots: tuple[str, ...]
+    unmaterialized_roots: tuple[str, ...]
+
+    @property
+    def complete(self) -> bool:
+        return not self.unmaterialized_roots
+
+
+def tracked_instruction_policies(repo: Path) -> tuple[Path, ...]:
+    """Return versioned AGENTS.md paths in one canonical repository checkout."""
+    result = subprocess.run(
+        ["git", "-C", str(repo), "ls-files", "-z"],
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise SetupError(
+            f"cannot enumerate versioned instruction policies in {repo}: "
+            f"{result.stderr.decode(errors='replace').strip()}"
+        )
+    policies = tuple(
+        sorted(
+            Path(raw.decode())
+            for raw in result.stdout.split(b"\0")
+            if raw and Path(raw.decode()).name == "AGENTS.md"
+        )
+    )
+    for relative in policies:
+        path = repo / relative
+        if not path.is_file():
+            raise SetupError(f"versioned instruction policy is not materialized: {path}")
+    return policies
+
+
+def canonical_submodule_paths(root: Path) -> tuple[Path, ...]:
+    """Return the parent repository's explicitly registered checkout roots."""
+    manifest = root / ".gitmodules"
+    if not manifest.is_file():
+        return ()
+    parser = configparser.ConfigParser()
+    try:
+        parser.read(manifest)
+    except configparser.Error as error:
+        raise SetupError(f"cannot parse {manifest}: {error}") from error
+    paths: list[Path] = []
+    for section in parser.sections():
+        if not section.startswith('submodule "') or not parser.has_option(section, "path"):
+            continue
+        relative = Path(parser.get(section, "path"))
+        if relative.is_absolute() or ".." in relative.parts or len(relative.parts) != 1:
+            raise SetupError(
+                f"canonical submodule path must be one top-level directory: {relative}"
+            )
+        entry = parent_index_entry(root, relative.as_posix())
+        if entry is None or entry[0] != "160000":
+            raise SetupError(
+                f"canonical submodule path is not a versioned gitlink: {relative}"
+            )
+        paths.append(relative)
+    return tuple(sorted(set(paths)))
+
+
+def is_materialized_repo(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    result = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    try:
+        return Path(result.stdout.strip()).resolve() == path.resolve()
+    except OSError:
+        return False
+
+
+def policy_chain(repo: Path, policies: tuple[Path, ...], relative: Path) -> list[int]:
+    chain: list[int] = []
+    current = relative.parent
+    policy_sizes = {path.parent: (repo / path).stat().st_size for path in policies}
+    while True:
+        if current in policy_sizes:
+            chain.append(policy_sizes[current])
+        if current == Path("."):
+            break
+        current = current.parent
+    chain.reverse()
+    return chain
+
+
+def instruction_chain_measurement(root: Path) -> InstructionChainMeasurement:
+    """Measure only canonical, versioned parent and top-level submodule policies.
+
+    The parent checkout and each top-level path registered by the parent's
+    `.gitmodules` are canonical instruction roots. Arbitrary nested checkouts,
+    runner work directories, build residue, and untracked AGENTS.md files are
+    excluded by construction.
+    """
     root_policy = root / "AGENTS.md"
     if not root_policy.is_file():
         raise SetupError(f"missing root policy: {root_policy}")
+    parent_policies = tracked_instruction_policies(root)
+    if Path("AGENTS.md") not in parent_policies:
+        raise SetupError(f"root instruction policy is not versioned: {root_policy}")
 
-    policies: dict[Path, int] = {}
-    for directory, child_dirs, filenames in os.walk(root):
-        child_dirs[:] = [name for name in child_dirs if name not in INSTRUCTION_SCAN_SKIP]
-        if "AGENTS.md" in filenames:
-            path = Path(directory) / "AGENTS.md"
-            policies[Path(directory)] = path.stat().st_size
+    root_bytes = root_policy.stat().st_size
+    candidates: list[tuple[int, str]] = []
+    for relative in parent_policies:
+        chain = policy_chain(root, parent_policies, relative)
+        scope = "parent" if relative == Path("AGENTS.md") else f"parent/{relative.parent}"
+        candidates.append((sum(chain) + max(0, len(chain) - 1) * 2, scope))
 
-    largest = 0
-    for directory in policies:
-        current = directory
-        chain: list[int] = []
-        while True:
-            if current in policies:
-                chain.append(policies[current])
-            if current == root:
-                break
-            if root not in current.parents:
-                raise SetupError(f"instruction path escaped repository root: {current}")
-            current = current.parent
-        largest = max(largest, sum(chain) + max(0, len(chain) - 1) * 2)
-    return largest
+    materialized = ["parent"]
+    unmaterialized: list[str] = []
+    for relative_root in canonical_submodule_paths(root):
+        checkout = root / relative_root
+        scope_root = relative_root.as_posix()
+        if not is_materialized_repo(checkout):
+            unmaterialized.append(scope_root)
+            continue
+        materialized.append(scope_root)
+        policies = tracked_instruction_policies(checkout)
+        if not policies:
+            candidates.append((root_bytes, scope_root))
+            continue
+        for relative in policies:
+            nested = policy_chain(checkout, policies, relative)
+            chain = [root_bytes, *nested]
+            scope = scope_root if relative == Path("AGENTS.md") else f"{scope_root}/{relative.parent}"
+            candidates.append((sum(chain) + max(0, len(chain) - 1) * 2, scope))
+
+    largest, max_scope = max(candidates)
+    return InstructionChainMeasurement(
+        byte_count=largest,
+        max_scope=max_scope,
+        materialized_roots=tuple(materialized),
+        unmaterialized_roots=tuple(unmaterialized),
+    )
 
 
 def local_link_problems(root: Path, packages: dict[str, Path]) -> list[str]:
@@ -512,7 +619,7 @@ def check(root: Path) -> int:
         packages, package_problems = canonical_packages(root)
         problems.extend(package_problems)
         limit = configured_doc_limit(root)
-        chain_bytes = instruction_chain_bytes(root)
+        chain = instruction_chain_measurement(root)
         problems.extend(local_link_problems(root, packages))
         problems.extend(discovery_link_problems(root, packages))
         planner_present = planner_source(root, problems)
@@ -520,10 +627,11 @@ def check(root: Path) -> int:
         print(f"check-codex-setup: ERROR {error}", file=sys.stderr)
         return 1
 
-    if chain_bytes > limit:
+    if chain.byte_count > limit:
+        qualifier = "canonical" if chain.complete else "partial canonical"
         problems.append(
-            f"largest root+nested AGENTS.md chain is {chain_bytes} bytes, "
-            f"above configured limit {limit}"
+            f"largest {qualifier} instruction chain is {chain.byte_count} bytes "
+            f"at scope {chain.max_scope}, above configured limit {limit}"
         )
 
     if problems:
@@ -531,10 +639,22 @@ def check(root: Path) -> int:
             print(f"check-codex-setup: ERROR {problem}", file=sys.stderr)
         return 1
 
+    materialization = "complete" if chain.complete else "partial"
+    byte_label = (
+        "instruction_chain_bytes_canonical"
+        if chain.complete
+        else "instruction_chain_bytes_partial"
+    )
+    unmaterialized = ",".join(chain.unmaterialized_roots) or "none"
     print(
         "check-codex-setup: PASS "
         f"packages={len(packages)} planner_source={str(planner_present).lower()} "
-        f"instruction_chain_bytes={chain_bytes} configured_limit={limit}"
+        "instruction_chain_scope=versioned-parent-plus-live-top-level-submodules "
+        f"instruction_chain_materialization={materialization} "
+        f"instruction_chain_roots={','.join(chain.materialized_roots)} "
+        f"instruction_chain_unmaterialized={unmaterialized} "
+        f"{byte_label}={chain.byte_count} "
+        f"instruction_chain_max_scope={chain.max_scope} configured_limit={limit}"
     )
     return 0
 

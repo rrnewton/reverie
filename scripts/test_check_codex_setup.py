@@ -57,6 +57,8 @@ class CheckCodexSetupTest(unittest.TestCase):
         (root / ".llms/skills").symlink_to(
             "../.claude/skills", target_is_directory=True
         )
+        self.git(root, "init", "--quiet")
+        self.git(root, "add", "AGENTS.md")
         return root
 
     def run_check(self, root: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -292,11 +294,94 @@ class CheckCodexSetupTest(unittest.TestCase):
         (root / "product/nested").mkdir(parents=True)
         (root / "product/AGENTS.md").write_text("p" * 40_000)
         (root / "product/nested/AGENTS.md").write_text("n" * 20_000)
+        self.git(
+            root,
+            "add",
+            "AGENTS.md",
+            "product/AGENTS.md",
+            "product/nested/AGENTS.md",
+        )
         result = self.run_check(root)
         self.assertEqual(result.returncode, 1)
         self.assertIn(
-            "largest root+nested AGENTS.md chain is 100004 bytes", result.stderr
+            "largest canonical instruction chain is 100004 bytes "
+            "at scope parent/product/nested",
+            result.stderr,
         )
+
+    def test_excludes_untracked_runtime_runner_checkout(self) -> None:
+        root = self.fixture()
+        residue = root / "ci-runner/state-gate/_work/hermit/hermit/trusted"
+        residue.mkdir(parents=True)
+        (residue.parent / "AGENTS.md").write_text("x" * 70_000)
+        (residue / "AGENTS.md").write_text("y" * 70_000)
+        result = self.run_check(root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("instruction_chain_bytes_canonical=12", result.stdout)
+        self.assertIn("instruction_chain_max_scope=parent", result.stdout)
+        self.assertNotIn("ci-runner", result.stdout)
+
+    def test_reports_unmaterialized_submodule_as_partial_scope(self) -> None:
+        root = self.fixture()
+        source = root / "source-hermit"
+        source.mkdir()
+        self.git(source, "init", "--quiet")
+        self.git(source, "config", "user.name", "Instruction Test")
+        self.git(source, "config", "user.email", "instruction@example.invalid")
+        (source / "AGENTS.md").write_text("child policy\n")
+        self.git(source, "add", "AGENTS.md")
+        self.git(source, "commit", "--quiet", "-m", "child policy")
+        child_commit = self.git(source, "rev-parse", "HEAD")
+        (root / ".gitmodules").write_text(
+            '[submodule "hermit"]\n\tpath = hermit\n\turl = https://example.invalid/hermit\n'
+        )
+        self.git(root, "add", ".gitmodules")
+        self.git(
+            root,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{child_commit},hermit",
+        )
+        result = self.run_check(root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("instruction_chain_materialization=partial", result.stdout)
+        self.assertIn("instruction_chain_roots=parent", result.stdout)
+        self.assertIn("instruction_chain_unmaterialized=hermit", result.stdout)
+        self.assertIn("instruction_chain_bytes_partial=12", result.stdout)
+        self.assertNotIn("instruction_chain_bytes_canonical=", result.stdout)
+
+    def test_includes_materialized_canonical_submodule(self) -> None:
+        root = self.fixture()
+        (root / "AGENTS.md").write_text("r" * 40_000)
+        self.git(root, "add", "AGENTS.md")
+        child = root / "hermit"
+        child.mkdir()
+        self.git(child, "init", "--quiet")
+        self.git(child, "config", "user.name", "Instruction Test")
+        self.git(child, "config", "user.email", "instruction@example.invalid")
+        (child / "AGENTS.md").write_text("h" * 20_000)
+        self.git(child, "add", "AGENTS.md")
+        self.git(child, "commit", "--quiet", "-m", "child policy")
+        child_commit = self.git(child, "rev-parse", "HEAD")
+        (root / ".gitmodules").write_text(
+            '[submodule "hermit"]\n\tpath = hermit\n\turl = https://example.invalid/hermit\n'
+        )
+        self.git(root, "add", ".gitmodules")
+        self.git(
+            root,
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{child_commit},hermit",
+        )
+        result = self.run_check(root)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("instruction_chain_materialization=complete", result.stdout)
+        self.assertIn("instruction_chain_roots=parent,hermit", result.stdout)
+        self.assertIn("instruction_chain_unmaterialized=none", result.stdout)
+        self.assertIn("instruction_chain_bytes_canonical=60002", result.stdout)
+        self.assertIn("instruction_chain_max_scope=hermit", result.stdout)
 
     def test_rejects_wrong_package_link(self) -> None:
         root = self.fixture()
