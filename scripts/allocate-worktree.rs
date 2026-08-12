@@ -2098,15 +2098,38 @@ fn main() {
     // keeps the row. An agent that released its slot could then never allocate
     // another one. Hit live 2026-08-08 after releasing rev1864.
     //
-    // Only `released` is discounted; `owner-lease-revoked` and `releasing` still
-    // count as owning, matching the collision check exactly.
+    // `owner-lease-revoked` IS ALSO DISCOUNTED HERE, AND ONLY HERE. This check and
+    // the collision check below answer DIFFERENT questions, so matching them
+    // "exactly" was the bug:
+    //
+    //   collision check   "may agent B take slot X?"      revoked must still REFUSE
+    //                     -- a revoked slot's disposition is unresolved and it may
+    //                     still hold work; that safety property is unchanged and is
+    //                     bracketed by allocate-worktree-released-rebind-test.sh.
+    //   this check        "may agent A, who owns revoked slot X, take a NEW slot Y?"
+    //                     -- refusing here imprisons A. It cannot use X (revoked),
+    //                     cannot release X (revoked), and the reaper skips X because
+    //                     it predates TTL leases. There is no path out from inside.
+    //
+    // That is the SAME UNSATISFIABLE-REFUSAL defect already fixed for `released`
+    // directly above: the error names a remedy the agent cannot perform. Measured
+    // 2026-08-12: six slots were owner-lease-revoked -- codex-rescue, codex-tickgate,
+    // codex-validatelock, slot04, slot74, w7 -- each imprisoning exactly its own
+    // owner, and one of them blocked the owner's stated priority task.
+    //
+    // NOTE WHAT IS NOT WIDENED. `active` and `releasing` still count as owning, so a
+    // live slot still blocks a second allocation. This removes an impossible demand;
+    // it does not make the allocator permissive.
     if !read_mostly {
         if let Some(slots) = state["slots"].as_object() {
             for (other, s) in slots {
                 if other == &slot {
                     continue;
                 }
-                if s["status"].as_str() == Some("released") {
+                if matches!(
+                    s["status"].as_str(),
+                    Some("released") | Some("owner-lease-revoked")
+                ) {
                     continue;
                 }
                 let owns = s["agents"]

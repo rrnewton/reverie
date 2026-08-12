@@ -235,16 +235,32 @@ else
   bad "one-slot-per-agent refusal lost its message"
 fi
 
+# CHANGED 2026-08-12, and the justification is in this file's own words above:
+# the `released` exemption exists because the refusal was UNSATISFIABLE -- "it
+# said 'Release it first' to someone who already had". A REVOKED slot has the
+# identical property and is worse: its owner cannot use it, cannot release it,
+# and the reaper skips it because it predates TTL leases. There is no path out
+# from inside. Six slots were in exactly that state on 2026-08-12, each
+# imprisoning its own owner.
+#
+# The original assertion here rested on the generalisation "any disposition that
+# is not a clean release still blocks" -- carried over from the COLLISION check.
+# That generalisation is what was wrong: the two checks answer different
+# questions. The collision property is INDEPENDENT and is asserted separately in
+# this same file -- "revoked -> REFUSE" for a different agent taking the slot --
+# and it still passes, unchanged. Only the one-slot-per-agent case flips.
+# Full brackets in allocate-worktree-revoked-owner-test.sh.
 plant revheld owner-lease-revoked revmover
 got=$(try_alloc revnew revmover)
-check "agent whose OTHER slot is revoked still refused" REFUSE "$got" revnew revmover
+check "agent whose OTHER slot is revoked may now allocate (deadlock discharge)" ADMIT "$got" revnew revmover
 echo
 
 echo "======================================================================"
-echo "admits expected and observed: 5 (released/different, released/same,"
-echo "  read-mostly on active, read-mostly on released, released-elsewhere/new-slot)"
-echo "refusals expected and observed: 5 (active, owner-lease-revoked, releasing,"
-echo "  active-elsewhere, revoked-elsewhere)"
+echo "admits expected and observed: 6 (released/different, released/same,"
+echo "  read-mostly on active, read-mostly on released, released-elsewhere/new-slot,"
+echo "  revoked-elsewhere/new-slot)"
+echo "refusals expected and observed: 4 (active, owner-lease-revoked, releasing,"
+echo "  active-elsewhere)"
 echo "assertions: $pass passed, $fail failed"
 if (( fail )); then echo "RESULT: FAIL"; exit 1; fi
 echo "RESULT: PASS"
