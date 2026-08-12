@@ -52,13 +52,15 @@ export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 # transition is malformed.
 production_registry=$script_dir/../validate/producer-definition.json
 production_repo=$root/hermit
-production_registered_at=796565d21d123cf177b54e26e2176b695752aef3
+production_registered_at=16d47dfebcffdf73ff800a5cd8a71ef84b7d4a5b
 production_rust=379a0f24374b562ccb2836726301034140b901b7
 production_history=0255c492791fba04aa9000efb18ec3f57dd6a8ad
 production_receipt=465f6c7e1f027ba81daf09f5011f84ebdd08deb0
-production_portable=3c6934be277a7261dfb8e4b5980f7ddbead1ddc5
+production_portable=8f56ca222078f831e85c86ec743cb3feacb0381a
 production_nextest_config=ec47795a8289a1f3ea62424b686217c942427b18
 production_nextest_wrapper=5fcfc77bb7264f9631312ebb4f24f635e464364c
+outgoing_registered_at=796565d21d123cf177b54e26e2176b695752aef3
+outgoing_portable=3c6934be277a7261dfb8e4b5980f7ddbead1ddc5
 previous_rust=15879c97c0ddcfeafaed18deaab0cba2fab30312
 previous_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
 if ! jq -e \
@@ -297,6 +299,32 @@ assert_mutated "$tmp/receipt.json" "$tmp/production-current.json" \
 PRODUCER_DEFINITION_REGISTRY=$production_registry \
     verify_file "$tmp/production-current.json" pass \
     "production rotation: exact current definition qualifies" \
+    '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
+
+# The outgoing complete map remains usable only at its one exact registered
+# commit. This brackets both directions of the promotion: old evidence is not
+# erased, and the old map cannot authorize a newer commit.
+retarget_receipt "$tmp/production-current.json" \
+    "$tmp/production-outgoing-retargeted.json" "$outgoing_registered_at"
+jq -cS --arg portable "$outgoing_portable" '
+  .producer.definition[".github/workflows/ci-portable.yml"] = $portable
+' "$tmp/production-outgoing-retargeted.json" >"$tmp/production-outgoing.json"
+assert_mutated "$tmp/production-current.json" "$tmp/production-outgoing.json" \
+    "PRODUCER outgoing definition at its bounded commit"
+PRODUCER_DEFINITION_REGISTRY=$production_registry \
+    verify_file "$tmp/production-outgoing.json" pass \
+    "production rotation: outgoing definition qualifies at its bounded commit" \
+    '[impl agent, ci-hub]' "$outgoing_registered_at" "$production_repo"
+
+jq -cS --arg portable "$outgoing_portable" '
+  .producer.definition[".github/workflows/ci-portable.yml"] = $portable
+' "$tmp/production-current.json" >"$tmp/production-outgoing-at-current.json"
+assert_mutated "$tmp/production-current.json" \
+    "$tmp/production-outgoing-at-current.json" \
+    "PRODUCER outgoing definition at current commit"
+PRODUCER_DEFINITION_REGISTRY=$production_registry \
+    verify_file "$tmp/production-outgoing-at-current.json" fail \
+    "production rotation: outgoing definition cannot authorize current commit" \
     '[impl agent, ci-hub]' "$production_registered_at" "$production_repo"
 
 jq -cS --arg rust "$previous_rust" --arg portable "$previous_portable" '
@@ -1044,4 +1072,4 @@ if [[ $mutation_anchor_failures -ne 0 ]]; then
     exit 1
 fi
 
-echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; previous/tampered/missing-wrapper/wrong-head production definitions (4/4), 2/2 additional identity/compatibility receipts, ${#valid_role_tags[@]}/${#valid_role_tags[@]} valid and ${#invalid_role_tags[@]}/${#invalid_role_tags[@]} malformed role tags, derived-enum positive 1/1 and underivable-enum negatives 3/3, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"
+echo "PASS: 2/2 legitimate exact-head landing receipts accepted; production primary 1/1, outgoing bounded legacy 1/1, synthetic lifecycle receipt positives 7/7, and second-rotation promoted-map resolution 1/1 accepted; two crossed + tampered + missing + extra + different-key + malformed + reversed + expired + two version-bounded replay negatives (11/11) refused; outgoing-at-current/previous/tampered/missing-wrapper/wrong-head production definitions (5/5), 2/2 additional identity/compatibility receipts, ${#valid_role_tags[@]}/${#valid_role_tags[@]} valid and ${#invalid_role_tags[@]}/${#invalid_role_tags[@]} malformed role tags, derived-enum positive 1/1 and underivable-enum negatives 3/3, current-tagged identity omission, malformed legacy identity, tampered selected-row digest after outer rehash, current-tagged weak row, stale-head, forged, tampered, zero-executed, host-mismatch, host-absent, five incomplete schema5 coverage controls and 1/1 missing-base control refused; all ${mutation_anchors_total} mutation anchors changed canonical content; fixture plant deleted cleanly"
