@@ -26,6 +26,19 @@ use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
 use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
 
+// Linux truncates PR_SET_NAME to 15 bytes.  Give every concurrently running
+// fixture a distinct, exact-width marker so one test never mistakes another
+// test's still-live process (or terminal zombie awaiting its own reaper) for a
+// cleanup failure.  The cleanup assertions remain fail-closed: they still
+// require zero processes carrying this test's marker.
+static PROCESS_NAME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn unique_process_name() -> String {
+    let sequence = PROCESS_NAME_SEQUENCE.fetch_add(1, Ordering::SeqCst) & 0x000f_ffff;
+    let identity = ((std::process::id() as u64) << 20) | sequence;
+    format!("li{:013x}", identity)
+}
+
 #[derive(Debug, Default)]
 struct EventCounter {
     delivered: AtomicU64,
@@ -814,7 +827,7 @@ where
     T: Tool<GlobalState = EventCounter, ThreadState = ()> + 'static,
 {
     let (_directory, guest) = compile_fixture(fixture);
-    let name = format!("li{:x}", std::process::id());
+    let name = unique_process_name();
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("root.pid");
     let mut command = Command::new(guest);
@@ -900,7 +913,7 @@ async fn hybrid_follows_a_grandchild() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
     let (_directory, guest) = compile_fixture("hybrid_fork_exec.c");
-    let name = format!("li{:x}", std::process::id());
+    let name = unique_process_name();
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("root.pid");
     let mut command = Command::new(guest);
@@ -950,7 +963,7 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
 #[tokio::test(flavor = "current_thread")]
 async fn vfork_in_a_forked_child_fails_the_session_after_root_exit() {
     let (_directory, guest) = compile_fixture("hybrid_fork_vfork.c");
-    let name = format!("li{:x}", std::process::id());
+    let name = unique_process_name();
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("root.pid");
     let mut command = Command::new(guest);
