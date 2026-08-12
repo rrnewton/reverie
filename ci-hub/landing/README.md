@@ -326,11 +326,23 @@ The superseded hosted deployment plan is intentionally not repeated here.
 Current policy and the dated history of that path live in the final section of
 skill `hermit-validation-authority`.
 
-Every terminal bail emits a visible ABANDON signal — stderr **and** a role-tagged
-PR comment — so an abandoned PR never silently languishes (the #244 pattern).
-Before taking the lock, the shared lander persists a post-land intent. Only after
-the merged SHA is ancestry-confirmed does it arm concurrent exact-SHA local and
-GitHub verification; ORC recovery closes the merge-before-arm crash window.
+Every terminal bail emits a visible ABANDON signal on stderr and attempts a
+role-tagged PR comment through the registered GitHub boundary.  If GitHub does
+not accept that write, the lander preserves the real error in a JSON file under
+`${CI_HUB_LANDING_LOG_DIR:-ignored/ci-hub/landing}` and prints the exact file
+path loudly in the retained landing log.  Enumerate those failures with:
+
+```bash
+find ignored/ci-hub/landing -name '*-comment-failed.json' -print
+```
+
+Before this behavior was added, comment failures were reduced to
+`WARN: could not post ABANDON comment` and could disappear with an agent's
+terminal.  Those earlier failures cannot be reconstructed from pull requests,
+so no historical count is claimed.  Before taking the lock, the shared lander
+persists a post-land intent. Only after the merged SHA is ancestry-confirmed
+does it arm concurrent exact-SHA local and GitHub verification; ORC recovery
+closes the merge-before-arm crash window.
 
 ```bash
 cd ~/work/dev-hermit

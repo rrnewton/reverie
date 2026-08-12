@@ -65,7 +65,6 @@ unset CI_HUB_VALIDATE_STATUS_BIN
 
 PR=""; BR=""; UNION=0; NO_REBASE=0; INNER=0; DETACHED_CHILD=0; FOREGROUND=0; GATE_ROTATION=0
 AGENT="hermit-lander"
-MODEL="${LANDER_MODEL:-opus-4.8}"
 # Measured 2026-08-04 over 11 successful pull_request demo-hot-path runs created
 # since 2026-08-03T23:00Z: median=586s, p90=646s, p95/p99/max=864s. The default
 # is ceil(max * 1.25) = 1080s; the whole-child ceiling gets two gate windows.
@@ -123,6 +122,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 WT="$ROOT/worktrees/lander/hermit"
 R=rrnewton/hermit
+TEAM=hermit2
 say(){ echo "[land#$PR] $*"; }
 verify_gate_rotation_checks(){
   local expected_head="$1" detail rc
@@ -163,17 +163,18 @@ verify_pr_belongs_to_repo(){
     exit 2
   fi
 }
+publish_landing_comment(){
+  local kind="$1" reason="$2"
+  python3 "$SCRIPT_DIR/publish_comment.py" \
+    --repo "$R" --pr "$PR" --agent "$AGENT" --team "$TEAM" \
+    --kind "$kind" --reason "$reason" \
+    --record-dir "${CI_HUB_LANDING_LOG_DIR:-$ROOT/ignored/ci-hub/landing}"
+}
 comment_abandon(){
-  local reason="$1"
-  with-proxy gh pr comment "$PR" -R "$R" --body \
-    "[coordinator, $MODEL] ABANDONED landing attempt: ${reason}. The lock was released so the FIFO can continue. Retry if the PR remains open; durable recovery will arm exact-SHA verification if GitHub completed the merge." \
-    >/dev/null 2>&1 || say "WARN: could not post ABANDON comment"
+  publish_landing_comment abandoned "$1"
 }
 comment_no_result(){
-  local reason="$1"
-  with-proxy gh pr comment "$PR" -R "$R" --body \
-    "[coordinator, $MODEL] NO-RESULT landing pause: ${reason}. No failing verdict was recorded; the missing check was re-dispatched and this PR remains blocked until it produces PASSED or FAILED." \
-    >/dev/null 2>&1 || say "WARN: could not post NO-RESULT comment"
+  publish_landing_comment no-result "$1"
 }
 
 # A real land exceeds the agent shell's foreground time budget. Launch the
@@ -284,9 +285,9 @@ if [ "$INNER" -eq 0 ]; then
     say "LANDED:$MC"; exit 0
   fi
   say "POST-LAND ARM PENDING: merge is landed; durable recovery will retry"
-  with-proxy gh pr comment "$PR" -R "$R" --body \
-    "[coordinator, $MODEL] LANDED, but immediate exact-SHA verification arming failed after the landing lock released. The durable prepared intent remains open and the ORC recovery watcher will retry; this landing is not being reported complete." \
-    >/dev/null 2>&1 || say "WARN: could not post post-land arm warning"
+  publish_landing_comment post-land-arm-failed \
+    "post-land verification arming returned no completed obligation" \
+    || say "POST-LAND COMMENT PUBLICATION FAILED: use the durable record printed above"
   exit 8
 fi
 
@@ -306,7 +307,8 @@ fi
 abandon(){
   local reason="$1" code="${2:-1}"
   say "ABANDON: $reason"
-  comment_abandon "$reason"
+  comment_abandon "$reason" \
+    || say "ABANDON COMMENT PUBLICATION FAILED: use the durable record printed above"
   exit "$code"
 }
 
