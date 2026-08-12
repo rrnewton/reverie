@@ -43,20 +43,19 @@ try:
 except ImportError as e:
     raise ImportError("This script must be run in GDB: ", str(e))
 import re
-from subprocess import check_output
 
-class MemQueryCommand (gdb.Command):
+
+class MemQueryCommand(gdb.Command):
     """Prints memory address properties"""
-    def __init__ (self):
-        super (MemQueryCommand, self).__init__ ("memquery",
-                                                gdb.COMMAND_DATA,
-                                                gdb.COMPLETE_FILENAME)
-    def invoke(self, arg, unused_from_tty):
+    def __init__(self) -> None:
+        super().__init__("memquery", gdb.COMMAND_DATA, gdb.COMPLETE_FILENAME)
+
+    def invoke(self, arg: str, unused_from_tty: bool) -> None:
         addr = gdb.parse_and_eval(arg)
         pid = int(gdb.selected_inferior().pid)
         map_name = "/proc/%d/maps" % pid
-        with open(map_name,'r') as map:
-            for line in map:
+        with open(map_name) as mappings:
+            for line in mappings:
                 line = line.rstrip()
                 if not line: continue
                 match = re.match(r'^(\w+)-(\w+)', line)
@@ -65,4 +64,6 @@ class MemQueryCommand (gdb.Command):
                     end = int(match.group(2), 16)
                     if addr >= start and addr < end:
                         print(line)
+
+
 MemQueryCommand()

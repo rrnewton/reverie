@@ -38,13 +38,22 @@ Usage: python codecsort.py [--rewrite|--global] codec_<version>.txt
 import re
 import sys
 import os.path
+from collections.abc import Callable
 
 
 DELIMITER = "# Instruction definitions:"
 
 class CodecLine:
     """Container to keep line info together"""
-    def __init__(self, pattern, nzcv, enum, feat, opcode, opndtypes):
+    def __init__(
+        self,
+        pattern: str,
+        nzcv: str,
+        enum: str | int | None,
+        feat: str,
+        opcode: str,
+        opndtypes: str,
+    ) -> None:
         self.enum = enum
         self.feat = feat
         self.pattern = pattern
@@ -52,10 +61,10 @@ class CodecLine:
         self.opcode = opcode
         self.opndtypes = opndtypes
 
-def read_instrs(codec_file):
+def read_instrs(codec_file: str) -> list[CodecLine]:
     """Read the instr lines from the codec_<version>.txt file"""
     seen_delimeter = False
-    instrs = []
+    instrs: list[CodecLine] = []
 
     with open(codec_file, "r") as lines:
         for line in (l.strip() for l in lines if l.strip()):
@@ -66,24 +75,36 @@ def read_instrs(codec_file):
                     continue
                 if line.strip().startswith("#"):
                     continue
-                line = line.split(None, 5)
-                if not line[2].isnumeric():
+                parts = line.split(None, 5)
+                if not parts[2].isnumeric():
                     # missing an enum entry, put a none in
-                    line = [line[0], line[1], None, line[2], line[3], " ".join(line[4:])]
-                instrs.append(CodecLine(*line))
+                    instrs.append(
+                        CodecLine(
+                            parts[0],
+                            parts[1],
+                            None,
+                            parts[2],
+                            parts[3],
+                            " ".join(parts[4:]),
+                        )
+                    )
+                else:
+                    instrs.append(CodecLine(*parts))
             except:
                 print("Error parsing line: {}".format(line), file=sys.stderr)
                 raise
 
     return instrs
 
-def handle_enums(instrs):
+def handle_enums(instrs: list[CodecLine]) -> None:
     """Make sure that every instr has an enum and that there are no clashes"""
     # There are 5 values populated by default into the enum so
     # we need to make sure that our first index is after those
     max_enum = 5
-    enums = {}
-    for i in (i for i in instrs if i.enum):
+    enums: dict[str, str | int] = {}
+    for i in instrs:
+        if i.enum is None:
+            continue
         if i.opcode in enums:
             assert enums[i.opcode] == i.enum, \
                 "Multiple enums for the same opcode {}: {} {}".format(
@@ -91,7 +112,7 @@ def handle_enums(instrs):
         else:
             enums[i.opcode] = i.enum
 
-    reversed_enums = {}
+    reversed_enums: dict[str | int, set[str]] = {}
     for opcode, enum in enums.items():
         reversed_enums.setdefault(enum, set()).add(opcode)
     for enum, opcodes in reversed_enums.items():
@@ -99,7 +120,10 @@ def handle_enums(instrs):
             "Multiple opcodes for the same enum {}: {}".format(
                 enum, ','.join(opcodes))
 
-    enums = {i.opcode: i.enum for i in instrs if i.enum}
+    enums = {}
+    for instr in instrs:
+        if instr.enum is not None:
+            enums[instr.opcode] = instr.enum
     if enums:
         max_enum = max(int(i.enum) for i in instrs if i.enum)
 
@@ -112,7 +136,7 @@ def handle_enums(instrs):
             enums[i.opcode] = max_enum
 
 
-def main():
+def main() -> None:
     """Reorder the given codec_<version>.txt """
 
     if len(sys.argv) < 2:
@@ -126,13 +150,18 @@ def main():
     else:
         codec_files = sys.argv[1:]
 
-    instr_orig = {codec_file: read_instrs(codec_file) for codec_file in codec_files}
-    file_instrs = {codec_file: sorted(instrs, key=lambda line: line.opcode) for codec_file, instrs in instr_orig.items()}
+    instr_orig: dict[str, list[CodecLine]] = {
+        codec_file: read_instrs(codec_file) for codec_file in codec_files
+    }
+    file_instrs: dict[str, list[CodecLine]] = {
+        codec_file: sorted(instrs, key=lambda line: line.opcode)
+        for codec_file, instrs in instr_orig.items()
+    }
 
     handle_enums([instr for finstrs in file_instrs.values() for instr in finstrs])
 
     for codec_file, instrs in file_instrs.items():
-        new_lines = []
+        new_lines: list[str] = []
 
         if instrs:
             # Scan for some max lengths for formatting
@@ -159,7 +188,7 @@ def main():
                         else instr.opndtypes
                         ).strip())
 
-        header = []
+        header: list[str] = []
         with open(codec_file, "r") as lines:
             for line in lines:
                 header.append(line.strip("\n"))
@@ -167,7 +196,7 @@ def main():
                     header.append("")
                     break
 
-        def output(dest):
+        def output(dest: Callable[[str], object]) -> None:
             dest("\n".join(header))
             dest("\n".join(new_lines))
 

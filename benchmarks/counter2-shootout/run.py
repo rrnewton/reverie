@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 
 BACKENDS = ("ptrace", "kvm", "liteinst", "dbt", "sabre", "e9patch")
@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> Never:
     raise SystemExit(f"counter2-shootout: {message}")
 
 
@@ -483,7 +483,7 @@ def main() -> None:
                 root,
             )
             check_outcome(execution, outcome, expected[(execution.workload, execution.variant)])
-            sample = {
+            sample: dict[str, Any] = {
                 "run_id": run_id,
                 "sequence": index,
                 "repetition": repetition,
@@ -509,8 +509,8 @@ def main() -> None:
 
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for sample in samples:
-        key = (sample["workload"], sample["backend"], sample["variant"])
-        groups.setdefault(key, []).append(sample)
+        group_key = (sample["workload"], sample["backend"], sample["variant"])
+        groups.setdefault(group_key, []).append(sample)
     native_medians = {
         (workload, variant): statistics.median(item["duration_ms"] for item in group)
         for (workload, backend, variant), group in groups.items()

@@ -39,11 +39,12 @@ import subprocess
 import os
 import re
 import difflib
+from typing import Pattern
 
 # XXX: This assumes a single line for a function signature!
-def filter_lines(path, regex, ignore_until=''):
+def filter_lines(path: str, regex: Pattern[str], ignore_until: str = "") -> list[str]:
     with open(path) as f:
-        patterns = []
+        patterns: list[str] = []
         ignore = True
         for l in f.readlines():
             ignore = ignore and l.find(ignore_until) == -1
@@ -56,7 +57,7 @@ def filter_lines(path, regex, ignore_until=''):
         return patterns
 
 
-def check(l1, l2, duplicate_check=False):
+def check(l1: list[str], l2: list[str], duplicate_check: bool = False) -> None:
     if duplicate_check:
         for item in l1:
             if l1.count(item) > 1:
@@ -82,10 +83,10 @@ def check(l1, l2, duplicate_check=False):
             print('Lines {} differ: \n  >  {}\n  <  {}'.format(i, a, b))
         sys.exit(1)
 
-def normalise_plus(string):
+def normalise_plus(string: str) -> str:
     return string.replace("+", "x")
 
-def main():
+def main() -> None:
     src_dir = sys.argv[1]
     bld_dir = sys.argv[2]
 

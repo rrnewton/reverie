@@ -45,23 +45,23 @@ except ImportError as e:
     raise ImportError("This script must be run in GDB: ", str(e))
 import re
 import subprocess
-from pathlib import Path
 import os.path
+from pathlib import Path
 
-class DRSymLoadCommand (gdb.Command):
+
+class DRSymLoadCommand(gdb.Command):
     """Loads symbols for libdynamorio.so"""
-    def __init__ (self):
-        super (DRSymLoadCommand, self).__init__ ("drsymload",
-                                                gdb.COMMAND_DATA,
-                                                gdb.COMPLETE_FILENAME)
-    def invoke(self, unused_arg, unused_from_tty):
+    def __init__(self) -> None:
+        super().__init__("drsymload", gdb.COMMAND_DATA, gdb.COMPLETE_FILENAME)
+
+    def invoke(self, unused_arg: str, unused_from_tty: bool) -> None:
         pid = int(gdb.selected_inferior().pid)
         exefile = "/proc/%d/exe" % pid
         drfile = str(Path(exefile).resolve())
         base = 0
         map_name = "/proc/%d/maps" % pid
-        with open(map_name,'r') as map:
-            for line in map:
+        with open(map_name) as mappings:
+            for line in mappings:
                 line = line.rstrip()
                 if not line: continue
                 match = re.match(r'^([^-]*)-.*libdynamorio.so', line)
@@ -69,10 +69,12 @@ class DRSymLoadCommand (gdb.Command):
                     base = int(match.group(1), 16)
                     print("libdynamorio base is 0x%x" % base)
                     break
-        p = subprocess.Popen(["objdump", "-h", drfile], stdout=subprocess.PIPE)
+        p = subprocess.Popen(
+            ["objdump", "-h", drfile], stdout=subprocess.PIPE, text=True
+        )
         stdout, _ = p.communicate()
         for line in iter(stdout.splitlines()):
-            match = re.match(r'.*\.text *\w+ *\w+ *\w+ *(\w+)', str(line))
+            match = re.match(r".*\.text *\w+ *\w+ *\w+ *(\w+)", line)
             if match:
                 offs = match.group(1)
                 cmd = "add-symbol-file %s 0x%x+0x%s" % (drfile, base, offs)
@@ -81,4 +83,6 @@ class DRSymLoadCommand (gdb.Command):
                 gdb.execute("symbol-file")
                 print("Running %s" % cmd)
                 gdb.execute(cmd)
+
+
 DRSymLoadCommand()
