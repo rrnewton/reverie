@@ -2441,6 +2441,12 @@ impl ValidateLock {
                 );
                 return Ok(None);
             }
+            // `run` enables subreaping before queue admission. Preflight and
+            // queue helpers can therefore leave exited grandchildren adopted
+            // here even though the payload has not been spawned yet. There is
+            // no protected direct Child in this phase, so the shared full reap
+            // is race-free.
+            reap_exited_children();
             thread::sleep(Duration::from_secs(POLL_SECONDS));
         }
     }
@@ -2859,6 +2865,8 @@ impl ValidateLock {
                 eprintln!("validate-lock: TIMEOUT after {wait}s");
                 return Ok(1);
             }
+            // No payload Child exists until this acquisition succeeds.
+            reap_exited_children();
             thread::sleep(Duration::from_secs(POLL_SECONDS));
         }
     }
@@ -3331,6 +3339,9 @@ impl ValidateLock {
                         );
                         return Ok(1);
                     }
+                    // No payload Child exists while yielding outside the box
+                    // anchor, so adopted helper exits are safe to reap here.
+                    reap_exited_children();
                     thread::sleep(Duration::from_secs(POLL_SECONDS));
                 }
             }
@@ -4940,13 +4951,47 @@ fn install_termination_handlers() -> io::Result<()> {
     Ok(())
 }
 
-/// Wait for `child`, killing its process group if it runs longer than
-/// `deadline_secs`. Copied (not reused) from landing_lock so the deadline-kill
-/// messages carry the `validate-lock:` prefix; `signal_group` itself is shared.
+/// Reap every exited child adopted by this subreaper without losing the direct
+/// payload child's status.
+///
+/// `Child::try_wait` followed by the shared `reap_exited_children` helper is
+/// unsafe here: the direct child can exit between those calls, and
+/// `waitpid(-1)` can then consume the status that `Child` still needs. Use one
+/// `waitpid(-1, WNOHANG)` loop for both jobs and return the direct status to the
+/// caller when it appears.
+fn reap_while_supervising(direct_pid: u32) -> io::Result<Option<ExitStatus>> {
+    loop {
+        let mut raw_status: libc::c_int = 0;
+        // SAFETY: `raw_status` is writable for the duration of the call. This
+        // process deliberately acts as a child subreaper, so -1 names only its
+        // own direct or adopted children; WNOHANG never blocks supervision.
+        let reaped = unsafe { libc::waitpid(-1, &mut raw_status, libc::WNOHANG) };
+        if reaped == 0 {
+            return Ok(None);
+        }
+        if reaped < 0 {
+            let source = io::Error::last_os_error();
+            if source.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(source);
+        }
+        if reaped == direct_pid as libc::pid_t {
+            return Ok(Some(
+                <ExitStatus as std::os::unix::process::ExitStatusExt>::from_raw(raw_status),
+            ));
+        }
+    }
+}
+
+/// Wait for `child`, reaping adopted exits while it is live and killing its
+/// process group if it runs longer than `deadline_secs`. Copied (not reused)
+/// from landing_lock so the deadline-kill messages carry the `validate-lock:`
+/// prefix; `signal_group` itself is shared.
 fn supervise_child(child: &mut Child, deadline_secs: u64, target: &str) -> ChildOutcome {
     let deadline = Instant::now() + Duration::from_secs(deadline_secs);
     loop {
-        match child.try_wait() {
+        match reap_while_supervising(child.id()) {
             Ok(Some(status)) => {
                 return ChildOutcome::Exited {
                     status,
@@ -4954,21 +4999,13 @@ fn supervise_child(child: &mut Child, deadline_secs: u64, target: &str) -> Child
                 }
             }
             Ok(None) => {}
-            Err(source) => match child.wait() {
-                Ok(status) => {
-                    return ChildOutcome::Exited {
-                        status,
-                        pgid: child.id(),
-                    }
-                }
-                Err(_) => {
-                    eprintln!("validate-lock: cannot wait on child: {source}");
-                    return ChildOutcome::Uncertain {
-                        pgid: child.id(),
-                        reason: source.to_string(),
-                    };
-                }
-            },
+            Err(source) => {
+                eprintln!("validate-lock: cannot wait on child: {source}");
+                return ChildOutcome::Uncertain {
+                    pgid: child.id(),
+                    reason: source.to_string(),
+                };
+            }
         }
         // A termination signal aimed at the SUPERVISOR must still fall through to
         // the census below, never skip it. Check before the deadline so a stop
@@ -6966,6 +7003,110 @@ while :; do sleep 60; done
         env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
         let _ = fs::remove_file(&stub);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The adopted grandchild must disappear while the direct payload is still
+    /// alive. An end-of-run reap cannot satisfy this bracket. Run it once with
+    /// success and once with a nonzero direct exit so periodic `waitpid(-1)`
+    /// cannot silently discard the payload's result.
+    #[test]
+    fn supervise_child_reaps_adopted_exits_during_run_and_preserves_direct_status() {
+        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        enable_child_subreaper().unwrap();
+        SUPERVISOR_TERMINATION_SIGNAL.store(0, Ordering::SeqCst);
+
+        let script = r#"
+import os
+import pathlib
+import sys
+import time
+
+grandchild_pid_path = pathlib.Path(sys.argv[1])
+release_path = pathlib.Path(sys.argv[2])
+exit_code = int(sys.argv[3])
+
+intermediate = os.fork()
+if intermediate == 0:
+    grandchild = os.fork()
+    if grandchild == 0:
+        os._exit(0)
+    grandchild_pid_path.write_text(f"{grandchild}\n", encoding="utf-8")
+    os._exit(0)
+
+os.waitpid(intermediate, 0)
+while not release_path.exists():
+    time.sleep(0.01)
+os._exit(exit_code)
+"#;
+
+        for expected_code in [0, 23] {
+            let root = env::temp_dir().join(format!(
+                "validate-lock-periodic-reap-{}-{expected_code}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&root).unwrap();
+            let grandchild_pid_path = root.join("grandchild.pid");
+            let release_path = root.join("release");
+            let mut gated = spawn_gated_child(
+                &OsString::from("/usr/bin/python3"),
+                &[
+                    OsString::from("-c"),
+                    OsString::from(script),
+                    grandchild_pid_path.clone().into_os_string(),
+                    release_path.clone().into_os_string(),
+                    OsString::from(expected_code.to_string()),
+                ],
+                |_| {},
+            )
+            .unwrap();
+            let direct_pid = gated.child.id();
+            gated.release().unwrap();
+
+            let observer = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(4);
+                let grandchild_pid = loop {
+                    if let Ok(text) = fs::read_to_string(&grandchild_pid_path) {
+                        if let Ok(pid) = text.trim().parse::<u32>() {
+                            break pid;
+                        }
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "direct child did not publish its grandchild PID"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                };
+                let grandchild_proc = PathBuf::from(format!("/proc/{grandchild_pid}"));
+                let direct_proc = PathBuf::from(format!("/proc/{direct_pid}"));
+                while grandchild_proc.exists() {
+                    assert!(
+                        direct_proc.exists(),
+                        "direct payload exited before its adopted child was reaped"
+                    );
+                    assert!(
+                        Instant::now() < deadline,
+                        "adopted exited child remained present during the live payload"
+                    );
+                    thread::sleep(Duration::from_millis(10));
+                }
+                assert!(
+                    direct_proc.exists(),
+                    "periodic reap was observed only after the direct payload exited"
+                );
+                fs::write(&release_path, b"release\n").unwrap();
+            });
+
+            let outcome = supervise_child(&mut gated.child, 5, "periodic-reap-bracket");
+            observer.join().unwrap();
+            match outcome {
+                ChildOutcome::Exited { status, pgid } => {
+                    assert_eq!(pgid, direct_pid);
+                    assert_eq!(status.code(), Some(expected_code));
+                }
+                _ => panic!("expected direct child exit"),
+            }
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     /// POSITIVE PROTOCOL BRACKET: the supervised leader deliberately exits
