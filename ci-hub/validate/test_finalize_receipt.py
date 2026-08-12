@@ -204,7 +204,7 @@ def test_schema6_clone_preserves_cell_results_without_downgrade():
         "selected": selected,
         "cells": [{
             "lane": "strict", "category": "record-replay", "test": "hello", "mode": "verify", "backend": "ptrace",
-            "cell_verdict": {"state": "unavailable-with-reason", "comparison_tier": "unqualified-no-comparison", "reason": "raw no_result"},
+            "cell_verdict": {"state": "unavailable-with-reason", "comparison_tier": "declared-but-unverifiable", "reason": "raw no_result"},
         }],
     }
     base = {

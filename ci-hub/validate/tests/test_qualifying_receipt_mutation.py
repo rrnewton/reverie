@@ -39,6 +39,7 @@ Consumers driven (seven certifier sites, six panel legs, three languages):
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -188,13 +189,13 @@ def _schema6_cell_row(sha: str, state: str) -> dict:
     if state in {"performs-no-comparison-by-design", "unavailable-with-reason"}:
         verdict = {
             "state": state,
-            "comparison_tier": "unqualified-no-comparison",
+            "comparison_tier": "declared-but-unverifiable",
             "reason": "exit-status gate" if state.startswith("performs") else "raw no_result: comparator output absent",
         }
     else:
         verdict = {
             "state": state,
-            "comparison_tier": "full-stdout-info-stack-heap",
+            "comparison_tier": "canonical-bitwise",
             "comparison": {
                 "strictness": "canonical",
                 "compare_logs": True,
@@ -937,6 +938,37 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                     qualifying_receipt.CellResultsVerdict.SATISFIED,
                 )
 
+    def test_tier_vocabulary_is_exactly_the_four_settled_names(self) -> None:
+        self.assertEqual(
+            qualifying_receipt._KNOWN_COMPARISON_TIERS,
+            {
+                "canonical-bitwise",
+                "exit-and-stream-equality",
+                "execution-only-self-consistent",
+                "declared-but-unverifiable",
+            },
+        )
+        for retired in (
+            "full-stdout-info-stack-heap",
+            "stdout-info-stack-heap-spot-check",
+            "legacy-unqualified",
+            "unqualified-no-comparison",
+            "unqualified-stdout-only",
+            "unqualified-self-verify-only",
+            "unqualified-tool-count-only",
+        ):
+            with self.subTest(retired=retired):
+                row = _schema6_cell_row(SHA, "compared-and-matched")
+                row["cell_results"]["cells"][0]["cell_verdict"][
+                    "comparison_tier"
+                ] = retired
+                self.assertIs(
+                    qualifying_receipt.cell_results_verdict(
+                        row, qualifying_receipt.active()
+                    ),
+                    qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+                )
+
     def test_raw_no_result_is_cause_evidence_not_a_fifth_verdict(self) -> None:
         row = _schema6_cell_row(SHA, "unavailable-with-reason")
         row["cell_results"]["cells"][0]["cell_verdict"]["state"] = "no_result"
@@ -975,13 +1007,25 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                 self.assertIs(projection["cells"][0]["scorecard_green"], green)
                 self.assertEqual(projection["green_count"], int(green))
 
-        unqualified = _schema6_cell_row(SHA, "compared-and-matched")
-        unqualified["cell_results"]["cells"][0]["cell_verdict"][
-            "comparison_tier"
-        ] = "unqualified-self-verify-only"
-        projection = qualifying_receipt.cell_scorecard_projection(unqualified, predicate)
+        weak = _schema6_cell_row(SHA, "compared-and-matched")
+        weak_verdict = weak["cell_results"]["cells"][0]["cell_verdict"]
+        weak_verdict["comparison_tier"] = "exit-and-stream-equality"
+        weak_verdict["comparison"]["strictness"] = "stripped"
+        weak_verdict["comparison"]["compare_logs"] = False
+        weak_verdict["comparison"]["log_scope"] = "deterministic"
+        weak_verdict["comparison"]["strip_lines"] = True
+        weak_verdict["comparison"]["canonicalize_addresses"] = False
+        weak_verdict["comparison"]["full_trace"] = False
+        weak_verdict["comparison"]["exact_remainder"] = False
+        weak_verdict["bitwise_parity"] = False
+        weak_verdict["compared_log_messages"] = None
+        projection = qualifying_receipt.cell_scorecard_projection(weak, predicate)
         self.assertTrue(projection["eligible"])
         self.assertFalse(projection["cells"][0]["scorecard_green"])
+        self.assertEqual(
+            projection["cells"][0]["comparison_tier"],
+            "exit-and-stream-equality",
+        )
 
         missing = _schema6_cell_row(SHA, "compared-and-matched")
         missing["exit_code"] = 0
@@ -990,6 +1034,175 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         self.assertFalse(projection["eligible"])
         self.assertIs(projection["cell_results_satisfied"], False)
         self.assertIsNone(projection["cells"])
+
+    def test_matched_tiers_remain_distinct_in_receipt_and_projection(self) -> None:
+        predicate = qualifying_receipt.active()
+        canonical = _schema6_cell_row(SHA, "compared-and-matched")
+        weak = copy.deepcopy(canonical)
+        weak_verdict = weak["cell_results"]["cells"][0]["cell_verdict"]
+        weak_verdict["comparison_tier"] = "exit-and-stream-equality"
+        weak_verdict["comparison"]["strictness"] = "stripped"
+        weak_verdict["comparison"]["compare_logs"] = False
+        weak_verdict["comparison"]["log_scope"] = "deterministic"
+        weak_verdict["comparison"]["strip_lines"] = True
+        weak_verdict["comparison"]["canonicalize_addresses"] = False
+        weak_verdict["comparison"]["full_trace"] = False
+        weak_verdict["comparison"]["exact_remainder"] = False
+        weak_verdict["bitwise_parity"] = False
+        weak_verdict["compared_log_messages"] = None
+
+        canonical_projection = qualifying_receipt.cell_scorecard_projection(
+            canonical, predicate
+        )
+        weak_projection = qualifying_receipt.cell_scorecard_projection(weak, predicate)
+        self.assertEqual(
+            canonical_projection["cells"][0]["comparison_tier"],
+            "canonical-bitwise",
+        )
+        self.assertEqual(
+            weak_projection["cells"][0]["comparison_tier"],
+            "exit-and-stream-equality",
+        )
+        self.assertTrue(canonical_projection["cells"][0]["scorecard_green"])
+        self.assertFalse(weak_projection["cells"][0]["scorecard_green"])
+        self.assertNotEqual(canonical_projection["cells"], weak_projection["cells"])
+
+    def test_weak_tiers_do_not_become_canonical_comparison_evidence(self) -> None:
+        predicate = qualifying_receipt.active()
+        laundered = _schema6_cell_row(SHA, "compared-and-matched")
+        verdict = laundered["cell_results"]["cells"][0]["cell_verdict"]
+        verdict["comparison_tier"] = "execution-only-self-consistent"
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(laundered, predicate),
+            qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+            "WITHOUT CONVERTING EITHER WEAK TIER INTO CANONICAL COMPARISON EVIDENCE",
+        )
+
+        measured_weak = copy.deepcopy(laundered)
+        measured_verdict = measured_weak["cell_results"]["cells"][0][
+            "cell_verdict"
+        ]
+        measured_verdict["comparison"]["strictness"] = "stripped"
+        measured_verdict["comparison"]["compare_logs"] = False
+        measured_verdict["comparison"]["log_scope"] = "deterministic"
+        measured_verdict["comparison"]["strip_lines"] = True
+        measured_verdict["comparison"]["canonicalize_addresses"] = False
+        measured_verdict["comparison"]["full_trace"] = False
+        measured_verdict["comparison"]["exact_remainder"] = False
+        measured_verdict["bitwise_parity"] = False
+        measured_verdict["compared_log_messages"] = None
+        projection = qualifying_receipt.cell_scorecard_projection(
+            measured_weak, predicate
+        )
+        self.assertTrue(projection["eligible"])
+        self.assertEqual(
+            projection["cells"][0]["comparison_tier"],
+            "execution-only-self-consistent",
+        )
+        self.assertFalse(projection["cells"][0]["scorecard_green"])
+
+        declared_laundered = _schema6_cell_row(SHA, "compared-and-matched")
+        declared_laundered["cell_results"]["cells"][0]["cell_verdict"][
+            "comparison_tier"
+        ] = "declared-but-unverifiable"
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(
+                declared_laundered, predicate
+            ),
+            qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+            "WITHOUT CONVERTING EITHER WEAK TIER INTO CANONICAL COMPARISON EVIDENCE",
+        )
+        declared = _schema6_cell_row(SHA, "unavailable-with-reason")
+        declared_projection = qualifying_receipt.cell_scorecard_projection(
+            declared, predicate
+        )
+        self.assertTrue(declared_projection["eligible"])
+        self.assertEqual(
+            declared_projection["cells"][0]["comparison_tier"],
+            "declared-but-unverifiable",
+        )
+        self.assertFalse(declared_projection["cells"][0]["scorecard_green"])
+
+    def test_tiers_classify_cells_not_backends_or_permanent_capabilities(self) -> None:
+        predicate = qualifying_receipt.active()
+        mixed = _schema6_cell_row(SHA, "compared-and-matched")
+        canonical_cell = mixed["cell_results"]["cells"][0]
+        canonical_cell["backend"] = "e9patch"
+        canonical_cell["test"] = "canonical-cell"
+        weak_cell = copy.deepcopy(canonical_cell)
+        weak_cell["test"] = "broad-path-cell"
+        weak_verdict = weak_cell["cell_verdict"]
+        weak_verdict["comparison_tier"] = "execution-only-self-consistent"
+        weak_verdict["comparison"]["strictness"] = "stripped"
+        weak_verdict["comparison"]["compare_logs"] = False
+        weak_verdict["comparison"]["log_scope"] = "deterministic"
+        weak_verdict["comparison"]["strip_lines"] = True
+        weak_verdict["comparison"]["canonicalize_addresses"] = False
+        weak_verdict["comparison"]["full_trace"] = False
+        weak_verdict["comparison"]["exact_remainder"] = False
+        weak_verdict["bitwise_parity"] = False
+        weak_verdict["compared_log_messages"] = None
+        selected = [
+            {key: cell[key] for key in qualifying_receipt._CELL_IDENTITY_KEYS}
+            for cell in (canonical_cell, weak_cell)
+        ]
+        mixed["cell_results"]["selected"] = selected
+        mixed["cell_results"]["cells"] = [canonical_cell, weak_cell]
+        mixed["cell_results"]["selected_count"] = 2
+        mixed["cell_results"]["recorded_count"] = 2
+        mixed["cell_results"]["population_sha256"] = (
+            qualifying_receipt.cell_population_sha256(selected)
+        )
+        mixed["cell_results"]["artifact"]["row_count"] = 2
+        mixed_projection = qualifying_receipt.cell_scorecard_projection(
+            mixed, predicate
+        )
+        self.assertTrue(mixed_projection["eligible"])
+        self.assertEqual(mixed_projection["green_count"], 1)
+        self.assertEqual(
+            [cell["comparison_tier"] for cell in mixed_projection["cells"]],
+            ["canonical-bitwise", "execution-only-self-consistent"],
+        )
+
+        current = _schema6_cell_row(SHA, "unavailable-with-reason")
+        current_cell = current["cell_results"]["cells"][0]
+        current_cell["backend"] = "dbt"
+        current["cell_results"]["selected"][0]["backend"] = "dbt"
+        current["cell_results"]["population_sha256"] = (
+            qualifying_receipt.cell_population_sha256(
+                current["cell_results"]["selected"]
+            )
+        )
+
+        future = _schema6_cell_row(SHA, "compared-and-matched")
+        future["run_id"] = "schema6-dbt-with-detlog"
+        future["record_id"] = "schema6-dbt-with-detlog"
+        future["cell_results"]["run_id"] = "schema6-dbt-with-detlog"
+        future_cell = future["cell_results"]["cells"][0]
+        future_cell["backend"] = "dbt"
+        future["cell_results"]["selected"][0]["backend"] = "dbt"
+        future["cell_results"]["population_sha256"] = (
+            qualifying_receipt.cell_population_sha256(
+                future["cell_results"]["selected"]
+            )
+        )
+
+        current_projection = qualifying_receipt.cell_scorecard_projection(
+            current, predicate
+        )
+        future_projection = qualifying_receipt.cell_scorecard_projection(
+            future, predicate
+        )
+        self.assertEqual(
+            current_projection["cells"][0]["comparison_tier"],
+            "declared-but-unverifiable",
+        )
+        self.assertFalse(current_projection["cells"][0]["scorecard_green"])
+        self.assertEqual(
+            future_projection["cells"][0]["comparison_tier"],
+            "canonical-bitwise",
+        )
+        self.assertTrue(future_projection["cells"][0]["scorecard_green"])
 
     def test_grandfathered_whole_run_never_satisfies_a_scorecard_cell(self) -> None:
         legacy = _green_row(SHA)

@@ -551,13 +551,10 @@ _REASONED_STATES = {
     "unavailable-with-reason",
 }
 _KNOWN_COMPARISON_TIERS = {
-    "full-stdout-info-stack-heap",
-    "stdout-info-stack-heap-spot-check",
-    "legacy-unqualified",
-    "unqualified-no-comparison",
-    "unqualified-stdout-only",
-    "unqualified-self-verify-only",
-    "unqualified-tool-count-only",
+    "canonical-bitwise",
+    "exit-and-stream-equality",
+    "execution-only-self-consistent",
+    "declared-but-unverifiable",
 }
 
 
@@ -622,7 +619,7 @@ def cell_verdict_valid(value: Any) -> bool:
     if state in _REASONED_STATES:
         return (
             set(value) == {"state", "comparison_tier", "reason"}
-            and value.get("comparison_tier") == "unqualified-no-comparison"
+            and value.get("comparison_tier") == "declared-but-unverifiable"
             and _nonblank(value.get("reason"))
         )
     if state not in _COMPARED_STATES:
@@ -636,6 +633,9 @@ def cell_verdict_valid(value: Any) -> bool:
     }:
         return False
     if value.get("comparison_tier") not in _KNOWN_COMPARISON_TIERS:
+        return False
+    tier = value["comparison_tier"]
+    if tier == "declared-but-unverifiable":
         return False
     comparison = value.get("comparison")
     if not _comparison_spec_valid(comparison) or not isinstance(value.get("bitwise_parity"), bool):
@@ -653,10 +653,8 @@ def cell_verdict_valid(value: Any) -> bool:
         return False
     if state == "compared-and-diverged" and value["bitwise_parity"]:
         return False
-    if value["bitwise_parity"]:
-        return (
-            state == "compared-and-matched"
-            and comparison["strictness"] == "canonical"
+    canonical_evidence_shape = (
+            comparison["strictness"] == "canonical"
             and comparison["compare_logs"] is True
             and comparison["strip_lines"] is False
             and comparison["canonicalize_addresses"] is True
@@ -668,8 +666,13 @@ def cell_verdict_valid(value: Any) -> bool:
             and counts is not None
             and counts["left"] > 0
             and counts["right"] > 0
+    )
+    if tier == "canonical-bitwise":
+        return canonical_evidence_shape and value["bitwise_parity"] == (
+            state == "compared-and-matched"
         )
-    return True
+    # WITHOUT CONVERTING EITHER WEAK TIER INTO CANONICAL COMPARISON EVIDENCE.
+    return value["bitwise_parity"] is False and not canonical_evidence_shape
 
 
 def cell_results_verdict(
@@ -770,8 +773,7 @@ def cell_results_accepted(verdict: CellResultsVerdict) -> bool:
 
 
 _SCORECARD_GREEN_TIERS = {
-    "full-stdout-info-stack-heap",
-    "stdout-info-stack-heap-spot-check",
+    "canonical-bitwise",
 }
 
 

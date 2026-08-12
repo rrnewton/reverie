@@ -81,12 +81,12 @@ def verdict(state: str = "compared-and-matched") -> dict:
     if state in {"performs-no-comparison-by-design", "unavailable-with-reason"}:
         return {
             "state": state,
-            "comparison_tier": "unqualified-no-comparison",
+            "comparison_tier": "declared-but-unverifiable",
             "reason": "this cell is an exit-status probe" if state.startswith("performs") else "raw no_result: comparator output absent",
         }
     return {
         "state": state,
-        "comparison_tier": "full-stdout-info-stack-heap",
+        "comparison_tier": "canonical-bitwise",
         "comparison": comparison(),
         "bitwise_parity": state == "compared-and-matched",
         "compared_log_messages": {"left": 3, "right": 3},
@@ -251,7 +251,7 @@ def test_raw_no_result_is_not_a_fifth_cell_verdict(tmp_path: Path):
     source = with_cell_results(row(tmp_path), tmp_path)
     source["cell_results"]["cells"][0]["cell_verdict"] = {
         "state": "no_result",
-        "comparison_tier": "unqualified-no-comparison",
+        "comparison_tier": "declared-but-unverifiable",
         "reason": "raw producer cause",
     }
 

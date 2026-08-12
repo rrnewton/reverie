@@ -391,13 +391,10 @@ pub enum ComparedLogScope {
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum ComparisonTier {
-    FullStdoutInfoStackHeap,
-    StdoutInfoStackHeapSpotCheck,
-    LegacyUnqualified,
-    UnqualifiedNoComparison,
-    UnqualifiedStdoutOnly,
-    UnqualifiedSelfVerifyOnly,
-    UnqualifiedToolCountOnly,
+    CanonicalBitwise,
+    ExitAndStreamEquality,
+    ExecutionOnlySelfConsistent,
+    DeclaredButUnverifiable,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -588,7 +585,7 @@ mod tests {
     fn cell_verdict_schema_keeps_all_four_states_distinct() {
         let compared = r#"{
             "state":"compared-and-matched",
-            "comparison_tier":"unqualified-self-verify-only",
+            "comparison_tier":"canonical-bitwise",
             "comparison":{
                 "strictness":"canonical","compare_logs":true,"log_scope":"info",
                 "strip_lines":false,"canonicalize_addresses":true,"full_trace":true,
@@ -614,7 +611,7 @@ mod tests {
                     .replace("\"bitwise_parity\":true", "\"bitwise_parity\":false")
             } else {
                 format!(
-                    r#"{{"state":"{state}","comparison_tier":"unqualified-no-comparison","reason":"fixture reason"}}"#
+                    r#"{{"state":"{state}","comparison_tier":"declared-but-unverifiable","reason":"fixture reason"}}"#
                 )
             };
             let verdict: CellVerdict = serde_json::from_str(&value).unwrap();
@@ -634,7 +631,7 @@ mod tests {
     fn compared_log_messages_key_is_required_but_explicit_null_is_retained() {
         let base = r#"{
             "state":"compared-and-matched",
-            "comparison_tier":"unqualified-self-verify-only",
+            "comparison_tier":"execution-only-self-consistent",
             "comparison":{
                 "strictness":"stripped","compare_logs":false,"log_scope":"deterministic",
                 "strip_lines":true,"canonicalize_addresses":false,"full_trace":false,
@@ -651,5 +648,18 @@ mod tests {
             .unwrap()
             .remove("compared_log_messages");
         assert!(serde_json::from_value::<CellVerdict>(missing).is_err());
+
+        for retired in [
+            "full-stdout-info-stack-heap",
+            "stdout-info-stack-heap-spot-check",
+            "legacy-unqualified",
+            "unqualified-no-comparison",
+            "unqualified-stdout-only",
+            "unqualified-self-verify-only",
+            "unqualified-tool-count-only",
+        ] {
+            let old_tier = base.replace("execution-only-self-consistent", retired);
+            assert!(serde_json::from_str::<CellVerdict>(&old_tier).is_err());
+        }
     }
 }
