@@ -7,15 +7,21 @@ description: "Land changes after validation qualifies under hermit-validation-au
 
 **Follow skill `hermit-validation-authority` for validation authority and evidence.**
 
-## PR Comment Convention
+## PR description and GitHub comment disclosure
 
-Every PR description and comment created under this workflow MUST start with
-the applicable role tag:
+Write the five-field disclosure required by `AGENTS.md` in a bot-authored PR
+description. Do not write that prefix in a GitHub comment or review body. From
+the `dev-hermit` parent, send the unprefixed body through the registered
+boundary:
 
-- `[impl agent, MODEL]` for implementation agents
-- `[adversarial-reviewer agent, MODEL]` for review agents
-- `[coordinator, MODEL]` for coordinator agents
-- `[Human]` for the human owner
+```bash
+with-proxy ./ci-hub/bin/gh --who AGENT --team TEAM --role ROLE \
+  pr comment PR --repo OWNER/REPO --body-file BODY
+```
+
+The three boundary flags must precede `pr comment`. The boundary validates the
+caller, resolves the model, and prepends the disclosure. Do not pass `--model`
+and do not substitute bare or official `gh` for `ci-hub/bin/gh`.
 
 This is the **canonical and currently active** review discipline. Normal Hermit
 changes land as soon as required adversarial review is resolved and validation

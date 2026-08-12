@@ -87,8 +87,22 @@ is the operational summary of the coordinator role.
   across status updates; when enumerating variants or actors, retain it and add
   a descriptive suffix, for example `btrfs-flood-fix/claude-agent`.
   Infrastructure IDs do not replace the slug.
-- Use `with-proxy` for all networked git/gh operations. Every PR comment starts
-  with `[coordinator, <model>]`.
+- Use `with-proxy` for all networked git/GitHub operations. Commit messages and
+  PR descriptions carry the five-field disclosure required by `AGENTS.md`; the
+  author writes those prefixes. GitHub comment and review bodies do **not**
+  carry a hand-written prefix. Include this literal command shape in every
+  dispatch that can write a GitHub comment or review:
+
+  ```bash
+  with-proxy ./ci-hub/bin/gh --who AGENT --team TEAM --role ROLE \
+    pr comment PR --repo OWNER/REPO --body-file BODY
+  ```
+
+  `--who`, `--team`, and `--role` belong to `ci-hub/bin/gh` and must all precede
+  the real `gh` subcommand. The boundary checks the caller, resolves the model,
+  and prepends the five-field disclosure. Do not supply `--model`, do not put a
+  disclosure in `BODY`, and do not substitute bare or official `gh` for the
+  named boundary.
 
 ## Plain-language status
 

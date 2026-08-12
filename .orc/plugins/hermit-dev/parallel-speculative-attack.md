@@ -61,9 +61,10 @@ For each selected strategy:
 2. Tell the agent explicitly: **SPECULATIVE competing draft; do not land.** Give
    it the same problem statement and evidence, but only its own candidate brief,
    validation target, timebox, and kill criterion.
-3. Require an early draft PR once the approach is coherent. The PR description
-   starts with `[impl agent, MODEL]`, names the strategy slug, links the umbrella
-   task, and reports exact SHAs and validation without claiming selection.
+3. Require an early draft PR once the approach is coherent. The author writes
+   the five-field disclosure required by `AGENTS.md` at the start of the PR
+   description, names the strategy slug, links the umbrella task, and reports
+   exact SHAs and validation without claiming selection.
 4. Apply the `speculative` label immediately:
 
    ```bash
@@ -76,11 +77,20 @@ an attempt as soon as its kill criterion fires.
 
 ## Link the competing PRs
 
-As soon as two PRs exist, add a coordinator comment to every competing PR. The
-comment starts with `[coordinator, MODEL]` and links the complete set, strategy
-slugs, current head SHAs, timeboxes, and the selection rubric. Update the same
-comment or add a new tagged comment when the set changes. No PR should look like
-an independent landing candidate.
+As soon as two PRs exist, add a coordinator comment to every competing PR. Keep
+the body unprefixed and post it from the `dev-hermit` parent through the
+registered boundary:
+
+```bash
+with-proxy ./ci-hub/bin/gh --who AGENT --team TEAM --role coordinator \
+  pr comment PR --repo OWNER/REPO --body-file BODY
+```
+
+The three boundary flags precede `pr comment`; the boundary resolves the model
+and prepends the disclosure. The body links the complete set, strategy slugs,
+current head SHAs, timeboxes, and the selection rubric. Update the same comment
+or add a new attributed comment when the set changes. No PR should look like an
+independent landing candidate.
 
 Evaluate all surviving approaches against the rubric declared before launch:
 correctness and determinism first, then focused validation, blast radius,
