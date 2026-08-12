@@ -56,7 +56,9 @@ pub const CLIENT_THREAD_START_FAILURE_EXIT_CODE: i32 = 125;
 /// Captured guest output and the bytes emitted through the DBT diagnostic fd.
 #[derive(Debug)]
 pub struct OutputWithDiagnostics {
+    /// Bytes and exit status produced through the guest's standard streams.
     pub output: Output,
+    /// Bytes emitted through the inherited DBT diagnostic descriptor.
     pub diagnostics: Vec<u8>,
 }
 
