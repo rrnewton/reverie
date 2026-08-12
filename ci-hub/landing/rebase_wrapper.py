@@ -94,7 +94,7 @@ Usage:
                              --conflicts none|<file,file,...>
                              [--resolver A --risk-judgement R --rationale "..."]
                              [--repo-checkout P] [--registry P] [--store P]
-                             [--no-fetch] [--json]
+                             [--no-publish-provenance] [--no-fetch] [--json]
   rebase_wrapper.py rebase   --source <sha-or-branch> --onto <sha|newest-green>
                              [--resolver A] [--push] [--repo-checkout P]
                              [--registry P] [--store P] [--no-fetch] [--json]
@@ -790,14 +790,18 @@ def do_record(args) -> int:
     rec = build_record(args.source, args.base, args.result, conflicts,
                        args.resolver, verdict, now, receipt=receipt)
     rec["rationale"] = (args.rationale or "").strip()
-    append_record(args.store, rec)
     maybe_publish_provenance(args, rec)
+    append_record(args.store, rec)
     emit_record(rec, args.json, action="RECORDED")
     return EXIT_OK
 
 
 def maybe_publish_provenance(args, rec: dict) -> None:
-    """Publish durable provenance iff asked AND there is a soft-green claim to make.
+    """Publish durable provenance by default for every soft-green claim.
+
+    ``--no-publish-provenance`` is an explicit offline escape hatch.  A publish
+    failure happens before the local row is appended, so the cache cannot claim
+    a completed record whose non-derivable judgement exists only on this box.
     A publish failure is a visible ERROR here (the datum is the whole point of A2)
     -- never swallowed into a store-only success that looks complete."""
     if not getattr(args, "publish_provenance", False):
@@ -911,10 +915,10 @@ def do_rebase(args) -> int:
                              receipt_present=receipt is not None, result=result)
     rec = build_record(source, base, result, [], args.resolver, verdict,
                        utc_now(), receipt=receipt)
-    append_record(args.store, rec)
-    maybe_publish_provenance(args, rec)
     # Leave the tree on a clean detached base (stateless, like union-rebase.sh).
     _git(checkout, ["checkout", "-q", "--detach", base])
+    maybe_publish_provenance(args, rec)
+    append_record(args.store, rec)
     emit_record(rec, args.json, action="RECORDED")
     if not receipt and not args.json:
         print(rec["landable_reason"], file=sys.stderr)
@@ -1276,6 +1280,20 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--store", default=default_store())
         p.add_argument("--json", action="store_true")
 
+    def provenance_options(p):
+        publish = p.add_mutually_exclusive_group()
+        publish.add_argument(
+            "--publish-provenance", dest="publish_provenance",
+            action="store_true",
+            help="publish soft-green provenance durably (the default)",
+        )
+        publish.add_argument(
+            "--no-publish-provenance", dest="publish_provenance",
+            action="store_false",
+            help="explicit offline escape: retain provenance only in the local cache",
+        )
+        p.set_defaults(publish_provenance=True)
+
     pr = sub.add_parser("record", description="record a completed rebase outcome", help="record a completed rebase outcome")
     common(pr)
     pr.add_argument("--source", required=True, help="revision X (pre-rebase sha)")
@@ -1291,12 +1309,7 @@ def build_parser() -> argparse.ArgumentParser:
                     action="store_true",
                     help="record receipt_at_Z=null without querying validate-status "
                          "(offline); yields NOT-LANDABLE until `eligible` re-checks")
-    pr.add_argument("--publish-provenance", dest="publish_provenance",
-                    action="store_true",
-                    help="ALSO publish the non-derivable soft-green provenance "
-                         "(level+judgement+rationale) durably to the shared "
-                         f"{RECEIPT_BRANCH} branch so any host can dereference it "
-                         "(A2 cross-host close; no-op for a null soft-green)")
+    provenance_options(pr)
     pr.add_argument("--no-fetch", action="store_true")
     pr.set_defaults(func=do_record)
 
@@ -1315,10 +1328,7 @@ def build_parser() -> argparse.ArgumentParser:
     rb.add_argument("--no-receipt-check", dest="no_receipt_check",
                     action="store_true",
                     help="skip binding the receipt at the pushed head Z (offline)")
-    rb.add_argument("--publish-provenance", dest="publish_provenance",
-                    action="store_true",
-                    help="ALSO publish the soft-green provenance durably to the "
-                         f"shared {RECEIPT_BRANCH} branch (A2 cross-host close)")
+    provenance_options(rb)
     rb.add_argument("--no-fetch", action="store_true")
     rb.set_defaults(func=do_rebase)
 

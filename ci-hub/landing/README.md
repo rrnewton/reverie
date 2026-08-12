@@ -470,13 +470,15 @@ filesystem. With the env set once on a host, every copy converges on one store.
 the wrapper's stored buckets. Interpret those fields only through
 `hermit-validation-authority`; absence from one bucket is not proof of non-landability.
 
-**Cross-host durability (opt-in).** A machine-local JSONL cannot carry the one
+**Cross-host durability (default).** A machine-local JSONL cannot carry the one
 non-derivable datum (the soft-green level + resolver judgement + rationale) to
-another host. `record`/`rebase --publish-provenance` publishes exactly that datum,
-content-addressed and keyed by Z, to the shared `validation-receipts` branch;
+another host. `record`/`rebase` publishes exactly that datum by default,
+content-addressed and keyed by Z, to the shared `validation-receipts` branch and
+stores the resulting path, digest, and branch commit in the local JSONL row;
 `eligible --durable-provenance` recovers an otherwise-`unaccounted` open-PR head by
 dereferencing it. Durability supplies provenance, never landability. Network stays off
-the default hot path.
+the `eligible` hot path. `--no-publish-provenance` is an explicit offline escape;
+it leaves the record box-local and must not be used by a normal landing flow.
 
 ## Notes
 

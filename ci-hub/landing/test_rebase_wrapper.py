@@ -188,6 +188,10 @@ _STUB_RECEIPT = {"sha": Z, "verdict": "VALIDATED", "profile": "full",
 def _args(argv, store, monkeypatch, clears=True, unmet=None, receipt=True):
     """Parse argv, point the store at tmp, and stub the floor + receipt checks +
     clock. `receipt=True` binds a validated receipt at Z; False/None binds none."""
+    if (argv[0] == "record"
+            and "--publish-provenance" not in argv
+            and "--no-publish-provenance" not in argv):
+        argv = argv + ["--no-publish-provenance"]
     args = M.build_parser().parse_args(argv + ["--store", store, "--no-fetch"]
                                        if "record" == argv[0] else argv + ["--store", store])
     monkeypatch.setattr(M, "base_floor_status",
@@ -549,6 +553,58 @@ def test_publish_provenance_content_addressed_immutable_path(monkeypatch) -> Non
     assert captured["path"] == f"rebase-provenance/{Z}/{digest}.json"
     assert captured["branch"] == M.RECEIPT_BRANCH
     assert info["digest"] == digest
+
+
+def test_soft_green_publication_is_default_with_explicit_offline_escape() -> None:
+    parser = M.build_parser()
+    common = ["--source", X, "--base", Y, "--result", Z, "--conflicts", "none"]
+    assert parser.parse_args(["record", *common]).publish_provenance is True
+    assert parser.parse_args(
+        ["record", *common, "--no-publish-provenance"]
+    ).publish_provenance is False
+    assert parser.parse_args(
+        ["rebase", "--source", X, "--onto", Y]
+    ).publish_provenance is True
+
+
+def test_default_publish_pointer_is_persisted_in_local_row(
+        tmp_path, monkeypatch) -> None:
+    store = str(tmp_path / "s.jsonl")
+    info = {
+        "path": f"rebase-provenance/{Z}/digest.json",
+        "digest": "d" * 64,
+        "commit": "c" * 40,
+    }
+    monkeypatch.setattr(M, "publish_provenance", lambda rec: info)
+    args = _args(
+        ["record", "--source", X, "--base", Y, "--result", Z,
+         "--conflicts", "none", "--publish-provenance"],
+        store, monkeypatch,
+    )
+    assert M.do_record(args) == M.EXIT_OK
+    assert M.load_records(store)[-1]["provenance"] == info
+
+
+def test_publish_failure_writes_no_local_soft_green_row(
+        tmp_path, monkeypatch) -> None:
+    store = str(tmp_path / "s.jsonl")
+
+    def fail_publish(_rec):
+        raise M.RebaseError("fixture publish failure")
+
+    monkeypatch.setattr(M, "publish_provenance", fail_publish)
+    args = _args(
+        ["record", "--source", X, "--base", Y, "--result", Z,
+         "--conflicts", "none", "--publish-provenance"],
+        store, monkeypatch,
+    )
+    try:
+        M.do_record(args)
+    except M.RebaseError as error:
+        assert "fixture publish failure" in str(error)
+    else:
+        raise AssertionError("a failed durable publish must refuse the record")
+    assert M.load_records(store) == []
 
 
 def test_fetch_provenance_picks_latest_by_time(monkeypatch) -> None:
