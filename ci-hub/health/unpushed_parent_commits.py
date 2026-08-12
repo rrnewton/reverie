@@ -50,6 +50,7 @@ Corollaries, each measured rather than assumed:
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import subprocess
 import sys
@@ -87,6 +88,81 @@ def local_only(scope: str) -> list[dict[str, str]]:
     return rows
 
 
+def raw_blob(rev: str, path: str) -> tuple[str, bytes]:
+    """Return one exact Git blob as present/absent/error without decoding it."""
+
+    listed = subprocess.run(
+        ["git", "-C", PARENT, "ls-tree", "-z", rev, "--", path],
+        capture_output=True,
+    )
+    if listed.returncode != 0:
+        return "error", b""
+    if not listed.stdout:
+        return "absent", b""
+    content = subprocess.run(
+        ["git", "-C", PARENT, "show", f"{rev}:{path}"],
+        capture_output=True,
+    )
+    if content.returncode != 0:
+        return "error", b""
+    return "present", content.stdout
+
+
+def complete_raw_rows(data: bytes) -> Counter[bytes] | None:
+    """Count byte-exact newline-terminated rows, refusing a partial last row."""
+
+    if data and not data.endswith(b"\n"):
+        return None
+    return Counter(data.splitlines(keepends=True))
+
+
+def ledger_rows_contained(
+    parent: str, head: str, target: str, path: str
+) -> tuple[bool, int, int, int]:
+    """Whether head is append-only from parent and its raw rows exist at target.
+
+    This deliberately compares complete raw-row multisets. Parsing JSON or
+    selecting producer fields would make a rewritten row look equivalent, and
+    comparing the whole file would reject an append-only target merely because
+    main has advanced.
+    """
+
+    parent_state, parent_data = raw_blob(parent, path)
+    head_state, head_data = raw_blob(head, path)
+    target_state, target_data = raw_blob(target, path)
+    if (
+        parent_state == "error"
+        or head_state != "present"
+        or target_state != "present"
+    ):
+        return False, 0, 0, 0
+    parent_rows = complete_raw_rows(parent_data)
+    head_rows = complete_raw_rows(head_data)
+    target_rows = complete_raw_rows(target_data)
+    if parent_rows is None or head_rows is None or target_rows is None:
+        return False, 0, 0, 0
+    # Append-only means the head cannot delete or rewrite any exact parent row.
+    if any(head_rows[row] < count for row, count in parent_rows.items()):
+        return False, 0, sum(head_rows.values()), sum(target_rows.values())
+    contributed = head_rows - parent_rows
+    # Target containment covers both the new rows and every unchanged base row;
+    # otherwise a deletion or rewrite that happened after the branch point
+    # would be mistaken for publication of the complete head ledger.
+    if any(target_rows[row] < count for row, count in head_rows.items()):
+        return (
+            False,
+            sum(contributed.values()),
+            sum(head_rows.values()),
+            sum(target_rows.values()),
+        )
+    return (
+        True,
+        sum(contributed.values()),
+        sum(head_rows.values()),
+        sum(target_rows.values()),
+    )
+
+
 PUBLISH_TARGET = "origin/main"
 
 
@@ -108,8 +184,11 @@ def classify_publication(rows: list[dict[str, str]], target: str = PUBLISH_TARGE
 
       1. `git cherry` -- patch-id equivalence. Survives rebase and reword, which
          plain blob comparison does not.
-      2. Blob identity for every touched path, which catches a change that
+      2. Blob identity for ordinary touched paths, which catches a change that
          landed folded into some other commit, where no patch id matches.
+      3. For ledger/*.jsonl, byte-exact complete-row multiset containment from
+         parent to head. Whole-file identity gives a false alarm whenever main
+         has appended later rows; selected-field comparison can miss rewrites.
 
     Anything else stays `unpublished` and still pages. A conflict resolved
     during a rebase changes the patch and can defeat both tests; that direction
@@ -132,11 +211,39 @@ def classify_publication(rows: list[dict[str, str]], target: str = PUBLISH_TARGE
         def blob(rev: str, path: str) -> str:
             return git("rev-parse", "--verify", "--quiet", f"{rev}:{path}") or "absent"
 
-        if all(blob(sha, q) == blob(target, q) for q in paths):
+        contained = True
+        ledger_added = 0
+        ledger_head = 0
+        ledger_target = 0
+        ordinary_paths = 0
+        for path in paths:
+            if path.startswith("ledger/") and path.endswith(".jsonl"):
+                ok, added, head_rows, target_rows = ledger_rows_contained(
+                    f"{sha}^", sha, target, path
+                )
+                contained = contained and ok
+                ledger_added += added
+                ledger_head += head_rows
+                ledger_target += target_rows
+            else:
+                ordinary_paths += 1
+                contained = contained and blob(sha, path) == blob(target, path)
+        if contained:
             row["disposition"] = "superseded"
-            row["evidence"] = (
-                f"all {len(paths)} touched path(s) byte-identical at {target}"
-            )
+            evidence = []
+            if ledger_added:
+                evidence.append(
+                    f"{ledger_added}/{ledger_added} contributed raw ledger row(s) "
+                    f"and {ledger_head}/{ledger_head} head raw ledger row(s) present "
+                    f"among {ledger_target} target row(s)"
+                )
+            elif ordinary_paths != len(paths):
+                evidence.append("no new raw ledger rows")
+            if ordinary_paths:
+                evidence.append(
+                    f"all {ordinary_paths} other touched path(s) byte-identical"
+                )
+            row["evidence"] = f"{'; '.join(evidence)} at {target}"
 
 
 def rescue(

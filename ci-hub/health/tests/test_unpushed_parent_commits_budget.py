@@ -402,6 +402,58 @@ class PublicationContentClassification(unittest.TestCase):
         run("git", "commit", "-q", "-m", f"unpublished: {name}", cwd=fx.root)
         return run("git", "rev-parse", "HEAD", cwd=fx.root).strip()
 
+    @staticmethod
+    def ledger_rows(prefix: str, count: int) -> list[str]:
+        return [
+            json.dumps(
+                {"event_id": f"{prefix}-{index:04d}", "result": "pass"},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+            for index in range(count)
+        ]
+
+    def plant_local_ledger_commit(
+        self,
+        fx: Fixture,
+        *,
+        head_rows: list[str],
+        target_rows: list[str],
+        base_rows: list[str] | None = None,
+        truncate_target: bool = False,
+    ) -> str:
+        path = fx.root / "ledger/hermit/devbig014/2026-08.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if base_rows is not None:
+            path.write_text("".join(base_rows))
+            run("git", "add", str(path.relative_to(fx.root)), cwd=fx.root)
+            run("git", "commit", "-q", "-m", "ledger baseline", cwd=fx.root)
+            run("git", "push", "-q", "origin", "main", cwd=fx.root)
+            run("git", "fetch", "-q", "origin", cwd=fx.root)
+
+        run("git", "checkout", "-q", "-b", "local-ledger", cwd=fx.root)
+        path.write_text("".join(head_rows))
+        run("git", "add", str(path.relative_to(fx.root)), cwd=fx.root)
+        run("git", "commit", "-q", "-m", "local ledger rows", cwd=fx.root)
+        local = run("git", "rev-parse", "HEAD", cwd=fx.root).strip()
+
+        run("git", "checkout", "-q", "main", cwd=fx.root)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        target_text = "".join(target_rows)
+        if truncate_target and target_text.endswith("\n"):
+            target_text = target_text[:-1]
+        path.write_text(target_text)
+        run("git", "add", str(path.relative_to(fx.root)), cwd=fx.root)
+        run("git", "commit", "-q", "-m", "squashed ledger rows", cwd=fx.root)
+        run("git", "push", "-q", "origin", "main", cwd=fx.root)
+        run("git", "fetch", "-q", "origin", cwd=fx.root)
+        self.assertTrue(
+            run("git", "cherry", "origin/main", local, cwd=fx.root).startswith("+"),
+            "fixture must bypass patch-id so raw-row containment decides",
+        )
+        return local
+
     def test_negative_a_routine_landing_does_not_page(self) -> None:
         fx = Fixture(self.tmp)
         orphan = self.routine_landing(fx)
@@ -480,6 +532,125 @@ class PublicationContentClassification(unittest.TestCase):
         self.assertEqual(rc, 0, f"patch-id must still recognise this landing:\n{out}")
         self.assertIn("superseded=1", out, out)
         self.assertIn("git cherry", out, out)
+
+    def test_ledger_rows_are_contained_when_main_has_appended_past_them(self) -> None:
+        fx = Fixture(self.tmp)
+        base = self.ledger_rows("base", 735)
+        contributed = self.ledger_rows("contributed", 42)
+        head = [*base, *contributed]
+        target = [*head, *self.ledger_rows("later-main", 25)]
+        self.plant_local_ledger_commit(
+            fx, base_rows=base, head_rows=head, target_rows=target
+        )
+
+        rc, out, _ = fx.gate_run("--scope", "all")
+
+        self.assertEqual(0, rc, out)
+        self.assertIn("unpublished=0", out, out)
+        self.assertIn("superseded=1", out, out)
+        self.assertIn("42/42 contributed raw ledger row(s)", out, out)
+        self.assertIn("777/777 head raw ledger row(s)", out, out)
+        self.assertIn("among 802 target row(s)", out, out)
+
+    def test_ledger_row_missing_from_target_refuses_containment(self) -> None:
+        fx = Fixture(self.tmp)
+        base = self.ledger_rows("base", 735)
+        contributed = self.ledger_rows("contributed", 42)
+        head = [*base, *contributed]
+        target = [*base, *contributed[:-1], *self.ledger_rows("later-main", 25)]
+        local = self.plant_local_ledger_commit(
+            fx, base_rows=base, head_rows=head, target_rows=target
+        )
+
+        rc, out, _ = fx.gate_run("--scope", "all")
+
+        self.assertEqual(1, rc, out)
+        self.assertIn("unpublished=1", out, out)
+        self.assertIn(local[:7], out, out)
+
+    def test_rewritten_ledger_row_refuses_containment(self) -> None:
+        fx = Fixture(self.tmp)
+        base = self.ledger_rows("base", 735)
+        contributed = self.ledger_rows("contributed", 42)
+        head = [*base, *contributed]
+        target = list(head)
+        target[735 + 17] = target[735 + 17].replace(
+            '"result":"pass"', '"result":"fail"'
+        )
+        target += self.ledger_rows("later-main", 25)
+        self.plant_local_ledger_commit(
+            fx, base_rows=base, head_rows=head, target_rows=target
+        )
+
+        rc, out, _ = fx.gate_run("--scope", "all")
+
+        self.assertEqual(1, rc, out)
+        self.assertIn("unpublished=1", out, out)
+
+    def test_duplicate_ledger_row_count_mismatch_refuses_containment(self) -> None:
+        fx = Fixture(self.tmp)
+        base = self.ledger_rows("base", 735)
+        duplicate = self.ledger_rows("duplicate", 1)[0]
+        unique = self.ledger_rows("unique", 40)
+        contributed = [duplicate, duplicate, *unique]
+        head = [*base, *contributed]
+        target = [*base, duplicate, *unique, *self.ledger_rows("later-main", 25)]
+        self.plant_local_ledger_commit(
+            fx, base_rows=base, head_rows=head, target_rows=target
+        )
+
+        rc, out, _ = fx.gate_run("--scope", "all")
+
+        self.assertEqual(1, rc, out)
+        self.assertIn("unpublished=1", out, out)
+
+    def test_truncated_target_ledger_row_refuses_containment(self) -> None:
+        fx = Fixture(self.tmp)
+        base = self.ledger_rows("base", 735)
+        contributed = self.ledger_rows("contributed", 42)
+        head = [*base, *contributed]
+        target = [*head, *self.ledger_rows("later-main", 25)]
+        self.plant_local_ledger_commit(
+            fx,
+            base_rows=base,
+            head_rows=head,
+            target_rows=target,
+            truncate_target=True,
+        )
+
+        rc, out, _ = fx.gate_run("--scope", "all")
+
+        self.assertEqual(1, rc, out)
+        self.assertIn("unpublished=1", out, out)
+
+    def test_target_deletion_of_base_ledger_row_refuses_containment(self) -> None:
+        fx = Fixture(self.tmp)
+        base = self.ledger_rows("base", 3)
+        contributed = self.ledger_rows("branch", 1)
+        head = [*base, *contributed]
+        target = [*base[1:], *contributed, *self.ledger_rows("later-main", 1)]
+        self.plant_local_ledger_commit(
+            fx, base_rows=base, head_rows=head, target_rows=target
+        )
+
+        rc, out, _ = fx.gate_run("--scope", "all")
+
+        self.assertEqual(1, rc, out)
+        self.assertIn("unpublished=1", out, out)
+
+    def test_deleted_parent_ledger_row_refuses_containment(self) -> None:
+        fx = Fixture(self.tmp)
+        base = self.ledger_rows("base", 3)
+        head = [*base[1:], *self.ledger_rows("branch", 1)]
+        target = [*base, *self.ledger_rows("later-main", 1)]
+        self.plant_local_ledger_commit(
+            fx, base_rows=base, head_rows=head, target_rows=target
+        )
+
+        rc, out, _ = fx.gate_run("--scope", "all")
+
+        self.assertEqual(1, rc, out)
+        self.assertIn("unpublished=1", out, out)
 
     def test_the_full_census_still_carries_every_local_only_object(self) -> None:
         """Narrowing the ALARM must not narrow the RECORD -- rescue and --json
