@@ -156,6 +156,14 @@ function check(name, cond, detail = "") {
     "report is still built from stdout/stderr only (timing NOT folded in)",
     src.includes('const report = [stdout, stderr].filter(Boolean).join("\\n");'),
   );
+  check(
+    "watcher bypasses the rust-script/Cargo serialization point",
+    src.includes("./ci-hub/bin/speculative-land watch --once --gate"),
+  );
+  check(
+    "watcher does not invoke the Rust front door",
+    !src.includes("./ci-hub/ci-hub watch-obligations --once --gate"),
+  );
 }
 
 // --- report -------------------------------------------------------------------

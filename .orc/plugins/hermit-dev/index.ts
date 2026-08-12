@@ -116,7 +116,13 @@ const SPECULATIVE_LAND_SCRIPT_NAME = "hermitSpeculativeLandObligations";
 const SPECULATIVE_LAND_COMMAND =
   'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
   'python3 ci-hub/remediation/land_and_arm.py recover --observe-timeout 5 && ' +
-  './ci-hub/ci-hub watch-obligations --once --gate';
+  // This heartbeat is already inside a hard wall bound. Do not route its
+  // Python obligation reader through ci-hub's `rust-script --force` front
+  // door: unrelated concurrent ci-hub callers serialize on Cargo's global
+  // build lock before this poll can run. The compatibility entrypoint execs
+  // the same protocol.py implementation directly and therefore keeps a
+  // repository-independent obligation census independent of Rust rebuilds.
+  './ci-hub/bin/speculative-land watch --once --gate';
 const SPECULATIVE_LAND_WAKE_SCRIPT_NAME = "hermitSpeculativeLandWakeSent";
 const SPECULATIVE_LAND_WAKE_COMMAND =
   'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
