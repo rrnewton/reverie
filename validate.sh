@@ -110,8 +110,11 @@ DEV_HERMIT_PARENT=$(find_dev_hermit_parent || true)
 VALIDATION_SLOT=$(validation_slot_name "$DEV_HERMIT_PARENT")
 if [[ -n $DEV_HERMIT_PARENT ]]; then
     VALIDATION_LEDGER_TOOL="$DEV_HERMIT_PARENT/ci-hub/ledger/validate_rows.py"
+    VALIDATION_LOCAL_LEDGER=
 else
-    VALIDATION_LEDGER_TOOL="${HOME:?HOME is required}/work/dev-hermit/ci-hub/ledger/validate_rows.py"
+    VALIDATION_LEDGER_TOOL=
+    validation_host_slug=${VALIDATION_HOST//[^[:alnum:]-]/-}
+    VALIDATION_LOCAL_LEDGER="$ROOT_DIR/ci/validate-ledger/local.$validation_host_slug.jsonl"
 fi
 VALIDATION_COMMIT=$(git rev-parse HEAD 2>/dev/null || printf unknown)
 VALIDATION_GIT_DEPTH=$(git rev-list --count HEAD 2>/dev/null || printf 0)
@@ -139,7 +142,7 @@ else
 fi
 VALIDATION_CPU_TIMES_FILE=$(mktemp "${TMPDIR:-/tmp}/reverie-validate-cpu.XXXXXX")
 readonly VALIDATION_STARTED_AT VALIDATION_STARTED_EPOCH VALIDATION_HOST
-readonly DEV_HERMIT_PARENT VALIDATION_SLOT VALIDATION_LEDGER_TOOL
+readonly DEV_HERMIT_PARENT VALIDATION_SLOT VALIDATION_LEDGER_TOOL VALIDATION_LOCAL_LEDGER
 readonly VALIDATION_COMMIT VALIDATION_GIT_DEPTH VALIDATION_GIT_AHEAD
 readonly VALIDATION_GIT_BEHIND VALIDATION_TREE_DIRTY VALIDATION_COMMIT_ANCHORED
 readonly VALIDATION_CACHE_STATE VALIDATION_CPU_TIMES_FILE
@@ -225,7 +228,16 @@ append_validation_ledger() {
     line+="\"real_seconds\":$wall_seconds,\"user_seconds\":$cpu_user,\"sys_seconds\":$cpu_sys,"
     line+="\"log_file\":$(json_quote "$LOG_FILE"),\"gates\":$gates_json}"
 
-    if [[ ! -r $VALIDATION_LEDGER_TOOL ]]; then
+    if [[ -z $VALIDATION_LEDGER_TOOL ]]; then
+        if ! mkdir -p "$(dirname -- "$VALIDATION_LOCAL_LEDGER")" ||
+            ! printf '%s\n' "$line" >>"$VALIDATION_LOCAL_LEDGER"; then
+            printf 'WARN: checkout-local diagnostic ledger write failed at %s\n' \
+                "$VALIDATION_LOCAL_LEDGER" >&2
+        else
+            printf 'WARN: wrote CHECKOUT-LOCAL diagnostic row to %s; no canonical reader queries it, so ci-hub validate-status will report NOT-VALIDATED for this commit\n' \
+                "$VALIDATION_LOCAL_LEDGER" >&2
+        fi
+    elif [[ ! -r $VALIDATION_LEDGER_TOOL ]]; then
         printf 'WARN: canonical validation ledger writer is unavailable at %s\n' \
             "$VALIDATION_LEDGER_TOOL" >&2
     elif ! printf '%s\n' "$line" | python3 "$VALIDATION_LEDGER_TOOL" record >/dev/null; then
