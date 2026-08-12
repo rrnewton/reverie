@@ -1,0 +1,1285 @@
+program,backend,state,reason,bitwise_parity,verified,verdict,compared_left,compared_right,comparison_strictness,rc,duration_ms,legacy_modes
+addr2line,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,9127,strict|sabre|e9patch|rr
+ar,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4952,strict|sabre|e9patch|rr
+arch,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,757,strict|sabre|e9patch|rr
+as,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,6314,strict|sabre|e9patch|rr
+awk,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1997,strict|sabre|e9patch|rr
+b2sum,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,778,strict|sabre|e9patch|rr
+base32,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,771,strict|sabre|e9patch|rr
+base64,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,985,strict|sabre|e9patch|rr
+basename,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1090,strict|sabre|e9patch|rr
+basenc,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2807,sabre
+bash,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1061,strict|sabre|e9patch|rr
+bc,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1351,strict|sabre|e9patch|rr
+bracket,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1221,strict|sabre|e9patch|rr
+bzip2,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2653,strict|sabre|e9patch|rr
+bzip2-roundtrip,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,8243,strict|sabre
+c++filt,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4182,strict|sabre|e9patch|rr
+cal,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1456,strict|sabre|e9patch|rr
+cargo,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,16039,strict|sabre|e9patch|rr
+cat,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1035,strict|sabre|e9patch|rr
+chmod,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4138,strict|sabre|e9patch|rr
+chown,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,5152,strict|sabre|e9patch|rr
+chrt,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1735,strict|sabre|e9patch|rr
+cksum,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1094,strict|sabre|e9patch|rr
+clang,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,16778,strict|sabre
+cmake,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,6827,strict|sabre|e9patch|rr
+cmp,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3943,strict|sabre|e9patch|rr
+col,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1999,sabre
+colrm,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2114,sabre
+column,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1798,strict|sabre|e9patch|rr
+comm,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3036,strict|sabre|e9patch|rr
+cp,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4694,strict|sabre|e9patch|rr
+cpio-roundtrip,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,9267,strict|sabre
+cpp,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,6802,strict|sabre|e9patch|rr
+crc32,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,7065,sabre
+cscope,dbt,FAIL,exit 1; reverie-dbt: tool=Detcore branches=574404 syscalls=377 rewritten=370 stdin_reads=0 memory_hash=69b04e3c4d287b7e,false,false,no_result,,,,1,2165,sabre
+csplit,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,5048,strict|sabre|e9patch|rr
+curl,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1403,strict|sabre|e9patch|rr
+curl-localhost,dbt,FAIL,exit 7; reverie-dbt: tool=Detcore branches=2268970 syscalls=446 rewritten=437 stdin_reads=0 memory_hash=cbf29ce484222325,false,false,no_result,,,,7,8294,strict|sabre
+cut,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1754,strict|sabre|e9patch|rr
+date,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,856,strict|sabre|e9patch|rr
+dc,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,865,strict|sabre|rr
+dd,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1264,strict|sabre|e9patch|rr
+df,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,964,strict|sabre|e9patch|rr
+diff,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4003,strict|sabre|e9patch|rr
+diff3,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4737,sabre
+dirname,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1073,strict|sabre|e9patch|rr
+dos2unix,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,5249,sabre
+du,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1050,strict|sabre|e9patch|rr
+echo,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,561,strict|sabre|e9patch|rr
+egrep,dbt,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90031,strict|sabre|e9patch|rr
+elfedit,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,7101,strict|sabre|e9patch|rr
+env,dbt,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90007,strict|sabre|e9patch|rr
+envsubst,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2442,sabre
+expand,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2394,strict|sabre|e9patch|rr
+expr,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1254,strict|sabre|e9patch|rr
+factor,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3289,strict|sabre|e9patch|rr
+fallocate,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4196,sabre
+fgrep,dbt,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90013,strict|sabre|e9patch|rr
+file,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1127,strict|sabre|e9patch|rr
+find,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4347,strict|sabre|e9patch|rr
+findmnt,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1019,strict|sabre|e9patch|rr
+flex,dbt,FAIL,exit 141; reverie-dbt: tool=Detcore branches=562209 syscalls=369 rewritten=362 stdin_reads=0 memory_hash=6b7c8c1be6e8103d,false,false,no_result,,,,141,1234,sabre
+flock,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2695,strict|sabre|e9patch|rr
+fmt,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1732,strict|sabre|e9patch|rr
+fold,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1765,strict|sabre|e9patch|rr
+free,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,824,strict|sabre|e9patch|rr
+g++,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,26502,strict|sabre|e9patch|rr
+gcc,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,9871,strict|sabre|e9patch|rr
+gcov,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4644,strict|sabre|e9patch|rr
+getconf,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1684,sabre
+getopt,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,756,strict|sabre|e9patch|rr
+git,dbt,FAIL,exit 128; reverie-dbt: tool=Detcore branches=2342446 syscalls=474 rewritten=461 stdin_reads=0 memory_hash=cbf29ce484222325,false,false,no_result,,,,128,2582,strict|sabre|e9patch|rr
+gprof,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4190,strict|sabre|e9patch|rr
+grep,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1301,strict|sabre|e9patch|rr
+groups,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,359,strict|sabre|e9patch|rr
+gzip,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1221,strict|sabre|e9patch|rr
+gzip-roundtrip,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,5945,strict|sabre
+head,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,605,strict|sabre|e9patch|rr
+hexdump,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1333,strict|sabre|e9patch|rr
+hostname,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,435,strict|sabre|e9patch|rr
+iconv,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1059,strict|sabre|e9patch|rr
+id,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,656,strict|sabre|e9patch|rr
+install,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2910,strict|sabre|e9patch|rr
+ionice,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,558,strict|sabre|e9patch|rr
+iostat,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,8152,strict|sabre|e9patch|rr
+ip,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3250,strict|sabre
+java,dbt,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90069,strict|sabre|e9patch|rr
+javac,dbt,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90023,strict|sabre
+join,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1081,strict|sabre|e9patch|rr
+jq,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4069,strict|sabre|e9patch|rr
+kill,dbt,FAIL,exit 1; reverie-dbt: tool=Detcore branches=104973 syscalls=123 rewritten=122 stdin_reads=0 memory_hash=b29ae385e76978d1,false,false,no_result,,,,1,355,strict|sabre|e9patch|rr
+ld,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,13650,strict|sabre|e9patch|rr
+ln,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,5210,strict|sabre|e9patch|rr
+logger,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2340,strict|sabre|e9patch|rr
+logname,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1185,strict|sabre|e9patch|rr
+ls,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,546,strict|sabre|e9patch|rr
+lscpu,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,6511,strict|sabre
+lsirq,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1441,strict|sabre|e9patch|rr
+lsmod,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,979,strict|sabre|e9patch|rr
+lsof,dbt,FAIL,exit 1; reverie-dbt: tool=Detcore branches=2257060 syscalls=470 rewritten=461 stdin_reads=0 memory_hash=1021e0e58d051a13,false,false,no_result,,,,1,10540,strict
+lua,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2425,strict|sabre|e9patch|rr
+m4,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,5544,strict|sabre|e9patch|rr
+make,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,6652,strict|sabre|e9patch|rr
+md5sum,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1391,strict|sabre|e9patch|rr
+mkdir,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3850,strict|sabre|e9patch|rr
+mkfifo,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3943,strict|sabre|e9patch|rr
+mktemp,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3055,strict|sabre|e9patch|rr
+mountpoint,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2544,sabre
+mpstat-softirqs,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,19663,strict|sabre|e9patch|rr
+msgfmt,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2207,sabre
+msgunfmt,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3953,sabre
+mv,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3194,strict|sabre|e9patch|rr
+namei,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,6484,sabre
+nice,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1031,strict|sabre|e9patch|rr
+nl,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1728,strict|sabre|e9patch|rr
+nm,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,7486,strict|sabre|e9patch|rr
+node,dbt,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90176,strict|sabre|e9patch|rr
+nohup,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,774,strict|sabre|e9patch|rr
+nproc,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,438,strict|sabre|e9patch|rr
+numactl-hardware,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,327,strict|sabre|e9patch|rr
+numastat,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,460,strict|sabre|e9patch|rr
+numfmt,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,482,strict|sabre|e9patch|rr
+objcopy,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,9389,strict|sabre|e9patch|rr
+objdump,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,9636,strict|sabre|e9patch|rr
+od,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2956,strict|sabre|e9patch|rr
+openssl,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1645,strict|sabre|e9patch|rr
+paste,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2252,strict|sabre|e9patch|rr
+patch,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,6198,strict|sabre|e9patch|rr
+pathchk,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3983,sabre
+perl,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2358,strict|sabre|e9patch|rr
+pgrep,dbt,FAIL,exit 1; reverie-dbt: tool=Detcore branches=494410 syscalls=256 rewritten=251 stdin_reads=0 memory_hash=cbf29ce484222325,false,false,no_result,,,,1,15640,strict|sabre|e9patch|rr
+pidstat-disk,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1040,strict|sabre|e9patch|rr
+pinky,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,737,strict|sabre|e9patch|rr
+pkg-config,dbt,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90034,strict|sabre|e9patch|rr
+pkill,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,30361,strict|sabre|e9patch|rr
+pr,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2507,strict|sabre|e9patch|rr
+printenv,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2174,strict|sabre|e9patch|rr
+printf,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1358,strict|sabre|e9patch|rr
+ps,dbt,FAIL,"exit 1; Error: DBT verification failed: guest stdout differed at byte 110489 (run1_len=841227, run2_len=819626); run1[110449..110609]=""   15:58   0:00 [kworker/u1272:25",false,false,no_result,,,,1,45609,strict|sabre|e9patch|rr
+ptx,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1587,strict|sabre|e9patch|rr
+pwd,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,720,strict|sabre|e9patch|rr
+python3,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,6029,strict|sabre|e9patch|rr
+ranlib,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,10615,strict|sabre|e9patch|rr
+readelf,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,7636,strict|sabre|e9patch|rr
+readlink,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,694,strict|sabre|e9patch|rr
+realpath,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,975,strict|sabre|e9patch|rr
+rev,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1941,strict|sabre|e9patch|rr
+rm,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3197,strict|sabre|e9patch|rr
+rmdir,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2857,strict|sabre|e9patch|rr
+ruby,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1360,strict|sabre|e9patch|rr
+rustc,dbt,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90581,strict|sabre|e9patch|rr
+sar-resource-tables,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1255,strict|sabre|e9patch|rr
+sed,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1502,strict|sabre|e9patch|rr
+seq,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4449,strict|sabre|e9patch|rr
+setfacl,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,5026,sabre
+setfattr,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4828,sabre
+sha1sum,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,780,strict|sabre|e9patch|rr
+sha224sum,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,821,strict|sabre|e9patch|rr
+sha256sum,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,623,strict|sabre|e9patch|rr
+sha384sum,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,832,strict|sabre|e9patch|rr
+sha512sum,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,636,strict|sabre|e9patch|rr
+shell-build,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,18355,strict
+shred,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,5306,sabre
+shuf,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4241,strict|sabre|e9patch|rr
+size,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4996,strict|sabre|e9patch|rr
+sleep,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,890,strict|sabre|e9patch|rr
+sort,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1902,strict|sabre|e9patch|rr
+split,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2999,strict|sabre|e9patch|rr
+sqlite3,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2310,strict|sabre|e9patch|rr
+ss,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2777,strict|sabre
+stat,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,371,strict|sabre|e9patch|rr
+stdbuf,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,941,strict|sabre|e9patch|rr
+strings,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1306,strict|sabre|e9patch|rr
+strip,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3488,strict|sabre|e9patch|rr
+sum,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,783,strict|sabre|e9patch|rr
+sync,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3118,sabre
+sysctl-random-uuid,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,786,strict|sabre|e9patch|rr
+tac,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1252,strict|sabre|e9patch|rr
+tar,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2853,strict|sabre|e9patch|rr
+tar-roundtrip,dbt,FAIL,exit 2; reverie-dbt: tool=Detcore branches=2294707 syscalls=604 rewritten=589 stdin_reads=0 memory_hash=c1fe3ae174d7cb7c,false,false,no_result,,,,2,1705,strict|sabre
+taskset,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1026,strict|sabre|e9patch|rr
+tcl,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2297,strict|sabre|rr
+tee,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1104,strict|sabre|e9patch|rr
+test,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,309,strict|sabre|e9patch|rr
+time,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3754,strict|sabre
+timeout,dbt,FAIL,exit 124; reverie-dbt: tool=Detcore branches=101446 syscalls=136 rewritten=133 stdin_reads=0 memory_hash=cbf29ce484222325,false,false,no_result,,,,124,396,sabre
+top,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1601,strict|sabre|e9patch|rr
+touch,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2197,strict|sabre|e9patch|rr
+tr,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,829,strict|sabre|e9patch|rr
+true,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,116,strict|sabre|e9patch|rr
+truncate,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4154,sabre
+tsort,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1936,strict|sabre|e9patch|rr
+tty,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,980,strict|sabre|e9patch|rr
+uname,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1171,strict|sabre|e9patch|rr
+unexpand,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1003,strict|sabre|e9patch|rr
+uniq,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1496,strict|sabre|e9patch|rr
+uptime,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,409,strict|sabre|e9patch|rr
+users,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,623,strict|sabre|e9patch|rr
+uuidgen,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1444,sabre
+vmstat,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,842,strict|sabre|e9patch|rr
+vmstat-disk,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1480,strict|sabre|e9patch|rr
+wc,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,259,strict|sabre|e9patch|rr
+wc-lines,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,364,strict|sabre|e9patch|rr
+wget-localhost,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,8248,strict|sabre
+whoami,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,414,strict|sabre|e9patch|rr
+xargs,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,5122,strict|sabre|e9patch|rr
+xmllint,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,4321,strict|sabre
+xxd,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2283,strict|sabre|e9patch|rr
+xz,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,2038,strict|sabre|e9patch|rr
+xz-roundtrip,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,6263,strict|sabre
+yes,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1127,strict|sabre|e9patch|rr
+zip-unzip,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,3756,strict|sabre|e9patch|rr
+zstd,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,1041,strict|sabre|e9patch|rr
+zstd-roundtrip,dbt,ATTEMPTED_UNQUALIFIABLE,verdict=no_result: ran without producing a comparable result (no log comparison performed); self-reported determinism is not qualifying evidence,false,false,no_result,,,,0,8106,strict|sabre
+addr2line,e9patch,PASS,,true,true,matched,5951,5951,canonical,0,645,strict|sabre|e9patch|rr
+ar,e9patch,PASS,,true,true,matched,5232,5232,canonical,0,471,strict|sabre|e9patch|rr
+arch,e9patch,PASS,,true,true,matched,304,304,canonical,0,74,strict|sabre|e9patch|rr
+as,e9patch,PASS,,true,true,matched,3789,3789,canonical,0,424,strict|sabre|e9patch|rr
+awk,e9patch,PASS,,true,true,matched,1773,1773,canonical,0,200,strict|sabre|e9patch|rr
+b2sum,e9patch,PASS,,true,true,matched,316,316,canonical,0,70,strict|sabre|e9patch|rr
+base32,e9patch,PASS,,true,true,matched,334,334,canonical,0,62,strict|sabre|e9patch|rr
+base64,e9patch,PASS,,true,true,matched,331,331,canonical,0,63,strict|sabre|e9patch|rr
+basename,e9patch,PASS,,true,true,matched,302,302,canonical,0,61,strict|sabre|e9patch|rr
+basenc,e9patch,PASS,,true,true,matched,1648,1648,canonical,0,193,sabre
+bash,e9patch,PASS,,true,true,matched,544,544,canonical,0,80,strict|sabre|e9patch|rr
+bc,e9patch,PASS,,true,true,matched,949,949,canonical,0,362,strict|sabre|e9patch|rr
+bracket,e9patch,PASS,,true,true,matched,297,297,canonical,0,58,strict|sabre|e9patch|rr
+bzip2,e9patch,PASS,,true,true,matched,1381,1381,canonical,0,144,strict|sabre|e9patch|rr
+bzip2-roundtrip,e9patch,PASS,,true,true,matched,5071,5071,canonical,0,461,strict|sabre
+c++filt,e9patch,PASS,,true,true,matched,2263,2263,canonical,0,256,strict|sabre|e9patch|rr
+cal,e9patch,PASS,,true,true,matched,389,389,canonical,0,64,strict|sabre|e9patch|rr
+cargo,e9patch,PASS,,true,true,matched,6705,6705,canonical,0,623,strict|sabre|e9patch|rr
+cat,e9patch,PASS,,true,true,matched,320,320,canonical,0,58,strict|sabre|e9patch|rr
+chmod,e9patch,PASS,,true,true,matched,2461,2461,canonical,0,229,strict|sabre|e9patch|rr
+chown,e9patch,PASS,,true,true,matched,2537,2537,canonical,0,224,strict|sabre|e9patch|rr
+chrt,e9patch,PASS,,true,true,matched,1023,1023,canonical,0,106,strict|sabre|e9patch|rr
+cksum,e9patch,PASS,,true,true,matched,316,316,canonical,0,55,strict|sabre|e9patch|rr
+clang,e9patch,PASS,,true,true,matched,9561,9561,canonical,0,886,strict|sabre
+cmake,e9patch,PASS,,true,true,matched,3710,3710,canonical,0,346,strict|sabre|e9patch|rr
+cmp,e9patch,PASS,,true,true,matched,2020,2020,canonical,0,189,strict|sabre|e9patch|rr
+col,e9patch,PASS,,true,true,matched,1093,1093,canonical,0,129,sabre
+colrm,e9patch,PASS,,true,true,matched,1102,1102,canonical,0,128,sabre
+column,e9patch,PASS,,true,true,matched,1113,1113,canonical,0,122,strict|sabre|e9patch|rr
+comm,e9patch,PASS,,true,true,matched,1800,1800,canonical,0,181,strict|sabre|e9patch|rr
+cp,e9patch,PASS,,true,true,matched,3064,3064,canonical,0,262,strict|sabre|e9patch|rr
+cpio-roundtrip,e9patch,PASS,,true,true,matched,5367,5367,canonical,0,516,strict|sabre
+cpp,e9patch,PASS,,true,true,matched,3828,3828,canonical,0,390,strict|sabre|e9patch|rr
+crc32,e9patch,PASS,,true,true,matched,5282,5282,canonical,0,777,sabre
+cscope,e9patch,PASS,,true,true,matched,3879,3879,canonical,0,362,sabre
+csplit,e9patch,PASS,,true,true,matched,2642,2642,canonical,0,231,strict|sabre|e9patch|rr
+curl,e9patch,PASS,,true,true,matched,1110,1110,canonical,0,116,strict|sabre|e9patch|rr
+curl-localhost,e9patch,PASS,,true,true,matched,8628,8628,canonical,0,753,strict|sabre
+cut,e9patch,PASS,,true,true,matched,1668,1668,canonical,0,189,strict|sabre|e9patch|rr
+date,e9patch,PASS,,true,true,matched,307,307,canonical,0,66,strict|sabre|e9patch|rr
+dc,e9patch,PASS,,true,true,matched,1012,1012,canonical,0,131,strict|sabre|rr
+dd,e9patch,PASS,,true,true,matched,1145,1145,canonical,0,123,strict|sabre|e9patch|rr
+df,e9patch,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,367,367,canonical,1,85,strict|sabre|e9patch|rr
+diff,e9patch,PASS,,true,true,matched,2658,2658,canonical,0,257,strict|sabre|e9patch|rr
+diff3,e9patch,PASS,,true,true,matched,3510,3510,canonical,0,359,sabre
+dirname,e9patch,PASS,,true,true,matched,302,302,canonical,0,53,strict|sabre|e9patch|rr
+dos2unix,e9patch,PASS,,true,true,matched,2609,2609,canonical,0,232,sabre
+du,e9patch,PASS,,true,true,matched,304,304,canonical,0,62,strict|sabre|e9patch|rr
+echo,e9patch,PASS,,true,true,matched,302,302,canonical,0,55,strict|sabre|e9patch|rr
+egrep,e9patch,PASS,,true,true,matched,2335,2335,canonical,0,211,strict|sabre|e9patch|rr
+elfedit,e9patch,PASS,,true,true,matched,4433,4433,canonical,0,420,strict|sabre|e9patch|rr
+env,e9patch,PASS,,true,true,matched,2148,2148,canonical,0,225,strict|sabre|e9patch|rr
+envsubst,e9patch,PASS,,true,true,matched,1026,1026,canonical,0,123,sabre
+expand,e9patch,PASS,,true,true,matched,1083,1083,canonical,0,114,strict|sabre|e9patch|rr
+expr,e9patch,PASS,,true,true,matched,322,322,canonical,0,67,strict|sabre|e9patch|rr
+factor,e9patch,PASS,,true,true,matched,2085,2085,canonical,0,222,strict|sabre|e9patch|rr
+fallocate,e9patch,PASS,,true,true,matched,2624,2624,canonical,0,227,sabre
+fgrep,e9patch,PASS,,true,true,matched,2323,2323,canonical,0,233,strict|sabre|e9patch|rr
+file,e9patch,PASS,,true,true,matched,701,701,canonical,0,122,strict|sabre|e9patch|rr
+find,e9patch,PASS,,true,true,matched,3204,3204,canonical,0,349,strict|sabre|e9patch|rr
+findmnt,e9patch,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,548,548,canonical,1,148,strict|sabre|e9patch|rr
+flex,e9patch,PASS,,true,true,matched,3489,3489,canonical,0,327,sabre
+flock,e9patch,PASS,,true,true,matched,2373,2373,canonical,0,229,strict|sabre|e9patch|rr
+fmt,e9patch,PASS,,true,true,matched,1090,1090,canonical,0,128,strict|sabre|e9patch|rr
+fold,e9patch,PASS,,true,true,matched,1090,1090,canonical,0,137,strict|sabre|e9patch|rr
+free,e9patch,PASS,,true,true,matched,457,457,canonical,0,82,strict|sabre|e9patch|rr
+g++,e9patch,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,12312,12312,canonical,1,3148,strict|sabre|e9patch|rr
+gcc,e9patch,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,4949,4949,canonical,1,527,strict|sabre|e9patch|rr
+gcov,e9patch,PASS,,true,true,matched,3287,3287,canonical,0,348,strict|sabre|e9patch|rr
+getconf,e9patch,PASS,,true,true,matched,1056,1056,canonical,0,127,sabre
+getopt,e9patch,PASS,,true,true,matched,306,306,canonical,0,52,strict|sabre|e9patch|rr
+git,e9patch,PASS,,true,true,matched,12486,12486,canonical,0,1321,strict|sabre|e9patch|rr
+gprof,e9patch,PASS,,true,true,matched,2748,2748,canonical,0,287,strict|sabre|e9patch|rr
+grep,e9patch,PASS,,true,true,matched,1741,1741,canonical,0,178,strict|sabre|e9patch|rr
+groups,e9patch,PASS,,true,true,matched,372,372,canonical,0,58,strict|sabre|e9patch|rr
+gzip,e9patch,PASS,,true,true,matched,1344,1344,canonical,0,146,strict|sabre|e9patch|rr
+gzip-roundtrip,e9patch,PASS,,true,true,matched,5029,5029,canonical,0,507,strict|sabre
+head,e9patch,PASS,,true,true,matched,321,321,canonical,0,1353,strict|sabre|e9patch|rr
+hexdump,e9patch,PASS,,true,true,matched,1105,1105,canonical,0,1458,strict|sabre|e9patch|rr
+hostname,e9patch,PASS,,true,true,matched,109,109,canonical,0,44,strict|sabre|e9patch|rr
+iconv,e9patch,PASS,,true,true,matched,971,971,canonical,0,122,strict|sabre|e9patch|rr
+id,e9patch,PASS,,true,true,matched,364,364,canonical,0,69,strict|sabre|e9patch|rr
+install,e9patch,PASS,,true,true,matched,2605,2605,canonical,0,235,strict|sabre|e9patch|rr
+ionice,e9patch,PASS,,true,true,matched,590,590,canonical,0,90,strict|sabre|e9patch|rr
+iostat,e9patch,PASS,,true,true,matched,12820,12820,canonical,0,687,strict|sabre|e9patch|rr
+ip,e9patch,PASS,,true,true,matched,2336,2336,canonical,0,264,strict|sabre
+java,e9patch,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,208682,208608,canonical,1,21133,strict|sabre|e9patch|rr
+javac,e9patch,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,165809,165793,canonical,1,15165,strict|sabre
+join,e9patch,PASS,,true,true,matched,1806,1806,canonical,0,184,strict|sabre|e9patch|rr
+jq,e9patch,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2542,2542,canonical,1,253,strict|sabre|e9patch|rr
+kill,e9patch,PASS,,true,true,matched,303,303,canonical,0,76,strict|sabre|e9patch|rr
+ld,e9patch,PASS,,true,true,matched,8288,8288,canonical,0,2241,strict|sabre|e9patch|rr
+ln,e9patch,PASS,,true,true,matched,3351,3351,canonical,0,303,strict|sabre|e9patch|rr
+logger,e9patch,PASS,,true,true,matched,1106,1106,canonical,0,137,strict|sabre|e9patch|rr
+logname,e9patch,PASS,,true,true,matched,1065,1065,canonical,0,142,strict|sabre|e9patch|rr
+ls,e9patch,PASS,,true,true,matched,402,402,canonical,0,74,strict|sabre|e9patch|rr
+lscpu,e9patch,PASS,,true,true,matched,3444,3444,canonical,0,345,strict|sabre
+lsirq,e9patch,PASS,,true,true,matched,1386,1386,canonical,0,391,strict|sabre|e9patch|rr
+lsmod,e9patch,PASS,,true,true,matched,2040,2040,canonical,0,774,strict|sabre|e9patch|rr
+lsof,e9patch,NOT_ATTEMPTED,corpus exclusion: not carried by the legacy e9patch corpus; reason not recorded upstream,,,,,,,,0,strict
+lua,e9patch,PASS,,true,true,matched,832,832,canonical,0,104,strict|sabre|e9patch|rr
+m4,e9patch,PASS,,true,true,matched,2802,2802,canonical,0,277,strict|sabre|e9patch|rr
+make,e9patch,PASS,,true,true,matched,3137,3137,canonical,0,294,strict|sabre|e9patch|rr
+md5sum,e9patch,PASS,,true,true,matched,362,362,canonical,0,59,strict|sabre|e9patch|rr
+mkdir,e9patch,PASS,,true,true,matched,2088,2088,canonical,0,183,strict|sabre|e9patch|rr
+mkfifo,e9patch,PASS,,true,true,matched,2496,2496,canonical,0,221,strict|sabre|e9patch|rr
+mktemp,e9patch,PASS,,true,true,matched,1518,1518,canonical,0,147,strict|sabre|e9patch|rr
+mountpoint,e9patch,PASS,,true,true,matched,1562,1562,canonical,0,581,sabre
+mpstat-softirqs,e9patch,PASS,,true,true,matched,30701,30701,canonical,0,1721,strict|sabre|e9patch|rr
+msgfmt,e9patch,PASS,,true,true,matched,2329,2329,canonical,0,1110,sabre
+msgunfmt,e9patch,PASS,,true,true,matched,3519,3519,canonical,0,288,sabre
+mv,e9patch,PASS,,true,true,matched,2563,2563,canonical,0,215,strict|sabre|e9patch|rr
+namei,e9patch,PASS,,true,true,matched,4528,4528,canonical,0,430,sabre
+nice,e9patch,PASS,,true,true,matched,582,582,canonical,0,232,strict|sabre|e9patch|rr
+nl,e9patch,PASS,,true,true,matched,1087,1087,canonical,0,114,strict|sabre|e9patch|rr
+nm,e9patch,PASS,,true,true,matched,4267,4267,canonical,0,378,strict|sabre|e9patch|rr
+node,e9patch,PASS,,true,true,matched,10401,10401,canonical,0,8575,strict|sabre|e9patch|rr
+nohup,e9patch,PASS,,true,true,matched,586,586,canonical,0,89,strict|sabre|e9patch|rr
+nproc,e9patch,PASS,,true,true,matched,305,305,canonical,0,75,strict|sabre|e9patch|rr
+numactl-hardware,e9patch,PASS,,true,true,matched,228,228,canonical,0,64,strict|sabre|e9patch|rr
+numastat,e9patch,PASS,,true,true,matched,145,145,canonical,0,52,strict|sabre|e9patch|rr
+numfmt,e9patch,PASS,,true,true,matched,302,302,canonical,0,63,strict|sabre|e9patch|rr
+objcopy,e9patch,PASS,,true,true,matched,4198,4198,canonical,0,404,strict|sabre|e9patch|rr
+objdump,e9patch,PASS,,true,true,matched,4130,4130,canonical,0,393,strict|sabre|e9patch|rr
+od,e9patch,PASS,,true,true,matched,1090,1090,canonical,0,132,strict|sabre|e9patch|rr
+openssl,e9patch,PASS,,true,true,matched,288,288,canonical,0,62,strict|sabre|e9patch|rr
+paste,e9patch,PASS,,true,true,matched,1806,1806,canonical,0,185,strict|sabre|e9patch|rr
+patch,e9patch,PASS,,true,true,matched,2632,2632,canonical,0,237,strict|sabre|e9patch|rr
+pathchk,e9patch,PASS,,true,true,matched,1824,1824,canonical,0,184,sabre
+perl,e9patch,PASS,,true,true,matched,1201,1201,canonical,0,1006,strict|sabre|e9patch|rr
+pgrep,e9patch,PASS,,true,true,matched,1562,1562,canonical,0,182,strict|sabre|e9patch|rr
+pidstat-disk,e9patch,PASS,,true,true,matched,1092,1092,canonical,0,148,strict|sabre|e9patch|rr
+pinky,e9patch,PASS,,true,true,matched,363,363,canonical,0,628,strict|sabre|e9patch|rr
+pkg-config,e9patch,PASS,,true,true,matched,10048,10048,canonical,0,1512,strict|sabre|e9patch|rr
+pkill,e9patch,PASS,,true,true,matched,1124,1124,canonical,0,127,strict|sabre|e9patch|rr
+pr,e9patch,PASS,,true,true,matched,356,356,canonical,0,59,strict|sabre|e9patch|rr
+printenv,e9patch,PASS,,true,true,matched,387,387,canonical,0,65,strict|sabre|e9patch|rr
+printf,e9patch,PASS,,true,true,matched,302,302,canonical,0,65,strict|sabre|e9patch|rr
+ps,e9patch,PASS,,true,true,matched,744,744,canonical,0,110,strict|sabre|e9patch|rr
+ptx,e9patch,PASS,,true,true,matched,1081,1081,canonical,0,135,strict|sabre|e9patch|rr
+pwd,e9patch,PASS,,true,true,matched,304,304,canonical,0,68,strict|sabre|e9patch|rr
+python3,e9patch,PASS,,true,true,matched,2821,2821,canonical,0,1431,strict|sabre|e9patch|rr
+ranlib,e9patch,PASS,,true,true,matched,5709,5709,canonical,0,862,strict|sabre|e9patch|rr
+readelf,e9patch,PASS,,true,true,matched,4285,4285,canonical,0,779,strict|sabre|e9patch|rr
+readlink,e9patch,PASS,,true,true,matched,306,306,canonical,0,128,strict|sabre|e9patch|rr
+realpath,e9patch,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,306,306,canonical,1,115,strict|sabre|e9patch|rr
+rev,e9patch,PASS,,true,true,matched,1091,1091,canonical,0,168,strict|sabre|e9patch|rr
+rm,e9patch,PASS,,true,true,matched,2005,2005,canonical,0,219,strict|sabre|e9patch|rr
+rmdir,e9patch,PASS,,true,true,matched,1518,1518,canonical,0,153,strict|sabre|e9patch|rr
+ruby,e9patch,PASS,,true,true,matched,796,796,canonical,0,117,strict|sabre|e9patch|rr
+rustc,e9patch,PASS,,true,true,matched,51091,51091,canonical,0,3805,strict|sabre|e9patch|rr
+sar-resource-tables,e9patch,PASS,,true,true,matched,5913,5913,canonical,0,394,strict|sabre|e9patch|rr
+sed,e9patch,PASS,,true,true,matched,1774,1774,canonical,0,443,strict|sabre|e9patch|rr
+seq,e9patch,PASS,,true,true,matched,2338,2338,canonical,0,349,strict|sabre|e9patch|rr
+setfacl,e9patch,PASS,,true,true,matched,3746,3746,canonical,0,347,sabre
+setfattr,e9patch,PASS,,true,true,matched,2705,2705,canonical,0,269,sabre
+sha1sum,e9patch,PASS,,true,true,matched,362,362,canonical,0,67,strict|sabre|e9patch|rr
+sha224sum,e9patch,PASS,,true,true,matched,362,362,canonical,0,65,strict|sabre|e9patch|rr
+sha256sum,e9patch,PASS,,true,true,matched,362,362,canonical,0,60,strict|sabre|e9patch|rr
+sha384sum,e9patch,PASS,,true,true,matched,362,362,canonical,0,68,strict|sabre|e9patch|rr
+sha512sum,e9patch,PASS,,true,true,matched,362,362,canonical,0,65,strict|sabre|e9patch|rr
+shell-build,e9patch,NOT_ATTEMPTED,corpus exclusion: not carried by the legacy e9patch corpus; reason not recorded upstream,,,,,,,,0,strict
+shred,e9patch,PASS,,true,true,matched,3058,3058,canonical,0,266,sabre
+shuf,e9patch,PASS,,true,true,matched,2581,2581,canonical,0,277,strict|sabre|e9patch|rr
+size,e9patch,PASS,,true,true,matched,3116,3116,canonical,0,295,strict|sabre|e9patch|rr
+sleep,e9patch,PASS,,true,true,matched,300,300,canonical,0,60,strict|sabre|e9patch|rr
+sort,e9patch,PASS,,true,true,matched,1201,1201,canonical,0,137,strict|sabre|e9patch|rr
+split,e9patch,PASS,,true,true,matched,2539,2539,canonical,0,236,strict|sabre|e9patch|rr
+sqlite3,e9patch,PASS,,true,true,matched,2314,2314,canonical,0,236,strict|sabre|e9patch|rr
+ss,e9patch,PASS,,true,true,matched,2296,2296,canonical,0,845,strict|sabre
+stat,e9patch,PASS,,true,true,matched,364,364,canonical,0,58,strict|sabre|e9patch|rr
+stdbuf,e9patch,PASS,,true,true,matched,631,631,canonical,0,89,strict|sabre|e9patch|rr
+strings,e9patch,PASS,,true,true,matched,1121,1121,canonical,0,116,strict|sabre|e9patch|rr
+strip,e9patch,PASS,,true,true,matched,3899,3899,canonical,0,1186,strict|sabre|e9patch|rr
+sum,e9patch,PASS,,true,true,matched,324,324,canonical,0,815,strict|sabre|e9patch|rr
+sync,e9patch,PASS,,true,true,matched,2570,2570,canonical,0,2601,sabre
+sysctl-random-uuid,e9patch,PASS,,true,true,matched,314,314,canonical,0,745,strict|sabre|e9patch|rr
+tac,e9patch,PASS,,true,true,matched,1116,1116,canonical,0,174,strict|sabre|e9patch|rr
+tar,e9patch,PASS,,true,true,matched,3277,3277,canonical,0,456,strict|sabre|e9patch|rr
+tar-roundtrip,e9patch,PASS,,true,true,matched,5271,5271,canonical,0,695,strict|sabre
+taskset,e9patch,PASS,,true,true,matched,1026,1026,canonical,0,123,strict|sabre|e9patch|rr
+tcl,e9patch,PASS,,true,true,matched,1228,1228,canonical,0,168,strict|sabre|rr
+tee,e9patch,PASS,,true,true,matched,1096,1096,canonical,0,128,strict|sabre|e9patch|rr
+test,e9patch,PASS,,true,true,matched,297,297,canonical,0,58,strict|sabre|e9patch|rr
+time,e9patch,PASS,,true,true,matched,2548,2548,canonical,0,303,strict|sabre
+timeout,e9patch,PASS,,true,true,matched,446,446,canonical,0,76,sabre
+top,e9patch,PASS,,true,true,matched,3823,3823,canonical,0,430,strict|sabre|e9patch|rr
+touch,e9patch,PASS,,true,true,matched,2459,2459,canonical,0,375,strict|sabre|e9patch|rr
+tr,e9patch,PASS,,true,true,matched,1081,1081,canonical,0,272,strict|sabre|e9patch|rr
+true,e9patch,PASS,,true,true,matched,96,96,canonical,0,237,strict|sabre|e9patch|rr
+truncate,e9patch,PASS,,true,true,matched,3935,3935,canonical,0,368,sabre
+tsort,e9patch,PASS,,true,true,matched,1087,1087,canonical,0,154,strict|sabre|e9patch|rr
+tty,e9patch,PASS,,true,true,matched,1122,1122,canonical,0,121,strict|sabre|e9patch|rr
+uname,e9patch,PASS,,true,true,matched,304,304,canonical,0,58,strict|sabre|e9patch|rr
+unexpand,e9patch,PASS,,true,true,matched,1083,1083,canonical,0,121,strict|sabre|e9patch|rr
+uniq,e9patch,PASS,,true,true,matched,1679,1679,canonical,0,174,strict|sabre|e9patch|rr
+uptime,e9patch,PASS,,true,true,matched,438,438,canonical,0,80,strict|sabre|e9patch|rr
+users,e9patch,PASS,,true,true,matched,1973,1973,canonical,0,175,strict|sabre|e9patch|rr
+uuidgen,e9patch,PASS,,true,true,matched,975,975,canonical,0,109,sabre
+vmstat,e9patch,PASS,,true,true,matched,548,548,canonical,0,99,strict|sabre|e9patch|rr
+vmstat-disk,e9patch,PASS,,true,true,matched,1919,1919,canonical,0,188,strict|sabre|e9patch|rr
+wc,e9patch,PASS,,true,true,matched,310,310,canonical,0,78,strict|sabre|e9patch|rr
+wc-lines,e9patch,PASS,,true,true,matched,316,316,canonical,0,81,strict|sabre|e9patch|rr
+wget-localhost,e9patch,PASS,,true,true,matched,6284,6284,canonical,0,1999,strict|sabre
+whoami,e9patch,PASS,,true,true,matched,350,350,canonical,0,80,strict|sabre|e9patch|rr
+xargs,e9patch,PASS,,true,true,matched,2625,2625,canonical,0,1504,strict|sabre|e9patch|rr
+xmllint,e9patch,PASS,,true,true,matched,3186,3186,canonical,0,1482,strict|sabre
+xxd,e9patch,PASS,,true,true,matched,888,888,canonical,0,1386,strict|sabre|e9patch|rr
+xz,e9patch,PASS,,true,true,matched,1641,1641,canonical,0,1083,strict|sabre|e9patch|rr
+xz-roundtrip,e9patch,PASS,,true,true,matched,5201,5201,canonical,0,1534,strict|sabre
+yes,e9patch,PASS,,true,true,matched,1472,1472,canonical,0,146,strict|sabre|e9patch|rr
+zip-unzip,e9patch,PASS,,true,true,matched,3525,3525,canonical,0,555,strict|sabre|e9patch|rr
+zstd,e9patch,PASS,,true,true,matched,1595,1595,canonical,0,396,strict|sabre|e9patch|rr
+zstd-roundtrip,e9patch,PASS,,true,true,matched,5497,5497,canonical,0,800,strict|sabre
+addr2line,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90008,strict|sabre|e9patch|rr
+ar,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,6508,strict|sabre|e9patch|rr
+arch,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1882,strict|sabre|e9patch|rr
+as,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,12431,strict|sabre|e9patch|rr
+awk,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5725,strict|sabre|e9patch|rr
+b2sum,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2057,strict|sabre|e9patch|rr
+base32,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2015,strict|sabre|e9patch|rr
+base64,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1845,strict|sabre|e9patch|rr
+basename,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1416,strict|sabre|e9patch|rr
+basenc,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,6471,sabre
+bash,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2263,strict|sabre|e9patch|rr
+bc,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,6643,strict|sabre|e9patch|rr
+bracket,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2211,strict|sabre|e9patch|rr
+bzip2,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5042,strict|sabre|e9patch|rr
+bzip2-roundtrip,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90011,strict|sabre
+c++filt,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90011,strict|sabre|e9patch|rr
+cal,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2380,strict|sabre|e9patch|rr
+cargo,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90011,strict|sabre|e9patch|rr
+cat,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1890,strict|sabre|e9patch|rr
+chmod,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3316,strict|sabre|e9patch|rr
+chown,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3645,strict|sabre|e9patch|rr
+chrt,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,5778,strict|sabre|e9patch|rr
+cksum,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1509,strict|sabre|e9patch|rr
+clang,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90008,strict|sabre
+cmake,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,22983,strict|sabre|e9patch|rr
+cmp,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2165,strict|sabre|e9patch|rr
+col,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4362,sabre
+colrm,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4090,sabre
+column,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3159,strict|sabre|e9patch|rr
+comm,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,7133,strict|sabre|e9patch|rr
+cp,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2602,strict|sabre|e9patch|rr
+cpio-roundtrip,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90007,strict|sabre
+cpp,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90010,strict|sabre|e9patch|rr
+crc32,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4835,sabre
+cscope,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4623,sabre
+csplit,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3385,strict|sabre|e9patch|rr
+curl,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2239,strict|sabre|e9patch|rr
+curl-localhost,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90012,strict|sabre
+cut,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5002,strict|sabre|e9patch|rr
+date,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2815,strict|sabre|e9patch|rr
+dc,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5681,strict|sabre|rr
+dd,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,7143,strict|sabre|e9patch|rr
+df,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2075,strict|sabre|e9patch|rr
+diff,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2832,strict|sabre|e9patch|rr
+diff3,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2375,sabre
+dirname,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1938,strict|sabre|e9patch|rr
+dos2unix,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2546,sabre
+du,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2013,strict|sabre|e9patch|rr
+echo,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1631,strict|sabre|e9patch|rr
+egrep,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5911,strict|sabre|e9patch|rr
+elfedit,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,14143,strict|sabre|e9patch|rr
+env,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,8602,strict|sabre|e9patch|rr
+envsubst,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5489,sabre
+expand,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4512,strict|sabre|e9patch|rr
+expr,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1982,strict|sabre|e9patch|rr
+factor,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,7493,strict|sabre|e9patch|rr
+fallocate,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2513,sabre
+fgrep,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5655,strict|sabre|e9patch|rr
+file,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2290,strict|sabre|e9patch|rr
+find,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90222,strict|sabre|e9patch|rr
+findmnt,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1887,strict|sabre|e9patch|rr
+flex,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2649,sabre
+flock,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3259,strict|sabre|e9patch|rr
+fmt,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,6038,strict|sabre|e9patch|rr
+fold,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2461,strict|sabre|e9patch|rr
+free,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2092,strict|sabre|e9patch|rr
+g++,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90010,strict|sabre|e9patch|rr
+gcc,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90393,strict|sabre|e9patch|rr
+gcov,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90604,strict|sabre|e9patch|rr
+getconf,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2975,sabre
+getopt,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1863,strict|sabre|e9patch|rr
+git,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,6968,strict|sabre|e9patch|rr
+gprof,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,18553,strict|sabre|e9patch|rr
+grep,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4365,strict|sabre|e9patch|rr
+groups,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1367,strict|sabre|e9patch|rr
+gzip,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,7236,strict|sabre|e9patch|rr
+gzip-roundtrip,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90010,strict|sabre
+head,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,3402,strict|sabre|e9patch|rr
+hexdump,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,5548,strict|sabre|e9patch|rr
+hostname,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1520,strict|sabre|e9patch|rr
+iconv,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2574,strict|sabre|e9patch|rr
+id,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1951,strict|sabre|e9patch|rr
+install,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1963,strict|sabre|e9patch|rr
+ionice,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1857,strict|sabre|e9patch|rr
+iostat,kvm,FAIL,"exit 1; > Process exited with code: Signaled(SIGALRM, false)",false,false,no_result,,,,1,1064,strict|sabre|e9patch|rr
+ip,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5140,strict|sabre
+java,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90009,strict|sabre|e9patch|rr
+javac,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90294,strict|sabre
+join,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4816,strict|sabre|e9patch|rr
+jq,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,7573,strict|sabre|e9patch|rr
+kill,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,672,strict|sabre|e9patch|rr
+ld,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,9615,strict|sabre|e9patch|rr
+ln,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1434,strict|sabre|e9patch|rr
+logger,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2787,strict|sabre|e9patch|rr
+logname,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,5658,strict|sabre|e9patch|rr
+ls,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1293,strict|sabre|e9patch|rr
+lscpu,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,11002,strict|sabre
+lsirq,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,722,strict|sabre|e9patch|rr
+lsmod,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,765,strict|sabre|e9patch|rr
+lsof,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,10195,strict
+lua,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3580,strict|sabre|e9patch|rr
+m4,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90290,strict|sabre|e9patch|rr
+make,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90006,strict|sabre|e9patch|rr
+md5sum,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2296,strict|sabre|e9patch|rr
+mkdir,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4524,strict|sabre|e9patch|rr
+mkfifo,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3989,strict|sabre|e9patch|rr
+mktemp,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3961,strict|sabre|e9patch|rr
+mountpoint,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,9226,sabre
+mpstat-softirqs,kvm,FAIL,"exit 1; > Process exited with code: Signaled(SIGALRM, false)",false,false,no_result,,,,1,884,strict|sabre|e9patch|rr
+msgfmt,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2066,sabre
+msgunfmt,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1880,sabre
+mv,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3189,strict|sabre|e9patch|rr
+namei,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2666,sabre
+nice,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,3141,strict|sabre|e9patch|rr
+nl,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5014,strict|sabre|e9patch|rr
+nm,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,58762,strict|sabre|e9patch|rr
+node,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,93225,strict|sabre|e9patch|rr
+nohup,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,3388,strict|sabre|e9patch|rr
+nproc,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,3369,strict|sabre|e9patch|rr
+numactl-hardware,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1967,strict|sabre|e9patch|rr
+numastat,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2109,strict|sabre|e9patch|rr
+numfmt,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1856,strict|sabre|e9patch|rr
+objcopy,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90007,strict|sabre|e9patch|rr
+objdump,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90305,strict|sabre|e9patch|rr
+od,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3022,strict|sabre|e9patch|rr
+openssl,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1673,strict|sabre|e9patch|rr
+paste,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90011,strict|sabre|e9patch|rr
+patch,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,33482,strict|sabre|e9patch|rr
+pathchk,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90038,sabre
+perl,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,48993,strict|sabre|e9patch|rr
+pgrep,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,50487,strict|sabre|e9patch|rr
+pidstat-disk,kvm,FAIL,"exit 1; > Process exited with code: Signaled(SIGALRM, false)",false,false,no_result,,,,1,35234,strict|sabre|e9patch|rr
+pinky,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,44482,strict|sabre|e9patch|rr
+pkg-config,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,95457,strict|sabre|e9patch|rr
+pkill,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,31590,strict|sabre|e9patch|rr
+pr,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,66536,strict|sabre|e9patch|rr
+printenv,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,27747,strict|sabre|e9patch|rr
+printf,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,22865,strict|sabre|e9patch|rr
+ps,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,11353,strict|sabre|e9patch|rr
+ptx,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,31885,strict|sabre|e9patch|rr
+pwd,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,17494,strict|sabre|e9patch|rr
+python3,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,25013,strict|sabre|e9patch|rr
+ranlib,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,74764,strict|sabre|e9patch|rr
+readelf,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,74735,strict|sabre|e9patch|rr
+readlink,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,21453,strict|sabre|e9patch|rr
+realpath,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,26748,strict|sabre|e9patch|rr
+rev,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,31383,strict|sabre|e9patch|rr
+rm,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,26552,strict|sabre|e9patch|rr
+rmdir,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,24125,strict|sabre|e9patch|rr
+ruby,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,16198,strict|sabre|e9patch|rr
+rustc,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90023,strict|sabre|e9patch|rr
+sar-resource-tables,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90460,strict|sabre|e9patch|rr
+sed,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,22629,strict|sabre|e9patch|rr
+seq,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90008,strict|sabre|e9patch|rr
+setfacl,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,20576,sabre
+setfattr,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,16980,sabre
+sha1sum,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,14715,strict|sabre|e9patch|rr
+sha224sum,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,6860,strict|sabre|e9patch|rr
+sha256sum,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,7069,strict|sabre|e9patch|rr
+sha384sum,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,5662,strict|sabre|e9patch|rr
+sha512sum,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,5011,strict|sabre|e9patch|rr
+shell-build,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,15666,strict
+shred,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,6455,sabre
+shuf,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90011,strict|sabre|e9patch|rr
+size,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,30891,strict|sabre|e9patch|rr
+sleep,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,6211,strict|sabre|e9patch|rr
+sort,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90013,strict|sabre|e9patch|rr
+split,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,6651,strict|sabre|e9patch|rr
+sqlite3,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90009,strict|sabre|e9patch|rr
+ss,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,25010,strict|sabre
+stat,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,3199,strict|sabre|e9patch|rr
+stdbuf,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,3312,strict|sabre|e9patch|rr
+strings,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,11514,strict|sabre|e9patch|rr
+strip,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,27966,strict|sabre|e9patch|rr
+sum,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2951,strict|sabre|e9patch|rr
+sync,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5264,sabre
+sysctl-random-uuid,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1017,strict|sabre|e9patch|rr
+tac,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3640,strict|sabre|e9patch|rr
+tar,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3201,strict|sabre|e9patch|rr
+tar-roundtrip,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90008,strict|sabre
+taskset,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,6885,strict|sabre|e9patch|rr
+tcl,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5569,strict|sabre|rr
+tee,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,6061,strict|sabre|e9patch|rr
+test,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1892,strict|sabre|e9patch|rr
+time,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90012,strict|sabre
+timeout,kvm,FAIL,"exit 1; > Process exited with code: Signaled(SIGALRM, false)",false,false,no_result,,,,1,2142,sabre
+top,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,8125,strict|sabre|e9patch|rr
+touch,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3968,strict|sabre|e9patch|rr
+tr,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4912,strict|sabre|e9patch|rr
+true,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1994,strict|sabre|e9patch|rr
+truncate,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3674,sabre
+tsort,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,6238,strict|sabre|e9patch|rr
+tty,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3433,strict|sabre|e9patch|rr
+uname,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1540,strict|sabre|e9patch|rr
+unexpand,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2999,strict|sabre|e9patch|rr
+uniq,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5251,strict|sabre|e9patch|rr
+uptime,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1479,strict|sabre|e9patch|rr
+users,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1605,strict|sabre|e9patch|rr
+uuidgen,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1796,sabre
+vmstat,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,1521,strict|sabre|e9patch|rr
+vmstat-disk,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1129,strict|sabre|e9patch|rr
+wc,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,3072,strict|sabre|e9patch|rr
+wc-lines,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2688,strict|sabre|e9patch|rr
+wget-localhost,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90006,strict|sabre
+whoami,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,2517,strict|sabre|e9patch|rr
+xargs,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90010,strict|sabre|e9patch|rr
+xmllint,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,10620,strict|sabre
+xxd,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3280,strict|sabre|e9patch|rr
+xz,kvm,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2893,strict|sabre|e9patch|rr
+xz-roundtrip,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90012,strict|sabre
+yes,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,6584,strict|sabre|e9patch|rr
+zip-unzip,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90012,strict|sabre|e9patch|rr
+zstd,kvm,ATTEMPTED_UNQUALIFIABLE,verified but bitwise_parity=false; comparator cannot certify L2,false,true,matched,,,canonical,0,6652,strict|sabre|e9patch|rr
+zstd-roundtrip,kvm,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90007,strict|sabre
+addr2line,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,263,strict|sabre|e9patch|rr
+ar,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,257,strict|sabre|e9patch|rr
+arch,liteinst,PASS,,true,true,matched,1101,1101,canonical,0,363,strict|sabre|e9patch|rr
+as,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,206,strict|sabre|e9patch|rr
+awk,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4285,strict|sabre|e9patch|rr
+b2sum,liteinst,PASS,,true,true,matched,1113,1113,canonical,0,420,strict|sabre|e9patch|rr
+base32,liteinst,PASS,,true,true,matched,1131,1131,canonical,0,413,strict|sabre|e9patch|rr
+base64,liteinst,PASS,,true,true,matched,1128,1128,canonical,0,360,strict|sabre|e9patch|rr
+basename,liteinst,PASS,,true,true,matched,1099,1099,canonical,0,335,strict|sabre|e9patch|rr
+basenc,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4228,sabre
+bash,liteinst,PASS,,true,true,matched,1452,1452,canonical,0,430,strict|sabre|e9patch|rr
+bc,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4311,strict|sabre|e9patch|rr
+bracket,liteinst,PASS,,true,true,matched,1094,1094,canonical,0,398,strict|sabre|e9patch|rr
+bzip2,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4314,strict|sabre|e9patch|rr
+bzip2-roundtrip,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,347,strict|sabre
+c++filt,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,293,strict|sabre|e9patch|rr
+cal,liteinst,PASS,,true,true,matched,1297,1297,canonical,0,379,strict|sabre|e9patch|rr
+cargo,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,314,strict|sabre|e9patch|rr
+cat,liteinst,PASS,,true,true,matched,1117,1117,canonical,0,354,strict|sabre|e9patch|rr
+chmod,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4267,strict|sabre|e9patch|rr
+chown,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4328,strict|sabre|e9patch|rr
+chrt,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4296,strict|sabre|e9patch|rr
+cksum,liteinst,PASS,,true,true,matched,1113,1113,canonical,0,372,strict|sabre|e9patch|rr
+clang,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,265,strict|sabre
+cmake,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,386,strict|sabre|e9patch|rr
+cmp,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4333,strict|sabre|e9patch|rr
+col,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4250,sabre
+colrm,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4325,sabre
+column,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4264,strict|sabre|e9patch|rr
+comm,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4219,strict|sabre|e9patch|rr
+cp,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4244,strict|sabre|e9patch|rr
+cpio-roundtrip,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,284,strict|sabre
+cpp,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,230,strict|sabre|e9patch|rr
+crc32,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4416,sabre
+cscope,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4251,sabre
+csplit,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4221,strict|sabre|e9patch|rr
+curl,liteinst,PASS,,true,true,matched,4696,4696,canonical,0,685,strict|sabre|e9patch|rr
+curl-localhost,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,234,strict|sabre
+cut,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4249,strict|sabre|e9patch|rr
+date,liteinst,PASS,,true,true,matched,1104,1104,canonical,0,291,strict|sabre|e9patch|rr
+dc,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4265,strict|sabre|rr
+dd,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4317,strict|sabre|e9patch|rr
+df,liteinst,PASS,,true,true,matched,1164,1164,canonical,0,480,strict|sabre|e9patch|rr
+diff,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4367,strict|sabre|e9patch|rr
+diff3,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4270,sabre
+dirname,liteinst,PASS,,true,true,matched,1099,1099,canonical,0,345,strict|sabre|e9patch|rr
+dos2unix,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4341,sabre
+du,liteinst,PASS,,true,true,matched,1101,1101,canonical,0,316,strict|sabre|e9patch|rr
+echo,liteinst,PASS,,true,true,matched,1099,1099,canonical,0,337,strict|sabre|e9patch|rr
+egrep,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4276,strict|sabre|e9patch|rr
+elfedit,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,234,strict|sabre|e9patch|rr
+env,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,284,strict|sabre|e9patch|rr
+envsubst,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4245,sabre
+expand,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4286,strict|sabre|e9patch|rr
+expr,liteinst,PASS,,true,true,matched,1228,1228,canonical,0,426,strict|sabre|e9patch|rr
+factor,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,278,strict|sabre|e9patch|rr
+fallocate,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4306,sabre
+fgrep,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4353,strict|sabre|e9patch|rr
+file,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,320,strict|sabre|e9patch|rr
+find,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,303,strict|sabre|e9patch|rr
+findmnt,liteinst,PASS,,true,true,matched,1949,1949,canonical,0,445,strict|sabre|e9patch|rr
+flex,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4405,sabre
+flock,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4260,strict|sabre|e9patch|rr
+fmt,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4470,strict|sabre|e9patch|rr
+fold,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4772,strict|sabre|e9patch|rr
+free,liteinst,PASS,,true,true,matched,1535,1535,canonical,0,322,strict|sabre|e9patch|rr
+g++,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,268,strict|sabre|e9patch|rr
+gcc,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,205,strict|sabre|e9patch|rr
+gcov,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,198,strict|sabre|e9patch|rr
+getconf,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4269,sabre
+getopt,liteinst,PASS,,true,true,matched,1103,1103,canonical,0,315,strict|sabre|e9patch|rr
+git,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,200,strict|sabre|e9patch|rr
+gprof,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,212,strict|sabre|e9patch|rr
+grep,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4227,strict|sabre|e9patch|rr
+groups,liteinst,PASS,,true,true,matched,1169,1169,canonical,0,356,strict|sabre|e9patch|rr
+gzip,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4249,strict|sabre|e9patch|rr
+gzip-roundtrip,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,206,strict|sabre
+head,liteinst,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1118,1118,canonical,1,346,strict|sabre|e9patch|rr
+hexdump,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4274,strict|sabre|e9patch|rr
+hostname,liteinst,PASS,,true,true,matched,906,906,canonical,0,605,strict|sabre|e9patch|rr
+iconv,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4565,strict|sabre|e9patch|rr
+id,liteinst,PASS,,true,true,matched,1371,1371,canonical,0,973,strict|sabre|e9patch|rr
+install,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4849,strict|sabre|e9patch|rr
+ionice,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,206,strict|sabre|e9patch|rr
+iostat,liteinst,PASS,,true,true,matched,13614,13614,canonical,0,1780,strict|sabre|e9patch|rr
+ip,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,313,strict|sabre
+java,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,281,strict|sabre|e9patch|rr
+javac,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,213,strict|sabre
+join,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4232,strict|sabre|e9patch|rr
+jq,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,214,strict|sabre|e9patch|rr
+kill,liteinst,PASS,,true,true,matched,1100,1100,canonical,0,285,strict|sabre|e9patch|rr
+ld,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,245,strict|sabre|e9patch|rr
+ln,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4258,strict|sabre|e9patch|rr
+logger,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4220,strict|sabre|e9patch|rr
+logname,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4227,strict|sabre|e9patch|rr
+ls,liteinst,PASS,,true,true,matched,1504,1504,canonical,0,450,strict|sabre|e9patch|rr
+lscpu,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,224,strict|sabre
+lsirq,liteinst,PASS,,true,true,matched,2292,2292,canonical,0,662,strict|sabre|e9patch|rr
+lsmod,liteinst,PASS,,true,true,matched,3213,3213,canonical,0,633,strict|sabre|e9patch|rr
+lsof,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,236,strict
+lua,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4224,strict|sabre|e9patch|rr
+m4,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,204,strict|sabre|e9patch|rr
+make,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,226,strict|sabre|e9patch|rr
+md5sum,liteinst,PASS,,true,true,matched,1369,1369,canonical,0,371,strict|sabre|e9patch|rr
+mkdir,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4274,strict|sabre|e9patch|rr
+mkfifo,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4209,strict|sabre|e9patch|rr
+mktemp,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4232,strict|sabre|e9patch|rr
+mountpoint,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4524,sabre
+mpstat-softirqs,liteinst,PASS,,true,true,matched,31486,31486,canonical,0,4335,strict|sabre|e9patch|rr
+msgfmt,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4262,sabre
+msgunfmt,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4229,sabre
+mv,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4217,strict|sabre|e9patch|rr
+namei,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4231,sabre
+nice,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,208,strict|sabre|e9patch|rr
+nl,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4326,strict|sabre|e9patch|rr
+nm,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,242,strict|sabre|e9patch|rr
+node,liteinst,FAIL,exit 1; Error: -524 ENOTSUPP (Operation is not supported),false,false,no_result,,,,1,396,strict|sabre|e9patch|rr
+nohup,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,268,strict|sabre|e9patch|rr
+nproc,liteinst,PASS,,true,true,matched,1102,1102,canonical,0,366,strict|sabre|e9patch|rr
+numactl-hardware,liteinst,PASS,,true,true,matched,1136,1136,canonical,0,429,strict|sabre|e9patch|rr
+numastat,liteinst,PASS,,true,true,matched,942,942,canonical,0,385,strict|sabre|e9patch|rr
+numfmt,liteinst,PASS,,true,true,matched,1099,1099,canonical,0,388,strict|sabre|e9patch|rr
+objcopy,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,239,strict|sabre|e9patch|rr
+objdump,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,291,strict|sabre|e9patch|rr
+od,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4320,strict|sabre|e9patch|rr
+openssl,liteinst,PASS,,true,true,matched,1384,1384,canonical,0,474,strict|sabre|e9patch|rr
+paste,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4295,strict|sabre|e9patch|rr
+patch,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4344,strict|sabre|e9patch|rr
+pathchk,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4307,sabre
+perl,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4410,strict|sabre|e9patch|rr
+pgrep,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4277,strict|sabre|e9patch|rr
+pidstat-disk,liteinst,PASS,,true,true,matched,1889,1889,canonical,0,441,strict|sabre|e9patch|rr
+pinky,liteinst,PASS,,true,true,matched,1160,1160,canonical,0,510,strict|sabre|e9patch|rr
+pkg-config,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,280,strict|sabre|e9patch|rr
+pkill,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4353,strict|sabre|e9patch|rr
+pr,liteinst,PASS,,true,true,matched,1153,1153,canonical,0,419,strict|sabre|e9patch|rr
+printenv,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,237,strict|sabre|e9patch|rr
+printf,liteinst,PASS,,true,true,matched,1099,1099,canonical,0,335,strict|sabre|e9patch|rr
+ps,liteinst,PASS,,true,true,matched,1822,1822,canonical,0,470,strict|sabre|e9patch|rr
+ptx,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4480,strict|sabre|e9patch|rr
+pwd,liteinst,PASS,,true,true,matched,1101,1101,canonical,0,405,strict|sabre|e9patch|rr
+python3,liteinst,PASS,,true,true,matched,3828,3828,canonical,0,2128,strict|sabre|e9patch|rr
+ranlib,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,244,strict|sabre|e9patch|rr
+readelf,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,302,strict|sabre|e9patch|rr
+readlink,liteinst,PASS,,true,true,matched,1103,1103,canonical,0,367,strict|sabre|e9patch|rr
+realpath,liteinst,PASS,,true,true,matched,1103,1103,canonical,0,374,strict|sabre|e9patch|rr
+rev,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4282,strict|sabre|e9patch|rr
+rm,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4362,strict|sabre|e9patch|rr
+rmdir,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4799,strict|sabre|e9patch|rr
+ruby,liteinst,PASS,,true,true,matched,2122,2122,canonical,0,945,strict|sabre|e9patch|rr
+rustc,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,233,strict|sabre|e9patch|rr
+sar-resource-tables,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4233,strict|sabre|e9patch|rr
+sed,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4283,strict|sabre|e9patch|rr
+seq,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,545,strict|sabre|e9patch|rr
+setfacl,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4505,sabre
+setfattr,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4371,sabre
+sha1sum,liteinst,PASS,,true,true,matched,1369,1369,canonical,0,484,strict|sabre|e9patch|rr
+sha224sum,liteinst,PASS,,true,true,matched,1369,1369,canonical,0,502,strict|sabre|e9patch|rr
+sha256sum,liteinst,PASS,,true,true,matched,1369,1369,canonical,0,578,strict|sabre|e9patch|rr
+sha384sum,liteinst,PASS,,true,true,matched,1369,1369,canonical,0,582,strict|sabre|e9patch|rr
+sha512sum,liteinst,PASS,,true,true,matched,1369,1369,canonical,0,549,strict|sabre|e9patch|rr
+shell-build,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4382,strict
+shred,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4454,sabre
+shuf,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,363,strict|sabre|e9patch|rr
+size,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,443,strict|sabre|e9patch|rr
+sleep,liteinst,PASS,,true,true,matched,1097,1097,canonical,0,542,strict|sabre|e9patch|rr
+sort,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4950,strict|sabre|e9patch|rr
+split,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4832,strict|sabre|e9patch|rr
+sqlite3,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,963,strict|sabre|e9patch|rr
+ss,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,944,strict|sabre
+stat,liteinst,PASS,,true,true,matched,1371,1371,canonical,0,701,strict|sabre|e9patch|rr
+stdbuf,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,354,strict|sabre|e9patch|rr
+strings,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4313,strict|sabre|e9patch|rr
+strip,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,331,strict|sabre|e9patch|rr
+sum,liteinst,PASS,,true,true,matched,1121,1121,canonical,0,457,strict|sabre|e9patch|rr
+sync,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4326,sabre
+sysctl-random-uuid,liteinst,PASS,,true,true,matched,1111,1111,canonical,0,405,strict|sabre|e9patch|rr
+tac,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4325,strict|sabre|e9patch|rr
+tar,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4311,strict|sabre|e9patch|rr
+tar-roundtrip,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,228,strict|sabre
+taskset,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4313,strict|sabre|e9patch|rr
+tcl,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4324,strict|sabre|rr
+tee,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4301,strict|sabre|e9patch|rr
+test,liteinst,PASS,,true,true,matched,1094,1094,canonical,0,394,strict|sabre|e9patch|rr
+time,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,300,strict|sabre
+timeout,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4243,sabre
+top,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,387,strict|sabre|e9patch|rr
+touch,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4444,strict|sabre|e9patch|rr
+tr,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4492,strict|sabre|e9patch|rr
+true,liteinst,PASS,,true,true,matched,899,899,canonical,0,488,strict|sabre|e9patch|rr
+truncate,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,5131,sabre
+tsort,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4582,strict|sabre|e9patch|rr
+tty,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4590,strict|sabre|e9patch|rr
+uname,liteinst,PASS,,true,true,matched,1101,1101,canonical,0,327,strict|sabre|e9patch|rr
+unexpand,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4267,strict|sabre|e9patch|rr
+uniq,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4288,strict|sabre|e9patch|rr
+uptime,liteinst,PASS,,true,true,matched,1516,1516,canonical,0,546,strict|sabre|e9patch|rr
+users,liteinst,PASS,,true,true,matched,2770,2770,canonical,0,751,strict|sabre|e9patch|rr
+uuidgen,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4341,sabre
+vmstat,liteinst,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1626,1626,canonical,1,508,strict|sabre|e9patch|rr
+vmstat-disk,liteinst,PASS,,true,true,matched,2997,2997,canonical,0,711,strict|sabre|e9patch|rr
+wc,liteinst,PASS,,true,true,matched,1107,1107,canonical,0,422,strict|sabre|e9patch|rr
+wc-lines,liteinst,PASS,,true,true,matched,1113,1113,canonical,0,379,strict|sabre|e9patch|rr
+wget-localhost,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,254,strict|sabre
+whoami,liteinst,PASS,,true,true,matched,1147,1147,canonical,0,344,strict|sabre|e9patch|rr
+xargs,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,507,strict|sabre|e9patch|rr
+xmllint,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,249,strict|sabre
+xxd,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4541,strict|sabre|e9patch|rr
+xz,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4302,strict|sabre|e9patch|rr
+xz-roundtrip,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,243,strict|sabre
+yes,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4299,strict|sabre|e9patch|rr
+zip-unzip,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4292,strict|sabre|e9patch|rr
+zstd,liteinst,FAIL,exit 1; Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3,false,false,no_result,,,,1,4432,strict|sabre|e9patch|rr
+zstd-roundtrip,liteinst,FAIL,exit 1; > reject LiteInst post-start exec failed for tracee 3: the required preload runtime cannot be preserved across exec (phase Ready),false,false,no_result,,,,1,290,strict|sabre
+addr2line,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,5951,5951,canonical,1,1422,strict|sabre|e9patch|rr
+ar,ptrace,PASS,,true,true,matched,5232,5232,canonical,0,1422,strict|sabre|e9patch|rr
+arch,ptrace,PASS,,true,true,matched,304,304,canonical,0,161,strict|sabre|e9patch|rr
+as,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,3789,3789,canonical,1,1392,strict|sabre|e9patch|rr
+awk,ptrace,PASS,,true,true,matched,1773,1773,canonical,0,416,strict|sabre|e9patch|rr
+b2sum,ptrace,PASS,,true,true,matched,316,316,canonical,0,158,strict|sabre|e9patch|rr
+base32,ptrace,PASS,,true,true,matched,334,334,canonical,0,160,strict|sabre|e9patch|rr
+base64,ptrace,PASS,,true,true,matched,331,331,canonical,0,147,strict|sabre|e9patch|rr
+basename,ptrace,PASS,,true,true,matched,302,302,canonical,0,133,strict|sabre|e9patch|rr
+basenc,ptrace,PASS,,true,true,matched,1648,1648,canonical,0,415,sabre
+bash,ptrace,PASS,,true,true,matched,544,544,canonical,0,177,strict|sabre|e9patch|rr
+bc,ptrace,PASS,,true,true,matched,949,949,canonical,0,406,strict|sabre|e9patch|rr
+bracket,ptrace,PASS,,true,true,matched,297,297,canonical,0,136,strict|sabre|e9patch|rr
+bzip2,ptrace,PASS,,true,true,matched,1381,1381,canonical,0,412,strict|sabre|e9patch|rr
+bzip2-roundtrip,ptrace,PASS,,true,true,matched,5071,5071,canonical,0,1526,strict|sabre
+c++filt,ptrace,PASS,,true,true,matched,2263,2263,canonical,0,1389,strict|sabre|e9patch|rr
+cal,ptrace,PASS,,true,true,matched,389,389,canonical,0,300,strict|sabre|e9patch|rr
+cargo,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,6705,6705,canonical,1,2688,strict|sabre|e9patch|rr
+cat,ptrace,PASS,,true,true,matched,320,320,canonical,0,1085,strict|sabre|e9patch|rr
+chmod,ptrace,PASS,,true,true,matched,2461,2461,canonical,0,2202,strict|sabre|e9patch|rr
+chown,ptrace,PASS,,true,true,matched,2537,2537,canonical,0,1519,strict|sabre|e9patch|rr
+chrt,ptrace,PASS,,true,true,matched,1023,1023,canonical,0,1279,strict|sabre|e9patch|rr
+cksum,ptrace,PASS,,true,true,matched,316,316,canonical,0,1213,strict|sabre|e9patch|rr
+clang,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,9561,9561,canonical,1,1994,strict|sabre
+cmake,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,3710,3710,canonical,1,1296,strict|sabre|e9patch|rr
+cmp,ptrace,PASS,,true,true,matched,2020,2020,canonical,0,1819,strict|sabre|e9patch|rr
+col,ptrace,PASS,,true,true,matched,1093,1093,canonical,0,1293,sabre
+colrm,ptrace,PASS,,true,true,matched,1102,1102,canonical,0,1271,sabre
+column,ptrace,PASS,,true,true,matched,1113,1113,canonical,0,634,strict|sabre|e9patch|rr
+comm,ptrace,PASS,,true,true,matched,1800,1800,canonical,0,1392,strict|sabre|e9patch|rr
+cp,ptrace,PASS,,true,true,matched,3064,3064,canonical,0,1312,strict|sabre|e9patch|rr
+cpio-roundtrip,ptrace,PASS,,true,true,matched,5367,5367,canonical,0,1396,strict|sabre
+cpp,ptrace,PASS,,true,true,matched,3828,3828,canonical,0,1415,strict|sabre|e9patch|rr
+crc32,ptrace,PASS,,true,true,matched,5282,5282,canonical,0,1499,sabre
+cscope,ptrace,PASS,,true,true,matched,3879,3879,canonical,0,1892,sabre
+csplit,ptrace,PASS,,true,true,matched,2642,2642,canonical,0,1302,strict|sabre|e9patch|rr
+curl,ptrace,PASS,,true,true,matched,1110,1110,canonical,0,1052,strict|sabre|e9patch|rr
+curl-localhost,ptrace,PASS,,true,true,matched,8628,8628,canonical,0,1647,strict|sabre
+cut,ptrace,PASS,,true,true,matched,1668,1668,canonical,0,1145,strict|sabre|e9patch|rr
+date,ptrace,PASS,,true,true,matched,307,307,canonical,0,1128,strict|sabre|e9patch|rr
+dc,ptrace,PASS,,true,true,matched,1012,1012,canonical,0,818,strict|sabre|rr
+dd,ptrace,PASS,,true,true,matched,1145,1145,canonical,0,654,strict|sabre|e9patch|rr
+df,ptrace,PASS,,true,true,matched,367,367,canonical,0,415,strict|sabre|e9patch|rr
+diff,ptrace,PASS,,true,true,matched,2658,2658,canonical,0,475,strict|sabre|e9patch|rr
+diff3,ptrace,PASS,,true,true,matched,3510,3510,canonical,0,1781,sabre
+dirname,ptrace,PASS,,true,true,matched,302,302,canonical,0,55,strict|sabre|e9patch|rr
+dos2unix,ptrace,PASS,,true,true,matched,2609,2609,canonical,0,552,sabre
+du,ptrace,PASS,,true,true,matched,304,304,canonical,0,57,strict|sabre|e9patch|rr
+echo,ptrace,PASS,,true,true,matched,302,302,canonical,0,68,strict|sabre|e9patch|rr
+egrep,ptrace,PASS,,true,true,matched,2335,2335,canonical,0,1700,strict|sabre|e9patch|rr
+elfedit,ptrace,PASS,,true,true,matched,4433,4433,canonical,0,1705,strict|sabre|e9patch|rr
+env,ptrace,PASS,,true,true,matched,2148,2148,canonical,0,505,strict|sabre|e9patch|rr
+envsubst,ptrace,PASS,,true,true,matched,1026,1026,canonical,0,496,sabre
+expand,ptrace,PASS,,true,true,matched,1083,1083,canonical,0,477,strict|sabre|e9patch|rr
+expr,ptrace,PASS,,true,true,matched,322,322,canonical,0,70,strict|sabre|e9patch|rr
+factor,ptrace,PASS,,true,true,matched,2085,2085,canonical,0,1153,strict|sabre|e9patch|rr
+fallocate,ptrace,PASS,,true,true,matched,2624,2624,canonical,0,1662,sabre
+fgrep,ptrace,PASS,,true,true,matched,2323,2323,canonical,0,1640,strict|sabre|e9patch|rr
+file,ptrace,PASS,,true,true,matched,701,701,canonical,0,786,strict|sabre|e9patch|rr
+find,ptrace,PASS,,true,true,matched,3204,3204,canonical,0,2259,strict|sabre|e9patch|rr
+findmnt,ptrace,PASS,,true,true,matched,548,548,canonical,0,1406,strict|sabre|e9patch|rr
+flex,ptrace,PASS,,true,true,matched,3501,3501,canonical,0,2234,sabre
+flock,ptrace,PASS,,true,true,matched,2373,2373,canonical,0,1469,strict|sabre|e9patch|rr
+fmt,ptrace,PASS,,true,true,matched,1090,1090,canonical,0,1821,strict|sabre|e9patch|rr
+fold,ptrace,PASS,,true,true,matched,1090,1090,canonical,0,1791,strict|sabre|e9patch|rr
+free,ptrace,PASS,,true,true,matched,457,457,canonical,0,670,strict|sabre|e9patch|rr
+g++,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,12312,12312,canonical,1,5186,strict|sabre|e9patch|rr
+gcc,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,4949,4949,canonical,1,2623,strict|sabre|e9patch|rr
+gcov,ptrace,PASS,,true,true,matched,3287,3287,canonical,0,2184,strict|sabre|e9patch|rr
+getconf,ptrace,PASS,,true,true,matched,1056,1056,canonical,0,1158,sabre
+getopt,ptrace,PASS,,true,true,matched,306,306,canonical,0,1151,strict|sabre|e9patch|rr
+git,ptrace,PASS,,true,true,matched,12486,12486,canonical,0,6965,strict|sabre|e9patch|rr
+gprof,ptrace,PASS,,true,true,matched,2748,2748,canonical,0,2107,strict|sabre|e9patch|rr
+grep,ptrace,PASS,,true,true,matched,1741,1741,canonical,0,1463,strict|sabre|e9patch|rr
+groups,ptrace,PASS,,true,true,matched,372,372,canonical,0,1186,strict|sabre|e9patch|rr
+gzip,ptrace,PASS,,true,true,matched,1344,1344,canonical,0,1443,strict|sabre|e9patch|rr
+gzip-roundtrip,ptrace,PASS,,true,true,matched,5029,5029,canonical,0,2502,strict|sabre
+head,ptrace,PASS,,true,true,matched,321,321,canonical,0,921,strict|sabre|e9patch|rr
+hexdump,ptrace,PASS,,true,true,matched,1105,1105,canonical,0,813,strict|sabre|e9patch|rr
+hostname,ptrace,PASS,,true,true,matched,109,109,canonical,0,740,strict|sabre|e9patch|rr
+iconv,ptrace,PASS,,true,true,matched,971,971,canonical,0,782,strict|sabre|e9patch|rr
+id,ptrace,PASS,,true,true,matched,364,364,canonical,0,790,strict|sabre|e9patch|rr
+install,ptrace,PASS,,true,true,matched,2605,2605,canonical,0,1414,strict|sabre|e9patch|rr
+ionice,ptrace,PASS,,true,true,matched,590,590,canonical,0,801,strict|sabre|e9patch|rr
+iostat,ptrace,PASS,,true,true,matched,12820,12820,canonical,0,5329,strict|sabre|e9patch|rr
+ip,ptrace,PASS,,true,true,matched,2336,2336,canonical,0,2403,strict|sabre
+java,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,208584,208872,canonical,1,26251,strict|sabre|e9patch|rr
+javac,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,166261,166465,canonical,1,21427,strict|sabre
+join,ptrace,PASS,,true,true,matched,1806,1806,canonical,0,2210,strict|sabre|e9patch|rr
+jq,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2542,2542,canonical,1,2441,strict|sabre|e9patch|rr
+kill,ptrace,PASS,,true,true,matched,303,303,canonical,0,1581,strict|sabre|e9patch|rr
+ld,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,8288,8288,canonical,1,5049,strict|sabre|e9patch|rr
+ln,ptrace,PASS,,true,true,matched,3351,3351,canonical,0,3615,strict|sabre|e9patch|rr
+logger,ptrace,PASS,,true,true,matched,1106,1106,canonical,0,2382,strict|sabre|e9patch|rr
+logname,ptrace,PASS,,true,true,matched,1065,1065,canonical,0,3452,strict|sabre|e9patch|rr
+ls,ptrace,PASS,,true,true,matched,402,402,canonical,0,2435,strict|sabre|e9patch|rr
+lscpu,ptrace,PASS,,true,true,matched,3444,3444,canonical,0,3372,strict|sabre
+lsirq,ptrace,PASS,,true,true,matched,1386,1386,canonical,0,2944,strict|sabre|e9patch|rr
+lsmod,ptrace,PASS,,true,true,matched,2040,2040,canonical,0,3865,strict|sabre|e9patch|rr
+lsof,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,7136,7136,canonical,1,3635,strict
+lua,ptrace,PASS,,true,true,matched,832,832,canonical,0,2863,strict|sabre|e9patch|rr
+m4,ptrace,PASS,,true,true,matched,2802,2802,canonical,0,3288,strict|sabre|e9patch|rr
+make,ptrace,PASS,,true,true,matched,3137,3137,canonical,0,3290,strict|sabre|e9patch|rr
+md5sum,ptrace,PASS,,true,true,matched,362,362,canonical,0,3276,strict|sabre|e9patch|rr
+mkdir,ptrace,PASS,,true,true,matched,2088,2088,canonical,0,2489,strict|sabre|e9patch|rr
+mkfifo,ptrace,PASS,,true,true,matched,2496,2496,canonical,0,2491,strict|sabre|e9patch|rr
+mktemp,ptrace,PASS,,true,true,matched,1518,1518,canonical,0,2141,strict|sabre|e9patch|rr
+mountpoint,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1562,1562,canonical,1,2629,sabre
+mpstat-softirqs,ptrace,PASS,,true,true,matched,30701,30701,canonical,0,6877,strict|sabre|e9patch|rr
+msgfmt,ptrace,PASS,,true,true,matched,2329,2329,canonical,0,1819,sabre
+msgunfmt,ptrace,PASS,,true,true,matched,3519,3519,canonical,0,3441,sabre
+mv,ptrace,PASS,,true,true,matched,2563,2563,canonical,0,1830,strict|sabre|e9patch|rr
+namei,ptrace,PASS,,true,true,matched,4528,4528,canonical,0,3940,sabre
+nice,ptrace,PASS,,true,true,matched,582,582,canonical,0,1313,strict|sabre|e9patch|rr
+nl,ptrace,PASS,,true,true,matched,1087,1087,canonical,0,1062,strict|sabre|e9patch|rr
+nm,ptrace,PASS,,true,true,matched,4267,4267,canonical,0,3350,strict|sabre|e9patch|rr
+node,ptrace,PASS,,true,true,matched,10401,10401,canonical,0,3372,strict|sabre|e9patch|rr
+nohup,ptrace,PASS,,true,true,matched,586,586,canonical,0,1056,strict|sabre|e9patch|rr
+nproc,ptrace,PASS,,true,true,matched,305,305,canonical,0,1057,strict|sabre|e9patch|rr
+numactl-hardware,ptrace,PASS,,true,true,matched,228,228,canonical,0,1054,strict|sabre|e9patch|rr
+numastat,ptrace,PASS,,true,true,matched,145,145,canonical,0,839,strict|sabre|e9patch|rr
+numfmt,ptrace,PASS,,true,true,matched,302,302,canonical,0,524,strict|sabre|e9patch|rr
+objcopy,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,4198,4198,canonical,1,2300,strict|sabre|e9patch|rr
+objdump,ptrace,PASS,,true,true,matched,4130,4130,canonical,0,2317,strict|sabre|e9patch|rr
+od,ptrace,PASS,,true,true,matched,1090,1090,canonical,0,1652,strict|sabre|e9patch|rr
+openssl,ptrace,PASS,,true,true,matched,288,288,canonical,0,2208,strict|sabre|e9patch|rr
+paste,ptrace,PASS,,true,true,matched,1806,1806,canonical,0,2299,strict|sabre|e9patch|rr
+patch,ptrace,PASS,,true,true,matched,2632,2632,canonical,0,2295,strict|sabre|e9patch|rr
+pathchk,ptrace,PASS,,true,true,matched,1824,1824,canonical,0,2268,sabre
+perl,ptrace,PASS,,true,true,matched,1201,1201,canonical,0,2291,strict|sabre|e9patch|rr
+pgrep,ptrace,PASS,,true,true,matched,1562,1562,canonical,0,2269,strict|sabre|e9patch|rr
+pidstat-disk,ptrace,PASS,,true,true,matched,1092,1092,canonical,0,1403,strict|sabre|e9patch|rr
+pinky,ptrace,PASS,,true,true,matched,363,363,canonical,0,726,strict|sabre|e9patch|rr
+pkg-config,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,10048,10048,canonical,1,2343,strict|sabre|e9patch|rr
+pkill,ptrace,PASS,,true,true,matched,1124,1124,canonical,0,1900,strict|sabre|e9patch|rr
+pr,ptrace,PASS,,true,true,matched,356,356,canonical,0,1496,strict|sabre|e9patch|rr
+printenv,ptrace,PASS,,true,true,matched,387,387,canonical,0,1315,strict|sabre|e9patch|rr
+printf,ptrace,PASS,,true,true,matched,302,302,canonical,0,5087,strict|sabre|e9patch|rr
+ps,ptrace,PASS,,true,true,matched,744,744,canonical,0,1873,strict|sabre|e9patch|rr
+ptx,ptrace,PASS,,true,true,matched,1081,1081,canonical,0,1902,strict|sabre|e9patch|rr
+pwd,ptrace,PASS,,true,true,matched,304,304,canonical,0,1304,strict|sabre|e9patch|rr
+python3,ptrace,PASS,,true,true,matched,2821,2821,canonical,0,1949,strict|sabre|e9patch|rr
+ranlib,ptrace,PASS,,true,true,matched,5709,5709,canonical,0,1927,strict|sabre|e9patch|rr
+readelf,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,4285,4285,canonical,1,1921,strict|sabre|e9patch|rr
+readlink,ptrace,PASS,,true,true,matched,306,306,canonical,0,1185,strict|sabre|e9patch|rr
+realpath,ptrace,PASS,,true,true,matched,306,306,canonical,0,740,strict|sabre|e9patch|rr
+rev,ptrace,PASS,,true,true,matched,1091,1091,canonical,0,1586,strict|sabre|e9patch|rr
+rm,ptrace,PASS,,true,true,matched,2005,2005,canonical,0,1589,strict|sabre|e9patch|rr
+rmdir,ptrace,PASS,,true,true,matched,1518,1518,canonical,0,906,strict|sabre|e9patch|rr
+ruby,ptrace,PASS,,true,true,matched,796,796,canonical,0,1377,strict|sabre|e9patch|rr
+rustc,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,51091,51091,canonical,1,7968,strict|sabre|e9patch|rr
+sar-resource-tables,ptrace,PASS,,true,true,matched,5913,5913,canonical,0,1159,strict|sabre|e9patch|rr
+sed,ptrace,PASS,,true,true,matched,1774,1774,canonical,0,1029,strict|sabre|e9patch|rr
+seq,ptrace,PASS,,true,true,matched,2338,2338,canonical,0,2242,strict|sabre|e9patch|rr
+setfacl,ptrace,PASS,,true,true,matched,3746,3746,canonical,0,960,sabre
+setfattr,ptrace,PASS,,true,true,matched,2705,2705,canonical,0,958,sabre
+sha1sum,ptrace,PASS,,true,true,matched,362,362,canonical,0,947,strict|sabre|e9patch|rr
+sha224sum,ptrace,PASS,,true,true,matched,362,362,canonical,0,944,strict|sabre|e9patch|rr
+sha256sum,ptrace,PASS,,true,true,matched,362,362,canonical,0,4033,strict|sabre|e9patch|rr
+sha384sum,ptrace,PASS,,true,true,matched,362,362,canonical,0,504,strict|sabre|e9patch|rr
+sha512sum,ptrace,PASS,,true,true,matched,362,362,canonical,0,720,strict|sabre|e9patch|rr
+shell-build,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,9668,9668,canonical,1,3815,strict
+shred,ptrace,PASS,,true,true,matched,3058,3058,canonical,0,2192,sabre
+shuf,ptrace,PASS,,true,true,matched,2581,2581,canonical,0,2174,strict|sabre|e9patch|rr
+size,ptrace,PASS,,true,true,matched,3116,3116,canonical,0,2173,strict|sabre|e9patch|rr
+sleep,ptrace,PASS,,true,true,matched,300,300,canonical,0,843,strict|sabre|e9patch|rr
+sort,ptrace,PASS,,true,true,matched,1201,1201,canonical,0,1257,strict|sabre|e9patch|rr
+split,ptrace,PASS,,true,true,matched,2539,2539,canonical,0,2182,strict|sabre|e9patch|rr
+sqlite3,ptrace,PASS,,true,true,matched,2314,2314,canonical,0,2174,strict|sabre|e9patch|rr
+ss,ptrace,PASS,,true,true,matched,2296,2296,canonical,0,3306,strict|sabre
+stat,ptrace,PASS,,true,true,matched,364,364,canonical,0,1355,strict|sabre|e9patch|rr
+stdbuf,ptrace,PASS,,true,true,matched,631,631,canonical,0,2096,strict|sabre|e9patch|rr
+strings,ptrace,PASS,,true,true,matched,1121,1121,canonical,0,931,strict|sabre|e9patch|rr
+strip,ptrace,PASS,,true,true,matched,3899,3899,canonical,0,2003,strict|sabre|e9patch|rr
+sum,ptrace,PASS,,true,true,matched,324,324,canonical,0,1664,strict|sabre|e9patch|rr
+sync,ptrace,PASS,,true,true,matched,2570,2570,canonical,0,3085,sabre
+sysctl-random-uuid,ptrace,PASS,,true,true,matched,314,314,canonical,0,1485,strict|sabre|e9patch|rr
+tac,ptrace,PASS,,true,true,matched,1116,1116,canonical,0,2130,strict|sabre|e9patch|rr
+tar,ptrace,PASS,,true,true,matched,3277,3277,canonical,0,2437,strict|sabre|e9patch|rr
+tar-roundtrip,ptrace,PASS,,true,true,matched,5271,5271,canonical,0,3288,strict|sabre
+taskset,ptrace,PASS,,true,true,matched,1026,1026,canonical,0,2505,strict|sabre|e9patch|rr
+tcl,ptrace,PASS,,true,true,matched,1228,1228,canonical,0,1474,strict|sabre|rr
+tee,ptrace,PASS,,true,true,matched,1096,1096,canonical,0,1339,strict|sabre|e9patch|rr
+test,ptrace,PASS,,true,true,matched,297,297,canonical,0,718,strict|sabre|e9patch|rr
+time,ptrace,PASS,,true,true,matched,2548,2548,canonical,0,1999,strict|sabre
+timeout,ptrace,PASS,,true,true,matched,445,445,canonical,0,684,sabre
+top,ptrace,PASS,,true,true,matched,3823,3823,canonical,0,2713,strict|sabre|e9patch|rr
+touch,ptrace,PASS,,true,true,matched,2459,2459,canonical,0,1849,strict|sabre|e9patch|rr
+tr,ptrace,PASS,,true,true,matched,1081,1081,canonical,0,2344,strict|sabre|e9patch|rr
+true,ptrace,PASS,,true,true,matched,96,96,canonical,0,2140,strict|sabre|e9patch|rr
+truncate,ptrace,PASS,,true,true,matched,3935,3935,canonical,0,1666,sabre
+tsort,ptrace,PASS,,true,true,matched,1087,1087,canonical,0,2394,strict|sabre|e9patch|rr
+tty,ptrace,PASS,,true,true,matched,1122,1122,canonical,0,2374,strict|sabre|e9patch|rr
+uname,ptrace,PASS,,true,true,matched,304,304,canonical,0,1704,strict|sabre|e9patch|rr
+unexpand,ptrace,PASS,,true,true,matched,1083,1083,canonical,0,9936,strict|sabre|e9patch|rr
+uniq,ptrace,PASS,,true,true,matched,1679,1679,canonical,0,1961,strict|sabre|e9patch|rr
+uptime,ptrace,PASS,,true,true,matched,438,438,canonical,0,1502,strict|sabre|e9patch|rr
+users,ptrace,PASS,,true,true,matched,1973,1973,canonical,0,1707,strict|sabre|e9patch|rr
+uuidgen,ptrace,PASS,,true,true,matched,975,975,canonical,0,1682,sabre
+vmstat,ptrace,PASS,,true,true,matched,548,548,canonical,0,1476,strict|sabre|e9patch|rr
+vmstat-disk,ptrace,PASS,,true,true,matched,1919,1919,canonical,0,1527,strict|sabre|e9patch|rr
+wc,ptrace,PASS,,true,true,matched,310,310,canonical,0,1049,strict|sabre|e9patch|rr
+wc-lines,ptrace,PASS,,true,true,matched,316,316,canonical,0,1014,strict|sabre|e9patch|rr
+wget-localhost,ptrace,PASS,,true,true,matched,6284,6284,canonical,0,3085,strict|sabre
+whoami,ptrace,PASS,,true,true,matched,350,350,canonical,0,1524,strict|sabre|e9patch|rr
+xargs,ptrace,PASS,,true,true,matched,2625,2625,canonical,0,1005,strict|sabre|e9patch|rr
+xmllint,ptrace,PASS,,true,true,matched,3186,3186,canonical,0,1202,strict|sabre
+xxd,ptrace,PASS,,true,true,matched,888,888,canonical,0,431,strict|sabre|e9patch|rr
+xz,ptrace,PASS,,true,true,matched,1641,1641,canonical,0,1956,strict|sabre|e9patch|rr
+xz-roundtrip,ptrace,PASS,,true,true,matched,5201,5201,canonical,0,2225,strict|sabre
+yes,ptrace,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1472,1466,canonical,1,1026,strict|sabre|e9patch|rr
+zip-unzip,ptrace,PASS,,true,true,matched,3525,3525,canonical,0,2095,strict|sabre|e9patch|rr
+zstd,ptrace,PASS,,true,true,matched,1595,1595,canonical,0,1975,strict|sabre|e9patch|rr
+zstd-roundtrip,ptrace,PASS,,true,true,matched,5497,5497,canonical,0,2401,strict|sabre
+addr2line,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,5352,5524,canonical,1,34041,strict|sabre|e9patch|rr
+ar,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,7189,strict|sabre|e9patch|rr
+arch,sabre,PASS,,true,true,matched,281,281,canonical,0,2122,strict|sabre|e9patch|rr
+as,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2874,3135,canonical,1,27899,strict|sabre|e9patch|rr
+awk,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1600,1597,canonical,1,6481,strict|sabre|e9patch|rr
+b2sum,sabre,PASS,,true,true,matched,292,292,canonical,0,932,strict|sabre|e9patch|rr
+base32,sabre,PASS,,true,true,matched,310,310,canonical,0,1532,strict|sabre|e9patch|rr
+base64,sabre,PASS,,true,true,matched,307,307,canonical,0,1265,strict|sabre|e9patch|rr
+basename,sabre,PASS,,true,true,matched,279,279,canonical,0,1218,strict|sabre|e9patch|rr
+basenc,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1857,sabre
+bash,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,393,393,canonical,1,2020,strict|sabre|e9patch|rr
+bc,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2278,strict|sabre|e9patch|rr
+bracket,sabre,PASS,,true,true,matched,274,274,canonical,0,1855,strict|sabre|e9patch|rr
+bzip2,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1152,1178,canonical,1,5720,strict|sabre|e9patch|rr
+bzip2-roundtrip,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,4761,4873,canonical,1,33508,strict|sabre
+c++filt,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2519,2063,canonical,1,16672,strict|sabre|e9patch|rr
+cal,sabre,PASS,,true,true,matched,344,344,canonical,0,1367,strict|sabre|e9patch|rr
+cargo,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,5992,6064,canonical,1,38922,strict|sabre|e9patch|rr
+cat,sabre,PASS,,true,true,matched,296,296,canonical,0,1540,strict|sabre|e9patch|rr
+chmod,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1459,strict|sabre|e9patch|rr
+chown,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1414,strict|sabre|e9patch|rr
+chrt,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,911,854,canonical,1,3759,strict|sabre|e9patch|rr
+cksum,sabre,PASS,,true,true,matched,292,292,canonical,0,1898,strict|sabre|e9patch|rr
+clang,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,8162,8438,canonical,1,34417,strict|sabre
+cmake,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2659,2885,canonical,1,23045,strict|sabre|e9patch|rr
+cmp,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1459,strict|sabre|e9patch|rr
+col,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1561,sabre
+colrm,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1658,sabre
+column,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1011,982,canonical,1,3600,strict|sabre|e9patch|rr
+comm,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1785,1830,canonical,1,8834,strict|sabre|e9patch|rr
+cp,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1387,strict|sabre|e9patch|rr
+cpio-roundtrip,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,5272,5705,canonical,1,38223,strict|sabre
+cpp,sabre,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90013,strict|sabre|e9patch|rr
+crc32,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2845,sabre
+cscope,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2713,sabre
+csplit,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1654,strict|sabre|e9patch|rr
+curl,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,508,508,canonical,1,2115,strict|sabre|e9patch|rr
+curl-localhost,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,5927,5711,canonical,1,37969,strict|sabre
+cut,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1614,1627,canonical,1,6440,strict|sabre|e9patch|rr
+date,sabre,PASS,,true,true,matched,284,284,canonical,0,1423,strict|sabre|e9patch|rr
+dc,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1990,strict|sabre|rr
+dd,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1047,1050,canonical,1,3552,strict|sabre|e9patch|rr
+df,sabre,PASS,,true,true,matched,354,354,canonical,0,2254,strict|sabre|e9patch|rr
+diff,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2035,strict|sabre|e9patch|rr
+diff3,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3304,sabre
+dirname,sabre,PASS,,true,true,matched,279,279,canonical,0,843,strict|sabre|e9patch|rr
+dos2unix,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4719,sabre
+du,sabre,PASS,,true,true,matched,281,281,canonical,0,2383,strict|sabre|e9patch|rr
+echo,sabre,PASS,,true,true,matched,279,279,canonical,0,1849,strict|sabre|e9patch|rr
+egrep,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2388,2231,canonical,1,9831,strict|sabre|e9patch|rr
+elfedit,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,3669,3433,canonical,1,31168,strict|sabre|e9patch|rr
+env,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,8664,strict|sabre|e9patch|rr
+envsubst,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,896,899,canonical,1,6457,sabre
+expand,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1064,1089,canonical,1,7216,strict|sabre|e9patch|rr
+expr,sabre,PASS,,true,true,matched,279,279,canonical,0,2268,strict|sabre|e9patch|rr
+factor,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,9371,strict|sabre|e9patch|rr
+fallocate,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4952,sabre
+fgrep,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2125,2128,canonical,1,10284,strict|sabre|e9patch|rr
+file,sabre,PASS,,true,true,matched,519,519,canonical,0,2694,strict|sabre|e9patch|rr
+find,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,3131,3141,canonical,1,22609,strict|sabre|e9patch|rr
+findmnt,sabre,PASS,,true,true,matched,367,367,canonical,0,1918,strict|sabre|e9patch|rr
+flex,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3350,sabre
+flock,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2647,strict|sabre|e9patch|rr
+fmt,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,978,981,canonical,1,3174,strict|sabre|e9patch|rr
+fold,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1050,1229,canonical,1,7671,strict|sabre|e9patch|rr
+free,sabre,PASS,,true,true,matched,336,336,canonical,0,1325,strict|sabre|e9patch|rr
+g++,sabre,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90009,strict|sabre|e9patch|rr
+gcc,sabre,TIMEOUT,exceeded 90s wall bound,false,false,no_result,,,,143,90007,strict|sabre|e9patch|rr
+gcov,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,3141,2873,canonical,1,25400,strict|sabre|e9patch|rr
+getconf,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3766,sabre
+getopt,sabre,PASS,,true,true,matched,283,283,canonical,0,1823,strict|sabre|e9patch|rr
+git,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,8788,8841,canonical,1,63457,strict|sabre|e9patch|rr
+gprof,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2900,2378,canonical,1,21734,strict|sabre|e9patch|rr
+grep,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1652,1824,canonical,1,8717,strict|sabre|e9patch|rr
+groups,sabre,PASS,,true,true,matched,344,344,canonical,0,1662,strict|sabre|e9patch|rr
+gzip,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1154,1148,canonical,1,6459,strict|sabre|e9patch|rr
+gzip-roundtrip,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,4975,4986,canonical,1,34751,strict|sabre
+head,sabre,PASS,,true,true,matched,297,297,canonical,0,2843,strict|sabre|e9patch|rr
+hexdump,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1139,1043,canonical,1,4734,strict|sabre|e9patch|rr
+hostname,sabre,PASS,,true,true,matched,101,101,canonical,0,1891,strict|sabre|e9patch|rr
+iconv,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,899,862,canonical,1,3356,strict|sabre|e9patch|rr
+id,sabre,PASS,,true,true,matched,298,298,canonical,0,1711,strict|sabre|e9patch|rr
+install,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3531,strict|sabre|e9patch|rr
+ionice,sabre,PASS,,true,true,matched,478,478,canonical,0,2554,strict|sabre|e9patch|rr
+iostat,sabre,PASS,,true,true,matched,12649,12649,canonical,0,12637,strict|sabre|e9patch|rr
+ip,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,8085,strict|sabre
+java,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,37629,37744,canonical,1,78058,strict|sabre|e9patch|rr
+javac,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,28447,28502,canonical,1,53843,strict|sabre
+join,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1785,1839,canonical,1,7124,strict|sabre|e9patch|rr
+jq,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,8844,strict|sabre|e9patch|rr
+kill,sabre,PASS,,true,true,matched,280,280,canonical,0,787,strict|sabre|e9patch|rr
+ld,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,7841,7736,canonical,1,30882,strict|sabre|e9patch|rr
+ln,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1872,strict|sabre|e9patch|rr
+logger,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1868,strict|sabre|e9patch|rr
+logname,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,645,642,canonical,1,4447,strict|sabre|e9patch|rr
+ls,sabre,PASS,,true,true,matched,316,316,canonical,0,871,strict|sabre|e9patch|rr
+lscpu,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,11293,strict|sabre
+lsirq,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1322,1336,canonical,1,4180,strict|sabre|e9patch|rr
+lsmod,sabre,PASS,,true,true,matched,1732,1732,canonical,0,2403,strict|sabre|e9patch|rr
+lsof,sabre,NOT_ATTEMPTED,corpus exclusion: not carried by the legacy sabre corpus; reason not recorded upstream,,,,,,,,0,strict
+lua,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1485,strict|sabre|e9patch|rr
+m4,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2602,2664,canonical,1,23997,strict|sabre|e9patch|rr
+make,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2987,2731,canonical,1,21326,strict|sabre|e9patch|rr
+md5sum,sabre,PASS,,true,true,matched,292,292,canonical,0,972,strict|sabre|e9patch|rr
+mkdir,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,5390,strict|sabre|e9patch|rr
+mkfifo,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4958,strict|sabre|e9patch|rr
+mktemp,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2339,strict|sabre|e9patch|rr
+mountpoint,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1357,1182,canonical,1,7898,sabre
+mpstat-softirqs,sabre,PASS,,true,true,matched,30282,30282,canonical,0,26595,strict|sabre|e9patch|rr
+msgfmt,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3525,sabre
+msgunfmt,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2662,sabre
+mv,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1540,strict|sabre|e9patch|rr
+namei,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,4072,sabre
+nice,sabre,PASS,,true,true,matched,471,471,canonical,0,2530,strict|sabre|e9patch|rr
+nl,sabre,PASS,,true,true,matched,982,982,canonical,0,3798,strict|sabre|e9patch|rr
+nm,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,3942,4009,canonical,1,22365,strict|sabre|e9patch|rr
+node,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,10076,10074,canonical,1,11292,strict|sabre|e9patch|rr
+nohup,sabre,PASS,,true,true,matched,475,475,canonical,0,4104,strict|sabre|e9patch|rr
+nproc,sabre,PASS,,true,true,matched,281,281,canonical,0,1486,strict|sabre|e9patch|rr
+numactl-hardware,sabre,PASS,,true,true,matched,208,208,canonical,0,1829,strict|sabre|e9patch|rr
+numastat,sabre,PASS,,true,true,matched,136,136,canonical,0,1548,strict|sabre|e9patch|rr
+numfmt,sabre,PASS,,true,true,matched,279,279,canonical,0,1244,strict|sabre|e9patch|rr
+objcopy,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,3305,3302,canonical,1,26336,strict|sabre|e9patch|rr
+objdump,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,3412,3247,canonical,1,26565,strict|sabre|e9patch|rr
+od,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,985,994,canonical,1,4958,strict|sabre|e9patch|rr
+openssl,sabre,PASS,,true,true,matched,210,210,canonical,0,1627,strict|sabre|e9patch|rr
+paste,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1903,1788,canonical,1,6668,strict|sabre|e9patch|rr
+patch,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2784,strict|sabre|e9patch|rr
+pathchk,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1478,1507,canonical,1,7312,sabre
+perl,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1541,strict|sabre|e9patch|rr
+pgrep,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1256,1259,canonical,1,5912,strict|sabre|e9patch|rr
+pidstat-disk,sabre,PASS,,true,true,matched,1072,1072,canonical,0,1962,strict|sabre|e9patch|rr
+pinky,sabre,PASS,,true,true,matched,336,336,canonical,0,1301,strict|sabre|e9patch|rr
+pkg-config,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,11007,strict|sabre|e9patch|rr
+pkill,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,854,857,canonical,1,4505,strict|sabre|e9patch|rr
+pr,sabre,PASS,,true,true,matched,331,331,canonical,0,1026,strict|sabre|e9patch|rr
+printenv,sabre,PASS,,true,true,matched,267,267,canonical,0,2234,strict|sabre|e9patch|rr
+printf,sabre,PASS,,true,true,matched,279,279,canonical,0,1894,strict|sabre|e9patch|rr
+ps,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,617,623,canonical,1,2049,strict|sabre|e9patch|rr
+ptx,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,972,975,canonical,1,4513,strict|sabre|e9patch|rr
+pwd,sabre,PASS,,true,true,matched,281,281,canonical,0,1182,strict|sabre|e9patch|rr
+python3,sabre,PASS,,true,true,matched,2682,2682,canonical,0,4868,strict|sabre|e9patch|rr
+ranlib,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,5117,5493,canonical,1,31945,strict|sabre|e9patch|rr
+readelf,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,3373,3730,canonical,1,31193,strict|sabre|e9patch|rr
+readlink,sabre,PASS,,true,true,matched,283,283,canonical,0,1761,strict|sabre|e9patch|rr
+realpath,sabre,PASS,,true,true,matched,283,283,canonical,0,1498,strict|sabre|e9patch|rr
+rev,sabre,PASS,,true,true,matched,982,982,canonical,0,3287,strict|sabre|e9patch|rr
+rm,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2185,strict|sabre|e9patch|rr
+rmdir,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2837,strict|sabre|e9patch|rr
+ruby,sabre,PASS,,true,true,matched,673,673,canonical,0,1630,strict|sabre|e9patch|rr
+rustc,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,8372,9059,canonical,1,44907,strict|sabre|e9patch|rr
+sar-resource-tables,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2342,strict|sabre|e9patch|rr
+sed,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1831,1618,canonical,1,9020,strict|sabre|e9patch|rr
+seq,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,9670,strict|sabre|e9patch|rr
+setfacl,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,8356,sabre
+setfattr,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,6417,sabre
+sha1sum,sabre,PASS,,true,true,matched,292,292,canonical,0,5227,strict|sabre|e9patch|rr
+sha224sum,sabre,PASS,,true,true,matched,292,292,canonical,0,1148,strict|sabre|e9patch|rr
+sha256sum,sabre,PASS,,true,true,matched,292,292,canonical,0,1145,strict|sabre|e9patch|rr
+sha384sum,sabre,PASS,,true,true,matched,292,292,canonical,0,1050,strict|sabre|e9patch|rr
+sha512sum,sabre,PASS,,true,true,matched,292,292,canonical,0,1052,strict|sabre|e9patch|rr
+shell-build,sabre,NOT_ATTEMPTED,corpus exclusion: not carried by the legacy sabre corpus; reason not recorded upstream,,,,,,,,0,strict
+shred,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3042,sabre
+shuf,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2421,2362,canonical,1,21199,strict|sabre|e9patch|rr
+size,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2549,2576,canonical,1,18980,strict|sabre|e9patch|rr
+sleep,sabre,PASS,,true,true,matched,277,277,canonical,0,1510,strict|sabre|e9patch|rr
+sort,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1049,1089,canonical,1,4285,strict|sabre|e9patch|rr
+split,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2168,strict|sabre|e9patch|rr
+sqlite3,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2052,2136,canonical,1,17124,strict|sabre|e9patch|rr
+ss,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1838,1989,canonical,1,15448,strict|sabre
+stat,sabre,PASS,,true,true,matched,298,298,canonical,0,870,strict|sabre|e9patch|rr
+stdbuf,sabre,PASS,,true,true,matched,496,496,canonical,0,2888,strict|sabre|e9patch|rr
+strings,sabre,PASS,,true,true,matched,966,966,canonical,0,3534,strict|sabre|e9patch|rr
+strip,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,2874,2851,canonical,1,25535,strict|sabre|e9patch|rr
+sum,sabre,PASS,,true,true,matched,300,300,canonical,0,1939,strict|sabre|e9patch|rr
+sync,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3054,sabre
+sysctl-random-uuid,sabre,PASS,,true,true,matched,290,290,canonical,0,1949,strict|sabre|e9patch|rr
+tac,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1003,1006,canonical,1,4938,strict|sabre|e9patch|rr
+tar,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2322,strict|sabre|e9patch|rr
+tar-roundtrip,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,4816,5366,canonical,1,30592,strict|sabre
+taskset,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,856,975,canonical,1,3632,strict|sabre|e9patch|rr
+tcl,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1787,strict|sabre|rr
+tee,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,990,1067,canonical,1,4546,strict|sabre|e9patch|rr
+test,sabre,PASS,,true,true,matched,274,274,canonical,0,3190,strict|sabre|e9patch|rr
+time,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,9421,strict|sabre
+timeout,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,409,417,canonical,1,3219,sabre
+top,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1852,1781,canonical,1,8969,strict|sabre|e9patch|rr
+touch,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,2725,strict|sabre|e9patch|rr
+tr,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1019,1065,canonical,1,3668,strict|sabre|e9patch|rr
+true,sabre,PASS,,true,true,matched,88,88,canonical,0,1562,strict|sabre|e9patch|rr
+truncate,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,3323,sabre
+tsort,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1095,982,canonical,1,3918,strict|sabre|e9patch|rr
+tty,sabre,PASS,,true,true,matched,994,994,canonical,0,4426,strict|sabre|e9patch|rr
+uname,sabre,PASS,,true,true,matched,281,281,canonical,0,1478,strict|sabre|e9patch|rr
+unexpand,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,978,978,canonical,1,5703,strict|sabre|e9patch|rr
+uniq,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1619,1619,canonical,1,7453,strict|sabre|e9patch|rr
+uptime,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,320,320,canonical,1,1211,strict|sabre|e9patch|rr
+users,sabre,PASS,,true,true,matched,1939,1939,canonical,0,2223,strict|sabre|e9patch|rr
+uuidgen,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,1477,sabre
+vmstat,sabre,PASS,,true,true,matched,431,431,canonical,0,1543,strict|sabre|e9patch|rr
+vmstat-disk,sabre,PASS,,true,true,matched,1809,1809,canonical,0,2462,strict|sabre|e9patch|rr
+wc,sabre,PASS,,true,true,matched,286,286,canonical,0,1120,strict|sabre|e9patch|rr
+wc-lines,sabre,PASS,,true,true,matched,292,292,canonical,0,1000,strict|sabre|e9patch|rr
+wget-localhost,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,6174,6439,canonical,1,31556,strict|sabre
+whoami,sabre,PASS,,true,true,matched,323,323,canonical,0,1075,strict|sabre|e9patch|rr
+xargs,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,7652,strict|sabre|e9patch|rr
+xmllint,sabre,FAIL,exit 1; Error: First run during --verify exited in error,false,false,no_result,,,,1,8936,strict|sabre
+xxd,sabre,PASS,,true,true,matched,797,797,canonical,0,5466,strict|sabre|e9patch|rr
+xz,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1388,1491,canonical,1,6053,strict|sabre|e9patch|rr
+xz-roundtrip,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,5603,5650,canonical,1,29005,strict|sabre
+yes,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1214,1215,canonical,1,5793,strict|sabre|e9patch|rr
+zip-unzip,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,3398,3966,canonical,1,15455,strict|sabre|e9patch|rr
+zstd,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,1320,1310,canonical,1,6813,strict|sabre|e9patch|rr
+zstd-roundtrip,sabre,FAIL,exit 1; Error: Mismatch between run 1 and run 2 outputs (logs retained).,false,false,diverged,5148,5903,canonical,1,29120,strict|sabre
