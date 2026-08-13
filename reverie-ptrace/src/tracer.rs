@@ -594,6 +594,19 @@ struct RegisteredTraceeCleanup {
     event_link: Option<EventChildLink>,
 }
 
+fn terminal_descendant_remains_owned(identity: &TraceeIdentity) -> bool {
+    if identity.is_our_tracee() {
+        return true;
+    }
+    let Some((_, parent_tgid, _)) = identity.parent else {
+        return false;
+    };
+    identity.same_process()
+        && tracee_snapshot(identity.tid)
+            .ok()
+            .is_some_and(|current| current.ppid == parent_tgid)
+}
+
 impl LiteinstTraceeCleanup {
     fn new(
         pid: Pid,
@@ -903,7 +916,12 @@ impl LiteinstTraceeCleanup {
                     terminal_descendants.insert(pid, tracee.identity);
                 }
             }
-            terminal_descendants.retain(|_, identity| identity.same_process());
+            // Once the exact notifier generation is terminal, retain its proc
+            // identity only while it remains our tracee or its recorded parent
+            // still owns the zombie. After reparenting, waiting for another
+            // process to reap it cannot strengthen our cleanup proof and can
+            // never make progress here.
+            terminal_descendants.retain(|_, identity| terminal_descendant_remains_owned(identity));
             let root_absent = !self.identity.same_process();
             let newborns_empty = self.newborn_tracees.lock().unwrap().is_empty();
             if root_done
@@ -1754,15 +1772,27 @@ async fn run_task_tree<T: Tool + 'static>(
     root: TracedTask<T>,
     child: Stopped,
     orphanage: mpsc::Receiver<Child>,
+    liteinst_fail_closed: bool,
 ) -> Result<ExitStatus, Error> {
-    future::join(
-        // Run the root task to completion
-        root.run(child),
-        // ...and wait for all orphans simultaneously.
-        run_orphaned(orphanage),
-    )
-    .await
-    .0
+    let root = root.run(child);
+    let orphans = run_orphaned(orphanage);
+    futures::pin_mut!(root, orphans);
+    match future::select(root, orphans).await {
+        future::Either::Left((result, orphans)) => {
+            if result.is_ok() || !liteinst_fail_closed {
+                // A successful root, and every non-LiteInst backend, still
+                // owns orderly orphan completion.
+                orphans.await;
+            }
+            // A failed LiteInst root must return control to its session cleanup
+            // guard immediately. A failed descendant can retain an orphanage
+            // sender while its Tool exit callback is pending, and waiting for
+            // that channel to close would prevent the guard from terminating
+            // the exact tracee generations which make the callback pending.
+            result
+        }
+        future::Either::Right(((), root)) => root.await,
+    }
 }
 
 /// Helper function for everything after the child is spawned.
@@ -1807,6 +1837,7 @@ async fn postspawn<L: Tool + 'static>(
 
     let (orphan_sender, orphan_receiver) = mpsc::channel(1);
     let (daemon_kill, _) = broadcast::channel(1);
+    let liteinst_fail_closed = options.liteinst_runtime.is_some();
 
     // This is the root task, so there's no reason to make run its init routine
     // asynchronously, as there isn't any other work to do.
@@ -1823,7 +1854,12 @@ async fn postspawn<L: Tool + 'static>(
     tracer.arm_liteinst_root_stop(&child, &Event::Signal(Signal::SIGSTOP));
     child = tracer.tracee_preinit(child).await?;
 
-    let tracer = Box::pin(run_task_tree(tracer, child, orphan_receiver));
+    let tracer = Box::pin(run_task_tree(
+        tracer,
+        child,
+        orphan_receiver,
+        liteinst_fail_closed,
+    ));
     Ok(tracer)
 }
 
@@ -2023,6 +2059,7 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             root_tid: Arc::new(StdOnceLock::new()),
             multi_task: Arc::new(AtomicBool::new(false)),
             session_failure: Arc::new(StdMutex::new(None)),
+            session_failure_changed: Arc::new(tokio::sync::Notify::new()),
             instrumentation_stats: stats_request
                 .is_enabled()
                 .then(|| Arc::new(StdMutex::new(LiteinstInstrumentationStats::default()))),
@@ -3678,12 +3715,52 @@ mod tests {
             !identity.is_our_tracee(),
             "untraced zombie became active tracee"
         );
+        assert!(
+            !terminal_descendant_remains_owned(&identity),
+            "terminal cleanup retained a zombie after its ptrace relationship ended"
+        );
 
         Running::new(pid).wait().expect("reap child");
         assert!(
             !identity.same_process(),
             "reaped child still matched identity"
         );
+    }
+
+    #[test]
+    fn terminal_descendant_retention_does_not_touch_an_untraced_process() {
+        let (traced_pid, stopped) = spawn_held_stop_child("terminal descendant retention child");
+        let traced_identity =
+            TraceeIdentity::open_root(traced_pid).expect("capture traced child identity");
+        assert!(
+            terminal_descendant_remains_owned(&traced_identity),
+            "cleanup dropped a live tracee"
+        );
+        let wait = stopped
+            .resume(None)
+            .expect("resume traced child")
+            .wait()
+            .expect("reap traced child");
+        assert_eq!(wait.assume_exited().1, ExitStatus::Exited(0));
+
+        let unrelated_pid = fork_paused_child();
+        let unrelated_identity = untraced_process_identity(unrelated_pid);
+        assert!(
+            !terminal_descendant_remains_owned(&unrelated_identity),
+            "cleanup treated an untraced process as its descendant"
+        );
+        assert_eq!(unsafe { libc::kill(unrelated_pid.as_raw(), 0) }, 0);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(unrelated_pid.as_raw(), &mut status, libc::WNOHANG) },
+            0,
+            "retention check changed an unrelated process"
+        );
+
+        unsafe { libc::kill(unrelated_pid.as_raw(), libc::SIGKILL) };
+        Running::new(unrelated_pid)
+            .wait()
+            .expect("reap unrelated child");
     }
 
     #[tokio::test(flavor = "current_thread")]
