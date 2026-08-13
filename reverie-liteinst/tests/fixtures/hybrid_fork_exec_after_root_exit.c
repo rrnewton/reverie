@@ -1,9 +1,9 @@
 /* A forked child that execs after the session root has exited.
 
-   Exec after start cannot preserve the preload runtime. The child delays the
-   refused exec until the root has entered process-exit bookkeeping, where the
-   root would otherwise wait forever if the child's Tool exit callback does
-   not complete. */
+   Exec after start cannot preserve the preload runtime. The child waits until
+   the kernel has reparented it, proving that the root exited before the
+   refused exec. The root would then wait forever for the child's Tool exit
+   callback if its process-exit bookkeeping ignored the session failure. */
 #include <stdio.h>
 #include <sys/prctl.h>
 #include <sys/types.h>
@@ -27,7 +27,10 @@ int main(int argc, char **argv) {
     return 10;
   }
   if (child == 0) {
-    usleep(250000);
+    pid_t root = getppid();
+    while (getppid() == root) {
+      usleep(1000);
+    }
     execl("/bin/true", "true", (char *)NULL);
     _exit(127);
   }
