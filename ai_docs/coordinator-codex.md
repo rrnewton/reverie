@@ -31,11 +31,26 @@ applies here unchanged.
 
 ## What does NOT apply to you
 
-`tmux_pane_id`, `cgroup_path`, `observe_owner_lease()`, `orc.scripts.*`, `orc.registerScript`,
+`tmux_pane_id`, `observe_owner_lease()`, `orc.scripts.*`, `orc.registerScript`,
 `scripts/orc-hermit-msg.py`, Herdr tabs/panes, `agent_liveness_probe.py`.
 
-- A slot you allocate is **born lease-less and stays that way** — normal and permanent, not a defect, and
-  never a reason to delay dispatch.
+- Codex-owned slots are not lease-less. The canonical allocator records a
+  coordinator-held systemd sentinel, including its cgroup path, as described by
+  [worktree-provisioning](../.claude/skills/worktree-provisioning/SKILL.md).
+- A Codex worker sandbox cannot create that transient user unit. The worker
+  supplies the exact allocation request; the coordinator runs the same canonical
+  allocator request with `--codex-systemd-sentinel` from a context with host
+  user-bus access. `Operation not permitted` or `cannot connect` from inside the
+  sandbox is a caller-context refusal, not evidence that the user manager is
+  unavailable and not permission to bypass the allocator or edit registry state.
+- One owner does not need a second slot merely to shepherd an earlier published
+  branch. Once work is clean, remotely recoverable, and recorded, reuse the same
+  slot for sequential branches and update its registration as specified by
+  `worktree-provisioning`; switch back when an earlier branch needs attention.
+- `ci-hub validate-run` also launches transient user units. A sandbox refusal
+  occurs before validation admission and produces no qualifying receipt; run it
+  through the repository's host-capable validation path rather than invoking the
+  underlying validator or weakening an admission check.
 - **"The coordinator has no shell" is an ORC constraint.** You have one. Run the commands yourself or hand
   them to your own subagents.
 - **Hard Invariant 13's fifteen-agent cap counts independently-launched top-level `claude`/`codex`
