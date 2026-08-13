@@ -383,14 +383,14 @@ siblings' live work.
 ## Task Lifecycle — phantom-closure rationale
 
 Phantom closures (a task marked done while its work never landed) are a recurring failure mode. The 2026-08-08
-policy stops fighting them with a gatekeeper — the coordinator-only closure step was unsatisfiable, because the
-ORC coordinator has no shell and could never run the gateway, so in practice NOTHING closed and finished work
-piled up as `implemented`-but-open. The defence is now the `implemented` tag plus the IMPLEMENTED evidence
-note: `closed` deliberately does NOT mean landed, landing debt is enumerated from CLOSED+`implemented` records
-by `drain-implemented-to-landed` and `health-tick`, and that debt is discharged only by the `CLOSURE-VERIFIED`
-note `./ci-hub/bin/close-task` writes. A phantom closure is now visible as a CLOSED task that carries
-`implemented` forever, rather than being prevented by a step nobody could execute. Ordinary agents have no
-reliable fleet-wide peer-message channel: the
+coordinator-only closure step was unsatisfiable because the ORC coordinator has no shell. Its replacement,
+close-at-publication, made landing debt visible through `implemented` but still allowed the task to become
+terminal before landing. The owner's binding 2026-08-12 ruling keeps the useful parts of both: the owning agent
+remains responsible, published work is open plus `implemented`, and the agent closes only after the gateway
+verifies landing and writes `CLOSURE-VERIFIED`. `drain-implemented-to-landed` and `health-tick` keep legacy
+premature closures visible rather than reading status as proof. Operative actor, timing, status, and command live
+only in `AGENTS.md` rule 15 and its linked closure evidence contract. Ordinary agents have no reliable
+fleet-wide peer-message channel: the
 agent-side `SendMessage` registry is scoped to same-session subagents and cannot resolve fixed/numeric ORC
 fleet names (`hermit-lander`, `hermit-247`), so never claim another fleet agent was notified merely because a
 message was attempted. TaskGraph notes are pull-based — they preserve a handoff across recycling but do not
@@ -409,7 +409,7 @@ for — the agent holding the shell runs the commands and reports.
   when authorized; record the resulting `main` SHA and evidence.
 - **Before parent pinning:** submodule commits clean, reviewed, tested, fetchable; inspect `git diff --submodule=log` before staging; stage only intended gitlinks + parent-owned files; validate a coordinated Hermit/Reverie pair when both move; commit parent changes to `main` only when the task authorizes it.
 - **Before closeout:** each changed repo has a clean committed feature branch; record exact SHAs + validation in the task and `ARCHIVED.md`; detach slot children at their parent-pinned gitlinks; remove/update the slot row; keep ≤ 5 parked; leave unrelated concurrent work exactly as found.
-- **Before closing a task (the OWNING AGENT closes it — superseded 2026-08-08):** the coordinator-only closure gate is GONE. An agent closes its own task with plain `tg update <id> --status closed` once it has posted the PR/artifact URL, exact SHA, and validation evidence and tagged `implemented`. `./ci-hub/bin/close-task` is retained but optional; it is still the only writer of the `CLOSURE-VERIFIED` note that discharges landing debt, so use it once the change is on `main`. See AGENTS.md **Task Lifecycle And Closure**.
+- **Before closing a task:** follow `AGENTS.md` rule 15 and the linked closure evidence contract; the coordinator audits the recorded publication and landing evidence rather than substituting task status for either fact.
 
 ### Manual GH Actions dispatch under `merge-gate-v4` — the measurements
 
