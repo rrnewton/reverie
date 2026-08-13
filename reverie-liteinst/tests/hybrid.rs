@@ -533,6 +533,87 @@ fn assert_pid_reaped(pid: u32) {
     );
 }
 
+struct UnrelatedStoppedProcess {
+    child: Option<std::process::Child>,
+}
+
+impl UnrelatedStoppedProcess {
+    fn spawn() -> Self {
+        let child = ProcessCommand::new("/bin/sleep")
+            .arg("300")
+            .spawn()
+            .expect("spawn unrelated process");
+        let pid = child.id() as i32;
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) },
+            pid,
+            "wait for unrelated process to stop"
+        );
+        assert!(
+            libc::WIFSTOPPED(status),
+            "unrelated process did not enter a stopped state: {status}"
+        );
+        Self { child: Some(child) }
+    }
+
+    fn assert_live_and_unreaped(&self) {
+        let pid = self.child.as_ref().unwrap().id() as i32;
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "cleanup signaled an unrelated process"
+        );
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+            0,
+            "cleanup made an unrelated process waitable"
+        );
+    }
+
+    fn kill_and_reap(mut self) {
+        let mut child = self.child.take().unwrap();
+        child.kill().expect("kill unrelated process after bracket");
+        child.wait().expect("reap unrelated process after bracket");
+    }
+}
+
+impl Drop for UnrelatedStoppedProcess {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn is_original_liteinst_session_refusal(text: &str, operation: &str) -> bool {
+    text.contains("LiteInst session failed closed in a non-root task")
+        && text.contains(operation)
+        && !text.contains("LiteInst tracee cleanup failed")
+        && !text.contains("notifier did not acknowledge terminal cleanup")
+}
+
+fn assert_original_liteinst_session_refusal(error: &Error, operation: &str) {
+    let text = error.to_string();
+    assert!(
+        is_original_liteinst_session_refusal(&text, operation),
+        "session failure did not retain the original refused {operation}, or cleanup replaced it: {text}"
+    );
+}
+
+#[test]
+fn session_refusal_assertion_rejects_terminal_cleanup_wrapper() {
+    let original = "LiteInst session failed closed in a non-root task: refused vfork";
+    let wrapped = format!(
+        "LiteInst tracee cleanup failed after {original}: notifier did not acknowledge terminal cleanup"
+    );
+    assert!(is_original_liteinst_session_refusal(original, "vfork"));
+    assert!(!is_original_liteinst_session_refusal(&wrapped, "vfork"));
+}
+
 async fn wait_for_pid_file(pid_file: &std::path::Path) -> u32 {
     loop {
         if let Ok(contents) = fs::read_to_string(pid_file)
@@ -1125,11 +1206,7 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
         ),
         Err(error) => error,
     };
-    let text = error.to_string();
-    assert!(
-        text.contains("LiteInst session failed closed in a non-root task") && text.contains("exec"),
-        "session failure did not name the unsupported non-root exec: {text}"
-    );
+    assert_original_liteinst_session_refusal(&error, "exec");
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
@@ -1175,11 +1252,7 @@ async fn post_start_exec_refusal_reaches_cleanup_while_process_exit_is_pending()
     .await
     .expect("post-start exec refusal never reached session cleanup");
     let error = result.expect_err("post-start exec refusal reported success");
-    let text = error.to_string();
-    assert!(
-        text.contains("LiteInst session failed closed in a non-root task") && text.contains("exec"),
-        "session failure did not retain the refused exec: {text}"
-    );
+    assert_original_liteinst_session_refusal(&error, "exec");
 
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
@@ -1204,6 +1277,7 @@ async fn post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending
     let pid_file = pid_directory.path().join("root.pid");
     let mut command = Command::new(guest);
     command.arg(&name).arg(&pid_file);
+    let unrelated = UnrelatedStoppedProcess::spawn();
 
     let result = tokio::time::timeout(
         Duration::from_secs(3),
@@ -1214,11 +1288,7 @@ async fn post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending
     .await
     .expect("post-start exec refusal did not cancel the root's child join");
     let error = result.expect_err("post-start exec refusal reported success");
-    let text = error.to_string();
-    assert!(
-        text.contains("LiteInst session failed closed in a non-root task") && text.contains("exec"),
-        "session failure did not retain the refused exec: {text}"
-    );
+    assert_original_liteinst_session_refusal(&error, "exec");
 
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
@@ -1231,6 +1301,8 @@ async fn post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending
         remaining.is_empty(),
         "refused exec left a LiteInst process behind: {remaining:?}"
     );
+    unrelated.assert_live_and_unreaped();
+    unrelated.kill_and_reap();
 }
 
 /// A vfork refusal in a non-root task fails the whole session even when it is
@@ -1260,12 +1332,7 @@ async fn vfork_in_a_forked_child_fails_the_session_after_root_exit() {
         ),
         Err(error) => error,
     };
-    let text = error.to_string();
-    assert!(
-        text.contains("LiteInst session failed closed in a non-root task")
-            && text.contains("vfork"),
-        "session failure did not name the non-root vfork refusal: {text}"
-    );
+    assert_original_liteinst_session_refusal(&error, "vfork");
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
