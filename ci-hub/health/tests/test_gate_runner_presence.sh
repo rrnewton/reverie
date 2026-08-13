@@ -98,6 +98,8 @@ expect "healthy scratch runner is NOT flagged (installation+credentials+service)
     2 "registration" --install-root "$PROBE_ROOT" --service "$UNIT" --offline
 expect "  ... and its three local surfaces are all PRESENT" \
     2 "PRESENT   service" --install-root "$PROBE_ROOT" --service "$UNIT" --offline
+expect "  ... and tick-hub receives a populated summary field" \
+    2 "summary=NO_RESULT:" --install-root "$PROBE_ROOT" --service "$UNIT" --offline
 
 # ------------------------------------------------------------------- deletion
 echo
@@ -115,6 +117,8 @@ expect "  ... and it names the _work-only deletion shape" \
     2 "only _work" --install-root "$PROBE_ROOT" --service "$UNIT" --offline
 expect "deleted credentials are reported SEPARATELY from installation" \
     2 "ABSENT    credentials" --install-root "$PROBE_ROOT" --service "$UNIT" --offline
+expect "the captured summary names the independently failed surfaces" \
+    2 "installation=ABSENT:" --install-root "$PROBE_ROOT" --service "$UNIT" --offline
 
 echo
 echo "[3] enabled-but-failed service is RED (enabled is necessary, not sufficient)"

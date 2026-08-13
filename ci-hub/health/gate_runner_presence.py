@@ -342,6 +342,22 @@ def evaluate(args) -> tuple[str, list[Surface]]:
     return aggregate, surfaces
 
 
+def render_summary(aggregate: str, surfaces: list[Surface]) -> str:
+    """Render the single-line value consumed by tick-hub's ``{summary}``."""
+    failed = [surface for surface in surfaces if not surface.ok]
+    if aggregate == PRESENT:
+        if failed:
+            raise ValueError("PRESENT aggregate contains a non-PRESENT surface")
+        return "PRESENT: installation, credentials, service, and registration confirmed"
+    if not failed:
+        raise ValueError(f"{aggregate} aggregate contains no non-PRESENT surface")
+    findings = "; ".join(
+        f"{surface.name}={surface.verdict}: {' '.join(surface.detail.split())}"
+        for surface in failed
+    )
+    return f"{aggregate}: {findings}"
+
+
 def write_record(path: Path, aggregate: str, surfaces: list[Surface]) -> None:
     record = {
         "checked_at": int(time.time()),
@@ -408,6 +424,11 @@ def main() -> int:
         if aggregate != PRESENT:
             failed = ", ".join(s.name for s in surfaces if not s.ok)
             print(f"  admission must treat this as NO_RESULT (surfaces: {failed})")
+        # This command is the captured producer for gate_runner_presence.  Keep
+        # the detailed human report above, and also publish the field its
+        # reminder template requires.  Never substitute an empty value: an
+        # absent field remains a loud, fail-closed tick-hub NO-SIGNAL.
+        print(f"summary={render_summary(aggregate, surfaces)}")
 
     if args.record:
         write_record(Path(args.record), aggregate, surfaces)

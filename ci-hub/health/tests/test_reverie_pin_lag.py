@@ -19,10 +19,12 @@ a smaller lag.
 from __future__ import annotations
 
 import importlib.util
+import io
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 MODULE = Path(__file__).resolve().parents[1] / "reverie_pin_lag.py"
@@ -46,6 +48,28 @@ class Staging(unittest.TestCase):
             return rpl.main(argv)
         finally:
             rpl.measure = original
+
+    def _output_at(self, result: dict, argv: list[str]) -> tuple[int, str]:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            rc = self._at(result, argv)
+        return rc, output.getvalue()
+
+    def test_gate_publishes_the_nonempty_summary_field_tick_hub_requires(self) -> None:
+        result = {"state": "lagging", "pin": "a" * 40, "main": "b" * 40, "lag": 3}
+        rc, output = self._output_at(result, NOTE_BAND)
+        self.assertEqual(rc, rpl.LAGGING)
+        lines = output.splitlines()
+        self.assertEqual(len(lines), 1, output)
+        self.assertTrue(lines[0].startswith("summary="), output)
+        self.assertGreater(len(lines[0].removeprefix("summary=")), 0, output)
+        self.assertNotIn("{summary}", output)
+
+    def test_clean_gate_is_quiet_but_still_satisfies_the_capture_contract(self) -> None:
+        result = {"state": "current", "pin": "a" * 40, "main": "a" * 40, "lag": 0}
+        rc, output = self._output_at(result, NOTE_BAND)
+        self.assertEqual(rc, rpl.CURRENT)
+        self.assertIn("summary=reverie pin is current", output)
 
     def test_owner_boundary_is_exactly_five(self) -> None:
         # The owner's line: "<5 -> small note. 5 or more -> louder." 4 and 5 are
