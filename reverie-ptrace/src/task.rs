@@ -64,6 +64,7 @@ use safeptrace::Running;
 use safeptrace::Stopped;
 use safeptrace::Wait;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -536,6 +537,10 @@ pub(crate) struct LiteinstRuntimeConfig {
     /// without this the session could finish "successfully" after a child was
     /// released untraced. The root consults it before reporting success.
     pub(crate) session_failure: Arc<StdMutex<Option<String>>>,
+    /// Wakes the root task as soon as a non-root refusal records the shared
+    /// failure. The root may otherwise remain blocked in a guest wait for the
+    /// refused child and never return control to the session cleanup guard.
+    pub(crate) session_failure_changed: Arc<Notify>,
     /// Set once the guest has created a second task.
     ///
     /// Hook installation is single-task-only (see `maybe_install_liteinst_site`).
@@ -2553,6 +2558,8 @@ impl<L: Tool + 'static> TracedTask<L> {
             let mut slot = runtime.session_failure.lock().unwrap();
             if slot.is_none() {
                 *slot = Some(format!("tracee {}: {failure}", self.tid()));
+                drop(slot);
+                runtime.session_failure_changed.notify_waiters();
             }
         }
         self.liteinst_failure = Some(failure);
@@ -4376,16 +4383,22 @@ impl<L: Tool + 'static> TracedTask<L> {
                 Err(err) => {
                     tracing::error!("Error in tracee tid {}: {}", tid, err);
 
-                    if liteinst_activation_failure_reason(&err)
-                        == Some(LiteinstActivationFailureReason::VforkUnsupported)
-                    {
+                    if matches!(
+                        liteinst_activation_failure_reason(&err),
+                        Some(
+                            LiteinstActivationFailureReason::PostStartExec
+                                | LiteinstActivationFailureReason::VforkUnsupported
+                        )
+                    ) {
                         // LiteInst's session-level cleanup guard owns the exact
                         // pidfd and notifier generation for every descendant.
-                        // In particular, a failed vfork parent is kernel-frozen
-                        // behind its child, so trying to detach/wait here cannot
-                        // make progress. Return to the root instead: its shared
-                        // failure slot rejects the session, and the outer guard
-                        // terminates and reaps the entire bound tree.
+                        // Detaching a refused post-start exec lets its guest
+                        // parent reap it before the notifier can acknowledge
+                        // the terminal status. A failed vfork parent is instead
+                        // kernel-frozen behind its child. In both cases return
+                        // to the root: its shared failure slot rejects the
+                        // session, and the outer guard terminates and reaps the
+                        // entire bound tree without transferring wait ownership.
                         return ExitStatus::Exited(1);
                     }
 
@@ -4783,10 +4796,29 @@ impl<L: Tool + 'static> TracedTask<L> {
         let exit_held_root_stop = self
             .liteinst_root_config()
             .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        let root_session_failure = self.liteinst_root_config().map(|runtime| {
+            (
+                Arc::clone(&runtime.session_failure),
+                Arc::clone(&runtime.session_failure_changed),
+            )
+        });
         let outcome = {
             let exit_event = child.exit_event().fuse();
             let run_loop = self.run_loop(child).fuse();
-            futures::pin_mut!(exit_event, run_loop);
+            let session_failure = async move {
+                let Some((failure, changed)) = root_session_failure else {
+                    return future::pending::<String>().await;
+                };
+                loop {
+                    let notified = changed.notified();
+                    if let Some(message) = failure.lock().unwrap().clone() {
+                        return message;
+                    }
+                    notified.await;
+                }
+            }
+            .fuse();
+            futures::pin_mut!(exit_event, run_loop, session_failure);
 
             futures::select_biased! {
                 task = exit_event => match task {
@@ -4798,6 +4830,9 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                     Err(err) => handle_internal_error(err.into()).await,
                 },
+                message = session_failure => Err(anyhow::anyhow!(
+                    "LiteInst session failed closed in a non-root task: {message}"
+                ).into()),
                 exit_status = run_loop => exit_status,
             }
         };
@@ -4847,7 +4882,9 @@ impl<L: Tool + 'static> TracedTask<L> {
             // A vfork parent returns directly to the session-level cleanup
             // guard because orderly per-task exit cannot advance while the
             // kernel has it frozen behind that child. Other non-root failures
-            // complete the existing tool-exit bookkeeping first.
+            // complete the existing tool-exit bookkeeping. The root failure
+            // notification allows cleanup to proceed independently if that
+            // bookkeeping blocks on a tracee which has not exited yet.
             return Err(failure);
         }
         let exit_status = exit_status.expect("a task without a failure has an exit status");
