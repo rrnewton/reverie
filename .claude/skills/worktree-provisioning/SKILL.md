@@ -142,8 +142,10 @@ All worktrees of one product repository share `refs/stash`. Never create,
 apply, pop, drop, or recover a stash. Commit coherent task-owned work on the
 registered feature branch and record its exact commit instead.
 
-Never rename a slot or reuse its directory. Never share a writable build
-directory between slots or agents.
+Never rename a slot or reuse its directory outside the registered sequential
+reuse and released-slot allocation paths described here. Those paths update the
+slot record before more work begins; they do not permit a second mutating owner.
+Never share a writable build directory between slots or agents.
 
 ### Release while the owner is alive: create the continuation first
 
