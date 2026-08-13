@@ -430,14 +430,15 @@ on the first attempt. The one-clean-dispatch repair was verified moving `fda945d
 - **Procedure:** confirm each submodule clean and on the intended SHA; inspect `git diff --submodule=log -- hermit reverie`; stage only pointers intentionally moved (`git add hermit reverie` records only checked-out commits, not uncommitted files); re-inspect `--cached`. If both move together, validate the exact pair and update both gitlinks in one commit with old/new SHAs + compatibility evidence. Confirm referenced commits are fetchable from authorized remotes before sharing the parent commit.
 - **Initialization** reproduces recorded commits: `git submodule update --init --checkout -- hermit` and the Reverie form with `-c submodule.reverie.update=checkout` (override only when init is intended and `.gitmodules` marks it `update = none`). Do not recursively init optional/heavy nested submodules without a task that needs them.
 
-### Existing Hermit PR checkout — never validate against the PR's historical Reverie pin
+### Existing Hermit PR checkout — keep its selected valid Reverie pin
 
 Checkout and preparation are one operation: `scripts/checkout-hermit-pr-latest-reverie.sh --repo
-worktrees/<slot>/hermit [--push] <pr>`. It fetches current Hermit+Reverie main, checks out the PR without
-rewriting history, merges current Hermit main, runs `check-reverie-pin.rs --update-to-latest` to update every
-tracked pin site, commits the pin update, and runs full validation at that commit. `--push` publishes the
-validated candidate with a non-force push. A stale pin is a hard validation failure; do not substitute raw `gh
-pr checkout` + validation.
+worktrees/<slot>/hermit [--push] <pr>`. It fetches current Hermit main, checks out the PR without rewriting
+history, merges current Hermit main, and asks `check-reverie-pin.rs` to validate the exact pin selected by that
+combined tree without changing it. It then runs full validation at the exact candidate. `--push` publishes the
+validated candidate with a non-force push. A checker-rejected pin is a hard validation failure; do not
+substitute raw `gh pr checkout` + validation. A deliberate pin advance is a separate change under the
+submodule-coordination rules, never a side effect of preparing the PR.
 
 ### Slot closing / parking / reclaiming
 
