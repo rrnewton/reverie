@@ -103,6 +103,21 @@ explicit read-only operation. The observer must not edit files, move branches,
 run a build that writes into the mutating owner's build directory, or share any
 writable build directory. Read-only observation is not joint ownership.
 
+Do not review an agent's live slot working tree. Mutation testing deliberately
+plants regressions in that tree, runs the test that should reject each one, and
+then restores the file; an observer can therefore catch a planted regression or
+a transition between mutants rather than the change under review. Bind review
+findings to an immutable published commit: inspect `git show <40-hex-sha>` or
+check out that exact commit in the observer's own clean, read-only clone. For
+work that is not yet published, read the agent's task notes and wait for a
+pinned commit; the mutable slot is progress evidence, not review evidence.
+
+Never "fix" surprising content in another agent's slot. It may be a live
+mutation experiment, and changing or restoring it can invalidate the
+experiment just as surely as mistaking the planted regression for authored
+work. Report the observed path and commit context to the owner without writing
+the tree.
+
 Treat every unexpected file, branch, commit, process, or registry value as
 somebody else's work. Do not reset, clean, overwrite, stash, absorb, switch over,
 or copy it aside. This rule preserved a Reverie commit that was reachable from
