@@ -1,0 +1,504 @@
+void rustland_enqueue(unsigned long long * ctx):
+bpf_prog_0a500fe12172ddd4_rustland_enqueue:
+; void BPF_STRUCT_OPS(rustland_enqueue, struct task_struct *p, u64 enq_flags)
+   0:	nopl	(%rax,%rax)
+	0f 1f 44 00 00 
+   5:	nopl	(%rax)
+	0f 1f 00 
+   8:	pushq	%rbp
+	55 
+   9:	movq	%rsp, %rbp
+	48 89 e5 
+   c:	subq	$8, %rsp
+	48 81 ec 08 00 00 00 
+  13:	pushq	%rbx
+	53 
+  14:	pushq	%r13
+	41 55 
+  16:	pushq	%r14
+	41 56 
+  18:	pushq	%r15
+	41 57 
+  1a:	movq	8(%rdi), %rbx
+	48 8b 5f 08 
+  1e:	movq	(%rdi), %r13
+	4c 8b 6f 00 
+; s32 prev_cpu = scx_bpf_task_cpu(p), cpu;
+  22:	movq	%r13, %rdi
+	4c 89 ef 
+  25:	callq	0xffffffff81d80f00
+	e8 da 6c cf e1 
+  2a:	movl	%eax, %r14d
+	41 89 c6 
+  2d:	xorl	%r15d, %r15d
+	45 31 ff 
+  30:	movl	$1, %edi
+	bf 01 00 00 00 
+; if (!bpf_core_enum_value_exists(enum scx_enq_flags,
+  35:	testq	%rdi, %rdi
+	48 85 ff 
+  38:	je	0xffffffffa008a252
+	74 1c 
+  3a:	movl	$1024, %edi
+	bf 00 04 00 00 
+; return enq_flags & flag;
+  3f:	andq	%rbx, %rdi
+	48 21 df 
+; return !__COMPAT_is_enq_cpu_selected(enq_flags) && !scx_bpf_task_running(p);
+  42:	testq	%rdi, %rdi
+	48 85 ff 
+  45:	jne	0xffffffffa008a252
+	75 0f 
+; return !__COMPAT_is_enq_cpu_selected(enq_flags) && !scx_bpf_task_running(p);
+  47:	movq	%r13, %rdi
+	4c 89 ef 
+  4a:	callq	0xffffffff811bc580
+	e8 35 23 13 e1 
+  4f:	movl	%eax, %r15d
+	41 89 c7 
+; return !__COMPAT_is_enq_cpu_selected(enq_flags) && !scx_bpf_task_running(p);
+  52:	xorl	$1, %r15d
+	41 83 f7 01 
+; return p->pid == usersched_pid;
+  56:	movl	1696(%r13), %edi
+	41 8b bd a0 06 00 00 
+; return p->pid == usersched_pid;
+  5d:	movabsq	$-60473127951996, %rsi
+	48 be 84 a1 b0 00 00 c9 ff ff 
+  67:	movl	(%rsi), %esi
+	8b 76 00 
+; if (is_usersched_task(p)) {
+  6a:	cmpl	%esi, %edi
+	39 f7 
+  6c:	jne	0xffffffffa008a2a1
+	75 37 
+; scx_bpf_dsq_insert(p, SCHED_DSQ, slice_ns, enq_flags);
+  6e:	movabsq	$-60473127951984, %rdi
+	48 bf 90 a1 b0 00 00 c9 ff ff 
+  78:	movq	(%rdi), %rdx
+	48 8b 57 00 
+; scx_bpf_dsq_insert(p, SCHED_DSQ, slice_ns, enq_flags);
+  7c:	movq	$-2116547760, %rdi
+	48 c7 c7 50 0b d8 81 
+; scx_bpf_dsq_insert(p, SCHED_DSQ, slice_ns, enq_flags);
+  83:	movq	%r13, %rdi
+	4c 89 ef 
+  86:	movl	$1025, %esi
+	be 01 04 00 00 
+  8b:	movq	%rbx, %rcx
+	48 89 d9 
+  8e:	callq	0xffffffff81d80b50
+	e8 c1 68 cf e1 
+; if (is_wakeup)
+  93:	andl	$1, %r15d
+	41 83 e7 01 
+  97:	testl	%r15d, %r15d
+	45 85 ff 
+  9a:	jne	0xffffffffa008a39b
+	0f 85 ff 00 00 00 
+  a0:	jmp	0xffffffffa008a3b1
+	e9 10 01 00 00 
+; return p->flags & PF_KTHREAD;
+  a5:	movl	44(%r13), %edi
+	41 8b 7d 2c 
+; return p->flags & PF_KTHREAD;
+  a9:	andl	$2097152, %edi
+	81 e7 00 00 20 00 
+; if ((is_kthread(p) && p->nr_cpus_allowed == 1) || is_kswapd(p) || is_khugepaged(p)) {
+  af:	testl	%edi, %edi
+	85 ff 
+  b1:	je	0xffffffffa008a2bb
+	74 0c 
+; if ((is_kthread(p) && p->nr_cpus_allowed == 1) || is_kswapd(p) || is_khugepaged(p)) {
+  b3:	movl	1304(%r13), %edi
+	41 8b bd 18 05 00 00 
+; if ((is_kthread(p) && p->nr_cpus_allowed == 1) || is_kswapd(p) || is_khugepaged(p)) {
+  ba:	cmpl	$1, %edi
+	83 ff 01 
+  bd:	je	0xffffffffa008a2db
+	74 20 
+; return p->flags & (PF_KSWAPD | PF_KCOMPACTD);
+  bf:	movl	44(%r13), %edi
+	41 8b 7d 2c 
+; return p->flags & (PF_KSWAPD | PF_KCOMPACTD);
+  c3:	andl	$196608, %edi
+	81 e7 00 00 03 00 
+; if ((is_kthread(p) && p->nr_cpus_allowed == 1) || is_kswapd(p) || is_khugepaged(p)) {
+  c9:	testl	%edi, %edi
+	85 ff 
+  cb:	jne	0xffffffffa008a2db
+	75 12 
+; return khugepaged_pid && p->pid == khugepaged_pid;
+  cd:	movabsq	$-60473127951992, %rdi
+	48 bf 88 a1 b0 00 00 c9 ff ff 
+  d7:	movl	(%rdi), %esi
+	8b 77 00 
+; return khugepaged_pid && p->pid == khugepaged_pid;
+  da:	jmp	0xffffffffa008a36d
+	e9 92 00 00 00 
+; if (cpu < 0 || cpu >= MAX_CPUS) {
+  df:	cmpl	$1023, %r14d
+	41 81 fe ff 03 00 00 
+  e6:	jg	0xffffffffa008a2ea
+	7f 06 
+  e8:	cmpl	$-1, %r14d
+	41 83 fe ff 
+  ec:	jg	0xffffffffa008a31b
+	7f 31 
+; scx_bpf_error("Invalid cpu: %d", cpu);
+  ee:	movl	%r14d, %edi
+	44 89 f7 
+  f1:	shlq	$32, %rdi
+	48 c1 e7 20 
+  f5:	sarq	$32, %rdi
+	48 c1 ff 20 
+; scx_bpf_error("Invalid cpu: %d", cpu);
+  f9:	movq	%rdi, -8(%rbp)
+	48 89 7d f8 
+  fd:	movq	%rbp, %rsi
+	48 89 ee 
+ 100:	addq	$-8, %rsi
+	48 83 c6 f8 
+; scx_bpf_error("Invalid cpu: %d", cpu);
+ 104:	movabsq	$-60473127394160, %rdi
+	48 bf 90 24 b9 00 00 c9 ff ff 
+ 10e:	movl	$8, %edx
+	ba 08 00 00 00 
+ 113:	callq	0xffffffff811bbeb0
+	e8 9c 1b 13 e1 
+ 118:	movl	$1024, %esi
+	be 00 04 00 00 
+; return SHARED_DSQ;
+ 11d:	jmp	0xffffffffa008a326
+	eb 0b 
+; return (u64)cpu;
+ 11f:	movl	%r14d, %esi
+	44 89 f6 
+ 122:	shlq	$32, %rsi
+	48 c1 e6 20 
+ 126:	sarq	$32, %rsi
+	48 c1 fe 20 
+; slice_ns, p->scx.dsq_vtime, enq_flags);
+ 12a:	movabsq	$-60473127951984, %rdi
+	48 bf 90 a1 b0 00 00 c9 ff ff 
+ 134:	movq	(%rdi), %rdx
+	48 8b 57 00 
+; scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(prev_cpu),
+ 138:	movq	$-2116547296, %rdi
+	48 c7 c7 20 0d d8 81 
+; slice_ns, p->scx.dsq_vtime, enq_flags);
+ 13f:	movq	912(%r13), %rcx
+	49 8b 8d 90 03 00 00 
+; scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(prev_cpu),
+ 146:	movq	%r13, %rdi
+	4c 89 ef 
+ 149:	movq	%rbx, %r8
+	49 89 d8 
+ 14c:	callq	0xffffffff81d80d20
+	e8 d3 69 cf e1 
+; scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(prev_cpu),
+ 151:	movl	$1, %edi
+	bf 01 00 00 00 
+; __sync_fetch_and_add(&nr_kernel_dispatches, 1);
+ 156:	movabsq	$-60473127296976, %rsi
+	48 be 30 a0 ba 00 00 c9 ff ff 
+ 160:	lock
+	f0 
+ 161:	xaddq	%rdi, (%rsi)
+	48 0f c1 7e 00 
+; if (is_wakeup)
+ 166:	andl	$1, %r15d
+	41 83 e7 01 
+ 16a:	testl	%r15d, %r15d
+	45 85 ff 
+ 16d:	jne	0xffffffffa008a39b
+	75 30 
+ 16f:	jmp	0xffffffffa008a3b1
+	eb 44 
+; if (!(builtin_idle && is_wakeup)) {
+ 171:	movabsq	$-60473127951976, %rdi
+	48 bf 98 a1 b0 00 00 c9 ff ff 
+ 17b:	movzbq	(%rdi), %rdi
+	48 0f b6 7f 00 
+; if (!(builtin_idle && is_wakeup)) {
+ 180:	andl	%r15d, %edi
+	44 21 ff 
+ 183:	andl	$1, %edi
+	83 e7 01 
+; queue_task_to_userspace(p, prev_cpu, enq_flags);
+ 186:	movq	%r13, %rdi
+	4c 89 ef 
+ 189:	movl	%r14d, %esi
+	44 89 f6 
+ 18c:	movq	%rbx, %rdx
+	48 89 da 
+ 18f:	callq	0xffffffffa008a3d4
+	e8 44 00 00 00 
+; if (is_wakeup)
+ 194:	andl	$1, %r15d
+	41 83 e7 01 
+ 198:	testl	%r15d, %r15d
+	45 85 ff 
+ 19b:	jne	0xffffffffa008a39b
+	75 02 
+ 19d:	jmp	0xffffffffa008a3b1
+	eb 16 
+; scx_bpf_kick_cpu(prev_cpu, SCX_KICK_IDLE);
+ 19f:	movabsq	$-60473127952080, %rdi
+	48 bf 30 a1 b0 00 00 c9 ff ff 
+ 1a9:	movq	(%rdi), %rsi
+	48 8b 77 00 
+; scx_bpf_kick_cpu(prev_cpu, SCX_KICK_IDLE);
+ 1ad:	movl	%r14d, %edi
+	44 89 f7 
+ 1b0:	callq	0xffffffff81e75ba0
+	e8 ef b7 de e1 
+; void BPF_STRUCT_OPS(rustland_enqueue, struct task_struct *p, u64 enq_flags)
+ 1b5:	popq	%r15
+	41 5f 
+ 1b7:	popq	%r14
+	41 5e 
+ 1b9:	popq	%r13
+	41 5d 
+ 1bb:	popq	%rbx
+	5b 
+ 1bc:	leave
+	c9 
+ 1bd:	retq
+	c3 
+ 1be:	int3
+	cc 
+
+void queue_task_to_userspace(struct task_struct * p, s32 prev_cpu, u64 enq_flags):
+bpf_prog_587b054b77c3067d_queue_task_to_userspace:
+; static void queue_task_to_userspace(struct task_struct *p, s32 prev_cpu, u64 enq_flags)
+   0:	nopl	(%rax,%rax)
+	0f 1f 44 00 00 
+   5:	nopl	(%rax)
+	0f 1f 00 
+   8:	pushq	%rbp
+	55 
+   9:	movq	%rsp, %rbp
+	48 89 e5 
+   c:	subq	$8, %rsp
+	48 81 ec 08 00 00 00 
+  13:	pushq	%rbx
+	53 
+  14:	pushq	%r13
+	41 55 
+  16:	pushq	%r14
+	41 56 
+  18:	pushq	%r15
+	41 57 
+  1a:	movq	%rdx, %r14
+	49 89 d6 
+  1d:	movl	%esi, %r13d
+	41 89 f5 
+  20:	movq	%rdi, %rbx
+	48 89 fb 
+; struct task_ctx *tctx = bpf_task_storage_get(&task_ctx_stor,
+  23:	movabsq	$-131380763495424, %rdi
+	48 bf 00 f4 42 88 82 88 ff ff 
+  2d:	movq	%rbx, %rsi
+	48 89 de 
+  30:	xorl	%edx, %edx
+	31 d2 
+  32:	xorl	%ecx, %ecx
+	31 c9 
+  34:	movl	$2080, %r8d
+	41 b8 20 08 00 00 
+  3a:	callq	0xffffffff81c7da30
+	e8 1d 36 bf e1 
+  3f:	movq	%rax, %r15
+	49 89 c7 
+; if (!tctx)
+  42:	testq	%r15, %r15
+	4d 85 ff 
+  45:	jne	0xffffffffa008a42f
+	75 14 
+; dbg_msg("warning: failed to get task context for pid=%d (%s)",
+  47:	movabsq	$-60473127952383, %rdi
+	48 bf 01 a0 b0 00 00 c9 ff ff 
+  51:	movzbq	(%rdi), %rdi
+	48 0f b6 7f 00 
+; dbg_msg("warning: failed to get task context for pid=%d (%s)",
+  56:	jmp	0xffffffffa008a558
+	e9 29 01 00 00 
+; dbg_msg("warning: failed to get task context for pid=%d (%s)",
+  5b:	movq	%r14, -8(%rbp)
+	4c 89 75 f8 
+; task = bpf_ringbuf_reserve(&queued, sizeof(*task), 0);
+  5f:	movabsq	$-131109661734656, %rdi
+	48 bf 00 89 2f a7 c1 88 ff ff 
+  69:	movl	$88, %esi
+	be 58 00 00 00 
+  6e:	xorl	%edx, %edx
+	31 d2 
+  70:	callq	0xffffffff81e757b0
+	e8 67 b3 de e1 
+  75:	movq	%rax, %r14
+	49 89 c6 
+  78:	movabsq	$-60473127952383, %rdi
+	48 bf 01 a0 b0 00 00 c9 ff ff 
+  82:	movzbq	(%rdi), %rdi
+	48 0f b6 7f 00 
+; if (!task) {
+  87:	testq	%r14, %r14
+	4d 85 f6 
+  8a:	jne	0xffffffffa008a4a7
+	75 47 
+; dbg_msg("congested: pid=%d (%s)", p->pid, p->comm);
+  8c:	movl	$1, %edi
+	bf 01 00 00 00 
+; __sync_fetch_and_add(&nr_sched_congested, 1);
+  91:	movabsq	$-60473127296944, %rsi
+	48 be 50 a0 ba 00 00 c9 ff ff 
+  9b:	lock
+	f0 
+  9c:	xaddq	%rdi, (%rsi)
+	48 0f c1 7e 00 
+; slice_ns, p->scx.dsq_vtime, enq_flags);
+  a1:	movabsq	$-60473127951984, %rdi
+	48 bf 90 a1 b0 00 00 c9 ff ff 
+  ab:	movq	(%rdi), %rdx
+	48 8b 57 00 
+; scx_bpf_dsq_insert_vtime(p, SHARED_DSQ,
+  af:	movq	$-2116547296, %rdi
+	48 c7 c7 20 0d d8 81 
+  b6:	movq	-8(%rbp), %r8
+	4c 8b 45 f8 
+; slice_ns, p->scx.dsq_vtime, enq_flags);
+  ba:	movq	912(%rbx), %rcx
+	48 8b 8b 90 03 00 00 
+; scx_bpf_dsq_insert_vtime(p, SHARED_DSQ,
+  c1:	movq	%rbx, %rdi
+	48 89 df 
+  c4:	movl	$1024, %esi
+	be 00 04 00 00 
+  c9:	callq	0xffffffff81d80d20
+	e8 7e 68 cf e1 
+  ce:	jmp	0xffffffffa008a543
+	e9 9c 00 00 00 
+; task->pid = p->pid;
+  d3:	movl	1696(%rbx), %edi
+	8b bb a0 06 00 00 
+; task->cpu = prev_cpu;
+  d9:	movl	%r13d, 4(%r14)
+	45 89 6e 04 
+; task->pid = p->pid;
+  dd:	movl	%edi, (%r14)
+	41 89 7e 00 
+; task->nr_cpus_allowed = p->nr_cpus_allowed;
+  e1:	movl	1304(%rbx), %edi
+	8b bb 18 05 00 00 
+; task->flags = enq_flags;
+  e7:	movq	-8(%rbp), %rsi
+	48 8b 75 f8 
+  eb:	movq	%rsi, 16(%r14)
+	49 89 76 10 
+; task->nr_cpus_allowed = p->nr_cpus_allowed;
+  ef:	shlq	$32, %rdi
+	48 c1 e7 20 
+  f3:	sarq	$32, %rdi
+	48 c1 ff 20 
+; task->nr_cpus_allowed = p->nr_cpus_allowed;
+  f7:	movq	%rdi, 8(%r14)
+	49 89 7e 08 
+; task->start_ts = tctx->start_ts;
+  fb:	movq	(%r15), %rdi
+	49 8b 7f 00 
+; task->start_ts = tctx->start_ts;
+  ff:	movq	%rdi, 24(%r14)
+	49 89 7e 18 
+; task->stop_ts = tctx->stop_ts;
+ 103:	movq	8(%r15), %rdi
+	49 8b 7f 08 
+; task->stop_ts = tctx->stop_ts;
+ 107:	movq	%rdi, 32(%r14)
+	49 89 7e 20 
+; task->exec_runtime = tctx->exec_runtime;
+ 10b:	movq	16(%r15), %rdi
+	49 8b 7f 10 
+; task->exec_runtime = tctx->exec_runtime;
+ 10f:	movq	%rdi, 40(%r14)
+	49 89 7e 28 
+; task->weight = p->scx.weight;
+ 113:	movl	820(%rbx), %edi
+	8b bb 34 03 00 00 
+; task->weight = p->scx.weight;
+ 119:	movq	%rdi, 48(%r14)
+	49 89 7e 30 
+; task->vtime = p->scx.dsq_vtime;
+ 11d:	movq	912(%rbx), %rdi
+	48 8b bb 90 03 00 00 
+; task->vtime = p->scx.dsq_vtime;
+ 124:	movq	%rdi, 56(%r14)
+	49 89 7e 38 
+; task->enq_cnt = ++tctx->enq_cnt;
+ 128:	movq	24(%r15), %rdi
+	49 8b 7f 18 
+; task->enq_cnt = ++tctx->enq_cnt;
+ 12c:	addq	$1, %rdi
+	48 83 c7 01 
+; task->enq_cnt = ++tctx->enq_cnt;
+ 130:	movq	%rdi, 24(%r15)
+	49 89 7f 18 
+; task->enq_cnt = ++tctx->enq_cnt;
+ 134:	movq	%rdi, 64(%r14)
+	49 89 7e 40 
+ 138:	movl	$2184, %edi
+	bf 88 08 00 00 
+ 13d:	addq	%rdi, %rbx
+	48 01 fb 
+; bpf_core_read(&task->comm, sizeof(task->comm), &p->comm);
+ 140:	movq	%r14, %rdi
+	4c 89 f7 
+ 143:	addq	$72, %rdi
+	48 83 c7 48 
+; bpf_core_read(&task->comm, sizeof(task->comm), &p->comm);
+ 147:	movl	$16, %esi
+	be 10 00 00 00 
+ 14c:	movq	%rbx, %rdx
+	48 89 da 
+ 14f:	callq	0xffffffff81d1c420
+	e8 f8 1e c9 e1 
+; bpf_ringbuf_submit(task, 0);
+ 154:	movq	%r14, %rdi
+	4c 89 f7 
+ 157:	xorl	%esi, %esi
+	31 f6 
+ 159:	callq	0xffffffff81e754b0
+	e8 7e af de e1 
+ 15e:	movl	$1, %edi
+	bf 01 00 00 00 
+; __sync_fetch_and_add(&nr_queued, 1);
+ 163:	movabsq	$-60473127297016, %rsi
+	48 be 08 a0 ba 00 00 c9 ff ff 
+ 16d:	jmp	0xffffffffa008a552
+	eb 0f 
+; scx_bpf_dsq_insert_vtime(p, SHARED_DSQ,
+ 16f:	movl	$1, %edi
+	bf 01 00 00 00 
+; __sync_fetch_and_add(&nr_kernel_dispatches, 1);
+ 174:	movabsq	$-60473127296976, %rsi
+	48 be 30 a0 ba 00 00 c9 ff ff 
+ 17e:	lock
+	f0 
+ 17f:	xaddq	%rdi, (%rsi)
+	48 0f c1 7e 00 
+; }
+ 184:	popq	%r15
+	41 5f 
+ 186:	popq	%r14
+	41 5e 
+ 188:	popq	%r13
+	41 5d 
+ 18a:	popq	%rbx
+	5b 
+ 18b:	leave
+	c9 
+ 18c:	retq
+	c3 
+ 18d:	int3
+	cc 
+

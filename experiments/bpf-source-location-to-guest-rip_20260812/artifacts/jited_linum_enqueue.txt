@@ -1,0 +1,298 @@
+void rustland_enqueue(unsigned long long * ctx):
+bpf_prog_0a500fe12172ddd4_rustland_enqueue:
+; void BPF_STRUCT_OPS(rustland_enqueue, struct task_struct *p, u64 enq_flags) [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:730 line_col:6]
+   0:	nopl	(%rax,%rax)
+   5:	nopl	(%rax)
+   8:	pushq	%rbp
+   9:	movq	%rsp, %rbp
+   c:	subq	$8, %rsp
+  13:	pushq	%rbx
+  14:	pushq	%r13
+  16:	pushq	%r14
+  18:	pushq	%r15
+  1a:	movq	8(%rdi), %rbx
+  1e:	movq	(%rdi), %r13
+; s32 prev_cpu = scx_bpf_task_cpu(p), cpu; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:732 line_col:17]
+  22:	movq	%r13, %rdi
+  25:	callq	0xffffffff81d80f00
+  2a:	movl	%eax, %r14d
+  2d:	xorl	%r15d, %r15d
+  30:	movl	$1, %edi
+; if (!bpf_core_enum_value_exists(enum scx_enq_flags, [file:/home/newton/work/scx/scheds/include/scx/compat.bpf.h line_num:180 line_col:6]
+  35:	testq	%rdi, %rdi
+  38:	je	0xffffffffa0084bfe
+  3a:	movl	$1024, %edi
+; return enq_flags & flag; [file:/home/newton/work/scx/scheds/include/scx/compat.bpf.h line_num:185 line_col:19]
+  3f:	andq	%rbx, %rdi
+; return !__COMPAT_is_enq_cpu_selected(enq_flags) && !scx_bpf_task_running(p); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:684 line_col:50]
+  42:	testq	%rdi, %rdi
+  45:	jne	0xffffffffa0084bfe
+; return !__COMPAT_is_enq_cpu_selected(enq_flags) && !scx_bpf_task_running(p); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:684 line_col:54]
+  47:	movq	%r13, %rdi
+  4a:	callq	0xffffffff811bc580
+  4f:	movl	%eax, %r15d
+; return !__COMPAT_is_enq_cpu_selected(enq_flags) && !scx_bpf_task_running(p); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:684 line_col:53]
+  52:	xorl	$1, %r15d
+; return p->pid == usersched_pid; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:237 line_col:12]
+  56:	movl	1696(%r13), %edi
+; return p->pid == usersched_pid; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:237 line_col:19]
+  5d:	movabsq	$-60473127919228, %rsi
+  67:	movl	(%rsi), %esi
+; if (is_usersched_task(p)) { [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:740 line_col:6]
+  6a:	cmpl	%esi, %edi
+  6c:	jne	0xffffffffa0084c4d
+; scx_bpf_dsq_insert(p, SCHED_DSQ, slice_ns, enq_flags); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:741 line_col:36]
+  6e:	movabsq	$-60473127919216, %rdi
+  78:	movq	(%rdi), %rdx
+; scx_bpf_dsq_insert(p, SCHED_DSQ, slice_ns, enq_flags); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:741 line_col:3]
+  7c:	movq	$-2116547760, %rdi
+; scx_bpf_dsq_insert(p, SCHED_DSQ, slice_ns, enq_flags); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:741 line_col:3]
+  83:	movq	%r13, %rdi
+  86:	movl	$1025, %esi
+  8b:	movq	%rbx, %rcx
+  8e:	callq	0xffffffff81d80b50
+; if (is_wakeup) [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:818 line_col:6]
+  93:	andl	$1, %r15d
+  97:	testl	%r15d, %r15d
+  9a:	jne	0xffffffffa0084d47
+  a0:	jmp	0xffffffffa0084d5d
+; return p->flags & PF_KTHREAD; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:245 line_col:12]
+  a5:	movl	44(%r13), %edi
+; return p->flags & PF_KTHREAD; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:245 line_col:18]
+  a9:	andl	$2097152, %edi
+; if ((is_kthread(p) && p->nr_cpus_allowed == 1) || is_kswapd(p) || is_khugepaged(p)) { [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:752 line_col:21]
+  af:	testl	%edi, %edi
+  b1:	je	0xffffffffa0084c67
+; if ((is_kthread(p) && p->nr_cpus_allowed == 1) || is_kswapd(p) || is_khugepaged(p)) { [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:752 line_col:27]
+  b3:	movl	1304(%r13), %edi
+; if ((is_kthread(p) && p->nr_cpus_allowed == 1) || is_kswapd(p) || is_khugepaged(p)) { [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:752 line_col:49]
+  ba:	cmpl	$1, %edi
+  bd:	je	0xffffffffa0084c87
+; return p->flags & (PF_KSWAPD | PF_KCOMPACTD); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:253 line_col:19]
+  bf:	movl	44(%r13), %edi
+; return p->flags & (PF_KSWAPD | PF_KCOMPACTD); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:253 line_col:25]
+  c3:	andl	$196608, %edi
+; if ((is_kthread(p) && p->nr_cpus_allowed == 1) || is_kswapd(p) || is_khugepaged(p)) { [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:752 line_col:65]
+  c9:	testl	%edi, %edi
+  cb:	jne	0xffffffffa0084c87
+; return khugepaged_pid && p->pid == khugepaged_pid; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:261 line_col:9]
+  cd:	movabsq	$-60473127919224, %rdi
+  d7:	movl	(%rdi), %esi
+; return khugepaged_pid && p->pid == khugepaged_pid; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:261 line_col:24]
+  da:	jmp	0xffffffffa0084d19
+; if (cpu < 0 || cpu >= MAX_CPUS) { [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:335 line_col:14]
+  df:	cmpl	$1023, %r14d
+  e6:	jg	0xffffffffa0084c96
+  e8:	cmpl	$-1, %r14d
+  ec:	jg	0xffffffffa0084cc7
+; scx_bpf_error("Invalid cpu: %d", cpu); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:336 line_col:36]
+  ee:	movl	%r14d, %edi
+  f1:	shlq	$32, %rdi
+  f5:	sarq	$32, %rdi
+; scx_bpf_error("Invalid cpu: %d", cpu); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:336 line_col:3]
+  f9:	movq	%rdi, -8(%rbp)
+  fd:	movq	%rbp, %rsi
+ 100:	addq	$-8, %rsi
+; scx_bpf_error("Invalid cpu: %d", cpu); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:336 line_col:3]
+ 104:	movabsq	$-60473127492464, %rdi
+ 10e:	movl	$8, %edx
+ 113:	callq	0xffffffff811bbeb0
+ 118:	movl	$1024, %esi
+; return SHARED_DSQ; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:337 line_col:3]
+ 11d:	jmp	0xffffffffa0084cd2
+; return (u64)cpu; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:339 line_col:9]
+ 11f:	movl	%r14d, %esi
+ 122:	shlq	$32, %rsi
+ 126:	sarq	$32, %rsi
+; slice_ns, p->scx.dsq_vtime, enq_flags); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:754 line_col:7]
+ 12a:	movabsq	$-60473127919216, %rdi
+ 134:	movq	(%rdi), %rdx
+; scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(prev_cpu), [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:753 line_col:3]
+ 138:	movq	$-2116547296, %rdi
+; slice_ns, p->scx.dsq_vtime, enq_flags); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:754 line_col:24]
+ 13f:	movq	912(%r13), %rcx
+; scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(prev_cpu), [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:753 line_col:3]
+ 146:	movq	%r13, %rdi
+ 149:	movq	%rbx, %r8
+ 14c:	callq	0xffffffff81d80d20
+; scx_bpf_dsq_insert_vtime(p, cpu_to_dsq(prev_cpu), [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:753 line_col:3]
+ 151:	movl	$1, %edi
+; __sync_fetch_and_add(&nr_kernel_dispatches, 1); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:755 line_col:3]
+ 156:	movabsq	$-60473127460816, %rsi
+ 160:	lock
+ 161:	xaddq	%rdi, (%rsi)
+; if (is_wakeup) [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:818 line_col:6]
+ 166:	andl	$1, %r15d
+ 16a:	testl	%r15d, %r15d
+ 16d:	jne	0xffffffffa0084d47
+ 16f:	jmp	0xffffffffa0084d5d
+; if (!(builtin_idle && is_wakeup)) { [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:765 line_col:8]
+ 171:	movabsq	$-60473127919208, %rdi
+ 17b:	movzbq	(%rdi), %rdi
+; if (!(builtin_idle && is_wakeup)) { [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:765 line_col:21]
+ 180:	andl	%r15d, %edi
+ 183:	andl	$1, %edi
+; queue_task_to_userspace(p, prev_cpu, enq_flags); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:766 line_col:3]
+ 186:	movq	%r13, %rdi
+ 189:	movl	%r14d, %esi
+ 18c:	movq	%rbx, %rdx
+ 18f:	callq	0xffffffffa0084d9c
+; if (is_wakeup) [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:818 line_col:6]
+ 194:	andl	$1, %r15d
+ 198:	testl	%r15d, %r15d
+ 19b:	jne	0xffffffffa0084d47
+ 19d:	jmp	0xffffffffa0084d5d
+; scx_bpf_kick_cpu(prev_cpu, SCX_KICK_IDLE); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:819 line_col:30]
+ 19f:	movabsq	$-60473127919312, %rdi
+ 1a9:	movq	(%rdi), %rsi
+; scx_bpf_kick_cpu(prev_cpu, SCX_KICK_IDLE); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:819 line_col:3]
+ 1ad:	movl	%r14d, %edi
+ 1b0:	callq	0xffffffff81e75ba0
+; void BPF_STRUCT_OPS(rustland_enqueue, struct task_struct *p, u64 enq_flags) [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:730 line_col:6]
+ 1b5:	popq	%r15
+ 1b7:	popq	%r14
+ 1b9:	popq	%r13
+ 1bb:	popq	%rbx
+ 1bc:	leave
+ 1bd:	retq
+ 1be:	int3
+
+void queue_task_to_userspace(struct task_struct * p, s32 prev_cpu, u64 enq_flags):
+bpf_prog_587b054b77c3067d_queue_task_to_userspace:
+; static void queue_task_to_userspace(struct task_struct *p, s32 prev_cpu, u64 enq_flags) [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:690 line_col:0]
+   0:	nopl	(%rax,%rax)
+   5:	nopl	(%rax)
+   8:	pushq	%rbp
+   9:	movq	%rsp, %rbp
+   c:	subq	$8, %rsp
+  13:	pushq	%rbx
+  14:	pushq	%r13
+  16:	pushq	%r14
+  18:	pushq	%r15
+  1a:	movq	%rdx, %r14
+  1d:	movl	%esi, %r13d
+  20:	movq	%rdi, %rbx
+; struct task_ctx *tctx = bpf_task_storage_get(&task_ctx_stor, [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:200 line_col:26]
+  23:	movabsq	$-130941331065344, %rdi
+  2d:	movq	%rbx, %rsi
+  30:	xorl	%edx, %edx
+  32:	xorl	%ecx, %ecx
+  34:	movl	$2080, %r8d
+  3a:	callq	0xffffffff81c7da30
+  3f:	movq	%rax, %r15
+; if (!tctx) [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:202 line_col:6]
+  42:	testq	%r15, %r15
+  45:	jne	0xffffffffa0084df7
+; dbg_msg("warning: failed to get task context for pid=%d (%s)", [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:203 line_col:3]
+  47:	movabsq	$-60473127919615, %rdi
+  51:	movzbq	(%rdi), %rdi
+; dbg_msg("warning: failed to get task context for pid=%d (%s)", [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:203 line_col:3]
+  56:	jmp	0xffffffffa0084f20
+; dbg_msg("warning: failed to get task context for pid=%d (%s)", [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:203 line_col:3]
+  5b:	movq	%r14, -8(%rbp)
+; task = bpf_ringbuf_reserve(&queued, sizeof(*task), 0); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:706 line_col:9]
+  5f:	movabsq	$-131332535490048, %rdi
+  69:	movl	$88, %esi
+  6e:	xorl	%edx, %edx
+  70:	callq	0xffffffff81e757b0
+  75:	movq	%rax, %r14
+  78:	movabsq	$-60473127919615, %rdi
+  82:	movzbq	(%rdi), %rdi
+; if (!task) { [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:707 line_col:6]
+  87:	testq	%r14, %r14
+  8a:	jne	0xffffffffa0084e6f
+; dbg_msg("congested: pid=%d (%s)", p->pid, p->comm); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:674 line_col:2]
+  8c:	movl	$1, %edi
+; __sync_fetch_and_add(&nr_sched_congested, 1); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:675 line_col:2]
+  91:	movabsq	$-60473127460784, %rsi
+  9b:	lock
+  9c:	xaddq	%rdi, (%rsi)
+; slice_ns, p->scx.dsq_vtime, enq_flags); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:710 line_col:7]
+  a1:	movabsq	$-60473127919216, %rdi
+  ab:	movq	(%rdi), %rdx
+; scx_bpf_dsq_insert_vtime(p, SHARED_DSQ, [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:709 line_col:3]
+  af:	movq	$-2116547296, %rdi
+  b6:	movq	-8(%rbp), %r8
+; slice_ns, p->scx.dsq_vtime, enq_flags); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:710 line_col:24]
+  ba:	movq	912(%rbx), %rcx
+; scx_bpf_dsq_insert_vtime(p, SHARED_DSQ, [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:709 line_col:3]
+  c1:	movq	%rbx, %rdi
+  c4:	movl	$1024, %esi
+  c9:	callq	0xffffffff81d80d20
+  ce:	jmp	0xffffffffa0084f0b
+; task->pid = p->pid; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:655 line_col:17]
+  d3:	movl	1696(%rbx), %edi
+; task->cpu = prev_cpu; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:656 line_col:12]
+  d9:	movl	%r13d, 4(%r14)
+; task->pid = p->pid; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:655 line_col:12]
+  dd:	movl	%edi, (%r14)
+; task->nr_cpus_allowed = p->nr_cpus_allowed; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:657 line_col:29]
+  e1:	movl	1304(%rbx), %edi
+; task->flags = enq_flags; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:658 line_col:14]
+  e7:	movq	-8(%rbp), %rsi
+  eb:	movq	%rsi, 16(%r14)
+; task->nr_cpus_allowed = p->nr_cpus_allowed; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:657 line_col:29]
+  ef:	shlq	$32, %rdi
+  f3:	sarq	$32, %rdi
+; task->nr_cpus_allowed = p->nr_cpus_allowed; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:657 line_col:24]
+  f7:	movq	%rdi, 8(%r14)
+; task->start_ts = tctx->start_ts; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:659 line_col:25]
+  fb:	movq	(%r15), %rdi
+; task->start_ts = tctx->start_ts; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:659 line_col:17]
+  ff:	movq	%rdi, 24(%r14)
+; task->stop_ts = tctx->stop_ts; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:660 line_col:24]
+ 103:	movq	8(%r15), %rdi
+; task->stop_ts = tctx->stop_ts; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:660 line_col:16]
+ 107:	movq	%rdi, 32(%r14)
+; task->exec_runtime = tctx->exec_runtime; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:661 line_col:29]
+ 10b:	movq	16(%r15), %rdi
+; task->exec_runtime = tctx->exec_runtime; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:661 line_col:21]
+ 10f:	movq	%rdi, 40(%r14)
+; task->weight = p->scx.weight; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:662 line_col:24]
+ 113:	movl	820(%rbx), %edi
+; task->weight = p->scx.weight; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:662 line_col:15]
+ 119:	movq	%rdi, 48(%r14)
+; task->vtime = p->scx.dsq_vtime; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:663 line_col:23]
+ 11d:	movq	912(%rbx), %rdi
+; task->vtime = p->scx.dsq_vtime; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:663 line_col:14]
+ 124:	movq	%rdi, 56(%r14)
+; task->enq_cnt = ++tctx->enq_cnt; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:664 line_col:18]
+ 128:	movq	24(%r15), %rdi
+; task->enq_cnt = ++tctx->enq_cnt; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:664 line_col:18]
+ 12c:	addq	$1, %rdi
+; task->enq_cnt = ++tctx->enq_cnt; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:664 line_col:18]
+ 130:	movq	%rdi, 24(%r15)
+; task->enq_cnt = ++tctx->enq_cnt; [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:664 line_col:16]
+ 134:	movq	%rdi, 64(%r14)
+ 138:	movl	$2184, %edi
+ 13d:	addq	%rdi, %rbx
+; bpf_core_read(&task->comm, sizeof(task->comm), &p->comm); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:666 line_col:23]
+ 140:	movq	%r14, %rdi
+ 143:	addq	$72, %rdi
+; bpf_core_read(&task->comm, sizeof(task->comm), &p->comm); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:666 line_col:2]
+ 147:	movl	$16, %esi
+ 14c:	movq	%rbx, %rdx
+ 14f:	callq	0xffffffff81d1c420
+; bpf_ringbuf_submit(task, 0); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:721 line_col:2]
+ 154:	movq	%r14, %rdi
+ 157:	xorl	%esi, %esi
+ 159:	callq	0xffffffff81e754b0
+ 15e:	movl	$1, %edi
+; __sync_fetch_and_add(&nr_queued, 1); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:722 line_col:2]
+ 163:	movabsq	$-60473127460856, %rsi
+ 16d:	jmp	0xffffffffa0084f1a
+; scx_bpf_dsq_insert_vtime(p, SHARED_DSQ, [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:709 line_col:3]
+ 16f:	movl	$1, %edi
+; __sync_fetch_and_add(&nr_kernel_dispatches, 1); [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:711 line_col:3]
+ 174:	movabsq	$-60473127460816, %rsi
+ 17e:	lock
+ 17f:	xaddq	%rdi, (%rsi)
+; } [file:/home/newton/work/scx/scheds/rust/scx_rlfifo/main.bpf.c line_num:723 line_col:1]
+ 184:	popq	%r15
+ 186:	popq	%r14
+ 188:	popq	%r13
+ 18a:	popq	%rbx
+ 18b:	leave
+ 18c:	retq
+ 18d:	int3
+
