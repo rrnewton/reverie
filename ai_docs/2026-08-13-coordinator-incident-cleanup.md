@@ -91,3 +91,28 @@ Observed in the disposable clone:
 
 After publication, the primary checkout must not be fast-forwarded over unrelated dirty files until
 those files have a recovery commit. Landing and activation are separate facts.
+
+## Publication, recovery, and activation
+
+The cleanup landed on `dev-hermit/main` as
+`a3adf1fe0b77582de395421b2585158d2aad484b`. Before activating it, the primary
+checkout's unrelated tracked edits and small untracked notes/scripts were preserved on branch
+`recovery/pre-cleanup-parent-20260813` at
+`dcdf8b4112faaebde8d396feee57db206363a01e` and pushed to GitHub. This recovery branch is an
+exact handoff of the displaced files, not an endorsement of their contents.
+
+The primary checkout also contained 27 GiB in 41 untracked experiment trees. They were not deleted
+or committed. They were moved intact to
+`/home/newton/recovery/dev-hermit-primary-pre-cleanup-20260813/experiments/`, with a local README
+that records the source and recovery commit. Narrow ignore rules can be added later for datasets that
+should return to their original experiment paths without making the parent checkout dirty.
+
+An object-size audit of all experiment blobs introduced by the 69 incident commits found no blob
+larger than 130,624 bytes and no binary path in the net experiment diff. Six text blobs larger than
+1 MiB remain in the restored pre-incident experiment tree; those are older baseline files, not part
+of this incident.
+
+After the recovery was durable, `scripts/parent-main-write sync` fast-forwarded the primary parent
+checkout from `ea96d3a` to `a3adf1fe`. Reverie was separately fast-forwarded to the retained
+`ee6716a` gitlink. The only remaining parent status entry is the intentional Hermit gitlink mismatch:
+the inner Hermit checkout contains the still-unpublished basic-sanity commit being validated.
