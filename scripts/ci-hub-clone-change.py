@@ -299,14 +299,100 @@ def activation_for_candidate(
     return max(matches, key=lambda item: str(item.get("opened_at", ""))) if matches else None
 
 
-def normalize_claim(raw: str) -> str:
+# Two kinds of repository, because they have OPPOSITE publication rules and a
+# single relaxed claim check would be worse than refusing outright.
+#
+#   parent   dev-hermit itself. Claims stay under `ci-hub/`. Publication goes
+#            straight to main through the serialized `parent-main-write`, and a
+#            coordinator later activates it in the primary checkout.
+#
+#   product  a product repository (hermit, reverie). Pushing `main` is
+#            FORBIDDEN: product work lands by feature branch and pull request.
+#            So `product` cannot reuse the parent publication path at all --
+#            loosening only the claim check would yield a tool that cheerfully
+#            pushed a product repo's main, which is strictly worse than the
+#            refusal it replaced.
+PARENT_KIND = "parent"
+PRODUCT_KIND = "product"
+REPO_KINDS = (PARENT_KIND, PRODUCT_KIND)
+
+# THE PARENT BOUNDARY IS THE POLICY'S, AND THIS TOOL WAS NARROWER THAN IT.
+#
+# AGENTS.md rule 8: "Changes to coordinator-executed infrastructure SUCH AS
+# `ci-hub/` are made in a task-specific disposable clone". `ci-hub/` is an
+# EXAMPLE of coordinator-executed infrastructure, not the whole set -- but this
+# tool enforced ci-hub-only, so parent tooling that agents execute sat inside
+# the policy and outside the tool. Twice in one session an agent had to apply
+# the protocol's principle by hand and disclose the deviation because a
+# legitimate claim could not be expressed: once for a product-repo path, once
+# for `scripts/checkout-hermit-pr-latest-reverie.sh`. Two disclosed deviations
+# is the tool being wrong, not the agents.
+#
+# Seeded with exactly the two roots that have evidence: `ci-hub` because policy
+# names it, and `scripts` because it is the parent's agent-executed harness
+# tooling (109 files, including this tool and `parent-main-write`) and it is
+# what the refusal above blocked.
+#
+# DELIBERATELY NOT INCLUDED, pending an owner decision rather than a guess:
+# `.orc/`, `.githooks/`, `agent-utils/`, `tools/`. Widening is a one-line edit
+# here, which is itself a reviewed change through this protocol.
+#
+# This is the OUTER bound only. Every task still names its own narrow claims,
+# and seal still refuses any changed path outside them.
+PARENT_CLAIM_ROOTS = ("ci-hub", "scripts")
+
+PRODUCT_REMOTES = {
+    "hermit": "https://github.com/rrnewton/hermit.git",
+    "reverie": "https://github.com/rrnewton/reverie.git",
+}
+
+# A product claim may only carry DOCUMENTATION, and that is enforced on the
+# CHANGED PATHS at seal time, not merely on the claim prefix.
+#
+# WHY THE RESTRICTION IS PART OF THE FEATURE. This route exists so that
+# documentation and policy edits -- which need no build, no validate-run, and no
+# registered worktree slot -- can proceed in a disposable clone. Without a path
+# rule the same route would carry a `detcore/src` edit into a pull request with
+# zero validation behind it, which is the thing the slot and the admitted
+# validate-run path exist to prevent. A tool that makes the unvalidated route
+# the convenient one does not stay unused.
+#
+# The rule is deliberately crude and mechanical rather than clever: every
+# changed path must end in `.md`. Product policy and documentation in these
+# repositories is markdown (`AGENTS.md`, `CLAUDE.md`, `docs/`, `ai_docs/`,
+# skills). Anything else -- source, manifests, workflows, lockfiles -- is
+# refused and routed to a registered slot.
+PRODUCT_DOC_SUFFIX = ".md"
+
+
+def normalize_claim(raw: str, kind: str = PARENT_KIND) -> str:
     path = PurePosixPath(raw)
     if path.is_absolute() or ".." in path.parts or raw.endswith("/"):
         raise Refusal(f"invalid claimed path {raw!r}")
     value = path.as_posix()
-    if value != "ci-hub" and not value.startswith("ci-hub/"):
-        raise Refusal(f"ci-hub change claims must stay below ci-hub/: {raw!r}")
+    if kind == PARENT_KIND:
+        if not any(
+            value == root or value.startswith(f"{root}/") for root in PARENT_CLAIM_ROOTS
+        ):
+            raise Refusal(
+                f"parent change claims must stay below one of "
+                f"{', '.join(root + '/' for root in PARENT_CLAIM_ROOTS)}: {raw!r}. "
+                f"These are the coordinator-executed roots this protocol governs; "
+                f"ordinary parent content is committed directly through "
+                f"scripts/parent-main-write."
+            )
+        return value
+    if value == "ci-hub" or value.startswith("ci-hub/"):
+        raise Refusal(
+            f"a product claim cannot name a ci-hub path: {raw!r}; ci-hub lives in "
+            f"the parent repository, so use --kind {PARENT_KIND}"
+        )
     return value
+
+
+def product_doc_violations(paths: Sequence[str]) -> list[str]:
+    """Changed paths a product change is not allowed to carry."""
+    return [path for path in paths if not path.endswith(PRODUCT_DOC_SUFFIX)]
 
 
 def validate_task(task: str) -> str:
@@ -344,7 +430,14 @@ def diff_digest(repo: Path, base: str, candidate: str) -> str:
     return hashlib.sha256(result.stdout).hexdigest()
 
 
-def initialize_manifest(repo: Path, task: str, claims: list[str], base: str) -> None:
+def initialize_manifest(
+    repo: Path,
+    task: str,
+    claims: list[str],
+    base: str,
+    kind: str,
+    product_repo: str | None,
+) -> None:
     write_json(
         metadata_path(repo, MANIFEST),
         {
@@ -354,18 +447,96 @@ def initialize_manifest(repo: Path, task: str, claims: list[str], base: str) -> 
             "created_at": datetime.now(timezone.utc).isoformat(),
             "initial_base": base,
             "claims": sorted(set(claims)),
+            "kind": kind,
+            "product_repo": product_repo,
         },
     )
 
 
+def manifest_kind(manifest: Mapping[str, Any]) -> str:
+    """The repository kind, defaulting to parent for manifests written before kinds existed."""
+    kind = str(manifest.get("kind") or PARENT_KIND)
+    if kind not in REPO_KINDS:
+        raise Refusal(f"manifest records an unknown repository kind: {kind!r}")
+    return kind
+
+
+def describe_occupant(destination: Path) -> str:
+    """Name who holds a destination, so a collision is diagnosable without guessing.
+
+    The bare "destination already exists" refusal sent the reader to look at a
+    directory and work out for themselves whose it was, whether its work was
+    published, and whether it was safe to remove. It is never safe for the
+    finder to remove it -- disposal is coordinator work -- but the coordinator
+    still has to answer those questions, and every fact needed is already
+    recorded inside the clone.
+    """
+    try:
+        manifest = read_json(metadata_path(destination, MANIFEST), "change manifest")
+    except Exception:
+        return "occupant unknown: no readable change manifest"
+    parts = [
+        f"task={manifest.get('task', '?')}",
+        f"kind={manifest.get('kind') or PARENT_KIND}",
+        f"claims={','.join(str(c) for c in manifest.get('claims') or []) or 'none'}",
+        f"created_at={manifest.get('created_at', '?')}",
+    ]
+    try:
+        seal = read_json(metadata_path(destination, SEAL), "change seal")
+        parts.append(f"sealed_candidate={seal.get('candidate', '?')}")
+        parts.append(f"sealed_base={seal.get('base', '?')}")
+    except Exception:
+        parts.append("sealed=no")
+    return "occupant " + " ".join(parts)
+
+
+def default_clone_destination(task: str, kind: str, product_repo: str | None) -> str:
+    """One destination per task, so two agents do not contend for one directory.
+
+    The original fixed default made the destination a shared resource: one
+    agent's unpublished, sealed work could sit in it while another agent needed
+    a clone, and the second agent's only options were to wait or to disposition
+    somebody else's change. Observed 2026-08-13, with a sealed candidate on an
+    already-stale base occupying it.
+    """
+    slug = validate_task(task)
+    stem = product_repo if kind == PRODUCT_KIND and product_repo else "dev-hermit"
+    return f"~/temp/{stem}-{slug}"
+
+
 def command_create(args: argparse.Namespace) -> None:
-    destination = Path(args.clone).expanduser().resolve()
+    kind = args.kind
+    if kind not in REPO_KINDS:
+        raise Refusal(f"--kind must be one of {', '.join(REPO_KINDS)}")
+    product_repo = args.repo
+    remote = args.remote
+    if kind == PRODUCT_KIND:
+        if not product_repo:
+            raise Refusal(
+                f"--kind {PRODUCT_KIND} requires --repo (one of "
+                f"{', '.join(sorted(PRODUCT_REMOTES))})"
+            )
+        if not remote:
+            if product_repo not in PRODUCT_REMOTES:
+                raise Refusal(
+                    f"unknown product repository {product_repo!r}; known: "
+                    f"{', '.join(sorted(PRODUCT_REMOTES))}. Pass --remote to use another."
+                )
+            remote = PRODUCT_REMOTES[product_repo]
+    else:
+        if product_repo:
+            raise Refusal(f"--repo only applies to --kind {PRODUCT_KIND}")
+        remote = remote or "https://github.com/rrnewton/dev-hermit.git"
+    destination = Path(
+        args.clone or default_clone_destination(args.task, kind, product_repo)
+    ).expanduser().resolve()
     if destination.exists() or destination.is_symlink():
         raise Refusal(
             f"clone destination already exists: {destination}; a coordinator must "
-            "disposition the per-change clone before creating another"
+            f"disposition the per-change clone before creating another "
+            f"({describe_occupant(destination)})"
         )
-    claims = [normalize_claim(item) for item in args.path]
+    claims = [normalize_claim(item, kind) for item in args.path]
     if not claims:
         raise Refusal("create requires at least one --path claim")
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -376,20 +547,23 @@ def command_create(args: argparse.Namespace) -> None:
         "--single-branch",
         "--branch",
         "main",
-        args.remote,
+        remote,
         str(destination),
     )
     base = git(destination, "rev-parse", "HEAD^{commit}")
-    remote = git(destination, "rev-parse", "refs/remotes/origin/main^{commit}")
-    if base != remote or not is_clean(destination):
+    remote_head = git(destination, "rev-parse", "refs/remotes/origin/main^{commit}")
+    if base != remote_head or not is_clean(destination):
         raise Refusal("fresh clone is not clean at exact origin/main")
     setup = destination / "scripts/setup-hooks.sh"
     if setup.is_file():
         run((str(setup),), cwd=destination, capture=False)
     branch = f"ci-hub/{validate_task(args.task)}"
     run(("git", "-C", str(destination), "switch", "-c", branch), capture=False)
-    initialize_manifest(destination, args.task, claims, base)
-    print(f"CI_HUB_CHANGE created={destination} task={args.task} base={base} branch={branch}")
+    initialize_manifest(destination, args.task, claims, base, kind, product_repo)
+    print(
+        f"CI_HUB_CHANGE created={destination} task={args.task} kind={kind} "
+        f"repo={product_repo or 'dev-hermit'} base={base} branch={branch}"
+    )
 
 
 def load_manifest(repo: Path) -> dict[str, Any]:
@@ -421,7 +595,29 @@ def verify_candidate(repo: Path) -> tuple[dict[str, Any], str, str, list[str], s
     outside = [path for path in paths if not any(claim_covers(claim, path) for claim in claims)]
     if outside:
         raise Refusal("candidate changes unclaimed paths: " + ", ".join(outside))
+    enforce_product_doc_rule(manifest, paths)
     return manifest, base, candidate, paths, diff_digest(repo, base, candidate)
+
+
+def enforce_product_doc_rule(manifest: Mapping[str, Any], paths: Sequence[str]) -> None:
+    """A product change carries documentation only, checked on the real changed paths.
+
+    Checked here rather than on the claim prefix because the claim is what an
+    agent asks for and this is what it actually did. A claim of `docs` looks
+    documentation-shaped and can still deliver a `.rs` file.
+    """
+    if manifest_kind(manifest) != PRODUCT_KIND:
+        return
+    violations = product_doc_violations(paths)
+    if violations:
+        raise Refusal(
+            "a product change through the clone protocol may only carry "
+            f"{PRODUCT_DOC_SUFFIX} documentation; these paths are not: "
+            + ", ".join(violations)
+            + ". Product work that needs a build or validation goes through a "
+            "registered worktree slot and the admitted validate-run path, not "
+            "through a disposable clone."
+        )
 
 
 def command_seal(args: argparse.Namespace) -> None:
@@ -472,6 +668,7 @@ def verified_seal(
     outside = [path for path in paths if not any(claim_covers(claim, path) for claim in claims)]
     if outside:
         raise Refusal("sealed candidate now changes unclaimed paths: " + ", ".join(outside))
+    enforce_product_doc_rule(manifest, paths)
     expected = {
         "task": manifest["task"],
         "base": base,
@@ -497,8 +694,57 @@ def verified_seal(
     return manifest, seal
 
 
+def command_publish_product(
+    repo: Path, manifest: Mapping[str, Any], seal: Mapping[str, Any]
+) -> None:
+    """Publish a product change as a BRANCH, never as a push to main.
+
+    This is the whole reason `product` is a distinct kind rather than a relaxed
+    claim check. The parent path publishes straight to main through
+    `parent-main-write`; doing that to hermit or reverie is forbidden outright,
+    so this path pushes the task branch and stops. Review and merge stay on the
+    ordinary pull-request route, and no activation obligation is opened: there
+    is nothing to activate in a primary checkout, and the parent gitlink is
+    separate bookkeeping.
+    """
+    branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if branch in ("main", "HEAD"):
+        raise Refusal(
+            f"refusing to publish from {branch!r}: a product change publishes a task branch"
+        )
+    candidate = str(seal["candidate"])
+    # Push the exact sealed commit to the exact named branch. An explicit
+    # refspec means a later local commit cannot ride along unnoticed.
+    network_git(repo, "push", "origin", f"{candidate}:refs/heads/{branch}")
+    # Read the REMOTE, not a local remote-tracking ref. `create` clones with
+    # --single-branch, so the fetch refspec covers only main and no tracking ref
+    # for this branch exists to read; and a cached ref would prove what this
+    # clone last heard rather than what the remote now holds.
+    listing = git(repo, "ls-remote", "origin", f"refs/heads/{branch}")
+    pushed = listing.split()[0] if listing else ""
+    if pushed != candidate:
+        raise Refusal(
+            f"published branch does not carry the sealed candidate; "
+            f"origin/{branch}={pushed} sealed={candidate}"
+        )
+    product_repo = manifest.get("product_repo") or "the product repository"
+    print(
+        f"CI_HUB_CHANGE published=1 kind={PRODUCT_KIND} repo={product_repo} "
+        f"task={manifest['task']} branch={branch} candidate={candidate}"
+    )
+    print(
+        "CI_HUB_CHANGE next=open a pull request against main and shepherd it to "
+        "landing; this tool does not merge, and main is never pushed for a product repo"
+    )
+
+
 def command_publish(args: argparse.Namespace) -> None:
     repo = repository_root(Path(args.clone).expanduser() if args.clone else None)
+    manifest_peek = load_manifest(repo)
+    if manifest_kind(manifest_peek) == PRODUCT_KIND:
+        manifest, seal = verified_seal(repo, require_unpublished_base=True)
+        command_publish_product(repo, manifest, seal)
+        return
     primary = repository_root(Path(args.primary).expanduser())
     manifest, seal = verified_seal(repo, require_unpublished_base=True)
     store = activation_store_path(primary, args.store)
@@ -732,6 +978,12 @@ def render_activation_obligations(
 
 def command_activate(args: argparse.Namespace) -> None:
     clone = repository_root(Path(args.clone).expanduser())
+    if manifest_kind(load_manifest(clone)) == PRODUCT_KIND:
+        raise Refusal(
+            "a product change has nothing to activate: it is not published to main "
+            "and the primary product checkout is not synced from a clone. It lands "
+            "through its pull request, and the parent gitlink is separate bookkeeping."
+        )
     primary = repository_root(Path(args.primary).expanduser())
     manifest, seal = verified_seal(clone, require_unpublished_base=False)
     candidate = str(seal["candidate"])
@@ -865,8 +1117,25 @@ def parser() -> argparse.ArgumentParser:
     create = commands.add_parser("create", description="create one fresh per-change clone", help="create one fresh per-change clone")
     create.add_argument("--task", required=True)
     create.add_argument("--path", action="append", default=[])
-    create.add_argument("--clone", default="~/temp/dev-hermit")
-    create.add_argument("--remote", default="https://github.com/rrnewton/dev-hermit.git")
+    create.add_argument(
+        "--kind",
+        default=PARENT_KIND,
+        choices=REPO_KINDS,
+        help=(
+            f"{PARENT_KIND}: dev-hermit, claims under ci-hub/, publishes to main. "
+            f"{PRODUCT_KIND}: a product repo, documentation only, publishes a branch."
+        ),
+    )
+    create.add_argument(
+        "--repo",
+        help=f"product repository name for --kind {PRODUCT_KIND} "
+        f"({', '.join(sorted(PRODUCT_REMOTES))})",
+    )
+    # Defaults resolved in command_create: one destination PER TASK, and the
+    # remote follows the kind. A shared fixed destination made one agent's
+    # unpublished work block another's.
+    create.add_argument("--clone")
+    create.add_argument("--remote")
     create.set_defaults(func=command_create)
     seal = commands.add_parser("seal", description="test and seal one exact candidate commit", help="test and seal one exact candidate commit")
     seal.add_argument("--clone")

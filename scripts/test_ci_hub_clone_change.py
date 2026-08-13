@@ -65,6 +65,13 @@ class Fixture(unittest.TestCase):
             "esac\n"
         )
         (self.seed / "scripts/parent-main-write").chmod(0o755)
+        # Product-shaped content: a documentation file the clone protocol may
+        # carry, and a source file it must refuse.
+        (self.seed / "docs").mkdir()
+        (self.seed / "docs/GUIDE.md").write_text("old\n")
+        (self.seed / "AGENTS.md").write_text("old policy\n")
+        (self.seed / "src").mkdir()
+        (self.seed / "src/lib.rs").write_text("// old\n")
         git(
             self.seed,
             "add",
@@ -72,6 +79,9 @@ class Fixture(unittest.TestCase):
             "outside.txt",
             "scripts/setup-hooks.sh",
             "scripts/parent-main-write",
+            "docs/GUIDE.md",
+            "AGENTS.md",
+            "src/lib.rs",
         )
         git(self.seed, "commit", "-m", "seed")
         git(self.seed, "remote", "add", "origin", str(self.remote))
@@ -92,11 +102,241 @@ class Fixture(unittest.TestCase):
         git(path, "config", "user.email", "test@example.invalid")
         return path
 
+    def product_clone(self, name: str = "product-change", *, path: str = "docs") -> Path:
+        target = self.root / name
+        result = command(
+            str(SOURCE), "create", "--task", "fixture-doc-change",
+            "--kind", "product", "--repo", "hermit", "--path", path,
+            "--clone", str(target), "--remote", str(self.remote),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        git(target, "config", "user.name", "Test Agent")
+        git(target, "config", "user.email", "test@example.invalid")
+        return target
+
     def commit(self, repo: Path, path: str, text: str) -> str:
         (repo / path).write_text(text)
         git(repo, "add", path)
         git(repo, "commit", "-m", "candidate")
         return git(repo, "rev-parse", "HEAD")
+
+    # --- PRODUCT KIND: the documentation route -------------------------------
+    #
+    # POSITIVE half first and asserted as hard as the negative. A route that
+    # refuses everything unblocks nobody, and unblocking the documentation case
+    # while slot allocation is down is the entire point of this kind.
+
+    def test_product_positive_documentation_change_seals(self) -> None:
+        repo = self.product_clone()
+        candidate = self.commit(repo, "docs/GUIDE.md", "new documentation\n")
+        result = command(
+            str(SOURCE), "seal", "--clone", str(repo), "--test", "test -f docs/GUIDE.md",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        seal = json.loads((repo / ".git" / TOOL.SEAL).read_text())
+        self.assertEqual(seal["candidate"], candidate)
+        self.assertEqual(seal["changed_paths"], ["docs/GUIDE.md"])
+        self.assertEqual(seal["tests"][0]["exit_code"], 0)
+
+    def test_product_positive_publish_pushes_branch_and_never_main(self) -> None:
+        repo = self.product_clone()
+        candidate = self.commit(repo, "docs/GUIDE.md", "published documentation\n")
+        main_before = git(repo, "rev-parse", "refs/remotes/origin/main")
+        self.assertEqual(
+            command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true").returncode,
+            0,
+        )
+        result = command(str(SOURCE), "publish", "--clone", str(repo))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        branch = "ci-hub/fixture-doc-change"
+        pushed = git(repo, "ls-remote", "origin", f"refs/heads/{branch}").split()[0]
+        self.assertEqual(pushed, candidate, "sealed candidate must be the published tip")
+        # THE LOAD-BEARING ASSERTION: main is untouched. If a future edit lets a
+        # product change reach parent-main-write, this is what catches it.
+        self.assertEqual(
+            git(repo, "ls-remote", "origin", "refs/heads/main").split()[0],
+            main_before,
+            "publishing a product change must not move main",
+        )
+        self.assertIn("does not merge", result.stdout)
+
+    def test_product_negative_publish_does_not_open_an_activation_obligation(self) -> None:
+        repo = self.product_clone()
+        self.commit(repo, "docs/GUIDE.md", "no obligation\n")
+        command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        result = command(str(SOURCE), "publish", "--clone", str(repo))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The parent path prints an activation_obligation token here; a product
+        # publication must not, because there is nothing to activate.
+        self.assertNotIn("activation_obligation", result.stdout)
+
+    def test_product_negative_activate_refuses(self) -> None:
+        repo = self.product_clone()
+        self.commit(repo, "docs/GUIDE.md", "activate me\n")
+        command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        result = command(
+            str(SOURCE), "activate", "--clone", str(repo), "--primary", str(self.seed),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("nothing to activate", result.stderr + result.stdout)
+
+    # NEGATIVE half: the scope discipline is a real gate, not a comment.
+
+    def test_product_negative_source_file_refuses_at_seal(self) -> None:
+        repo = self.product_clone(path="src")
+        self.commit(repo, "src/lib.rs", "// new\n")
+        result = command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        self.assertNotEqual(result.returncode, 0, "a product source edit must not seal")
+        self.assertIn("may only carry .md", result.stderr + result.stdout)
+        self.assertIn("registered worktree slot", result.stderr + result.stdout)
+
+    def test_product_negative_mixed_doc_and_source_refuses(self) -> None:
+        """A source file must not ride along beside a legitimate doc edit."""
+        repo = self.product_clone(path=".")
+        (repo / "docs/GUIDE.md").write_text("doc\n")
+        (repo / "src/lib.rs").write_text("// smuggled\n")
+        git(repo, "add", "docs/GUIDE.md", "src/lib.rs")
+        git(repo, "commit", "-m", "candidate")
+        result = command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("src/lib.rs", result.stderr + result.stdout)
+
+    def test_product_negative_claim_naming_ci_hub_refuses(self) -> None:
+        result = command(
+            str(SOURCE), "create", "--task", "bad-claim", "--kind", "product",
+            "--repo", "hermit", "--path", "ci-hub/bin",
+            "--clone", str(self.root / "never"), "--remote", str(self.remote),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot name a ci-hub path", result.stderr + result.stdout)
+        self.assertFalse((self.root / "never").exists())
+
+    def test_product_negative_missing_repo_refuses(self) -> None:
+        result = command(
+            str(SOURCE), "create", "--task", "no-repo", "--kind", "product",
+            "--path", "docs", "--clone", str(self.root / "never"),
+            "--remote", str(self.remote),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requires --repo", result.stderr + result.stdout)
+
+    def test_parent_negative_repo_flag_refuses(self) -> None:
+        result = command(
+            str(SOURCE), "create", "--task", "wrong-flag", "--repo", "hermit",
+            "--path", "ci-hub/bin", "--clone", str(self.root / "never"),
+            "--remote", str(self.remote),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("only applies to", result.stderr + result.stdout)
+
+    # --- THE PARENT BOUNDARY: policy says "such as ci-hub/", not "only" -------
+
+    def test_parent_positive_scripts_claim_is_accepted(self) -> None:
+        """Coord's exact refusal: parent tooling under scripts/ is in policy scope.
+
+        `scripts/checkout-hermit-pr-latest-reverie.sh` is a dev-hermit parent
+        path, not a product path, and was refused. It is coordinator-executed
+        harness tooling, so the protocol is supposed to govern it.
+        """
+        target = self.root / "scripts-change"
+        result = command(
+            str(SOURCE), "create", "--task", "parent-script-change",
+            "--path", "scripts/checkout-hermit-pr-latest-reverie.sh",
+            "--clone", str(target), "--remote", str(self.remote),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        git(target, "config", "user.name", "Test Agent")
+        git(target, "config", "user.email", "test@example.invalid")
+        self.commit(target, "scripts/setup-hooks.sh", "#!/bin/sh\nexit 0\n# edited\n")
+        # Claimed one script, changed another: seal must still refuse. Widening
+        # the OUTER bound must not weaken the per-task claim check.
+        refused = command(str(SOURCE), "seal", "--clone", str(target), "--test", "true")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("unclaimed paths", refused.stderr + refused.stdout)
+
+    def test_parent_positive_scripts_change_seals_and_publishes_to_main(self) -> None:
+        target = self.root / "scripts-ok"
+        result = command(
+            str(SOURCE), "create", "--task", "parent-script-ok",
+            "--path", "scripts/setup-hooks.sh",
+            "--clone", str(target), "--remote", str(self.remote),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        git(target, "config", "user.name", "Test Agent")
+        git(target, "config", "user.email", "test@example.invalid")
+        candidate = self.commit(target, "scripts/setup-hooks.sh", "#!/bin/sh\nexit 0\n#v2\n")
+        self.assertEqual(
+            command(str(SOURCE), "seal", "--clone", str(target), "--test", "true").returncode,
+            0,
+        )
+        published = command(
+            str(SOURCE), "publish", "--clone", str(target), "--primary", str(self.seed),
+        )
+        self.assertEqual(published.returncode, 0, published.stderr)
+        # A parent change DOES go to main, unlike a product change.
+        self.assertEqual(
+            git(target, "ls-remote", "origin", "refs/heads/main").split()[0], candidate
+        )
+
+    def test_parent_negative_claim_outside_the_declared_roots_refuses(self) -> None:
+        """Widening to scripts/ is not widening to everything."""
+        result = command(
+            str(SOURCE), "create", "--task", "still-refused", "--path", "docs",
+            "--clone", str(self.root / "never"), "--remote", str(self.remote),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        message = result.stderr + result.stdout
+        self.assertIn("must stay below one of", message)
+        # The refusal names the roots and the correct alternative route, so the
+        # reader is not left to discover the boundary by trial and error.
+        self.assertIn("ci-hub/", message)
+        self.assertIn("scripts/", message)
+        self.assertIn("parent-main-write", message)
+        self.assertFalse((self.root / "never").exists())
+
+    def test_parent_boundary_is_a_single_named_constant(self) -> None:
+        """The set is owner-owned policy; keep it in one auditable place."""
+        self.assertEqual(TOOL.PARENT_CLAIM_ROOTS, ("ci-hub", "scripts"))
+
+    # --- THE SHARED-DESTINATION HAZARD ---------------------------------------
+
+    def test_default_destination_is_per_task_not_shared(self) -> None:
+        first = TOOL.default_clone_destination("task-one", TOOL.PARENT_KIND, None)
+        second = TOOL.default_clone_destination("task-two", TOOL.PARENT_KIND, None)
+        self.assertNotEqual(first, second)
+        self.assertIn("task-one", first)
+        # A product clone is named for its repository, so two kinds working the
+        # same task slug still do not collide.
+        product = TOOL.default_clone_destination("task-one", TOOL.PRODUCT_KIND, "hermit")
+        self.assertNotEqual(first, product)
+        self.assertIn("hermit", product)
+
+    def test_occupied_destination_refusal_names_the_occupant(self) -> None:
+        occupied = self.clone("occupied")
+        self.commit(occupied, "ci-hub/bin/tool", "occupant work\n")
+        command(str(SOURCE), "seal", "--clone", str(occupied), "--test", "true")
+        result = command(
+            str(SOURCE), "create", "--task", "second-agent", "--path", "ci-hub/bin",
+            "--clone", str(occupied), "--remote", str(self.remote),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        message = result.stderr + result.stdout
+        # Naming the occupant is the difference between a diagnosable collision
+        # and a directory the finder has to reverse-engineer. Disposal is still
+        # coordinator work; this only supplies the facts that decision needs.
+        self.assertIn("task=fixture-change", message)
+        self.assertIn("claims=ci-hub/bin", message)
+        self.assertIn("sealed_candidate=", message)
+
+    def test_occupied_destination_without_manifest_says_so(self) -> None:
+        stray = self.root / "stray"
+        stray.mkdir()
+        result = command(
+            str(SOURCE), "create", "--task", "third-agent", "--path", "ci-hub/bin",
+            "--clone", str(stray), "--remote", str(self.remote),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("occupant unknown", result.stderr + result.stdout)
 
     def test_positive_one_commit_claimed_and_tested_seals(self) -> None:
         repo = self.clone()
