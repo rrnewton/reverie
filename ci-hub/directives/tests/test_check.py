@@ -13,6 +13,8 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+import yaml
+
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "check.py"
 SPEC = importlib.util.spec_from_file_location("directive_check", MODULE_PATH)
@@ -189,6 +191,42 @@ class DirectiveCheckTest(unittest.TestCase):
         self.assertEqual(1, report.counts["gated"])
         self.assertEqual([], runner.verifier_calls)
 
+    def test_tick_alert_and_notice_paths_are_disjoint(self):
+        gated, _runner = self.evaluate(
+            [directive("deferred", identity=None, gate="zero open PRs")]
+        )
+        self.assertEqual(0, directive_check._gate_exit_code(gated, "alert"))
+        self.assertEqual(1, directive_check._gate_exit_code(gated, "notice"))
+
+        drift, _runner = self.evaluate(
+            [directive("not-landed", identity="b" * 40)]
+        )
+        self.assertEqual(1, directive_check._gate_exit_code(drift, "alert"))
+        self.assertEqual(0, directive_check._gate_exit_code(drift, "notice"))
+
+        unknown, _runner = self.evaluate(
+            [directive("unverified", identity="c" * 40)]
+        )
+        self.assertEqual(2, directive_check._gate_exit_code(unknown, "alert"))
+        self.assertEqual(0, directive_check._gate_exit_code(unknown, "notice"))
+
+    def test_tick_wiring_keeps_gated_rows_visible_without_hard_action(self):
+        config = yaml.safe_load(
+            (directive_check.ROOT / "ci-hub/health/tick-hub.yaml").read_text()
+        )
+        reminders = {row["name"]: row for row in config["reminders"]}
+
+        alert = reminders["owner_tooling_directives"]
+        self.assertIn("--gate-on alert", alert["gate"]["cmd"])
+        self.assertEqual("action", alert["emit"]["kind"])
+        self.assertEqual("hard-warn-coordinator", alert["emit"]["skill"])
+
+        notice = reminders["owner_tooling_directives_gated"]
+        self.assertIn("--gate-on notice", notice["gate"]["cmd"])
+        self.assertIn("--no-write", notice["gate"]["cmd"])
+        self.assertEqual("note", notice["emit"]["kind"])
+        self.assertNotIn("skill", notice["emit"])
+
     def test_unnamed_gate_is_invalid(self):
         report, _runner = self.evaluate(
             [directive("bare-gate", identity=None, gate="   ")]
@@ -226,7 +264,7 @@ class DirectiveCheckTest(unittest.TestCase):
         self.assertEqual("fetch_failed", broke.ancestry)
         self.assertNotEqual("not_checked", broke.ancestry)
         self.assertIn("fetch failed", broke.reason)
-        self.assertIn(broke.state, directive_check.DRIFT_STATES)
+        self.assertIn(broke.state, directive_check.NO_RESULT_STATES)
         # Never green, and unknown (exit 2) rather than a confirmed not_landed red.
         self.assertEqual("unknown", report.overall_state)
         self.assertEqual(2, report.exit_code)

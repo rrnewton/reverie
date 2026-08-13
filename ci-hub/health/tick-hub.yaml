@@ -195,7 +195,7 @@ reminders:
   - name: owner_tooling_directives
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/directives/check.py --deadline-secs 180
+      cmd: python3 ci-hub/directives/check.py --deadline-secs 180 --gate-on alert
       timeout_secs: 195
       when: failure
       capture: true
@@ -205,6 +205,24 @@ reminders:
       fields:
         component: owner-tooling-directives
       title: "owner tooling directives need action: {summary}"
+
+  # A named gate is a real, visible deferral, not drift. Keep it in the tick as
+  # a note while reserving the action above for drift or a failed measurement.
+  # The checker makes the paths disjoint, so a report that needs action does not
+  # also emit this note. The alert path writes the durable report; this second
+  # read is report-only and must not compete for that output path.
+  - name: owner_tooling_directives_gated
+    cadence_secs: 3600
+    gate:
+      cmd: python3 ci-hub/directives/check.py --deadline-secs 180 --gate-on notice --no-write
+      timeout_secs: 195
+      when: failure
+      capture: true
+    emit:
+      kind: note
+      fields:
+        component: owner-tooling-directives
+      title: "owner tooling directives gated: {summary}"
 
   # THE TICK POLICES ITS OWN CODE. It executes from the shared parent WORKING
   # TREE (hermitOperationalTick does `cd <parent> && ./ci-hub/bin/health-tick`),
