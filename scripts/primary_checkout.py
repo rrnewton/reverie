@@ -220,6 +220,64 @@ def print_command_output(result: subprocess.CompletedProcess[str], stream: TextI
             print(output.rstrip(), file=stream)
 
 
+def run_reverie_pin_policy(
+    hermit: Path,
+    base_ref: str,
+    *,
+    use_proxy: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run Hermit's canonical ancestry-and-monotonicity pin checker.
+
+    The parent snapshot used to implement a second, stricter rule by comparing
+    Hermit's pin and every lock source with the live Reverie checkout.  That
+    turns a permitted ancestor lag into a refusal.  Hermit already owns the
+    policy and its metadata scan, so this caller supplies only the Hermit commit
+    recorded by the current parent as the monotonicity floor.
+    """
+    helper = hermit / "ci" / "run-reverie-pin-check.sh"
+    command: list[str] = []
+    if use_proxy and not proxy_disabled():
+        proxy = shutil.which(os.environ.get("WITH_PROXY", "with-proxy"))
+        if proxy:
+            command.append(proxy)
+    command.extend(("bash", str(helper), "--base-ref", base_ref))
+    env = dict(os.environ)
+    for name in GIT_REPO_SCOPED_ENV:
+        env.pop(name, None)
+    return _run_process(
+        command,
+        cwd=hermit,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+
+
+def reverie_pin_policy_failure(
+    result: subprocess.CompletedProcess[str],
+) -> str:
+    """Collapse one canonical-checker refusal into one snapshot finding."""
+    lines = [
+        line.strip(" =")
+        for output in (result.stderr, result.stdout)
+        for line in output.splitlines()
+        if line.strip(" =")
+    ]
+    headline = next(
+        (
+            line
+            for line in lines
+            if "BLOCKED" in line or "REFUS" in line or "ERROR" in line
+        ),
+        lines[-1] if lines else "no diagnostic output",
+    )
+    return (
+        "Hermit Reverie pin policy check did not pass "
+        f"(exit {result.returncode}): {headline}"
+    )
+
+
 def live_main_sha(
     repo: Path, *, use_proxy: bool = True
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
@@ -749,53 +807,19 @@ def publish_parent_snapshot(
         heads[product] = head_sha
 
     if not failures and len(heads) == len(PRODUCTS):
-        pins, pin_count, pin_errors = reverie_manifest_pins(root / "hermit")
-        failures.extend(f"hermit: {message}" for message in pin_errors)
-        expected = heads["reverie"]
-        if pin_count == 0:
-            failures.append("hermit: no tracked Cargo manifest pins rrnewton/reverie")
-        elif len(pins) > 1:
-            # INTERNAL INCOHERENCE: the manifests contradict each other. No pin
-            # value could satisfy them, so this is unfixable by any bump and is
-            # never a moving-reference complaint.
+        base = run_git(root, "rev-parse", "HEAD:hermit")
+        base_ref = base.stdout.strip()
+        if base.returncode != 0 or not FULL_SHA.fullmatch(base_ref):
             failures.append(
-                "Hermit Reverie pins disagree with EACH OTHER across tracked "
-                f"Cargo.toml: {', '.join(sorted(pins))}"
+                "Hermit Reverie pin policy check could not resolve the parent-recorded "
+                "Hermit base"
             )
-        elif pins != {expected}:
-            # SNAPSHOT INCOHERENCE: the manifests agree with each other but name a
-            # different Reverie than the gitlink this snapshot would record. Say
-            # that, rather than "not globally consistent" -- the manifests ARE
-            # globally consistent here, and calling them inconsistent sent readers
-            # hunting for a disagreement that does not exist.
-            #
-            # This is EXACT on purpose and must stay exact. `expected` is the
-            # gitlink about to be recorded; publishing hermit-pins-X alongside
-            # reverie-gitlink-Y hands a colleague who runs `git submodule update
-            # --init` a mismatched pair. A small gap is not less broken than a
-            # large one, so this is NOT the place for a staleness bound.
-            #
-            # It nevertheless reads as a treadmill, and the cause is one level up:
-            # an earlier loop requires every primary HEAD to equal its own
-            # origin/main, so `expected` IS the upstream tip. Coherence-with-the-
-            # gitlink therefore composes into currency-with-the-tip. Bound the
-            # CURRENCY leg where it lives (that loop, and
-            # check_reverie_pin_invariant.py leg C) -- not here.
-            behind = run_git(
-                root / "reverie", "rev-list", "--count", f"{next(iter(pins))}..{expected}"
+        else:
+            policy = run_reverie_pin_policy(
+                root / "hermit", base_ref, use_proxy=use_proxy
             )
-            n = behind.stdout.strip() if behind.returncode == 0 else ""
-            distance = f"{n} commit{'' if n == '1' else 's'}" if n else "an unknown number of commits"
-            failures.append(
-                "Hermit Reverie pin lags the reverie gitlink this snapshot would "
-                f"record: manifests all agree at {next(iter(pins))}, gitlink/"
-                f"reverie-main={expected} ({distance} ahead). The manifests "
-                "are consistent with each other; only the recorded gitlink differs."
-            )
-        failures.extend(
-            f"hermit: {message}"
-            for message in reverie_generated_pin_errors(root / "hermit", expected)
-        )
+            if policy.returncode != 0:
+                failures.append(reverie_pin_policy_failure(policy))
 
     if failures:
         print("HARD WARNING: PARENT SUBMODULE SNAPSHOT NOT PUBLISHED", file=err)
@@ -1730,20 +1754,25 @@ def check_freshness(
                 f"{product}: parent gitlink {recorded} differs from origin/main {remote}"
             )
 
-    reverie_head = run_git(root / "reverie", "rev-parse", "HEAD").stdout.strip()
     pins, pin_count, pin_errors = reverie_manifest_pins(root / "hermit")
     warnings.extend(f"hermit: {message}" for message in pin_errors)
     if pin_count == 0:
         warnings.append("hermit: no tracked Cargo manifest pins rrnewton/reverie")
-    elif reverie_head and pins != {reverie_head}:
+    elif len(pins) > 1:
         warnings.append(
-            "Hermit Reverie manifest pin mismatch: "
-            f"manifests={','.join(sorted(pins)) or 'none'} reverie={reverie_head}"
+            "Hermit Reverie manifest pins are inconsistent: "
+            f"manifests={','.join(sorted(pins))}"
         )
-    if reverie_head:
+    elif pins:
+        # Freshness is an advisory working-tree check.  Keep its local
+        # generated-file consistency check, but do not compare the Hermit pin
+        # with the live Reverie checkout: policy permits a lagging pin.  The
+        # publishing path below runs Hermit's canonical ancestry and
+        # monotonicity checker before creating a snapshot commit.
+        expected_pin = next(iter(pins))
         warnings.extend(
             f"hermit: {message}"
-            for message in reverie_generated_pin_errors(root / "hermit", reverie_head)
+            for message in reverie_generated_pin_errors(root / "hermit", expected_pin)
         )
 
     if warnings:

@@ -240,11 +240,16 @@ class _ParentWorkspaceFixture(unittest.TestCase):
                 'reverie_pin=$("$root_dir/ci/run-reverie-pin-check.sh" --print-pin)\n'
                 'liteinst_target_dir=$(realpath -m -- "$3-${reverie_pin:0:8}")\n'
             ),
+            # The parent snapshot wires to Hermit's canonical checker. Most
+            # fixture cases are about snapshot mechanics, so their checker is a
+            # passing stand-in; refusal cases patch the process result below.
+            Path("ci/run-reverie-pin-check.sh"): "#!/usr/bin/env bash\nexit 0\n",
         }
         for relative, contents in generated.items():
             path = self.seeds["hermit"] / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(contents)
+        (self.seeds["hermit"] / "ci/run-reverie-pin-check.sh").chmod(0o755)
         git(
             self.seeds["hermit"],
             "add",
@@ -458,6 +463,28 @@ class PrimaryCheckoutDeadlineTests(unittest.TestCase):
             primary_checkout._COMMAND_DEADLINE.reset(token)
 
         self.assertEqual(run.call_args.kwargs["timeout"], 7.0)
+
+    def test_pin_policy_helper_receives_the_exact_parent_recorded_base(self) -> None:
+        completed = subprocess.CompletedProcess(["bash"], 0, "pass\n", "")
+        hermit = Path("/fixture/hermit")
+        base = "a" * 40
+        with patch.object(
+            primary_checkout, "_run_process", return_value=completed
+        ) as run:
+            result = primary_checkout.run_reverie_pin_policy(
+                hermit, base, use_proxy=False
+            )
+
+        self.assertIs(result, completed)
+        self.assertEqual(
+            run.call_args.args[0],
+            [
+                "bash",
+                str(hermit / "ci/run-reverie-pin-check.sh"),
+                "--base-ref",
+                base,
+            ],
+        )
 
     def test_checkout_deadline_returns_named_block_instead_of_escaping(self) -> None:
         out, err = StringIO(), StringIO()
@@ -883,6 +910,19 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
         self.assertIn("hermit: HEAD", err.getvalue())
         self.assertIn("reverie: branch is DETACHED", err.getvalue())
 
+    def test_check_does_not_warn_that_a_permitted_reverie_pin_lags(self) -> None:
+        self.advance("reverie")
+        git(self.root / "reverie", "pull", "--ff-only", "origin", "main")
+        out, err = StringIO(), StringIO()
+
+        result = primary_checkout.check_freshness(
+            self.root, use_proxy=False, out=out, err=err
+        )
+
+        self.assertEqual(result, 0)
+        self.assertNotIn("manifest pin mismatch", err.getvalue())
+        self.assertNotIn("stale Reverie source", err.getvalue())
+
     def test_fresh_publishes_one_consistent_parent_snapshot(self) -> None:
         hermit_remote = self.advance("hermit")
         liteinst_remote = self.advance("liteinst2")
@@ -926,35 +966,76 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
         )
         self.assertIn("Published parent snapshot", out.getvalue())
 
-    def test_snapshot_refuses_pin_lagging_the_recorded_gitlink(self) -> None:
-        """An UPSTREAM ADVANCE, not a manifest mismatch.
-
-        `self.advance("reverie")` lands a README-only commit upstream; the hermit
-        manifests are untouched and still agree with each other. The snapshot must
-        still refuse -- publishing hermit-pins-X beside reverie-gitlink-Y hands a
-        clone a mismatched pair -- but it must SAY that, not claim the manifests
-        are mutually inconsistent. This test previously asserted "not globally
-        consistent" and so enshrined the conflation its own name describes.
-        """
+    def test_snapshot_accepts_a_permitted_pin_lag_without_warning(self) -> None:
+        """A pin may lag the Reverie gitlink while remaining on main ancestry."""
+        self.install_parent_attribution_checker()
         original_parent = git(self.root, "rev-parse", "HEAD")
         self.advance("reverie")
         out, err = StringIO(), StringIO()
 
-        result = primary_checkout.checkout_fresh(
-            self.root,
-            publish_parent=True,
-            strict=True,
-            use_proxy=False,
-            out=out,
-            err=err,
+        with patch.dict(os.environ, {"HERMIT_COMMIT_MACHINE": "devbig030"}):
+            result = primary_checkout.checkout_fresh(
+                self.root,
+                publish_parent=True,
+                strict=True,
+                use_proxy=False,
+                out=out,
+                err=err,
+            )
+
+        self.assertEqual(result, 0, err.getvalue())
+        self.assertNotEqual(git(self.root, "rev-parse", "HEAD"), original_parent)
+        self.assertEqual(err.getvalue().count("HARD WARNING"), 0)
+        self.assertEqual(err.getvalue().count("stale Reverie source"), 0)
+        self.assertEqual(out.getvalue().count("Published parent snapshot"), 1)
+
+    def test_snapshot_refuses_an_off_history_pin_once(self) -> None:
+        refused = subprocess.CompletedProcess(
+            ["check-reverie-pin"],
+            1,
+            "",
+            "REVERIE PIN IS NOT ON reverie/main HISTORY - BLOCKED\n",
         )
+        out, err = StringIO(), StringIO()
+        with patch.object(
+            primary_checkout, "run_reverie_pin_policy", return_value=refused
+        ):
+            result = primary_checkout.checkout_fresh(
+                self.root,
+                publish_parent=True,
+                strict=True,
+                use_proxy=False,
+                out=out,
+                err=err,
+            )
 
         self.assertEqual(result, 1)
-        self.assertEqual(git(self.root, "rev-parse", "HEAD"), original_parent)
-        message = err.getvalue()
-        self.assertIn("pin lags the reverie gitlink", message)
-        self.assertIn("consistent with each other", message)
-        self.assertNotIn("disagree with EACH OTHER", message)
+        self.assertEqual(err.getvalue().count("pin policy check did not pass"), 1)
+        self.assertEqual(err.getvalue().count("NOT ON reverie/main HISTORY"), 1)
+
+    def test_snapshot_refuses_a_backward_pin_once(self) -> None:
+        refused = subprocess.CompletedProcess(
+            ["check-reverie-pin"],
+            1,
+            "",
+            "REVERIE PIN REGRESSION - BLOCKED\n",
+        )
+        out, err = StringIO(), StringIO()
+        with patch.object(
+            primary_checkout, "run_reverie_pin_policy", return_value=refused
+        ):
+            result = primary_checkout.checkout_fresh(
+                self.root,
+                publish_parent=True,
+                strict=True,
+                use_proxy=False,
+                out=out,
+                err=err,
+            )
+
+        self.assertEqual(result, 1)
+        self.assertEqual(err.getvalue().count("pin policy check did not pass"), 1)
+        self.assertEqual(err.getvalue().count("PIN REGRESSION"), 1)
 
     def test_snapshot_names_manifests_that_disagree_with_each_other(self) -> None:
         """The OTHER failure, which must be distinguishable from the one above.
@@ -975,19 +1056,28 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
         git(self.seeds["hermit"], "push", "origin", "main")
         out, err = StringIO(), StringIO()
 
-        result = primary_checkout.checkout_fresh(
-            self.root,
-            publish_parent=True,
-            strict=True,
-            use_proxy=False,
-            out=out,
-            err=err,
+        refused = subprocess.CompletedProcess(
+            ["check-reverie-pin"],
+            1,
+            "",
+            "INCONSISTENT HERMIT REVERIE REVISIONS - BLOCKED\n",
         )
+        with patch.object(
+            primary_checkout, "run_reverie_pin_policy", return_value=refused
+        ):
+            result = primary_checkout.checkout_fresh(
+                self.root,
+                publish_parent=True,
+                strict=True,
+                use_proxy=False,
+                out=out,
+                err=err,
+            )
 
         self.assertEqual(result, 1)
         message = err.getvalue()
-        self.assertIn("disagree with EACH OTHER", message)
-        self.assertIn("c" * 40, message)
+        self.assertEqual(message.count("pin policy check did not pass"), 1)
+        self.assertEqual(message.count("INCONSISTENT HERMIT REVERIE REVISIONS"), 1)
         self.assertNotIn("pin lags the reverie gitlink", message)
 
     def test_snapshot_refuses_stale_reverie_lock(self) -> None:
@@ -1000,18 +1090,28 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
         git(self.seeds["hermit"], "push", "origin", "main")
         out, err = StringIO(), StringIO()
 
-        result = primary_checkout.checkout_fresh(
-            self.root,
-            publish_parent=True,
-            strict=True,
-            use_proxy=False,
-            out=out,
-            err=err,
+        refused = subprocess.CompletedProcess(
+            ["check-reverie-pin"],
+            1,
+            "",
+            "INCONSISTENT HERMIT REVERIE REVISIONS - BLOCKED\n",
         )
+        with patch.object(
+            primary_checkout, "run_reverie_pin_policy", return_value=refused
+        ):
+            result = primary_checkout.checkout_fresh(
+                self.root,
+                publish_parent=True,
+                strict=True,
+                use_proxy=False,
+                out=out,
+                err=err,
+            )
 
         self.assertEqual(result, 1)
         self.assertEqual(git(self.root, "rev-parse", "HEAD"), original_parent)
-        self.assertIn("Cargo.lock: stale Reverie source", err.getvalue())
+        self.assertEqual(err.getvalue().count("pin policy check did not pass"), 1)
+        self.assertEqual(err.getvalue().count("INCONSISTENT HERMIT REVERIE REVISIONS"), 1)
 
     def test_snapshot_refuses_hardcoded_revision_cache_key(self) -> None:
         """A hardcoded suffix must be REFUSED, not required.
@@ -1030,18 +1130,28 @@ class PrimaryCheckoutTests(_ParentWorkspaceFixture):
         git(self.seeds["hermit"], "push", "origin", "main")
         out, err = StringIO(), StringIO()
 
-        result = primary_checkout.checkout_fresh(
-            self.root,
-            publish_parent=True,
-            strict=True,
-            use_proxy=False,
-            out=out,
-            err=err,
+        refused = subprocess.CompletedProcess(
+            ["check-reverie-pin"],
+            1,
+            "",
+            "LITEINST CACHE KEY DRIFT - BLOCKED\n",
         )
+        with patch.object(
+            primary_checkout, "run_reverie_pin_policy", return_value=refused
+        ):
+            result = primary_checkout.checkout_fresh(
+                self.root,
+                publish_parent=True,
+                strict=True,
+                use_proxy=False,
+                out=out,
+                err=err,
+            )
 
         self.assertEqual(result, 1)
         self.assertEqual(git(self.root, "rev-parse", "HEAD"), original_parent)
-        self.assertIn("scripts/validate.rs: hardcoded LiteInst cache key", err.getvalue())
+        self.assertEqual(err.getvalue().count("pin policy check did not pass"), 1)
+        self.assertEqual(err.getvalue().count("LITEINST CACHE KEY DRIFT"), 1)
 
     def test_check_pins_passes_on_consistent_tree(self) -> None:
         out, err = StringIO(), StringIO()
@@ -1780,10 +1890,20 @@ class SnapshotMovingReferenceTests(_ParentWorkspaceFixture):
         git(self.root / "hermit", "push", "origin", "main")
         git(self.root / "hermit", "fetch", "origin", "main")
 
-        code, out, err = self.snapshot()
+        refused = subprocess.CompletedProcess(
+            ["check-reverie-pin"],
+            1,
+            "",
+            "INCONSISTENT HERMIT REVERIE REVISIONS - BLOCKED\n",
+        )
+        with patch.object(
+            primary_checkout, "run_reverie_pin_policy", return_value=refused
+        ):
+            code, out, err = self.snapshot()
 
         self.assertEqual(code, primary_checkout.SNAPSHOT_BLOCKED, out)
         self.assertIn("HARD WARNING", err)
+        self.assertEqual(err.count("pin policy check did not pass"), 1)
         self.assertNotIn("DEFERRED", out)
 
     def test_primary_off_main_still_blocks_immediately(self) -> None:
