@@ -138,6 +138,94 @@ cases.append((same_comment_shas == [CUR] and len(mal4) == 1 and mal4_prs.get(mal
               "same comment preserves canonical authority AND malformed syntax debt",
               f"bound={same_comment_shas} malformed={len(mal4)} pr={mal4_prs.get(mal4[0]) if mal4 else None}"))
 
+# --- MARKDOWN-STRUCTURAL-PREFIX VERDICTS, BOTH DIRECTIONS ---------------------
+# `undecorate` removes markdown that WRAPS a line -- matching opener and closer.
+# A structural marker is a prefix with NO closer, so it survives untouched. A
+# rejection written that way used to match nothing at all, and the lane then
+# reported BOUND_CURRENT off an earlier approval while its newest verdict was a
+# rejection at the SAME head: a false PASS that looks healthy. Live on #2176.
+#
+# The two directions are deliberately asymmetric. Read the comment on
+# REJECT_PREFIX in approval_binding.py before making them symmetric.
+for marker, label in (("##", "heading"), (">", "blockquote"), ("-", "list dash"),
+                      ("*", "list star"), ("+", "list plus"), ("###", "deep heading")):
+    case(f"a {label}-prefixed rejection REVOKES an earlier approval",
+         C(f"APPROVED-AT: claude {CUR}") + C(f"{marker} CHANGES-REQUESTED-AT: claude {CUR}"),
+         "claude", ab.UNDETERMINED)
+case("a heading-prefixed LEGACY rejection revokes too",
+     C(f"APPROVED-AT: codex {CUR}") + C(f"## REQUEST CHANGES AT {CUR}"),
+     "codex", ab.UNDETERMINED)
+# Positive half: revocation must not be permanent, or the lane could never
+# re-earn authority and the gate becomes unsatisfiable.
+case("a masked rejection followed by a fresh approval binds again",
+     C(f"APPROVED-AT: claude {CUR}") + C(f"## CHANGES-REQUESTED-AT: claude {CUR}")
+     + C(f"APPROVED-AT: claude {CUR}"),
+     "claude", ab.BOUND_CURRENT, CUR)
+# A masked rejection is lane-scoped exactly like an unmasked one.
+case("a masked claude rejection does NOT revoke the codex lane",
+     C(f"APPROVED-AT: codex {CUR}") + C(f"## CHANGES-REQUESTED-AT: claude {CUR}"),
+     "codex", ab.BOUND_CURRENT, CUR)
+# THE ASYMMETRY. A prefixed APPROVAL must never bind -- extending the prefix
+# class to `approve` would let `## APPROVED-AT: ...` start authorising, which is
+# the direction that loses. It is reported as malformed instead.
+mal_pref = []
+pref_approve = ab.lane_shas(C(f"## APPROVED-AT: claude {CUR}"), "claude", mal_pref)
+cases.append((pref_approve == [] and len(mal_pref) == 1,
+              "a heading-prefixed APPROVAL does NOT bind and is reported",
+              f"bound={pref_approve} malformed={len(mal_pref)}"))
+# A recognised rejection is understood, not malformed -- it has a known shape.
+mal_rej = []
+ab.lane_shas(C(f"## CHANGES-REQUESTED-AT: claude {CUR}"), "claude", mal_rej)
+cases.append((len(mal_rej) == 0,
+              "a masked rejection is honoured, not filed as malformed syntax",
+              f"malformed={len(mal_rej)}"))
+# Prose that merely mentions a marker and a SHA must stay inert.
+mal_prose = []
+ab.lane_shas(C(f"see the discussion at {CUR} for why"), "claude", mal_prose)
+cases.append((len(mal_prose) == 0, "prose naming a SHA is still not a verdict",
+              f"malformed={len(mal_prose)}"))
+
+# --- MALFORMED SUPERSESSION ---------------------------------------------------
+# A malformed line matters only if this lane has not already spoken past it. A
+# blanket "any malformed line counts forever" rule made the gate PERMANENTLY
+# UNSATISFIABLE for #2176 and #2172, which already hold four prose verdict
+# headlines between them: no amount of correct re-approval would ever clear
+# them, and a gate that cannot be satisfied by doing the right thing gets
+# routed around.
+mal_old = []
+old_then_bind = ab.lane_shas(
+    C(f"APPROVED AT EXACT HEAD {OLD}") + C(f"APPROVED-AT: claude {CUR}"), "claude", mal_old)
+cases.append((old_then_bind == [CUR] and len(mal_old) == 0,
+              "a malformed line BEFORE the newest binding is superseded history",
+              f"bound={old_then_bind} malformed={len(mal_old)}"))
+mal_after = []
+bind_then_old = ab.lane_shas(
+    C(f"APPROVED-AT: claude {CUR}") + C(f"APPROVED AT EXACT HEAD {CUR}"), "claude", mal_after)
+cases.append((bind_then_old == [CUR] and len(mal_after) == 1,
+              "a malformed line AFTER the newest binding is still an open question",
+              f"bound={bind_then_old} malformed={len(mal_after)}"))
+mal_never = []
+never_bound = ab.lane_shas(C(f"APPROVED AT EXACT HEAD {OLD}"), "claude", mal_never)
+cases.append((never_bound == [] and len(mal_never) == 1,
+              "a malformed line still counts when the lane never bound at all",
+              f"bound={never_bound} malformed={len(mal_never)}"))
+# #1847 again, restated against the supersession rule: same comment means the
+# malformed line is NOT before the binding, so it survives. Guards the boundary.
+mal_same = []
+same_idx = ab.lane_shas(C(f"APPROVE {CUR}\nAPPROVED-AT: claude {CUR}"), "claude", mal_same)
+cases.append((same_idx == [CUR] and len(mal_same) == 1,
+              "same-comment malformed line is NOT superseded by that comment's binding",
+              f"bound={same_idx} malformed={len(mal_same)}"))
+# A rejection resets the lane, so it must reset the supersession watermark too:
+# an old malformed line is no longer 'spoken past' once the binding is revoked.
+mal_reset = []
+reset = ab.lane_shas(
+    C(f"APPROVED AT EXACT HEAD {OLD}") + C(f"APPROVED-AT: claude {CUR}")
+    + C(f"CHANGES-REQUESTED-AT: claude {CUR}"), "claude", mal_reset)
+cases.append((reset == [] and len(mal_reset) == 1,
+              "revocation resets the watermark; the old malformed line counts again",
+              f"bound={reset} malformed={len(mal_reset)}"))
+
 p=sum(1 for ok,_,_ in cases if ok); f=len(cases)-p
 for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
 print(f"assertions: {p} passed, {f} failed")

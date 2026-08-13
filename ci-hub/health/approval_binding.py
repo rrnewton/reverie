@@ -181,11 +181,38 @@ def lane_shas(
             else:
                 return line
 
+    # THE PREFIX CLASS IS ON THE REJECTIONS AND DELIBERATELY NOT ON `approve`.
+    # That asymmetry is the whole fix, so it must not be "tidied" into symmetry.
+    #
+    # `undecorate` above removes markdown that WRAPS a line -- matching opener
+    # and closer. A markdown STRUCTURAL marker (`##`, `>`, `-`, `*`, `+`) is a
+    # prefix with NO closer, so it survives undecoration and, before this
+    # change, matched nothing. A rejection written that way was invisible:
+    #
+    #     [APPROVED-AT: claude <head>, "## CHANGES-REQUESTED-AT: claude <head>"]
+    #       -> lane_shas == ["<head>"]  =>  BOUND_CURRENT, --gate rc=0, state=ok
+    #
+    # The lane read as currently approved while its newest verdict was a
+    # REJECTION AT THE SAME HEAD. That is worse than the stale-label bug this
+    # verifier exists to catch: a stale label can be spotted, whereas this
+    # returns a correctly-bound approval and looks perfectly healthy. Measured
+    # live on hermit#2176, where a heading-prefixed Claude-lane rejection sat
+    # underneath two standing approval labels.
+    #
+    # Each direction is the REFUSING one:
+    #   * a prefixed REJECTION is honoured, so it revokes. Being generous about
+    #     recognising a rejection can only withdraw authority, never grant it.
+    #   * a prefixed APPROVAL still does NOT bind -- `approve` keeps its strict
+    #     anchor. Extending the class to it would let `## APPROVED-AT: ...`
+    #     start authorising, which is the direction that loses.
+    # A prefixed approval instead falls through to `suspect` below and is
+    # reported as a malformed source line.
+    REJECT_PREFIX = r"[\s#>*+-]*"
     reject_legacy = re.compile(
-        r"^REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}$", re.IGNORECASE
+        rf"^{REJECT_PREFIX}REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{{40}}$", re.IGNORECASE
     )
     reject_current = re.compile(
-        r"^CHANGES-REQUESTED-AT:\s*(claude|codex)\s+[0-9a-f]{40}$",
+        rf"^{REJECT_PREFIX}CHANGES-REQUESTED-AT:\s*(claude|codex)\s+[0-9a-f]{{40}}$",
         re.IGNORECASE,
     )
     approve = re.compile(
@@ -196,13 +223,44 @@ def lane_shas(
     # neither grammar is reported, never ignored. Silently skipping an
     # unrecognised variant is how variant three went unnoticed; the next one must
     # announce itself instead.
+    #
+    # THE LEADING `[#>*+-]` CLASS CLOSES A FALSE PASS, and it is the reason this
+    # pattern is not simply anchored at the keyword. `undecorate` above removes
+    # markdown that WRAPS a line -- a matching opener and closer. A markdown
+    # STRUCTURAL marker is a prefix with NO closer, so `## CHANGES-REQUESTED-AT:
+    # claude <sha>` survives undecoration intact and then matches neither the
+    # verdict grammar nor (without this class) the suspect pattern. It was
+    # therefore invisible, and the consequence was not a missing approval but a
+    # WRONG one:
+    #
+    #     [APPROVED-AT: claude <head>, "## CHANGES-REQUESTED-AT: claude <head>"]
+    #       -> lane_shas == ["<head>"], malformed == []   =>  BOUND_CURRENT
+    #
+    # The lane read as currently approved while its newest verdict was a
+    # rejection AT THE SAME HEAD. That is strictly worse than the stale-label
+    # bug this verifier exists to catch: a stale label can be noticed, whereas
+    # this returns a correctly-bound approval and looks healthy. Measured live
+    # on hermit#2176, where a heading-prefixed Claude-lane rejection sat under
+    # two standing approval labels.
+    #
+    # A prefixed line is REPORTED, never promoted: it must not bind either, or
+    # `## APPROVED-AT: ...` would start authorising, which is the wrong
+    # direction. hermit's `scripts/core-review-protocol-lint.sh` carries the
+    # same class so the two verifiers agree.
     suspect = re.compile(
-        r"^(?:APPROV|CHANGES-REQUESTED|REQUEST\s+CHANGES|REJECT|LGTM|SIGN(?:ED)?[-\s]?OFF|ACK)[^\n]*\b[0-9a-f]{40}\b",
+        r"^[\s#>*+-]*"
+        r"(?:APPROV|CHANGES-REQUESTED|REQUEST\s+CHANGES|REJECT|LGTM|SIGN(?:ED)?[-\s]?OFF|ACK)"
+        r"[^\n]*\b[0-9a-f]{40}\b",
         re.IGNORECASE,
     )
 
+    # Malformed lines are buffered WITH the index of the comment they came from,
+    # because whether one matters depends on where it sits relative to this
+    # lane's newest binding. Reported at the end, once that position is known.
     found: list[str] = []
-    for c in comments:
+    newest_binding_idx = -1
+    candidates: list[tuple[int, tuple[str, str]]] = []
+    for idx, c in enumerate(comments):
         body = c.get("body") or ""
         lines = [undecorate(l) for l in body.split("\n")]
         # A rejection contributes NOTHING, even if the same comment also carries
@@ -221,6 +279,7 @@ def lane_shas(
             # is load-bearing: otherwise APPROVED then CHANGES-REQUESTED reads
             # as approved forever.
             found.clear()
+            newest_binding_idx = -1
             continue
         for line in lines:
             m = approve.match(line)
@@ -230,21 +289,42 @@ def lane_shas(
                     and not reject_legacy.match(line)
                     and not reject_current.match(line)
                 ):
-                    finding = (
-                        c.get("html_url") or c.get("url") or "?",
-                        line[:120],
+                    candidates.append(
+                        (idx, (c.get("html_url") or c.get("url") or "?", line[:120]))
                     )
-                    # collect_live checks the same comment once per approval
-                    # lane.  Count a malformed source line once, not once per
-                    # label, or one defect becomes a confident count of two.
-                    if finding not in malformed:
-                        malformed.append(finding)
-                    if pr_number is not None and malformed_prs is not None:
-                        malformed_prs[finding] = pr_number
                 continue
             explicit_lane, sha = m.group(1), m.group(2)
             if explicit_lane.lower() == lane:
                 found.append(sha)
+                newest_binding_idx = idx
+
+    # SUPERSEDED HISTORY IS NOT AN OPEN QUESTION. An unparseable verdict line
+    # matters only if it could express an opinion this lane has not already
+    # spoken past. One in a comment OLDER than the lane's newest binding cannot:
+    # whatever it was trying to say, the lane said something later and parseable.
+    #
+    # A blanket "any malformed line gates" rule is what this replaces, and it
+    # made the gate PERMANENTLY UNSATISFIABLE for the PRs that need it. #2176
+    # and #2172 hold four prose verdict headlines between them, already in their
+    # comment history; under a blanket rule no amount of correct re-approval
+    # would ever clear them. A gate that cannot be satisfied by doing the right
+    # thing gets routed around, and then it protects nothing.
+    #
+    # AT the newest binding still counts: a bad line in the same comment as the
+    # binding has not been spoken past, and could be the rejection the parser
+    # failed to read. So does everything after it, and everything when the lane
+    # never bound at all.
+    for idx, finding in candidates:
+        if newest_binding_idx >= 0 and idx < newest_binding_idx:
+            continue
+        # collect_live checks the same comment once per approval lane. Count a
+        # malformed source line once, not once per label, or one defect becomes
+        # a confident count of two. A line one lane has superseded is still
+        # reported if another lane has not -- the union is what gates.
+        if finding not in malformed:
+            malformed.append(finding)
+        if pr_number is not None and malformed_prs is not None:
+            malformed_prs[finding] = pr_number
     return found
 
 
