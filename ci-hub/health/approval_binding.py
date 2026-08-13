@@ -84,18 +84,158 @@ BOUND_CURRENT = "BOUND_CURRENT"
 SUPERSEDED = "SUPERSEDED"
 UNDETERMINED = "UNDETERMINED"
 
+# The two states that were previously unrepresentable. See `classify_lane`.
+REJECTED_CURRENT = "REJECTED_CURRENT"
+REJECTED_SUPERSEDED = "REJECTED_SUPERSEDED"
+NEVER = "NEVER"
+
 
 def classify_approval(head: str, comment_shas: list[str]) -> str:
     """Pure classifier: the seam the bracket drives.
 
     `comment_shas` are the head SHAs named by that lane's role-tagged review
     comments, oldest first. The NEWEST is what the lane last bound itself to.
+
+    DELIBERATELY UNCHANGED by the 2026-08-13 three-state work, and the
+    unchangedness is the point.  Every consumer of this function is a GATE --
+    `land-pr.sh` and `pr_head_ci.py` read only the CLI return code, and
+    `pr_status.py` reduces the result to ``binding == BOUND_CURRENT``.  For a
+    gate, "this lane rejected" and "this lane never spoke" must BOTH refuse,
+    so collapsing them onto UNDETERMINED here is correct behaviour rather
+    than the defect.  Making a gate three-state would be a regression wearing
+    a fix's clothes.  `classify_lane` below adds the distinction for the
+    consumers that need it, without moving this seam.
     """
     if not comment_shas:
         return UNDETERMINED
     if comment_shas[-1] == head:
         return BOUND_CURRENT
     return SUPERSEDED
+
+
+class LaneVerdict:
+    """Everything one lane said, including the part that used to be discarded.
+
+    DELIBERATELY A PLAIN CLASS, NOT A ``@dataclass``.  Several consumers load
+    this file through ``importlib.util.module_from_spec`` WITHOUT registering
+    it in ``sys.modules`` -- including this module's own grammar test.
+    ``dataclasses`` resolves ``sys.modules[cls.__module__].__dict__`` while
+    building the class, so a module-level dataclass raises AttributeError on
+    import under exactly those loaders.  A first draft here used
+    ``@dataclass(frozen=True)`` and broke the test suite at import time.
+
+    ``approved_shas`` is exactly what `lane_shas` has always returned: the
+    SHAs this lane bound approvals to, oldest first, cleared by any later
+    rejection.  ``rejected_sha`` and ``rejected_idx`` are the newest rejection
+    that survived -- that is, one with no later approval after it.  They are
+    None when the lane's newest word is an approval or when it never spoke.
+
+    THE SCAN ALREADY COMPUTED THE REJECTION AND THREW IT AWAY.  `lane_shas`
+    detected a rejection precisely enough to clear the approval list, then
+    returned only the list, so a rejected lane and a silent one both surfaced
+    as ``[]``.  hermit-906 rebuilt the review inventory BY HAND against live
+    pull requests because the parser underneath it could not express the
+    difference.  Nothing new is being detected here; the detection is simply
+    no longer discarded.
+    """
+
+    __slots__ = ("approved_shas", "rejected_sha", "rejected_idx")
+
+    def __init__(
+        self,
+        approved_shas: list[str],
+        rejected_sha: str | None = None,
+        rejected_idx: int = -1,
+    ) -> None:
+        self.approved_shas = approved_shas
+        self.rejected_sha = rejected_sha
+        self.rejected_idx = rejected_idx
+
+    @property
+    def spoke(self) -> bool:
+        return bool(self.approved_shas) or self.rejected_sha is not None
+
+    def __repr__(self) -> str:  # diagnostics only
+        return (
+            f"LaneVerdict(approved_shas={self.approved_shas!r}, "
+            f"rejected_sha={self.rejected_sha!r}, "
+            f"rejected_idx={self.rejected_idx!r})"
+        )
+
+
+def classify_lane(head: str, verdict: LaneVerdict) -> str:
+    """Five states, where `classify_approval` can express three.
+
+    NEVER                the lane emitted no parseable verdict at all
+    BOUND_CURRENT        newest verdict is an approval naming ``head``
+    SUPERSEDED           newest verdict is an approval naming another commit
+    REJECTED_CURRENT     newest verdict is a rejection naming ``head``
+    REJECTED_SUPERSEDED  newest verdict is a rejection naming another commit
+
+    NEVER exists as its own name rather than reusing UNDETERMINED because the
+    two answer different questions.  UNDETERMINED means "this gate cannot
+    confirm an approval", which is true of a rejected lane and a silent one
+    alike.  NEVER means "nobody has looked", which is true of only one of
+    them -- and it is the value that routes a dispatch.
+
+    THE ROUTING CONSEQUENCE IS THE REASON TO BE CAREFUL WITH IT.  A lane
+    reading REJECTED_CURRENT leaves the "needs a reviewer" queue and joins
+    "author must fix".  That is right only when the findings genuinely reached
+    the author.  On hermit#2216 the author held every finding while the PR had
+    never had an independent look, so recording a rejection there would have
+    concealed the absence of review instead of reporting it.  A consumer that
+    maps REJECTED_* back onto NEVER, or NEVER onto REJECTED_*, reintroduces
+    the collapse this exists to remove.
+    """
+    if verdict.approved_shas:
+        return BOUND_CURRENT if verdict.approved_shas[-1] == head else SUPERSEDED
+    if verdict.rejected_sha is not None:
+        return (
+            REJECTED_CURRENT
+            if verdict.rejected_sha == head
+            else REJECTED_SUPERSEDED
+        )
+    return NEVER
+
+
+def lane_row(
+    *,
+    number: int,
+    label: str,
+    lane: str,
+    head: str,
+    verdict: LaneVerdict,
+    runs_at_head: int,
+    mergeable: Any,
+) -> dict[str, Any]:
+    """The ONE row shape, built in one place.
+
+    There were two copies of this dict -- one in `collect_live`, one in
+    `collect_fixture` -- and only the fixture path is reachable offline, so
+    only the fixture path had a test.  A mutation deleting ``lane_state`` from
+    the LIVE copy survived the whole suite: the key existed where it was
+    tested and was gone where it was not.  Two constructors of one shape with
+    asymmetric coverage is the same divergence that produced this task, so
+    they are now a single function that both paths call.
+
+    `state` keeps the three-value GATE vocabulary exactly. Every consumer
+    reads that key, and a gate must refuse on a rejection and a silence
+    alike. `lane_state` is additive and carries the distinction.
+    """
+
+    shas = verdict.approved_shas
+    return {
+        "number": number,
+        "label": label,
+        "lane": lane,
+        "head": head,
+        "bound_to": shas[-1] if shas else None,
+        "state": classify_approval(head, shas),
+        "lane_state": classify_lane(head, verdict),
+        "rejected_at": verdict.rejected_sha,
+        "runs_at_head": runs_at_head,
+        "mergeable": mergeable,
+    }
 
 
 def gh_json(args: list[str]) -> Any:
@@ -114,6 +254,25 @@ def lane_shas(
     pr_number: int | None = None,
     malformed_prs: dict[tuple[str, str], int] | None = None,
 ) -> list[str]:
+    """The approval SHAs from `lane_verdict`. Signature and result unchanged.
+
+    Kept as the name every existing caller already uses, and kept as a THIN
+    WRAPPER rather than a second scan.  Two scans of one grammar is how
+    `lane_shas` and the review inventory drifted apart in the first place --
+    the parser discarded rejections while the tooling above it tried to reason
+    about them.  A copy here would start the next divergence.
+    """
+
+    return lane_verdict(comments, lane, malformed, pr_number, malformed_prs).approved_shas
+
+
+def lane_verdict(
+    comments: list[dict[str, Any]],
+    lane: str,
+    malformed: list[tuple[str, str]] | None = None,
+    pr_number: int | None = None,
+    malformed_prs: dict[tuple[str, str], int] | None = None,
+) -> LaneVerdict:
     """SHAs a lane EXPLICITLY bound itself to, oldest first. Never inferred.
 
     *** THIS DELIBERATELY REFUSES TO GUESS, AND THE FIRST VERSION DID GUESS. ***
@@ -259,6 +418,8 @@ def lane_shas(
     # lane's newest binding. Reported at the end, once that position is known.
     found: list[str] = []
     newest_binding_idx = -1
+    rejected_sha: str | None = None
+    rejected_idx = -1
     candidates: list[tuple[int, tuple[str, str]]] = []
     for idx, c in enumerate(comments):
         body = c.get("body") or ""
@@ -266,20 +427,39 @@ def lane_shas(
         # A rejection contributes NOTHING, even if the same comment also carries
         # an APPROVED-AT-shaped line -- a comment quoting the convention, or
         # quoting the approval it supersedes, must not bind as a positive.
-        relevant_rejection = any(reject_legacy.match(line) for line in lines)
-        relevant_rejection = relevant_rejection or any(
-            (match := reject_current.match(line)) is not None
-            and match.group(1).lower() == lane
-            for line in lines
-        )
-        if relevant_rejection:
+        #
+        # The SHA is captured as well as the fact. It was always available on
+        # the matched line and was simply dropped, which is what made a
+        # rejected lane indistinguishable from a silent one. The LAST matching
+        # line in the comment wins: within one body, later is newer.
+        rejection_here: str | None = None
+        for line in lines:
+            legacy = reject_legacy.match(line)
+            if legacy is not None:
+                # The historical form names no lane, so it revokes BOTH. That
+                # breadth is deliberate and predates this change.
+                sha = SHA40.search(line.lower())
+                rejection_here = sha.group(0) if sha else ""
+                continue
+            current = reject_current.match(line)
+            if current is not None and current.group(1).lower() == lane:
+                sha = SHA40.search(line.lower())
+                rejection_here = sha.group(0) if sha else ""
+        if rejection_here is not None:
             # Verdicts are chronological. A later exact-head request for changes
             # revokes this lane's earlier approval; a still-later approval can
             # establish authority again. Clearing rather than merely skipping
             # is load-bearing: otherwise APPROVED then CHANGES-REQUESTED reads
             # as approved forever.
+            #
+            # UNCHANGED by the three-state work, and revocation stays
+            # SHA-INDEPENDENT: any rejection clears, whichever commit it names,
+            # because ordering is what revokes. Recording which SHA it named
+            # adds a report; it does not add a condition.
             found.clear()
             newest_binding_idx = -1
+            rejected_sha = rejection_here or None
+            rejected_idx = idx
             continue
         for line in lines:
             m = approve.match(line)
@@ -297,6 +477,14 @@ def lane_shas(
             if explicit_lane.lower() == lane:
                 found.append(sha)
                 newest_binding_idx = idx
+                # An approval AFTER a rejection re-establishes authority, so
+                # that rejection is no longer this lane's newest word. Mirrors
+                # the clearing above in the other direction; without it a lane
+                # that was rejected and then correctly re-approved would keep
+                # reporting a rejection it has already spoken past.
+                rejected_sha = None
+                rejected_idx = -1
+                rejected_idx = -1
 
     # SUPERSEDED HISTORY IS NOT AN OPEN QUESTION. An unparseable verdict line
     # matters only if it could express an opinion this lane has not already
@@ -325,7 +513,7 @@ def lane_shas(
             malformed.append(finding)
         if pr_number is not None and malformed_prs is not None:
             malformed_prs[finding] = pr_number
-    return found
+    return LaneVerdict(found, rejected_sha, rejected_idx)
 
 
 def critical_classes_at_head(
@@ -400,20 +588,20 @@ def collect_live(
         comments, runs = f["comments"], f["runs"]
         for label in approvals:
             lane = label.rsplit("-", 1)[-1]
-            shas = lane_shas(
+            verdict = lane_verdict(
                 comments, lane, malformed, pr["number"], malformed_prs
             )
+            shas = verdict.approved_shas
             rows.append(
-                {
-                    "number": pr["number"],
-                    "label": label,
-                    "lane": lane,
-                    "head": head,
-                    "bound_to": shas[-1] if shas else None,
-                    "state": classify_approval(head, shas),
-                    "runs_at_head": len(runs),
-                    "mergeable": pr.get("mergeable"),
-                }
+                lane_row(
+                    number=pr["number"],
+                    label=label,
+                    lane=lane,
+                    head=head,
+                    verdict=verdict,
+                    runs_at_head=len(runs),
+                    mergeable=pr.get("mergeable"),
+                )
             )
     selected = None
     if pr_number is not None and fetched:
@@ -462,7 +650,7 @@ def collect_fixture(
                 continue
             lane = label.rsplit("-", 1)[-1]
             if "comments" in pr:
-                shas = lane_shas(
+                verdict = lane_verdict(
                     comments,
                     lane,
                     malformed,
@@ -470,18 +658,22 @@ def collect_fixture(
                     malformed_prs,
                 )
             else:
-                shas = pr.get("lane_shas", {}).get(lane, [])
+                # A fixture supplying only `lane_shas` cannot express a
+                # rejection, so this reads NEVER rather than REJECTED_*. That
+                # is the honest answer for such a fixture -- the input carries
+                # no rejection to report -- and a fixture wanting the third
+                # state supplies `comments` instead.
+                verdict = LaneVerdict(pr.get("lane_shas", {}).get(lane, []))
             rows.append(
-                {
-                    "number": pr["number"],
-                    "label": label,
-                    "lane": lane,
-                    "head": pr["head"],
-                    "bound_to": shas[-1] if shas else None,
-                    "state": classify_approval(pr["head"], shas),
-                    "runs_at_head": pr.get("runs_at_head", 1),
-                    "mergeable": pr.get("mergeable"),
-                }
+                lane_row(
+                    number=pr["number"],
+                    label=label,
+                    lane=lane,
+                    head=pr["head"],
+                    verdict=verdict,
+                    runs_at_head=pr.get("runs_at_head", 1),
+                    mergeable=pr.get("mergeable"),
+                )
             )
     return rows, selected
 

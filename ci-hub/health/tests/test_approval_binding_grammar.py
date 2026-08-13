@@ -226,6 +226,141 @@ cases.append((reset == [] and len(mal_reset) == 1,
               "revocation resets the watermark; the old malformed line counts again",
               f"bound={reset} malformed={len(mal_reset)}"))
 
+
+# ---------------------------------------------------------------------------
+# THREE-STATE LANE VERDICTS (2026-08-13).
+#
+# lane_shas returned only APPROVED-AT SHAs, and a CHANGES-REQUESTED-AT cleared
+# them, so a REJECTED lane and a SILENT one both surfaced as []. hermit-906
+# rebuilt the review inventory by hand because of it. These cases bracket the
+# fix in BOTH directions: a rejection must become distinguishable from silence,
+# and an approval superseded by a later rejection must STILL be revoked.
+# ---------------------------------------------------------------------------
+
+def _lane(comments, head=None, lane="claude"):
+    v = ab.lane_verdict(comments, lane)
+    return ab.classify_lane(head or CUR, v), v
+
+# DIRECTION 1 -- the defect. Rejection and silence must no longer be the same.
+silent, _ = _lane(C("no verdict here at all"))
+rejected, rej_v = _lane(C(f"CHANGES-REQUESTED-AT: claude {CUR}"))
+cases.append((silent == ab.NEVER and rejected == ab.REJECTED_CURRENT,
+              "DIRECTION 1: a rejection at head is distinguishable from silence",
+              f"silent={silent} rejected={rejected}"))
+cases.append((rej_v.rejected_sha == CUR,
+              "the rejection reports WHICH head it named",
+              f"rejected_sha={rej_v.rejected_sha}"))
+
+# DIRECTION 2 -- the requirement that must not be broken to get direction 1.
+revoked, _ = _lane(C(f"APPROVED-AT: claude {CUR}") + C(f"CHANGES-REQUESTED-AT: claude {CUR}"))
+cases.append((revoked == ab.REJECTED_CURRENT,
+              "DIRECTION 2: an approval superseded by a later rejection is STILL revoked",
+              f"state={revoked}"))
+cases.append((ab.lane_shas(C(f"APPROVED-AT: claude {CUR}")
+                           + C(f"CHANGES-REQUESTED-AT: claude {CUR}"), "claude") == [],
+              "DIRECTION 2: found.clear() still empties the approval list",
+              "approved_shas must be []"))
+
+# Revocation is chronological, so a later approval re-establishes authority AND
+# clears the recorded rejection -- otherwise a correctly re-approved lane would
+# keep reporting a rejection it has already spoken past.
+reapproved, reapp_v = _lane(C(f"CHANGES-REQUESTED-AT: claude {OLD}") + C(f"APPROVED-AT: claude {CUR}"))
+cases.append((reapproved == ab.BOUND_CURRENT and reapp_v.rejected_sha is None,
+              "a later approval re-establishes authority and drops the stale rejection",
+              f"state={reapproved} rejected_sha={reapp_v.rejected_sha}"))
+
+# A rejection naming an older commit is its own state, not the current one.
+old_rej, _ = _lane(C(f"CHANGES-REQUESTED-AT: claude {OLD}"))
+cases.append((old_rej == ab.REJECTED_SUPERSEDED,
+              "a rejection at an older head is REJECTED_SUPERSEDED, not REJECTED_CURRENT",
+              f"state={old_rej}"))
+
+# The masked rejection that produced the original false pass must reach the new
+# state too, not fall back to NEVER.
+masked, _ = _lane(C(f"APPROVED-AT: claude {CUR}") + C(f"## CHANGES-REQUESTED-AT: claude {CUR}"))
+cases.append((masked == ab.REJECTED_CURRENT,
+              "a ##-masked rejection surfaces as REJECTED_CURRENT, not NEVER",
+              f"state={masked}"))
+
+# The historical lane-less form names no lane and revokes BOTH.
+legacy_cl, _ = _lane(C(f"APPROVED-AT: claude {CUR}") + C(f"REQUEST CHANGES AT {CUR}"))
+legacy_cx, _ = _lane(C(f"APPROVED-AT: codex {CUR}") + C(f"REQUEST CHANGES AT {CUR}"), lane="codex")
+cases.append((legacy_cl == ab.REJECTED_CURRENT and legacy_cx == ab.REJECTED_CURRENT,
+              "the lane-less historical rejection revokes BOTH lanes",
+              f"claude={legacy_cl} codex={legacy_cx}"))
+
+# A rejection for the OTHER lane must not revoke this one.
+other, _ = _lane(C(f"APPROVED-AT: claude {CUR}") + C(f"CHANGES-REQUESTED-AT: codex {CUR}"))
+cases.append((other == ab.BOUND_CURRENT,
+              "a rejection for the other lane leaves this lane bound",
+              f"state={other}"))
+
+# NON-REGRESSION: the gate vocabulary must be byte-identical, because every
+# consumer of classify_approval is a GATE and a gate must refuse on both.
+_gate_corpus = [
+    C("nothing"),
+    C(f"APPROVED-AT: claude {CUR}"),
+    C(f"APPROVED-AT: claude {OLD}"),
+    C(f"CHANGES-REQUESTED-AT: claude {CUR}"),
+    C(f"CHANGES-REQUESTED-AT: claude {OLD}"),
+    C(f"APPROVED-AT: claude {CUR}") + C(f"CHANGES-REQUESTED-AT: claude {CUR}"),
+    C(f"CHANGES-REQUESTED-AT: claude {OLD}") + C(f"APPROVED-AT: claude {CUR}"),
+]
+_gate_states = [ab.classify_approval(CUR, ab.lane_shas(c, "claude")) for c in _gate_corpus]
+cases.append((_gate_states == [ab.UNDETERMINED, ab.BOUND_CURRENT, ab.SUPERSEDED,
+                               ab.UNDETERMINED, ab.UNDETERMINED, ab.UNDETERMINED,
+                               ab.BOUND_CURRENT],
+              "NON-REGRESSION: classify_approval is unchanged across the corpus",
+              f"states={_gate_states}"))
+
+# THE CONSUMER-COLLAPSE GUARD the brief asked for. pr_status.py reduces the
+# result to `binding == BOUND_CURRENT`. Both non-approving states must stay
+# false there -- a gate that started passing a rejected lane would be the
+# regression this fix must not cause.
+_has_approval = [ab.classify_approval(CUR, ab.lane_shas(c, "claude")) == ab.BOUND_CURRENT
+                 for c in (C("nothing"), C(f"CHANGES-REQUESTED-AT: claude {CUR}"))]
+cases.append((_has_approval == [False, False],
+              "CONSUMER GUARD: pr_status's boolean stays False for BOTH silence and rejection",
+              f"has_approval={_has_approval}"))
+
+# And the third state must be genuinely reachable through the row the CLI
+# emits, or the fix is real in the parser and invisible to every reader.
+# NO hasattr GUARD: a first draft here wrapped this in `if hasattr(...)` and the
+# case SILENTLY SKIPPED because the function is named collect_fixture, not
+# collect_from_fixture. A conditionally-skipped assertion reports success while
+# testing nothing, which is the exact shape this file exists to catch.
+import json as _json, tempfile as _tempfile, os as _os
+_fx = _tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+_json.dump([{
+    "number": 1, "head": CUR, "labels": ["passed-review-claude"],
+    "comments": [f"CHANGES-REQUESTED-AT: claude {CUR}"],
+}], _fx)
+_fx.close()
+_rows, _ = ab.collect_fixture(_fx.name, [], {})
+_os.unlink(_fx.name)
+cases.append((len(_rows) == 1
+              and _rows[0]["state"] == ab.UNDETERMINED
+              and _rows[0]["lane_state"] == ab.REJECTED_CURRENT
+              and _rows[0]["rejected_at"] == CUR,
+              "the emitted row carries BOTH the gate state and the lane state",
+              f"row={ {k: _rows[0][k] for k in ('state','lane_state','rejected_at')} if _rows else None}"))
+
+# The same row for a SILENT lane must differ in lane_state while sharing the
+# gate state -- otherwise the row exposes the collapse it was meant to remove.
+_fx2 = _tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+_json.dump([{
+    "number": 2, "head": CUR, "labels": ["passed-review-claude"],
+    "comments": ["no verdict at all"],
+}], _fx2)
+_fx2.close()
+_rows2, _ = ab.collect_fixture(_fx2.name, [], {})
+_os.unlink(_fx2.name)
+cases.append((_rows2[0]["state"] == _rows[0]["state"]
+              and _rows2[0]["lane_state"] == ab.NEVER
+              and _rows[0]["lane_state"] == ab.REJECTED_CURRENT,
+              "ROW-LEVEL BRACKET: same gate state, DIFFERENT lane_state for rejected vs silent",
+              f"gate={_rows2[0]['state']} silent={_rows2[0]['lane_state']} rejected={_rows[0]['lane_state']}"))
+
 p=sum(1 for ok,_,_ in cases if ok); f=len(cases)-p
 for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
 print(f"assertions: {p} passed, {f} failed")
