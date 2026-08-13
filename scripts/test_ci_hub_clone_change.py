@@ -327,6 +327,8 @@ class Fixture(unittest.TestCase):
         self.assertIn("task=fixture-change", message)
         self.assertIn("claims=ci-hub/bin", message)
         self.assertIn("sealed_candidate=", message)
+        # The branch is what lets the blocked agent look the work up itself.
+        self.assertIn("branch=ci-hub/fixture-change", message)
 
     def test_occupied_destination_without_manifest_says_so(self) -> None:
         stray = self.root / "stray"

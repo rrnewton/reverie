@@ -478,6 +478,18 @@ def describe_occupant(destination: Path) -> str:
     parts = [
         f"task={manifest.get('task', '?')}",
         f"kind={manifest.get('kind') or PARENT_KIND}",
+    ]
+    # The BRANCH is read from the occupied clone rather than inferred from the
+    # task slug, so a clone that was switched or renamed reports what it really
+    # is. This is what lets the blocked agent self-serve: with the branch it can
+    # look the work up, or pick its own destination, instead of escalating.
+    try:
+        parts.append(
+            "branch=" + git(destination, "rev-parse", "--abbrev-ref", "HEAD")
+        )
+    except Exception:
+        parts.append("branch=?")
+    parts += [
         f"claims={','.join(str(c) for c in manifest.get('claims') or []) or 'none'}",
         f"created_at={manifest.get('created_at', '?')}",
     ]
