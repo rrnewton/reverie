@@ -635,57 +635,6 @@ def preflight(
 
 
 
-def _prepend_path(existing: str, entry: str) -> str:
-    """Put `entry` first in a colon-separated search path, without duplicating it."""
-    parts = [p for p in existing.split(":") if p and p != entry]
-    return ":".join([entry, *parts])
-
-
-
-# Directories that may hold libunwind's SHARED objects at run time, best first.
-# `ignored/lu-parity/usr/lib64` is deliberately last: it has the .pc and the
-# static `libunwind-ptrace.a`, but no `libunwind-ptrace.so*`.
-RUNTIME_CANDIDATES = (
-    "~/fbsource/fbcode/third-party-buck/platform010/build/libunwind/lib",
-    "~/.local/hermit-deps/lu/usr/lib64",
-)
-
-
-def _libunwind_runtime_dir(root: Path, link_dir: Path) -> Path:
-    """Pick the directory that can actually satisfy the loader.
-
-    `libunwind-ptrace.so.0` is THE file that matters, because pointing
-    LIBRARY_PATH at a tree carrying a shared `libunwind-ptrace.so` is what makes
-    the link depend on it in the first place (see build_systemd_command). A
-    directory that has `libunwind.so.8` but NOT the ptrace variant cannot satisfy
-    that dependency, so it must never be preferred over one that can.
-
-    `link_dir` competes on equal terms rather than being a last resort. It used
-    to be excluded on the belief that it ships only a static
-    `libunwind-ptrace.a`; that is no longer true of `ignored/lu-parity`, which
-    now carries the shared objects too and can satisfy build, link and run on its
-    own. Excluding it meant that with the first candidate absent the probe
-    selected `~/.local/hermit-deps/lu/usr/lib64` -- which has only the static
-    `.a` -- on a `libunwind.so.8` tiebreak, producing exactly the
-    `libunwind-ptrace.so.0: cannot open shared object file` failure this probe
-    exists to prevent.
-
-    Order is still candidates-then-link_dir, so on a host where a candidate has
-    the ptrace object the selection is unchanged.
-    """
-    candidates = [Path(c).expanduser() for c in RUNTIME_CANDIDATES] + [link_dir]
-    # First pass: only a directory that carries the object the link needs.
-    for candidate in candidates:
-        if (candidate / "libunwind-ptrace.so.0").exists():
-            return candidate
-    # Second pass: no ptrace object anywhere. A tree with the base library is
-    # still the best available guess for a statically-linked-ptrace build.
-    for candidate in candidates:
-        if (candidate / "libunwind.so.8").exists():
-            return candidate
-    return link_dir
-
-
 def build_systemd_command(
     *,
     root: Path,
@@ -776,68 +725,6 @@ def build_systemd_command(
     else:
         child.extend(["with-proxy", "./scripts/validate.rs", *(validate_args or ["full"])])
 
-    # libunwind is not installed system-wide on this host class, so
-    # `unwind-sys`'s build.rs panics on
-    #   pkg-config --libs --cflags libunwind-ptrace
-    # and every DAG lane that builds the workspace fails with an environment
-    # fault that looks exactly like a product red. The .pc and .so live in the
-    # repo; point the unit at them when they are present. Nothing is
-    # substituted or weakened if they are absent -- the unit simply runs as it
-    # did before and the build fails loudly, as it should.
-    #
-    # THREE variables are required, and they are NOT interchangeable -- getting
-    # this wrong yields a DIFFERENT failure at a LATER node, which is why
-    # propagating only the first and third still looked broken:
-    #   PKG_CONFIG_PATH  build time. Without it unwind-sys's build.rs panics on
-    #                    `pkg-config --libs --cflags libunwind-ptrace`.
-    #   LIBRARY_PATH     LINK time. pkg-config emits `-lunwind-ptrace
-    #                    -lunwind-generic -lunwind`, and the linker still has to
-    #                    FIND those .so files. Without it the build gets past
-    #                    build.rs and then dies with
-    #                    `rust-lld: error: unable to find library -lunwind`
-    #                    while linking reverie-liteinst.
-    #   LD_LIBRARY_PATH  RUN time, for the produced binaries. It does NOT help
-    #                    the link -- the loader is not the linker, and it must
-    #                    NOT be assumed equal to LIBRARY_PATH. See below.
-    #
-    # THE LINK DIR AND THE RUNTIME DIR NEED NOT BE THE SAME DIRECTORY, which has
-    # bitten twice, so the runtime directory is PROBED rather than assumed --
-    # see `_libunwind_runtime_dir`. A future relocation is picked up by adding a
-    # path to RUNTIME_CANDIDATES, not by rediscovering the failure.
-    #
-    # NOTE ON WHY LD_LIBRARY_PATH IS LOAD-BEARING AT ALL, since it is easy to
-    # conclude it is redundant and delete it. Measured on this host class
-    # (libunwind-devel installed system-wide, three units, one variable changed
-    # per run):
-    #   no LIBRARY_PATH, no LD_LIBRARY_PATH -> `-lunwind-ptrace` resolves to the
-    #     system STATIC /usr/lib64/libunwind-ptrace.a, ldd shows no ptrace
-    #     dependency, and the binary runs.
-    #   LIBRARY_PATH only -> the link now prefers the SHARED
-    #     `libunwind-ptrace.so` in the pointed-at tree, and the binary dies with
-    #     `libunwind-ptrace.so.0: cannot open shared object file` because
-    #     /usr/lib64 ships that library only as a static `.a`.
-    # In other words LIBRARY_PATH is what CREATES the runtime dependency that
-    # LD_LIBRARY_PATH then satisfies. The three are a set: propagate all of them
-    # or none. This also means the probe must key on `libunwind-ptrace.so.0`
-    # specifically, not on libunwind generally.
-    lu_env: list[str] = []
-    lu_root = root / "ignored/lu-parity/usr/lib64"
-    if (lu_root / "pkgconfig/libunwind-ptrace.pc").exists():
-        runtime = _libunwind_runtime_dir(root, lu_root)
-        pkg_config = _prepend_path(
-            environment.get("PKG_CONFIG_PATH", ""), str(lu_root / "pkgconfig")
-        )
-        library = _prepend_path(environment.get("LIBRARY_PATH", ""), str(lu_root))
-        ld_library = _prepend_path(environment.get("LD_LIBRARY_PATH", ""), str(runtime))
-        lu_env = [
-            "--setenv",
-            f"PKG_CONFIG_PATH={pkg_config}",
-            "--setenv",
-            f"LIBRARY_PATH={library}",
-            "--setenv",
-            f"LD_LIBRARY_PATH={ld_library}",
-        ]
-
     return [
         "systemd-run",
         "--user",
@@ -860,7 +747,6 @@ def build_systemd_command(
         # which appends the tracked per-machine shard that ci-hub unions.
         "--setenv",
         f"DEV_HERMIT_PARENT={root}",
-        *lu_env,
         "--property",
         f"StandardOutput=append:{log}",
         "--property",
