@@ -1,5 +1,7 @@
 use std::ffi::OsString;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::AtomicU64;
@@ -9,8 +11,11 @@ use std::time::Duration;
 #[cfg(target_arch = "x86_64")]
 use reverie::CpuIdResult;
 use reverie::Error;
+use reverie::ExitStatus;
+use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
+use reverie::Pid;
 #[cfg(target_arch = "x86_64")]
 use reverie::Rdtsc;
 #[cfg(target_arch = "x86_64")]
@@ -42,6 +47,7 @@ fn unique_process_name() -> String {
 #[derive(Debug, Default)]
 struct EventCounter {
     delivered: AtomicU64,
+    task_creation_events: AtomicU64,
     cpuid_events: AtomicU64,
     cpuid_interception: AtomicU64,
     rdtsc_events: AtomicU64,
@@ -73,6 +79,8 @@ impl GlobalTool for EventCounter {
             self.rdtsc_events.fetch_add(1, Ordering::SeqCst);
         } else if increment & (1_u64 << 58) != 0 {
             self.cpuid_interception.store(1, Ordering::SeqCst);
+        } else if increment & (1_u64 << 57) != 0 {
+            self.task_creation_events.fetch_add(1, Ordering::SeqCst);
         } else {
             self.delivered.fetch_add(increment, Ordering::SeqCst);
         }
@@ -195,6 +203,108 @@ impl Tool for PassthroughGetpid {
         assert_eq!(syscall.number(), Sysno::getpid);
         guest.send_rpc(1).await;
         Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[derive(Default)]
+struct PassthroughGetpidAndTaskCreation;
+
+#[reverie::tool]
+impl Tool for PassthroughGetpidAndTaskCreation {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [
+            Sysno::getpid,
+            Sysno::clone,
+            Sysno::clone3,
+            Sysno::fork,
+            Sysno::vfork,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if syscall.number() == Sysno::getpid {
+            guest.send_rpc(1).await;
+        } else {
+            assert!(matches!(
+                syscall.number(),
+                Sysno::clone | Sysno::clone3 | Sysno::fork | Sysno::vfork
+            ));
+            guest.send_rpc(1_u64 << 57).await;
+        }
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[derive(Default)]
+struct ExitRecorder {
+    path: PathBuf,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for ExitRecorder {
+    type Request = ();
+    type Response = ();
+    type Config = PathBuf;
+
+    async fn init_global_state(path: &PathBuf) -> Self {
+        Self { path: path.clone() }
+    }
+
+    async fn receive_rpc(&self, from: Tid, (): ()) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .unwrap();
+        writeln!(file, "{from}").unwrap();
+    }
+}
+
+#[derive(Default)]
+struct PassthroughTaskCreationAndRecordExits;
+
+#[reverie::tool]
+impl Tool for PassthroughTaskCreationAndRecordExits {
+    type GlobalState = ExitRecorder;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &PathBuf) -> Subscription {
+        [
+            Sysno::getpid,
+            Sysno::clone,
+            Sysno::clone3,
+            Sysno::fork,
+            Sysno::vfork,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        Ok(guest.inject(syscall).await?)
+    }
+
+    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+        self,
+        _pid: Pid,
+        global_state: &G,
+        _exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        global_state.send_rpc(()).await;
+        Ok(())
     }
 }
 
@@ -822,7 +932,7 @@ async fn first_discovery_event_can_inject_more_than_once() {
 /// Exit status alone is not enough: every fixture here prints its marker only
 /// after the task it creates has been created, run and reaped, so a regression
 /// that skips the task cannot satisfy the assertion by exiting zero.
-async fn run_multi_task_fixture<T>(fixture: &str, marker_line: &str)
+async fn run_multi_task_fixture<T>(fixture: &str, marker_line: &str) -> EventCounter
 where
     T: Tool<GlobalState = EventCounter, ThreadState = ()> + 'static,
 {
@@ -832,7 +942,7 @@ where
     let pid_file = pid_directory.path().join("root.pid");
     let mut command = Command::new(guest);
     command.arg(&name).arg(&pid_file);
-    let (output, _global) =
+    let (output, global) =
         LiteinstBackend::run_host_with_output_and_preload::<T>(command, (), preload_path())
             .await
             .unwrap_or_else(|error| panic!("hybrid refused to follow {fixture}: {error}"));
@@ -853,6 +963,7 @@ where
         processes_named(&name).is_empty(),
         "LiteInst root/child remains stopped or as a zombie"
     );
+    global
 }
 
 /// The hybrid follows a forked child instead of refusing at the clone boundary.
@@ -861,7 +972,15 @@ where
 /// isolate the root-TID identity and root-stop lease re-arm mechanisms.
 #[tokio::test(flavor = "current_thread")]
 async fn hybrid_follows_a_forked_child() {
-    run_multi_task_fixture::<PassthroughGetpid>("hybrid_fork.c", "fork-followed\n").await;
+    let global = run_multi_task_fixture::<PassthroughGetpidAndTaskCreation>(
+        "hybrid_fork.c",
+        "fork-followed\n",
+    )
+    .await;
+    assert!(
+        global.task_creation_events.load(Ordering::SeqCst) > 0,
+        "the task-subscribing tool did not observe the fork lifecycle"
+    );
 }
 
 /// The hybrid follows a second thread created with `clone3(CLONE_THREAD)`.
@@ -870,7 +989,39 @@ async fn hybrid_follows_a_forked_child() {
 /// independently isolate the task-creating-site patch guard.
 #[tokio::test(flavor = "current_thread")]
 async fn hybrid_follows_a_created_thread() {
-    run_multi_task_fixture::<PassthroughGetpid>("hybrid_thread.c", "thread-followed\n").await;
+    let global = run_multi_task_fixture::<PassthroughGetpidAndTaskCreation>(
+        "hybrid_thread.c",
+        "thread-followed\n",
+    )
+    .await;
+    assert!(
+        global.task_creation_events.load(Ordering::SeqCst) > 0,
+        "the task-subscribing tool did not observe the clone lifecycle"
+    );
+}
+
+/// The task-subscribing tool remains active without manufacturing a task event
+/// when the guest makes subscribed `getpid` calls but creates no task.
+#[tokio::test(flavor = "current_thread")]
+async fn task_subscriber_does_not_report_task_creation_without_one() {
+    let (_directory, guest) = compile_fixture("hybrid_hot_site.c");
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<
+        PassthroughGetpidAndTaskCreation,
+    >(Command::new(guest), (), preload_path())
+    .await
+    .unwrap();
+
+    assert_eq!(
+        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=3\n",
+        "{output:?}"
+    );
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 32, "{output:?}");
+    assert_eq!(
+        global.task_creation_events.load(Ordering::SeqCst),
+        0,
+        "the tool reported task creation for a single-task fixture: {output:?}"
+    );
+    assert!(output.status.success(), "{output:?}");
 }
 
 /// KNOWN GAP, committed as a reproducer rather than described: two generations
@@ -916,18 +1067,18 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
     let name = unique_process_name();
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("root.pid");
+    let exit_file = pid_directory.path().join("process-exits");
     let mut command = Command::new(guest);
     command.arg(&name).arg(&pid_file);
-    let result = tokio::time::timeout(
-        Duration::from_secs(60),
-        LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
-            command,
-            (),
-            preload_path(),
-        ),
-    )
-    .await
-    .expect("a failed non-root task was never released from the tool: the session hung");
+    let result =
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            LiteinstBackend::run_host_with_output_and_preload::<
+                PassthroughTaskCreationAndRecordExits,
+            >(command, exit_file.clone(), preload_path()),
+        )
+        .await
+        .expect("a failed non-root task was never released from the tool: the session hung");
 
     let error = match result {
         Ok((output, _global)) => panic!(
@@ -940,6 +1091,12 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
     assert!(
         text.contains("LiteInst session failed closed in a non-root task") && text.contains("exec"),
         "session failure did not name the unsupported non-root exec: {text}"
+    );
+    let exits = fs::read_to_string(&exit_file).unwrap_or_default();
+    assert_eq!(
+        exits.lines().count(),
+        1,
+        "the failed non-root process did not run its Tool exit callback: {exits:?}"
     );
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
