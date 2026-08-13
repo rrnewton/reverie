@@ -492,6 +492,16 @@ live_head=$(with-proxy gh pr view "$PR" -R "$R" --json headRefOid -q .headRefOid
 [ "$live_head" = "$HEAD" ] \
   || abandon "PR head moved before receipt authorization (expected $HEAD, observed ${live_head:-missing})" 5
 
+# A changed validation producer cannot land until its exact parent transition
+# is active. Check this at the final mutation boundary, after refreshing the PR
+# head, so a transition for another PR or an earlier push cannot authorize it.
+producer_detail=$(python3 "$SCRIPT_DIR/producer_transition_guard.py" \
+  --repo "$R" --pr "$PR" --head "$HEAD" --checkout "$WT" 2>&1)
+producer_rc=$?
+say "producer transition authority(head=$HEAD) rc=$producer_rc: $producer_detail"
+[ "$producer_rc" -eq 0 ] \
+  || abandon "producer transition authority REFUSED for $HEAD: ${producer_detail:-no result}" 5
+
 # Review labels are caches, never authority. Re-read this PR through the one
 # APPROVED-AT verifier at the final mutation boundary. A passed-review-* label
 # with no exact-head binding is ABSENT approval and refuses the merge; it is not
