@@ -848,6 +848,7 @@ fn reconcile(
         let ownership = effective_ownership(&container, &registry);
         let Some(ownership) = ownership else {
             report.unmanaged += 1;
+            let action = unmanaged_action(&container.state);
             report.details.push(ContainerReport {
                 id: container.id,
                 name: container.name,
@@ -859,8 +860,7 @@ fn reconcile(
                 lifetime: None,
                 namespace,
                 zombies,
-                action: "report-only: legacy/unlabelled container is never auto-removed"
-                    .to_string(),
+                action,
             });
             continue;
         };
@@ -2076,25 +2076,7 @@ fn emit_report(report: &ReconcileReport, json_output: bool) -> Result<()> {
     // the rest of the line, `summary` was never captured, and the action rendered
     // a LITERAL `{summary}` naming nothing. Measured 2026-08-08 -- a producer can
     // emit a perfectly good summary and still lose it to line discipline.
-    let summary = if report.state == "ok" {
-        format!(
-            "all {} managed container(s) have live owners; nothing to reclaim",
-            report.managed
-        )
-    } else {
-        format!(
-            "container lifecycle needs action: {} reclaimable, {} transfer-required, \
-             {} owner-unknown, {} unmanaged, {} zombie(s) in {} container(s) \
-             (REPORT-ONLY: reclaim with `scripts/agent-podman.rs reconcile \
-             --agents-json ignored/ci-hub/agent-snapshot.json --apply`)",
-            report.reclaimable,
-            report.transfer_required,
-            report.owner_unknown,
-            report.unmanaged,
-            report.zombies,
-            report.zombie_containers
-        )
-    };
+    let summary = reconcile_summary(report);
     println!("state={}", report.state);
     println!("summary={summary}");
     println!("managed={}", report.managed);
@@ -2125,6 +2107,59 @@ fn emit_report(report: &ReconcileReport, json_output: bool) -> Result<()> {
         println!("ERROR: container-lifecycle {error}");
     }
     Ok(())
+}
+
+fn unmanaged_action(state: &str) -> String {
+    format!(
+        "known, unidentifiable: {state} legacy/unlabelled container; \
+         unlabelled is not ownerless; never auto-removed"
+    )
+}
+
+fn reconcile_summary(report: &ReconcileReport) -> String {
+    if report.state == "ok" {
+        format!(
+            "all {} managed container(s) have live owners; nothing to reclaim",
+            report.managed
+        )
+    } else {
+        let observation = format!(
+            "container lifecycle observation: {} reclaimable, {} transfer-required, \
+             {} owner-unknown, {} unmanaged, {} zombie(s) in {} container(s)",
+            report.reclaimable,
+            report.transfer_required,
+            report.owner_unknown,
+            report.unmanaged,
+            report.zombies,
+            report.zombie_containers
+        );
+        if report.reclaimable > 0 {
+            format!(
+                "{observation} (reclaim applies only to independently verified \
+                 reclaimable entries: `scripts/agent-podman.rs reconcile \
+                 --agents-json ignored/ci-hub/agent-snapshot.json --apply`)"
+            )
+        } else if report.unmanaged > 0
+            && report.transfer_required == 0
+            && report.owner_unknown == 0
+            && report.errors.is_empty()
+        {
+            format!(
+                "{observation} (known, unidentifiable: unmanaged means unlabelled, \
+                 not ownerless; it is report-only and not reclaimable)"
+            )
+        } else {
+            let unmanaged = if report.unmanaged > 0 {
+                "unmanaged entries are unlabelled, not ownerless, and not reclaimable; "
+            } else {
+                ""
+            };
+            format!(
+                "{observation} ({unmanaged}no reclaimable entry; inspect DETAIL and \
+                 ERROR lines for the required non-removal action)"
+            )
+        }
+    }
 }
 
 fn emit_reconcile_error(error: &AppError) {
@@ -2304,6 +2339,57 @@ mod tests {
     fn quickstart_is_nonempty_and_consequence_led() {
         assert!(QUICKSTART.contains("never automatic deletion targets"));
         assert!(QUICKSTART.lines().count() < 20);
+    }
+
+    fn report_with(reclaimable: usize, unmanaged: usize) -> ReconcileReport {
+        ReconcileReport {
+            state: "action-required".to_string(),
+            managed: reclaimable,
+            live: 0,
+            reclaimed: 0,
+            reclaimable,
+            transfer_required: 0,
+            owner_unknown: 0,
+            unmanaged,
+            zombie_containers: 0,
+            zombies: 0,
+            details: Vec::new(),
+            errors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn unmanaged_only_summary_is_observation_not_reclaim_instruction() {
+        let summary = reconcile_summary(&report_with(0, 1));
+        assert!(summary.contains("known, unidentifiable"));
+        assert!(summary.contains("unlabelled, not ownerless"));
+        assert!(summary.contains("not reclaimable"));
+        assert!(!summary.contains("--apply"));
+        assert!(!summary.contains("needs action"));
+        assert_eq!(
+            unmanaged_action("running"),
+            "known, unidentifiable: running legacy/unlabelled container; \
+             unlabelled is not ownerless; never auto-removed"
+        );
+    }
+
+    #[test]
+    fn reclaimable_summary_keeps_the_scoped_command() {
+        let summary = reconcile_summary(&report_with(1, 1));
+        assert!(summary.contains("reclaim applies only"));
+        assert!(summary.contains("independently verified reclaimable entries"));
+        assert!(summary.contains("--apply"));
+    }
+
+    #[test]
+    fn mixed_non_reclaimable_summary_keeps_each_category_visible() {
+        let mut report = report_with(0, 1);
+        report.owner_unknown = 1;
+        let summary = reconcile_summary(&report);
+        assert!(summary.contains("1 owner-unknown, 1 unmanaged"));
+        assert!(summary.contains("unlabelled, not ownerless, and not reclaimable"));
+        assert!(summary.contains("inspect DETAIL and ERROR lines"));
+        assert!(!summary.contains("--apply"));
     }
 
     #[test]

@@ -556,7 +556,7 @@ reminders:
       skill: hard-warn-coordinator
       fields:
         component: agent-container-lifecycle
-      title: "agent-owned containers need attention (REPORT-ONLY, coordinator reclaims): {summary}"
+      title: "container lifecycle observation (unmanaged is unlabelled, not reclaimable): {summary}"
 
   # Memory <-> skill sync: the sync/lint scripts existed but nothing invoked them,
   # so being in-sync was luck. This reminder runs the authoritative structural
