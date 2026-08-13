@@ -156,6 +156,63 @@ def run() -> int:
               merged("hermit", 2100, OWN_MERGE), anc),
           "LANDED")
 
+    # ---------- hermit-903's gap: unanchored substring matching ----------
+    # No natural failing case exists in current data -- every real branch is
+    # long and multi-token -- so the refusal is CONSTRUCTED, the same technique
+    # 904 used to reproduce the phantom LANDED with an unrelated URL.
+    anc = StubAncestry({})
+    SHORT = merged("hermit", 2100, OWN_MERGE, head="a" * 40, branch="fix")
+
+    check("REFUSE branch name buried in unrelated words (903's gap)",
+          ancestry_audit.classify(
+              item("t-substr", prs=[("hermit", 2100)],
+                   text="https://github.com/rrnewton/hermit/pull/2100 -- prefix, "
+                        "bugfix-notes and a fixture all contain it"),
+              SHORT, anc),
+          "NOT-DETERMINABLE")
+
+    check("ACCEPT the same branch as a whole token -> LANDED",
+          ancestry_audit.classify(
+              item("t-branch-ok", prs=[("hermit", 2100)],
+                   text="https://github.com/rrnewton/hermit/pull/2100 on branch fix here"),
+              SHORT, anc),
+          "LANDED")
+
+    check("ACCEPT branch delimited by backticks -> LANDED",
+          ancestry_audit.classify(
+              item("t-branch-tick", prs=[("hermit", 2100)],
+                   text="https://github.com/rrnewton/hermit/pull/2100 `fix`"),
+              SHORT, anc),
+          "LANDED")
+
+    # head_sha shares the shape: a 12-hex prefix must not match inside a longer
+    # hex run, and this database really does carry sha256 digests in notes.
+    HEX = merged("hermit", 2101, OWN_MERGE, head="abcdef012345" + "9" * 28,
+                 branch="feat/unrelated-branch-name")
+    check("REFUSE 12-hex prefix buried inside a 64-hex digest",
+          ancestry_audit.classify(
+              item("t-hex-substr", prs=[("hermit", 2101)],
+                   text="https://github.com/rrnewton/hermit/pull/2101 "
+                        "diff_sha256=00000abcdef01234500000000000000000000"
+                        "000000000000000000000000000"),
+              HEX, anc),
+          "NOT-DETERMINABLE")
+
+    check("ACCEPT a standalone 12-hex short sha -> LANDED",
+          ancestry_audit.classify(
+              item("t-hex-short", prs=[("hermit", 2101)],
+                   text="https://github.com/rrnewton/hermit/pull/2101 head abcdef012345"),
+              HEX, anc),
+          "LANDED")
+
+    check("ACCEPT the full 40-hex head next to punctuation -> LANDED",
+          ancestry_audit.classify(
+              item("t-hex-full", prs=[("hermit", 2101)],
+                   text="https://github.com/rrnewton/hermit/pull/2101 (head="
+                        + "abcdef012345" + "9" * 28 + ")"),
+              HEX, anc),
+          "LANDED")
+
     # A task with nothing at all stays UNKNOWN, not NOT-DETERMINABLE.
     check("no candidates at all -> UNKNOWN (unchanged)",
           ancestry_audit.classify(item("t-empty"), {}, StubAncestry({})),

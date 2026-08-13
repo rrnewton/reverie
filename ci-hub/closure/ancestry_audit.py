@@ -245,6 +245,39 @@ def normalize_subject(subject: str) -> str:
     return re.sub(r"\s*\(#\d+\)\s*$", "", subject).strip()
 
 
+# Characters that can be part of a branch-name-shaped token. A match flanked by
+# one of these is a FRAGMENT of a longer token, not a reference to the branch.
+_BRANCH_TOKEN = r"A-Za-z0-9._/\-"
+
+
+def _bounded(needle: str, haystack: str, token_class: str) -> bool:
+    """Is `needle` present in `haystack` as a WHOLE token?
+
+    *** THE UNANCHORED VERSION WAS CORRECT ONLY BY ACCIDENT. ***
+    This used to be `needle in haystack`. hermit-903 found it by EXECUTING
+    pr_attribution rather than reading it, and its diagnosis is the reason this
+    function exists: the gate held because of a NAMING CONVENTION plus
+    REDUNDANT COVERAGE, not because the code checked anything. Measured at the
+    time: 200 hermit pull requests sampled, shortest branch 18 characters, all
+    multi-token, and of the 19 pull-request-attributed LANDED verdicts the 16
+    carrying `branch` ALSO carried `head_sha`. So the hole could not have
+    produced a verdict in that run -- and nothing forbids the branch name `fix`,
+    which would match "prefix", "fixture", and "bugfix-notes" on the next run.
+    A convention nobody enforces is not a check.
+
+    `head_sha` shares the shape and is anchored here too, for the same reason
+    rather than a measured miss: `head[:12] in text` can match inside a LONGER
+    hex run, and 30 task notes in the live database carry hex runs over 40
+    characters -- sha256 digests, which this tool's own seal records emit. Hex
+    uses a hex-only boundary so a full 40-hex SHA still matches when it sits
+    next to `=` or a bracket, while a 12-hex prefix buried at an offset inside a
+    64-hex digest does not.
+    """
+    return re.search(
+        rf"(?<![{token_class}]){re.escape(needle)}(?![{token_class}])", haystack
+    ) is not None
+
+
 def pr_attribution(item: dict, row: dict, *, url_seen: bool) -> tuple[str, list[str]]:
     """Is THIS pull request attributable to THIS task? Agreement, not mention.
 
@@ -284,10 +317,13 @@ def pr_attribution(item: dict, row: dict, *, url_seen: bool) -> tuple[str, list[
     if url_seen:
         strong.append("pr_url")
     head = row.get("headRefOid") or ""
-    if head and (head in text or head[:12] in text):
+    if head and (
+        _bounded(head, text, "0-9a-fA-F")
+        or _bounded(head[:12], text, "0-9a-fA-F")
+    ):
         strong.append("head_sha")
     branch = row.get("headRefName") or ""
-    if branch and branch in text:
+    if branch and _bounded(branch, text, _BRANCH_TOKEN):
         strong.append("branch")
     if num is not None and re.search(rf"#{num}\b", text):
         weak.append("pr_num")
