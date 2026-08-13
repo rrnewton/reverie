@@ -195,7 +195,7 @@ reminders:
   - name: owner_tooling_directives
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/directives/check.py --deadline-secs 180 --gate-on alert
+      cmd: python3 ci-hub/directives/check.py --deadline-secs 180
       timeout_secs: 195
       when: failure
       capture: true
@@ -205,24 +205,6 @@ reminders:
       fields:
         component: owner-tooling-directives
       title: "owner tooling directives need action: {summary}"
-
-  # A named gate is a real, visible deferral, not drift. Keep it in the tick as
-  # a note while reserving the action above for drift or a failed measurement.
-  # The checker makes the paths disjoint, so a report that needs action does not
-  # also emit this note. The alert path writes the durable report; this second
-  # read is report-only and must not compete for that output path.
-  - name: owner_tooling_directives_gated
-    cadence_secs: 3600
-    gate:
-      cmd: python3 ci-hub/directives/check.py --deadline-secs 180 --gate-on notice --no-write
-      timeout_secs: 195
-      when: failure
-      capture: true
-    emit:
-      kind: note
-      fields:
-        component: owner-tooling-directives
-      title: "owner tooling directives gated: {summary}"
 
   # THE TICK POLICES ITS OWN CODE. It executes from the shared parent WORKING
   # TREE (hermitOperationalTick does `cd <parent> && ./ci-hub/bin/health-tick`),
@@ -574,7 +556,7 @@ reminders:
       skill: hard-warn-coordinator
       fields:
         component: agent-container-lifecycle
-      title: "container lifecycle observation (unmanaged is unlabelled, not reclaimable): {summary}"
+      title: "agent-owned containers need attention (REPORT-ONLY, coordinator reclaims): {summary}"
 
   # Memory <-> skill sync: the sync/lint scripts existed but nothing invoked them,
   # so being in-sync was luck. This reminder runs the authoritative structural
@@ -697,18 +679,16 @@ reminders:
   # deletion), credentials, service (enabled is necessary and never sufficient --
   # it was enabled the entire two days), and registration with the repo.
   #
-  # The repository runner list establishes whether the expected runner is
-  # online. The four local surfaces apply only when this host carries a local
-  # identity, installation, or service trace. Absence is NO_RESULT and exits 2,
-  # never silence, so this is fail-visible in the direction that matters.
-  # Verified by its own deletion bracket rather than by reading:
+  # Absence is NO_RESULT and exits 2, never silence, so this is fail-visible in
+  # the direction that matters. Verified by its own deletion bracket
+  # (tests/test_gate_runner_presence.sh, 14 assertions) rather than by reading:
   # it builds a scratch install and unit, deletes the installation while leaving
   # the unit enabled, and reproduces UnitFileState=enabled with
   # ExecMainStatus=203. Live runner untouched.
   - name: gate_runner_presence
     cadence_secs: 900
     gate:
-      cmd: python3 ci-hub/health/gate_runner_presence.py --gate-on alert --record .tick-hub/gate-runner-presence.json
+      cmd: python3 ci-hub/health/gate_runner_presence.py --record .tick-hub/gate-runner-presence.json
       when: failure
       capture: true
     emit:
@@ -716,23 +696,6 @@ reminders:
       skill: hard-warn-coordinator
       fields:
         component: gate-runner-presence
-      title: "expected gate runner is not confirmably online: {summary}"
-
-  # A healthy runner on another host and repository Actions disabled by the
-  # owner's directive are facts worth reporting, not runner failures. Keep this
-  # NOTE separate from the ACTION above so the check says what is true without
-  # suppressing a genuine absence. A disabled queued Merge Gate run with zero
-  # admitted jobs is expected and is neither a pass nor a failure.
-  - name: gate_runner_presence_scope
-    cadence_secs: 900
-    gate:
-      cmd: python3 ci-hub/health/gate_runner_presence.py --gate-on notice
-      when: failure
-      capture: true
-    emit:
-      kind: note
-      fields:
-        component: gate-runner-presence
-      title: "gate runner scope and repository Actions state: {summary}"
+      title: "gate runner is not confirmably present on all four surfaces: {summary}"
 
 health_checks: []

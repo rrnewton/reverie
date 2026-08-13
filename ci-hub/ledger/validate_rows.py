@@ -42,80 +42,6 @@ LIVE_SPOOL_RELATIVE = Path("ignored/ci-hub/validate-ledger-spool")
 ACCEPTANCE_FIXTURE_PRODUCERS = frozenset({"ledger-live-sync-acceptance"})
 
 
-def _needs_failure_evidence(row: dict) -> bool:
-    """Whether this result needs the leaf failure preserved before its log goes."""
-    if str(row.get("result") or "") != "pass":
-        return True
-    gates = row.get("gates")
-    return isinstance(gates, list) and any(
-        isinstance(gate, dict) and str(gate.get("result") or "") == "fail"
-        for gate in gates
-    )
-
-
-def _retain_run_diagnostics(row: dict) -> None:
-    """Inline the small diagnostic facts that ephemeral logs currently strand.
-
-    This runs inside the canonical writer while the validation driver and its
-    log still exist.  The Rust front controller does not write the row; Hermit's
-    validate.rs invokes this Python adapter directly, so capturing here binds
-    the evidence to the exact event that every consumer already reads.
-
-    ``host_after`` and ``failed_substep_classes`` are established ci-hub record
-    shapes, shared with attribution.py and failure_evidence.py respectively.
-    Import them lazily: failure_evidence imports this canonical boundary for its
-    read-side CLI, and importing it while this module is still initializing
-    would create a circular import.
-    """
-    if not isinstance(row.get("host_after"), dict):
-        attribution_dir = Path(__file__).resolve().parents[1] / "attribution"
-        if str(attribution_dir) not in sys.path:
-            sys.path.insert(0, str(attribution_dir))
-        from attribution import HostConditions
-
-        proc_pattern = (
-            "reverie" if _ledger_team(row.get("repo")) == "reverie" else "hermit"
-        )
-        row["host_after"] = HostConditions.sample(proc_pattern).as_dict()
-
-    if not _needs_failure_evidence(row):
-        return
-
-    raw_log = row.get("log_file")
-    log = Path(raw_log) if isinstance(raw_log, str) and raw_log else None
-    try:
-        log_text = log.read_text(errors="replace") if log is not None else None
-    except OSError:
-        log_text = None
-    if log_text is None:
-        # Missing stays missing.  In particular, never turn a plausible cause
-        # from another run into evidence for this one.
-        row.setdefault("log_status", "missing")
-        row.setdefault("failed_substep_classes", [])
-        row.setdefault("first_error_line", None)
-        return
-
-    validate_dir = Path(__file__).resolve().parents[1] / "validate"
-    if str(validate_dir) not in sys.path:
-        sys.path.insert(0, str(validate_dir))
-    from failure_evidence import (
-        DEFAULT_REGISTRY,
-        classify_failed_substeps,
-        flaky_cells,
-    )
-
-    registry = flaky_cells(DEFAULT_REGISTRY) if DEFAULT_REGISTRY.is_file() else set()
-    classes = classify_failed_substeps(log_text, flaky_registry=registry)
-    row.setdefault("log_status", "present")
-    if row.get("failed_substep_classes") is None:
-        row["failed_substep_classes"] = classes
-    if row.get("first_error_line") is None:
-        row["first_error_line"] = next(
-            (item["first_error_line"] for item in classes if item.get("first_error_line")),
-            None,
-        )
-
-
 def _producer_tool(value: object) -> str:
     if isinstance(value, dict):
         return str(value.get("tool") or "")
@@ -391,7 +317,6 @@ def record(row: dict, *, root: Path | None = None) -> dict:
         )
     _require_local_commit(row)
     _require_cell_results(row, root)
-    _retain_run_diagnostics(row)
     event = _event_for_row(row, root)
     target = spool(live_spool_dir(root), event["team"], event["host"], [event])
     return {

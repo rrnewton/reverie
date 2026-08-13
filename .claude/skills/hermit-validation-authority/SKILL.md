@@ -77,30 +77,6 @@ If the calling agent exits, attach to the service handle printed by
 `ci-hub validate-run`. Do not launch a replacement run merely because the
 original caller disappeared.
 
-## Check the host capability before a full or privileged run
-
-The `full` and `privileged` profiles contain `privileged-cpuid.faulting`, which
-runs a test that asserts the host supports CPUID faulting rather than skipping
-when it does not. A machine without that capability cannot produce a full
-receipt: the node fails in about 0.1 s with `exit 101`, and the runner's
-eager-exit then aborts a dozen sibling gates that were still in flight. Those
-aborts are collateral; the run records `failures=1`.
-
-Measured 2026-08-12: **devbig030 lacks the capability and devbig014 has it.**
-Route a full or privileged run to a capable machine. The `portable` profile does
-not contain the node and is unaffected.
-
-Probe the machine you are on before starting, and read
-[the host-capability note](../../../ai_docs/host-capability-cpuid-faulting_20260812.md)
-for the probe itself, how each machine's capability was established, and the
-three separate constraints on devbig030 that must not be merged into one routing
-rule.
-
-`privileged-cpuid.faulting … exit 101` is this capability gap, not a defect in
-the commit under test and not a flake. Re-running it on the same machine cannot
-help, and the assertion must not be turned into a skip to make a local run
-green.
-
 ## Rebase before validation
 
 **ALWAYS REBASE BEFORE VALIDATE.**

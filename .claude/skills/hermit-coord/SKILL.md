@@ -23,19 +23,20 @@ is the operational summary of the coordinator role.
   registries, and submodule pins.
 - Slot lifecycle: provision, assign, park, reclaim (≤12 active, ≤5 parked,
   ≤15 agents; canonical named-agent or `slotNN` slots only).
-- Task closure actor, timing, status, and command are defined only by
-  `AGENTS.md` rule 15. The coordinator audits that closures carried the
-  required evidence; do not restate the lifecycle in this skill.
+- Task closure follows `AGENTS.md` rule 15: the author keeps ownership through
+  landing and closes only after fresh ancestry confirmation.
 
 ## Constraints
 
 - **Primaries ALWAYS on `main`.** Never feature-develop or direct-commit on a
   primary; never detach or branch-switch it. After any op touching a primary,
   verify `git branch --show-current` == `main`.
-- **Task lifecycle:** follow `AGENTS.md` rule 15 and the linked closure evidence
-  contract. The coordinator checks that the owning agent remains assigned while
-  work is open, that published work stays visible through `implemented`, and
-  that closure carries the gateway's landing proof.
+- **Task lifecycle:** an implementation agent publishes the PR or durable
+  artifact, records its exact SHA and evidence, adds `implemented`, and keeps
+  the task `in_progress` while shepherding review, validation, and landing.
+  After fresh ancestry confirmation, the author closes through
+  `./ci-hub/bin/close-task`. Do not close at publication or hand unfinished
+  landing work to another agent.
 - **Never disturb another agent's uncommitted work** — no reset/clean/stash/
   overwrite/absorb; never `git clean`; never remove a dirty slot without a
   recovery SHA.
@@ -58,17 +59,6 @@ is the operational summary of the coordinator role.
   deleted a check instead of satisfying it. Two real misses show why a passing suite is insufficient:
   a harness assertion still accepted a backward pin after the assertion was changed, and strict
   compatibility used the legacy comparator for seven days while being described as L2-bitwise.
-  Every review dispatch must require the reviewer to end with exactly one parser-defined verdict
-  line at column zero, naming the review lane and full head SHA:
-
-  ```text
-  APPROVED-AT: <claude|codex> <40-hex-head>
-  CHANGES-REQUESTED-AT: <claude|codex> <40-hex-head>
-  ```
-
-  Never ask for or emit `REJECTED-AT`. `approval_binding.py` reports that spelling as malformed and
-  does not revoke an earlier approval, so it can leave authority standing after the reviewer meant
-  to withdraw it.
 - **PR ownership:** the author shepherds each new PR through review, validation
   under `hermit-validation-authority`, landing, and ancestry confirmation. Do not hand
   ordinary work to a dedicated lander; that role drains inherited backlog.

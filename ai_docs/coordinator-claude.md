@@ -42,11 +42,8 @@ Corollaries:
 `tmux_pane_id`, `cgroup_path`, `observe_owner_lease()`, `orc.scripts.*`, `orc.registerScript`,
 `scripts/orc-hermit-msg.py`, Herdr tabs/panes, `agent_liveness_probe.py`.
 
-- The current allocator has no Claude-native process-generation binding. A slot can therefore be
-  allocated with its owner evidence **UNBOUND**, which does not block dispatch, but that is not
-  permanent release authority: the lifecycle writer refuses release while legacy/unbound ownership
-  remains. Preserve the row and report that exact limitation; do not call an unbound slot ownerless,
-  bypass the lifecycle writer, or infer a tmux identity for a native subagent.
+- A slot you allocate is **born lease-less and stays that way**. That is normal and permanent, not a
+  defect to repair, and it never blocks dispatch.
 - **"The coordinator has no shell" is an ORC constraint.** You have one. Run the commands yourself or hand
   them to your own subagents. Never cite it as a reason not to act.
 - **Hard Invariant 13's fifteen-agent cap counts independently-launched top-level `claude`/`codex`

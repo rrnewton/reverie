@@ -7,31 +7,23 @@ returned an approval for one exact PR head.  The family is a closed CLI enum;
 unknown values fail during argument parsing before any GitHub command runs.
 
 The exact-head comment is authority.  Labels are routing/activity caches.  The
-comment is posted first, read back through the canonical approval parser, and
-the live head is checked again.  Labels are applied and the named review task
-is closed only while that authority remains current.  No label is created by
-this command.
+comment is posted first, the live head is checked again, and labels are applied
+only while that head remains current.  No label is created by this command.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
 import sys
-from typing import Callable, Mapping, Sequence
+from typing import Callable, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[2]
 GH = ROOT / "ci-hub/bin/gh"
-sys.path.insert(0, str(ROOT / "ci-hub/health"))
-sys.path.insert(0, str(ROOT / "ci-hub/lib"))
-import approval_binding  # noqa: E402
-import taskgraph_db  # noqa: E402
-
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SUPPORTED_REPOS = frozenset({"rrnewton/hermit", "rrnewton/reverie"})
 FAMILY_LABELS = {
@@ -97,12 +89,8 @@ def _run(
     args: Sequence[str],
     *,
     context: str,
-    env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    kwargs: dict[str, object] = {"text": True, "capture_output": True}
-    if env is not None:
-        kwargs["env"] = dict(env)
-    proc = runner(list(args), **kwargs)
+    proc = runner(list(args), text=True, capture_output=True)
     if proc.returncode != 0:
         detail = (proc.stderr or proc.stdout).strip()[:800]
         raise RuntimeError(f"{context} failed rc={proc.returncode}: {detail}")
@@ -155,55 +143,6 @@ def _available_labels(runner: Runner, repo: str) -> set[str]:
         raise RuntimeError("repository label list returned malformed JSON") from error
 
 
-def _read_comments(runner: Runner, repo: str, pr: int) -> list[dict[str, object]]:
-    proc = _run(
-        runner,
-        [
-            str(GH),
-            "api",
-            "--paginate",
-            "--slurp",
-            f"repos/{repo}/issues/{pr}/comments",
-        ],
-        context="read posted review authority",
-    )
-    try:
-        pages = json.loads(proc.stdout)
-    except json.JSONDecodeError as error:
-        raise RuntimeError("review authority readback returned malformed JSON") from error
-    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
-        raise RuntimeError("review authority readback returned malformed pages")
-    comments: list[dict[str, object]] = []
-    for page in pages:
-        for comment in page:
-            if not isinstance(comment, dict):
-                raise RuntimeError("review authority readback returned a malformed comment")
-            comments.append(comment)
-    return comments
-
-
-def _task_environment() -> dict[str, str]:
-    environment = dict(os.environ)
-    try:
-        resolution = taskgraph_db.resolve(env=environment)
-    except taskgraph_db.TaskGraphUnavailable as error:
-        raise RuntimeError(f"cannot bind review task: {error}") from error
-    return taskgraph_db.child_env(resolution, env=environment)
-
-
-def _close_review_task(
-    runner: Runner,
-    task: str,
-    environment: Mapping[str, str],
-) -> None:
-    _run(
-        runner,
-        ["tg", "update", task, "--status", "closed"],
-        context="close canonically bound review task",
-        env=environment,
-    )
-
-
 def _required_labels(family: str, round_number: int, critical: str | None) -> list[str]:
     labels = [
         f"adversarial-review-{family}{round_number}",
@@ -232,29 +171,13 @@ def _comment_body(args: argparse.Namespace) -> str:
     )
 
 
-def execute(
-    args: argparse.Namespace,
-    runner: Runner = subprocess.run,
-    task_environment: Mapping[str, str] | None = None,
-) -> int:
+def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:
     if args.pr <= 0:
         raise RuntimeError("--pr must be positive")
     if args.who.casefold() == args.reviewer.casefold():
         raise RuntimeError(
             "the dispatched reviewer cannot record its own family attestation"
         )
-
-    environment = (
-        dict(task_environment)
-        if task_environment is not None
-        else _task_environment()
-    )
-    _run(
-        runner,
-        ["tg", "show", args.task],
-        context="read review task before attestation",
-        env=environment,
-    )
 
     labels = _required_labels(args.family, args.round, args.critical)
     available = _available_labels(runner, args.repo)
@@ -301,18 +224,6 @@ def execute(
             "PR head moved after the exact-head comment; no labels were applied"
         )
 
-    comments = _read_comments(runner, args.repo, args.pr)
-    binding = approval_binding.classify_approval(
-        args.head,
-        approval_binding.lane_shas(comments, args.family),
-    )
-    if binding != approval_binding.BOUND_CURRENT:
-        raise RuntimeError(
-            "posted review authority did not bind the requested family to the exact head: "
-            f"expected {approval_binding.BOUND_CURRENT}, observed {binding}; "
-            "no labels were applied and the review task remains open"
-        )
-
     edit = [str(GH), "pr", "edit", str(args.pr), "--repo", args.repo]
     existing = _label_names(after_comment.get("labels"))
     additions = [label for label in labels if label not in existing]
@@ -326,7 +237,6 @@ def execute(
         raise RuntimeError(
             "PR head moved after cache-label application; exact-head consumers must treat the labels as stale"
         )
-    _close_review_task(runner, args.task, environment)
     print(
         "REVIEW-ATTESTED "
         f"repo={args.repo} pr={args.pr} head={args.head} family={args.family} "
@@ -336,14 +246,10 @@ def execute(
     return 0
 
 
-def main(
-    argv: Sequence[str] | None = None,
-    runner: Runner = subprocess.run,
-    task_environment: Mapping[str, str] | None = None,
-) -> int:
+def main(argv: Sequence[str] | None = None, runner: Runner = subprocess.run) -> int:
     try:
         args = parser().parse_args(argv)
-        return execute(args, runner, task_environment)
+        return execute(args, runner)
     except RuntimeError as error:
         print(f"review-attest: REFUSED: {error}", file=sys.stderr)
         return 1

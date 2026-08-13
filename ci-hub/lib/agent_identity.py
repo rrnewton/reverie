@@ -213,39 +213,14 @@ def _safe_model(raw: str | None) -> str | None:
     return raw if raw == raw.strip() and MODEL_RE.fullmatch(raw) else None
 
 
-CLIENT_FAMILIES = frozenset({"codex", "claude"})
-
-
 def _recognized_client_index(argv: Sequence[str]) -> int | None:
     """Find the real agent client without treating arbitrary body text as argv."""
 
     for index, raw in enumerate(argv[:4]):
         name = Path(raw).name.casefold()
-        if name in CLIENT_FAMILIES:
+        if name in {"codex", "claude"}:
             return index
     return None
-
-
-def client_family(argv: Sequence[str]) -> str | None:
-    """Return the recognized CLI family for ``argv``, or None if unrecognized.
-
-    The family was always present in the data and thrown away: the index
-    above is derived from the client's own basename, but its only caller
-    wanted a ``--model`` flag, so which client it found was discarded.
-    Reviewer eligibility needs exactly that discarded fact, and deriving it
-    a second time elsewhere would be a second definition of "recognized
-    client" free to drift from this one.
-
-    This is the ONLY sound source for an agent's family.  A family inferred
-    from an agent's NAME is a proxy and a wrong one: ``hermit-907`` is
-    Codex-family, and reading its name would have called it Claude-eligible
-    and reproduced the dispatch defect this exists to prevent.
-    """
-
-    index = _recognized_client_index(argv)
-    if index is None:
-        return None
-    return Path(argv[index]).name.casefold()
 
 
 def _explicit_models(argv: Sequence[str]) -> tuple[list[str], bool]:
@@ -508,10 +483,6 @@ def _within(path: Path, parent: Path) -> bool:
         return False
 
 
-def _registry_row_is_active(row: Mapping[str, Any]) -> bool:
-    return row.get("status", "active") == "active"
-
-
 def slot_owner_signal(
     cwd: Path | None,
     cwd_detail: str,
@@ -538,19 +509,6 @@ def slot_owner_signal(
             detail="cwd matches multiple registered slots: " + ",".join(slot for slot, _ in matches),
         ), ()
     slot, row = matches[0]
-    status = row.get("status", "active")
-    if not _registry_row_is_active(row):
-        return (
-            Signal(
-                "cwd-slot-owner",
-                "unavailable",
-                detail=(
-                    f"cwd={physical} slot={slot} status={status} "
-                    "has no current owner"
-                ),
-            ),
-            (),
-        )
     owners = _slot_owners(row)
     tasks = {
         task
@@ -558,7 +516,7 @@ def slot_owner_signal(
         if isinstance(task, str) and task.strip()
     }
     detail = (
-        f"cwd={physical} slot={slot} status={status} "
+        f"cwd={physical} slot={slot} status={row.get('status', 'unknown')} "
         "basis=physical-path+owner (branch metadata is not identity authority)"
     )
     if len(owners) == 1:
@@ -581,8 +539,6 @@ def _registry_owner_matches(
     matches: set[str] = set()
     for row in registry.document["slots"].values():
         if not isinstance(row, dict):
-            continue
-        if not _registry_row_is_active(row):
             continue
         for entry in row.get("agents", []):
             if not isinstance(entry, dict) or not predicate(row, entry):

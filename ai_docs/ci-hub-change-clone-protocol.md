@@ -6,50 +6,6 @@ shared primary checkout while work is in progress. Therefore **no task edits
 `ci-hub/` in `/home/newton/work/dev-hermit`**. A file lock is insufficient:
 it prevents a second writer, but readers can still execute a half-applied edit.
 
-## What this protocol governs
-
-AGENTS.md rule 8 says coordinator-executed infrastructure "such as `ci-hub/`".
-`ci-hub/` is an example, not the whole set, and until 2026-08-13 the tool
-enforced ci-hub-only and was therefore narrower than the policy it implements.
-Two agents in one session had to apply the protocol by hand and disclose a
-deviation because a legitimate claim could not be expressed — one for a
-product-repo documentation path, one for
-`scripts/checkout-hermit-pr-latest-reverie.sh`.
-
-There are now two repository kinds, and they differ in **publication**, not
-merely in which paths they accept. That distinction is the reason `product` is
-a separate kind rather than a relaxed claim check: publishing straight to
-`main` is right for the parent and forbidden for a product repository.
-
-| | `--kind parent` (default) | `--kind product` |
-| --- | --- | --- |
-| repository | `dev-hermit` | `hermit`, `reverie` (`--repo`) |
-| claims may name | `ci-hub/`, `scripts/` | anything except `ci-hub/` |
-| changed paths must be | anything under the claims | `.md` only |
-| `publish` does | `parent-main-write publish HEAD` → `main` | pushes the task branch; **never** `main` |
-| `activate` | coordinator syncs the primary | refused; nothing to activate |
-| opens an activation obligation | yes | no |
-
-**The parent root set is `ci-hub/` and `scripts/`**, held in one named constant
-`PARENT_CLAIM_ROOTS` in the tool. It is deliberately not wider: `.orc/`,
-`.githooks/`, `agent-utils/`, and `tools/` are left out pending an owner
-decision rather than guessed at. Ordinary parent content — reports,
-experiments, `ai_docs/` — is not coordinator-executed and is committed directly
-through `scripts/parent-main-write`.
-
-**A product change carries documentation only, and that is enforced on the
-changed paths at seal time.** This route exists so documentation and policy
-edits — which need no build, no validate-run, and no registered worktree slot —
-can proceed in a disposable clone. It is not a way around validation: product
-work that needs a build or a validate-run still requires a registered slot and
-the admitted validate-run path. Without the `.md` rule the same route would
-carry a `detcore/src` edit into a pull request with nothing behind it, and a
-tool that makes the unvalidated route the convenient one does not stay unused.
-
-A product change is **published, not landed**: the tool pushes the branch and
-stops. Review and merge stay on the ordinary pull-request route, and the author
-shepherds it to landing.
-
 The supported workflow is `scripts/ci-hub-clone-change.py`:
 
 1. A coordinator assigns the task and its complete `ci-hub/` path claims.
@@ -78,22 +34,10 @@ The supported workflow is `scripts/ci-hub-clone-change.py`:
 Example:
 
 ```bash
-# Coordinator, before dispatch. The destination defaults to one per task.
+# Coordinator, before dispatch. The default destination is deliberately fixed.
 scripts/ci-hub-clone-change.py create \
   --task fix-receipt-carrier \
   --path ci-hub/validation
-
-# A parent tooling change under scripts/ uses the same default kind.
-scripts/ci-hub-clone-change.py create \
-  --task fix-pr-checkout-helper \
-  --path scripts/checkout-hermit-pr-latest-reverie.sh
-
-# A product-repo DOCUMENTATION change needs no registered worktree slot.
-# It publishes a branch; it never pushes the product repo's main.
-scripts/ci-hub-clone-change.py create \
-  --task correct-closure-policy \
-  --kind product --repo hermit \
-  --path AGENTS.md
 
 # Implementer, inside ~/temp/dev-hermit, after one commit.
 scripts/ci-hub-clone-change.py seal \
@@ -108,25 +52,11 @@ scripts/ci-hub-clone-change.py activate \
 
 ## Answers to the operational questions
 
-**Is the clone reused?** No. It is per-change and disposable, and since
-2026-08-13 the **default destination is per task** —
-`~/temp/dev-hermit-<task>`, or `~/temp/<repo>-<task>` for a product change.
-
-The default used to be the fixed `~/temp/dev-hermit`, justified as serializing
-same-box work. That was wrong on its own terms: rule 8 already requires a
-"task-specific disposable clone", and a fixed path is by definition not
-task-specific. What it actually produced was a shared resource — observed
-2026-08-13 holding one agent's **sealed but unpublished** candidate, on a base
-that had already gone stale, while a second agent needed a clone. The second
-agent's only options were to wait or to disposition somebody else's change, and
-disposition is coordinator work.
-
-When a destination is occupied the refusal now **names the occupant** — task,
-kind, claims, creation time, and the sealed candidate and base if it has sealed
-— so a coordinator can decide without reverse-engineering a directory. Disposal
-is still coordinator work after publication, activation, and recovery checks;
-this tool does not delete a clone. An explicit `--clone` path remains permitted
-for migration or another machine, and does not weaken the publication CAS.
+**Is the clone reused?** No. It is per-change and disposable. The fixed default
+path serializes same-box work and makes an abandoned clone visible. Disposal is
+coordinator work after publication, activation, and recovery checks; this tool
+does not delete a clone. A separately authorized `--clone` path is permitted
+for migration or another machine, but it does not weaken the publication CAS.
 
 **How is completeness checked?** The seal proves structural completeness: one
 commit, latest base, clean tree, no unclaimed paths, nonempty diff, successful

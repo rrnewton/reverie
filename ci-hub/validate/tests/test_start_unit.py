@@ -40,7 +40,7 @@ class FakeRun:
         self.canonical_status_rc = 0
         self.canonical_selected_row_index = -1
         self.removed: list[str] = []
-        # What the committed HEAD tree reports as tracked inside the fresh checkout.
+        # What `git ls-files` reports as TRACKED inside the fresh checkout.
         # Empty is the real-world case: hermit tracks zero .jsonl files.
         self.fresh_tracked_jsonl = ""
         # Relative path of a receipt the RUN writes inside its own temp
@@ -93,21 +93,7 @@ class FakeRun:
             if self.plant_receipt is not None:
                 receipt = self.fresh / self.plant_receipt
                 receipt.parent.mkdir(parents=True, exist_ok=True)
-                receipt.write_text(
-                    json.dumps(
-                        {
-                            "schema_version": 5,
-                            "repo": "hermit",
-                            "producer": "hermit-validate-rs",
-                            "commit": SHA,
-                            "tree": "b" * 40,
-                            "cwd": str(self.fresh),
-                            "started_at": "2099-01-01T00:00:01Z",
-                            "finished_at": "2099-01-01T00:00:02Z",
-                        }
-                    )
-                    + "\n"
-                )
+                receipt.write_text(f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}\n')
             return completed(command, stdout=f"{self.fresh}\n")
         if (
             self.fresh is not None
@@ -131,12 +117,12 @@ class FakeRun:
         if (
             self.fresh is not None
             and command[:1] == ["git"]
-            and len(command) >= 6
+            and len(command) >= 7
             and command[1] == "-C"
-            and command[3:5] == ["cat-file", "-e"]
+            and command[3:5] == ["ls-files", "--error-unmatch"]
         ):
             owner = Path(command[2])
-            candidate = owner / command[-1].split(":", 1)[1]
+            candidate = owner / command[-1]
             relative = str(candidate.relative_to(self.fresh))
             tracked = set(self.fresh_tracked_jsonl.splitlines())
             return completed(command, rc=0 if relative in tracked else 1)
@@ -909,11 +895,11 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
     def test_a_receipt_under_an_UNANTICIPATED_name_is_still_retained(self) -> None:
-        """Why the test checks schema, not a whitelist of ledger filenames.
+        """Why the test is SHAPE, not a whitelist of ledger filenames.
 
         A whitelist fails in the dangerous direction: a receipt written under a
-        name nobody enumerated reads as "no evidence" and gets deleted. The row
-        is retained because its schema and cwd identify this exact run.
+        name nobody enumerated reads as "no evidence" and gets deleted. Any
+        untracked *.jsonl in the tree counts.
         """
         self.fake.ledger_rows = []
         self.plant_orphan_receipt("ci/some-unanticipated-receipt.jsonl")
@@ -994,153 +980,6 @@ class StartUnitTest(unittest.TestCase):
         # receipt in its own tree, so there is nothing to preserve and the tree
         # is reclaimed. Asserting retention here conflated the two.
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
-
-
-class OrphanedReceiptLocationsTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.checkout = Path(self.temporary.name) / "checkout"
-        self.checkout.mkdir()
-        subprocess.run(["git", "init", "-q", str(self.checkout)], check=True)
-        subprocess.run(
-            ["git", "-C", str(self.checkout), "config", "user.name", "fixture"],
-            check=True,
-        )
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(self.checkout),
-                "config",
-                "user.email",
-                "fixture@example.invalid",
-            ],
-            check=True,
-        )
-        (self.checkout / "README").write_text("fixture\n")
-        subprocess.run(["git", "-C", str(self.checkout), "add", "README"], check=True)
-        subprocess.run(
-            ["git", "-C", str(self.checkout), "commit", "-qm", "fixture"],
-            check=True,
-        )
-
-    @staticmethod
-    def runner(
-        command: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            command,
-            text=True,
-            capture_output=True,
-            **kwargs,
-        )
-
-    def write(self, relative: str, content: str) -> None:
-        target = self.checkout / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content)
-
-    def receipt(self, *, cwd: Path | None = None) -> str:
-        return (
-            json.dumps(
-                {
-                    "schema_version": 5,
-                    "repo": "hermit",
-                    "producer": "hermit-validate-rs",
-                    "commit": SHA,
-                    "tree": "b" * 40,
-                    "cwd": str(cwd or self.checkout),
-                    "started_at": "2099-01-01T00:00:01Z",
-                    "finished_at": "2099-01-01T00:00:02Z",
-                }
-            )
-            + "\n"
-        )
-
-    def scan(self) -> list[str]:
-        return start_unit.orphaned_receipt_locations(self.checkout, run=self.runner)
-
-    def test_validation_row_under_unexpected_name_is_reported(self) -> None:
-        self.write("ci/some-unanticipated-receipt.jsonl", self.receipt())
-        self.assertEqual(["ci/some-unanticipated-receipt.jsonl"], self.scan())
-
-    def test_malformed_checkout_ledger_file_is_reported(self) -> None:
-        self.write(
-            "ci/validate-ledger/hermit.test-host.jsonl",
-            '{"schema_version": 5, "repo": "hermit"',
-        )
-        self.assertEqual(["ci/validate-ledger/hermit.test-host.jsonl"], self.scan())
-
-    def test_untracked_e2e_results_jsonl_is_ignored(self) -> None:
-        self.write(
-            "ignored/e2e/portable/backend-parity-c/results.jsonl",
-            json.dumps(
-                {
-                    "schema": 2,
-                    "run_id": "local-fixture",
-                    "hermit_sha": SHA,
-                    "source_tree_dirty": False,
-                    "test": "backend-parity-c/personality-domain",
-                    "category": "backend-parity-c",
-                    "lane": "portable",
-                    "mode": "verify",
-                    "backend": "ptrace",
-                    "outcome": "PASS",
-                }
-            )
-            + "\n",
-        )
-        self.assertEqual([], self.scan())
-
-    def test_untracked_claude_fixture_jsonl_is_ignored(self) -> None:
-        self.write(
-            "agent-utils/py/tests/fixtures/claude/session.jsonl",
-            json.dumps(
-                {
-                    "type": "user",
-                    "uuid": "fixture-user",
-                    "parentUuid": None,
-                    "sessionId": "fixture-session",
-                    "message": {"role": "user", "content": "fixture"},
-                }
-            )
-            + "\n",
-        )
-        self.assertEqual([], self.scan())
-
-    def test_validation_row_for_another_checkout_is_ignored(self) -> None:
-        self.write("fixture/other-run.jsonl", self.receipt(cwd=Path("/other")))
-        self.assertEqual([], self.scan())
-
-    def test_tracked_validation_row_fixture_is_ignored(self) -> None:
-        self.write("fixture/tracked.jsonl", self.receipt())
-        subprocess.run(
-            ["git", "-C", str(self.checkout), "add", "fixture/tracked.jsonl"],
-            check=True,
-        )
-        subprocess.run(
-            ["git", "-C", str(self.checkout), "commit", "-qm", "tracked fixture"],
-            check=True,
-        )
-        self.assertEqual([], self.scan())
-
-    def test_staged_validation_row_is_reported(self) -> None:
-        self.write("fixture/staged.jsonl", self.receipt())
-        subprocess.run(
-            ["git", "-C", str(self.checkout), "add", "fixture/staged.jsonl"],
-            check=True,
-        )
-        self.assertEqual(["fixture/staged.jsonl"], self.scan())
-
-    def test_unreadable_directory_refuses_scan(self) -> None:
-        def unreadable(_root: Path, *, onerror):
-            onerror(OSError("cannot read fixture directory"))
-            return iter(())
-
-        with mock.patch.object(start_unit.os, "walk", unreadable):
-            with self.assertRaisesRegex(OSError, "cannot read fixture directory"):
-                self.scan()
 
 
 class LibunwindEnvTest(unittest.TestCase):

@@ -267,15 +267,6 @@ authority through skill `hermit-validation-authority`:
    itself uses `--match-head-commit` so a concurrent push cannot inherit that
    authorization. A failed merge call does not reuse this verdict: the next
    attempt starts at the gate and re-fetches both bases.
-5. **Stage a producer transition before landing a producer change.** At the
-   final mutation boundary, `land-pr.sh` compares the exact PR head with the
-   validated primary producer definition. A changed registered path is refused
-   unless the installed parent registry has an active transition bound to the
-   exact `rrnewton/hermit` PR and head, and the canonical receipt verifier
-   resolves that head to the complete candidate map. After the rebased commit
-   is proven on fetched Hermit main, finalize the transition through the
-   existing landed-replay procedure. Do not deploy consumer code first and
-   repair the parent registry afterward.
 
 ### `--no-rebase`: avoid an unnecessary rewrite
 

@@ -726,30 +726,6 @@ def _print_fields(report: Report) -> None:
         print(f"{key}={_field(value)}")
 
 
-def _gate_exit_code(report: Report, gate_on: str) -> int:
-    """Select the tick-hub emission path without changing the report verdict.
-
-    The ordinary checker remains fail-closed for every non-green report.  The
-    tick has two different consumers, though: genuine drift or an incomplete
-    measurement requires an action, while a named gate is a visible note.  A
-    single nonzero exit previously collapsed those two facts into one action.
-
-    The paths are deliberately disjoint.  If a report contains both a named
-    gate and drift/no-result, the action already carries the gated count and the
-    note stays quiet rather than emitting a second account of the same run.
-    """
-    drift = any(item.state in DRIFT_STATES for item in report.directives)
-    no_result = any(item.state in NO_RESULT_STATES for item in report.directives)
-    if gate_on == "alert":
-        if no_result:
-            return 2
-        return 1 if drift else 0
-    if gate_on == "notice":
-        gated = report.counts.get("gated", 0) > 0
-        return 1 if gated and not drift and not no_result else 0
-    return report.exit_code
-
-
 def quickstart() -> None:
     print("Owner directive tracker quickstart")
     print("1. Add the directive to ci-hub/directives/ledger.json when it is asked.")
@@ -769,15 +745,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-write", action="store_true")
     parser.add_argument("--quickstart", action="store_true")
-    parser.add_argument(
-        "--gate-on",
-        choices=("all", "alert", "notice"),
-        default="all",
-        help=(
-            "select tick-hub emission: alert for drift/no-result, notice for "
-            "named gates without drift; all preserves the fail-closed CLI verdict"
-        ),
-    )
     return parser.parse_args(argv)
 
 
@@ -795,10 +762,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except LedgerError as error:
         print(f"state=invalid\nsummary={_field(error)}")
-        # Invalid input belongs exclusively on the alert path.  Letting the
-        # notice path fail as well would turn one checker failure into two
-        # contradictory emissions.
-        return 0 if args.gate_on == "notice" else 2
+        return 2
     if not args.no_write:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(report.to_dict(), indent=2, sort_keys=True) + "\n")
@@ -806,7 +770,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(json.dumps(report.to_dict(), sort_keys=True))
     else:
         _print_fields(report)
-    return _gate_exit_code(report, args.gate_on)
+    return report.exit_code
 
 
 if __name__ == "__main__":

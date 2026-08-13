@@ -81,8 +81,7 @@ is nothing to adapt; do not copy a parent role merely to populate discovery.
 Do not copy parent coordinator roles, worktree policy, landing policy, or
 task-closure rules into a product repository. When working inside a product,
 its nested `AGENTS.md` adds build, architecture, and test requirements; the
-parent `AGENTS.md` Scope rule governs any conflict. Stop and report the exact
-conflict; do not choose by perceived strictness.
+stricter applicable rule wins.
 
 Archived skills live under `.claude/archived_skills/` and are not part of normal
 discovery.

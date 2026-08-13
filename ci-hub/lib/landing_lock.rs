@@ -2931,14 +2931,6 @@ fn scan_descendants(root_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
         .collect())
 }
 
-/// Observe the supervisor's current descendants without signalling them.
-/// Reap completed adopted children first so callers can give normally exiting
-/// payload helpers time to drain before taking a frozen residual census.
-pub(crate) fn observe_descendants(supervisor_pid: u32) -> io::Result<Vec<ProcessIdentity>> {
-    reap_exited_children();
-    scan_descendants(supervisor_pid)
-}
-
 fn scan_process_stat_fields(pid: u32) -> io::Result<(char, u32, u64)> {
     #[cfg(test)]
     if SCAN_UNREADABLE_PID.load(std::sync::atomic::Ordering::SeqCst) == pid {

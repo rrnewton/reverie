@@ -163,15 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     result = measure()
-    if args.as_json:
-        print(json.dumps(result, indent=2, sort_keys=True))
-    elif args.gate:
-        # Tick-hub capture consumes key=value lines.  The reminder templates use
-        # {summary}, so gate mode must publish that exact field rather than only
-        # the human report used by the direct CLI.
-        print(f"summary={render(result)}")
-    else:
-        print(render(result))
+    print(json.dumps(result, indent=2, sort_keys=True) if args.as_json else render(result))
     if not args.gate:
         return 0
 

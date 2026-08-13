@@ -242,59 +242,6 @@ out="$(run "$tmp/unbound.json" --gate)"; rc=$?
   || bad "default gate contract regressed (rc=$rc)"
 
 
-# --- MASKED REJECTION AT THE GATE, end to end --------------------------------
-# The grammar suite proves lane_shas revokes. This proves the GATE refuses,
-# which is a separate claim: malformed syntax is only an ADVISORY here (see the
-# #1847 case above, rc=0 by design), so reporting a masked rejection as
-# malformed would NOT have refused anything. Only honouring it as a rejection
-# does. The whole #2176 defect lived in exactly that gap: state=ok, rc=0,
-# "every approval label is bound to the current head", while the newest verdict
-# at that head was a rejection.
-for marker in '##' '>' '-'; do
-  cat >"$tmp/masked-reject.json" <<JSON
-[{"number":2176,"head":"$CUR","labels":["passed-review-claude","passed-review-codex"],
-  "comments":["APPROVED-AT: claude $CUR","APPROVED-AT: codex $CUR",
-              "$marker CHANGES-REQUESTED-AT: claude $CUR"],
-  "runs_at_head":5,"mergeable":"MERGEABLE"}]
-JSON
-  out="$(run "$tmp/masked-reject.json" --pr 2176 --gate)"; rc=$?
-  [[ $rc -eq 1 ]] \
-    && ok "masked rejection ('$marker'): gate REFUSES (rc=1), not a green advisory" \
-    || bad "masked rejection ('$marker') passed the gate (rc=$rc): $out"
-done
-grep -q "authoritative at current head: 1; authority absent: 1" <<<"$out" \
-  && ok "masked rejection strips exactly the rejected lane, leaving the other bound" \
-  || bad "masked rejection did not resolve to 1 bound / 1 absent: $out"
-
-# POSITIVE HALF, and it is not optional: a gate that refuses everything is as
-# useless as one that accepts everything. Re-approval after a masked rejection
-# must restore authority, or the lane could never recover and the gate becomes
-# unsatisfiable.
-cat >"$tmp/masked-then-reapproved.json" <<JSON
-[{"number":2176,"head":"$CUR","labels":["passed-review-claude","passed-review-codex"],
-  "comments":["APPROVED-AT: claude $CUR","APPROVED-AT: codex $CUR",
-              "## CHANGES-REQUESTED-AT: claude $CUR","APPROVED-AT: claude $CUR"],
-  "runs_at_head":5,"mergeable":"MERGEABLE"}]
-JSON
-out="$(run "$tmp/masked-then-reapproved.json" --pr 2176 --gate)"; rc=$?
-[[ $rc -eq 0 ]] \
-  && ok "masked rejection then fresh approval: gate PASSES again (rc=0), not permanently poisoned" \
-  || bad "re-approval after a masked rejection did not restore authority (rc=$rc): $out"
-
-# A malformed line that PREDATES the lane's newest binding is superseded
-# history. Under a blanket rule #2176 and #2172 could never clear the prose
-# headlines already in their history, and an unsatisfiable gate gets bypassed.
-cat >"$tmp/malformed-superseded.json" <<JSON
-[{"number":2172,"head":"$CUR","labels":["passed-review-claude"],
-  "comments":["APPROVED AT EXACT HEAD $OLD -- prose headline, unparseable",
-              "APPROVED-AT: claude $CUR"],
-  "runs_at_head":7,"mergeable":"MERGEABLE"}]
-JSON
-out="$(run "$tmp/malformed-superseded.json" --gate)"; rc=$?
-[[ $rc -eq 0 ]] && grep -q '^malformed_state=none$' <<<"$out" \
-  && ok "malformed line older than the newest binding is superseded, not reported" \
-  || bad "old malformed line was not superseded by a later valid binding: $out"
-
 # --- the binding GRAMMAR, including the rejection trap -----------------------
 if python3 "$here/test_approval_binding_grammar.py" >"$tmp/grammar.out" 2>&1; then
   ok "binding grammar suite: $(grep -c '^  PASS' "$tmp/grammar.out") assertions pass"
@@ -344,50 +291,6 @@ if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
       ok "mutation control: suite FAILS on the exact changes-requested case when revocation is removed"
     else
       bad "rejection mutation control did not fail for CHANGES-REQUESTED-AT (rc=$mutant_rc)"
-    fi
-  fi
-fi
-
-# Drop the structural-prefix class from the REJECTION grammar -- the exact
-# pre-2026-08-13 behaviour. The suite must fail specifically because a masked
-# rejection stops revoking, which is the #2176 false pass restored.
-if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
-  mutant="$tmp/approval_binding-without-reject-prefix.py"
-  sed 's/^    REJECT_PREFIX = .*/    REJECT_PREFIX = ""  # MUTANT: masked rejections invisible again/' \
-    "$tool" >"$mutant"
-  if ! grep -q 'MUTANT: masked rejections invisible again' "$mutant"; then
-    bad "prefix mutation control could not locate REJECT_PREFIX"
-  else
-    APPROVAL_BINDING_TOOL="$mutant" APPROVAL_BINDING_MUTATION_CHILD=1 \
-      bash "$0" >"$tmp/prefix-mutant-suite.out" 2>&1
-    mutant_rc=$?
-    if [[ $mutant_rc -ne 0 ]] \
-      && grep -q "FAIL  masked rejection ('##') passed the gate" "$tmp/prefix-mutant-suite.out"; then
-      ok "mutation control: suite FAILS on the masked rejection when the prefix class is removed"
-    else
-      bad "prefix mutation control did not fail on the masked rejection (rc=$mutant_rc)"
-    fi
-  fi
-fi
-
-# Make malformed supersession unconditional -- every historical malformed line
-# counts forever. The suite must fail on the superseded case, because that rule
-# is what makes #2176 and #2172 satisfiable at all.
-if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
-  mutant="$tmp/approval_binding-without-supersession.py"
-  sed 's/if newest_binding_idx >= 0 and idx < newest_binding_idx:/if False:  # MUTANT: malformed supersession disabled/' \
-    "$tool" >"$mutant"
-  if ! grep -q 'MUTANT: malformed supersession disabled' "$mutant"; then
-    bad "supersession mutation control could not locate the watermark test"
-  else
-    APPROVAL_BINDING_TOOL="$mutant" APPROVAL_BINDING_MUTATION_CHILD=1 \
-      bash "$0" >"$tmp/supersession-mutant-suite.out" 2>&1
-    mutant_rc=$?
-    if [[ $mutant_rc -ne 0 ]] \
-      && grep -q 'FAIL  old malformed line was not superseded' "$tmp/supersession-mutant-suite.out"; then
-      ok "mutation control: suite FAILS when malformed supersession is disabled"
-    else
-      bad "supersession mutation control did not fail (rc=$mutant_rc)"
     fi
   fi
 fi

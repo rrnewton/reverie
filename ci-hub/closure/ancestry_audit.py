@@ -109,7 +109,7 @@ def load_prs(root: Path, repo: str, limit: int, herdr_agent: str | None) -> dict
     if slug is None:
         return {}
     cmd = (f"with-proxy gh pr list -R {slug} --state all --limit {limit} "
-           f"--json number,state,mergeCommit,headRefOid,headRefName")
+           f"--json number,state,mergeCommit,headRefOid")
     if herdr_agent:
         run = subprocess.run(
             [str(root / "agent-utils/bin/herdr-run"), "--agent", herdr_agent, cmd],
@@ -137,95 +137,6 @@ def load_prs(root: Path, repo: str, limit: int, herdr_agent: str | None) -> dict
     return {r["number"]: r for r in rows}
 
 
-# A line's LEADING CLAUSE -- everything before its first colon -- says what the
-# line is. `IMPLEMENTED: <url> | branch ...` is this task claiming an artifact;
-# `FROM pr418_claude_review: ...` is this task QUOTING another task's artifact.
-# The clause must BEGIN with the claim token, not merely contain it. An optional
-# slash qualifier is allowed because `FINAL/IMPLEMENTED:` occurs in the corpus,
-# but it may not be a negator, so `NOT/IMPLEMENTED` cannot sneak in that way.
-CLAIM_HEAD = re.compile(
-    r"^\s*(?:(?!NOT\b|NEVER\b|NO\b)[A-Za-z][A-Za-z0-9-]*/)?IMPLEMENTED\b", re.I
-)
-CLAIM_HEAD_MAX = 60
-
-
-def is_claim_line(line: str) -> bool:
-    """Does this line CLAIM an artifact for its own task, rather than cite one?
-
-    *** THE FOURTH ROUTE TO A PHANTOM LANDED, FOUND BY hermit-906. ***
-    pile() is database-row clean -- it selects notes by t.local_id and never
-    pulls a description, a parent, a dependency, an inherited field or a GitHub
-    body -- so there is no cross-task ROW contamination. But it FLATTENS every
-    note into one string, and a task that QUOTES another task's pull request
-    quotes it precisely: url, branch and head together, because that is how
-    anyone cites a PR usefully. Two strong signals then co-occur in text that
-    was never a claim.
-
-    ADDING A THIRD SIGNAL CANNOT FIX THIS. The signals co-occur BECAUSE the
-    quotation is precise, so any further co-occurring signal is satisfied by the
-    same quotation. The discriminator has to be claim-versus-citation, not more
-    agreement.
-
-    DERIVED FROM THE CORPUS, NOT GUESSED. Across every task note carrying a pull
-    request URL, the leading clause is `IMPLEMENTED` (and its variants
-    `IMPLEMENTED AND LANDED`, `IMPLEMENTED FIX-FORWARD`, `FINAL/IMPLEMENTED`,
-    `IMPLEMENTED (widened #2092)`) 47 times, and an attribution clause --
-    `FROM pr417_codex_review`, `FROM hermit-lander`, `FROM hermit-901` -- 28
-    times. Measured effect on the live pile: 18 of the 19 pull-request-attributed
-    LANDED verdicts keep their attribution, and the one that drops is
-    `fix-417-model-0xcf`, whose only reference is
-    `FROM pr418_claude_review: ...` -- a REAL instance of 906's fixture, not a
-    constructed one.
-
-    *** THE FIFTH ROUTE, found by hermit-deslop verifying the fourth fix. ***
-    Recognising the token ANYWHERE in the leading clause accepted a clause that
-    NEGATES or DISOWNS it, because the marker is present in a sentence saying the
-    opposite. More signals could not discriminate that -- a disowned claim
-    carries the same markers as a claim -- so the axis had to change from "is the
-    marker present" to "does this clause CLAIM, or mention a claim".
-
-    THE BOUNDARY IS AGAIN CORPUS-DERIVED, and the corpus is emphatic. Of the
-    claim-shaped clauses carrying the token, 101 have NOTHING before it, one has
-    the qualifier `FINAL/`, and exactly three have something else -- and all
-    three are the hazard:
-
-        PRESERVED CHECKPOINT (not published, not implemented ...
-        PUBLISHED DRAFT (not implemented/closed) ...
-        FROM hermit-905 IMPLEMENTED PRIVATE COMMIT: ...
-
-    So the clause must BEGIN with the token. That refuses all three and keeps
-    102 of 105. Note the third: the plain `FROM x:` attribution form was already
-    refused because its clause lacks the token, but `FROM x IMPLEMENTED ...`
-    slipped through the CONTAINS test -- the attribution and the marker in one
-    clause.
-
-    NO NEGATOR DENYLIST IS APPLIED TO THE WHOLE CLAUSE, deliberately. The anchor
-    already refuses every observed hazard, and scanning the clause for "not"
-    would refuse a genuine `IMPLEMENTED (not blocking):`. That is the too-tight
-    failure this function already committed once, on `FINAL/IMPLEMENTED`, and a
-    false negative silently converts real work into NOT-DETERMINABLE. The guard
-    is scoped to the qualifier alone, where it costs nothing.
-
-    Markdown-prefixed and quote-opened forms (`## IMPLEMENTED:`, `"IMPLEMENTED:`)
-    are refused by the same anchor. They do NOT occur in the corpus -- 0
-    occurrences of each -- so they are closed as a consequence of anchoring
-    rather than as a measured need; recorded that way rather than claimed as a
-    finding.
-
-    THIS CHECK IS CONVENTION-DEPENDENT AND THAT IS A KNOWN LIMIT, not a claim of
-    soundness. It holds because agents write `IMPLEMENTED:`, exactly the shape
-    hermit-903 warned about when it found the branch match holding by naming
-    convention. It fails CLOSED -- an unrecognised claim form yields
-    NOT-DETERMINABLE, never a phantom LANDED -- which is why it is worth having
-    meanwhile. The durable fix is a structured task-to-PR field; `task_diffs`
-    and `task_attachments` both exist in the schema and both hold 0 rows today,
-    so that is an owner and infrastructure decision, not something this audit
-    can derive from prose.
-    """
-    head = line.split(":", 1)[0] if ":" in line else ""
-    return len(head) <= CLAIM_HEAD_MAX and bool(CLAIM_HEAD.match(head))
-
-
 def pile(db: Path) -> list[dict]:
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     con.text_factory = lambda b: b.decode("utf-8", "replace")
@@ -249,26 +160,6 @@ def pile(db: Path) -> list[dict]:
             "bare_prs": sorted({int(m.group(1)) for m in BARE_PR.finditer(notes)}),
             "shas": sorted(set(SHA40.findall(notes))),
             "artifacts": sorted(set(ARTIFACT.findall(notes))),
-            # The raw note text, so PR attribution can look for the SECOND
-            # signal. Without it a PR URL is a lone mention, which is exactly
-            # how the phantom LANDED survived the first fix.
-            "text": notes,
-            # Only the lines that CLAIM an artifact for this task. Pull-request
-            # signals are read from here, never from flattened prose, so a
-            # quoted citation of another task's PR cannot attribute.
-            # SPLIT ON THE NOTE SEPARATOR FIRST. group_concat joins notes with
-            # ' ~~ ' and the stored content arrives with its newlines already
-            # collapsed, so `notes` is ONE line for the whole task: splitting on
-            # "\n" alone finds no lines to classify and every task loses its
-            # claim. Measured when that was wrong: 4 of 19 pull-request
-            # attributions survived instead of 18. This is the same flattening
-            # hermit-906 named, one layer down.
-            "claim_text": "\n".join(
-                seg
-                for chunk in notes.split(" ~~ ")
-                for seg in chunk.split("\n")
-                if is_claim_line(seg)
-            ),
         })
     return out
 
@@ -280,7 +171,6 @@ class Ancestry:
         self.root = root
         self._anc: dict[tuple[str, str], tuple[bool, bool]] = {}
         self._subjects: dict[str, dict[str, list[str]]] = {}
-        self._claims: dict[tuple[str, str, str], bool] = {}
 
     def test(self, repo: str, sha: str) -> tuple[bool, bool]:
         """(is_ancestor_of_origin_main, object_present_locally)"""
@@ -293,27 +183,6 @@ class Ancestry:
         ).returncode == 0
         self._anc[key] = (anc, present)
         return self._anc[key]
-
-    def claims_task(self, repo: str, sha: str, task: str) -> bool:
-        """Does THIS COMMIT say it implements THIS TASK?
-
-        AGENTS.md requires an implementing commit to carry `Task: <task-id>`.
-        That trailer is the only thing in the system by which a commit ASSERTS
-        which task it is, so it is the attribution used here for any SHA that
-        did not arrive through a task-linked pull request.
-        """
-        key = (repo, sha, task)
-        if key in self._claims:
-            return self._claims[key]
-        body = git(self.root, repo, "log", "-1", "--format=%B", sha).stdout
-        found = bool(
-            body
-            and re.search(
-                rf"(?mi)^\s*Task:\s*`?{re.escape(task)}`?\s*$", body
-            )
-        )
-        self._claims[key] = found
-        return found
 
     def _index(self, repo: str) -> dict[str, list[str]]:
         """subject -> [main-side SHAs]. Built once per repo."""
@@ -350,266 +219,61 @@ def normalize_subject(subject: str) -> str:
     return re.sub(r"\s*\(#\d+\)\s*$", "", subject).strip()
 
 
-# Characters that can be part of a branch-name-shaped token. A match flanked by
-# one of these is a FRAGMENT of a longer token, not a reference to the branch.
-_BRANCH_TOKEN = r"A-Za-z0-9._/\-"
-
-
-def _bounded(needle: str, haystack: str, token_class: str) -> bool:
-    """Is `needle` present in `haystack` as a WHOLE token?
-
-    *** THE UNANCHORED VERSION WAS CORRECT ONLY BY ACCIDENT. ***
-    This used to be `needle in haystack`. hermit-903 found it by EXECUTING
-    pr_attribution rather than reading it, and its diagnosis is the reason this
-    function exists: the gate held because of a NAMING CONVENTION plus
-    REDUNDANT COVERAGE, not because the code checked anything. Measured at the
-    time: 200 hermit pull requests sampled, shortest branch 18 characters, all
-    multi-token, and of the 19 pull-request-attributed LANDED verdicts the 16
-    carrying `branch` ALSO carried `head_sha`. So the hole could not have
-    produced a verdict in that run -- and nothing forbids the branch name `fix`,
-    which would match "prefix", "fixture", and "bugfix-notes" on the next run.
-    A convention nobody enforces is not a check.
-
-    `head_sha` shares the shape and is anchored here too, for the same reason
-    rather than a measured miss: `head[:12] in text` can match inside a LONGER
-    hex run, and 30 task notes in the live database carry hex runs over 40
-    characters -- sha256 digests, which this tool's own seal records emit. Hex
-    uses a hex-only boundary so a full 40-hex SHA still matches when it sits
-    next to `=` or a bracket, while a 12-hex prefix buried at an offset inside a
-    64-hex digest does not.
-    """
-    return re.search(
-        rf"(?<![{token_class}]){re.escape(needle)}(?![{token_class}])", haystack
-    ) is not None
-
-
-def pr_attribution(item: dict, row: dict, *, url_seen: bool) -> tuple[str, list[str]]:
-    """Is THIS pull request attributable to THIS task? Agreement, not mention.
-
-    *** THIS IS THE SECOND HALF OF THE 2026-08-12 FIX AND THE MORE INSTRUCTIVE
-    HALF. *** The first pass closed every SHA-shaped route to a phantom LANDED
-    and left the URL-shaped one open, because `pile()` builds `item["prs"]`
-    from `PR_URL.finditer(notes)` -- ANY full pull-request URL appearing in any
-    note. That was read as "linked to the task" when it only ever meant
-    "mentioned somewhere". hermit-904's independent verification reproduced the
-    phantom LANDED with an unrelated full URL. The lesson recorded here for the
-    next reader: the first fix generalised over the modes that had been
-    DIAGNOSED (two of them SHA-shaped) instead of over the mechanism that
-    produced them, so the one route with a single example stayed open.
-
-    The standard is not invented here. `ci-hub/landing/task_pr_join.py` already
-    settled it for the same question -- which task owns which PR -- after both
-    single-signal methods failed, and its rule is AGREEMENT ACROSS INDEPENDENT
-    SIGNALS: at least one STRONG identity signal AND at least two signals in
-    total. A lone STRONG signal is PROBABLE, never CONFIRMED, and only
-    CONFIRMED may authorise a close. A bare `#N` is WEAK there ("a rollup
-    mention is not ownership") and is weak here.
-
-        STRONG   pr_url    the full URL is in the task text
-                 head_sha  the PR head SHA, or its 12-hex prefix, is in the text
-                 branch    the PR head branch name appears verbatim
-        WEAK     pr_num    a bare `#N` -- corroborator only, never alone
-
-    Measured on the live pile when this landed: of the 19 LANDED verdicts that
-    rested on a pull request, 17 are CONFIRMED and 2 are lone-URL PROBABLE. So
-    the standard keeps genuinely landed work binding while refusing exactly the
-    shape 904 exploited.
-    """
-    # CLAIM lines only -- see is_claim_line() for why flattened prose cannot
-    # be trusted here, and why a third signal would not have helped.
-    text = item.get("claim_text") or ""
-    num = row.get("number")
-    strong: list[str] = []
-    weak: list[str] = []
-    # `url_seen` only says the URL is SOMEWHERE in the notes -- which is how the
-    # quotation route worked. The signal must come from a CLAIM line like every
-    # other one, or claim-scoping is bypassed by its own entry condition.
-    if url_seen and num is not None and re.search(rf"/pull/{num}(?![0-9])", text):
-        strong.append("pr_url")
-    head = row.get("headRefOid") or ""
-    if head and (
-        _bounded(head, text, "0-9a-fA-F")
-        or _bounded(head[:12], text, "0-9a-fA-F")
-    ):
-        strong.append("head_sha")
-    branch = row.get("headRefName") or ""
-    if branch and _bounded(branch, text, _BRANCH_TOKEN):
-        strong.append("branch")
-    if num is not None and re.search(rf"#{num}\b", text):
-        weak.append("pr_num")
-    signals = strong + weak
-    # WHY ONE STRONG SIGNAL IS NOW ENOUGH, having previously required two.
-    # The two-strong rule was a PROXY for "this is not a passing mention",
-    # adopted when signals were read from flattened prose where a citation and
-    # a claim were indistinguishable. Since hermit-906's finding, `text` is
-    # CLAIM LINES ONLY, which answers that question directly and better: a pull
-    # request URL on a line whose leading clause is `IMPLEMENTED` is the task
-    # asserting the artifact as its own, and there is no mention left to guard
-    # against. Keeping both stacked was measured against the live pile and cost
-    # 15 of 19 genuine verdicts -- the proxy firing on top of the real check,
-    # because a claim line carries the URL while the branch and head often sit
-    # on neighbouring lines. Replacing the proxy with the real discriminator
-    # keeps 18 of 19 and drops exactly the quotation, which is the outcome the
-    # proxy was approximating. The weak `pr_num` still never suffices alone. `head_sha` and `branch` are
-    # facts about the PR that a mention does not carry.
-    #
-    # MEASURED COST ON THE LIVE PILE: ZERO. Before and after the gate the audit
-    # reports the same 19 PR-attributed LANDED verdicts, because every one of
-    # them carries head_sha and/or branch agreement in its notes -- a validation
-    # receipt quotes the head, and a landing note names the branch. An earlier
-    # estimate here said "15 instead of 17"; that came from an offline harness
-    # that split `tg sql` output on a separator multi-line notes break, so it
-    # truncated each task's text and under-counted signals. The running code was
-    # right and the estimate was wrong; the number above is what the audit
-    # actually emits. The gate costs nothing on real data and closes the route
-    # hermit-904 exploited.
-    if strong:
-        return "CONFIRMED", signals
-    return "NONE", signals
-
-
 def classify(item: dict, prs: dict, anc: Ancestry) -> dict:
-    """Bucket one task by whether ITS OWN change landed.
-
-    *** ANCESTRY ALONE IS NOT EVIDENCE, AND THAT IS THE WHOLE POINT. ***
-
-    Until 2026-08-12 this collected every SHA and PR number that appeared
-    anywhere in a task's notes, tested each for ancestry of `origin/main`, and
-    returned LANDED on the first hit. Measured against the live pile it
-    reported 58 LANDED and 0 NOT-LANDED while seventeen pull requests sat open
-    and unlandable, because a commit does not have to be the task's change to
-    be an ancestor of main:
-
-      * `p1_compat_lsof_is` was LANDED on `why="note SHA in hermit"`,
-        sha `1f4e430c1352` -- which is hermit MAIN'S OWN TIP, quoted in a note
-        and trivially an ancestor of itself -- while the same record carried
-        `pr_states=["hermit#2221:OPEN"]`.
-      * `compat_bin_c_robust` and `p1_promoting_an_e2e` were LANDED on the
-        mergeCommit of bare PR #2071, a DIFFERENT pull request mentioned in
-        passing, while their own #2223 and #2220 were open.
-      * `port-peer-snapshot-protocol-into-validate-rs` was LANDED on a
-        dev-hermit SHA while its hermit PR #2222 was open.
-
-    Acting on the resulting "closable on ancestry now: 58" would have closed 58
-    tasks whose work was not landed -- undoing the close-only-after-landing rule
-    automatically, at scale, and looking like routine cleanup.
-
-    THE ORDER MATTERS. Identify WHICH commit is the change, THEN test ancestry.
-    Reversing it reproduces the defect in better-looking code. A candidate is
-    admissible only when something binds it to THIS task:
-
-      linked-pr     the pull request is linked to the task and we take its
-                    `mergeCommit.oid`, in that pull request's OWN repository.
-      task-trailer  the commit message carries `Task: <task-id>`, i.e. the
-                    commit itself asserts which task it implements.
-
-    A SHA merely quoted in a note, the mergeCommit of an incidentally-mentioned
-    bare PR, and a SHA tried against a repository it did not come from are all
-    NON-EVIDENCE. They are still listed in `refused` so the record shows what
-    was inspected and why it did not count.
-
-    When candidates exist but none is admissible the bucket is
-    NOT-DETERMINABLE, never LANDED and never NOT-LANDED. A stalled task costs a
-    prompt; a wrongly closed one costs the work.
-    """
-    task = item["task"]
-    admissible: list[tuple[str, str, str]] = []   # (repo, sha, provenance)
-    refused: list[str] = []
+    cands: list[tuple[str, str, str]] = []   # (repo, sha, provenance)
     notes: list[str] = []
-    seen: set[tuple[str, str]] = set()
 
-    def consider(repo: str, sha: str, why: str, *, linked: bool) -> None:
-        if (repo, sha) in seen:
-            return
-        seen.add((repo, sha))
-        if linked:
-            admissible.append((repo, sha, why))
-        elif anc.claims_task(repo, sha, task):
-            admissible.append((repo, sha, f"{why}; commit carries Task: {task}"))
-        else:
-            refused.append(f"{why} [{sha[:12]}]: not attributable to this task")
-
-    # A. Pull requests whose URL appears in the task text. A URL IS A MENTION,
-    #    NOT AN ATTRIBUTION -- it counts only when a second independent signal
-    #    agrees. See pr_attribution().
     for repo, num in item["prs"]:
         row = prs.get(repo, {}).get(num)
         if row is None:
             notes.append(f"{repo}#{num}:not-in-window-or-no-API")
             continue
-        notes.append(f"{repo}#{num}:{row['state']}")
         oid = (row.get("mergeCommit") or {}).get("oid")
-        if not oid:
-            continue
-        verdict, signals = pr_attribution(item, {**row, "number": num}, url_seen=True)
-        if verdict == "CONFIRMED":
+        notes.append(f"{repo}#{num}:{row['state']}")
+        if oid:
             # mergeCommit.oid ONLY -- never headRefOid, never the MERGED flag.
-            consider(repo, oid,
-                     f"mergeCommit of {repo}#{num} CONFIRMED by {'+'.join(signals)}",
-                     linked=True)
-        else:
-            refused.append(
-                f"mergeCommit of {repo}#{num} [{oid[:12]}]: pull request is "
-                f"{verdict} for this task ({'+'.join(signals) or 'no signal'}); "
-                f"a mention is not an attribution")
-
-    # B. Bare PR numbers found in prose. WEAK by construction -- it can never
-    #    reach CONFIRMED on its own, so it only counts if the merge commit
-    #    itself claims the task.
+            cands.append((repo, oid, f"mergeCommit of {repo}#{num}"))
     for num in item["bare_prs"]:
         for repo in ("hermit", "reverie"):
             row = prs.get(repo, {}).get(num)
-            if not row:
-                continue
-            notes.append(f"{repo}#{num}:{row['state']}(bare)")
-            oid = (row.get("mergeCommit") or {}).get("oid")
-            if oid:
-                consider(repo, oid, f"mergeCommit of bare PR #{num}->{repo}", linked=False)
-            break
-
-    # C. Bare SHAs found in prose, in any repository. Non-evidence on their own.
+            if row:
+                oid = (row.get("mergeCommit") or {}).get("oid")
+                notes.append(f"{repo}#{num}:{row['state']}(bare)")
+                if oid:
+                    cands.append((repo, oid, f"mergeCommit of bare PR #{num}->{repo}"))
+                break
     for sha in item["shas"]:
         for repo in REPOS:
-            if anc.test(repo, sha)[1]:
-                consider(repo, sha, f"note SHA in {repo}", linked=False)
+            cands.append((repo, sha, f"note SHA in {repo}"))
 
     present_any = False
-    for repo, sha, why in admissible:
+    for repo, sha, why in cands:
         is_anc, present = anc.test(repo, sha)
         present_any |= present
         if is_anc:
             return {**item, "bucket": "LANDED", "repo": repo, "sha": sha,
-                    "why": why, "refused": refused, "pr_states": notes}
+                    "why": why, "pr_states": notes}
 
-    # CAVEAT 1: SHA miss -> try subject, but ONLY for an admissible candidate.
-    for repo, sha, why in admissible:
-        if not anc.test(repo, sha)[1]:
+    # CAVEAT 1: SHA miss -> try subject. Reported as its own state.
+    for repo, sha, why in cands:
+        _, present = anc.test(repo, sha)
+        if not present:
             continue
         main_sha, detail = anc.by_subject(repo, sha)
         if main_sha:
             return {**item, "bucket": "LANDED-BY-SUBJECT", "repo": repo, "sha": main_sha,
-                    "why": f"{why}; recorded {sha[:12]} is not an ancestor, but {detail}",
-                    "refused": refused, "pr_states": notes}
+                    "why": f"recorded {sha[:12]} is not an ancestor, but {detail}",
+                    "pr_states": notes}
 
-    if admissible:
-        if present_any:
-            return {**item, "bucket": "NOT-LANDED",
-                    "why": "attributable commit(s) exist locally; none is an ancestor of "
-                           "origin/main and no commit on main carries their subject",
-                    "refused": refused, "pr_states": notes}
-        return {**item, "bucket": "UNKNOWN",
-                "why": "attributable commit(s) are not present in any known repo",
-                "artifacts": item["artifacts"], "refused": refused, "pr_states": notes}
-
-    if refused:
-        return {**item, "bucket": "NOT-DETERMINABLE",
-                "why": (f"{len(refused)} candidate(s) inspected, none attributable to this "
-                        f"task: no linked-PR mergeCommit and no commit carrying "
-                        f"Task: {task}"),
-                "artifacts": item["artifacts"], "refused": refused, "pr_states": notes}
+    if present_any:
+        return {**item, "bucket": "NOT-LANDED",
+                "why": "candidate commit(s) exist locally; none is an ancestor of origin/main "
+                       "and no commit on main carries their subject",
+                "pr_states": notes}
     return {**item, "bucket": "UNKNOWN",
-            "why": "no PR link and no 40-hex SHA in any note",
-            "artifacts": item["artifacts"], "refused": refused, "pr_states": notes}
+            "why": ("no PR link and no 40-hex SHA in any note" if not cands
+                    else "referenced commit(s) not present in any known repo"),
+            "artifacts": item["artifacts"], "pr_states": notes}
 
 
 def main() -> int:
@@ -665,18 +329,13 @@ def main() -> int:
     counts = Counter(r["bucket"] for r in results)
 
     print("\n=== buckets ===")
-    for b in ("LANDED", "LANDED-BY-SUBJECT", "NOT-LANDED",
-              "NOT-DETERMINABLE", "UNKNOWN"):
+    for b in ("LANDED", "LANDED-BY-SUBJECT", "NOT-LANDED", "UNKNOWN"):
         print(f"  {b:18s} {counts[b]:4d}")
     print(f"  {'TOTAL':18s} {len(results):4d}")
     closable = counts["LANDED"] + counts["LANDED-BY-SUBJECT"]
     real = counts["NOT-LANDED"]
     print(f"\nclosable on ancestry now : {closable}")
     print(f"real drain queue         : {real}")
-    print(f"NOT-DETERMINABLE         : {counts['NOT-DETERMINABLE']}  "
-          f"-- candidates inspected, none attributable to the task; NOT closable, "
-          f"NOT proof of unlanded. Give the task a linked PR or an implementing "
-          f"commit carrying `Task: <task-id>`.")
     print(f"UNKNOWN (NOT not-landed) : {counts['UNKNOWN']}  "
           f"-- research/artifact closure, needs close-task --artifact")
     if args.agents:

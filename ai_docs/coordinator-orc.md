@@ -36,10 +36,8 @@ on 2026-08-08).
 
 **Repair by ADOPTION, never release-then-reallocate** — that collides slots and has already broken one.
 On arrival the living owner re-runs the exact `allocate-worktree.rs` line, no flags, and the row gains
-`tmux_pane_id` + `cgroup_path`. The resulting owner sidecar carries a TTL; expiry only makes reclaim
-eligible and never proves owner death, process absence, cleanliness, or remote durability. A plain
-release without `--clean` retains the physical cache and marks the machine row `released`; only a
-successful clean reclaim drops the row.
+`tmux_pane_id` + `cgroup_path`. Leases never expire, so an unadopted row stays un-`--clean`-able once its
+owner dies; a plain release without `--clean` still deregisters it, and only disk reclaim is blocked.
 
 ## Verify Before You Replace (Hard Invariant 16)
 

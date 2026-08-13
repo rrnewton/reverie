@@ -47,18 +47,6 @@ def row(root: Path, *, record_id: str = "host-1-7", host: str = "hosta") -> dict
         "result": "pass",
         "commit": commit,
         "cwd": str(checkout),
-        "host_after": {
-            "load1": 0.0,
-            "load5": 0.0,
-            "load15": 0.0,
-            "nproc": 1,
-            "concurrent_procs": 0,
-            "proc_pattern": "hermit",
-            "cpu_pressure_avg10": 0.0,
-            "mem_pressure_avg10": 0.0,
-            "mem_avail_ratio": 1.0,
-            "captured_at": "2026-08-09T01:01:00Z",
-        },
     }
 
 
@@ -155,76 +143,6 @@ def test_record_is_immediately_visible_through_canonical_union(tmp_path: Path):
     assert report["published_shard"] == "ledger/hermit/hosta/2026-08.jsonl"
     assert not (tmp_path / report["published_shard"]).exists()
     assert validate_rows.rows(root=tmp_path) == [source]
-
-
-def test_record_retains_leaf_failure_and_host_sample_before_log_eviction(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    source = row(tmp_path, record_id="failed-with-diagnostics")
-    source.pop("host_after")
-    source["result"] = "fail"
-    source["exit_code"] = 1
-    source["gates"] = [{"name": "portable CI DAG manifest", "result": "fail"}]
-    log = tmp_path / "validate.log"
-    log.write_text(
-        "[build.runtime_release] scheduler_impl.h:1325: undefined reference to "
-        "`dynamorio::drmemtrace::op_infile[abi:cxx11]'\n"
-        "[build.runtime_release] ✗ FAIL   build.runtime_release (exit 101)\n"
-    )
-    source["log_file"] = str(log)
-
-    class FixedHostConditions:
-        @staticmethod
-        def sample(proc_pattern: str):
-            assert proc_pattern == "hermit"
-            return FixedHostConditions()
-
-        def as_dict(self):
-            return {
-                "load1": 12.5,
-                "load5": 8.0,
-                "load15": 4.0,
-                "nproc": 8,
-                "concurrent_procs": 3,
-                "proc_pattern": "hermit",
-                "cpu_pressure_avg10": 21.0,
-                "mem_pressure_avg10": 0.0,
-                "mem_avail_ratio": 0.5,
-                "captured_at": "2026-08-09T01:01:00Z",
-            }
-
-    attribution_dir = Path(__file__).resolve().parents[2] / "attribution"
-    sys.path.insert(0, str(attribution_dir))
-    import attribution
-
-    monkeypatch.setattr(attribution, "HostConditions", FixedHostConditions)
-    validate_rows.record(source, root=tmp_path)
-
-    # The log may disappear immediately after record(); the canonical row must
-    # remain sufficient to name the leaf and its cause.
-    log.unlink()
-    [recorded] = validate_rows.rows(root=tmp_path)
-    assert recorded["log_status"] == "present"
-    assert recorded["host_after"]["load1"] == 12.5
-    assert recorded["host_after"]["concurrent_procs"] == 3
-    assert recorded["failed_substep_classes"][0]["node"] == "build.runtime_release"
-    assert recorded["failed_substep_classes"][0]["fault_class"] == "infrastructure"
-    assert "undefined reference to" in recorded["first_error_line"]
-
-
-def test_record_marks_missing_failure_log_without_fabricating_cause(tmp_path: Path):
-    source = row(tmp_path, record_id="failed-with-missing-log")
-    source["result"] = "fail"
-    source["exit_code"] = 1
-    source["gates"] = [{"name": "portable CI DAG manifest", "result": "fail"}]
-    source["log_file"] = str(tmp_path / "never-existed.log")
-
-    validate_rows.record(source, root=tmp_path)
-
-    [recorded] = validate_rows.rows(root=tmp_path)
-    assert recorded["log_status"] == "missing"
-    assert recorded["failed_substep_classes"] == []
-    assert recorded["first_error_line"] is None
 
 
 def test_canonical_reverie_repo_uses_top_level_reverie_shard(tmp_path: Path):

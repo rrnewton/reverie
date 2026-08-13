@@ -1,6 +1,6 @@
 ---
 name: post-facto-review
-description: "Land changes after validation qualifies under hermit-validation-authority and before human review, using Codex and Claude adversarial review for every post-facto-human-review trigger."
+description: "Land changes after validation qualifies under hermit-validation-authority and before human review, using the owner's single-review preference and two-agent review for critical syscall, scheduling, or Reverie API changes."
 ---
 
 # Post-Facto-Review Mode
@@ -78,13 +78,12 @@ verbatim:
 > POST-FACTO HUMAN REVIEW LABEL. THAT IS THE PROCEDURE THAT I ASKED FOR.
 
 Critical means Hermit syscall handling (trigger 1), a Reverie API change
-(trigger 2), or DetCore scheduling (trigger 4). The live merge consumer applies
-the same two-family gate to every PR carrying `post-facto-human-review`, so all
-four triggers, including a trigger-3 new determinization strategy, require one
-dispatched Codex reviewer and one dispatched Claude reviewer at the exact head.
-The typed `--critical` classes below still name only triggers 1, 2, and 4;
-trigger 3 has no separate critical-class value, but its label activates the
-same two-review gate.
+(trigger 2), or DetCore scheduling (trigger 4). Those PRs use one dispatched
+Codex reviewer and one dispatched Claude reviewer. Trigger 3, a
+new determinization strategy, still requires `post-facto-human-review`, but is
+a single-review PR unless it also enters one of those three critical domains.
+For single-review PRs, prefer a reviewer other than the author, but do not turn
+an API outage into an indefinite landing hold.
 
 The earlier Codex-only direction was temporary for rate-limit recovery, with a
 12-hour lifetime, and is expired. Do not enforce or restate it as standing
@@ -102,19 +101,6 @@ are caches for routing and activity, not the approval authority:
   round `N`; they do not mean approval.
 - `passed-review-codex` and `passed-review-claude` may cache the corresponding
   exact-head approvals. The role-tagged comments and SHA remain authoritative.
-
-Every generated review task and every reviewer verdict uses exactly one of these
-parser-defined lines at column zero:
-
-```text
-APPROVED-AT: <claude|codex> <40-hex-head>
-CHANGES-REQUESTED-AT: <claude|codex> <40-hex-head>
-```
-
-`REJECTED-AT` is not a synonym. The approval-binding parser reports it as malformed and
-does not revoke an earlier approval. Do not include it as an allowed result in a review
-prompt, and do not edit an old comment to repair it; emit the canonical current verdict
-in a new role-tagged comment.
 
 The coordinator, never the reviewer, records a completed family review with
 the typed front door:

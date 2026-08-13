@@ -16,7 +16,6 @@ ROOT = Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "scripts" / "check_commit_attribution.py"
 DISPATCHER = ROOT / ".githooks" / "dev-hermit-hook-dispatch"
 INSTALLER = ROOT / "scripts" / "setup-hooks.sh"
-PARENT_REFERENCE_TRANSACTION = ROOT / "scripts" / "parent-reference-transaction"
 TRAILER_030 = "[impl agent, gpt-5.6-sol] [hermit-902, devbig030]"
 TRAILER_014 = "[coordinator, claude-opus-5] [hermit-coord, devbig014]"
 QUERY_030 = (
@@ -240,15 +239,10 @@ class HookAndInstallerTests(unittest.TestCase):
             (root / ".githooks").mkdir()
             shutil.copy2(CHECKER, root / "scripts" / CHECKER.name)
             shutil.copy2(INSTALLER, root / "scripts" / INSTALLER.name)
-            shutil.copy2(
-                PARENT_REFERENCE_TRANSACTION,
-                root / "scripts" / PARENT_REFERENCE_TRANSACTION.name,
-            )
             shutil.copy2(DISPATCHER, root / ".githooks" / DISPATCHER.name)
             for path in (
                 root / "scripts" / CHECKER.name,
                 root / "scripts" / INSTALLER.name,
-                root / "scripts" / PARENT_REFERENCE_TRANSACTION.name,
                 root / ".githooks" / DISPATCHER.name,
             ):
                 path.chmod(0o755)
@@ -279,15 +273,6 @@ class HookAndInstallerTests(unittest.TestCase):
                 self.assertTrue(configured.endswith("/dev-hermit-hooks"), configured)
                 delegated = run(str(Path(configured) / "pre-commit"), cwd=repo)
                 self.assertEqual("delegated", delegated.stdout.strip())
-                reference_transaction = (
-                    root / "scripts" / PARENT_REFERENCE_TRANSACTION.name
-                    if repo == root
-                    else root / ".githooks" / DISPATCHER.name
-                )
-                self.assertEqual(
-                    reference_transaction.resolve(),
-                    (Path(configured) / "reference-transaction").resolve(),
-                )
                 checked = run(
                     str(root / "scripts" / INSTALLER.name),
                     "--check",

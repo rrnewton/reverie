@@ -1,3 +1,0 @@
-A: 24162 TB entries, 218 distinct sites
-B: 24162 TB entries, 218 distinct sites
-NORMALIZED TRACES IDENTICAL

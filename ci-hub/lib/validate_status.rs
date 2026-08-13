@@ -304,7 +304,6 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
     match row.result.as_deref() {
         Some("truncated") => return FailureDisposition::Truncated,
         Some("needs-rerun" | "needs_rerun") => return FailureDisposition::NeedsRerun,
-        Some("no-result" | "no_result") => return FailureDisposition::NoResult,
         _ => {}
     }
     if !is_clean_full_coverage(row, sha)
@@ -1417,24 +1416,15 @@ mod tests {
     }
 
     #[test]
-    fn explicit_no_result_verdict_is_preserved() {
-        // A producer that completed without a product verdict is explicit
-        // evidence, not the same state as an absent or disqualified record.
+    fn no_result_verdict_is_not_failed_on_record() {
+        // A `no_result` (the aggregator's downgrade of a zero-test green) is
+        // unverified, not known-bad: NotValidated (re-dispatch), not
+        // FailedOnRecord.
         let mut r = clean_full_pass(PASS_SHA);
         r.result = Some("no_result".into());
         let a = assess(&[r], PASS_SHA);
-        assert_eq!(a.verdict, Verdict::NoResult);
+        assert_eq!(a.verdict, Verdict::NotValidated);
         assert_eq!(a.verdict.exit_code(), 4);
-    }
-
-    #[test]
-    fn genuine_failed_sibling_wins_over_explicit_no_result() {
-        let mut no_result = clean_full_pass(PASS_SHA);
-        no_result.result = Some("no_result".into());
-        let a = assess(&[no_result, complete_failure(PASS_SHA)], PASS_SHA);
-        assert_eq!(a.verdict, Verdict::FailedOnRecord);
-        assert_eq!(a.verdict.exit_code(), 3);
-        assert_eq!(a.failed_records, 1);
     }
 
     #[test]

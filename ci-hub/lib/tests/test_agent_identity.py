@@ -215,82 +215,6 @@ class ResolutionTests(IdentityFixture):
         self.assertEqual("resolved", pane.state)
         self.assertEqual("agent-a", pane.agent)
 
-    def test_released_pane_binding_is_not_current_ownership(self) -> None:
-        document = json.loads(self.state.read_text())
-        document["slots"]["slot-b"] = {
-            "status": "released",
-            "task": "task-b",
-            "agents": [
-                {
-                    "name": "agent-b",
-                    "task": "task-b",
-                    "read_only": False,
-                    "tmux_pane_id": "%8",
-                }
-            ],
-        }
-        self.state.write_text(json.dumps(document))
-        self.standard_processes(pane="%8")
-        result = self.resolve()
-        self.assertEqual("AGREEMENT", result.state)
-        self.assertEqual("agent-a", result.agent)
-        pane = next(signal for signal in result.signals if signal.source == "pane-owner")
-        self.assertEqual("unavailable", pane.state)
-        self.assertEqual("pane=%8", pane.detail)
-
-    def test_released_cwd_does_not_supply_owner_or_historical_task(self) -> None:
-        self.write_state(owners=("agent-b",), sidecar_agent="agent-b")
-        document = json.loads(self.state.read_text())
-        document["slots"]["slot-a"]["status"] = "released"
-        self.state.write_text(json.dumps(document))
-        self.standard_processes()
-        result = self.resolve(task=None)
-        self.assertEqual("AGREEMENT", result.state)
-        self.assertEqual("agent-a", result.agent)
-        cwd = next(signal for signal in result.signals if signal.source == "cwd-slot-owner")
-        self.assertEqual("unavailable", cwd.state)
-        self.assertIn("status=released has no current owner", cwd.detail)
-        task = next(signal for signal in result.signals if signal.source == "taskgraph-owner")
-        self.assertEqual("unavailable", task.state)
-        self.assertEqual("no explicit or uniquely slot-derived active task", task.detail)
-
-    def test_missing_status_retains_legacy_active_disagreement(self) -> None:
-        self.write_state(owners=("agent-b",), sidecar_agent="agent-b")
-        document = json.loads(self.state.read_text())
-        del document["slots"]["slot-a"]["status"]
-        self.state.write_text(json.dumps(document))
-        self.standard_processes()
-        result = self.resolve(task=None)
-        self.assertEqual("DISAGREEMENT", result.state)
-        self.assertIsNone(result.agent)
-        for source in ("cwd-slot-owner", "pane-owner", "cgroup-owner", "supervisor-owner"):
-            signal = next(item for item in result.signals if item.source == source)
-            self.assertEqual("resolved", signal.state, source)
-            self.assertEqual("agent-b", signal.agent, source)
-
-    def test_active_pane_disagreement_still_refuses(self) -> None:
-        document = json.loads(self.state.read_text())
-        document["slots"]["slot-b"] = {
-            "status": "active",
-            "task": "task-b",
-            "agents": [
-                {
-                    "name": "agent-b",
-                    "task": "task-b",
-                    "read_only": False,
-                    "tmux_pane_id": "%8",
-                }
-            ],
-        }
-        self.state.write_text(json.dumps(document))
-        self.standard_processes(pane="%8")
-        result = self.resolve()
-        self.assertEqual("DISAGREEMENT", result.state)
-        self.assertIsNone(result.agent)
-        pane = next(signal for signal in result.signals if signal.source == "pane-owner")
-        self.assertEqual("resolved", pane.state)
-        self.assertEqual("agent-b", pane.agent)
-
     def test_unreadable_cwd_is_explicit_but_does_not_erase_proven_identity(self) -> None:
         self.standard_processes(cwd=None)
         (self.proc / "100" / "cwd").unlink(missing_ok=True)
@@ -556,26 +480,6 @@ class CliTests(IdentityFixture):
         )
         self.assertFalse(result.stdout.endswith("\n"))
 
-    def test_tag_ignores_released_pane_binding(self) -> None:
-        document = json.loads(self.state.read_text())
-        document["slots"]["slot-b"] = {
-            "status": "released",
-            "task": "task-b",
-            "agents": [
-                {
-                    "name": "agent-b",
-                    "task": "task-b",
-                    "read_only": False,
-                    "tmux_pane_id": "%8",
-                }
-            ],
-        }
-        self.state.write_text(json.dumps(document))
-        self.standard_processes(pane="%8")
-        result = self.run_tag("--role", "impl", "--task", "task-a")
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("[hermit2, agent-a, unresolved,", result.stdout)
-
     def test_tag_refuses_without_role_or_resolved_identity(self) -> None:
         self.standard_processes()
         missing_role = self.run_tag()
@@ -588,13 +492,6 @@ class CliTests(IdentityFixture):
         self.assertEqual(1, disagreement.returncode)
         self.assertIn("DISAGREEMENT", disagreement.stderr)
         self.assertEqual("", disagreement.stdout)
-
-    def test_tag_refuses_unresolved_process_identity(self) -> None:
-        self.standard_processes(caller_agent=None, parent_agent=None)
-        unresolved = self.run_tag("--role", "impl", "--task", "task-a")
-        self.assertEqual(2, unresolved.returncode)
-        self.assertIn("UNRESOLVED", unresolved.stderr)
-        self.assertEqual("", unresolved.stdout)
 
 
 if __name__ == "__main__":

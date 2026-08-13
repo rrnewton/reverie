@@ -249,11 +249,17 @@ class VerifiedCloseTest(unittest.TestCase):
         self.assertEqual(verified_close.UNVERIFIABLE, rc)
         self.assertEqual([], runner.task_mutations)
 
-    def test_not_landed_and_unverifiable_both_refuse_without_task_mutation(self):
+    # CONTRACT CHANGE, 2026-08-06 (close-on-implemented + single drain). This
+    # test previously asserted that a resolved-but-not-landed reference was
+    # REFUSED, pairing it with the unverifiable case. Under the new rule those
+    # two are no longer the same kind of thing: "not landed yet" is a VERIFIED
+    # state that closes, while "did not resolve" still refuses. Rewritten in
+    # place rather than deleted so the reversal is visible in review.
+    def test_not_landed_closes_while_unverifiable_still_refuses(self):
         unlanded = FakeRunner(code_state="not-landed")
         unverifiable = FakeRunner(code_state="unverifiable")
         self.assertEqual(
-            verified_close.REFUSED,
+            verified_close.CLOSED,
             verified_close.main(
                 ["fixture-task", "--code", "b" * 40, "--source", "."],
                 run=unlanded,
@@ -266,58 +272,86 @@ class VerifiedCloseTest(unittest.TestCase):
                 run=unverifiable,
             ),
         )
-        self.assertEqual([], unlanded.task_mutations)
+        self.assertNotEqual([], unlanded.task_mutations)
         self.assertEqual([], unverifiable.task_mutations)
 
-    def test_not_landed_is_refused_uniformly_for_every_repository(self):
-        for repo in (
-            "rrnewton/hermit",
-            "rrnewton/reverie",
-            "rrnewton/dev-hermit",
-        ):
-            with self.subTest(repo=repo):
-                runner = FakeRunner(code_state="not-landed")
-                rc = verified_close.main(
-                    ["fixture-task", "--code", "b" * 40, "--repo", repo,
-                     "--source", "."],
-                    run=runner,
-                )
-                self.assertEqual(verified_close.REFUSED, rc)
-                self.assertEqual([], runner.task_mutations)
+    def test_parent_not_landed_is_refused_without_task_mutation(self):
+        """Parent tooling is direct-to-main, so no unlanded close is legitimate."""
+        runner = FakeRunner(code_state="not-landed")
 
-    def test_landed_closure_records_landed_in_the_note(self):
-        runner = FakeRunner(code_state="landed")
+        rc = verified_close.main(
+            [
+                "parent-task",
+                "--code",
+                "b" * 40,
+                "--repo",
+                verified_close.PARENT_REPO,
+                "--source",
+                ".",
+            ],
+            run=runner,
+        )
+
+        self.assertEqual(verified_close.REFUSED, rc)
+        self.assertEqual([], runner.task_mutations)
+
+    def test_unlanded_closure_records_the_landing_state_in_the_note(self):
+        """`closed` no longer implies landed, so the note must say which it was.
+
+        Without this the closure record is indistinguishable from a landing
+        claim -- the exact proxy-binding error the drain rule exists to avoid.
+        """
+        runner = FakeRunner(code_state="not-landed")
         self.assertEqual(
             verified_close.CLOSED,
             verified_close.main(
-                ["fixture-task", "--code", "a" * 40, "--source", "."], run=runner
+                ["fixture-task", "--code", "b" * 40, "--source", "."], run=runner
             ),
         )
         notes = [c for c in runner.task_mutations if c[:2] == ("tg", "note")]
         self.assertEqual(1, len(notes), notes)
-        self.assertIn("landing=landed", notes[0][-1])
+        self.assertIn("landing=implemented-unlanded", notes[0][-1])
+        self.assertIn("b" * 40, notes[0][-1])
 
-    def test_landed_close_requires_the_implemented_tag(self):
-        runner = FakeRunner(code_state="landed", tags="infra, process")
+        landed = FakeRunner(code_state="landed")
+        verified_close.main(
+            ["fixture-task", "--code", "a" * 40, "--source", "."], run=landed
+        )
+        landed_notes = [c for c in landed.task_mutations if c[:2] == ("tg", "note")]
+        self.assertIn("landing=landed", landed_notes[0][-1])
+
+    def test_unlanded_close_is_refused_when_the_implemented_tag_is_absent(self):
+        """The negative bracket for the tag gate.
+
+        `drain-implemented-to-landed` selects on the `implemented` tag. Closing
+        an unlanded task without it would drop the work out of ready, active,
+        AND the drain simultaneously -- invisible rather than pending. Plant the
+        violating case (no tag) and confirm refusal with no task mutation.
+        """
+        runner = FakeRunner(code_state="not-landed", tags="infra, process")
         self.assertEqual(
             verified_close.REFUSED,
             verified_close.main(
-                ["fixture-task", "--code", "a" * 40, "--source", "."], run=runner
+                ["fixture-task", "--code", "b" * 40, "--source", "."], run=runner
             ),
         )
         self.assertEqual([], runner.task_mutations)
 
-    def test_check_only_does_not_require_the_implemented_tag(self):
+    def test_landed_close_does_not_require_the_implemented_tag(self):
+        """Anti-vacuity guard for the gate above.
+
+        A gate that refused every untagged close would also block the ordinary
+        landed path, so assert the tag requirement is scoped to the unlanded
+        state only.
+        """
         runner = FakeRunner(code_state="landed", tags="infra, process")
         self.assertEqual(
             verified_close.CLOSED,
             verified_close.main(
-                ["fixture-task", "--code", "a" * 40, "--source", ".",
-                 "--check-only"],
-                run=runner,
+                ["fixture-task", "--code", "a" * 40, "--source", "."], run=runner
             ),
         )
-        self.assertEqual([], runner.task_mutations)
+        self.assertNotEqual([], runner.task_mutations)
 
     def test_three_legitimate_fixture_closures_succeed(self):
         runner = FakeRunner()
