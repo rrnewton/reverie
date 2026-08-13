@@ -43,8 +43,8 @@ use crate::landing_lock::{
     box_exclusion_anchor_path as box_exclusion_anchor_at, capture_and_freeze_residuals,
     census_cleanup_domain, census_disposition, current_host, enable_child_subreaper,
     exact_process_liveness, exit_status_code, foreign_box_claim, heartbeat_test_helper_delay,
-    print_census_recovery, print_cleanup_record, process_group_exists, process_start_ticks,
-    reap_exited_children, register_box_claim, remove_cleanup_record_and_claim,
+    observe_descendants, print_census_recovery, print_cleanup_record, process_group_exists,
+    process_start_ticks, reap_exited_children, register_box_claim, remove_cleanup_record_and_claim,
     repository_lock_root, signal_group, spawn_gated_child, suffix, verify_cleanup_record,
     write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor, CleanupDomain, CleanupPhase,
     CleanupRecord, CleanupVerification, DomainAttestation, DomainEvidence, GatedChild,
@@ -1632,30 +1632,79 @@ enum RunCleanupFinalization {
     },
 }
 
-fn settle_empty_payload_domain(
+/// The only two results of the bounded post-payload transition. `ProvenEmpty`
+/// can be constructed only after one complete descendant observation and the
+/// original process-group check both prove absence. Every other terminal state
+/// carries the frozen census that must remain quarantined. A direct child exit
+/// is deliberately not a completion state.
+enum SettledPayloadDomain {
+    ProvenEmpty {
+        leader: ProcessIdentity,
+        pgid: u32,
+    },
+    Quarantined {
+        leader: ProcessIdentity,
+        pgid: u32,
+        capture: ResidualCapture,
+        group: OriginalProcessGroupState,
+    },
+}
+
+fn freeze_payload_domain(
     supervisor_pid: u32,
     pgid: u32,
     leader: &ProcessIdentity,
-    mut capture: ResidualCapture,
-) -> ResidualCapture {
+) -> SettledPayloadDomain {
+    let capture = capture_and_freeze_residuals(supervisor_pid);
+    let group = original_process_group_state(pgid, leader);
+    if capture.complete
+        && capture.identities.is_empty()
+        && matches!(group, OriginalProcessGroupState::Absent(_))
+    {
+        SettledPayloadDomain::ProvenEmpty {
+            leader: leader.clone(),
+            pgid,
+        }
+    } else {
+        SettledPayloadDomain::Quarantined {
+            leader: leader.clone(),
+            pgid,
+            capture,
+            group,
+        }
+    }
+}
+
+fn settle_payload_domain(
+    supervisor_pid: u32,
+    pgid: u32,
+    leader: &ProcessIdentity,
+) -> SettledPayloadDomain {
     let deadline = Instant::now() + Duration::from_secs(EMPTY_DOMAIN_SETTLE_SECONDS);
-    while capture.complete && capture.identities.is_empty() {
-        if matches!(
-            original_process_group_state(pgid, leader),
-            OriginalProcessGroupState::Absent(_)
-        ) {
-            return capture;
+    loop {
+        if matches!(observe_descendants(supervisor_pid), Ok(identities) if identities.is_empty())
+            && matches!(
+                original_process_group_state(pgid, leader),
+                OriginalProcessGroupState::Absent(_)
+            )
+        {
+            // The observation above gives draining descendants time to finish,
+            // but /proc is not an atomic snapshot. Preserve the old release
+            // bar: construct the empty state only from the stable frozen census
+            // plus a second generation-bound process-group absence check.
+            return freeze_payload_domain(supervisor_pid, pgid, leader);
         }
         if Instant::now() >= deadline {
-            return capture;
+            break;
         }
         thread::sleep(Duration::from_millis(EMPTY_DOMAIN_SETTLE_POLL_MILLIS));
-        // Repeat the *whole* census, not merely the PGID probe. A helper that
-        // becomes visible during the grace window must turn into an exact
-        // residual and quarantine; waiting may never erase live ownership.
-        capture = capture_and_freeze_residuals(supervisor_pid);
     }
-    capture
+
+    // Only after the non-signalling drain window expires may cleanup stop the
+    // remaining descendants to take a stable exact census. Freezing first is
+    // what made short-lived completion helpers incapable of exiting and caused
+    // cleanup to manufacture the residual it then quarantined.
+    freeze_payload_domain(supervisor_pid, pgid, leader)
 }
 
 struct ValidateLock {
@@ -2762,9 +2811,7 @@ impl ValidateLock {
         agent: &str,
         kind: Kind,
         target: &str,
-        leader: &ProcessIdentity,
-        pgid: u32,
-        capture: ResidualCapture,
+        domain: SettledPayloadDomain,
     ) -> Result<RunCleanupFinalization, ValidateLockError> {
         self.with_guard(|| {
             let holder = self.read_holder()?.ok_or_else(|| {
@@ -2791,42 +2838,56 @@ impl ValidateLock {
                     )))
                 }
             };
-            match &record.phase {
-                CleanupPhase::CensusPending {
-                    leader: recorded_leader,
-                    pgid: recorded_pgid,
-                } if recorded_leader == leader && *recorded_pgid == pgid => {}
-                phase => {
-                    return Err(ValidateLockError::InvalidState(format!(
-                        "cleanup finalization rejected phase {phase:?}"
-                    )))
+            match domain {
+                SettledPayloadDomain::ProvenEmpty { leader, pgid } => {
+                    match &record.phase {
+                        CleanupPhase::CensusPending {
+                            leader: recorded_leader,
+                            pgid: recorded_pgid,
+                        } if *recorded_leader == leader && *recorded_pgid == pgid => {}
+                        phase => {
+                            return Err(ValidateLockError::InvalidState(format!(
+                                "empty-domain finalization rejected phase {phase:?}"
+                            )))
+                        }
+                    }
+                    remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.anchor)
+                        .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
+                    Ok(RunCleanupFinalization::Released)
+                }
+                SettledPayloadDomain::Quarantined {
+                    leader,
+                    pgid,
+                    capture,
+                    group,
+                } => {
+                    match &record.phase {
+                        CleanupPhase::CensusPending {
+                            leader: recorded_leader,
+                            pgid: recorded_pgid,
+                        } if *recorded_leader == leader && *recorded_pgid == pgid => {}
+                        phase => {
+                            return Err(ValidateLockError::InvalidState(format!(
+                                "quarantine finalization rejected phase {phase:?}"
+                            )))
+                        }
+                    }
+                    let residual_count = capture.identities.len();
+                    let domain_complete = capture.complete;
+                    record.phase = CleanupPhase::Residual {
+                        pgid,
+                        domain_complete,
+                        residuals: capture.identities,
+                    };
+                    write_cleanup_record(&self.paths.cleanup, &record)
+                        .map_err(|source| io_error("write", &self.paths.cleanup, source))?;
+                    Ok(RunCleanupFinalization::Quarantined {
+                        residual_count,
+                        domain_complete,
+                        group,
+                    })
                 }
             }
-
-            let group = original_process_group_state(pgid, leader);
-            if capture.complete
-                && capture.identities.is_empty()
-                && matches!(group, OriginalProcessGroupState::Absent(_))
-            {
-                remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.anchor)
-                    .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
-                return Ok(RunCleanupFinalization::Released);
-            }
-
-            let residual_count = capture.identities.len();
-            let domain_complete = capture.complete;
-            record.phase = CleanupPhase::Residual {
-                pgid,
-                domain_complete,
-                residuals: capture.identities,
-            };
-            write_cleanup_record(&self.paths.cleanup, &record)
-                .map_err(|source| io_error("write", &self.paths.cleanup, source))?;
-            Ok(RunCleanupFinalization::Quarantined {
-                residual_count,
-                domain_complete,
-                group,
-            })
         })
     }
 
@@ -4547,20 +4608,8 @@ impl ValidateLock {
         let _ = heartbeat.join();
         reap_exited_children();
         let pgid = outcome.pgid();
-        let capture = settle_empty_payload_domain(
-            std::process::id(),
-            pgid,
-            &gated.leader,
-            capture_and_freeze_residuals(std::process::id()),
-        );
-        match self.finalize_run_census(
-            &args.agent,
-            args.kind,
-            &args.target,
-            &gated.leader,
-            pgid,
-            capture,
-        )? {
+        let domain = settle_payload_domain(std::process::id(), pgid, &gated.leader);
+        match self.finalize_run_census(&args.agent, args.kind, &args.target, domain)? {
             RunCleanupFinalization::Released => {}
             RunCleanupFinalization::Quarantined {
                 residual_count,
@@ -7345,6 +7394,103 @@ os._exit(0)
         );
         assert_eq!(second.unwrap(), 0);
         assert!(lock.read_holder().unwrap().is_none());
+
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        let _ = fs::remove_file(&stub);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// POSITIVE COMPLETION BRACKET. The direct payload exits while one child
+    /// is still finishing normally in the same process group. Cleanup must let
+    /// that child drain without signalling it, release every lock authority,
+    /// and admit the next run. Exercise both zero and nonzero payload results:
+    /// cleanup depends on process ownership, not the product verdict.
+    #[test]
+    fn live_draining_descendant_releases_after_zero_and_nonzero_exit() {
+        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let stub = write_stub("live-drain-admit", "#!/bin/sh\necho OK\nexit 0\n");
+        env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
+
+        let paths = temp_paths("live-drain-release");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let draining_script = r#"
+import os
+import pathlib
+import sys
+import time
+
+exit_code = int(sys.argv[1])
+marker = pathlib.Path(sys.argv[2])
+child = os.fork()
+if child == 0:
+    time.sleep(2.0)
+    marker.write_text("completed\n", encoding="utf-8")
+    os._exit(0)
+os._exit(exit_code)
+"#;
+        let run_args = |agent: &str, child: Vec<OsString>| RunArgs {
+            agent: agent.into(),
+            kind: Kind::Validate,
+            target: HEX_SHA.into(),
+            run_record: None,
+            no_wait: false,
+            wait: 0,
+            hold: 30,
+            child_deadline: 30,
+            max: 1,
+            skip_base_check: false,
+            child,
+        };
+
+        let mut admitted = 0;
+        let mut quarantined = 0;
+        for (index, expected_code) in [0, 23].into_iter().enumerate() {
+            let marker = root.join(format!("child-{index}.completed"));
+            let result = lock.run(
+                run_args(
+                    &format!("live-drain-{index}"),
+                    vec![
+                        OsString::from("/usr/bin/python3"),
+                        OsString::from("-c"),
+                        OsString::from(draining_script),
+                        OsString::from(expected_code.to_string()),
+                        marker.clone().into_os_string(),
+                    ],
+                ),
+                &root,
+            );
+            match result {
+                Ok(code) => {
+                    admitted += 1;
+                    assert_eq!(code, expected_code);
+                }
+                Err(ValidateLockError::CleanupQuarantined(_)) => quarantined += 1,
+                Err(error) => panic!("unexpected validate-lock failure: {error}"),
+            }
+            assert!(lock.read_holder().unwrap().is_none());
+            assert!(!paths.owner.exists());
+            assert!(!paths.cleanup.exists());
+            assert_eq!(fs::read_to_string(marker).unwrap(), "completed\n");
+            seed_watch_after_latest_release(&lock);
+        }
+
+        assert_eq!(admitted, 2, "both completed payloads must be admitted");
+        assert_eq!(quarantined, 0, "completion must not create quarantine");
+        assert_eq!(
+            lock.run(
+                run_args("post-live-drain", vec![OsString::from("/bin/true")]),
+                &root,
+            )
+            .unwrap(),
+            0
+        );
+        assert!(lock.read_holder().unwrap().is_none());
+        assert!(!paths.owner.exists());
+        assert!(!paths.cleanup.exists());
 
         env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
         let _ = fs::remove_file(&stub);
