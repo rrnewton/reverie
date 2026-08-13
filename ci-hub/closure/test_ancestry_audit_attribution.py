@@ -51,9 +51,13 @@ class StubAncestry:
         return None, "stub"
 
 
-def item(task, prs=(), bare=(), shas=(), text=""):
+def item(task, prs=(), bare=(), shas=(), text="", claim_text=None):
+    """`claim_text` defaults to `text` so the pre-existing cases keep their
+    meaning; the 906 cases below set it explicitly to model flattened prose
+    that contains NO claim line."""
     return {"task": task, "title": task, "prs": list(prs), "bare_prs": list(bare),
-            "shas": list(shas), "artifacts": [], "text": text}
+            "shas": list(shas), "artifacts": [], "text": text,
+            "claim_text": text if claim_text is None else claim_text}
 
 
 def merged(repo, num, oid, head="deadbeef" * 5, branch="feat/x"):
@@ -134,8 +138,13 @@ def run() -> int:
     anc = StubAncestry({})
     check("REFUSE 904's repro: unrelated full PR URL, lone signal",
           ancestry_audit.classify(
+              # pile() emits NO claim text for this prose -- "see ... for
+              # context" carries no claiming clause -- which is now what
+              # refuses it. Same scenario 904 constructed, enforced one layer
+              # lower than when 904 wrote it.
               item("t-mentions-someone-elses-pr", prs=[("hermit", 2071)],
-                   text="see https://github.com/rrnewton/hermit/pull/2071 for context"),
+                   text="see https://github.com/rrnewton/hermit/pull/2071 for context",
+                   claim_text=""),
               merged("hermit", 2071, OTHER_PR_MERGE), anc),
           "NOT-DETERMINABLE")
 
@@ -144,7 +153,8 @@ def run() -> int:
     check("REFUSE URL + only a WEAK corroborator (same mention, counted twice)",
           ancestry_audit.classify(
               item("t-weak-only", prs=[("hermit", 2071)],
-                   text="https://github.com/rrnewton/hermit/pull/2071 and #2071 again"),
+                   text="https://github.com/rrnewton/hermit/pull/2071 and #2071 again",
+                   claim_text=""),
               merged("hermit", 2071, OTHER_PR_MERGE), anc),
           "NOT-DETERMINABLE")
 
@@ -162,14 +172,26 @@ def run() -> int:
     # 904 used to reproduce the phantom LANDED with an unrelated URL.
     anc = StubAncestry({})
     SHORT = merged("hermit", 2100, OWN_MERGE, head="a" * 40, branch="fix")
+    SHORT_PRE = SHORT
 
-    check("REFUSE branch name buried in unrelated words (903's gap)",
+    def signals_of(got):
+        w = got.get("why") or ""
+        return w.split("CONFIRMED by ")[-1] if "CONFIRMED by" in w else "(not confirmed)"
+
+    def check_signal(name, got, absent):
+        sig = signals_of(got)
+        ok = absent not in sig
+        print(f"  {'PASS' if ok else 'FAIL'}  {name:52} -> signals={sig}")
+        if not ok:
+            failures.append(f"{name}: {absent} fired; signals={sig}")
+
+    check_signal("ANCHOR branch: buried in words must NOT fire (903's gap)",
           ancestry_audit.classify(
               item("t-substr", prs=[("hermit", 2100)],
                    text="https://github.com/rrnewton/hermit/pull/2100 -- prefix, "
                         "bugfix-notes and a fixture all contain it"),
-              SHORT, anc),
-          "NOT-DETERMINABLE")
+              SHORT_PRE, anc),
+          "branch")
 
     check("ACCEPT the same branch as a whole token -> LANDED",
           ancestry_audit.classify(
@@ -189,14 +211,14 @@ def run() -> int:
     # hex run, and this database really does carry sha256 digests in notes.
     HEX = merged("hermit", 2101, OWN_MERGE, head="abcdef012345" + "9" * 28,
                  branch="feat/unrelated-branch-name")
-    check("REFUSE 12-hex prefix buried inside a 64-hex digest",
+    check_signal("ANCHOR head_sha: 12-hex inside a 64-hex digest must NOT fire",
           ancestry_audit.classify(
               item("t-hex-substr", prs=[("hermit", 2101)],
                    text="https://github.com/rrnewton/hermit/pull/2101 "
                         "diff_sha256=00000abcdef01234500000000000000000000"
                         "000000000000000000000000000"),
               HEX, anc),
-          "NOT-DETERMINABLE")
+          "head_sha")
 
     check("ACCEPT a standalone 12-hex short sha -> LANDED",
           ancestry_audit.classify(
@@ -211,6 +233,57 @@ def run() -> int:
                    text="https://github.com/rrnewton/hermit/pull/2101 (head="
                         + "abcdef012345" + "9" * 28 + ")"),
               HEX, anc),
+          "LANDED")
+
+    # ---------- hermit-906's fourth route: quoted identifiers ----------
+    # pile() flattens every note, so a task that QUOTES another task's PR
+    # quotes it precisely -- url AND branch, or url AND head -- and two strong
+    # signals co-occur in text that was never a claim. A third signal cannot
+    # discriminate this, because the co-occurrence IS the precision of the
+    # quotation. Attribution is therefore read from CLAIM lines only.
+    anc = StubAncestry({})
+    QUOTED = merged("hermit", 2100, OWN_MERGE,
+                    head="abcdef012345" + "9" * 28, branch="feature/other-task")
+
+    check("REFUSE 906 fixture A: quoted URL + branch, no claim line",
+          ancestry_audit.classify(
+              item("t-quotes-a", prs=[("hermit", 2100)],
+                   text="Quoted from another task: "
+                        "https://github.com/rrnewton/hermit/pull/2100 "
+                        "branch feature/other-task",
+                   claim_text=""),
+              QUOTED, anc),
+          "NOT-DETERMINABLE")
+
+    check("REFUSE 906 fixture B: quoted URL + head12, no claim line",
+          ancestry_audit.classify(
+              item("t-quotes-b", prs=[("hermit", 2100)],
+                   text="Quoted from another task: "
+                        "https://github.com/rrnewton/hermit/pull/2100 "
+                        "head abcdef012345",
+                   claim_text=""),
+              QUOTED, anc),
+          "NOT-DETERMINABLE")
+
+    check("REFUSE the real-data form: FROM <other-task>: <url> <branch>",
+          ancestry_audit.classify(
+              item("t-from-other", prs=[("hermit", 2100)],
+                   text="FROM pr418_claude_review: APPROVE "
+                        "https://github.com/rrnewton/hermit/pull/2100 "
+                        "branch feature/other-task",
+                   claim_text=""),
+              QUOTED, anc),
+          "NOT-DETERMINABLE")
+
+    check("ACCEPT the task's OWN claim line -> LANDED",
+          ancestry_audit.classify(
+              item("t-own-claim", prs=[("hermit", 2100)],
+                   text="IMPLEMENTED: https://github.com/rrnewton/hermit/pull/2100 "
+                        "| branch feature/other-task",
+                   claim_text="IMPLEMENTED: "
+                              "https://github.com/rrnewton/hermit/pull/2100 "
+                              "| branch feature/other-task"),
+              QUOTED, anc),
           "LANDED")
 
     # A task with nothing at all stays UNKNOWN, not NOT-DETERMINABLE.

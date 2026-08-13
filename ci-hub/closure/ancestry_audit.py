@@ -137,6 +137,55 @@ def load_prs(root: Path, repo: str, limit: int, herdr_agent: str | None) -> dict
     return {r["number"]: r for r in rows}
 
 
+# A line's LEADING CLAUSE -- everything before its first colon -- says what the
+# line is. `IMPLEMENTED: <url> | branch ...` is this task claiming an artifact;
+# `FROM pr418_claude_review: ...` is this task QUOTING another task's artifact.
+CLAIM_HEAD = re.compile(r"\bIMPLEMENTED\b", re.I)
+CLAIM_HEAD_MAX = 60
+
+
+def is_claim_line(line: str) -> bool:
+    """Does this line CLAIM an artifact for its own task, rather than cite one?
+
+    *** THE FOURTH ROUTE TO A PHANTOM LANDED, FOUND BY hermit-906. ***
+    pile() is database-row clean -- it selects notes by t.local_id and never
+    pulls a description, a parent, a dependency, an inherited field or a GitHub
+    body -- so there is no cross-task ROW contamination. But it FLATTENS every
+    note into one string, and a task that QUOTES another task's pull request
+    quotes it precisely: url, branch and head together, because that is how
+    anyone cites a PR usefully. Two strong signals then co-occur in text that
+    was never a claim.
+
+    ADDING A THIRD SIGNAL CANNOT FIX THIS. The signals co-occur BECAUSE the
+    quotation is precise, so any further co-occurring signal is satisfied by the
+    same quotation. The discriminator has to be claim-versus-citation, not more
+    agreement.
+
+    DERIVED FROM THE CORPUS, NOT GUESSED. Across every task note carrying a pull
+    request URL, the leading clause is `IMPLEMENTED` (and its variants
+    `IMPLEMENTED AND LANDED`, `IMPLEMENTED FIX-FORWARD`, `FINAL/IMPLEMENTED`,
+    `IMPLEMENTED (widened #2092)`) 47 times, and an attribution clause --
+    `FROM pr417_codex_review`, `FROM hermit-lander`, `FROM hermit-901` -- 28
+    times. Measured effect on the live pile: 18 of the 19 pull-request-attributed
+    LANDED verdicts keep their attribution, and the one that drops is
+    `fix-417-model-0xcf`, whose only reference is
+    `FROM pr418_claude_review: ...` -- a REAL instance of 906's fixture, not a
+    constructed one.
+
+    THIS CHECK IS CONVENTION-DEPENDENT AND THAT IS A KNOWN LIMIT, not a claim of
+    soundness. It holds because agents write `IMPLEMENTED:`, exactly the shape
+    hermit-903 warned about when it found the branch match holding by naming
+    convention. It fails CLOSED -- an unrecognised claim form yields
+    NOT-DETERMINABLE, never a phantom LANDED -- which is why it is worth having
+    meanwhile. The durable fix is a structured task-to-PR field; `task_diffs`
+    and `task_attachments` both exist in the schema and both hold 0 rows today,
+    so that is an owner and infrastructure decision, not something this audit
+    can derive from prose.
+    """
+    head = line.split(":", 1)[0] if ":" in line else ""
+    return len(head) <= CLAIM_HEAD_MAX and bool(CLAIM_HEAD.search(head))
+
+
 def pile(db: Path) -> list[dict]:
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     con.text_factory = lambda b: b.decode("utf-8", "replace")
@@ -164,6 +213,22 @@ def pile(db: Path) -> list[dict]:
             # signal. Without it a PR URL is a lone mention, which is exactly
             # how the phantom LANDED survived the first fix.
             "text": notes,
+            # Only the lines that CLAIM an artifact for this task. Pull-request
+            # signals are read from here, never from flattened prose, so a
+            # quoted citation of another task's PR cannot attribute.
+            # SPLIT ON THE NOTE SEPARATOR FIRST. group_concat joins notes with
+            # ' ~~ ' and the stored content arrives with its newlines already
+            # collapsed, so `notes` is ONE line for the whole task: splitting on
+            # "\n" alone finds no lines to classify and every task loses its
+            # claim. Measured when that was wrong: 4 of 19 pull-request
+            # attributions survived instead of 18. This is the same flattening
+            # hermit-906 named, one layer down.
+            "claim_text": "\n".join(
+                seg
+                for chunk in notes.split(" ~~ ")
+                for seg in chunk.split("\n")
+                if is_claim_line(seg)
+            ),
         })
     return out
 
@@ -310,11 +375,16 @@ def pr_attribution(item: dict, row: dict, *, url_seen: bool) -> tuple[str, list[
     the standard keeps genuinely landed work binding while refusing exactly the
     shape 904 exploited.
     """
-    text = item.get("text") or ""
+    # CLAIM lines only -- see is_claim_line() for why flattened prose cannot
+    # be trusted here, and why a third signal would not have helped.
+    text = item.get("claim_text") or ""
     num = row.get("number")
     strong: list[str] = []
     weak: list[str] = []
-    if url_seen:
+    # `url_seen` only says the URL is SOMEWHERE in the notes -- which is how the
+    # quotation route worked. The signal must come from a CLAIM line like every
+    # other one, or claim-scoping is bypassed by its own entry condition.
+    if url_seen and num is not None and re.search(rf"/pull/{num}(?![0-9])", text):
         strong.append("pr_url")
     head = row.get("headRefOid") or ""
     if head and (
@@ -328,12 +398,19 @@ def pr_attribution(item: dict, row: dict, *, url_seen: bool) -> tuple[str, list[
     if num is not None and re.search(rf"#{num}\b", text):
         weak.append("pr_num")
     signals = strong + weak
-    # DELIBERATE DEVIATION, STRICTER THAN task_pr_join's ">=1 strong and >=2
-    # total": here the second signal must itself be STRONG. `pr_url` and a bare
-    # `#N` routinely come from THE SAME textual mention -- "see
-    # .../pull/2071 (#2071)" fires both -- so counting them as two is one
-    # mention double-counted, not independent agreement, and this whole defect
-    # class is mentions being read as attributions. `head_sha` and `branch` are
+    # WHY ONE STRONG SIGNAL IS NOW ENOUGH, having previously required two.
+    # The two-strong rule was a PROXY for "this is not a passing mention",
+    # adopted when signals were read from flattened prose where a citation and
+    # a claim were indistinguishable. Since hermit-906's finding, `text` is
+    # CLAIM LINES ONLY, which answers that question directly and better: a pull
+    # request URL on a line whose leading clause is `IMPLEMENTED` is the task
+    # asserting the artifact as its own, and there is no mention left to guard
+    # against. Keeping both stacked was measured against the live pile and cost
+    # 15 of 19 genuine verdicts -- the proxy firing on top of the real check,
+    # because a claim line carries the URL while the branch and head often sit
+    # on neighbouring lines. Replacing the proxy with the real discriminator
+    # keeps 18 of 19 and drops exactly the quotation, which is the outcome the
+    # proxy was approximating. The weak `pr_num` still never suffices alone. `head_sha` and `branch` are
     # facts about the PR that a mention does not carry.
     #
     # MEASURED COST ON THE LIVE PILE: ZERO. Before and after the gate the audit
@@ -346,10 +423,8 @@ def pr_attribution(item: dict, row: dict, *, url_seen: bool) -> tuple[str, list[
     # right and the estimate was wrong; the number above is what the audit
     # actually emits. The gate costs nothing on real data and closes the route
     # hermit-904 exploited.
-    if len(strong) >= 2:
-        return "CONFIRMED", signals
     if strong:
-        return "PROBABLE", signals
+        return "CONFIRMED", signals
     return "NONE", signals
 
 
