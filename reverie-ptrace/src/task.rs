@@ -4889,10 +4889,12 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         let exit_status = exit_status.expect("a task without a failure has an exit status");
         let root_session_failure = self.liteinst_root_config().and_then(|_| {
-            self.global_state
-                .liteinst_runtime
-                .as_ref()
-                .map(|runtime| Arc::clone(&runtime.session_failure))
+            self.global_state.liteinst_runtime.as_ref().map(|runtime| {
+                (
+                    Arc::clone(&runtime.session_failure),
+                    Arc::clone(&runtime.session_failure_changed),
+                )
+            })
         });
 
         // A fail-closed refusal raised by a non-root task cannot reach the
@@ -4900,7 +4902,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         // of the guest could finish. Refuse to report success over it.
         if let Some(message) = root_session_failure
             .as_ref()
-            .and_then(|slot| slot.lock().unwrap().clone())
+            .and_then(|(slot, _)| slot.lock().unwrap().clone())
         {
             return Err(anyhow::anyhow!(
                 "LiteInst session failed closed in a non-root task: {message}"
@@ -4912,14 +4914,36 @@ impl<L: Tool + 'static> TracedTask<L> {
             stats.record_tracee_exit();
         }
         log_guest_exit(self.tid(), self.pid(), exit_status);
-        self.tool_exit(exit_status).await?;
+
+        let tool_exit = self.tool_exit(exit_status).fuse();
+        if let Some((failure, changed)) = root_session_failure.as_ref() {
+            let session_failure = async {
+                loop {
+                    let notified = changed.notified();
+                    if let Some(message) = failure.lock().unwrap().clone() {
+                        return message;
+                    }
+                    notified.await;
+                }
+            }
+            .fuse();
+            futures::pin_mut!(tool_exit, session_failure);
+            futures::select_biased! {
+                message = session_failure => return Err(anyhow::anyhow!(
+                    "LiteInst session failed closed in a non-root task: {message}"
+                ).into()),
+                result = tool_exit => result?,
+            }
+        } else {
+            tool_exit.await?;
+        }
 
         // A child can fail while the root is joining it in `tool_exit`, after
         // the fast-path check above.  The join is the final ordering boundary:
         // re-read the shared slot before allowing the root's success to escape.
         if let Some(message) = root_session_failure
             .as_ref()
-            .and_then(|slot| slot.lock().unwrap().clone())
+            .and_then(|(slot, _)| slot.lock().unwrap().clone())
         {
             return Err(anyhow::anyhow!(
                 "LiteInst session failed closed in a non-root task: {message}"
