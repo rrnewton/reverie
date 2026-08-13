@@ -22,12 +22,12 @@ int main(int argc, char **argv) {
     return 7;
   }
 
+  pid_t root = getpid();
   pid_t child = fork();
   if (child < 0) {
     return 10;
   }
   if (child == 0) {
-    pid_t root = getppid();
     while (getppid() == root) {
       usleep(1000);
     }
