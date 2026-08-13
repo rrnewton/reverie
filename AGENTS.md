@@ -441,12 +441,14 @@ below are mandatory for every implementation and review agent.
 
    The PR link and the exact tested SHA are required, not optional. A branch
    name alone is not evidence.
-3. **Adversarial review confirms the work exists in the PR.** A reviewer checks
-   the claimed diff and exact-SHA validation. A Reverie-only change is floored
-   at L0 and does not establish a determinism guarantee on its own. If the
-   published artifact is missing, superseded, or does not contain the claim,
-   strip the `implemented` tag and reopen the task. Review normally happens
-   after the close, so the corrective action is reopening, not withholding.
+3. **Adversarial review confirms the work exists in the PR, and it precedes the
+   close.** A reviewer checks the claimed diff and exact-SHA validation. A
+   Reverie-only change is floored at L0 and does not establish a determinism
+   guarantee on its own. If the published artifact is missing, superseded, or
+   does not contain the claim, strip the `implemented` tag and reopen the task.
+   The parent orders these steps and its own rule 3 opens with "**Then** the
+   owning agent closes its own task", so review is a precondition of rule 4
+   below rather than a step that follows it.
 4. **Then the owning agent closes its own task** — `tg update <task> --status
    closed`. No coordinator, no gateway. Close once rule 1 is satisfied and the
    PR is published; do **not** hold it open waiting for the merge. Work that is
@@ -477,11 +479,18 @@ the lower status and say why in a task note.
 **`closed` + `implemented` (the owning agent closes, once evidenced):**
 
 - Branch pushed, PR open, exact-head validation green, awaiting merge.
-- PR open but validation red, or an exact-head receipt missing/stale — still
-  close it, and report the exact failure in the note. A red PR is published and
-  evidenced; the debt rides on the tag, not on the status.
-- Reverie change committed and pushed but the Hermit pin bump that consumes it
-  has not landed — closed with the blocker and dependency SHAs named.
+
+**Blocked — stays `in_progress`/`open`, never `implemented`, never `closed`:**
+
+The parent states this exception directly: "Blocked work stays
+`in_progress`/`open` with blocker and partial SHA — never `implemented`, never
+`closed`." Record the blocker and the partial SHA and leave the task open.
+
+- A dependency has not landed — e.g. a Reverie change whose consuming Hermit pin
+  bump is still outstanding. This case is the parent's wording verbatim.
+- Validation is red, or the exact-head receipt is missing or stale. The parent
+  does not name this case; treating a PR that cannot land as blocked is a
+  reading of its exception, recorded here as a reading rather than a quotation.
 
 **`closed` + `CLOSURE-VERIFIED` (landing debt discharged):**
 
