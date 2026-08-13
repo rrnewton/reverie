@@ -9,14 +9,17 @@
 use std::io;
 use std::io::Write;
 
-use bincode::Options;
 use serde::Deserialize;
 use serde::Serialize;
 
-fn bincode_options() -> impl bincode::Options {
-    // NOTE: Both the server and client must agree on these bincode options.
-    // Otherwise, we'll get deserialization errors.
-    bincode::DefaultOptions::new().with_limit(16 * (1 << 20) /* 16MB */)
+/// Maximum accepted frame size (16 MiB).
+const MAX_FRAME_LEN: usize = 16 * (1 << 20);
+
+// NOTE: Both the server and client must agree on this configuration. Otherwise,
+// we'll get deserialization errors. `legacy` matches the configuration used
+// elsewhere in the Reverie tree, including `reverie-rpc-transport`.
+fn bincode_config() -> impl bincode::config::Config {
+    bincode::config::legacy().with_limit::<MAX_FRAME_LEN>()
 }
 
 pub fn encode<T>(item: &T, buf: &mut Vec<u8>) -> io::Result<()>
@@ -47,8 +50,8 @@ where
     T: Serialize + ?Sized,
     W: Write,
 {
-    bincode_options()
-        .serialize_into(writer, item)
+    bincode::serde::encode_into_std_write(item, &mut { writer }, bincode_config())
+        .map(|_written| ())
         .map_err(|e| io::Error::other(format!("failed to encode frame: {}", e)))
 }
 
@@ -57,8 +60,8 @@ pub fn decode_frame<'a, T>(frame: &'a [u8]) -> io::Result<T>
 where
     T: Deserialize<'a>,
 {
-    bincode_options()
-        .deserialize(frame)
+    bincode::serde::borrow_decode_from_slice(frame, bincode_config())
+        .map(|(value, _consumed)| value)
         .map_err(|e| io::Error::other(format!("failed to decode frame: {}", e)))
 }
 
