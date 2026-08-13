@@ -6,12 +6,8 @@
 # of this source tree. You may select, at your option, one of the
 # above-listed licenses.
 
-# Labels consumed by Meta's test runner. Open-source builds run tests directly,
-# so the labels are empty strings.
+# Runs LLVM lit tests under Meta's test runner. Open-source builds do not carry
+# that runner, so no target is defined.
 
-tpx_labels = struct(
-    local_only = "",
-    disabled = "",
-    run_as_bundle = "",
-    test_is_invisible_to_testpilot = "",
-)
+def lit_unittest(**_kwargs):
+    pass

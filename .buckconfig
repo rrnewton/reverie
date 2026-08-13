@@ -43,3 +43,12 @@ file_watcher = notify
 
 [project]
 ignore = .git, target, shim/third-party/rust/vendor
+
+# reverie resolves the cells its BUCK files load from against its OWN vendored
+# shim, so its third-party comes from reindeer run on reverie's own Cargo.toml.
+[cell_aliases]
+fbsource = reverie_shim
+fbcode = reverie_shim
+fbcode_macros = reverie_shim
+shim = reverie_shim
+toolchains = reverie_shim

@@ -6,12 +6,12 @@
 # of this source tree. You may select, at your option, one of the
 # above-listed licenses.
 
-# Labels consumed by Meta's test runner. Open-source builds run tests directly,
-# so the labels are empty strings.
+# Builds an fbpkg, Meta's internal packaging format. There is no open-source
+# equivalent, so no target is defined.
 
-tpx_labels = struct(
-    local_only = "",
-    disabled = "",
-    run_as_bundle = "",
-    test_is_invisible_to_testpilot = "",
+def _builder(**_kwargs):
+    pass
+
+fbpkg = struct(
+    builder = _builder,
 )

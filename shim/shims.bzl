@@ -239,10 +239,11 @@ def rust_library(
     mapped_srcs = {},
     cpp_deps = None,
     cxx_bridge = None,
+    test_rustc_flags = None,
     visibility = ["PUBLIC"],
     **kwargs,
 ):
-    _unused = (test_deps, test_env, named_deps, autocargo, unittests, visibility, cpp_deps, cxx_bridge)  # @unused
+    _unused = (test_deps, test_env, named_deps, autocargo, unittests, visibility, cpp_deps, cxx_bridge, test_rustc_flags)  # @unused
     deps = _fix_deps(deps)
     mapped_srcs = _maybe_select_map(mapped_srcs, _fix_mapped_srcs)
 
@@ -260,9 +261,9 @@ def rust_library(
     )
 
 def rust_binary(
-    name, edition = None, rustc_flags = [], deps = [], autocargo = None, unittests = None, allocator = None, default_strip_mode = None, visibility = ["PUBLIC"], **kwargs
+    name, edition = None, rustc_flags = [], deps = [], autocargo = None, unittests = None, allocator = None, default_strip_mode = None, test_deps = None, test_env = None, test_srcs = None, visibility = ["PUBLIC"], **kwargs
 ):
-    _unused = (unittests, allocator, default_strip_mode, autocargo)  # @unused
+    _unused = (unittests, allocator, default_strip_mode, autocargo, test_deps, test_env, test_srcs)  # @unused
     deps = _fix_deps(deps)
 
     # @lint-ignore BUCKLINT: avoid "Direct usage of native rules is not allowed."
