@@ -17,6 +17,7 @@ import socket
 import subprocess
 import sys
 import time
+import tomllib
 import uuid
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -829,14 +830,14 @@ def _persisted_local_failed_receipt_problem(
 
 
 def _dereference_current_local_receipt(
-    repo: str, sha: str
+    repo: str, sha: str, *, deadline: float | None = None
 ) -> tuple[bool, dict[str, Any]]:
     """Call the one canonical exact-SHA local receipt verifier."""
-    return verify_local_receipt(repo, sha)
+    return verify_local_receipt(repo, sha, deadline=deadline)
 
 
 def _compare_persisted_local_receipt(
-    evidence: object, *, repo: str, sha: str
+    evidence: object, *, repo: str, sha: str, deadline: float | None = None
 ) -> tuple[bool, dict[str, Any], str | None]:
     """Compare cached evidence with a fresh canonical selected receipt.
 
@@ -847,7 +848,11 @@ def _compare_persisted_local_receipt(
     canonical digest and bound fields) to match the persisted selection.
     """
     persisted_problem = _persisted_local_receipt_problem(evidence, repo=repo, sha=sha)
-    current_verified, current = _dereference_current_local_receipt(repo, sha)
+    current_verified, current = (
+        _dereference_current_local_receipt(repo, sha)
+        if deadline is None
+        else _dereference_current_local_receipt(repo, sha, deadline=deadline)
+    )
     if persisted_problem is not None:
         return False, current, persisted_problem
     if not current_verified:
@@ -909,9 +914,101 @@ def _persisted_local_receipt_valid(evidence: object, *, repo: str, sha: str) -> 
     return matches
 
 
+def _rust_script_projects_dir() -> Path:
+    override = os.environ.get("CI_HUB_RUST_SCRIPT_PROJECTS")
+    if override:
+        return Path(override).expanduser()
+    cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
+    return cache / "rust-script/projects"
+
+
+def _local_receipt_execution(
+    logical_command: Sequence[str], deadline: float | None
+) -> tuple[tuple[str, ...], Mapping[str, str] | None]:
+    """Use a source-current rust-script executable without taking Cargo's lock.
+
+    ``rust-script --force`` deliberately checks every included Rust module, but
+    it does so under a machine-wide Cargo build lock.  The five-minute watcher
+    is a reader and normally has an already-built executable for this exact
+    source path.  Ask that executable to prove its compiled sources still equal
+    the checkout before using it.  No cache hit, malformed metadata, stale
+    source, or failed proof ever becomes authority: all of those fall back to
+    the normal source entry point.
+    """
+    source = LOCAL_RECEIPT_AUTHORITY.resolve()
+    projects = _rust_script_projects_dir()
+    if not projects.is_dir():
+        return tuple(logical_command), None
+    candidates: list[Path] = []
+    for manifest in projects.glob("*/Cargo.toml"):
+        try:
+            with manifest.open("rb") as handle:
+                package = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        bins = package.get("bin")
+        if not isinstance(bins, list):
+            continue
+        for binary in bins:
+            if not isinstance(binary, Mapping):
+                continue
+            path, name = binary.get("path"), binary.get("name")
+            if not isinstance(path, str) or not isinstance(name, str):
+                continue
+            try:
+                matches_source = Path(path).resolve() == source
+            except OSError:
+                matches_source = False
+            # rust-script keeps generated manifests under projects/ and links
+            # every finished executable into the sibling shared target.
+            candidate = projects.parent / "binaries/release" / name
+            if matches_source and candidate.is_file() and os.access(candidate, os.X_OK):
+                candidates.append(candidate)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "RUST_SCRIPT_PATH": str(source),
+            "CI_HUB_SOURCE_CURRENT": "1",
+            "CI_HUB_SKIP_SOFT_MAIN_WARNING": "1",
+            "CI_HUB_TOOL_COST_ACTIVE": "1",
+        }
+    )
+    # Do not sort by mutable cache metadata: another rust-script process may
+    # replace a candidate between discovery and use.  The source proof below is
+    # the selector; a vanished candidate simply falls through to the source
+    # entry point.
+    for candidate in sorted(candidates):
+        try:
+            probe = _run(
+                (str(candidate), "quickstart"),
+                check=False,
+                env=environment,
+                timeout=min(
+                    3.0,
+                    _watch_inner_timeout(deadline, "cached source check"),
+                ),
+            )
+            report = json.loads(probe.stdout)
+        except (OSError, ProtocolError, json.JSONDecodeError):
+            continue
+        if (
+            probe.returncode == 0
+            and isinstance(report, Mapping)
+            and report.get("schema_version") == 1
+            and report.get("source_current") is True
+            and report.get("changed_sources") == []
+        ):
+            execution_environment = dict(environment)
+            execution_environment.pop("CI_HUB_SOURCE_CURRENT", None)
+            return (str(candidate), *logical_command[1:]), execution_environment
+    return tuple(logical_command), None
+
+
 def verify_local_receipt(
     repo: str,
     sha: str,
+    *,
+    deadline: float | None = None,
 ) -> tuple[bool, dict[str, Any]]:
     """Dereference and persist the canonical counted exact-SHA receipt verdict."""
     if not obligations.SHA_RE.fullmatch(sha):
@@ -926,9 +1023,22 @@ def verify_local_receipt(
         "--json",
     ]
     checked_at = obligations.utc_now()
+    execution_command, execution_env = _local_receipt_execution(command, deadline)
     try:
-        result = _run(tuple(command), check=False, timeout=DEFAULT_NETWORK_TIMEOUT)
+        timeout = _watch_inner_timeout(deadline, "local receipt authority")
+        result = _run(
+            execution_command,
+            check=False,
+            timeout=timeout,
+            env=execution_env,
+        )
     except ProtocolError as error:
+        if deadline is not None and isinstance(
+            error.__cause__, subprocess.TimeoutExpired
+        ):
+            raise WatchBudgetExhausted(
+                f"local receipt authority exhausted the watch budget after {timeout:.1f}s"
+            ) from error
         return False, {
             "state": "error",
             "authority": "ci-hub-validate-status",
@@ -1064,7 +1174,7 @@ def _local_policy_skip_valid(record: Mapping[str, Any]) -> bool:
 
 
 def bind_local_receipt_authority(
-    obligation_id: str, store_path: Path
+    obligation_id: str, store_path: Path, *, deadline: float | None = None
 ) -> dict[str, Any]:
     """Bind the local leg to its repository's canonical receipt authority."""
     record = obligations.get_record(obligation_id, store_path)
@@ -1087,7 +1197,11 @@ def bind_local_receipt_authority(
         # consult the canonical exact-SHA authority again on every evaluation.
         # Do not persist refusals here: doing so would append a new checked_at
         # value on every poll while providing no new authoritative fact.
-        _accepted, current = _dereference_current_local_receipt(repo, sha)
+        _accepted, current = (
+            _dereference_current_local_receipt(repo, sha)
+            if deadline is None
+            else _dereference_current_local_receipt(repo, sha, deadline=deadline)
+        )
         if _persisted_local_receipt_problem(current, repo=repo, sha=sha) is not None:
             return record
         return obligations.transition(
@@ -1113,7 +1227,11 @@ def bind_local_receipt_authority(
         # A raw validate exit and test-looking DAG summary are not a durable red.
         # Re-dereference the canonical authority: only its counted FAILED/3
         # answer may preserve red.  Every refusal/error is a no-result hole.
-        _accepted, current = _dereference_current_local_receipt(repo, sha)
+        _accepted, current = (
+            _dereference_current_local_receipt(repo, sha)
+            if deadline is None
+            else _dereference_current_local_receipt(repo, sha, deadline=deadline)
+        )
         if _persisted_local_failed_receipt_problem(current, repo=repo, sha=sha) is None:
             if local.get("receipt_verification") == current:
                 return record
@@ -1158,7 +1276,7 @@ def bind_local_receipt_authority(
             store_path,
         )
     matches, current, comparison_problem = _compare_persisted_local_receipt(
-        local.get("receipt_verification"), repo=repo, sha=sha
+        local.get("receipt_verification"), repo=repo, sha=sha, deadline=deadline
     )
     if matches:
         return record
@@ -2239,16 +2357,20 @@ def github_runs(
     return runs
 
 
-def _watch_network_timeout(deadline: float | None) -> float:
+def _watch_inner_timeout(deadline: float | None, operation: str) -> float:
     """Return an inner timeout that leaves the one-shot watcher time to report."""
     if deadline is None:
         return DEFAULT_NETWORK_TIMEOUT
     remaining = deadline - time.monotonic() - WATCH_GATE_COMPLETION_RESERVE_SECS
     if remaining <= 0:
         raise WatchBudgetExhausted(
-            "watch budget exhausted before the next GitHub API call"
+            f"watch budget exhausted before the next {operation} call"
         )
     return min(DEFAULT_NETWORK_TIMEOUT, remaining)
+
+
+def _watch_network_timeout(deadline: float | None) -> float:
+    return _watch_inner_timeout(deadline, "GitHub API")
 
 
 def _github_run_with_deadline(
@@ -2961,6 +3083,7 @@ def evaluate_obligation(
     store_path: Path,
     main_sha: str | None = None,
     deadline: float | None = None,
+    local_receipt_bound: bool = False,
 ) -> dict[str, Any]:
     record = obligations.get_record(obligation_id, store_path)
     remediation = record.get("remediation")
@@ -2985,7 +3108,10 @@ def evaluate_obligation(
     # Older obligation rows may carry local.state=green solely from
     # validate.sh's process exit. Re-dereference them once through the counted
     # exact-SHA authority; a refusal becomes no_result, never a preserved green.
-    record = bind_local_receipt_authority(obligation_id, store_path)
+    if not local_receipt_bound:
+        record = bind_local_receipt_authority(
+            obligation_id, store_path, deadline=deadline
+        )
     states = (record["local"]["state"], record["github"]["state"])
     now = obligations.utc_now()
     first_terminal_at = record.get("first_terminal_at")
@@ -4712,12 +4838,15 @@ def poll_obligation(
     # A receipt can arrive after the first no_result observation. Bind the
     # canonical exact-SHA answer before deciding whether another producer is
     # needed, so a completed validation never causes a redundant redispatch.
-    record = bind_local_receipt_authority(obligation_id, store_path)
+    record = bind_local_receipt_authority(
+        obligation_id, store_path, deadline=deadline
+    )
     record = _maybe_redispatch_local(obligation_id, record, store_path)
     return evaluate_obligation(
         obligation_id,
         store_path=store_path,
         deadline=deadline,
+        local_receipt_bound=True,
     )
 
 

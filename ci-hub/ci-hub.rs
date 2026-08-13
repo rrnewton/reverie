@@ -77,6 +77,32 @@ const DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECONDS: u64 = 10 * 60;
 const GATE_FLOOR_POLICY: &str = "registry-effective-floor";
 const CANONICAL_VALIDATE_REPO: &str = "rrnewton/hermit";
 const CANONICAL_REVERIE_REPO: &str = "rrnewton/reverie";
+const COMPILED_CI_HUB_SOURCES: &[(&str, &str)] = &[
+    ("ci-hub/ci-hub.rs", include_str!("ci-hub.rs")),
+    (
+        "ci-hub/lib/history_queries.rs",
+        include_str!("lib/history_queries.rs"),
+    ),
+    (
+        "ci-hub/lib/landing_lock.rs",
+        include_str!("lib/landing_lock.rs"),
+    ),
+    ("ci-hub/lib/lease.rs", include_str!("lib/lease.rs")),
+    ("ci-hub/lib/measured.rs", include_str!("lib/measured.rs")),
+    (
+        "ci-hub/lib/qualifying_receipt.rs",
+        include_str!("lib/qualifying_receipt.rs"),
+    ),
+    ("ci-hub/lib/records.rs", include_str!("lib/records.rs")),
+    (
+        "ci-hub/lib/validate_lock.rs",
+        include_str!("lib/validate_lock.rs"),
+    ),
+    (
+        "ci-hub/lib/validate_status.rs",
+        include_str!("lib/validate_status.rs"),
+    ),
+];
 const ROOT_HELP: &str = r#"Typed front door for dev-hermit validation, GH Actions, and runner operations
 
 Usage: ci-hub <COMMAND>
@@ -1425,6 +1451,22 @@ impl CiHubError {
 }
 
 fn main() -> ExitCode {
+    if env::var_os("CI_HUB_SOURCE_CURRENT").is_some() {
+        let root = match workspace_root() {
+            Ok(root) => root,
+            Err(error) => {
+                eprintln!("{error}");
+                return to_exit_code(error.exit_code());
+            }
+        };
+        return match run_source_current(&root) {
+            Ok(code) => to_exit_code(code),
+            Err(error) => {
+                eprintln!("{error}");
+                to_exit_code(error.exit_code())
+            }
+        };
+    }
     let mut raw: Vec<OsString> = env::args_os().collect();
     if raw.len() == 1 {
         raw.push("--help".into());
@@ -1559,6 +1601,33 @@ fn run_costed(root: &Path, original_args: &[OsString], spec: CostSpec) -> Result
         .arg(executable)
         .args(original_args);
     run_status(command, "tool-cost")
+}
+
+/// Prove that a rust-script cache executable contains the sources currently
+/// checked out beside it.  The obligation watcher uses this before executing a
+/// cached binary directly: a cache hit avoids rust-script's machine-wide Cargo
+/// lock, while any changed or unreadable source refuses the shortcut and falls
+/// back to the normal source entry point.
+fn run_source_current(root: &Path) -> Result<i32, CiHubError> {
+    let changed = COMPILED_CI_HUB_SOURCES
+        .iter()
+        .filter_map(|(relative, compiled)| {
+            let path = root.join(relative);
+            match std::fs::read_to_string(&path) {
+                Ok(current) if current == *compiled => None,
+                _ => Some(*relative),
+            }
+        })
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::json!({
+            "schema_version": 1,
+            "source_current": changed.is_empty(),
+            "changed_sources": changed,
+        })
+    );
+    Ok(if changed.is_empty() { 0 } else { 75 })
 }
 
 fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
@@ -6775,6 +6844,27 @@ mod tests {
     use super::*;
 
     const RECEIPT_SHA: &str = "630f44aab7fdf4ee52e572c38ae09818e92271b2";
+
+    #[test]
+    fn cached_executable_refuses_changed_source() {
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-source-current-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for (relative, compiled) in COMPILED_CI_HUB_SOURCES {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, compiled).unwrap();
+        }
+        assert_eq!(run_source_current(&root).unwrap(), 0);
+        std::fs::write(root.join("ci-hub/lib/records.rs"), "changed\n").unwrap();
+        assert_eq!(run_source_current(&root).unwrap(), 75);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn local_label_reconcile_preserves_or_adds_a_validated_head() {

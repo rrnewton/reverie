@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
@@ -360,7 +361,10 @@ class ProtocolTest(unittest.TestCase):
         current_local_receipt_patch = mock.patch.object(
             protocol,
             "_dereference_current_local_receipt",
-            side_effect=lambda _repo, sha: (True, verified_local_receipt(sha)),
+            side_effect=lambda _repo, sha, **_kwargs: (
+                True,
+                verified_local_receipt(sha),
+            ),
         )
         self.current_local_receipt = current_local_receipt_patch.start()
         self.addCleanup(current_local_receipt_patch.stop)
@@ -4266,6 +4270,25 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn("state=clear", printed)
         self.assertNotIn("NO-RESULT", printed)
 
+    def test_poll_dereferences_a_late_local_receipt_once(self) -> None:
+        self.create()
+        self.transition(
+            {
+                "local": {"state": "no_result"},
+                "github": {"state": "red"},
+            }
+        )
+        record = protocol.poll_obligation(
+            "test-obligation",
+            self.store,
+            deadline=time.monotonic() + 20.0,
+        )
+        self.assertEqual(record["overall_state"], "satisfied")
+        self.assertEqual(record["local"]["state"], "green")
+        self.current_local_receipt.assert_called_once_with(
+            "rrnewton/hermit", SHA, deadline=mock.ANY
+        )
+
     def test_per_poll_wall_and_cpu_are_reported_as_comment_lines(self) -> None:
         """The timing basis must ride along without polluting the gate fields.
 
@@ -4380,6 +4403,87 @@ class ProtocolTest(unittest.TestCase):
         self.assertFalse(accepted)
         self.assertIn("bound to rrnewton/hermit", evidence["reason"])
 
+    def test_local_receipt_uses_only_a_source_current_rust_script_executable(
+        self,
+    ) -> None:
+        projects = self.root / "projects"
+        project = projects / "0123456789abcdef01234567"
+        project.mkdir(parents=True)
+        name = "ci-hub_0123456789abcdef01234567"
+        (project / "Cargo.toml").write_text(
+            "[[bin]]\n"
+            f'name = "{name}"\n'
+            f'path = "{protocol.LOCAL_RECEIPT_AUTHORITY.resolve()}"\n',
+            encoding="utf-8",
+        )
+        candidate = projects.parent / "binaries/release" / name
+        candidate.parent.mkdir(parents=True)
+        candidate.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        candidate.chmod(0o755)
+        logical = (
+            str(protocol.LOCAL_RECEIPT_AUTHORITY),
+            "validate-status",
+            "--sha",
+            SHA,
+        )
+        current = subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source_current": True,
+                    "changed_sources": [],
+                }
+            ),
+            "",
+        )
+        with mock.patch.dict(
+            os.environ, {"CI_HUB_RUST_SCRIPT_PROJECTS": str(projects)}
+        ), mock.patch.object(protocol, "_run", return_value=current):
+            command, environment = protocol._local_receipt_execution(logical, None)
+        self.assertEqual(command, (str(candidate), *logical[1:]))
+        self.assertEqual(
+            environment["RUST_SCRIPT_PATH"],
+            str(protocol.LOCAL_RECEIPT_AUTHORITY.resolve()),
+        )
+
+        stale = subprocess.CompletedProcess(
+            [],
+            75,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source_current": False,
+                    "changed_sources": ["ci-hub/ci-hub.rs"],
+                }
+            ),
+            "",
+        )
+        with mock.patch.dict(
+            os.environ, {"CI_HUB_RUST_SCRIPT_PROJECTS": str(projects)}
+        ), mock.patch.object(protocol, "_run", return_value=stale):
+            command, environment = protocol._local_receipt_execution(logical, None)
+        self.assertEqual(command, logical)
+        self.assertIsNone(environment)
+
+    def test_local_receipt_timeout_preserves_watch_no_result(self) -> None:
+        def time_out(*_args, **_kwargs):
+            try:
+                raise subprocess.TimeoutExpired(["validate-status"], 1.0)
+            except subprocess.TimeoutExpired as cause:
+                raise protocol.ProtocolError("timed out") from cause
+
+        with mock.patch.object(
+            protocol,
+            "_local_receipt_execution",
+            side_effect=lambda command, _deadline: (tuple(command), None),
+        ), mock.patch.object(protocol, "_run", side_effect=time_out):
+            with self.assertRaises(protocol.WatchBudgetExhausted):
+                protocol.verify_local_receipt(
+                    "rrnewton/hermit", SHA, deadline=time.monotonic() + 5.0
+                )
+
     def test_real_canonical_cli_brackets_planted_receipts(self) -> None:
         ledger = self.root / "ledger" / "hermit" / "test-host" / "2026-08.jsonl"
         observed_commands: list[tuple[str, ...]] = []
@@ -4416,7 +4520,11 @@ class ProtocolTest(unittest.TestCase):
             ledger.parent.mkdir(parents=True, exist_ok=True)
             event = protocol.canonical_ledger._event_for_row(row, self.root)
             ledger.write_text(json.dumps(event) + "\n", encoding="utf-8")
-            with mock.patch.object(protocol, "_run", side_effect=run_actual_cli):
+            with mock.patch.object(
+                protocol,
+                "_local_receipt_execution",
+                side_effect=lambda command, _deadline: (tuple(command), None),
+            ), mock.patch.object(protocol, "_run", side_effect=run_actual_cli):
                 return protocol.verify_local_receipt("rrnewton/hermit", producer_sha)
 
         accepted, evidence = verify(planted_row())
