@@ -1194,6 +1194,45 @@ async fn post_start_exec_refusal_reaches_cleanup_while_process_exit_is_pending()
     );
 }
 
+/// A root that has already exited must stop joining its child when that child
+/// refuses post-start exec, even if the child's Tool exit callback is pending.
+#[tokio::test(flavor = "current_thread")]
+async fn post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending() {
+    let (_directory, guest) = compile_fixture("hybrid_fork_exec_after_root_exit.c");
+    let name = unique_process_name();
+    let pid_directory = tempfile::tempdir().unwrap();
+    let pid_file = pid_directory.path().join("root.pid");
+    let mut command = Command::new(guest);
+    command.arg(&name).arg(&pid_file);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        LiteinstBackend::run_host_with_output_and_preload::<
+            PassthroughTaskCreationWithPendingProcessExit,
+        >(command, (), preload_path()),
+    )
+    .await
+    .expect("post-start exec refusal did not cancel the root's child join");
+    let error = result.expect_err("post-start exec refusal reported success");
+    let text = error.to_string();
+    assert!(
+        text.contains("LiteInst session failed closed in a non-root task") && text.contains("exec"),
+        "session failure did not retain the refused exec: {text}"
+    );
+
+    let root_pid: u32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_pid_reaped(root_pid);
+    let remaining = processes_named(&name);
+    assert!(
+        remaining.is_empty(),
+        "refused exec left a LiteInst process behind: {remaining:?}"
+    );
+}
+
 /// A vfork refusal in a non-root task fails the whole session even when it is
 /// recorded only after the root has reached its own clean exit.
 #[tokio::test(flavor = "current_thread")]
