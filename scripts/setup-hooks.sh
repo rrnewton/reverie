@@ -15,8 +15,13 @@ case "${1:-}" in
 esac
 
 dispatcher="$root/.githooks/dev-hermit-hook-dispatch"
+parent_reference_transaction="$root/scripts/parent-reference-transaction"
 checker="$root/scripts/check_commit_attribution.py"
 [ -x "$dispatcher" ] || { echo "missing executable dispatcher: $dispatcher" >&2; exit 1; }
+[ -x "$parent_reference_transaction" ] || {
+  echo "missing executable parent reference-transaction hook: $parent_reference_transaction" >&2
+  exit 1
+}
 [ -x "$checker" ] || { echo "missing executable checker: $checker" >&2; exit 1; }
 machine=$("$checker" --detect-machine)
 
@@ -54,17 +59,21 @@ for repo in "${repos[@]}"; do
 
   for hook in "${hooks[@]}"; do
     target="$composite/$hook"
+    source="$dispatcher"
+    if [ "$repo" = "$root" ] && [ "$hook" = reference-transaction ]; then
+      source="$parent_reference_transaction"
+    fi
     if [ "$mode" = check ]; then
-      [ -L "$target" ] && [ "$(readlink -f -- "$target")" = "$dispatcher" ] || {
-        echo "hook check REFUSED: $target is not bound to $dispatcher" >&2
+      if [ ! -L "$target" ] || [ "$(readlink -f -- "$target")" != "$source" ]; then
+        echo "hook check REFUSED: $target is not bound to $source" >&2
         exit 1
-      }
+      fi
     else
       if [ -e "$target" ] && [ ! -L "$target" ]; then
         echo "hook install REFUSED: unmanaged file exists at $target" >&2
         exit 1
       fi
-      ln -sfn "$dispatcher" "$target"
+      ln -sfn "$source" "$target"
     fi
   done
 
