@@ -98,6 +98,21 @@ exact refusal.
 The mutating agent writes only inside its allocated product checkout and only
 on its registered task branch. One slot has exactly one mutating owner.
 
+A slot is not bound to one branch for its lifetime. The ownership rule prevents
+concurrent writers; it does not require the first branch to land before the same
+owner can do more work. After the current task commit is clean, pushed to its
+authorized remote branch, and recorded in the task, the owner may reuse the
+same product checkout for another sequential branch. Fetch `origin/main`, create
+an unrelated branch from the resulting current `origin/main` commit, and repeat
+the allocation/adoption request with the same agent and slot but the new task,
+purpose, and branch so the registry describes the checkout again. Do not branch
+from the previous PR's branch unless the work is deliberately stacked and its
+inherited landing risk is stated: an accidental stack makes the new work depend
+on an unlanded PR. If an earlier PR later needs a rebase, first make the current
+branch clean and remotely recoverable, then switch back and update the
+registration to match; that branch switch is ordinary reuse, not a reason to
+hold later work until the earlier PR lands.
+
 An additional observer may join only through the current tool adapter's
 explicit read-only operation. The observer must not edit files, move branches,
 run a build that writes into the mutating owner's build directory, or share any
@@ -272,6 +287,33 @@ Adoption repeats the exact allocation command, including any sentinel flag,
 from the live owner's execution context. The
 [current sentinel design](../../../ai_docs/slot-reclamation-sentinel-design-20260808.md)
 defines its exact process-generation and revocation proofs.
+
+After a published PR, reuse its slot only after the old branch is clean and its
+exact task commit is reachable from the authorized remote branch. Record that
+commit and remote ref in the old task, then start unrelated work from the
+freshly fetched main branch and move the registration with the checkout:
+
+```bash
+git -C worktrees/<slot>/hermit status --short --branch
+git -C worktrees/<slot>/hermit rev-parse HEAD
+git -C worktrees/<slot>/hermit branch -r --contains HEAD
+with-proxy git -C hermit fetch origin main
+git -C worktrees/<slot>/hermit switch -c <new-branch> origin/main
+./scripts/allocate-worktree.rs \
+  --agent <same-agent> \
+  --slot <same-slot> \
+  --task <new-task> \
+  --product hermit \
+  --start-point origin/main \
+  --hermit-branch <new-branch> \
+  --purpose "<new observable outcome>"
+```
+
+Use the corresponding product and branch flag for Reverie or LiteInst2. Repeat
+the post-allocation checks from [Provision and register](#provision-and-register)
+before editing. If the new work intentionally depends on the unlanded PR, state
+that dependency instead of using `origin/main`; otherwise using the old branch
+as the start point silently stacks the new PR.
 
 The current explicit read-only join is the same allocation request with:
 
