@@ -1,0 +1,21 @@
+load("@fbsource//tools/target_determinator/macros:ci.bzl", "ci")
+
+ci.package(
+    ci.remove(
+        ci.linux(
+            ci.mode("fbcode//mode/dev-nosan"),
+        )
+    ),
+    ci.remove(
+        ci.skip_test(
+            ci.linux(
+                ci.aarch64(
+                    ci.mode("fbcode//mode/dev-nosan"),
+                ),
+            ),
+        )
+    ),
+    ci.linux(
+        ci.mode("fbcode//mode/dev-nosan"),
+    ),
+)

@@ -1,0 +1,220 @@
+load("@bazel_skylib//lib:paths.bzl", "paths")
+load("@fbcode_macros//build_defs:cpp_binary.bzl", "cpp_binary")
+load("@fbsource//tools/build_defs:glob_defs.bzl", "subdir_glob")
+load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
+load("//hermetic_infra/reverie/tests/gdbserver-integration:helpers.bzl", "gen_gdbserver_test")
+
+oncall("hermit")
+
+# Everything in the test-src folder is an active test. To disable a test, delete
+# it or move it to the `disabled/` directory.
+gdbserver_tests = [
+    paths.replace_extension(
+        paths.basename(p),
+        "",
+    )
+    for p in glob(["test-src/*.c"])
+]
+
+# Run natively without instrumentation:
+[
+    cpp_binary(
+        name = "test_binary_" + base,
+        srcs = ["test-src/" + base + ".c"],
+        headers = subdir_glob([
+            ("test-src/", "*.h"),
+        ]),
+        allocator = "malloc",
+        compiler_flags = [
+            "-g",
+            "-Wall",
+            "-O0",
+            "-D_POSIX_C_SOURCE=20180920",
+            "-D_GNU_SOURCE=1",
+            "-fPIE",
+            "-static-pie",
+            "-fPIC",
+        ],
+        linker_flags = [
+            "--emit-relocs",  # makes linker ignore `--strip-debug-*` flags
+        ],
+        preprocessor_flags = ["-UNDEBUG"],
+    )
+    for base in gdbserver_tests
+]
+
+rust_binary(
+    name = "gdbserver-test-launcher",
+    srcs = glob(["gdbserver-helper/**/*.rs"]),
+    visibility = [
+        "//hermetic_infra/reverie/tests/...",
+    ],
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:clap",
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:tempfile",
+        "fbsource//third-party/rust:tokio",
+        "//hermetic_infra/reverie:reverie",
+        "//hermetic_infra/reverie:reverie-ptrace",
+    ],
+)
+
+# Check exit status, success only if hermit gdbserver returns 0.
+gen_gdbserver_test(
+    name = "gdbserver-smoke-test",
+    gdb_binary = "gdb",
+    gdbex = [
+        "continue",
+    ],
+    gdbiex = [
+        "set remote pass-signals 0",
+        "set remote hostio-open-packet 1",
+    ],
+    gdbserver_launcher = ":gdbserver-test-launcher",
+    test_binary = ":test_binary_forkExec",
+)
+
+# Check output (stdout), success only if output matches.
+gen_gdbserver_test(
+    name = "gdbserver-can-check-output",
+    expect_stdout = "openat1: 3\nopenat1: 4\n",
+    gdbex = [
+        "break main",
+        "continue",
+        "continue",
+    ],
+    gdbserver_launcher = ":gdbserver-test-launcher",
+    test_binary = ":test_binary_openat1",
+)
+
+# Check if we can debug parent after fork, with follow-fork-mode =
+# parent (this is the default behavior).
+gen_gdbserver_test(
+    name = "gdbserver_fork_follow_parent",
+    gdbex = [
+        "set follow-fork-mode parent",
+        "break 18",
+        "continue",
+        "backtrace",
+        "continue",
+    ],
+    gdbserver_launcher = ":gdbserver-test-launcher",
+    test_binary = ":test_binary_forkExec",
+)
+
+# Check if we can debug child after fork, with follow-fork-mode =
+# child, parent will be detached.
+gen_gdbserver_test(
+    name = "gdbserver_fork_follow_child",
+    gdbex = [
+        "set follow-fork-mode child",
+        "break 18",
+        "continue",
+        "backtrace",
+        "continue",
+    ],
+    gdbserver_launcher = ":gdbserver-test-launcher",
+    test_binary = ":test_binary_forkExec",
+)
+
+# Check if test nested.c can output expected value.
+gen_gdbserver_test(
+    name = "gdbserver_nested_output_value",
+    expect_stdout = "-421875\n",
+    gdbex = [
+        "break baz",
+        "continue",
+        "continue",
+    ],
+    gdbserver_launcher = ":gdbserver-test-launcher",
+    test_binary = ":test_binary_nested",
+)
+
+# Check if we can change function arguments with test nested.c.
+gen_gdbserver_test(
+    name = "gdbserver_nested_change_argument",
+    expect_stdout = "421875\n",
+    gdbex = [
+        "break baz",
+        "continue",
+        "backtrace",
+        "set var a=650",
+        "set var b=25",
+        "continue",
+    ],
+    gdbserver_launcher = ":gdbserver-test-launcher",
+    test_binary = ":test_binary_nested",
+)
+
+gen_gdbserver_test(
+    name = "gdbserver_threads1",
+    gdbex = [
+        "break bkpt",
+        "continue",
+        "continue",
+        "backtrace",
+        "continue",
+        "backtrace",
+        "continue",
+        "backtrace",
+        "continue",
+    ],
+    gdbserver_launcher = ":gdbserver-test-launcher",
+    test_binary = ":test_binary_threads1",
+)
+
+# check if breakpoint in multi threaded program works
+gen_gdbserver_test(
+    name = "gdbserver_manyThreads_breakpoint_exit_normally",
+    gdbex = [
+        "break bkpt",
+        "continue",
+        "continue",
+        "continue",
+        "continue",
+        "continue",
+        "continue",
+        "continue",
+        "continue",
+        "continue",
+        "continue",
+    ],
+    gdbserver_launcher = ":gdbserver-test-launcher",
+    test_binary = ":test_binary_manyThreads",
+)
+
+# Check if we can break at every breakpoint in each thread
+gen_gdbserver_test(
+    name = "gdbserver_manyThreads_breakpoint_stop_each_threads",
+    expect_stdout = "64 64\n",
+    gdbex = [
+        "break bkpt",
+        "continue",
+    ]
+    + [
+        "set bkpt_resumed_count = 1 + bkpt_resumed_count",
+        "continue",
+    ]
+    * 64,
+    gdbserver_launcher = ":gdbserver-test-launcher",
+    test_binary = ":test_binary_manyThreads",
+    test_binary_args = ["63"],
+)
+
+# test if we would miss any ptrace events.
+gen_gdbserver_test(
+    name = "gdbserver_should_not_missing_ptrace_events",
+    expect_stdout = "8 8\n",
+    gdbex = [
+        "break bkpt",
+        "continue",
+    ]
+    + [
+        "set bkpt_resumed_count = 1 + bkpt_resumed_count",
+        "continue",
+    ]
+    * 8,
+    gdbserver_launcher = ":gdbserver-test-launcher",
+    test_binary = ":test_binary_threads2",
+)

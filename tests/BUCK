@@ -1,0 +1,197 @@
+load("@bazel_skylib//lib:paths.bzl", "paths")
+load("@fbcode_macros//build_defs:cpp_binary.bzl", "cpp_binary")
+load("@fbcode_macros//build_defs:custom_rule.bzl", "custom_rule")
+load("@fbcode_macros//build_defs:native_rules.bzl", "buck_sh_binary", "buck_sh_test")
+load("@fbcode_macros//build_defs:sanitizers.bzl", "sanitizers")
+load("@fbsource//tools/build_defs:glob_defs.bzl", "subdir_glob")
+load("@fbsource//tools/build_defs:rust_binary.bzl", "rust_binary")
+load("@fbsource//tools/build_defs:rust_unittest.bzl", "rust_unittest")
+load("@fbsource//tools/build_defs:selects.bzl", "selects")
+
+oncall("hermit")
+
+# Some tests don't work when a sanitizer is in use (i.e., with @mode/dev). This
+# makes it easy to conditionally compile them with `#[cfg(not(sanitized))]`.
+sanitized_feature = selects.apply(
+    sanitizers.get_sanitizer_v2(),
+    lambda san: ["--cfg=sanitized"] if san else [],
+)
+
+[
+    rust_unittest(
+        name = paths.replace_extension(test, ""),
+        srcs = [test],
+        rustc_flags = sanitized_feature,
+        deps = [
+            "fbsource//third-party/rust:close-err",
+            "fbsource//third-party/rust:futures",
+            "fbsource//third-party/rust:libc",
+            "fbsource//third-party/rust:nix",
+            "fbsource//third-party/rust:raw-cpuid",
+            "fbsource//third-party/rust:serde",
+            "fbsource//third-party/rust:syscalls",
+            "fbsource//third-party/rust:test-case",
+            "fbsource//third-party/rust:tokio",
+            "//hermetic_infra/reverie:reverie",
+            "//hermetic_infra/reverie:reverie-ptrace",
+            "//hermetic_infra/reverie:reverie-util",
+        ],
+    )
+    for test in glob(["*.rs"])
+]
+
+# Standalone tests
+rust_binary(
+    name = "inject-then-tail-inject",
+    srcs = ["standalone/inject_then_tail_inject.rs"],
+    allocator = "malloc",
+    crate_root = "standalone/inject_then_tail_inject.rs",
+    deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:nix",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:tokio",
+        "fbsource//third-party/rust:tracing",
+        "//hermetic_infra/reverie:reverie",
+        "//hermetic_infra/reverie:reverie-ptrace",
+    ],
+)
+
+rust_binary(
+    name = "parallel-tasks",
+    srcs = ["standalone/parallel_tasks.rs"],
+    crate_root = "standalone/parallel_tasks.rs",
+    deps = [
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:tokio",
+        "//hermetic_infra/reverie:reverie",
+        "//hermetic_infra/reverie:reverie-ptrace",
+    ],
+)
+
+rust_binary(
+    name = "at-random",
+    srcs = ["standalone/at_random.rs"],
+    crate_root = "standalone/at_random.rs",
+    deps = [
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:tokio",
+        "//hermetic_infra/reverie:reverie",
+        "//hermetic_infra/reverie:reverie-ptrace",
+    ],
+)
+
+# Everything in the c_tests folder is an active test. To disable a test, delete
+# it or move it to the `disabled/` directory.
+reverie_tests = [
+    paths.replace_extension(
+        paths.basename(p),
+        "",
+    )
+    for p in glob(["c_tests/*.c"])
+]
+
+# These are assembly files without any external deps (nostdlib)
+reverie_standalone_tests = [
+    paths.replace_extension(
+        paths.basename(p),
+        "",
+    )
+    for p in glob(["c_tests/*.S"])
+]
+
+# call cc to build with `-nostdlib` flag
+# FIXME(T77896624): This is currently broken!
+buck_sh_binary(
+    name = "cc_no_shlib",
+    main = "c_tests/cc_no_shlib.sh",
+)
+
+# build tests from assembly without shlib
+[
+    custom_rule(
+        name = "test_binary_" + base,
+        srcs = ["c_tests/" + base + ".S"],
+        build_args = "c_tests/" + base + ".S",
+        build_script_dep = ":cc_no_shlib",
+        has_content_based_path = False,
+        output_gen_files = [
+            base,
+        ],
+        strict = False,
+    )
+    for base in reverie_standalone_tests
+]
+
+buck_sh_test(
+    name = "test_strace_pwd",
+    args = [
+        "/bin/pwd",
+    ],
+    test = "//hermetic_infra/reverie/reverie-examples:strace",
+)
+
+# Run natively without instrumentation:
+[
+    cpp_binary(
+        name = "test_" + base,
+        srcs = ["c_tests/" + base + ".c"],
+        headers = subdir_glob([
+            ("c_tests/", "*.h"),
+        ]),
+        allocator = "malloc",
+        compiler_flags = [
+            "-g",
+            "-Wall",
+            "-O2",
+            "-D_POSIX_C_SOURCE=20180920",
+            "-D_GNU_SOURCE=1",
+            "-fPIC",
+        ],
+    )
+    for base in reverie_tests
+]
+
+sample_tools = [
+    ("noop", "//hermetic_infra/reverie/reverie-examples:noop"),
+    ("strace", "//hermetic_infra/reverie/reverie-examples:strace"),
+    ("counter1", "//hermetic_infra/reverie/reverie-examples:counter1"),
+    ("counter2", "//hermetic_infra/reverie/reverie-examples:counter2"),
+    ("chunky_print", "//hermetic_infra/reverie/reverie-examples:chunky_print"),
+]
+
+[
+    buck_sh_test(
+        name = shortname + "_" + base,
+        args = [
+            "--",
+            "$(location :test_" + base + ")",
+        ],
+        test = toolbin,
+        deps = [
+            ":test_" + base,
+        ],
+    )
+    for base in reverie_tests + reverie_standalone_tests
+    for (shortname, toolbin) in sample_tools
+]
+
+buck_sh_test(
+    name = "sh-test-at-random",
+    args = [],
+    test = ":at-random",
+    deps = [
+        ":at-random",
+    ],
+)
+
+# Run tests without any sort of syscall interception.
+[
+    buck_sh_test(
+        name = "run_" + base,
+        args = [],
+        test = ":test_" + base,
+    )
+    for base in reverie_tests
+]

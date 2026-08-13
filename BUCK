@@ -1,0 +1,249 @@
+load("@fbcode_macros//build_defs:sanitizers.bzl", "sanitizers")
+load("@fbsource//tools/build_defs:rust_library.bzl", "rust_library")
+load("@fbsource//tools/build_defs:selects.bzl", "selects")
+
+oncall("hermit")
+
+# Some tests don't work when a sanitizer is in use (i.e., with @mode/dev). This
+# makes it easy to conditionally compile them with `#[cfg(not(sanitized))]`.
+sanitized_feature = selects.apply(
+    sanitizers.get_sanitizer_v2(),
+    lambda san: ["--cfg=sanitized"] if san else [],
+)
+
+rust_library(
+    name = "reverie",
+    srcs = glob(["reverie/src/**/*.rs"]),
+    autocargo = {"cargo_toml_dir": "reverie"},
+    test_rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:addr2line",
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:async-trait",
+        "fbsource//third-party/rust:bitflags",
+        "fbsource//third-party/rust:byteorder",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:linked-hash-map",
+        "fbsource//third-party/rust:memmap2",
+        "fbsource//third-party/rust:never-say-never",
+        "fbsource//third-party/rust:nix",
+        "fbsource//third-party/rust:object",
+        "fbsource//third-party/rust:procfs",
+        "fbsource//third-party/rust:raw-cpuid",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:syscalls",
+        "fbsource//third-party/rust:thiserror",
+        "fbsource//third-party/rust:typed-arena",
+        ":reverie-process",
+        ":reverie-syscalls",
+    ],
+)
+
+# NOTE: This crate should not depend on any other Reverie crate. It should
+# remain a generic way of spawning processes.
+rust_library(
+    name = "reverie-process",
+    srcs = glob(["reverie-process/src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            "dependencies_override": {
+                "dependencies": {
+                    "bitflags": {
+                        "features": [
+                            "serde",
+                        ]
+                    },
+                },
+            },
+            "features": {
+                "default": [],
+                "nightly": [],
+            },
+            "lints": {
+                "rust": {
+                    "unexpected_cfgs": {
+                        "check-cfg": ["cfg(sanitized)"],
+                        "level": "warn",
+                    },
+                },
+            },
+        },
+        "cargo_toml_dir": "reverie-process",
+        "edge_features": [],
+    },
+    features = ["nightly"],
+    test_deps = [
+        "fbsource//third-party/rust:num_cpus",
+        "fbsource//third-party/rust:raw-cpuid",
+        "fbsource//third-party/rust:tempfile",
+    ],
+    test_rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:bincode",
+        "fbsource//third-party/rust:bitflags",
+        "fbsource//third-party/rust:colored",
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:nix",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:syscalls",
+        "fbsource//third-party/rust:thiserror",
+        "fbsource//third-party/rust:tokio",
+    ],
+)
+
+rust_library(
+    name = "reverie-util",
+    srcs = glob(["reverie-util/src/**/*.rs"]),
+    autocargo = {"cargo_toml_dir": "reverie-util"},
+    deps = [
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:chrono",
+        "fbsource//third-party/rust:clap",
+        "fbsource//third-party/rust:tracing",
+        "fbsource//third-party/rust:tracing-appender",
+        "fbsource//third-party/rust:tracing-subscriber",
+        ":reverie",
+    ],
+)
+
+rust_library(
+    name = "reverie-ptrace",
+    srcs = glob(["reverie-ptrace/src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            "dependencies_override": {
+                "dependencies": {
+                    "safeptrace": {
+                        "features": [
+                            "notifier",
+                            "memory",
+                        ]
+                    },
+                },
+            },
+        },
+        "cargo_toml_dir": "reverie-ptrace",
+    },
+    test_deps = [
+        "fbsource//third-party/rust:test-case",
+    ],
+    test_env = {
+        # Disable leak detection for the `exit_status::test::propagate_exit`
+        # test. The test does an early exit post-fork which invokes the ASAN
+        # atexit handler code. The Rust test harness never has a chance to
+        # deallocate its own stuff, so the ASAN atexit handler produces the
+        # wrong exit code and thus causes the test to fail.
+        "ASAN_OPTIONS": "detect_leaks=0",
+    },
+    test_rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/libunwind:unwind-ptrace",  # Used for getting remote backtraces.
+        "fbsource//third-party/rust:anyhow",
+        "fbsource//third-party/rust:async-trait",
+        "fbsource//third-party/rust:bincode",
+        "fbsource//third-party/rust:bytes",
+        "fbsource//third-party/rust:close-err",
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:goblin",
+        "fbsource//third-party/rust:iced-x86",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:nix",
+        "fbsource//third-party/rust:num-traits",
+        "fbsource//third-party/rust:paste",
+        "fbsource//third-party/rust:perf-event-open-sys",
+        "fbsource//third-party/rust:procfs",
+        "fbsource//third-party/rust:raw-cpuid",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:thiserror",
+        "fbsource//third-party/rust:tokio",
+        "fbsource//third-party/rust:tokio-stream",
+        "fbsource//third-party/rust:tracing",
+        "fbsource//third-party/rust:tracing-subscriber",
+        "fbsource//third-party/rust:unwind",
+        ":reverie",
+        ":safeptrace",
+    ],
+)
+
+rust_library(
+    name = "reverie-syscalls",
+    srcs = glob(["reverie-syscalls/src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            "dependencies_override": {
+                "dependencies": {
+                    "bitflags": {
+                        "features": [
+                            "serde",
+                        ]
+                    },
+                },
+            },
+        },
+        "cargo_toml_dir": "reverie-syscalls",
+    },
+    deps = [
+        "fbsource//third-party/rust:bitflags",
+        "fbsource//third-party/rust:derive_more",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:nix",
+        "fbsource//third-party/rust:paste",
+        "fbsource//third-party/rust:serde",
+        "fbsource//third-party/rust:syscalls",
+        ":reverie-memory",
+    ],
+)
+
+rust_library(
+    name = "reverie-memory",
+    srcs = glob(["reverie-memory/src/**/*.rs"]),
+    autocargo = {"cargo_toml_dir": "reverie-memory"},
+    deps = [
+        "fbsource//third-party/rust:syscalls",
+    ],
+)
+
+rust_library(
+    name = "safeptrace",
+    srcs = glob(["safeptrace/src/**/*.rs"]),
+    autocargo = {
+        "cargo_toml_config": {
+            "features": {
+                "default": [],
+                "memory": ["reverie-memory"],
+                "notifier": [],
+            },
+            "lints": {
+                "rust": {
+                    "unexpected_cfgs": {
+                        "check-cfg": ["cfg(sanitized)"],
+                        "level": "warn",
+                    },
+                },
+            },
+        },
+        "cargo_toml_dir": "safeptrace",
+    },
+    features = [
+        "notifier",
+        "memory",
+    ],
+    test_deps = [
+        "fbsource//third-party/rust:quickcheck",
+        "fbsource//third-party/rust:quickcheck_macros",
+        "fbsource//third-party/rust:tokio",
+    ],
+    test_rustc_flags = sanitized_feature,
+    deps = [
+        "fbsource//third-party/rust:bitflags",
+        "fbsource//third-party/rust:futures",
+        "fbsource//third-party/rust:libc",
+        "fbsource//third-party/rust:nix",
+        "fbsource//third-party/rust:parking_lot",
+        "fbsource//third-party/rust:syscalls",
+        "fbsource//third-party/rust:thiserror",
+        ":reverie-memory",
+        ":reverie-process",
+    ],
+)

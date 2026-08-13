@@ -5,3 +5,6 @@ Cargo.lock
 *.orig
 **/__pycache__/
 **/.mypy_cache/
+
+# buck2 build output
+buck-out/
