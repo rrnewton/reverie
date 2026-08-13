@@ -109,7 +109,7 @@ def load_prs(root: Path, repo: str, limit: int, herdr_agent: str | None) -> dict
     if slug is None:
         return {}
     cmd = (f"with-proxy gh pr list -R {slug} --state all --limit {limit} "
-           f"--json number,state,mergeCommit,headRefOid")
+           f"--json number,state,mergeCommit,headRefOid,headRefName")
     if herdr_agent:
         run = subprocess.run(
             [str(root / "agent-utils/bin/herdr-run"), "--agent", herdr_agent, cmd],
@@ -160,6 +160,10 @@ def pile(db: Path) -> list[dict]:
             "bare_prs": sorted({int(m.group(1)) for m in BARE_PR.finditer(notes)}),
             "shas": sorted(set(SHA40.findall(notes))),
             "artifacts": sorted(set(ARTIFACT.findall(notes))),
+            # The raw note text, so PR attribution can look for the SECOND
+            # signal. Without it a PR URL is a lone mention, which is exactly
+            # how the phantom LANDED survived the first fix.
+            "text": notes,
         })
     return out
 
@@ -241,6 +245,78 @@ def normalize_subject(subject: str) -> str:
     return re.sub(r"\s*\(#\d+\)\s*$", "", subject).strip()
 
 
+def pr_attribution(item: dict, row: dict, *, url_seen: bool) -> tuple[str, list[str]]:
+    """Is THIS pull request attributable to THIS task? Agreement, not mention.
+
+    *** THIS IS THE SECOND HALF OF THE 2026-08-12 FIX AND THE MORE INSTRUCTIVE
+    HALF. *** The first pass closed every SHA-shaped route to a phantom LANDED
+    and left the URL-shaped one open, because `pile()` builds `item["prs"]`
+    from `PR_URL.finditer(notes)` -- ANY full pull-request URL appearing in any
+    note. That was read as "linked to the task" when it only ever meant
+    "mentioned somewhere". hermit-904's independent verification reproduced the
+    phantom LANDED with an unrelated full URL. The lesson recorded here for the
+    next reader: the first fix generalised over the modes that had been
+    DIAGNOSED (two of them SHA-shaped) instead of over the mechanism that
+    produced them, so the one route with a single example stayed open.
+
+    The standard is not invented here. `ci-hub/landing/task_pr_join.py` already
+    settled it for the same question -- which task owns which PR -- after both
+    single-signal methods failed, and its rule is AGREEMENT ACROSS INDEPENDENT
+    SIGNALS: at least one STRONG identity signal AND at least two signals in
+    total. A lone STRONG signal is PROBABLE, never CONFIRMED, and only
+    CONFIRMED may authorise a close. A bare `#N` is WEAK there ("a rollup
+    mention is not ownership") and is weak here.
+
+        STRONG   pr_url    the full URL is in the task text
+                 head_sha  the PR head SHA, or its 12-hex prefix, is in the text
+                 branch    the PR head branch name appears verbatim
+        WEAK     pr_num    a bare `#N` -- corroborator only, never alone
+
+    Measured on the live pile when this landed: of the 19 LANDED verdicts that
+    rested on a pull request, 17 are CONFIRMED and 2 are lone-URL PROBABLE. So
+    the standard keeps genuinely landed work binding while refusing exactly the
+    shape 904 exploited.
+    """
+    text = item.get("text") or ""
+    num = row.get("number")
+    strong: list[str] = []
+    weak: list[str] = []
+    if url_seen:
+        strong.append("pr_url")
+    head = row.get("headRefOid") or ""
+    if head and (head in text or head[:12] in text):
+        strong.append("head_sha")
+    branch = row.get("headRefName") or ""
+    if branch and branch in text:
+        strong.append("branch")
+    if num is not None and re.search(rf"#{num}\b", text):
+        weak.append("pr_num")
+    signals = strong + weak
+    # DELIBERATE DEVIATION, STRICTER THAN task_pr_join's ">=1 strong and >=2
+    # total": here the second signal must itself be STRONG. `pr_url` and a bare
+    # `#N` routinely come from THE SAME textual mention -- "see
+    # .../pull/2071 (#2071)" fires both -- so counting them as two is one
+    # mention double-counted, not independent agreement, and this whole defect
+    # class is mentions being read as attributions. `head_sha` and `branch` are
+    # facts about the PR that a mention does not carry.
+    #
+    # MEASURED COST ON THE LIVE PILE: ZERO. Before and after the gate the audit
+    # reports the same 19 PR-attributed LANDED verdicts, because every one of
+    # them carries head_sha and/or branch agreement in its notes -- a validation
+    # receipt quotes the head, and a landing note names the branch. An earlier
+    # estimate here said "15 instead of 17"; that came from an offline harness
+    # that split `tg sql` output on a separator multi-line notes break, so it
+    # truncated each task's text and under-counted signals. The running code was
+    # right and the estimate was wrong; the number above is what the audit
+    # actually emits. The gate costs nothing on real data and closes the route
+    # hermit-904 exploited.
+    if len(strong) >= 2:
+        return "CONFIRMED", signals
+    if strong:
+        return "PROBABLE", signals
+    return "NONE", signals
+
+
 def classify(item: dict, prs: dict, anc: Ancestry) -> dict:
     """Bucket one task by whether ITS OWN change landed.
 
@@ -302,7 +378,9 @@ def classify(item: dict, prs: dict, anc: Ancestry) -> dict:
         else:
             refused.append(f"{why} [{sha[:12]}]: not attributable to this task")
 
-    # A. Pull requests LINKED to the task. Their mergeCommit is the change.
+    # A. Pull requests whose URL appears in the task text. A URL IS A MENTION,
+    #    NOT AN ATTRIBUTION -- it counts only when a second independent signal
+    #    agrees. See pr_attribution().
     for repo, num in item["prs"]:
         row = prs.get(repo, {}).get(num)
         if row is None:
@@ -310,12 +388,23 @@ def classify(item: dict, prs: dict, anc: Ancestry) -> dict:
             continue
         notes.append(f"{repo}#{num}:{row['state']}")
         oid = (row.get("mergeCommit") or {}).get("oid")
-        if oid:
+        if not oid:
+            continue
+        verdict, signals = pr_attribution(item, {**row, "number": num}, url_seen=True)
+        if verdict == "CONFIRMED":
             # mergeCommit.oid ONLY -- never headRefOid, never the MERGED flag.
-            consider(repo, oid, f"mergeCommit of linked {repo}#{num}", linked=True)
+            consider(repo, oid,
+                     f"mergeCommit of {repo}#{num} CONFIRMED by {'+'.join(signals)}",
+                     linked=True)
+        else:
+            refused.append(
+                f"mergeCommit of {repo}#{num} [{oid[:12]}]: pull request is "
+                f"{verdict} for this task ({'+'.join(signals) or 'no signal'}); "
+                f"a mention is not an attribution")
 
-    # B. Bare PR numbers found in prose. NOT the task's pull request unless the
-    #    merge commit itself claims the task.
+    # B. Bare PR numbers found in prose. WEAK by construction -- it can never
+    #    reach CONFIRMED on its own, so it only counts if the merge commit
+    #    itself claims the task.
     for num in item["bare_prs"]:
         for repo in ("hermit", "reverie"):
             row = prs.get(repo, {}).get(num)

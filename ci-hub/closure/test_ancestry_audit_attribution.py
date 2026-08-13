@@ -51,17 +51,19 @@ class StubAncestry:
         return None, "stub"
 
 
-def item(task, prs=(), bare=(), shas=()):
+def item(task, prs=(), bare=(), shas=(), text=""):
     return {"task": task, "title": task, "prs": list(prs), "bare_prs": list(bare),
-            "shas": list(shas), "artifacts": []}
+            "shas": list(shas), "artifacts": [], "text": text}
 
 
-def merged(repo, num, oid):
-    return {repo: {num: {"state": "MERGED", "mergeCommit": {"oid": oid}}}}
+def merged(repo, num, oid, head="deadbeef" * 5, branch="feat/x"):
+    return {repo: {num: {"state": "MERGED", "mergeCommit": {"oid": oid},
+                         "headRefOid": head, "headRefName": branch}}}
 
 
 def open_pr(repo, num):
-    return {repo: {num: {"state": "OPEN", "mergeCommit": None}}}
+    return {repo: {num: {"state": "OPEN", "mergeCommit": None,
+                         "headRefOid": "0" * 40, "headRefName": "feat/open"}}}
 
 
 def run() -> int:
@@ -79,9 +81,11 @@ def run() -> int:
 
     # ---------- ACCEPT ----------
     anc = StubAncestry({})
-    check("ACCEPT linked PR merged -> LANDED",
-          ancestry_audit.classify(item("t-linked", prs=[("hermit", 2100)]),
-                                  merged("hermit", 2100, OWN_MERGE), anc),
+    check("ACCEPT PR URL + a second agreeing signal -> LANDED",
+          ancestry_audit.classify(
+              item("t-linked", prs=[("hermit", 2100)],
+                   text="https://github.com/rrnewton/hermit/pull/2100 branch feat/x"),
+              merged("hermit", 2100, OWN_MERGE), anc),
           "LANDED", "why")
 
     anc = StubAncestry({("dev-hermit", OWN_COMMIT): "t-trailer"})
@@ -122,6 +126,34 @@ def run() -> int:
           ancestry_audit.classify(
               item("p1_compat_lsof_is", prs=[("hermit", 2221)], shas=[MAIN_TIP]),
               open_pr("hermit", 2221), anc),
+          "LANDED")
+
+    # ---------- hermit-904's reproduction: the URL-shaped route ----------
+    # A full PR URL, mentioned and nothing more. Before this fix it produced a
+    # phantom LANDED; a lone STRONG signal is PROBABLE, never CONFIRMED.
+    anc = StubAncestry({})
+    check("REFUSE 904's repro: unrelated full PR URL, lone signal",
+          ancestry_audit.classify(
+              item("t-mentions-someone-elses-pr", prs=[("hermit", 2071)],
+                   text="see https://github.com/rrnewton/hermit/pull/2071 for context"),
+              merged("hermit", 2071, OTHER_PR_MERGE), anc),
+          "NOT-DETERMINABLE")
+
+    # pr_url and a bare #N routinely come from the SAME mention, so two of them
+    # is one mention counted twice. The second signal must be STRONG.
+    check("REFUSE URL + only a WEAK corroborator (same mention, counted twice)",
+          ancestry_audit.classify(
+              item("t-weak-only", prs=[("hermit", 2071)],
+                   text="https://github.com/rrnewton/hermit/pull/2071 and #2071 again"),
+              merged("hermit", 2071, OTHER_PR_MERGE), anc),
+          "NOT-DETERMINABLE")
+
+    check("ACCEPT URL + head_sha agreeing -> LANDED",
+          ancestry_audit.classify(
+              item("t-headsha", prs=[("hermit", 2100)],
+                   text="https://github.com/rrnewton/hermit/pull/2100 head "
+                        + "deadbeef" * 5),
+              merged("hermit", 2100, OWN_MERGE), anc),
           "LANDED")
 
     # A task with nothing at all stays UNKNOWN, not NOT-DETERMINABLE.
