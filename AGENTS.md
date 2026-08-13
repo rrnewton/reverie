@@ -96,7 +96,7 @@ unblocks. A status label, queue declaration, or old task note does not outrank c
 15. **Close only after landing.** After landing, the owning agent closes its own task. Publishing a
     pull request or durable artifact is implementation evidence, not the end of the task. At
     publication, record
-    `tg note <id> "IMPLEMENTED: <artifact-url> | SHA <40-hex> | <validation>"`, then add the
+    `tg note <id> "IMPLEMENTED: <artifact-url> | branch <branch> | SHA <40-hex> | <validation>"`, then add the
     `implemented` tag while preserving every existing tag. Keep the task `in_progress` and retain
     ownership while shepherding review, rebases, qualifying validation, and authorized landing; red,
     missing, or stale selected validation does not qualify. After the change is on its named target
@@ -104,6 +104,17 @@ unblocks. A status label, queue declaration, or old task note does not outrank c
     writes `CLOSURE-VERIFIED`, and only then changes the status to `closed`. Do not bypass the gateway
     for implementation work. Follow the
     [closure evidence contract](ci-hub/closure/README.md).
+
+    The leading `IMPLEMENTED:` clause is also the task's **claim marker**. The ancestry audit reads
+    PR, branch, and head attribution only from lines marked as that task's claim; a full PR URL and
+    exact SHA or branch in `FROM ...:`, quoted review text, or other prose remain a citation. Without
+    a recognized claim line, genuine published work fails closed as `NOT-DETERMINABLE` rather than
+    being attributed from a mention. For example, `fix-417-model-0xcf` quoted Reverie PR #417, but
+    its own `IMPLEMENTED:` line claims Reverie PR #418; the audit ignores the quotation and uses
+    #418. This does **not** relax the evidence standard: keep the exact artifact URL, branch, 40-hex
+    SHA, and validation in the completion note, and mark which artifact this task claims. The marker
+    is self-declared and is not proof of ownership, correctness, or landing; it prevents this specific
+    citation-as-attribution error and still requires independent verification.
 
 Landing debt rides on the `implemented` tag, never on the status: published but unlanded work is open
 and `implemented`; landed work is closed through the gateway and keeps the tag. Landed does not mean
