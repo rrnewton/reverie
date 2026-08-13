@@ -20,8 +20,9 @@ that must also be reflected in the generated source.
 ## Architecture Overview
 
 This is the coordinator-level map; the canonical `.claude/skills/` files
-(`reverie-architecture`, `syscall-interception`, `adding-a-backend`, and
-`testing-tools`) are the task-level detail. Claude reads them through
+(`reverie-architecture`, `reverie-validation-authority`,
+`syscall-interception`, `adding-a-backend`, and `testing-tools`) are the
+task-level detail. Claude reads them through
 `.llms/skills`; stock Codex reads the structured
 `.agents/skills/<name>/SKILL.md` package links. **Read `reverie-architecture`
 before working anywhere in the tree.**
@@ -350,12 +351,12 @@ feature branches -> rrnewton/reverie main -> periodic upstream pull request
   `main`; do not target upstream for routine CI iteration.
 - The PR author owns review fixes, rebases, and exact-head validation through
   landing. Do not hand ordinary queue work to a separate lander.
-- Reverie's current authoritative landing gate is `merge-gate-v2` at the exact
-  PR head. It dereferences both `Regular tests (GitHub-hosted)` and
-  `Host-dependent tests (self-hosted)` and requires both to pass. A local
-  validation receipt, `locally-validated` label, raw exit, or copied comment is
-  supplemental evidence only and cannot authorize landing. Await the two
-  authoritative jobs; a missing, skipped, stale, or failed result is not green.
+- Reverie's validation authority is the canonical exact-head local LEDGER row
+  selected by `ci-hub validate-status --repo rrnewton/reverie`. The
+  `locally-validated` label, raw exit, copied comment, and GitHub Actions result
+  are not evidence by themselves. GitHub Actions is currently diagnostic only
+  by owner directive. Missing, malformed, stale, incomplete, unboxed,
+  zero-execution, or red local evidence blocks landing.
 - Only an authorized coordinator lands changes and updates the parent gitlink
   through the serialized landing path.
 - Never force-push `main`, rewrite shared branches, or merge around a genuine

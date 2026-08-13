@@ -5,3 +5,8 @@ Cargo.lock
 *.orig
 **/__pycache__/
 **/.mypy_cache/
+
+# Standalone validate.sh writes diagnostic-only rows here when no dev-hermit
+# parent is discoverable. Canonical validation authority lives in the parent's
+# ledger and never treats these checkout-local rows as receipts.
+ci/validate-ledger/

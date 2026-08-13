@@ -22,6 +22,7 @@ const ROOT_SKILLS: &[&str] = &[
     "adding-a-backend",
     "repo-cleanliness",
     "reverie-architecture",
+    "reverie-validation-authority",
     "syscall-interception",
     "testing-tools",
 ];
