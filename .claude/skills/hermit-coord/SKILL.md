@@ -58,6 +58,17 @@ is the operational summary of the coordinator role.
   deleted a check instead of satisfying it. Two real misses show why a passing suite is insufficient:
   a harness assertion still accepted a backward pin after the assertion was changed, and strict
   compatibility used the legacy comparator for seven days while being described as L2-bitwise.
+  Every review dispatch must require the reviewer to end with exactly one parser-defined verdict
+  line at column zero, naming the review lane and full head SHA:
+
+  ```text
+  APPROVED-AT: <claude|codex> <40-hex-head>
+  CHANGES-REQUESTED-AT: <claude|codex> <40-hex-head>
+  ```
+
+  Never ask for or emit `REJECTED-AT`. `approval_binding.py` reports that spelling as malformed and
+  does not revoke an earlier approval, so it can leave authority standing after the reviewer meant
+  to withdraw it.
 - **PR ownership:** the author shepherds each new PR through review, validation
   under `hermit-validation-authority`, landing, and ancestry confirmation. Do not hand
   ordinary work to a dedicated lander; that role drains inherited backlog.

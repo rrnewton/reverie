@@ -103,6 +103,19 @@ are caches for routing and activity, not the approval authority:
 - `passed-review-codex` and `passed-review-claude` may cache the corresponding
   exact-head approvals. The role-tagged comments and SHA remain authoritative.
 
+Every generated review task and every reviewer verdict uses exactly one of these
+parser-defined lines at column zero:
+
+```text
+APPROVED-AT: <claude|codex> <40-hex-head>
+CHANGES-REQUESTED-AT: <claude|codex> <40-hex-head>
+```
+
+`REJECTED-AT` is not a synonym. The approval-binding parser reports it as malformed and
+does not revoke an earlier approval. Do not include it as an allowed result in a review
+prompt, and do not edit an old comment to repair it; emit the canonical current verdict
+in a new role-tagged comment.
+
 The coordinator, never the reviewer, records a completed family review with
 the typed front door:
 
