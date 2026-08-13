@@ -208,7 +208,7 @@ impl Tool for CountGetpid {
 async fn rewritten_syscall_is_delivered_and_emulated() {
     let mut command = Command::new(direct_syscall_guest());
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let (output, global) = E9patchBackend::run_with_output::<EmulateGetpid>(command, ())
+    let (output, global, _stats) = E9patchBackend::run_with_output::<EmulateGetpid>(command, ())
         .await
         .unwrap();
     assert_eq!(global.delivered.load(Ordering::SeqCst), 1);

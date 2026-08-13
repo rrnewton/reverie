@@ -18,16 +18,50 @@ Concrete entry points to read: `PtraceBackend` (a ZST) in
 `run_with_tool::<T, F>`; and `DbtGuest<'a, T>` + `DbtRunner` in
 `reverie-dbt/src/lib.rs`.
 
-## 1. Implement `Backend::run<T>`
+## 1. Implement the three `Backend` entry points
 
-`reverie/src/backend.rs:147` (`#[async_trait(?Send)]`):
+`reverie/src/backend.rs` (`#[async_trait(?Send)]`). A backend declares one
+associated type and implements three methods; **none of them has a default**:
 
 ```rust
+type Stats: BackendStatsSnapshot;
+
 async fn run<T>(command: Command,
                 config: <T::GlobalState as GlobalTool>::Config)
     -> Result<(ExitStatus, T::GlobalState), Error>
 where T: Tool + 'static;
+
+async fn run_with_stats<T>(command: Command,
+                           config: <T::GlobalState as GlobalTool>::Config)
+    -> Result<(ExitStatus, T::GlobalState, Self::Stats), Error>
+where T: Tool + 'static;
+
+async fn run_with_output<T>(command: Command,
+                            config: <T::GlobalState as GlobalTool>::Config)
+    -> Result<(Output, T::GlobalState, Self::Stats), Error>
+where T: Tool + 'static;
 ```
+
+**Write `type Stats = ...;` by hand, every time.** There is no default type and
+no default method body, and both omissions are deliberate. A defaulted method
+would let you inherit a stub that returns `Ok` with nothing, which is
+indistinguishable from a real measurement that found nothing. A defaulted type
+would let a backend inherit "no stats" without anyone deciding it. A backend
+with nothing to report yet writes `type Stats = ();` — that declares the absence
+in the type system, where it carries no values and cannot be misread, and
+gaining real stats later shows up as a visible type diff in review.
+
+`run_with_output` must pipe the guest's stdout and stderr itself (set
+[`Stdio::piped`] on the command before spawning) and return them in `Output`
+alongside the exit status. Inheriting the caller's stdio and returning empty
+buffers is a contract violation: an empty `stdout` must mean the guest printed
+nothing. `Output` is `reverie::process::Output`, not `std::process::Output`, so
+the status is the same `reverie::ExitStatus` the other two entry points return.
+
+`preload` is **not** on the trait and that is a recorded decision, not an
+oversight — see the "Why `preload` is deliberately not on this trait" section of
+the trait docs. Backends that use a preload keep it on their own inherent
+methods and resolve it internally in the trait methods.
 
 Your `run` owns the full lifecycle:
 
