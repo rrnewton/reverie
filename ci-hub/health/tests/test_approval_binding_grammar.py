@@ -338,12 +338,39 @@ _json.dump([{
 _fx.close()
 _rows, _ = ab.collect_fixture(_fx.name, [], {})
 _os.unlink(_fx.name)
+# ROW KEYS ARE ASSERTED BY NAME, BEFORE ANY VALUE IS READ.
+#
+# These cases used _rows[0]["lane_state"] directly. A mutation DELETING that
+# key from lane_row() is still killed -- but it kills with a raw KeyError
+# traceback, and the harness dies before printing the summary, so the run
+# emits no assertion count at all. hermit-bpf-post found this during the
+# independent lane on the three-state fix.
+#
+# The kill was real; the REPORT was worthless. A reader facing a traceback
+# cannot tell a deliberate catch from an unrelated crash, which collapses two
+# of the four ways a mutation report can lie -- "described by a false
+# diagnostic" and "killed by a broken build" -- into a shape indistinguishable
+# from a genuine kill.
+#
+# THE FIX IS NOT try/except. Swallowing the KeyError into a generic failure
+# would trade an ugly true signal for a clean ambiguous one, which is strictly
+# worse. Instead: assert the key SET as its own named case, then read values
+# with .get() so a missing key produces a NAMED FAIL. Nothing is caught, so an
+# unrelated crash still crashes -- which is the second direction of the
+# bracket and is verified by mutations_approval_binding.py.
+ROW_KEYS = {"number", "label", "lane", "head", "bound_to", "state",
+            "lane_state", "rejected_at", "runs_at_head", "mergeable"}
+_got_keys = set(_rows[0]) if _rows else set()
+cases.append((_got_keys == ROW_KEYS,
+              "the emitted row carries exactly the expected keys",
+              f"missing={sorted(ROW_KEYS - _got_keys)} unexpected={sorted(_got_keys - ROW_KEYS)}"))
+
 cases.append((len(_rows) == 1
-              and _rows[0]["state"] == ab.UNDETERMINED
-              and _rows[0]["lane_state"] == ab.REJECTED_CURRENT
-              and _rows[0]["rejected_at"] == CUR,
+              and _rows[0].get("state") == ab.UNDETERMINED
+              and _rows[0].get("lane_state") == ab.REJECTED_CURRENT
+              and _rows[0].get("rejected_at") == CUR,
               "the emitted row carries BOTH the gate state and the lane state",
-              f"row={ {k: _rows[0][k] for k in ('state','lane_state','rejected_at')} if _rows else None}"))
+              f"row={ {k: _rows[0].get(k) for k in ('state','lane_state','rejected_at')} if _rows else None}"))
 
 # The same row for a SILENT lane must differ in lane_state while sharing the
 # gate state -- otherwise the row exposes the collapse it was meant to remove.
@@ -355,11 +382,11 @@ _json.dump([{
 _fx2.close()
 _rows2, _ = ab.collect_fixture(_fx2.name, [], {})
 _os.unlink(_fx2.name)
-cases.append((_rows2[0]["state"] == _rows[0]["state"]
-              and _rows2[0]["lane_state"] == ab.NEVER
-              and _rows[0]["lane_state"] == ab.REJECTED_CURRENT,
+cases.append((_rows2[0].get("state") == _rows[0].get("state")
+              and _rows2[0].get("lane_state") == ab.NEVER
+              and _rows[0].get("lane_state") == ab.REJECTED_CURRENT,
               "ROW-LEVEL BRACKET: same gate state, DIFFERENT lane_state for rejected vs silent",
-              f"gate={_rows2[0]['state']} silent={_rows2[0]['lane_state']} rejected={_rows[0]['lane_state']}"))
+              f"gate={_rows2[0].get('state')} silent={_rows2[0].get('lane_state')} rejected={_rows[0].get('lane_state')}"))
 
 p=sum(1 for ok,_,_ in cases if ok); f=len(cases)-p
 for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
