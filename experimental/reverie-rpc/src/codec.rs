@@ -16,10 +16,12 @@ use serde::Serialize;
 const MAX_FRAME_LEN: usize = 16 * (1 << 20);
 
 // NOTE: Both the server and client must agree on this configuration. Otherwise,
-// we'll get deserialization errors. `legacy` matches the configuration used
-// elsewhere in the Reverie tree, including `reverie-rpc-transport`.
+// we'll get deserialization errors. This is bincode 2's own default, which uses
+// variable-length integer encoding -- the same choice bincode 1's
+// `DefaultOptions` made, so this call site keeps the integer encoding it always
+// had.
 fn bincode_config() -> impl bincode::config::Config {
-    bincode::config::legacy().with_limit::<MAX_FRAME_LEN>()
+    bincode::config::standard().with_limit::<MAX_FRAME_LEN>()
 }
 
 pub fn encode<T>(item: &T, buf: &mut Vec<u8>) -> io::Result<()>

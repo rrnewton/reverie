@@ -35,7 +35,7 @@ internal_cell = fbcode
 project_dirs = hermetic_infra/reverie
 
 [rust]
-default_edition = 2021
+default_edition = 2024
 
 [buck2]
 forkserver = false
