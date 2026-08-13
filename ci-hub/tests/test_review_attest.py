@@ -34,9 +34,22 @@ BASE_ARGS = [
 
 
 class FakeGh:
-    def __init__(self, *, heads: list[str] | None = None, missing: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        heads: list[str] | None = None,
+        missing: set[str] | None = None,
+        persist_comment: bool = True,
+        task_notes: list[str] | None = None,
+    ) -> None:
         self.heads = iter(heads or [HEAD, HEAD, HEAD])
         self.calls: list[list[str]] = []
+        self.comments: list[dict[str, str]] = []
+        self.persist_comment = persist_comment
+        # Deliberately not read by review-attest. A TaskGraph note is durable
+        # review output, but it is not the PR-comment authority consumed at
+        # landing and therefore cannot authorize task completion.
+        self.task_notes = task_notes or []
         self.labels = {
             "adversarial-review-codex1",
             "adversarial-review-claude1",
@@ -47,13 +60,26 @@ class FakeGh:
 
     def __call__(self, args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
         self.calls.append(args)
-        if args[1:3] == ["label", "list"]:
+        if args[:2] == ["tg", "show"] or args[:2] == ["tg", "update"]:
+            out = ""
+        elif args[1:3] == ["label", "list"]:
             out = json.dumps([{"name": name} for name in sorted(self.labels)])
         elif args[1:3] == ["pr", "view"]:
             out = json.dumps({"headRefOid": next(self.heads), "state": "OPEN", "labels": []})
+        elif "comment" in args:
+            if self.persist_comment:
+                body = args[args.index("--body") + 1]
+                self.comments.append({"body": body})
+            out = ""
+        elif args[1:3] == ["api", "--paginate"]:
+            out = json.dumps([self.comments])
         else:
             out = ""
         return subprocess.CompletedProcess(args, 0, out, "")
+
+
+def task_was_closed(fake: FakeGh) -> bool:
+    return ["tg", "update", "review-pr-42", "--status", "closed"] in fake.calls
 
 
 def assert_unknown_family_refuses_before_mutation() -> None:
@@ -72,7 +98,7 @@ def assert_unknown_family_refuses_before_mutation() -> None:
 
 def assert_positive_and_critical_paths() -> None:
     fake = FakeGh()
-    assert R.main(BASE_ARGS, fake) == 0
+    assert R.main(BASE_ARGS, fake, {}) == 0
     comment = next(call for call in fake.calls if "comment" in call)
     body = comment[comment.index("--body") + 1]
     assert "APPROVED-AT: codex " + HEAD in body
@@ -81,23 +107,44 @@ def assert_positive_and_critical_paths() -> None:
     edit = next(call for call in fake.calls if call[1:3] == ["pr", "edit"])
     assert "adversarial-review-codex1" in edit and "passed-review-codex" in edit
     assert "post-facto-human-review" not in edit
+    assert task_was_closed(fake), "canonically bound review did not close its task"
 
     critical = FakeGh()
     args = [*BASE_ARGS, "--critical", "hermit-syscall"]
-    assert R.main(args, critical) == 0
+    assert R.main(args, critical, {}) == 0
     edit = next(call for call in critical.calls if call[1:3] == ["pr", "edit"])
     assert "post-facto-human-review" in edit
 
 
 def assert_missing_label_and_head_drift_refuse() -> None:
     missing = FakeGh(missing={"passed-review-codex"})
-    assert R.main(BASE_ARGS, missing) == 1
+    assert R.main(BASE_ARGS, missing, {}) == 1
     assert all("comment" not in call and call[1:3] != ["pr", "edit"] for call in missing.calls)
 
     drift = FakeGh(heads=[HEAD, "b" * 40])
-    assert R.main(BASE_ARGS, drift) == 1
+    assert R.main(BASE_ARGS, drift, {}) == 1
     assert any("comment" in call for call in drift.calls)
     assert all(call[1:3] != ["pr", "edit"] for call in drift.calls)
+    assert not task_was_closed(drift)
+
+
+def assert_comment_success_without_authority_refuses() -> None:
+    fake = FakeGh(persist_comment=False)
+    assert R.main(BASE_ARGS, fake, {}) == 1
+    assert any("comment" in call for call in fake.calls), "fixture did not reach comment rc=0"
+    assert all(call[1:3] != ["pr", "edit"] for call in fake.calls)
+    assert not task_was_closed(fake), "missing PR authority closed the review task"
+
+
+def assert_task_note_only_cannot_complete_lane() -> None:
+    fake = FakeGh(
+        persist_comment=False,
+        task_notes=[f"APPROVED-AT: codex {HEAD}"],
+    )
+    assert R.main(BASE_ARGS, fake, {}) == 1
+    assert fake.task_notes, "fixture lost its TaskGraph-only approval"
+    assert fake.comments == [], "fixture unexpectedly persisted PR authority"
+    assert not task_was_closed(fake), "TaskGraph note alone closed the review task"
 
 
 def assert_named_reviewer_cannot_self_attest() -> None:
@@ -106,7 +153,7 @@ def assert_named_reviewer_cannot_self_attest() -> None:
         value if value != "hermit-coord" else "codex-2"
         for value in BASE_ARGS
     ]
-    assert R.main(args, fake) == 1
+    assert R.main(args, fake, {}) == 1
     assert fake.calls == [], "named reviewer reached GitHub on self-attestation"
 
 
@@ -122,10 +169,16 @@ def assert_family_validation_mutation_is_observable() -> None:
         fake = FakeGh()
         fake.labels.add("adversarial-review-codxe1")
         args = mutant.parse_args([*BASE_ARGS[:5], "codxe", *BASE_ARGS[6:]])
-        assert R.execute(args, fake) == 0
+        try:
+            R.execute(args, fake, {})
+        except RuntimeError as error:
+            assert "did not bind the requested family" in str(error)
+        else:
+            raise AssertionError("unknown family passed canonical authority readback")
         assert any("comment" in call for call in fake.calls), (
             "mutation did not reach the guarded GitHub write"
         )
+        assert not task_was_closed(fake)
     finally:
         del R.FAMILY_LABELS["codxe"]
 
@@ -134,11 +187,14 @@ def main() -> None:
     assert_unknown_family_refuses_before_mutation()
     assert_positive_and_critical_paths()
     assert_missing_label_and_head_drift_refuse()
+    assert_comment_success_without_authority_refuses()
+    assert_task_note_only_cannot_complete_lane()
     assert_named_reviewer_cannot_self_attest()
     assert_family_validation_mutation_is_observable()
     print(
         "review-attest: unknown-family-refusal=1/1 positive=1/1 critical=1/1 "
         "missing-label-refusal=1/1 head-drift-refusal=1/1 "
+        "comment-no-readback-refusal=1/1 task-note-only-refusal=1/1 "
         "reviewer-self-attestation-refusal=1/1 mutation=1/1"
     )
 
