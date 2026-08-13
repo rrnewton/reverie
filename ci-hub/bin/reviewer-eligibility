@@ -1,0 +1,276 @@
+#!/usr/bin/env python3
+"""Answer, BEFORE dispatch, whether a candidate can fill a review lane.
+
+Two questions, both cheap, both answerable offline except for the live
+process read:
+
+  1. AUTHORSHIP -- did the candidate write any commit in <base>..<head>?
+     An author cannot supply the independent lane on their own change.
+  2. FAMILY -- does the candidate's CLI family match the lane?  A
+     Codex-family process cannot emit Claude review authority.
+
+WHY THIS EXISTS.  PR #2216's Claude lane was dispatched FOUR times to
+agents who could not fill it: twice to hermit-907 (Codex-family, so it
+could not emit `APPROVED-AT: claude`), then to hermit-903, which had
+authored every commit on the branch.  All three refusals were correct and
+all three cost a dispatch.  Both questions were answerable in advance --
+that is the entire content of this tool.
+
+WHAT IT IS NOT.  This prevents WASTE, not FORGERY.  Agent identity comes
+from `DG_AGENT_NAME` in a process environment, which the process itself
+can set, so a determined caller can present any name it likes.  That is
+acceptable here and would not be in an authorization boundary: claiming a
+name that makes you INELIGIBLE gains nothing, and claiming one that makes
+you eligible requires already controlling a process.  Do not cite this
+tool as evidence that a review was independent -- it filters a dispatch
+queue; it does not attest anything.
+
+EXIT STATUS
+  0   ELIGIBLE       -- not an author, family matches
+  1   REFUSED        -- an author, or the family does not match
+  2   usage error
+  75  NOT-DETERMINED -- the question could not be answered (EX_TEMPFAIL)
+
+75 IS THE POINT OF THE DESIGN.  A precheck that cannot see the answer must
+say so rather than return 0.  Silence that reads as clean is the defect
+class this fleet spent 2026-08-13 removing, and a dispatch filter that
+fails open would quietly re-admit exactly the dispatches it exists to stop.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Iterable, NamedTuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import agent_identity  # noqa: E402
+import disclosure_tag  # noqa: E402
+
+ELIGIBLE = 0
+REFUSED = 1
+USAGE = 2
+NOT_DETERMINED = 75
+
+PROC_ROOT = Path("/proc")
+
+
+class Authorship(NamedTuple):
+    authors: frozenset[str]
+    unattributed: tuple[str, ...]
+
+
+def commit_authors(repo: Path, base: str, head: str) -> Authorship:
+    """Map every commit in base..head to its authoring AGENT.
+
+    Reads the disclosure tag out of the SUBJECT, not `%an`.  `%an` is the
+    human git identity and is the same on nearly every commit in this
+    fleet -- on PR #2216 one commit reads `Ryan Newton` and the other
+    `hermit-903`, while BOTH subjects carry `hermit-903` in the tag.  A
+    check keyed on `%an` would therefore find no agent on most branches
+    and pass everyone: a filter that never fires, which is worse than no
+    filter because it looks like coverage.
+    """
+
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repo), "log", "--format=%H%x1f%s", f"{base}..{head}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as error:
+        raise LookupError(f"git is not available: {error}") from error
+    except subprocess.CalledProcessError as error:
+        raise LookupError(
+            f"git log {base}..{head} failed in {repo}: "
+            f"{(error.stderr or '').strip()[:200]}"
+        ) from error
+
+    authors: set[str] = set()
+    unattributed: list[str] = []
+    for line in completed.stdout.splitlines():
+        if not line.strip():
+            continue
+        sha, _, subject = line.partition("\x1f")
+        try:
+            authors.add(disclosure_tag.parse_prefix(subject).agent)
+        except disclosure_tag.DisclosureError:
+            unattributed.append(sha[:12])
+    return Authorship(frozenset(authors), tuple(unattributed))
+
+
+def _argv_of(pid_dir: Path) -> tuple[str, ...] | None:
+    try:
+        raw = (pid_dir / "cmdline").read_bytes()
+    except OSError:
+        return None
+    return tuple(part for part in raw.decode("utf-8", "replace").split("\0") if part)
+
+
+def _agent_of(pid_dir: Path) -> str | None:
+    try:
+        raw = (pid_dir / "environ").read_bytes()
+    except OSError:
+        return None
+    for entry in raw.decode("utf-8", "replace").split("\0"):
+        name, sep, value = entry.partition("=")
+        if sep and name == agent_identity.IDENTITY_VAR:
+            return value or None
+    return None
+
+
+def live_families(agent: str, proc_root: Path = PROC_ROOT) -> tuple[set[str], int]:
+    """Families observed across every live process claiming to be ``agent``.
+
+    Reads /proc directly rather than matching a `ps` line.  A `pgrep -f`
+    against an agent name matches the very shell running the search, so a
+    name-pattern search cannot distinguish the subject from the observer.
+    """
+
+    families: set[str] = set()
+    seen = 0
+    for pid_dir in proc_root.iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        if _agent_of(pid_dir) != agent:
+            continue
+        argv = _argv_of(pid_dir)
+        if argv is None:
+            continue
+        family = agent_identity.client_family(argv)
+        if family is not None:
+            seen += 1
+            families.add(family)
+    return families, seen
+
+
+def _emit(verdict: str, reason: str, detail: Iterable[str] = ()) -> None:
+    print(f"{verdict}: {reason}")
+    for line in detail:
+        print(f"  {line}")
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="reviewer-eligibility",
+        description="Can this candidate fill this review lane?",
+    )
+    parser.add_argument("--candidate", required=True, help="agent name to dispatch")
+    parser.add_argument(
+        "--lane",
+        required=True,
+        choices=sorted(agent_identity.CLIENT_FAMILIES),
+        help="required review lane",
+    )
+    parser.add_argument("--base", required=True, help="merge base of the change")
+    parser.add_argument("--head", required=True, help="head commit of the change")
+    parser.add_argument(
+        "--repo",
+        default=".",
+        type=Path,
+        help="repository holding base..head (default: cwd)",
+    )
+    parser.add_argument(
+        "--proc-root",
+        default=PROC_ROOT,
+        type=Path,
+        help=argparse.SUPPRESS,  # tests substitute a fixture tree
+    )
+    args = parser.parse_args(argv)
+
+    # AUTHORSHIP FIRST: it is offline, and a definite refusal should not be
+    # delayed behind a question that might come back NOT-DETERMINED.
+    try:
+        authorship = commit_authors(args.repo, args.base, args.head)
+    except LookupError as error:
+        _emit("NOT-DETERMINED", f"cannot read authorship: {error}")
+        return NOT_DETERMINED
+
+    if args.candidate in authorship.authors:
+        _emit(
+            "REFUSED",
+            f"{args.candidate} AUTHORED commits in {args.base[:12]}..{args.head[:12]}",
+            [
+                "an author cannot supply the independent review lane on their "
+                "own change",
+                f"authors on this range: {', '.join(sorted(authorship.authors))}",
+            ],
+        )
+        return REFUSED
+
+    # Ordered AFTER the positive authorship test on purpose.  Finding the
+    # candidate among the parsed authors is definite regardless of gaps, so
+    # it is answered first; only once the candidate is absent does an
+    # incomplete author set become load-bearing, because the candidate could
+    # be hiding in the commits that did not parse.
+    if authorship.unattributed:
+        _emit(
+            "NOT-DETERMINED",
+            f"{len(authorship.unattributed)} commit(s) in "
+            f"{args.base[:12]}..{args.head[:12]} carry no parseable disclosure tag",
+            [
+                f"unattributed: {', '.join(authorship.unattributed[:8])}",
+                f"{args.candidate} is absent from the tags that DID parse, but an "
+                "untagged commit could be theirs",
+            ],
+        )
+        return NOT_DETERMINED
+
+    families, processes = live_families(args.candidate, args.proc_root)
+    if not families:
+        _emit(
+            "NOT-DETERMINED",
+            f"no live process claims to be {args.candidate}",
+            [
+                "family is read from the running client binary; an agent that is "
+                "not running cannot be classified",
+                "there is no name-to-family roster, and inferring family from the "
+                "name would be wrong: hermit-907 is Codex-family",
+            ],
+        )
+        return NOT_DETERMINED
+    if len(families) > 1:
+        _emit(
+            "NOT-DETERMINED",
+            f"{args.candidate} presents conflicting families: "
+            f"{', '.join(sorted(families))}",
+            [f"observed across {processes} process(es); refusing to pick one"],
+        )
+        return NOT_DETERMINED
+
+    family = next(iter(families))
+    if family != args.lane:
+        _emit(
+            "REFUSED",
+            f"{args.candidate} is {family}-family and cannot fill the "
+            f"{args.lane} lane",
+            [
+                f"observed from the running client binary across {processes} "
+                "process(es)",
+                f"a {family} process cannot emit APPROVED-AT: {args.lane}",
+            ],
+        )
+        return REFUSED
+
+    _emit(
+        "ELIGIBLE",
+        f"{args.candidate} may fill the {args.lane} lane",
+        [
+            f"authored none of the commits in {args.base[:12]}..{args.head[:12]}",
+            f"{family}-family, observed across {processes} live process(es)",
+            "this filters dispatch; it does not attest independence",
+        ],
+    )
+    return ELIGIBLE
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(NOT_DETERMINED)
