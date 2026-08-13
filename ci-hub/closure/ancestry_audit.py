@@ -171,6 +171,7 @@ class Ancestry:
         self.root = root
         self._anc: dict[tuple[str, str], tuple[bool, bool]] = {}
         self._subjects: dict[str, dict[str, list[str]]] = {}
+        self._claims: dict[tuple[str, str, str], bool] = {}
 
     def test(self, repo: str, sha: str) -> tuple[bool, bool]:
         """(is_ancestor_of_origin_main, object_present_locally)"""
@@ -183,6 +184,27 @@ class Ancestry:
         ).returncode == 0
         self._anc[key] = (anc, present)
         return self._anc[key]
+
+    def claims_task(self, repo: str, sha: str, task: str) -> bool:
+        """Does THIS COMMIT say it implements THIS TASK?
+
+        AGENTS.md requires an implementing commit to carry `Task: <task-id>`.
+        That trailer is the only thing in the system by which a commit ASSERTS
+        which task it is, so it is the attribution used here for any SHA that
+        did not arrive through a task-linked pull request.
+        """
+        key = (repo, sha, task)
+        if key in self._claims:
+            return self._claims[key]
+        body = git(self.root, repo, "log", "-1", "--format=%B", sha).stdout
+        found = bool(
+            body
+            and re.search(
+                rf"(?mi)^\s*Task:\s*`?{re.escape(task)}`?\s*$", body
+            )
+        )
+        self._claims[key] = found
+        return found
 
     def _index(self, repo: str) -> dict[str, list[str]]:
         """subject -> [main-side SHAs]. Built once per repo."""
@@ -220,60 +242,134 @@ def normalize_subject(subject: str) -> str:
 
 
 def classify(item: dict, prs: dict, anc: Ancestry) -> dict:
-    cands: list[tuple[str, str, str]] = []   # (repo, sha, provenance)
-    notes: list[str] = []
+    """Bucket one task by whether ITS OWN change landed.
 
+    *** ANCESTRY ALONE IS NOT EVIDENCE, AND THAT IS THE WHOLE POINT. ***
+
+    Until 2026-08-12 this collected every SHA and PR number that appeared
+    anywhere in a task's notes, tested each for ancestry of `origin/main`, and
+    returned LANDED on the first hit. Measured against the live pile it
+    reported 58 LANDED and 0 NOT-LANDED while seventeen pull requests sat open
+    and unlandable, because a commit does not have to be the task's change to
+    be an ancestor of main:
+
+      * `p1_compat_lsof_is` was LANDED on `why="note SHA in hermit"`,
+        sha `1f4e430c1352` -- which is hermit MAIN'S OWN TIP, quoted in a note
+        and trivially an ancestor of itself -- while the same record carried
+        `pr_states=["hermit#2221:OPEN"]`.
+      * `compat_bin_c_robust` and `p1_promoting_an_e2e` were LANDED on the
+        mergeCommit of bare PR #2071, a DIFFERENT pull request mentioned in
+        passing, while their own #2223 and #2220 were open.
+      * `port-peer-snapshot-protocol-into-validate-rs` was LANDED on a
+        dev-hermit SHA while its hermit PR #2222 was open.
+
+    Acting on the resulting "closable on ancestry now: 58" would have closed 58
+    tasks whose work was not landed -- undoing the close-only-after-landing rule
+    automatically, at scale, and looking like routine cleanup.
+
+    THE ORDER MATTERS. Identify WHICH commit is the change, THEN test ancestry.
+    Reversing it reproduces the defect in better-looking code. A candidate is
+    admissible only when something binds it to THIS task:
+
+      linked-pr     the pull request is linked to the task and we take its
+                    `mergeCommit.oid`, in that pull request's OWN repository.
+      task-trailer  the commit message carries `Task: <task-id>`, i.e. the
+                    commit itself asserts which task it implements.
+
+    A SHA merely quoted in a note, the mergeCommit of an incidentally-mentioned
+    bare PR, and a SHA tried against a repository it did not come from are all
+    NON-EVIDENCE. They are still listed in `refused` so the record shows what
+    was inspected and why it did not count.
+
+    When candidates exist but none is admissible the bucket is
+    NOT-DETERMINABLE, never LANDED and never NOT-LANDED. A stalled task costs a
+    prompt; a wrongly closed one costs the work.
+    """
+    task = item["task"]
+    admissible: list[tuple[str, str, str]] = []   # (repo, sha, provenance)
+    refused: list[str] = []
+    notes: list[str] = []
+    seen: set[tuple[str, str]] = set()
+
+    def consider(repo: str, sha: str, why: str, *, linked: bool) -> None:
+        if (repo, sha) in seen:
+            return
+        seen.add((repo, sha))
+        if linked:
+            admissible.append((repo, sha, why))
+        elif anc.claims_task(repo, sha, task):
+            admissible.append((repo, sha, f"{why}; commit carries Task: {task}"))
+        else:
+            refused.append(f"{why} [{sha[:12]}]: not attributable to this task")
+
+    # A. Pull requests LINKED to the task. Their mergeCommit is the change.
     for repo, num in item["prs"]:
         row = prs.get(repo, {}).get(num)
         if row is None:
             notes.append(f"{repo}#{num}:not-in-window-or-no-API")
             continue
-        oid = (row.get("mergeCommit") or {}).get("oid")
         notes.append(f"{repo}#{num}:{row['state']}")
+        oid = (row.get("mergeCommit") or {}).get("oid")
         if oid:
             # mergeCommit.oid ONLY -- never headRefOid, never the MERGED flag.
-            cands.append((repo, oid, f"mergeCommit of {repo}#{num}"))
+            consider(repo, oid, f"mergeCommit of linked {repo}#{num}", linked=True)
+
+    # B. Bare PR numbers found in prose. NOT the task's pull request unless the
+    #    merge commit itself claims the task.
     for num in item["bare_prs"]:
         for repo in ("hermit", "reverie"):
             row = prs.get(repo, {}).get(num)
-            if row:
-                oid = (row.get("mergeCommit") or {}).get("oid")
-                notes.append(f"{repo}#{num}:{row['state']}(bare)")
-                if oid:
-                    cands.append((repo, oid, f"mergeCommit of bare PR #{num}->{repo}"))
-                break
+            if not row:
+                continue
+            notes.append(f"{repo}#{num}:{row['state']}(bare)")
+            oid = (row.get("mergeCommit") or {}).get("oid")
+            if oid:
+                consider(repo, oid, f"mergeCommit of bare PR #{num}->{repo}", linked=False)
+            break
+
+    # C. Bare SHAs found in prose, in any repository. Non-evidence on their own.
     for sha in item["shas"]:
         for repo in REPOS:
-            cands.append((repo, sha, f"note SHA in {repo}"))
+            if anc.test(repo, sha)[1]:
+                consider(repo, sha, f"note SHA in {repo}", linked=False)
 
     present_any = False
-    for repo, sha, why in cands:
+    for repo, sha, why in admissible:
         is_anc, present = anc.test(repo, sha)
         present_any |= present
         if is_anc:
             return {**item, "bucket": "LANDED", "repo": repo, "sha": sha,
-                    "why": why, "pr_states": notes}
+                    "why": why, "refused": refused, "pr_states": notes}
 
-    # CAVEAT 1: SHA miss -> try subject. Reported as its own state.
-    for repo, sha, why in cands:
-        _, present = anc.test(repo, sha)
-        if not present:
+    # CAVEAT 1: SHA miss -> try subject, but ONLY for an admissible candidate.
+    for repo, sha, why in admissible:
+        if not anc.test(repo, sha)[1]:
             continue
         main_sha, detail = anc.by_subject(repo, sha)
         if main_sha:
             return {**item, "bucket": "LANDED-BY-SUBJECT", "repo": repo, "sha": main_sha,
-                    "why": f"recorded {sha[:12]} is not an ancestor, but {detail}",
-                    "pr_states": notes}
+                    "why": f"{why}; recorded {sha[:12]} is not an ancestor, but {detail}",
+                    "refused": refused, "pr_states": notes}
 
-    if present_any:
-        return {**item, "bucket": "NOT-LANDED",
-                "why": "candidate commit(s) exist locally; none is an ancestor of origin/main "
-                       "and no commit on main carries their subject",
-                "pr_states": notes}
+    if admissible:
+        if present_any:
+            return {**item, "bucket": "NOT-LANDED",
+                    "why": "attributable commit(s) exist locally; none is an ancestor of "
+                           "origin/main and no commit on main carries their subject",
+                    "refused": refused, "pr_states": notes}
+        return {**item, "bucket": "UNKNOWN",
+                "why": "attributable commit(s) are not present in any known repo",
+                "artifacts": item["artifacts"], "refused": refused, "pr_states": notes}
+
+    if refused:
+        return {**item, "bucket": "NOT-DETERMINABLE",
+                "why": (f"{len(refused)} candidate(s) inspected, none attributable to this "
+                        f"task: no linked-PR mergeCommit and no commit carrying "
+                        f"Task: {task}"),
+                "artifacts": item["artifacts"], "refused": refused, "pr_states": notes}
     return {**item, "bucket": "UNKNOWN",
-            "why": ("no PR link and no 40-hex SHA in any note" if not cands
-                    else "referenced commit(s) not present in any known repo"),
-            "artifacts": item["artifacts"], "pr_states": notes}
+            "why": "no PR link and no 40-hex SHA in any note",
+            "artifacts": item["artifacts"], "refused": refused, "pr_states": notes}
 
 
 def main() -> int:
@@ -329,13 +425,18 @@ def main() -> int:
     counts = Counter(r["bucket"] for r in results)
 
     print("\n=== buckets ===")
-    for b in ("LANDED", "LANDED-BY-SUBJECT", "NOT-LANDED", "UNKNOWN"):
+    for b in ("LANDED", "LANDED-BY-SUBJECT", "NOT-LANDED",
+              "NOT-DETERMINABLE", "UNKNOWN"):
         print(f"  {b:18s} {counts[b]:4d}")
     print(f"  {'TOTAL':18s} {len(results):4d}")
     closable = counts["LANDED"] + counts["LANDED-BY-SUBJECT"]
     real = counts["NOT-LANDED"]
     print(f"\nclosable on ancestry now : {closable}")
     print(f"real drain queue         : {real}")
+    print(f"NOT-DETERMINABLE         : {counts['NOT-DETERMINABLE']}  "
+          f"-- candidates inspected, none attributable to the task; NOT closable, "
+          f"NOT proof of unlanded. Give the task a linked PR or an implementing "
+          f"commit carrying `Task: <task-id>`.")
     print(f"UNKNOWN (NOT not-landed) : {counts['UNKNOWN']}  "
           f"-- research/artifact closure, needs close-task --artifact")
     if args.agents:
