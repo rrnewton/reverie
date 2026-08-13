@@ -1,0 +1,20 @@
+qemu pid 3561773
+2026-08-13T02:11:43.467350Z ERROR reverie_ptrace::task: ARCH_GET_CPUID reported a valid state, but ARCH_SET_CPUID returned ENODEV. The kernel exposes CPUID state without hardware faulting support. On AMD hosts, use Linux 6.17+ upstream or a kernel with CPUID faulting backported; continuing without CPUID interception initial_state=1
+2026-08-13T02:11:43.469386Z ERROR reverie_ptrace::task: ARCH_GET_CPUID reported a valid state, but ARCH_SET_CPUID returned ENODEV. The kernel exposes CPUID state without hardware faulting support. On AMD hosts, use Linux 6.17+ upstream or a kernel with CPUID faulting backported; continuing without CPUID interception initial_state=1
+qemu-kvm: warning: Machine type 'pc-i440fx-rhel7.6.0' is deprecated: machines from the previous RHEL major release are subject to deletion in the next RHEL major release
+breakpoint target (rustland_enqueue subprog 0 base): 0xffffffffa0000b50
+The target architecture is assumed to be i386:x86-64
+warning: No executable has been specified and target does not support
+determining executable automatically.  Try using the "file" command.
+0x00000000004d6255 in ?? ()
+Breakpoint 1 at 0xffffffffa0000b50
+
+Breakpoint 1, 0xffffffffa0000b50 in ?? ()
+rip            0xffffffffa0000b50  0xffffffffa0000b50
+rsp            0xffa0000000aa7c18  0xffa0000000aa7c18
+GDB-RIP 0xffffffffa0000b50
+[Inferior 1 (process 1) detached]
+console tail:
+    0xffffffffa0001eae 29         /home/newton/work/rrn_scx_playground/scx/scheds/rust/scx_rlfifo/main.bpf.c:1142:6
+--- MAP END ---
+--- KALLSYMS BEGIN ---
