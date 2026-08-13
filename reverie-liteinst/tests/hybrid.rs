@@ -251,7 +251,7 @@ struct ExitRecorder {
 
 #[reverie::global_tool]
 impl GlobalTool for ExitRecorder {
-    type Request = ();
+    type Request = i32;
     type Response = ();
     type Config = PathBuf;
 
@@ -259,13 +259,13 @@ impl GlobalTool for ExitRecorder {
         Self { path: path.clone() }
     }
 
-    async fn receive_rpc(&self, from: Tid, (): ()) {
+    async fn receive_rpc(&self, _from: Tid, pid: i32) {
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)
             .unwrap();
-        writeln!(file, "{from}").unwrap();
+        writeln!(file, "{pid}").unwrap();
     }
 }
 
@@ -299,11 +299,11 @@ impl Tool for PassthroughTaskCreationAndRecordExits {
 
     async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
         self,
-        _pid: Pid,
+        pid: Pid,
         global_state: &G,
         _exit_status: ExitStatus,
     ) -> Result<(), Error> {
-        global_state.send_rpc(()).await;
+        global_state.send_rpc(pid.as_raw()).await;
         Ok(())
     }
 }
@@ -1092,17 +1092,21 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
         text.contains("LiteInst session failed closed in a non-root task") && text.contains("exec"),
         "session failure did not name the unsupported non-root exec: {text}"
     );
-    let exits = fs::read_to_string(&exit_file).unwrap_or_default();
-    assert_eq!(
-        exits.lines().count(),
-        1,
-        "the failed non-root process did not run its Tool exit callback: {exits:?}"
-    );
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
         .parse()
         .unwrap();
+    let exits = fs::read_to_string(&exit_file).unwrap_or_default();
+    let non_root_exits = exits
+        .lines()
+        .map(|pid| pid.parse::<i32>().unwrap())
+        .filter(|pid| *pid != root_pid as i32)
+        .count();
+    assert_eq!(
+        non_root_exits, 1,
+        "the failed non-root process did not run its Tool exit callback: root={root_pid} exits={exits:?}"
+    );
     assert_pid_reaped(root_pid);
     let remaining = processes_named(&name);
     let remaining_status = remaining
