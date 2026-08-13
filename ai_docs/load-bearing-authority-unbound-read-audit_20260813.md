@@ -88,9 +88,12 @@ auditor was willing to report a dirty one.
 instead of calling `verify-landing`. Worth stating precisely: **the
 reimplementation performs the correct check.** The defect is duplication, not
 incorrectness — the same divergence risk as any second copy of a grammar.
-`ci-hub/remediation/land_and_arm.py:138` is the real unbound read:
-`state == "MERGED" and sha and SHA_RE.fullmatch(sha)` is a shape test, and shape
-is not ancestry.
+
+> **RETRACTED 2026-08-13 — this section originally named
+> `ci-hub/remediation/land_and_arm.py:138` as "the real unbound read" and the
+> ranking below placed it second by blast radius. That was wrong. See
+> *Retraction* at the end of this document; the claim is withdrawn, not
+> softened.**
 
 **B2. Merge conflicts and final mergeability — `COVERED`, accurate.** Planning
 fetches refs and runs real merges; the actual merge command is the final
@@ -134,7 +137,7 @@ from read call sites, not from mention counts.
 | rank | authority | unbound read | who trusts it |
 | --- | --- | --- | --- |
 | 1 | **Review, on the GitHub merge path** | label presence, no SHA | every `post-facto-human-review` PR merged through GitHub rather than `land-pr.sh`. Fix exists (hermit#2216), unlanded. |
-| 2 | **Landed identity in `land_and_arm.py`** | `state == MERGED` + SHA *shape* | remediation arming; a wrongly-armed obligation reports a landing that did not happen. |
+| ~~2~~ | ~~**Landed identity in `land_and_arm.py`**~~ | ~~`state == MERGED` + SHA *shape*~~ | **RETRACTED — not a defect. See *Retraction*.** |
 | 3 | **Landing authorization** | nothing — no verifier | every land. Currently held by human judgement, correctly recorded as `MISSING`. |
 | 4 | **Historical Git provenance** | 40-hex syntax, no dereference | every measurement claiming a commit. |
 | 5 | **Workflow-policy version** | required-context name | every green emitted by a stale branch YAML. |
@@ -199,3 +202,53 @@ To which this audit adds a third, from C1 and from instance 9:
 
 These are recorded here rather than applied in the same change, so the registry
 edit is reviewable against this evidence instead of arriving with it.
+
+---
+
+## Retraction — `land_and_arm.py` is not an unbound read
+
+**2026-08-13, same author, task `land-and-arm-shape-for-ancestry-substitution`.**
+
+This audit named `ci-hub/remediation/land_and_arm.py:138` as "the real unbound
+read" and ranked it second by blast radius. **That claim is withdrawn.** It was
+established by reading a predicate; testing the code refutes it.
+
+`observe_merged_sha`'s `state == "MERGED" and SHA_RE.fullmatch(sha)` is a
+**polling pre-filter** deciding when to stop waiting on GitHub. It is not the
+authority. The authority is one call deeper and it is bound:
+
+```
+land_and_arm.arm_sha -> protocol.main(["arm", sha, ...]) -> arm()            [protocol.py:5364]
+  -> resolve_landed_sha()                                                     [protocol.py:5385]
+     -> _fetch_target(source, "main")  then  _is_main_ancestor()
+     -> raises ProtocolError unless sha is reachable from FRESHLY FETCHED origin/main
+```
+
+**Bracket on the real `resolve_landed_sha`, inert local fixture** (bare origin
+plus clone; no GitHub, and no obligation, label, approval or merge created
+anywhere):
+
+| case | count | result |
+| --- | --- | --- |
+| premise: both SHAs satisfy `SHA_RE` | 2/2 | the shape pre-filter genuinely cannot tell them apart — the divergence *does* exist at that layer |
+| POSITIVE: genuine ancestor | 1/1 | returned `50b30dcc…` — the gate is not inert |
+| NEGATIVE: same shape, **no ancestry** | 1/1 | REFUSED, "is not reachable from fetched origin/main" |
+| CANNOT-RUN: missing source checkout | 1/1 | REFUSED **loudly**, not silent |
+
+No bypass: all three arming sites (`:332`, `:442`, `:526`) route through
+`arm_sha`. No leaked pre-arm evidence: the intent record does write
+`landed_sha` before arming, but the intent directory has exactly one consumer —
+`land_and_arm.py` itself, whose recovery path at `:487` arms through the same
+gate. `merged-unarmed` appears nowhere else as evidence.
+
+Shape is used where shape suffices; ancestry is checked where ancestry is
+claimed.
+
+**Why the audit got it wrong, which matters more than the row.** I traced the
+claim to line 138 and stopped, instead of following the call chain to its gate.
+That is the same substitution the audit exists to catch — I checked what the
+code *said* rather than what it *does*. This document had already warned that a
+call-site count cannot distinguish a gate from a log line; the retraction is
+that warning applied to its own author. The method section's rule stands and
+should be read as covering this case too: **a status claim rests on reading the
+call site through to the decision, not on reading the predicate.**
