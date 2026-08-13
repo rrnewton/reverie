@@ -28,6 +28,13 @@ source notes found no current consumer, or the test is filtered from validation.
 Qualified states such as `LIVE, masked` preserve a source finding that a value
 is read but cannot currently affect the result.
 
+All 24 findings are in `rrnewton/hermit`. This index currently contains no
+parent-side `rrnewton/dev-hermit` finding that can use the parent publication
+path. In particular, rank 1's `ci/run-nextest-counted.sh` is inside the Hermit
+repository; it is not parent `ci-hub/`. A request to take the highest-ranked
+parent-side entry therefore has an empty selection and must not silently
+reclassify or reorder a Hermit finding.
+
 ## Cross-sweep backlog
 
 | Rank | State | Source task | Established defect and location | What the consumer sees | Ownership |
