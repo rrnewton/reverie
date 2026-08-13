@@ -483,6 +483,10 @@ def _within(path: Path, parent: Path) -> bool:
         return False
 
 
+def _registry_row_is_active(row: Mapping[str, Any]) -> bool:
+    return row.get("status", "active") == "active"
+
+
 def slot_owner_signal(
     cwd: Path | None,
     cwd_detail: str,
@@ -509,6 +513,19 @@ def slot_owner_signal(
             detail="cwd matches multiple registered slots: " + ",".join(slot for slot, _ in matches),
         ), ()
     slot, row = matches[0]
+    status = row.get("status", "active")
+    if not _registry_row_is_active(row):
+        return (
+            Signal(
+                "cwd-slot-owner",
+                "unavailable",
+                detail=(
+                    f"cwd={physical} slot={slot} status={status} "
+                    "has no current owner"
+                ),
+            ),
+            (),
+        )
     owners = _slot_owners(row)
     tasks = {
         task
@@ -516,7 +533,7 @@ def slot_owner_signal(
         if isinstance(task, str) and task.strip()
     }
     detail = (
-        f"cwd={physical} slot={slot} status={row.get('status', 'unknown')} "
+        f"cwd={physical} slot={slot} status={status} "
         "basis=physical-path+owner (branch metadata is not identity authority)"
     )
     if len(owners) == 1:
@@ -539,6 +556,8 @@ def _registry_owner_matches(
     matches: set[str] = set()
     for row in registry.document["slots"].values():
         if not isinstance(row, dict):
+            continue
+        if not _registry_row_is_active(row):
             continue
         for entry in row.get("agents", []):
             if not isinstance(entry, dict) or not predicate(row, entry):
