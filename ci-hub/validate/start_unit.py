@@ -469,6 +469,61 @@ def assert_row_readable_from_canonical_ledger(
 # Directories a receipt is never written into and that are expensive to walk.
 RECEIPT_SCAN_PRUNE = {".git", "target", "node_modules"}
 
+CHECKOUT_LEDGER_DIR = Path("ci/validate-ledger")
+
+
+def is_validation_receipt_row(value: object, *, checkout: Path) -> bool:
+    """Whether one JSON value has the stable identity of a validation row."""
+    if not isinstance(value, dict):
+        return False
+    if value.get("schema") == "validate-ledger/v1":
+        value = value.get("legacy_row")
+        if not isinstance(value, dict):
+            return False
+    schema = value.get("schema_version")
+    producer = value.get("producer")
+    cwd = value.get("cwd")
+    return (
+        isinstance(schema, int)
+        and not isinstance(schema, bool)
+        and schema >= 1
+        and value.get("repo") in ("hermit", "rrnewton/hermit")
+        and isinstance(producer, str)
+        and bool(producer)
+        and isinstance(cwd, str)
+        and bool(cwd)
+        and Path(cwd).resolve() == checkout.resolve()
+        and isinstance(value.get("commit"), str)
+        and SHA_RE.fullmatch(value["commit"]) is not None
+        and isinstance(value.get("tree"), str)
+        and SHA_RE.fullmatch(value["tree"]) is not None
+        and isinstance(value.get("started_at"), str)
+        and bool(value["started_at"])
+        and isinstance(value.get("finished_at"), str)
+        and bool(value["finished_at"])
+    )
+
+
+def file_has_validation_receipt(candidate: Path, *, checkout: Path) -> bool:
+    """Inspect a JSONL file for a validation row from this exact checkout."""
+    relative = candidate.relative_to(checkout)
+    if relative.parent == CHECKOUT_LEDGER_DIR:
+        # This is validate.rs's established standalone fallback. Retain even a
+        # malformed or partial file there: its location proves the validation
+        # writer attempted a checkout-local receipt and it is the only evidence.
+        return True
+    with candidate.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                value = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if is_validation_receipt_row(value, checkout=checkout):
+                return True
+    return False
+
 
 def orphaned_receipt_locations(fresh: Path, *, run: Runner) -> list[str]:
     """Receipt files THIS RUN left inside the temp checkout, if any.
@@ -484,20 +539,21 @@ def orphaned_receipt_locations(fresh: Path, *, run: Runner) -> list[str]:
         abort in seconds. Nothing is preserved by keeping 26 MB of build tree.
         RECLAIM.
 
-    THE TEST IS SHAPE, NOT NAME, and that choice is the safety-critical one. A
-    whitelist of known ledger filenames fails in the DANGEROUS direction: a
-    receipt written under a name nobody enumerated would read as "no evidence"
-    and be deleted -- a disk-hygiene fix eating the evidence path. So this looks
-    for any `*.jsonl` in the tree that git does not track. Measured before
-    relying on it: hermit tracks ZERO `.jsonl` files, so anything found here was
-    produced by this run. The tracked-ness check is kept regardless, so the
-    property survives that changing.
-
-    Reads no ledger CONTENT -- existence and tracked-ness are the whole test --
-    so this module stays a non-reader under the ledger-reader allowlist.
+    THE TEST IS SHAPE OR THE ESTABLISHED CHECKOUT-LOCAL PATH, NOT EXTENSION. A
+    whitelist of filenames fails in the dangerous direction: a receipt written
+    under an unexpected name would read as "no evidence" and be deleted. But
+    treating every untracked `*.jsonl` as a receipt fails in the other direction:
+    e2e result rows and copied test fixtures pin a large temp checkout while
+    reporting a validation-writer failure that did not happen. The detector
+    therefore retains an untracked file only when it is below
+    `ci/validate-ledger/` or contains the validation HistoryRow identity for this
+    exact checkout. It does not decide whether that row qualifies for landing.
     """
+    def refuse_incomplete_scan(error: OSError) -> None:
+        raise error
+
     candidates: list[str] = []
-    for current, dirs, files in os.walk(fresh):
+    for current, dirs, files in os.walk(fresh, onerror=refuse_incomplete_scan):
         dirs[:] = [d for d in dirs if d not in RECEIPT_SCAN_PRUNE]
         for name in files:
             if name.endswith(".jsonl"):
@@ -528,14 +584,15 @@ def orphaned_receipt_locations(fresh: Path, *, run: Runner) -> list[str]:
                 "git",
                 "-C",
                 str(owner),
-                "ls-files",
-                "--error-unmatch",
-                "--",
-                str(owner_relative),
+                "cat-file",
+                "-e",
+                f"HEAD:{owner_relative.as_posix()}",
             ],
             check=False,
         )
-        if tracked.returncode != 0:
+        if tracked.returncode != 0 and file_has_validation_receipt(
+            candidate, checkout=fresh
+        ):
             orphaned.append(relative)
     return sorted(orphaned)
 
