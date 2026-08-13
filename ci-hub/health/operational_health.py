@@ -177,12 +177,10 @@ class TaskRecord:
     def awaiting_landing(self) -> bool:
         """Finished work whose landing is still owed: implemented AND NOT landed.
 
-        TAG FIRST, STATUS SECOND still holds — the same rule
-        `scripts/status-log.rs` `classify_task` applies. Under the
-        close-on-implemented lifecycle an implemented task is CLOSED
-        immediately, so keying awaiting-landing off `IN_PROGRESS` reports ~zero
-        while the real population sits in CLOSED. That reasoning is why the
-        entry condition is the TAG and not the status, and it is unchanged.
+        The owning agent adds the tag at publication and keeps the task open
+        while shepherding it to landing. The tag is therefore the entry
+        condition regardless of status; this also keeps legacy tasks that were
+        closed too early visible until landing is proven.
 
         WHAT CHANGED, and why the previous version was wrong anyway. This used
         to be a bare `return self.implemented`, with no exit condition at all.
@@ -207,23 +205,22 @@ class TaskRecord:
 
         Consequences worth stating so nobody "fixes" this back:
           * it can DECREASE — closing a task through the gateway removes it;
-          * `lifecycle_violation` stays a DISTINCT signal. Scoping this to
-            IN_PROGRESS instead would have made the two metrics near-duplicates
-            (47 vs 53, differing only by the BACKLOG rows).
+          * `lifecycle_violation` stays a DISTINCT signal. It reports a mismatch
+            between terminal status and landing proof, not ordinary open
+            shepherding.
         """
         return self.implemented and not self.landed
 
     @property
     def lifecycle_violation(self) -> bool:
-        """An implemented task that was NOT closed.
+        """Implemented work whose terminal status disagrees with landing proof.
 
-        The current lifecycle closes implemented work immediately and lets
-        `drain-implemented-to-landed` enumerate the landing debt from
-        CLOSED+implemented records. A nonterminal implemented row is therefore
-        a deviation to fix, not a state to honour — it is invisible to the
-        drain tracker while still occupying the live queue.
+        The valid pairs are open plus not-proven-landed while the owning agent
+        shepherds, and closed plus proven-landed after the gateway completes.
+        Closed without proof is premature closure; open with proof means the
+        gateway wrote its note but did not finish the status update.
         """
-        return self.implemented and not self.closed
+        return self.implemented and (self.closed != self.landed)
 
 
 @dataclass(frozen=True)
@@ -995,9 +992,9 @@ def cache_agent_snapshot(snapshot: str | None = None) -> int:
 def _taskgraph_in_progress() -> tuple[TaskRecord, ...]:
     # Two populations, deliberately in one query:
     #   * IN_PROGRESS       -- the live queue (activity, staleness, routing)
-    #   * implemented, ANY status -- the landing debt, which under the
-    #     close-on-implemented lifecycle lives in CLOSED and was previously
-    #     invisible here because the filter was `status = 'IN_PROGRESS'` alone.
+    #   * implemented, ANY status -- current open shepherding plus legacy tasks
+    #     closed before landing, both of which remain landing debt until the
+    #     gateway writes CLOSURE-VERIFIED.
     # Tag matching uses json_each on the JSON array so `implemented` cannot be
     # matched inside some longer tag by a LIKE '%implemented%'.
     sql = """
@@ -1119,15 +1116,15 @@ def reconcile_active_work(
 ) -> ActiveWorkReport:
     everything = tuple(sorted(tasks, key=lambda task: task.id))
     # LANDING DEBT: implemented AND NOT proven landed. Entry is keyed off the
-    # tag, not the status, so it survives the close-on-implemented lifecycle;
-    # EXIT is the gateway's CLOSURE-VERIFIED ancestry proof. The previous
-    # version had entry but no exit and so could only ever rise -- see
+    # tag, not the status, so open shepherding and legacy premature closures are
+    # both visible; EXIT is the gateway's CLOSURE-VERIFIED ancestry proof. The
+    # previous version had entry but no exit and so could only ever rise -- see
     # `TaskRecord.awaiting_landing`. Ancestry verification is still
     # `drain-implemented-to-landed`'s job to ACT on; this monitor only reads the
     # proof the gateway already recorded.
     awaiting_land = tuple(task for task in everything if task.awaiting_landing)
-    # LIFECYCLE DEVIATION: implemented but not closed. Reported separately so
-    # it is fixable rather than silently absorbed into the landing debt.
+    # LIFECYCLE DEVIATION: terminal status and landing proof disagree. Reported
+    # separately so a premature close or incomplete gateway update is visible.
     lifecycle_violations = tuple(
         task for task in everything if task.lifecycle_violation
     )
@@ -1252,7 +1249,7 @@ def _active_work_detail(report: ActiveWorkReport) -> list[str]:
         )
     detail.extend(
         f"LIFECYCLE-VIOLATION {task.id} status={task.status} "
-        "implemented-but-not-closed"
+        f"landed={str(task.landed).lower()} status/landing-proof-mismatch"
         for task in report.lifecycle_violations
     )
     detail.extend(

@@ -861,15 +861,13 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class CloseOnImplementedLifecycleTest(unittest.TestCase):
-    """The close-on-implemented lifecycle, asserted as code behaviour.
+class ShepherdThroughLandingLifecycleTest(unittest.TestCase):
+    """The publish-open, close-after-landing lifecycle as code behaviour.
 
-    Under this lifecycle an implemented task is CLOSED immediately and the
-    landing debt is enumerated from CLOSED+implemented records by
-    `drain-implemented-to-landed`. Before this, `awaiting_land` was derived
-    from the IN_PROGRESS set, which reports ~zero once the lifecycle is
-    followed -- the landing debt became invisible exactly when the policy
-    started working.
+    Publication adds `implemented` while the task remains IN_PROGRESS and its
+    owning agent shepherds it. The task closes only after CLOSURE-VERIFIED
+    proves landing. Legacy prematurely closed rows remain visible as debt and
+    are reported as violations rather than treated as proof.
     """
 
     @staticmethod
@@ -884,9 +882,9 @@ class CloseOnImplementedLifecycleTest(unittest.TestCase):
         return [
             self._task("active-ready", owner="agent-a"),
             self._task("stale-unowned", owner=""),
-            self._task("implemented-unlanded", status="CLOSED",
+            self._task("implemented-unlanded", status="IN_PROGRESS",
                        tags=("implemented",)),
-            self._task("implemented-unlanded-2", status="CLOSED",
+            self._task("implemented-unlanded-2", status="IN_PROGRESS",
                        tags=("determinism", "implemented")),
             self._task("backlog-item", status="BACKLOG"),
             self._task("blocked-item", status="OPEN"),
@@ -899,9 +897,11 @@ class CloseOnImplementedLifecycleTest(unittest.TestCase):
 
     def test_only_live_in_progress_work_reaches_the_actionable_queue(self):
         r = self.report()
-        # BACKLOG/OPEN/CLOSED rows must not be treated as the live queue.
+        # Open implemented rows stay visible as their owning agent's work, but
+        # are excluded from every set that could dispatch them elsewhere.
         self.assertEqual([t.id for t in r.in_progress],
-                         ["active-ready", "stale-unowned"])
+                         ["active-ready", "implemented-unlanded",
+                          "implemented-unlanded-2", "stale-unowned"])
         self.assertEqual([t.id for t in r.owned_active], ["active-ready"])
         self.assertEqual([t.id for t in r.stale], ["stale-unowned"])
 
@@ -936,7 +936,7 @@ class CloseOnImplementedLifecycleTest(unittest.TestCase):
         self.assertEqual(start, 2)
 
         # UP: tag one more task implemented -> the debt RISES.
-        rose = base + [self._task("newly-implemented", status="CLOSED",
+        rose = base + [self._task("newly-implemented", status="IN_PROGRESS",
                                   tags=("implemented",))]
         self.assertEqual(depth(rose), start + 1,
                          "tagging implemented must increase the debt")
@@ -951,7 +951,8 @@ class CloseOnImplementedLifecycleTest(unittest.TestCase):
 
         # And landing the whole original set drains it to zero.
         all_landed = [
-            self._task(t.id, status=t.status, owner=t.owner, tags=t.tags,
+            self._task(t.id, status="CLOSED" if t.implemented else t.status,
+                       owner=t.owner, tags=t.tags,
                        landed=t.implemented)
             for t in base
         ]
@@ -970,14 +971,15 @@ class CloseOnImplementedLifecycleTest(unittest.TestCase):
                                       tags=("implemented",), landed=False)]
         r = operational_health.reconcile_active_work(closed_unproven, [])
         self.assertEqual([t.id for t in r.awaiting_land], ["closed-no-proof"])
+        self.assertEqual([t.id for t in r.lifecycle_violations],
+                         ["closed-no-proof"])
 
     def test_lifecycle_violation_stays_a_distinct_signal(self):
         """The two metrics must not collapse into near-duplicates.
 
-        Scoping awaiting_land to IN_PROGRESS (the other candidate fix) would
-        have made it `implemented AND NOT closed`, which is exactly
-        `lifecycle_violation`. Here an implemented+landed+open task is a
-        lifecycle deviation but NOT landing debt, so the sets differ.
+        An implemented+landed+open task means the gateway recorded proof but
+        did not complete the status update. It is a lifecycle deviation but
+        not landing debt, so the sets remain distinct.
         """
         tasks = [self._task("open-implemented-landed", status="IN_PROGRESS",
                             owner="a", tags=("implemented",), landed=True)]
@@ -986,33 +988,30 @@ class CloseOnImplementedLifecycleTest(unittest.TestCase):
                          ["open-implemented-landed"])
         self.assertEqual([t.id for t in r.awaiting_land], [])
 
-    def test_closed_implemented_work_is_never_dispatchable(self):
-        """Negative mutation: the landing debt must not leak into any set an
-        idle agent could be assigned from, nor into the closure-candidate
-        sets."""
+    def test_open_implemented_work_is_never_dispatchable(self):
+        """Open shepherding stays owned without becoming assignable work."""
         r = self.report()
         debt = {"implemented-unlanded", "implemented-unlanded-2"}
-        for name in ("in_progress", "owned_active", "actually_active",
-                     "stale", "orphaned"):
+        self.assertEqual(debt, debt & {t.id for t in r.in_progress})
+        for name in ("owned_active", "actually_active", "stale", "orphaned"):
             leaked = debt & {t.id for t in getattr(r, name)}
             self.assertEqual(leaked, set(), f"landing debt leaked into {name}")
 
-    def test_implemented_but_not_closed_is_reported_as_a_deviation(self):
-        """An implemented row left nonterminal is invisible to the drain
-        tracker while still occupying the live queue, so it is surfaced as a
-        violation rather than silently absorbed."""
-        tasks = self.fixture() + [
-            self._task("implemented-but-open", status="IN_PROGRESS",
-                       tags=("implemented",))
-        ]
-        r = operational_health.reconcile_active_work(tasks, [])
-        self.assertEqual([t.id for t in r.lifecycle_violations],
-                         ["implemented-but-open"])
-        # It still counts as landing debt (tag-first), and still must not be
-        # dispatchable as active work.
-        self.assertIn("implemented-but-open", {t.id for t in r.awaiting_land})
-        self.assertNotIn("implemented-but-open", {t.id for t in r.owned_active})
-        self.assertNotIn("implemented-but-open", {t.id for t in r.stale})
+    def test_open_unlanded_passes_and_closed_unlanded_fails(self):
+        """Bracket both directions with the same implemented evidence."""
+        conformant = [self._task("open-shepherding", status="IN_PROGRESS",
+                                 tags=("implemented",), landed=False)]
+        accepted = operational_health.reconcile_active_work(conformant, [])
+        self.assertEqual(accepted.counts()["lifecycle_violations"], 0)
+        self.assertEqual(accepted.counts()["awaiting_land"], 1)
+
+        premature = [self._task("closed-without-landing", status="CLOSED",
+                                tags=("implemented",), landed=False)]
+        refused = operational_health.reconcile_active_work(premature, [])
+        self.assertEqual(refused.counts()["lifecycle_violations"], 1)
+        self.assertEqual([t.id for t in refused.lifecycle_violations],
+                         ["closed-without-landing"])
+        self.assertEqual(refused.counts()["awaiting_land"], 1)
 
     def test_conformant_graph_reports_zero_violations(self):
         """Positive control: the violation detector is not inert -- it fires

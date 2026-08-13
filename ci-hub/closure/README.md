@@ -15,8 +15,8 @@ Everything else is a report *about* landing, not landing.
 
 > **`tg` CANNOT VERIFY LANDING. It is a TRACKER, not a source of truth on `main`.**
 >
-> A task reads `closed` because a coordinator closed it. The close is a **record
-> of a verification, never the verification**. Reading it back as proof is
+> A task reads `closed` because its owning agent closed it through the gateway.
+> The close is a **record of a verification, never the verification**. Reading it back as proof is
 > circular — the tracker would be certifying the thing it was told.
 
 ## Ask the predicate instead of remembering the rule
@@ -41,7 +41,7 @@ list it belongs to.
 
 | source | what it really says |
 |---|---|
-| `tg` status `closed` | a coordinator closed the task |
+| `tg` status `closed` | the owning agent closed the task through the gateway |
 | `tg` `implemented` tag | published, explicitly **not** landed |
 | a task note | one agent's unverified belief |
 | PR `MERGED` flag | merged at some point — a later force-push **orphans** the replay SHA (~12 PRs, 2026-08-03) |

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Keep repository instructions agreeing that an agent closes its own task.
+"""Keep the parent task lifecycle bound to close-after-landing policy.
 
 INVERTED 2026-08-08. This file used to assert the opposite: it forbade any text
 telling an agent to self-close and REQUIRED the coordinator-only closure
@@ -9,11 +9,9 @@ dispatch preamble told every agent to self-close on every dispatch. This gate
 was therefore actively enforcing the contradiction, and would reject the stock
 ORC preamble as a violation.
 
-The evidence requirement did NOT go away with the gatekeeper, so this file now
-guards the half that is easy to lose: closing is still gated on a recorded
-IMPLEMENTED note, the `implemented` tag still carries landing debt, and
-`./ci-hub/bin/close-task` is still the only writer of the `CLOSURE-VERIFIED`
-note that discharges it.
+The owning agent publishes evidence and adds `implemented`, then keeps the task
+open while shepherding it. Only after landing does the agent close through
+`./ci-hub/bin/close-task`, whose CLOSURE-VERIFIED note discharges landing debt.
 """
 
 from __future__ import annotations
@@ -41,10 +39,6 @@ FORBIDDEN = (
     re.compile(r"only\s+the\s+coordinator\s+closes", re.IGNORECASE),
     re.compile(
         r"a\s+working\s+agent\s+NEVER\s+moves\s+a\s+task\s+to\s+a\s+terminal\s+status",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"never\s+use\s+raw\s+`?tg\s+update[^\n]*--status\s+(?:closed|resolved)",
         re.IGNORECASE,
     ),
     re.compile(r"leaves?\s+status\s+`?in_progress`?,?\s+and\s+stops?", re.IGNORECASE),
@@ -89,7 +83,7 @@ class TaskLifecyclePolicyTest(unittest.TestCase):
             fixture = Path(directory) / "stale-policy.md"
             fixture.write_text(
                 "Only the coordinator closes tasks, and only through the gateway.\n"
-                "Never use raw `tg update <id> --status closed`.\n",
+                "The working agent leaves status in_progress and stops.\n",
                 encoding="utf-8",
             )
             findings = find_forbidden((fixture,))
@@ -107,40 +101,44 @@ class TaskLifecyclePolicyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             fixture = Path(directory) / "good-policy.md"
             fixture.write_text(
-                "Post the evidence, then close the task yourself when done: "
-                "`tg update <id> --status closed`.\n",
+                "Post the evidence and add implemented, then keep the task "
+                "in_progress while shepherding it. After landing, the owning "
+                "agent closes through ci-hub/bin/close-task.\n",
                 encoding="utf-8",
             )
             self.assertEqual([], find_forbidden((fixture,)))
 
     def test_canonical_policy_states_the_agent_closes_its_own_task(self) -> None:
         policy = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+        normalized = " ".join(policy.split())
         for required in (
             # The rule itself.
-            "the owning agent closes its own task",
-            "tg update <id> --status closed",
+            "After landing, the owning agent closes its own task",
+            "Publishing a pull request or durable artifact is implementation evidence, not the end of the task",
+            "Keep the task `in_progress`",
+            "Do not bypass the gateway",
             # The evidence half, which the gatekeeper's removal must NOT take
             # with it.
-            "Record the evidence BEFORE you change status",
             'tg note <id> "IMPLEMENTED:',
-            "tg update <id> --tags <existing-tags>,implemented",
+            "`implemented` tag while preserving every existing tag",
             # Landing debt still has an owner and a discharge mechanism.
-            "Landing debt rides on the `implemented`\ntag, never on the status",
+            "Landing debt rides on the `implemented` tag, never on the status",
+            "published but unlanded work is open and `implemented`",
             "CLOSURE-VERIFIED",
             "./ci-hub/bin/close-task",
         ):
-            self.assertIn(required, policy)
+            self.assertIn(required, normalized)
 
-    def test_coordinator_skill_agrees_with_the_canonical_policy(self) -> None:
-        coordinator_skill = " ".join(
-            (ROOT / ".claude" / "skills" / "hermit-coord" / "SKILL.md")
-            .read_text(encoding="utf-8")
-            .split()
+    def test_running_consumers_encode_both_directions(self) -> None:
+        gateway = (ROOT / "ci-hub/closure/verified_close.py").read_text(
+            encoding="utf-8"
         )
-        self.assertIn("CLOSES ITS OWN TASK", coordinator_skill)
-        self.assertIn(
-            "Task closure is NOT a coordinator duty", coordinator_skill
+        health = (ROOT / "ci-hub/health/operational_health.py").read_text(
+            encoding="utf-8"
         )
+        self.assertNotIn('landing="implemented-unlanded"', gateway)
+        self.assertIn("if not task_has_implemented_tag(task, run=run):", gateway)
+        self.assertIn("self.implemented and (self.closed != self.landed)", health)
 
 
 if __name__ == "__main__":

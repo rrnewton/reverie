@@ -13,17 +13,15 @@ THE DEFECT
       IN_PROGRESS     3
       OPEN            1
 
-**A CLOSED TASK CANNOT BE AWAITING LANDING.** 1610 of 1625 rows are finished work whose
-tag was simply never removed, so the headline reads as an enormous undrained backlog and
-shapes priority accordingly. It is the same tag-as-proxy defect already found once in
-`the-unlanded-count-query-misses-closed-tasks-whose-commits-never-landed`.
+Closed status does not prove landing. The count therefore cannot include or exclude a task
+from status alone; it must ask the repository state that the status cannot establish.
 
 WHY EXCLUDING CLOSED ROWS WOULD NOT BE A FIX
 --------------------------------------------
 It trades one tag-proxy for a status-proxy. Status does not know whether the commit
-landed either: under the close-on-implemented lifecycle a task is CLOSED the moment it is
-implemented, *before* landing, so CLOSED rows legitimately include genuinely-unlanded
-work. The binding has to be to the COMMIT.
+landed either. Current policy keeps published work open while its owning agent shepherds
+it, but legacy CLOSED rows still include genuinely-unlanded work. The binding has to be
+to the COMMIT.
 
 THE BINDING
 -----------
