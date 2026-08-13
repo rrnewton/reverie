@@ -93,18 +93,22 @@ unblocks. A status label, queue declaration, or old task note does not outrank c
 14. **Bracket both directions.** Prove that a qualifying case is accepted and a violating case is
     refused. Never plant a real approval, validation label, merge, or other authorization to test the
     refusal; use an inert fixture or isolated repository.
-15. **Closed does not mean landed; landed does not mean deployed.** After publication, evidence, and
-    adversarial confirmation, the owning agent closes its own task with
-    `tg update <id> --status closed`; red, missing, or stale selected validation does not qualify.
-    After landing, verify ancestry and activate the landed commit in the primary checkout; ancestry
-    alone does not prove the running coordinator or checkout uses it. Record the evidence BEFORE you change status:
-    `tg note <id> "IMPLEMENTED: <artifact-url> | SHA <40-hex> | <validation>"`, then
-    `tg update <id> --tags <existing-tags>,implemented`.
+15. **Close only after landing.** After landing, the owning agent closes its own task. Publishing a
+    pull request or durable artifact is implementation evidence, not the end of the task. At
+    publication, record
+    `tg note <id> "IMPLEMENTED: <artifact-url> | SHA <40-hex> | <validation>"`, then add the
+    `implemented` tag while preserving every existing tag. Keep the task `in_progress` and retain
+    ownership while shepherding review, rebases, qualifying validation, and authorized landing; red,
+    missing, or stale selected validation does not qualify. After the change is on its named target
+    `main`, the owning agent runs `./ci-hub/bin/close-task`; the gateway freshly verifies ancestry,
+    writes `CLOSURE-VERIFIED`, and only then changes the status to `closed`. Do not bypass the gateway
+    for implementation work. Follow the
+    [closure evidence contract](ci-hub/closure/README.md).
 
-Landing debt rides on the `implemented`
-tag, never on the status. After landing, `./ci-hub/bin/close-task` verifies ancestry and writes
-`CLOSURE-VERIFIED`. Follow the [closure evidence contract](ci-hub/closure/README.md); never infer landing
-from task status.
+Landing debt rides on the `implemented` tag, never on the status: published but unlanded work is open
+and `implemented`; landed work is closed through the gateway and keeps the tag. Landed does not mean
+deployed: after landing, activate the landed commit in the primary checkout; ancestry alone does not
+prove that the running coordinator or checkout uses it.
 
 # Canonical action guides
 
