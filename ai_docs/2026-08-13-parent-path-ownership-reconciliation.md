@@ -55,3 +55,13 @@ transfer ownership, or infer that a path is free.
 
 This keeps the explicit-transfer rule intact while making decay visible at the
 point where a writer would otherwise trust the prose.
+
+## Publication record
+
+The reconciliation content first landed at
+`9e0769b0862d83ec22aa4d5d03d49c4c9117ed0e`. Its commit message contains only
+the canonical final machine-attribution line because the writer was invoked with
+multiple message arguments although its interface accepts one message. Published
+main was not rewritten. The immediate follow-up records the required disclosure,
+task, validation, and this invocation defect while retaining the first commit in
+linear ancestry.
