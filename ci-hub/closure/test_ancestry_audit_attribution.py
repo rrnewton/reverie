@@ -286,6 +286,37 @@ def run() -> int:
               QUOTED, anc),
           "LANDED")
 
+    # ---------- fifth route: a claim MARKER inside a disowning clause ----------
+    # deslop confirmed these attribute before the anchor. The three refusals
+    # marked (corpus) are the real forms found in task notes; the markdown and
+    # quote forms do NOT occur in the corpus and are closed as a consequence of
+    # anchoring rather than as a measured need.
+    for line, want, note in [
+        ("IMPLEMENTED: x", True, "the norm: 101 of 105 clauses look like this"),
+        ("FINAL/IMPLEMENTED: x", True, "corpus qualifier"),
+        ("IMPLEMENTED (widened #2092): x", True, "corpus parenthetical"),
+        ("IMPLEMENTED AND LANDED: x", True, "corpus variant"),
+        ("IMPLEMENTED (not blocking): x", True,
+         "GUARD: a negator INSIDE a genuine claim must not refuse it"),
+        ("NOT IMPLEMENTED: x", False, "negation"),
+        ("NOT YET IMPLEMENTED: x", False, "negation"),
+        ("NOT/IMPLEMENTED: x", False, "negator may not pose as a qualifier"),
+        ("PRESERVED CHECKPOINT (not published, not implemented): x", False,
+         "(corpus) disowning clause"),
+        ("PUBLISHED DRAFT (not implemented/closed): x", False,
+         "(corpus) disowning clause"),
+        ("FROM hermit-905 IMPLEMENTED PRIVATE COMMIT: x", False,
+         "(corpus) attribution AND marker in one clause"),
+        ("## IMPLEMENTED: x", False, "markdown heading, not corpus-observed"),
+        ("> IMPLEMENTED: x", False, "markdown quote, not corpus-observed"),
+        ('"IMPLEMENTED: x"', False, "quote-opened, not corpus-observed"),
+    ]:
+        got = ancestry_audit.is_claim_line(line)
+        ok = got == want
+        print(f"  {'PASS' if ok else 'FAIL'}  claim={got!s:5} want={want!s:5} {line[:46]:48}{note}")
+        if not ok:
+            failures.append(f"is_claim_line({line!r}) = {got}, wanted {want}")
+
     # A task with nothing at all stays UNKNOWN, not NOT-DETERMINABLE.
     check("no candidates at all -> UNKNOWN (unchanged)",
           ancestry_audit.classify(item("t-empty"), {}, StubAncestry({})),

@@ -140,7 +140,12 @@ def load_prs(root: Path, repo: str, limit: int, herdr_agent: str | None) -> dict
 # A line's LEADING CLAUSE -- everything before its first colon -- says what the
 # line is. `IMPLEMENTED: <url> | branch ...` is this task claiming an artifact;
 # `FROM pr418_claude_review: ...` is this task QUOTING another task's artifact.
-CLAIM_HEAD = re.compile(r"\bIMPLEMENTED\b", re.I)
+# The clause must BEGIN with the claim token, not merely contain it. An optional
+# slash qualifier is allowed because `FINAL/IMPLEMENTED:` occurs in the corpus,
+# but it may not be a negator, so `NOT/IMPLEMENTED` cannot sneak in that way.
+CLAIM_HEAD = re.compile(
+    r"^\s*(?:(?!NOT\b|NEVER\b|NO\b)[A-Za-z][A-Za-z0-9-]*/)?IMPLEMENTED\b", re.I
+)
 CLAIM_HEAD_MAX = 60
 
 
@@ -172,6 +177,41 @@ def is_claim_line(line: str) -> bool:
     `FROM pr418_claude_review: ...` -- a REAL instance of 906's fixture, not a
     constructed one.
 
+    *** THE FIFTH ROUTE, found by hermit-deslop verifying the fourth fix. ***
+    Recognising the token ANYWHERE in the leading clause accepted a clause that
+    NEGATES or DISOWNS it, because the marker is present in a sentence saying the
+    opposite. More signals could not discriminate that -- a disowned claim
+    carries the same markers as a claim -- so the axis had to change from "is the
+    marker present" to "does this clause CLAIM, or mention a claim".
+
+    THE BOUNDARY IS AGAIN CORPUS-DERIVED, and the corpus is emphatic. Of the
+    claim-shaped clauses carrying the token, 101 have NOTHING before it, one has
+    the qualifier `FINAL/`, and exactly three have something else -- and all
+    three are the hazard:
+
+        PRESERVED CHECKPOINT (not published, not implemented ...
+        PUBLISHED DRAFT (not implemented/closed) ...
+        FROM hermit-905 IMPLEMENTED PRIVATE COMMIT: ...
+
+    So the clause must BEGIN with the token. That refuses all three and keeps
+    102 of 105. Note the third: the plain `FROM x:` attribution form was already
+    refused because its clause lacks the token, but `FROM x IMPLEMENTED ...`
+    slipped through the CONTAINS test -- the attribution and the marker in one
+    clause.
+
+    NO NEGATOR DENYLIST IS APPLIED TO THE WHOLE CLAUSE, deliberately. The anchor
+    already refuses every observed hazard, and scanning the clause for "not"
+    would refuse a genuine `IMPLEMENTED (not blocking):`. That is the too-tight
+    failure this function already committed once, on `FINAL/IMPLEMENTED`, and a
+    false negative silently converts real work into NOT-DETERMINABLE. The guard
+    is scoped to the qualifier alone, where it costs nothing.
+
+    Markdown-prefixed and quote-opened forms (`## IMPLEMENTED:`, `"IMPLEMENTED:`)
+    are refused by the same anchor. They do NOT occur in the corpus -- 0
+    occurrences of each -- so they are closed as a consequence of anchoring
+    rather than as a measured need; recorded that way rather than claimed as a
+    finding.
+
     THIS CHECK IS CONVENTION-DEPENDENT AND THAT IS A KNOWN LIMIT, not a claim of
     soundness. It holds because agents write `IMPLEMENTED:`, exactly the shape
     hermit-903 warned about when it found the branch match holding by naming
@@ -183,7 +223,7 @@ def is_claim_line(line: str) -> bool:
     can derive from prose.
     """
     head = line.split(":", 1)[0] if ":" in line else ""
-    return len(head) <= CLAIM_HEAD_MAX and bool(CLAIM_HEAD.search(head))
+    return len(head) <= CLAIM_HEAD_MAX and bool(CLAIM_HEAD.match(head))
 
 
 def pile(db: Path) -> list[dict]:
