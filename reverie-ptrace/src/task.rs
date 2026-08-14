@@ -4994,6 +4994,8 @@ impl<L: Tool + 'static> TracedTask<L> {
         let tid = self.tid();
 
         tracing::info!(
+            target: "reverie::guest",
+            parent: None,
             "[tool] (tid {}) beginning tail_inject of syscall: {}",
             &tid,
             nr,

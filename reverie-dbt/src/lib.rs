@@ -362,7 +362,15 @@ where
         // this future and every Rust state borrow have been dropped. Besides
         // preserving DynamoRIO lifecycle bookkeeping, this keeps blocking calls
         // such as futex out of `dr_invoke_syscall_as_app`.
+        let tid = self.tid();
         let (number, args) = syscall.into_parts();
+        tracing::info!(
+            target: "reverie::guest",
+            parent: None,
+            "[tool] (tid {}) beginning tail_inject of syscall: {}",
+            tid,
+            number,
+        );
         self.tail_inject_result
             .set_execute_original(Syscall::from_raw(number, args));
         std::future::pending().await
