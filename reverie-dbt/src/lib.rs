@@ -1469,6 +1469,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_created(
     _pid: i32,
     _branches: u64,
     _child_tid: i32,
+    _virtual_child_tid: i32,
     _child_tid_addr: u64,
     _flags: u64,
     _invoke_syscall: SyscallInvoker,
