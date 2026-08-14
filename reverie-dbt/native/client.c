@@ -1647,6 +1647,9 @@ static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-453): Review virtual pidfd_open target translation.
   case SYS_pidfd_open:
+  // TODO-HUMAN-REVIEW(PR-455): Review queued-signal target translation at the
+  // native syscall boundary.
+  case SYS_rt_sigqueueinfo:
   case SYS_tkill:
   case SYS_wait4:
   case SYS_getpgid:
@@ -1659,6 +1662,12 @@ static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   case SYS_sched_setscheduler:
     return translate_identity_argument(&args[0]);
   case SYS_tgkill:
+    return translate_identity_argument(&args[0]) &&
+           translate_identity_argument(&args[1]);
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-455): Review queued-signal target translation at the
+  // native syscall boundary.
+  case SYS_rt_tgsigqueueinfo:
     return translate_identity_argument(&args[0]) &&
            translate_identity_argument(&args[1]);
   case SYS_setpgid:
