@@ -67,6 +67,7 @@ pub struct DbtRunner {
     drrun: PathBuf,
     client: PathBuf,
     client_arguments: Vec<OsString>,
+    diagnostic_file: Option<Arc<File>>,
     summary: bool,
     isolated_process_group: bool,
     terminate_process_group_on_exit: bool,
@@ -102,6 +103,7 @@ impl DbtRunner {
             drrun,
             client,
             client_arguments: Vec::new(),
+            diagnostic_file: None,
             summary: false,
             isolated_process_group: false,
             terminate_process_group_on_exit: false,
@@ -119,6 +121,16 @@ impl DbtRunner {
     /// Adds an argument passed to the native client in every instrumented process image.
     pub fn client_argument(mut self, argument: impl Into<OsString>) -> Self {
         self.client_arguments.push(argument.into());
+        self
+    }
+
+    /// Writes native-client diagnostics to `file` instead of launcher stderr.
+    ///
+    /// Guest stderr remains independently inherited or captured. The file is
+    /// installed at the client's reserved diagnostic descriptor before drrun
+    /// starts, so the setting survives guest redirects and followed execs.
+    pub fn diagnostic_file(mut self, file: File) -> Self {
+        self.diagnostic_file = Some(Arc::new(file));
         self
     }
 
@@ -247,6 +259,41 @@ impl DbtRunner {
             .stderr(Stdio::piped())
             .spawn()?;
         self.wait_with_output(child)
+    }
+
+    /// Captures `guest` output with an exact environment while streaming input.
+    pub fn output_with_environment_and_reader<R>(
+        &self,
+        guest: &Command,
+        environment: &BTreeMap<OsString, OsString>,
+        mut input: R,
+    ) -> io::Result<Output>
+    where
+        R: Read + Send,
+    {
+        let mut child = self
+            .command(guest, Some(environment))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::BrokenPipe, "failed to open DBT guest stdin")
+        })?;
+
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(move || io::copy(&mut input, &mut stdin));
+            let output = self.wait_with_output(child);
+            let write_result = writer
+                .join()
+                .map_err(|_| io::Error::other("DBT guest stdin writer thread panicked"))?;
+            if let Err(error) = write_result
+                && error.kind() != io::ErrorKind::BrokenPipe
+            {
+                return Err(error);
+            }
+            output
+        })
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -772,11 +819,16 @@ impl DbtRunner {
             command.process_group(0);
         }
 
+        let diagnostic_fd = self
+            .diagnostic_file
+            .as_ref()
+            .map_or(libc::STDERR_FILENO, |file| file.as_raw_fd());
+
         // SAFETY: personality(2) and dup2(2) are async-signal-safe and the closure
         // captures no process state. Both settings survive drrun and guest execs.
         unsafe {
-            command.pre_exec(|| {
-                if libc::dup2(libc::STDERR_FILENO, DIAGNOSTIC_FD) == -1 {
+            command.pre_exec(move || {
+                if libc::dup2(diagnostic_fd, DIAGNOSTIC_FD) == -1 {
                     return Err(io::Error::last_os_error());
                 }
                 let current = libc::personality(0xffff_ffff);
@@ -1132,6 +1184,7 @@ mod tests {
             drrun: PathBuf::from("/opt/dynamorio/bin64/drrun"),
             client: PathBuf::from("/opt/reverie/libreverie_dbt_client.so"),
             client_arguments: Vec::new(),
+            diagnostic_file: None,
             summary: false,
             isolated_process_group: false,
             terminate_process_group_on_exit: false,
@@ -1488,6 +1541,65 @@ mod tests {
         assert!(output.status.success());
         assert_eq!(output.stdout, b"captured=<guest-stderr>\n");
         assert_eq!(output.stderr, b"backend-diagnostic");
+    }
+
+    #[test]
+    fn writes_diagnostics_to_a_dedicated_file() {
+        let root = tempfile::tempdir().unwrap();
+        let drrun = root.path().join("drrun");
+        let client = root.path().join("client.so");
+        let diagnostics = root.path().join("diagnostics.log");
+        write_executable_script(
+            &drrun,
+            b"#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+        );
+        std::fs::write(&client, b"placeholder").unwrap();
+
+        let script = format!(
+            "printf guest-stderr >&2; printf backend-diagnostic >&{DIAGNOSTIC_FD}"
+        );
+        let mut guest = Command::new("/bin/bash");
+        guest.args(["-c", &script]);
+
+        let output = DbtRunner::new(drrun, client)
+            .unwrap()
+            .diagnostic_file(File::create(&diagnostics).unwrap())
+            .output(&guest)
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stderr, b"guest-stderr");
+        assert_eq!(std::fs::read(diagnostics).unwrap(), b"backend-diagnostic");
+    }
+
+    #[test]
+    fn exact_environment_reader_supplies_replayable_input() {
+        let root = tempfile::tempdir().unwrap();
+        let drrun = root.path().join("drrun");
+        let client = root.path().join("client.so");
+        write_executable_script(
+            &drrun,
+            b"#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+        );
+        std::fs::write(&client, b"placeholder").unwrap();
+
+        let mut guest = Command::new("/bin/sh");
+        guest.args([
+            "-c",
+            "IFS= read -r input; printf '%s:%s\\n' \"$input\" \"$EXACT_VALUE\"",
+        ]);
+        let environment = BTreeMap::from([(OsString::from("EXACT_VALUE"), OsString::from("set"))]);
+
+        let output = DbtRunner::new(drrun, client)
+            .unwrap()
+            .output_with_environment_and_reader(
+                &guest,
+                &environment,
+                io::Cursor::new(b"replayed\n"),
+            )
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"replayed:set\n");
+        assert!(output.stderr.is_empty());
     }
 
     #[test]
