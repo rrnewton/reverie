@@ -174,6 +174,10 @@ typedef struct {
   // buffered bytes to the real stdout at a flush boundary. Added at the end of
   // the struct so the existing field layout is unchanged.
   reverie_emit_fn_t emit_stdout;
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-dbi-log): Review the persistent diagnostic-level ABI.
+  // 0=off, 1=error, 2=warn, 3=info, 4=debug, 5=trace.
+  int32_t diagnostic_level;
 } runtime_callbacks_t;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#90): Confirm diagnostic fd ownership across exec.
@@ -2762,7 +2766,7 @@ static void runtime_idle(void) { dr_sleep(1); }
 static _Atomic int32_t runtime_background_state;
 
 static runtime_callbacks_t runtime_callbacks = {
-    reverie_dbt_emit, runtime_idle, 0, 0, reverie_dbt_emit_stdout};
+    reverie_dbt_emit, runtime_idle, 0, 0, reverie_dbt_emit_stdout, 0};
 
 static void runtime_background_init(void *argument) {
   (void)argument;
@@ -2838,6 +2842,21 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     }
     else if (strcmp(argv[i], "-panic-on-unsupported-syscalls") == 0)
       runtime_callbacks.panic_on_unsupported_syscalls = 1;
+    else if (strcmp(argv[i], "-log-level") == 0) {
+      DR_ASSERT(++i < argc);
+      if (strcmp(argv[i], "error") == 0)
+        runtime_callbacks.diagnostic_level = 1;
+      else if (strcmp(argv[i], "warn") == 0)
+        runtime_callbacks.diagnostic_level = 2;
+      else if (strcmp(argv[i], "info") == 0)
+        runtime_callbacks.diagnostic_level = 3;
+      else if (strcmp(argv[i], "debug") == 0)
+        runtime_callbacks.diagnostic_level = 4;
+      else if (strcmp(argv[i], "trace") == 0)
+        runtime_callbacks.diagnostic_level = 5;
+      else
+        DR_ASSERT(false);
+    }
     else if (strcmp(argv[i], "-isolated-process-group") == 0)
       runtime_process_group = (process_id_t)getpgrp();
     // AUTONOMOUS-BOT-IMPLEMENTED

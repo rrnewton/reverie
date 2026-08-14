@@ -121,6 +121,11 @@ pub struct DbtRuntimeCallbacks {
     /// of the struct so the existing field layout matches the C
     /// `runtime_callbacks_t`.
     pub emit_stdout: RuntimeEmitter,
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-dbi-log): Review the persistent diagnostic-level ABI.
+    /// Controller-selected diagnostic level: 0=off, 1=error, 2=warn,
+    /// 3=info, 4=debug, 5=trace.
+    pub diagnostic_level: i32,
 }
 
 /// Result of dispatching a syscall through an external DBT Tool.
