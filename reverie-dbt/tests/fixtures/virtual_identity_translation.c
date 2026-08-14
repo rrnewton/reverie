@@ -22,8 +22,23 @@ static int expect_translation(const virtual_identity_t *identities,
   return 1;
 }
 
+static int expect_lookup(const virtual_identity_t *identities, size_t count,
+                         int32_t host, int32_t expected) {
+  int32_t actual = 0;
+  if (!lookup_virtual_identity_entries(identities, count, host, &actual)) {
+    fprintf(stderr, "host identity %d was not found\n", host);
+    return 1;
+  }
+  if (actual == expected)
+    return 0;
+
+  fprintf(stderr, "host identity %d resolved to %d, expected %d\n", host,
+          actual, expected);
+  return 1;
+}
+
 int main(void) {
-  const virtual_identity_t identities[] = {
+  virtual_identity_t identities[] = {
       {.host = 4, .virtual_id = 3},
       {.host = 100, .virtual_id = 4},
   };
@@ -41,6 +56,28 @@ int main(void) {
     return 5;
   if (expect_translation(identities, count, -1, -1) != 0)
     return 6;
+  if (expect_lookup(identities, count, 100, 4) != 0)
+    return 7;
+
+  int32_t unchanged = 23;
+  if (lookup_virtual_identity_entries(identities, count, 200, &unchanged))
+    return 8;
+  if (unchanged != 23) {
+    fprintf(stderr, "missing host identity changed output to %d, expected 23\n",
+            unchanged);
+    return 9;
+  }
+
+  int32_t refreshed = 4;
+  if (!update_virtual_identity_entries(identities, count, 100, 9))
+    return 10;
+  if (!lookup_virtual_identity_entries(identities, count, 100, &refreshed))
+    return 11;
+  if (refreshed != 9) {
+    fprintf(stderr, "refreshed host identity remained %d, expected 9\n",
+            refreshed);
+    return 12;
+  }
 
   return 0;
 }

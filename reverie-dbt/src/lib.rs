@@ -121,6 +121,11 @@ pub struct DbtRuntimeCallbacks {
     /// of the struct so the existing field layout matches the C
     /// `runtime_callbacks_t`.
     pub emit_stdout: RuntimeEmitter,
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-dbi-log): Review the persistent diagnostic-level ABI.
+    /// Controller-selected diagnostic level: 0=off, 1=error, 2=warn,
+    /// 3=info, 4=debug, 5=trace.
+    pub diagnostic_level: i32,
 }
 
 /// Result of dispatching a syscall through an external DBT Tool.
@@ -362,7 +367,15 @@ where
         // this future and every Rust state borrow have been dropped. Besides
         // preserving DynamoRIO lifecycle bookkeeping, this keeps blocking calls
         // such as futex out of `dr_invoke_syscall_as_app`.
+        let tid = self.tid();
         let (number, args) = syscall.into_parts();
+        tracing::info!(
+            target: "reverie::guest",
+            parent: None,
+            "[tool] (tid {}) beginning tail_inject of syscall: {}",
+            tid,
+            number,
+        );
         self.tail_inject_result
             .set_execute_original(Syscall::from_raw(number, args));
         std::future::pending().await
@@ -1469,6 +1482,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_created(
     _pid: i32,
     _branches: u64,
     _child_tid: i32,
+    _virtual_child_tid: i32,
     _child_tid_addr: u64,
     _flags: u64,
     _invoke_syscall: SyscallInvoker,

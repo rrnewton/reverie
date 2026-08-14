@@ -174,6 +174,10 @@ typedef struct {
   // buffered bytes to the real stdout at a flush boundary. Added at the end of
   // the struct so the existing field layout is unchanged.
   reverie_emit_fn_t emit_stdout;
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-dbi-log): Review the persistent diagnostic-level ABI.
+  // 0=off, 1=error, 2=warn, 3=info, 4=debug, 5=trace.
+  int32_t diagnostic_level;
 } runtime_callbacks_t;
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(#90): Confirm diagnostic fd ownership across exec.
@@ -202,8 +206,9 @@ extern int32_t reverie_dbt_runtime_thread_init(
     register_writer_t write_registers);
 extern int32_t reverie_dbt_runtime_thread_created(
     prototype_counters_t *counters, void *context, int32_t parent_tid,
-    int32_t pid, uint64_t branches, int32_t child_tid, uint64_t child_tid_addr,
-    uint64_t flags, syscall_invoker_t invoke_syscall,
+    int32_t pid, uint64_t branches, int32_t child_tid,
+    int32_t virtual_child_tid, uint64_t child_tid_addr, uint64_t flags,
+    syscall_invoker_t invoke_syscall,
     register_reader_t read_registers, register_writer_t write_registers);
 
 extern void reverie_dbt_runtime_thread_exit(prototype_counters_t *counters,
@@ -426,19 +431,15 @@ static int32_t ensure_virtual_identity(int32_t host) {
 }
 
 static void remember_virtual_identity(int32_t host, int32_t virtual_id) {
-  size_t i;
   if (host <= 0 || virtual_id <= 0)
     return;
 
   virtual_identity_lock();
-  for (i = 0; i < virtual_identity_state->count; ++i) {
-    if (virtual_identity_state->identities[i].host == host ||
-        virtual_identity_state->identities[i].virtual_id == virtual_id) {
-      virtual_identity_state->identities[i] =
-          (virtual_identity_t){host, virtual_id};
-      virtual_identity_unlock();
-      return;
-    }
+  if (update_virtual_identity_entries(
+          virtual_identity_state->identities, virtual_identity_state->count,
+          host, virtual_id)) {
+    virtual_identity_unlock();
+    return;
   }
   DR_ASSERT(virtual_identity_state->count < MAX_VIRTUAL_IDENTITIES);
   virtual_identity_state->identities[virtual_identity_state->count++] =
@@ -464,19 +465,12 @@ static int32_t virtual_identity_for_host(int32_t host) {
 }
 
 static bool lookup_virtual_identity(int32_t host, int32_t *virtual_id) {
-  size_t i;
-  bool found = false;
-  if (host <= 0)
-    return false;
+  bool found;
 
   virtual_identity_lock();
-  for (i = 0; i < virtual_identity_state->count; ++i) {
-    if (virtual_identity_state->identities[i].host == host) {
-      *virtual_id = virtual_identity_state->identities[i].virtual_id;
-      found = true;
-      break;
-    }
-  }
+  found = lookup_virtual_identity_entries(
+      virtual_identity_state->identities, virtual_identity_state->count, host,
+      virtual_id);
   virtual_identity_unlock();
   return found;
 }
@@ -701,8 +695,22 @@ static void start_pending_thread(void) {
   void *drcontext = dr_get_current_drcontext();
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
+  int32_t virtual_tid;
   if (counters == NULL || counters->pending_thread_start == 0)
     return;
+
+  /* The parent allocates the virtual identity before clone and publishes its
+   * host mapping in post_syscall.  Re-read the mapping on every retry: a reused
+   * host TID can still name the preceding thread until the parent overwrites
+   * that entry.  Do not initialize the Rust thread with a host TID or allocate
+   * a second virtual identity when the child wins this race. */
+  if (!lookup_virtual_identity((int32_t)dr_get_thread_id(drcontext),
+                               &virtual_tid)) {
+    counters->pending_thread_start = 2;
+    return;
+  }
+  DR_ASSERT(virtual_tid > 0);
+  counters->virtual_tid = virtual_tid;
 
   int32_t init_result = reverie_dbt_runtime_thread_init(
       counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
@@ -922,6 +930,10 @@ static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   case SYS_get_robust_list:
   case SYS_kill:
   case SYS_pidfd_open:
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-455): Review queued-signal target translation at the
+  // native syscall boundary.
+  case SYS_rt_sigqueueinfo:
   case SYS_tkill:
   case SYS_wait4:
   case SYS_getpgid:
@@ -934,6 +946,12 @@ static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   case SYS_sched_setscheduler:
     return translate_identity_argument(&args[0]);
   case SYS_tgkill:
+    return translate_identity_argument(&args[0]) &&
+           translate_identity_argument(&args[1]);
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-455): Review queued-signal target translation at the
+  // native syscall boundary.
+  case SYS_rt_tgsigqueueinfo:
     return translate_identity_argument(&args[0]) &&
            translate_identity_argument(&args[1]);
   case SYS_setpgid:
@@ -1064,23 +1082,17 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
                                        int64_t result) {
   int32_t virtual_child = counters->pending_virtual_child;
   uint64_t flags = counters->pending_clone_flags;
-  int32_t mapped;
   if (virtual_child == 0)
     return 0;
 
   if (result > 0) {
-    if ((flags & CLONE_THREAD) != 0 &&
-        lookup_virtual_identity((int32_t)result, &mapped))
-      virtual_child = mapped;
-    else
-      remember_virtual_identity((int32_t)result, virtual_child);
+    /* The parent allocated virtual_child before clone.  It remains
+     * authoritative when Linux reuses a host TID whose old mapping is still in
+     * the shared table. */
+    remember_virtual_identity((int32_t)result, virtual_child);
   } else if (result == 0) {
     int32_t host_tid = (int32_t)dr_get_thread_id(dr_get_current_drcontext());
-    if ((flags & CLONE_THREAD) != 0 &&
-        lookup_virtual_identity(host_tid, &mapped))
-      virtual_child = mapped;
-    else
-      remember_virtual_identity(host_tid, virtual_child);
+    remember_virtual_identity(host_tid, virtual_child);
     if ((flags & CLONE_THREAD) != 0) {
       counters->virtual_tid = virtual_child;
     } else {
@@ -1835,6 +1847,7 @@ static bool prepare_original_identity_syscall(void *drcontext,
 static void post_syscall(void *drcontext, int sysnum) {
   ptr_int_t syscall_result = (ptr_int_t)dr_syscall_get_result(drcontext);
   ptr_int_t host_syscall_result = syscall_result;
+  int32_t virtual_child_tid = 0;
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
   DR_ASSERT(counters != NULL);
@@ -1856,9 +1869,9 @@ static void post_syscall(void *drcontext, int sysnum) {
     atomic_store_explicit(&guest_stack_scrubbed, 0, memory_order_release);
 
   if (counters->pending_virtual_child != 0 && is_clone_syscall(sysnum)) {
-    int32_t virtual_child = complete_clone_identity(counters, syscall_result);
+    virtual_child_tid = complete_clone_identity(counters, syscall_result);
     if (syscall_result > 0) {
-      syscall_result = virtual_child;
+      syscall_result = virtual_child_tid;
       dr_syscall_set_result(drcontext, (reg_t)syscall_result);
     }
   }
@@ -1888,13 +1901,14 @@ static void post_syscall(void *drcontext, int sysnum) {
 
   if (counters->pending_thread_clone != 0) {
     if (host_syscall_result >= 0) {
+      DR_ASSERT(virtual_child_tid > 0);
       int32_t registration = reverie_dbt_runtime_thread_created(
           counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
           (int32_t)dr_get_process_id(),
           atomic_load_explicit(&branch_count, memory_order_relaxed),
-          (int32_t)host_syscall_result, counters->thread_clone_ctid,
-          counters->thread_clone_flags, invoke_syscall, read_registers,
-          write_registers);
+          (int32_t)host_syscall_result, virtual_child_tid,
+          counters->thread_clone_ctid, counters->thread_clone_flags,
+          invoke_syscall, read_registers, write_registers);
       if (registration < 0) {
         dr_fprintf(diagnostic_file,
                    "reverie-dbt: child thread registration failed\n");
@@ -2559,6 +2573,7 @@ static void thread_init(void *drcontext) {
       !has_copied_runtime() && dr_get_thread_id(drcontext) != dr_get_process_id() &&
       reverie_dbt_runtime_ready(
           atomic_load_explicit(&image_generation, memory_order_acquire));
+  int32_t published_virtual_tid = 0;
   int32_t init_result = reverie_dbt_runtime_thread_init(
       counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
       (int32_t)dr_get_process_id(), in_tree_parent_pid(),
@@ -2575,8 +2590,15 @@ static void thread_init(void *drcontext) {
   counters->virtual_ppid = pending_child != 0 && !is_thread
                                ? virtual_process_id
                                : virtual_parent_process_id;
-  counters->virtual_tid =
-      pending_child != 0 ? pending_child : ensure_virtual_identity(host_tid);
+  if (pending_child != 0) {
+    counters->virtual_tid = pending_child;
+  } else if (!pending_thread_start) {
+    counters->virtual_tid = ensure_virtual_identity(host_tid);
+  } else if (lookup_virtual_identity(host_tid, &published_virtual_tid)) {
+    /* Parent post_syscall may already have published the mapping.  Otherwise
+     * leave this zero for start_pending_thread instead of allocating here. */
+    counters->virtual_tid = published_virtual_tid;
+  }
   counters->pending_virtual_child = 0;
   counters->pending_clone_flags = pending_child != 0 ? clone_flags : 0;
   if (pending_child != 0) {
@@ -2754,7 +2776,7 @@ static void runtime_idle(void) { dr_sleep(1); }
 static _Atomic int32_t runtime_background_state;
 
 static runtime_callbacks_t runtime_callbacks = {
-    reverie_dbt_emit, runtime_idle, 0, 0, reverie_dbt_emit_stdout};
+    reverie_dbt_emit, runtime_idle, 0, 0, reverie_dbt_emit_stdout, 0};
 
 static void runtime_background_init(void *argument) {
   (void)argument;
@@ -2830,6 +2852,21 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     }
     else if (strcmp(argv[i], "-panic-on-unsupported-syscalls") == 0)
       runtime_callbacks.panic_on_unsupported_syscalls = 1;
+    else if (strcmp(argv[i], "-log-level") == 0) {
+      DR_ASSERT(++i < argc);
+      if (strcmp(argv[i], "error") == 0)
+        runtime_callbacks.diagnostic_level = 1;
+      else if (strcmp(argv[i], "warn") == 0)
+        runtime_callbacks.diagnostic_level = 2;
+      else if (strcmp(argv[i], "info") == 0)
+        runtime_callbacks.diagnostic_level = 3;
+      else if (strcmp(argv[i], "debug") == 0)
+        runtime_callbacks.diagnostic_level = 4;
+      else if (strcmp(argv[i], "trace") == 0)
+        runtime_callbacks.diagnostic_level = 5;
+      else
+        DR_ASSERT(false);
+    }
     else if (strcmp(argv[i], "-isolated-process-group") == 0)
       runtime_process_group = (process_id_t)getpgrp();
     // AUTONOMOUS-BOT-IMPLEMENTED
