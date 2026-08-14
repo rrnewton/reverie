@@ -15,6 +15,7 @@ use std::future::Future;
 use std::io;
 use std::io::Read;
 use std::os::fd::AsRawFd;
+use std::os::fd::RawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
@@ -46,6 +47,30 @@ const BINPRM_BUF_SIZE: usize = 256;
 // TODO-HUMAN-REVIEW(#90): Confirm the reserved descriptor across followed execs.
 // Keep client diagnostics on launcher stderr across guest fd 2 redirects and execs.
 const DIAGNOSTIC_FD: libc::c_int = 198;
+
+fn install_diagnostic_fd(source: RawFd) -> io::Result<()> {
+    // SAFETY: dup2(2) and fcntl(2) operate only on the supplied descriptors.
+    // Both are async-signal-safe and report failure through errno.
+    unsafe {
+        if libc::dup2(source, DIAGNOSTIC_FD) == -1 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // dup2 clears FD_CLOEXEC when source and destination differ, but it is
+        // a no-op when they are equal. Clear the flag explicitly so descriptor
+        // 198 survives drrun and followed guest execs in both cases.
+        let flags = libc::fcntl(DIAGNOSTIC_FD, libc::F_GETFD);
+        if flags == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        if flags & libc::FD_CLOEXEC != 0
+            && libc::fcntl(DIAGNOSTIC_FD, libc::F_SETFD, flags & !libc::FD_CLOEXEC) == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
 
 // TODO-HUMAN-REVIEW(PR-134): Review the native bootstrap failure ABI.
 /// Exit code used when DynamoRIO cannot start the sideline runtime thread before guest code runs.
@@ -261,39 +286,20 @@ impl DbtRunner {
         self.wait_with_output(child)
     }
 
-    /// Captures `guest` output with an exact environment while streaming input.
-    pub fn output_with_environment_and_reader<R>(
+    /// Captures `guest` output with an exact environment and an owned stdin file.
+    pub fn output_with_environment_and_stdin_file(
         &self,
         guest: &Command,
         environment: &BTreeMap<OsString, OsString>,
-        mut input: R,
-    ) -> io::Result<Output>
-    where
-        R: Read + Send,
-    {
-        let mut child = self
+        input: File,
+    ) -> io::Result<Output> {
+        let child = self
             .command(guest, Some(environment))
-            .stdin(Stdio::piped())
+            .stdin(Stdio::from(input))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let mut stdin = child.stdin.take().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::BrokenPipe, "failed to open DBT guest stdin")
-        })?;
-
-        std::thread::scope(|scope| {
-            let writer = scope.spawn(move || io::copy(&mut input, &mut stdin));
-            let output = self.wait_with_output(child);
-            let write_result = writer
-                .join()
-                .map_err(|_| io::Error::other("DBT guest stdin writer thread panicked"))?;
-            if let Err(error) = write_result
-                && error.kind() != io::ErrorKind::BrokenPipe
-            {
-                return Err(error);
-            }
-            output
-        })
+        self.wait_with_output(child)
     }
 
     // AUTONOMOUS-BOT-IMPLEMENTED
@@ -824,13 +830,12 @@ impl DbtRunner {
             .as_ref()
             .map_or(libc::STDERR_FILENO, |file| file.as_raw_fd());
 
-        // SAFETY: personality(2) and dup2(2) are async-signal-safe and the closure
-        // captures no process state. Both settings survive drrun and guest execs.
+        // SAFETY: the closure captures only the raw diagnostic descriptor.
+        // dup2(2) and fcntl(2) are async-signal-safe. personality(2) is the
+        // existing Linux-specific direct libc call in this pre-exec path.
         unsafe {
             command.pre_exec(move || {
-                if libc::dup2(diagnostic_fd, DIAGNOSTIC_FD) == -1 {
-                    return Err(io::Error::last_os_error());
-                }
+                install_diagnostic_fd(diagnostic_fd)?;
                 let current = libc::personality(0xffff_ffff);
                 if current == -1 {
                     return Err(io::Error::last_os_error());
@@ -1555,9 +1560,8 @@ mod tests {
         );
         std::fs::write(&client, b"placeholder").unwrap();
 
-        let script = format!(
-            "printf guest-stderr >&2; printf backend-diagnostic >&{DIAGNOSTIC_FD}"
-        );
+        let script =
+            format!("printf guest-stderr >&2; printf backend-diagnostic >&{DIAGNOSTIC_FD}");
         let mut guest = Command::new("/bin/bash");
         guest.args(["-c", &script]);
 
@@ -1572,7 +1576,85 @@ mod tests {
     }
 
     #[test]
-    fn exact_environment_reader_supplies_replayable_input() {
+    fn dedicated_diagnostic_file_survives_exec_when_source_is_reserved_fd() {
+        const CHILD_ENV: &str = "REVERIE_DBT_TEST_DIAGNOSTIC_SOURCE_IS_198";
+
+        if env::var_os(CHILD_ENV).is_none() {
+            let thread = std::thread::current();
+            let test_name = thread.name().expect("test thread should have a name");
+            let output = Command::new(env::current_exe().unwrap())
+                .args(["--exact", test_name, "--nocapture"])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated reserved-fd test failed:\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
+
+        use std::os::fd::FromRawFd as _;
+
+        let root = tempfile::tempdir().unwrap();
+        let drrun = root.path().join("drrun");
+        let client = root.path().join("client.so");
+        let diagnostics = root.path().join("diagnostics.log");
+        write_executable_script(
+            &drrun,
+            b"#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+        );
+        std::fs::write(&client, b"placeholder").unwrap();
+
+        let source = File::create(&diagnostics).unwrap();
+        let diagnostic_file = if source.as_raw_fd() == DIAGNOSTIC_FD {
+            // SAFETY: source owns this valid descriptor in the isolated test process.
+            let result = unsafe { libc::fcntl(DIAGNOSTIC_FD, libc::F_SETFD, libc::FD_CLOEXEC) };
+            assert_eq!(result, 0, "failed to set close-on-exec on descriptor 198");
+            source
+        } else {
+            // SAFETY: source owns a valid descriptor. Asking for the lowest
+            // available descriptor at or above 198 refuses through the assert
+            // below if the isolated test harness unexpectedly already uses 198.
+            let result =
+                unsafe { libc::fcntl(source.as_raw_fd(), libc::F_DUPFD_CLOEXEC, DIAGNOSTIC_FD) };
+            assert_eq!(
+                result, DIAGNOSTIC_FD,
+                "failed to duplicate onto descriptor 198"
+            );
+            drop(source);
+            unsafe { File::from_raw_fd(result) }
+        };
+        // SAFETY: diagnostic_file owns a valid descriptor.
+        let flags = unsafe { libc::fcntl(diagnostic_file.as_raw_fd(), libc::F_GETFD) };
+        assert_ne!(flags, -1);
+        assert_ne!(flags & libc::FD_CLOEXEC, 0);
+
+        let script = format!("exec /bin/sh -c 'printf followed-exec-diagnostic >&{DIAGNOSTIC_FD}'");
+        let mut guest = Command::new("/bin/sh");
+        guest.args(["-c", &script]);
+
+        let output = DbtRunner::new(drrun, client)
+            .unwrap()
+            .diagnostic_file(diagnostic_file)
+            .output(&guest)
+            .unwrap();
+        assert!(output.status.success(), "guest failed: {output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+        assert_eq!(
+            std::fs::read(diagnostics).unwrap(),
+            b"followed-exec-diagnostic"
+        );
+    }
+
+    #[test]
+    fn exact_environment_stdin_file_supplies_replayable_input() {
+        use std::io::Seek as _;
+        use std::io::Write as _;
+
         let root = tempfile::tempdir().unwrap();
         let drrun = root.path().join("drrun");
         let client = root.path().join("client.so");
@@ -1588,14 +1670,13 @@ mod tests {
             "IFS= read -r input; printf '%s:%s\\n' \"$input\" \"$EXACT_VALUE\"",
         ]);
         let environment = BTreeMap::from([(OsString::from("EXACT_VALUE"), OsString::from("set"))]);
+        let mut input = tempfile::tempfile().unwrap();
+        input.write_all(b"replayed\n").unwrap();
+        input.rewind().unwrap();
 
         let output = DbtRunner::new(drrun, client)
             .unwrap()
-            .output_with_environment_and_reader(
-                &guest,
-                &environment,
-                io::Cursor::new(b"replayed\n"),
-            )
+            .output_with_environment_and_stdin_file(&guest, &environment, input)
             .unwrap();
         assert!(output.status.success());
         assert_eq!(output.stdout, b"replayed:set\n");
