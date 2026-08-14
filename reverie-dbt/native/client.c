@@ -2440,12 +2440,6 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       dr_syscall_set_result(drcontext, (reg_t)result);
       return false;
     }
-    if (pipe_io_events(sysnum) != 0 && fd_is_pipe(drcontext, (int)args[0])) {
-      result = invoke_raw_syscall((uintptr_t)drcontext, sysnum, args);
-      retry_pipe_eagain(drcontext, sysnum, args, &result);
-      dr_syscall_set_result(drcontext, (reg_t)result);
-      return false;
-    }
     return prepare_original_identity_syscall(drcontext, counters, sysnum, args);
   }
   while (!reverie_dbt_runtime_ready(
