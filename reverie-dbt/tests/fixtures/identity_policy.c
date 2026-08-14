@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -61,6 +62,17 @@ static int pidfd_targets_virtual_child(void) {
              : 1;
 }
 
+static int pidfd_preserves_identity_and_flag_validation_order(void) {
+  errno = 0;
+  long fd = syscall(SYS_pidfd_open, INT32_MAX, 0);
+  if (fd != -1 || errno != ESRCH)
+    return 1;
+
+  errno = 0;
+  fd = syscall(SYS_pidfd_open, INT32_MAX, UINT32_C(0x40000000));
+  return fd == -1 && errno == EINVAL ? 0 : 1;
+}
+
 // TODO-HUMAN-REVIEW(PR-154): Review deferred DBT identity and private-fd
 // policy.
 int main(void) {
@@ -77,6 +89,8 @@ int main(void) {
     return 3;
   if (pidfd_targets_virtual_child() != 0)
     return 4;
+  if (pidfd_preserves_identity_and_flag_validation_order() != 0)
+    return 5;
 
   printf("pid=%ld ppid=%ld tid=%ld identity_fd=open\n", pid, ppid, tid);
   return 0;

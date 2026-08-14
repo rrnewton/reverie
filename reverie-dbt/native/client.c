@@ -954,7 +954,27 @@ static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   }
 }
 
-static int64_t unknown_identity_error(int sysnum) {
+static int64_t unknown_identity_error(uintptr_t context, int sysnum,
+                                      const uint64_t *args) {
+  if (sysnum == SYS_pidfd_open) {
+    uint64_t validation_args[6];
+    int64_t result;
+    memcpy(validation_args, args, sizeof(validation_args));
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-453): Preserve Linux pidfd_open validation order.
+    // INT32_MAX is outside Linux's PID range. Asking the running kernel to
+    // validate the original flags against that impossible PID preserves its
+    // EINVAL-before-ESRCH order without passing an unknown virtual PID through
+    // to a potentially unrelated host process.
+    validation_args[0] = INT32_MAX;
+    result = invoke_raw_syscall(context, SYS_pidfd_open, validation_args);
+    if (result >= 0) {
+      uint64_t close_args[6] = {(uint64_t)result, 0, 0, 0, 0, 0};
+      (void)invoke_raw_syscall(context, SYS_close, close_args);
+      return -ESRCH;
+    }
+    return result;
+  }
   return sysnum == SYS_wait4 || sysnum == SYS_waitid ? -ECHILD : -ESRCH;
 }
 
@@ -1123,7 +1143,7 @@ static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
   DR_ASSERT(counters != NULL);
   memcpy(translated, args, sizeof(translated));
   if (!translate_identity_arguments((int)sysnum, translated))
-    return unknown_identity_error((int)sysnum);
+    return unknown_identity_error(context, (int)sysnum, args);
 
   if (sysnum == SYS_getpid)
     return pending_identity_is_process(counters)
@@ -1821,7 +1841,8 @@ static bool prepare_original_identity_syscall(void *drcontext,
   int i;
   memcpy(translated, args, sizeof(translated));
   if (!translate_identity_arguments(sysnum, translated)) {
-    dr_syscall_set_result(drcontext, (reg_t)unknown_identity_error(sysnum));
+    dr_syscall_set_result(drcontext, (reg_t)unknown_identity_error(
+                                         (uintptr_t)drcontext, sysnum, args));
     return false;
   }
   for (i = 0; i != 6; ++i) {
