@@ -30,6 +30,7 @@
 #include "drreg.h"
 #include "drwrap.h"
 #include "drx.h"
+#include "virtual_identity.h"
 
 #ifndef X86_64
 #error "The Reverie DynamoRIO prototype currently requires x86-64"
@@ -85,11 +86,6 @@ typedef struct {
 #define DBT_DIAGNOSTIC_FD 198
 #define VIRTUAL_IDENTITY_MAGIC UINT64_C(0x5245565049443033)
 #define MAX_VIRTUAL_IDENTITIES 8192
-
-typedef struct {
-  int32_t host;
-  int32_t virtual_id;
-} virtual_identity_t;
 
 typedef struct {
   uint64_t magic;
@@ -486,19 +482,14 @@ static bool lookup_virtual_identity(int32_t host, int32_t *virtual_id) {
 }
 
 static int32_t host_identity_for_guest(int32_t identity) {
-  int32_t result = -1;
-  size_t i;
+  int32_t result;
   if (identity <= 0)
     return identity;
 
   virtual_identity_lock();
-  for (i = 0; i < virtual_identity_state->count; ++i) {
-    if (virtual_identity_state->identities[i].virtual_id == identity ||
-        virtual_identity_state->identities[i].host == identity) {
-      result = virtual_identity_state->identities[i].host;
-      break;
-    }
-  }
+  result = host_identity_for_guest_entries(virtual_identity_state->identities,
+                                           virtual_identity_state->count,
+                                           identity);
   virtual_identity_unlock();
   return result;
 }
