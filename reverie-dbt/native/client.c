@@ -921,6 +921,7 @@ static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   // TODO-HUMAN-REVIEW(PR-259): Review virtual get_robust_list target translation.
   case SYS_get_robust_list:
   case SYS_kill:
+  case SYS_pidfd_open:
   case SYS_tkill:
   case SYS_wait4:
   case SYS_getpgid:
@@ -2436,6 +2437,12 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     // TODO-HUMAN-REVIEW(PR-ratchet12): Review copied-child clock/resource virtualization.
     if (handle_virtual_clock((uintptr_t)drcontext, sysnum, args, &result) ||
         handle_virtual_resource(sysnum, args, &result)) {
+      dr_syscall_set_result(drcontext, (reg_t)result);
+      return false;
+    }
+    if (pipe_io_events(sysnum) != 0 && fd_is_pipe(drcontext, (int)args[0])) {
+      result = invoke_raw_syscall((uintptr_t)drcontext, sysnum, args);
+      retry_pipe_eagain(drcontext, sysnum, args, &result);
       dr_syscall_set_result(drcontext, (reg_t)result);
       return false;
     }
