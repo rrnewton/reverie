@@ -234,15 +234,28 @@ pub(crate) fn configure_long_mode_with_syscall_area(
         });
     }
 
-    let regs = kvm_bindings::kvm_regs {
-        rip: entry_point,
-        rsp: stack_pointer,
-        rbp: stack_pointer,
-        rflags: 2,
-        ..Default::default()
-    };
+    let regs = initial_guest_registers(entry_point, stack_pointer);
     vcpu.set_regs(&regs)?;
     Ok(())
+}
+
+/// The register state Linux hands a freshly `exec`'d x86-64 process.
+///
+/// The kernel zeroes every general-purpose register except `rsp`, and the
+/// x86-64 ABI requires the outermost frame pointer to be null so that a
+/// frame-pointer walk terminates at the entry frame rather than running off
+/// into the initial stack. Everything other than `rip`, `rsp`, and the
+/// mandatory reserved bit of `rflags` is therefore left zero here.
+///
+/// This is a pure function so the ABI contract can be asserted without a VM.
+fn initial_guest_registers(entry_point: u64, stack_pointer: u64) -> kvm_bindings::kvm_regs {
+    kvm_bindings::kvm_regs {
+        rip: entry_point,
+        rsp: stack_pointer,
+        // rflags bit 1 is reserved and must be set; every other flag starts clear.
+        rflags: 2,
+        ..Default::default()
+    }
 }
 
 pub(crate) fn set_user_segment_base(
@@ -821,5 +834,61 @@ mod tests {
         assert_eq!(exception_from_halt(page_fault_rip), Some(14));
         assert_eq!(exception_from_halt(0x1234), None);
         assert_eq!(exception_stub(), [0xf4]);
+    }
+}
+
+#[cfg(test)]
+mod initial_register_tests {
+    use super::*;
+
+    /// Linux zeroes every general-purpose register except `rsp` when it starts a
+    /// process. A guest that begins in any other state is in a state Linux never
+    /// produces, and it disagrees with the ptrace backend, which observes the
+    /// kernel's own register setup.
+    ///
+    /// This previously regressed specifically on `rbp`, which was seeded with the
+    /// stack pointer. Measured against the ptrace backend on the same static
+    /// guest, that made `rbp` read as the stack pointer under KVM and 0 under
+    /// ptrace at `_start`; every other general-purpose register already agreed.
+    #[test]
+    fn initial_registers_match_the_linux_process_entry_abi() {
+        let entry_point = 0x40_1000;
+        let stack_pointer = 0x3fff_c520;
+        let regs = initial_guest_registers(entry_point, stack_pointer);
+
+        assert_eq!(regs.rip, entry_point, "rip must be the ELF entry point");
+        assert_eq!(regs.rsp, stack_pointer, "rsp must be the initial stack");
+        assert_eq!(
+            regs.rflags, 2,
+            "rflags must have only the reserved bit 1 set",
+        );
+
+        // Name every remaining general-purpose register explicitly rather than
+        // trusting `..Default::default()`. Deriving the expectation from the same
+        // default that produces the value would make this assertion agree with
+        // any future change instead of discriminating against one.
+        let zeroed: [(&str, u64); 14] = [
+            ("rax", regs.rax),
+            ("rbx", regs.rbx),
+            ("rcx", regs.rcx),
+            ("rdx", regs.rdx),
+            ("rsi", regs.rsi),
+            ("rdi", regs.rdi),
+            ("rbp", regs.rbp),
+            ("r8", regs.r8),
+            ("r9", regs.r9),
+            ("r10", regs.r10),
+            ("r11", regs.r11),
+            ("r12", regs.r12),
+            ("r13", regs.r13),
+            ("r14", regs.r14),
+        ];
+        for (name, value) in zeroed {
+            assert_eq!(
+                value, 0,
+                "{name} must start zeroed to match the Linux process entry ABI",
+            );
+        }
+        assert_eq!(regs.r15, 0, "r15 must start zeroed");
     }
 }
