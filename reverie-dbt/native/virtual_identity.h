@@ -24,6 +24,8 @@ static inline int32_t host_identity_for_guest_entries(
   if (identity <= 0)
     return identity;
 
+  /* A guest virtual ID wins even when an earlier entry has the same numeric
+   * host ID. */
   for (i = 0; i < count; ++i) {
     if (identities[i].virtual_id == identity)
       return identities[i].host;
