@@ -1677,10 +1677,10 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct RestartWaitTool;
+    struct RestartWait4Tool;
 
     #[reverie::tool]
-    impl ReverieTool for RestartWaitTool {
+    impl ReverieTool for RestartWait4Tool {
         type GlobalState = ();
         type ThreadState = usize;
 
@@ -1689,7 +1689,7 @@ mod tests {
             guest: &mut G,
             syscall: Syscall,
         ) -> Result<i64, Error> {
-            assert!(matches!(syscall.number(), Sysno::wait4 | Sysno::waitid));
+            assert_eq!(syscall.number(), Sysno::wait4);
             let calls = guest.thread_state_mut();
             *calls += 1;
             match *calls {
@@ -1702,14 +1702,38 @@ mod tests {
 
     #[test]
     fn local_adapter_restarts_wait4_private_errno() {
-        let adapter = ReverieAdapter::new(RestartWaitTool, (), ());
+        let adapter = ReverieAdapter::new(RestartWait4Tool, (), ());
         let syscall = Syscall::from_raw(Sysno::wait4, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(adapter.handle_syscall(syscall), Ok(17));
     }
 
+    #[derive(Default)]
+    struct RestartWaitidTool;
+
+    #[reverie::tool]
+    impl ReverieTool for RestartWaitidTool {
+        type GlobalState = ();
+        type ThreadState = usize;
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert_eq!(syscall.number(), Sysno::waitid);
+            let calls = guest.thread_state_mut();
+            *calls += 1;
+            match *calls {
+                1 => Err(Errno::ERESTARTSYS.into()),
+                2 => Ok(17),
+                calls => panic!("waitid callback invoked {calls} times"),
+            }
+        }
+    }
+
     #[test]
     fn local_adapter_restarts_waitid_private_errno() {
-        let adapter = ReverieAdapter::new(RestartWaitTool, (), ());
+        let adapter = ReverieAdapter::new(RestartWaitidTool, (), ());
         let syscall = Syscall::from_raw(Sysno::waitid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(adapter.handle_syscall(syscall), Ok(17));
     }
@@ -2020,7 +2044,7 @@ mod tests {
         });
         ready_rx.recv().unwrap();
 
-        let adapter = RemoteReverieAdapter::<RestartWaitTool>::connect(&path).unwrap();
+        let adapter = RemoteReverieAdapter::<RestartWait4Tool>::connect(&path).unwrap();
         let syscall = Syscall::from_raw(Sysno::wait4, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(adapter.handle_syscall(syscall), Ok(17));
         drop(adapter);
