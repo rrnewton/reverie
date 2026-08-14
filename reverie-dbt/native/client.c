@@ -921,6 +921,8 @@ static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   // TODO-HUMAN-REVIEW(PR-259): Review virtual get_robust_list target translation.
   case SYS_get_robust_list:
   case SYS_kill:
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-453): Review virtual pidfd_open target translation.
   case SYS_pidfd_open:
   case SYS_tkill:
   case SYS_wait4:
