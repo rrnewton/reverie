@@ -19,6 +19,7 @@ nostd-print = { version = "0.2.0", path = "../nostd-print" }
 parking_lot = { version = "0.12.1", features = ["send_guard"] }
 reverie = { version = "0.2.0", path = "../../reverie", package = "reverie-core" }
 reverie-memory = { version = "0.2.0", path = "../../reverie-memory" }
+reverie-preload = { version = "0.2.0", path = "../../reverie-preload", default-features = false, features = ["coordinator-rpc"] }
 reverie-rpc = { version = "0.2.0", path = "../reverie-rpc" }
 reverie-rpc-transport = { version = "0.2.0", path = "../../reverie-rpc-transport" }
 reverie-sabre-stats = { version = "0.2.0", path = "../reverie-sabre-stats" }

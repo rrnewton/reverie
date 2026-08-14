@@ -13,7 +13,7 @@
 //! handlers to completion with a
 //! no-op waker (there is no async executor inside a `SIGSYS`-driven guest). That
 //! driver — the poll loop, the tail-injection rendezvous, and the syscall
-//! *restart* protocol required by Detcore's `wait4` scheduler poll — was
+//! *restart* protocol required by Detcore's process-wait scheduler polls — was
 //! previously written twice, once per backend. This module factors the part
 //! that does **not** depend on either backend's concrete syscall-event or
 //! `Guest` type so it is written and reviewed **once**.
@@ -32,8 +32,9 @@
 //!
 //! # The `ERESTARTSYS` restart protocol (Reverie #362)
 //!
-//! A Tool such as Detcore uses `wait4` as a *restartable* scheduler poll: it
-//! returns `ERESTARTSYS` to mean "re-run me once a sibling has made progress".
+//! A Tool such as Detcore uses `wait4` and `waitid` as *restartable* scheduler
+//! polls: they return `ERESTARTSYS` to mean "re-run me once a sibling has made
+//! progress".
 //! Under the ptrace backend the kernel's syscall-restart frame consumes this
 //! private errno transparently. An in-guest `SIGSYS` dispatcher writes the
 //! syscall result directly and has no such frame, so it must repeat the Tool
@@ -41,17 +42,14 @@
 //! application-visible errno. [`drive_tool_syscall`] owns that loop so both
 //! ld-preload backends inherit identical semantics.
 //!
-//! # Not yet here (deferred to the wiring increments)
+//! # Coverage boundary
 //!
-//! This module is the shared *driver*; it is intentionally **not wired** to any
-//! backend yet, and each backend still carries its own copy of this logic. The
-//! backend seam traits (`HostSyscallEvent`, `HostBackend`, and the slow-path
-//! counter) are co-designed with the first backend that adopts the driver,
-//! where a real implementor validates their shape. When that seam lands, the
-//! host-backend's slow-path counter accessor must be **non-`Option`** so a
-//! converging backend cannot silently drop per-path (fastpath vs slowpath)
-//! counts — that invariant is a hard requirement, recorded here so the wiring
-//! increment honors it.
+//! The e9patch, LiteInst, and SaBRe hosts use this shared Tool driver. Their
+//! patch-frame conversion, lifecycle state, syscall-event storage, and
+//! fast-path versus slow-path counters remain in the concrete hosts. This
+//! module therefore prevents the Tool polling, tail-injection, and restart
+//! protocol from drifting while the broader patching-backend consolidation
+//! proceeds in later increments.
 
 use core::future::Future;
 use core::sync::atomic::AtomicI64;
@@ -208,17 +206,18 @@ pub enum DrivenSyscall {
 /// the `ERESTARTSYS` restart protocol (Reverie #362).
 ///
 /// The Tool's `handle_syscall_event` future is recreated — by reborrowing
-/// `guest` — each time the Tool asks to restart the syscall (Detcore's `wait4`
-/// scheduler poll). Taking `tool`/`guest`/`syscall` by reference rather than a
+/// `guest` — each time the Tool asks to restart a syscall (Detcore's `wait4`
+/// and `waitid` scheduler polls). Taking `tool`/`guest`/`syscall` by reference rather than a
 /// caller-supplied `FnMut() -> Future` closure is deliberate: a closure that
 /// returned a future borrowing `guest` cannot satisfy `FnMut` (the borrow would
 /// escape the closure body), so the restart loop must own the re-invocation.
 /// `number` is the subscribed syscall so [`classify_outcome`] can decide — in
 /// exactly one place — which syscalls are restartable.
 ///
-/// The restart policy is intentionally narrow: only `wait4` restarts on a
-/// private `ERESTARTSYS`. Every other Tool/syscall — including Chaos Tool read
-/// injection — preserves an explicit `ERESTARTSYS` result to the guest.
+/// The restart policy is intentionally narrow: only `wait4` and `waitid`
+/// restart on a private `ERESTARTSYS`. Every other Tool/syscall — including
+/// Chaos Tool read injection — preserves an explicit `ERESTARTSYS` result to
+/// the guest.
 pub fn drive_tool_syscall<T, G>(
     tool: &T,
     guest: &mut G,
@@ -242,7 +241,8 @@ where
 
 /// Map a single driven [`SyscallOutcome`] onto a terminal [`DrivenSyscall`], or
 /// `None` when the shared restart protocol requires re-running the Tool callback
-/// (a private `ERESTARTSYS` from Detcore's restartable `wait4` poll).
+/// (a private `ERESTARTSYS` from one of Detcore's restartable process-wait
+/// polls).
 ///
 /// This isolates the whole restart *policy* in one pure, directly testable
 /// place; [`drive_tool_syscall`] owns only the re-invocation loop around it.
@@ -250,11 +250,12 @@ fn classify_outcome(number: Sysno, outcome: SyscallOutcome) -> Option<DrivenSysc
     match outcome {
         SyscallOutcome::Return(Ok(value)) => Some(DrivenSyscall::Result(value)),
         SyscallOutcome::Return(Err(error)) => match error.into_errno() {
-            // Detcore uses wait4 as a restartable scheduler poll. The ptrace
-            // backend consumes this private errno through its kernel restart
-            // frame; a SIGSYS dispatcher must repeat the callback itself.
-            // Preserve explicit ERESTARTSYS results for other Tools/syscalls.
-            Ok(Errno::ERESTARTSYS) if number == Sysno::wait4 => None,
+            // Detcore uses wait4 and waitid as restartable scheduler polls. The
+            // ptrace backend consumes this private errno through its kernel
+            // restart frame; an in-guest dispatcher must repeat the callback
+            // itself. Preserve explicit ERESTARTSYS results for other
+            // Tools/syscalls.
+            Ok(Errno::ERESTARTSYS) if matches!(number, Sysno::wait4 | Sysno::waitid) => None,
             Ok(errno) => Some(DrivenSyscall::Result(-(errno.into_raw() as i64))),
             Err(error) => Some(DrivenSyscall::Fatal(error)),
         },
@@ -420,6 +421,12 @@ mod tests {
         // callback: no terminal outcome, so the loop restarts.
         let outcome = SyscallOutcome::Return(Err(Error::from(Errno::ERESTARTSYS)));
         assert!(classify_outcome(Sysno::wait4, outcome).is_none());
+    }
+
+    #[test]
+    fn classify_outcome_restarts_waitid_on_erestartsys() {
+        let outcome = SyscallOutcome::Return(Err(Error::from(Errno::ERESTARTSYS)));
+        assert!(classify_outcome(Sysno::waitid, outcome).is_none());
     }
 
     #[test]
