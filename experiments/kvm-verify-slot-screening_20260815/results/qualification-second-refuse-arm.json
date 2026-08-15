@@ -1,0 +1,104 @@
+[
+ {
+  "id": "backend-parity-c/epoll-pwait2",
+  "program": "tests/backend-parity/fixtures/epoll_pwait2_readiness.c",
+  "value_mutants": 1,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 1
+ },
+ {
+  "id": "backend-parity-c/fsync-durability",
+  "program": "tests/backend-parity/fixtures/fsync_durability.c",
+  "value_mutants": 1,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 1
+ },
+ {
+  "id": "backend-parity-c/inotify-watch",
+  "program": "tests/backend-parity/fixtures/inotify_watch.c",
+  "value_mutants": 1,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 1
+ },
+ {
+  "id": "backend-parity-c/ioctl-fionread",
+  "program": "tests/backend-parity/fixtures/ioctl_fionread.c",
+  "value_mutants": 1,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 1
+ },
+ {
+  "id": "backend-parity-c/memfd-create",
+  "program": "tests/backend-parity/fixtures/memfd_create.c",
+  "value_mutants": 1,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 1
+ },
+ {
+  "id": "backend-parity-c/preadv2-flags",
+  "program": "tests/backend-parity/fixtures/preadv2_flags.c",
+  "value_mutants": 7,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 7
+ },
+ {
+  "id": "backend-parity-c/socket-options",
+  "program": "tests/backend-parity/fixtures/socket_options.c",
+  "value_mutants": 1,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 1
+ },
+ {
+  "id": "backend-parity-c/sockname-unnamed",
+  "program": "tests/backend-parity/fixtures/sockname_unnamed.c",
+  "value_mutants": 1,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 1
+ },
+ {
+  "id": "backend-parity-c/msync-writeback",
+  "program": "tests/backend-parity/fixtures/msync_writeback.c",
+  "value_mutants": 1,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 1
+ },
+ {
+  "id": "backend-parity-c/fchmodat2-flags",
+  "program": "tests/backend-parity/fixtures/fchmodat2_flags.c",
+  "value_mutants": 1,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 1
+ },
+ {
+  "id": "backend-parity-c/socketpair-flags",
+  "program": "tests/backend-parity/fixtures/socketpair_flags.c",
+  "value_mutants": 1,
+  "refuse2": "NO-REFUSAL",
+  "why": "value mutants ran under kvm and none moved the verdict",
+  "mutants_built": 1
+ },
+ {
+  "id": "determinism-stress/order-violation",
+  "program": "tests/chaos/order_violation.c",
+  "value_mutants": 0,
+  "refuse2": "NOT-MEASURED",
+  "why": "no integer reaching stdout with a usable write site; value mutation never applied"
+ },
+ {
+  "id": "system-utils/record-getpid",
+  "program": "tests/c/getpid.c",
+  "value_mutants": 0,
+  "refuse2": "NOT-MEASURED",
+  "why": "no integer reaching stdout with a usable write site; value mutation never applied"
+ }
+]

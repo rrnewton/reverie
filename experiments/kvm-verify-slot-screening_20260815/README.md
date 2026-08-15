@@ -226,6 +226,27 @@ This operator also carries the fix for the defect in `direct.py`: children run v
 `start_new_session=True` and a timeout kills the whole process group, so hermit's grandchildren
 holding the stderr pipe can no longer wedge the run.
 
+
+### Second refuse arm: `operators/refuse2.py`
+
+The refuse arm above uses one operator (check mutation). A single negative is weak evidence for
+"cannot be made to fail", so the 13 non-qualified cells were re-attempted with the *other* mechanism
+— value mutation, run under kvm rather than natively.
+
+**It promoted zero.** All 11 that the check arm could not fail stay negative under value mutation
+too, and the 2 with no usable site under one operator have none under the other either. So:
+
+| | |
+|---|---|
+| qualified — accept and refuse both measured | **9** |
+| refuse arm negative under **both** operators | **11** |
+| refuse arm **not measured** by either | **2** |
+
+Two independent operators agreeing that a cell cannot be made to fail is much better evidence than
+one, and it is the evidence that matters: those 11 pass today, so a staleness check alone would mark
+them enablable, and enabling them would book a green that can never go red. Measured at host load
+16-22, hermit `e18acde5` (verdict chain unchanged at `302a1a9c`).
+
 ## Files
 
 `metadata.json` records a `sha256` and line count for every file here.

@@ -10,8 +10,8 @@
   "date_utc": "2026-08-15",
   "files": {
     "README.md": {
-      "lines": 231,
-      "sha256": "fb2e560591109e870a6563340e67212214570134076a3d475863568dad9596c0"
+      "lines": 252,
+      "sha256": "454d4771c7915890dafc054ca06deeadcc5c4c722cf32a1d9832baa670562ec0"
     },
     "controls/neg_cannotfail.c": {
       "lines": 2,
@@ -49,6 +49,10 @@
       "lines": 134,
       "sha256": "7eed2e854592924aed2b051b664639060dc6bc40fa8dcc58561fce300f70588a"
     },
+    "operators/refuse2.py": {
+      "lines": 59,
+      "sha256": "7a2fff200465d283329cc00c9abec264e2d96d631274fd4e219294aa58156812"
+    },
     "operators/run_value.py": {
       "lines": 10,
       "sha256": "edb4ee340c8ad59174a62ce4a5749e137ae53648b9db2e7dc8ca6253e9af025a"
@@ -80,6 +84,10 @@
     "results/qualification-candidate-list.json": {
       "lines": 112,
       "sha256": "f7e32748dc2d17e6c27b54fbbc1a0656de5cbc65eaf3ffde75e74e59d7760812"
+    },
+    "results/qualification-second-refuse-arm.json": {
+      "lines": 104,
+      "sha256": "705db34892d4f8ecafcecc78a1db4a5b4b75349d5cd4a7c74754eafa05481e52"
     },
     "results/refusable86.json": {
       "lines": 582,
@@ -148,6 +156,9 @@
     "qualified_both_arms": 9,
     "refuse_arm_measured_cannot_be_failed": 11,
     "refuse_arm_not_measured_no_mutation_sites": 2,
+    "refuse_negative_under_both_operators": 11,
+    "refuse_not_measured_by_either": 2,
+    "second_refuse_arm_promoted": 0,
     "total": 22
   },
   "reverie_pin": "c261050cfd41bec67e31bfd0cf6f56be008d0ebb",
