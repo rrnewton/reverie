@@ -1,15 +1,28 @@
 <!-- PROVENANCE: snapshot of ignored/overnight-report-2026-08-15.md promoted 2026-08-15 by hermit-coord
-     source sha256 622da788ec84f761d9564deb56796ae8be0134319b7443cde3a71002191479da
-     source lines 554
-     READING ORDER: hourly sections are superseded by the CORRECTION section (cells landed
-     is ZERO, not 1); the CORRECTION is qualified by its RESERVATIONS section; the three-
-     class blocker head-sample is superseded by the completed partition in
-     ai_docs/DISABLED_SLOT_PARTITION_20260815.tsv. Superseded text is deliberately NOT
-     rewritten -- how long each error ran is part of the finding.
+     source sha256 a14a6158ed8a3c248e0dc3ffd1b55ee23eed7898738b341715d4edd3052e368b
+     source lines 566
+     START WITH THE HANDOFF BLOCK AT THE TOP: what is blocked and on what, in ten lines.
+     READING ORDER BELOW IT: hourly sections are superseded by the CORRECTION section
+     (cells landed is ZERO, not 1); the CORRECTION is qualified by its RESERVATIONS
+     section; the three-class blocker head-sample is superseded by the completed
+     partition in ai_docs/DISABLED_SLOT_PARTITION_20260815.tsv. Superseded text is
+     deliberately NOT rewritten -- how long each error ran is part of the finding.
      PROVENANCE OF FIGURES: sections are marked MEASURED BY hermit-coord or RELAYED with
      their source named. A relayed figure has not been independently reproduced here.
      THIS IS A SNAPSHOT OF A LIVE FILE. If `sha256sum ignored/overnight-report-2026-08-15.md` no longer equals
      the hash above, THIS COPY IS STALE. -->
+# HANDOFF — read this, not the 566 lines below
+
+**ONE RECEIPT UNBLOCKS THREE PRs.** #2279 (DRAFT, 8 cells, 170→178), #2276 (APPROVED AND ATTESTED AT `b2bbeb6de`), #2277 (COUNT UNVERIFIED — read 26, 32, and a title saying 31). All three need a full-profile receipt from a CPUID-capable host. **devbig014 is down and is the only one.**
+
+**TWO OWNER DECISIONS, written down rather than remembered:** branch protection on an unprotected `main`, and trigger-based re-promotion so artifacts in `ignored/` do not depend on someone asking.
+
+**THE METRIC DEFINITION, because it cost nine hours:** `CELLS LANDED` counts plan membership per `scorecard.rs:54`. Merged fixture work is not a landed cell. **Only a manifest-changing PR moves it.**
+
+**THE ADDRESSABLE FIGURE, with its caveat:** 367 now, 447 with a runner, 144 never by cell work. **Quoting 591 overstates by 38%.**
+
+---
+
 
 
 ## Hour ending — coordinator report
