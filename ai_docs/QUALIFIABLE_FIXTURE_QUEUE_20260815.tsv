@@ -37,6 +37,31 @@
 # PER-BACKEND CELLS: dbt=47  kvm=71  liteinst=79  native=73  ptrace=81  sabre=29   TOTAL=380
 # PER-MODE CELLS:    naked=73  replay=81  verify=226   TOTAL=380
 #
+#
+# ================ CAVEAT ADDED 2026-08-15 AFTER SHIPPING: THIS QUEUE IS SCOPED TO THE EXIT-STATUS CHANNEL ================
+# VERIFY ALSO REFUSES ON STDOUT DIVERGENCE AT IDENTICAL EXIT STATUS. Replicated on this host, both directions, with a control:
+#   control arm  -- identical stdout, exit 0            -> verdict=matched,  bitwise_parity=true
+#   test arm     -- DIFFERING stdout, SAME exit 0       -> verdict=diverged, bitwise_parity=false, guest_exit_code=0,
+#                                                          literal harness line: "Mismatch in stdout between run 1 and run 2"
+#   The test arm is only meaningful because the divergence was PROVEN: a first attempt used a counter file under /tmp and
+#   PASSED VACUOUSLY -- the container gives the guest a private /tmp, the guest's writes never reached the host, and both runs
+#   printed the same line. Moving the counter under the repo made the runs share it; the state file read 2 afterwards, which is
+#   the proof that stdout actually differed. A "matched" verdict from the /tmp version would have been evidence of nothing.
+#   This is REPLICATION of a devbig014 finding on the same codebase, not independent corroboration: it shows the behaviour is
+#   not host-specific and nothing more. n=1 per direction, one guest, one mechanism.
+#
+# CONSEQUENCE FOR THIS FILE: THE 83 / 380 ROWS BELOW ARE CORRECT BUT SCOPED. They are the cells whose fixture discriminates via
+#   EXIT STATUS. They are NOT the complete set of refusable cells, because a fixture that always exits 0 can still discriminate
+#   via stdout, and the harness refuses on that.
+# CONSEQUENCE FOR THE OTHER BUCKETS: "cannot-fail" IS A CLAIM ABOUT THE EXIT CHANNEL ONLY AND IS THE WRONG LABEL FOR VERIFY
+#   PURPOSES. In the same screen, 58 of the 283 programs had a mutation that MOVED STDOUT WHILE EXIT STAYED 0 -- 29 currently
+#   labelled not-exit-gated and 29 labelled cannot-fail. Those 58 are candidates for stdout-channel refusability, so a combined
+#   floor across both channels would be on the order of 141 of 283 rather than 83.
+# WHAT IS NOT ESTABLISHED, AND THE DISTINCTION MATTERS: verify compares two runs of the SAME binary, whereas the screen compared
+#   an ORIGINAL against a MUTANT. Showing a mutation moves a fixture's stdout proves its stdout is sensitive to program
+#   behaviour; it does NOT prove that a real backend defect would move it. So 141 IS NOT A SECOND FLOOR -- the 58 are candidates
+#   needing their own screen against the stdout channel, and that screen has not been run.
+# =======================================================================================================================
 backend	mode	cell	fixture	mutation_family	evidence
 dbt	verify	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
 dbt	verify	backend-parity-c/child-subreaper-refusal	tests/backend-parity/fixtures/child_subreaper_refusal.c	ok-init	baseline already exits 1 natively
