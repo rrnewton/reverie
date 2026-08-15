@@ -171,8 +171,15 @@ Two ci-hub gates share a defect class that is not about the thing they monitor:
 **a monitor that fails silently is indistinguishable from a healthy system.**
 Both were observed on 2026-08-15.
 
-- **`ledger_spool_backlog` intermittently skips an emission while its condition
-  still holds.** Observed: the alarm fired every ops tick, was absent for
+- **`ledger_spool_backlog` emits INTERMITTENTLY, not merely once-skipped.**
+  Measured across three consecutive ops ticks on 2026-08-15: **absent, present
+  (`depth=8`, `oldest_age=30371.7s`), absent** — while the condition
+  demonstrably persisted through at least the first two, confirmed by direct
+  inspection during the gaps. **A single missed emission is dismissible; an
+  alternating pattern is not.** The third absence is not evidence either way,
+  because the spool was drained between ticks — which is precisely the problem:
+  once a gate is known to skip, no individual silence from it can be read.
+  Earlier detail: the alarm fired every ops tick, was absent for
   exactly one tick, then returned with the same `depth=8` and the same
   `oldest_entry`, its age advanced by one tick interval. Checked directly during
   the gap, the spool was unchanged — depth 8, `published/` empty, directory
