@@ -487,6 +487,25 @@ precisely how it reached six out of date. **A field that cannot go stale beats a
 field that is currently accurate.** Same move as deleting a duplicated literal so
 two readers cannot disagree by construction.
 
+**AND THE SECOND HALF, WHICH IS WHAT MAKES THIS USABLE WHERE NO CHECKER EXISTS.**
+"Unchecked" does not by itself predict drift. Commit messages on the same two PRs
+are hand-typed, have no oracle, and did not go wrong. The author's account:
+*"commit messages describe a moment rather than a state. A claim pinned to a SHA
+can go stale-but-true, while a claim about THIS PR goes stale-and-false."*
+Same words, same author: `adds 8 cells` in a commit message stays true at
+fourteen; `eight cells` in a PR title is false at fourteen.
+
+**So the design rule where a checker is unavailable is: ANCHOR THE CLAIM TO A
+MOMENT.** A dated or SHA-pinned statement degrades into history; an unqualified
+present-tense statement degrades into a lie. That is available for prose, which
+is most of what we write and most of what can never have an oracle.
+
+**The commit-message case is evidence rather than a caveat, because it is the one
+that could have refuted the rule** — unchecked and yet not wrong. A hypothesis
+that survives its own best counterexample is worth more than one never tested
+against it, and it sharpens the claim: the predictor is not "checked" versus
+"unchecked" but "anchored" versus "present-tense".
+
 **n=3 is not a rate, and this does not claim machine checks outperform attention
 in general.** What is claimed is only what was observed, plus the asymmetry that
 makes it matter: **a human catch requires a wrong result to exist first, and some
