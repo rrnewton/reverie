@@ -1,6 +1,6 @@
 <!-- PROVENANCE: snapshot of ignored/overnight-report-2026-08-15.md promoted 2026-08-15 by hermit-coord
-     source sha256 1e1a55526e4ee2deaa9ffd4bcdb098fac27bb8334bf9ac9fbd0c60338b284997
-     source lines 641
+     source sha256 3d03ee9604e60b662ad68fea42d8d9d2ce51def1ae10974d186f6dd548982db9
+     source lines 651
      START WITH THE HANDOFF BLOCK AT THE TOP, then the COMPLETED THIS SESSION section at
      the bottom, which supersedes the handoff on one point: the ledger publisher repair
      needed neither devbig014 nor an owner decision and is done.
@@ -22,6 +22,16 @@
 **ONE CORRECTION TO THAT DEPENDENCY, MEASURED BY hermit-coord:** #2279 is **not** itself downstream of #2276/#2277. Of its 13 cells, **7 have fixtures already gated on `main` and 6 are gated by none of the three PRs** — zero depend on #2276 or #2277, consistent with the earlier finding of zero cell-level and zero fixture-file overlap. **So #2279 can land in any order without losing anything of its own.** The sequence matters for the ~60 *other* cells, not for these 13. Order the stack for that reason, not for a dependency #2279 does not have.
 
 **AND A LIVE FLAG ON #2279, NOT A BLOCKER:** those 6 cells are being enabled with no `EXPECTED_CHECKS` gate on their fixtures. That is *not* proof they are inert — refusal-style fixtures were measured this session to express failure by exit status with no such gate — but **whether these 6 can express failure is unverified**, and enabling a cell that cannot is the inert-coverage trap catalogued all night. Worth one screen before landing.
+
+**A FOURTH OWNER DECISION, AND THE HIGHEST-CONSEQUENCE ONE: A CONTENT-CONDITIONED LANDING FLOOR.**
+
+- **#2276 IS GENUINELY RECEIPT-GATED — MEASURED, NOT ASSUMED.** `validate-status --sha b2bbeb6de` returns `NOT-VALIDATED`, exit 4, `qualifying_count: 0`. The canonical predicate `ci-hub/validate/qualifying-receipt.json` requires `profile: "full"` with **no clause keyed on what the change touches** — no manifest exemption, no fixture-only path. **The gate applies even though the PR adds zero cells.** A receipt is the landing floor for any head, not a device for qualifying a cell being added to the plan; #2276 touching no manifest changes what a receipt would *prove*, not whether one is *required*. Nothing else blocks it: head unchanged, approval still bound, `MERGEABLE`/`CLEAN`, both labels, zero checks, nothing red.
+- **THE EDIT WOULD BE SMALL AND IN A REGISTERED PLACE.** That predicate is one file with a stated single-source contract — all consumers must read it rather than keep an inline copy — so a content-conditioned floor is **one edit there, not five consumers**.
+- **IT IS THE ONLY ROUTE THAT UNBLOCKS THE LANE WITHOUT devbig014**, releasing the #2276 → #2277 → #2279 sequence. **[Worth roughly sixty cells — MAGNITUDE RELAYED FROM hermit-sabre, NOT INDEPENDENTLY VERIFIED.]**
+- ***** **AND I AM NOT PROPOSING IT. IT LOWERS THE LANDING FLOOR, WHICH IS THE EXACT SHAPE THIS FLEET REFUSED ALL NIGHT: A MERGE ONE COMMAND AWAY WAS DECLINED, AN AUTHOR REFUSED TO APPROVE ITS OWN PR, A REVIEWER REFUSED TO ATTEST ITS OWN REVIEW, AND CELLS WERE NOT ENABLED ON LOCAL EVIDENCE. THE CONSISTENCY ARGUMENT AGAINST IT IS STRONG AND IS THE COUNTERWEIGHT, NOT A CAVEAT.** *****
+- **IT IS RECORDED BECAUSE IT IS THE OWNER'S DECISION TO HAVE, NOT MINE TO SUPPRESS — AND BECAUSE A ROUTE FOUND, EVALUATED AND DECLINED BY THE AGENT THAT FOUND IT IS A DIFFERENT ARTEFACT FROM ONE NOBODY NOTICED.**
+
+**A PROPERTY OF THE LANDING PATH WORTH KNOWING BEFORE ANYONE PROPOSES ADDING IT: `validate-status` ALREADY RETURNS `local_absence_is_authoritative: true`.** The gate distinguishes **"no receipt exists"** from **"I cannot see the ledger"** — the absence-versus-unverifiable distinction, already built in and load-bearing here, since it is what makes #2276's `qualifying_count: 0` a fact rather than a blind spot. Someone will eventually propose adding this. It is there.
 
 **TWO OWNER DECISIONS, written down rather than remembered:** branch protection on an unprotected `main`, and trigger-based re-promotion so artifacts in `ignored/` do not depend on someone asking.
 
