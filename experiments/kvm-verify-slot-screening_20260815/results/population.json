@@ -1,0 +1,1880 @@
+[
+ {
+  "id": "applications/timed-progress-bar",
+  "program": "",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "applications/c-toolchain-workflow",
+  "program": "tests/e2e/applications/c-toolchain-workflow.sh",
+  "reason": "KVM requires the privileged runner and must ratchet after the ptrace reference path",
+  "cap": true
+ },
+ {
+  "id": "applications/git-repository-workflow",
+  "program": "tests/e2e/applications/git-repository-workflow.sh",
+  "reason": "KVM requires the privileged runner and must ratchet after the ptrace reference path",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/aio-refusal",
+  "program": "tests/backend-parity/fixtures/aio_refusal.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/set-tid-address",
+  "program": "tests/backend-parity/fixtures/set_tid_address.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/personality-domain",
+  "program": "tests/backend-parity/fixtures/personality_domain.c",
+  "reason": "Current KVM fixture and /bin/true controls time out before guest start on the validation host, so no personality-specific verdict is available",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/cachestat-refusal",
+  "program": "tests/backend-parity/fixtures/cachestat_refusal.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/child-subreaper-refusal",
+  "program": "tests/backend-parity/fixtures/child_subreaper_refusal.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/close-range-fds",
+  "program": "tests/backend-parity/fixtures/close_range_fds.c",
+  "reason": "KVM ElfExecutor personality returns deterministic ENOSYS for close_range; ptrace and DBT forward the fd-table syscall",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/copy-file-range-refusal",
+  "program": "tests/backend-parity/fixtures/copy_file_range_refusal.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/cpuid-probe",
+  "program": "tests/backend-parity/fixtures/cpuid_probe.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/epoll-pwait2",
+  "program": "tests/backend-parity/fixtures/epoll_pwait2_readiness.c",
+  "reason": "KVM ElfExecutor returns deterministic ENOSYS for epoll_pwait2 (syscall 441); it implements the classic epoll_wait but not the newer wait entry point",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/epoll-readiness",
+  "program": "tests/backend-parity/fixtures/epoll_readiness.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/faccessat2-flags",
+  "program": "tests/backend-parity/fixtures/faccessat2_flags.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/fadvise-hints",
+  "program": "tests/backend-parity/fixtures/fadvise_hints.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/fallocate-extents",
+  "program": "tests/backend-parity/fixtures/fallocate_extents.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/fchmod-bits",
+  "program": "tests/backend-parity/fixtures/fchmod_bits.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/file-backed-mmap",
+  "program": "tests/backend-parity/fixtures/file_backed_mmap.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/flock-lifecycle",
+  "program": "tests/backend-parity/fixtures/flock_lifecycle.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/fsync-durability",
+  "program": "tests/backend-parity/fixtures/fsync_durability.c",
+  "reason": "KVM ElfExecutor forwards fsync and fdatasync but returns deterministic ENOSYS for syncfs",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/getrusage-self-accounting",
+  "program": "tests/backend-parity/fixtures/getrusage_self_accounting.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/inotify-watch",
+  "program": "tests/backend-parity/fixtures/inotify_watch.c",
+  "reason": "KVM ElfExecutor returns a deterministic error for the inotify family (inotify_init1), so the filesystem-watch descriptor lifecycle is unavailable",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/ioctl-fionread",
+  "program": "tests/backend-parity/fixtures/ioctl_fionread.c",
+  "reason": "KVM ElfExecutor returns ENOTTY for the FIONREAD pipe ioctl; FIONBIO is supported",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/kcmp-refusal",
+  "program": "tests/backend-parity/fixtures/kcmp_refusal.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/linkat-flags",
+  "program": "tests/backend-parity/fixtures/linkat_flags.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/mce-kill-refusal",
+  "program": "tests/backend-parity/fixtures/mce_kill_policy.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/memfd-create",
+  "program": "tests/backend-parity/fixtures/memfd_create.c",
+  "reason": "KVM ElfExecutor personality returns deterministic ENOSYS for memfd_create; ptrace and DBT forward the anonymous-memfd syscall",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/mempolicy-default",
+  "program": "tests/backend-parity/fixtures/mempolicy_default.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/mincore-residency",
+  "program": "tests/backend-parity/fixtures/mincore_residency.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/mkdir-rmdir",
+  "program": "tests/backend-parity/fixtures/mkdir_rmdir.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/mknod-special",
+  "program": "tests/backend-parity/fixtures/mknod_special.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/numa-node-identity",
+  "program": "tests/c/numa_node_identity.c",
+  "reason": "Fresh shared-manifest L2 revalidation timed out at the 90-second contract on current main; requalify KVM before enabling this cell",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/name-to-handle-refusal",
+  "program": "tests/backend-parity/fixtures/name_to_handle.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/no-new-privs-refusal",
+  "program": "tests/backend-parity/fixtures/no_new_privs_refusal.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/openat2-refusal",
+  "program": "tests/backend-parity/fixtures/openat2_refusal.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/path-file-ops",
+  "program": "tests/backend-parity/fixtures/path_file_ops.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/pid-probe",
+  "program": "tests/backend-parity/fixtures/pid_probe.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/pipe2-flags",
+  "program": "tests/backend-parity/fixtures/pipe2_flags.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/prctl-pdeathsig",
+  "program": "tests/backend-parity/fixtures/prctl_pdeathsig.c",
+  "reason": "KVM ElfExecutor returns deterministic ENOSYS for prctl PR_SET_PDEATHSIG/PR_GET_PDEATHSIG; ptrace and DBT drive the full parent-death-signal state machine",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/preadv2-flags",
+  "program": "tests/backend-parity/fixtures/preadv2_flags.c",
+  "reason": "KVM ElfExecutor does not implement preadv2/pwritev2 (syscalls 327/328); it returns ENOSYS, mirroring its missing classic pwritev/preadv",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/pthread-lifecycle",
+  "program": "tests/backend-parity/fixtures/pthread_lifecycle.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/readdir-entries",
+  "program": "tests/backend-parity/fixtures/readdir_entries.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/rename-ops",
+  "program": "tests/backend-parity/fixtures/rename_ops.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/renameat2-flags",
+  "program": "tests/backend-parity/fixtures/renameat2_flags.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/robust-list",
+  "program": "tests/backend-parity/fixtures/robust_list.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/seccomp-refusal",
+  "program": "tests/backend-parity/fixtures/seccomp_refusal.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/signalfd-create",
+  "program": "tests/backend-parity/fixtures/signalfd_create.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/statfs-free-determinism",
+  "program": "tests/backend-parity/fixtures/statfs_free_determinism.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/statx-metadata",
+  "program": "tests/backend-parity/fixtures/statx_metadata.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/symlink-ops",
+  "program": "tests/backend-parity/fixtures/symlink_ops.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/sync-file-range",
+  "program": "tests/backend-parity/fixtures/sync_file_range.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/sysv-ipc-refusal",
+  "program": "tests/backend-parity/fixtures/sysv_ipc_refusal.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/thp-disable",
+  "program": "tests/backend-parity/fixtures/thp_disable.c",
+  "reason": "KVM ElfExecutor returns deterministic ENOSYS for prctl PR_SET_THP_DISABLE/PR_GET_THP_DISABLE; ptrace and DBT drive the full transparent-hugepage flag round-trip",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/umask-mode",
+  "program": "tests/backend-parity/fixtures/umask_mode.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/uname-identity",
+  "program": "tests/backend-parity/fixtures/uname_identity.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/utimensat-determinism",
+  "program": "tests/backend-parity/fixtures/utimensat_determinism.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/socket-options",
+  "program": "tests/backend-parity/fixtures/socket_options.c",
+  "reason": "KVM ElfExecutor accepts setsockopt but getsockopt returns ENOPROTOOPT for SO_REUSEADDR/SO_KEEPALIVE/SO_BROADCAST, so the option round-trip observes ok=0 instead of ok=6",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/shutdown-socketpair",
+  "program": "tests/backend-parity/fixtures/shutdown_socketpair.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/sockname-unnamed",
+  "program": "tests/backend-parity/fixtures/sockname_unnamed.c",
+  "reason": "KVM ElfExecutor implements getsockname but returns ENOSYS for getpeername on an AF_UNIX socket pair, so the peer-name checks fail and it observes ok=4 instead of ok=6",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/bind-getsockname",
+  "program": "tests/backend-parity/fixtures/bind_getsockname.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/msync-writeback",
+  "program": "tests/backend-parity/fixtures/msync_writeback.c",
+  "reason": "KVM msync returns 0 but its in-memory mapping model does not flush MAP_SHARED writes to the backing file, so the pread write-through checks fail and it observes ok=3 instead of ok=5",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/sendfile-copy",
+  "program": "tests/backend-parity/fixtures/sendfile_copy.c",
+  "reason": "KVM ElfExecutor personality returns deterministic ENOSYS for sendfile(2); the in-kernel copy path is not yet emulated",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/poll-readiness",
+  "program": "tests/backend-parity/fixtures/poll_readiness.c",
+  "reason": "KVM ElfExecutor personality implements poll/ppoll readiness but returns deterministic ENOSYS for select(2)/pselect6",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/append-pwrite",
+  "program": "tests/backend-parity/fixtures/append_pwrite.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/prctl-identity",
+  "program": "tests/c/prctl_identity.c",
+  "reason": "inherited from the L1 KVM prctl_identity gap: PR_SET_NAME returns ENOSYS so the guest exits non-zero and there is no L2 run to verify",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/pipe-ipc",
+  "program": "tests/backend-parity/fixtures/pipe_ipc.c",
+  "reason": "KVM's child-process personality does not synchronize cross-process pipe I/O with the coordinator, so the parent's blocking read returns EAGAIN instead of the child's bytes",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/vectored-io",
+  "program": "tests/backend-parity/fixtures/vectored_io.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/eventfd-semantics",
+  "program": "tests/backend-parity/fixtures/eventfd_probe.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/ftruncate-sparse",
+  "program": "tests/backend-parity/fixtures/ftruncate_sparse.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/vectored-file-io",
+  "program": "tests/backend-parity/fixtures/vectored_file_io.c",
+  "reason": "KVM ElfExecutor returns deterministic ENOSYS for pwritev/preadv (positioned vectored I/O); plain writev/readv are supported but the positioned variants are not",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/openat-flags",
+  "program": "tests/backend-parity/fixtures/openat_flags.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/fchmodat2-flags",
+  "program": "tests/backend-parity/fixtures/fchmodat2_flags.c",
+  "reason": "KVM ElfExecutor returns ENOSYS for fchmodat2 (syscall 452); ptrace and DBT forward it to the host",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/socketpair-flags",
+  "program": "tests/backend-parity/fixtures/socketpair_flags.c",
+  "reason": "KVM ElfExecutor getsockopt implements SO_TYPE but returns ENOPROTOOPT for SO_DOMAIN and SO_ACCEPTCONN, so the socket-introspection contract observes ok=5 instead of ok=7",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/pipe-capacity",
+  "program": "tests/backend-parity/fixtures/pipe_capacity.c",
+  "reason": "KVM ElfExecutor does not implement the F_GETPIPE_SZ/F_SETPIPE_SZ pipe-capacity fcntl commands and returns a deterministic error",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/record-lock",
+  "program": "tests/backend-parity/fixtures/record_lock.c",
+  "reason": "KVM ElfExecutor implements F_SETLK advisory locking but returns a deterministic ENOSYS for F_GETLK lock queries",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/cwd-roundtrip",
+  "program": "tests/backend-parity/fixtures/cwd_roundtrip.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/o-tmpfile-anon",
+  "program": "tests/backend-parity/fixtures/o_tmpfile_anon.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/fcntl-owner",
+  "program": "tests/backend-parity/fixtures/fcntl_owner.c",
+  "reason": "KVM ElfExecutor returns a deterministic error for the F_SETOWN/F_GETOWN async-I/O owner fcntl family, so the SIGIO/SIGURG owner round-trip is unavailable",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/membarrier-query",
+  "program": "tests/backend-parity/fixtures/membarrier_query.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/stat-metadata-identity",
+  "program": "tests/backend-parity/fixtures/stat_metadata_identity.c",
+  "reason": "KVM does not complete a guest on the authoring host; qualify KVM separately",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/mmap-layout-pointer-order",
+  "program": "tests/backend-parity/fixtures/mmap_layout_pointer_order.c",
+  "reason": "KVM livelocks at guest startup on the current host; qualify KVM separately -- also a priority for this guest",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/signal-waitstatus-identity",
+  "program": "tests/c/signal_waitstatus_identity.c",
+  "reason": "Cannot complete a guest on the current host (startup livelock); no wait-status observation exists to compare",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/hardware-trap-identity",
+  "program": "tests/c/hardware_trap_identity.c",
+  "reason": "Cannot complete a guest on the current host (startup livelock); no trap observation exists to compare",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/host-identity",
+  "program": "tests/backend-parity/fixtures/host_identity.c",
+  "reason": "KVM times out before guest start on the validation host, so no host-identity verdict is available; re-enable when the startup livelock is fixed",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/short-io-split-identity",
+  "program": "tests/backend-parity/fixtures/short_io_split_identity.c",
+  "reason": "KVM times out before guest start on the validation host, so no split-pattern verdict is available",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/event-delivery-ordering",
+  "program": "tests/backend-parity/fixtures/event_delivery_ordering.c",
+  "reason": "KVM does not start the guest on the validation host; the existing inotify_watch entry already records that its ElfExecutor personality omits the inotify family",
+  "cap": true
+ },
+ {
+  "id": "backend-parity-c/fork-exec-pipeline",
+  "program": "tests/backend-parity/fixtures/fork_exec_pipeline.c",
+  "reason": "New top-of-funnel coverage is established on the ptrace reference first; KVM ratchets against it separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/signal-delivery-sequence",
+  "program": "tests/backend-parity/fixtures/signal_delivery_sequence.c",
+  "reason": "New top-of-funnel coverage is established on the ptrace reference first; KVM ratchets against it separately",
+  "cap": false
+ },
+ {
+  "id": "backend-parity-c/file-io-roundtrip",
+  "program": "tests/backend-parity/fixtures/file_io_roundtrip.c",
+  "reason": "New top-of-funnel coverage is established on the ptrace reference first; KVM ratchets against it separately",
+  "cap": false
+ },
+ {
+  "id": "bin-c/posix-timer-test",
+  "program": "tests/bin/posix_timer_test.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "bin-c/robust-futex-test",
+  "program": "tests/bin/robust_futex_test.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/acct-refusal-probe",
+  "program": "tests/c/acct_refusal_probe.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/add-key-enosys",
+  "program": "tests/c/add_key_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/adjtimex-deterministic",
+  "program": "tests/c/adjtimex_deterministic.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/arch-prctl-determinism",
+  "program": "tests/c/arch_prctl_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/bpf-enosys",
+  "program": "tests/c/bpf_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/cachestat-enosys",
+  "program": "tests/c/cachestat_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/clock-adjtime-deterministic",
+  "program": "tests/c/clock_adjtime_deterministic.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/clone",
+  "program": "tests/c/clone.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/copy-file-range-refusal-probe",
+  "program": "tests/c/copy_file_range_refusal_probe.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/dbt-copied-tiocgpgrp",
+  "program": "tests/c/dbt_copied_tiocgpgrp.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/dbt-exec-failure",
+  "program": "tests/c/dbt_exec_failure.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/dbt-execveat-unsupported",
+  "program": "tests/c/dbt_execveat_unsupported.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/dbt-mmap-exec",
+  "program": "tests/c/dbt_mmap_exec.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/dbt-pid-virtualization",
+  "program": "tests/c/dbt_pid_virtualization.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/dbt-prlimit-self",
+  "program": "tests/c/dbt_prlimit_self.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/dbt-self-sigqueue",
+  "program": "tests/c/dbt_self_sigqueue.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/dbt-unsupported-syscall",
+  "program": "tests/c/dbt_unsupported_syscall.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/dbt-wait-lifecycle",
+  "program": "tests/c/dbt_wait_lifecycle.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/fp-reduction-nondeterminism",
+  "program": "tests/c/fp_reduction_nondeterminism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/futex-requeue-enosys",
+  "program": "tests/c/futex_requeue_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/futex-waitv-enosys",
+  "program": "tests/c/futex_waitv_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/futex-wake-enosys",
+  "program": "tests/c/futex_wake_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/get-robust-list-child",
+  "program": "tests/c/get_robust_list_child.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/get-robust-list-self",
+  "program": "tests/c/get_robust_list_self.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/get-robust-list-thread",
+  "program": "tests/c/get_robust_list_thread.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/getcpu",
+  "program": "tests/c/getCpu.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/getitimer-determinism-probe",
+  "program": "tests/c/getitimer_determinism_probe.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/getsockopt-null",
+  "program": "tests/c/getsockopt_null.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/hello-alarm",
+  "program": "tests/c/hello_alarm.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/hello-nostdlib",
+  "program": "tests/c/simple/hello_nostdlib.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/hello-signals",
+  "program": "tests/c/hello_signals.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/io-uring-fallback",
+  "program": "tests/c/io_uring_fallback.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/io-uring-ring-determinism",
+  "program": "tests/c/io_uring_ring_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/ioctl-fioclex",
+  "program": "tests/c/ioctl_fioclex.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/ioctl-siocethtool",
+  "program": "tests/c/ioctl_siocethtool.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/ipc-determinism",
+  "program": "tests/c/ipc_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/just-spin",
+  "program": "tests/c/just_spin.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/kcmp-eperm",
+  "program": "tests/c/kcmp_eperm.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/keyctl-enosys",
+  "program": "tests/c/keyctl_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/keyctl-passthrough",
+  "program": "tests/c/keyctl_passthrough.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/listmount-enosys",
+  "program": "tests/c/listmount_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/liteinst-advanced",
+  "program": "tests/c/liteinst_advanced.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/lsm-get-self-attr-enosys",
+  "program": "tests/c/lsm_get_self_attr_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/lsm-list-modules-enosys",
+  "program": "tests/c/lsm_list_modules_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/lsm-set-self-attr-enosys",
+  "program": "tests/c/lsm_set_self_attr_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/map-shadow-stack-enosys",
+  "program": "tests/c/map_shadow_stack_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/memfd-secret-enosys",
+  "program": "tests/c/memfd_secret_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/meminfo-available-deterministic",
+  "program": "tests/c/meminfo_available_deterministic.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/meminfo-cached-deterministic",
+  "program": "tests/c/meminfo_cached_deterministic.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/meminfo-free-deterministic",
+  "program": "tests/c/meminfo_free_deterministic.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/memorypress",
+  "program": "tests/c/memoryPress.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/mmap-stress-determinism",
+  "program": "tests/c/mmap_stress_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/name-to-handle-at-eopnotsupp",
+  "program": "tests/c/name_to_handle_at_eopnotsupp.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/name-to-handle-directory-eopnotsupp",
+  "program": "tests/c/name_to_handle_directory_eopnotsupp.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/name-to-handle-empty-path-eopnotsupp",
+  "program": "tests/c/name_to_handle_empty_path_eopnotsupp.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/name-to-handle-regular-eopnotsupp",
+  "program": "tests/c/name_to_handle_regular_eopnotsupp.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/nanosleep-par",
+  "program": "tests/c/nanosleep-par.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/nanosleep-threads-nocrash",
+  "program": "tests/c/simple/nanosleep-threads-nocrash.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/nanosleep-threads-simple",
+  "program": "tests/c/simple/nanosleep-threads-simple.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/netns-cookie-tcp4",
+  "program": "tests/c/netns_cookie_tcp4.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/netns-cookie-tcp6",
+  "program": "tests/c/netns_cookie_tcp6.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/netns-cookie-udp4",
+  "program": "tests/c/netns_cookie_udp4.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/pause-alarm-interrupt",
+  "program": "tests/c/pause_alarm_interrupt.c",
+  "reason": "pause(2) scheduler interaction is qualified against the ptrace reference first; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/perf-event-hardware-enosys",
+  "program": "tests/c/perf_event_hardware_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/perf-event-open-enosys",
+  "program": "tests/c/perf_event_open_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/perf-event-software-enosys",
+  "program": "tests/c/perf_event_software_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/perf-event-watchpoint-enosys",
+  "program": "tests/c/perf_event_watchpoint_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/periodic-setitimer-delivery",
+  "program": "tests/c/periodic_setitimer_delivery.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/pidfd-open-self",
+  "program": "tests/c/pidfd_open_self.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/pidfd-poll-self",
+  "program": "tests/c/pidfd_poll_self.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/pidfd-waitid-child",
+  "program": "tests/c/pidfd_waitid_child.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/ppoll-readv",
+  "program": "tests/c/ppoll_readv.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/ppoll-simulation",
+  "program": "tests/c/ppoll_simulation.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/prctl-dumpable",
+  "program": "tests/c/prctl_dumpable.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/pread64-nostdlib",
+  "program": "tests/c/simple/pread64_nostdlib.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/print-memaddrs",
+  "program": "tests/c/print_memaddrs.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/printf-with-threads",
+  "program": "tests/c/printf_with_threads.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/proc-fd-link-aliases",
+  "program": "tests/c/proc_fd_link_aliases.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/proc-fdinfo",
+  "program": "tests/c/proc_fdinfo.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/proc-locks",
+  "program": "tests/c/proc_locks.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/process-mrelease-enosys",
+  "program": "tests/c/process_mrelease_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/process-vm-readv-refusal-probe",
+  "program": "tests/c/process_vm_readv_refusal_probe.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/process-vm-writev-refusal-probe",
+  "program": "tests/c/process_vm_writev_refusal_probe.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/procfs-positioned-probe",
+  "program": "tests/c/procfs_positioned_probe.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/prodcons-determinism",
+  "program": "tests/c/prodcons_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/pselect6-simulation",
+  "program": "tests/c/pselect6_simulation.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/ptrace-attach-eperm",
+  "program": "tests/c/ptrace_attach_eperm.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/ptrace-eperm",
+  "program": "tests/c/ptrace_eperm.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/ptrace-seize-eperm",
+  "program": "tests/c/ptrace_seize_eperm.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/ptrace-traceme-eperm",
+  "program": "tests/c/ptrace_traceme_eperm.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/pty-nr-count",
+  "program": "tests/c/pty_nr_count.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/racewrite-nostdlib",
+  "program": "tests/c/simple/racewrite_nostdlib.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/random-sources",
+  "program": "tests/c/random_sources.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/rcx-canonicalization",
+  "program": "tests/c/rcx_canonicalization.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/record-replay-fd-close",
+  "program": "tests/c/record_replay_fd_close.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/record-replay-file-state",
+  "program": "tests/c/record_replay_file_state.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/record-replay-lseek-seek-cur",
+  "program": "tests/c/record_replay_lseek_seek_cur.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/record-replay-setsockopt",
+  "program": "tests/c/record_replay_setsockopt.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/recvmsg-scm-rights-mmap",
+  "program": "tests/c/recvmsg_scm_rights_mmap.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/remap-file-pages-anonymous-enosys",
+  "program": "tests/c/remap_file_pages_anonymous_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/remap-file-pages-memfd-enosys",
+  "program": "tests/c/remap_file_pages_memfd_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/remap-file-pages-tmpfile-enosys",
+  "program": "tests/c/remap_file_pages_tmpfile_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/request-key-enosys",
+  "program": "tests/c/request_key_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/resource-determinism",
+  "program": "tests/c/resource_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sched-setattr-batch",
+  "program": "tests/c/sched_setattr_batch.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sched-setattr-idle",
+  "program": "tests/c/sched_setattr_idle.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sched-setattr-other",
+  "program": "tests/c/sched_setattr_other.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sched-yield-progress",
+  "program": "tests/c/sched_yield_progress.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/scheduler-policy-queries",
+  "program": "tests/c/scheduler_policy_queries.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/setitimer-determinism",
+  "program": "tests/c/setitimer_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sigmask-preemption",
+  "program": "tests/c/sigmask_preemption.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/signal-determinism",
+  "program": "tests/c/signal_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sigpipe-siginfo",
+  "program": "tests/c/sigpipe_siginfo.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sigtimedwait-no-timeout",
+  "program": "tests/c/sigtimedwait-no-timeout.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sigtimedwait-timeout-0s",
+  "program": "tests/c/sigtimedwait-timeout-0s.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sigtimedwait-timeout-1s",
+  "program": "tests/c/sigtimedwait-timeout-1s.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/so-incoming-cpu-tcp4",
+  "program": "tests/c/so_incoming_cpu_tcp4.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/so-incoming-cpu-tcp6",
+  "program": "tests/c/so_incoming_cpu_tcp6.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/so-incoming-cpu-udp4",
+  "program": "tests/c/so_incoming_cpu_udp4.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/socket-cookie-tcp",
+  "program": "tests/c/socket_cookie_tcp.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/socket-cookie-udp",
+  "program": "tests/c/socket_cookie_udp.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/socket-cookie-unix",
+  "program": "tests/c/socket_cookie_unix.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/socket-ioctl-timestamp",
+  "program": "tests/c/socket_ioctl_timestamp.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/socket-timestamp-edge-cases",
+  "program": "tests/c/socket_timestamp_edge_cases.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/socket-timestamp-timespec",
+  "program": "tests/c/socket_timestamp_timespec.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/socket-timestamp-timeval",
+  "program": "tests/c/socket_timestamp_timeval.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/splice-enosys",
+  "program": "tests/c/splice_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/statmount-enosys",
+  "program": "tests/c/statmount_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/syscall-file-io",
+  "program": "tests/c/syscall_file_io.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/syscall-file-metadata",
+  "program": "tests/c/syscall_file_metadata.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/syscall-quick-wins",
+  "program": "tests/c/syscall_quick_wins.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sysfs-enosys",
+  "program": "tests/c/sysfs_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sysinfo",
+  "program": "tests/c/sysinfo.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sysinfo-uptime",
+  "program": "tests/c/sysinfo_uptime.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/syslog-deterministic",
+  "program": "tests/c/syslog_deterministic.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sysv-sem-enosys",
+  "program": "tests/c/sysv_sem_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/sysv-shm-enosys",
+  "program": "tests/c/sysv_shm_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/tcp-info-accept4",
+  "program": "tests/c/tcp_info_accept4.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/tcp-info-accept6",
+  "program": "tests/c/tcp_info_accept6.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/tcp-info-client4",
+  "program": "tests/c/tcp_info_client4.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/tee-enosys",
+  "program": "tests/c/tee_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/thread-self-procfs-handoff",
+  "program": "tests/c/thread_self_procfs_handoff.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/threadexhaustion",
+  "program": "tests/c/threadExhaustion.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/timer-create-determinism",
+  "program": "tests/c/timer_create_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/uname",
+  "program": "tests/c/uname.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/unix-autobind-dgram",
+  "program": "tests/c/unix_autobind_dgram.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/unix-autobind-seqpacket",
+  "program": "tests/c/unix_autobind_seqpacket.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/unix-autobind-stream",
+  "program": "tests/c/unix_autobind_stream.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/ustat-enosys",
+  "program": "tests/c/ustat_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/vforkexec",
+  "program": "tests/c/vforkExec.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/vmsplice-enosys",
+  "program": "tests/c/vmsplice_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/wait-on-child",
+  "program": "tests/c/wait_on_child.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "c-programs/writev-determinism",
+  "program": "tests/c/writev_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "chaos-c/lock-granularity",
+  "program": "tests/chaos/lock_granularity.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "data-handling/archive-roundtrip",
+  "program": "tests/e2e/data-handling/archive-roundtrip.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "data-handling/shell-pipeline",
+  "program": "tests/e2e/data-handling/shell-pipeline.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "data-handling/jq-json-transform",
+  "program": "tests/e2e/data-handling/jq-json-transform.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "data-handling/sqlite-query-determinism",
+  "program": "tests/e2e/data-handling/sqlite-query-determinism.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "data-handling/zstd-multithread",
+  "program": "tests/e2e/data-handling/zstd-multithread.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "debugger-c/debuggee",
+  "program": "tests/debugger/guests/debuggee.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress-c/fork-tree",
+  "program": "tests/e2e/determinism-stress/fork_tree.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress-c/lock-free",
+  "program": "tests/e2e/determinism-stress/guests/lock_free.c",
+  "reason": "This determinism cell calibrates the ptrace strict-verify baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress-c/mmap-fork-shared",
+  "program": "tests/e2e/determinism-stress/mmap_fork_shared.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress-c/pid-tid",
+  "program": "tests/e2e/determinism-stress/guests/pid_tid.c",
+  "reason": "This determinism cell calibrates the ptrace strict-verify baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress-c/pid-tid-identity",
+  "program": "tests/e2e/determinism-stress/pid_tid_identity.c",
+  "reason": "KVM compares output only and cannot assert DETLOG identity yet",
+  "cap": true
+ },
+ {
+  "id": "determinism-stress-c/pipe-chain",
+  "program": "tests/e2e/determinism-stress/pipe_chain.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress-c/pipe-prefill",
+  "program": "tests/e2e/determinism-stress/pipe_prefill.c",
+  "reason": "This determinism cell calibrates the ptrace strict-verify baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress-c/producer-consumer",
+  "program": "tests/e2e/determinism-stress/producer_consumer.c",
+  "reason": "This condvar/futex determinism cell calibrates the ptrace strict-verify baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress-c/signal-order",
+  "program": "tests/e2e/determinism-stress/guests/signal_order.c",
+  "reason": "This determinism cell calibrates the ptrace strict-verify baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress-c/thread-contention",
+  "program": "tests/e2e/determinism-stress/thread_contention.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress-c/thread-stress",
+  "program": "tests/e2e/determinism-stress/thread_stress.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "determinism-stress/thread-output",
+  "program": "tests/e2e/determinism-stress/thread-output.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "determinism-stress/thread-contention",
+  "program": "tests/e2e/determinism-stress/thread-contention.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "determinism-stress/process-chains",
+  "program": "tests/e2e/determinism-stress/process-chains.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "determinism-stress/order-violation",
+  "program": "tests/chaos/order_violation.c",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "determinism-stress/thread-interleaving",
+  "program": "tests/chaos/thread_interleaving.c",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/bash-loop-pipe-time",
+  "program": "tests/e2e/language-runtimes/bash-loop-pipe-time.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/bash-random",
+  "program": "tests/e2e/language-runtimes/bash-random.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/cpp-stl-determinism",
+  "program": "tests/e2e/language-runtimes/cpp-stl-determinism.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/gawk-random",
+  "program": "tests/e2e/language-runtimes/gawk-random.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/m4-macro-mkstemp",
+  "program": "tests/e2e/language-runtimes/m4-macro-mkstemp.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/perl-io-subprocess-time",
+  "program": "tests/e2e/language-runtimes/perl-io-subprocess-time.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/perl-random",
+  "program": "tests/e2e/language-runtimes/perl-random.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/python-hash-determinism",
+  "program": "tests/e2e/language-runtimes/python-hash-determinism.sh",
+  "reason": "KVM Python coverage is in the privileged applications bucket",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/python-io-subprocess-time",
+  "program": "tests/e2e/language-runtimes/python-io-subprocess-time.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/python-random",
+  "program": "tests/e2e/language-runtimes/python-random.sh",
+  "reason": "KVM Python coverage is in the privileged applications bucket",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/rust-hashmap-iteration",
+  "program": "tests/e2e/language-runtimes/rust-hashmap-iteration.rs",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/ruby-random",
+  "program": "tests/e2e/language-runtimes/ruby-random.sh",
+  "reason": "KVM Ruby coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/perl-hash-order",
+  "program": "tests/e2e/language-runtimes/perl-hash-order.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/lua-random",
+  "program": "tests/e2e/language-runtimes/lua-random.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/python-hashseed",
+  "program": "tests/e2e/language-runtimes/python-hashseed.sh",
+  "reason": "KVM Python coverage is in the privileged applications bucket",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/python-dict-hash-iteration",
+  "program": "tests/e2e/language-runtimes/python-dict-hash-iteration.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/tcl-rand-clock",
+  "program": "tests/e2e/language-runtimes/tcl-rand-clock.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true
+ },
+ {
+  "id": "language-runtimes/node-v8-jit",
+  "program": "tests/e2e/language-runtimes/node-v8-jit.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "shared-futex-c/qemu-exec-init",
+  "program": "tests/shared-futex-verify/qemu_exec_init.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "shared-futex-c/qemu-hello",
+  "program": "tests/shared-futex-verify/qemu_hello.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "shared-futex-c/qemu-init",
+  "program": "tests/shared-futex-verify/qemu_init.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "shared-futex-c/qemu-net-init",
+  "program": "tests/shared-futex-verify/qemu_net_init.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ },
+ {
+  "id": "system-utils/clock-determinism",
+  "program": "tests/c/clock_determinism.c",
+  "reason": "Enable after the ptrace baseline for direct C guests is trusted",
+  "cap": false
+ },
+ {
+  "id": "system-utils/date-nanoseconds",
+  "program": "tests/e2e/system-utils/date-nanoseconds.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/mcookie-random",
+  "program": "tests/e2e/system-utils/mcookie-random.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/mktemp-name",
+  "program": "tests/e2e/system-utils/mktemp-name.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/openssl-enc",
+  "program": "tests/e2e/system-utils/openssl-enc.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/openssl-genpkey",
+  "program": "tests/e2e/system-utils/openssl-genpkey.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/openssl-passwd",
+  "program": "tests/e2e/system-utils/openssl-passwd.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/openssl-rand",
+  "program": "tests/e2e/system-utils/openssl-rand.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/openssl-x509",
+  "program": "tests/e2e/system-utils/openssl-x509.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/proc-uptime",
+  "program": "tests/e2e/system-utils/proc-uptime.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/random-device",
+  "program": "tests/e2e/system-utils/random-device.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/record-getpid",
+  "program": "tests/c/getpid.c",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/shuf-permutation",
+  "program": "tests/e2e/system-utils/shuf-permutation.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/sort-random",
+  "program": "tests/e2e/system-utils/sort-random.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/ssh-keygen-ed25519",
+  "program": "tests/e2e/system-utils/ssh-keygen-ed25519.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/uuidgen-random",
+  "program": "tests/e2e/system-utils/uuidgen-random.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/proc-random-uuid",
+  "program": "tests/e2e/system-utils/proc-random-uuid.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true
+ },
+ {
+  "id": "system-utils/du-tree-summary",
+  "program": "",
+  "reason": "Qualify recursive du independently against the new ptrace golden baseline",
+  "cap": false
+ },
+ {
+  "id": "system-utils/find-tree-metadata",
+  "program": "",
+  "reason": "Qualify recursive find independently against the new ptrace golden baseline",
+  "cap": false
+ },
+ {
+  "id": "system-utils/file-timestamp-identity",
+  "program": "tests/c/file_timestamp_identity.c",
+  "reason": "Enable once measured on this backend; ptrace is the proven baseline",
+  "cap": false
+ },
+ {
+  "id": "system-utils/startup-surface-identity",
+  "program": "tests/c/startup_surface_identity.c",
+  "reason": "Enable once measured on this backend; ptrace is the proven baseline. A cross-backend difference in the RAW vDSO base or AT_RANDOM is a FINDING to report, never something to normalise away",
+  "cap": false
+ },
+ {
+  "id": "system-utils/shm-coherency-identity",
+  "program": "tests/c/shm_coherency_identity.c",
+  "reason": "Enable once measured on this backend; ptrace is the proven baseline. A cross-backend difference in WHICH partial state a reader catches is a FINDING, not something to stabilise away",
+  "cap": false
+ },
+ {
+  "id": "system-utils/clock-exec-continuity",
+  "program": "tests/c/clock_exec_continuity.c",
+  "reason": "Enable once the KVM post-exec clock path is qualified against the ptrace baseline",
+  "cap": false
+ },
+ {
+  "id": "util-c/pmu-skid",
+  "program": "tests/util/pmu_skid.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "cap": false
+ }
+]

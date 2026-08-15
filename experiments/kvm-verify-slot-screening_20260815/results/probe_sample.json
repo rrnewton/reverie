@@ -1,0 +1,77 @@
+[
+ {
+  "id": "backend-parity-c/close-range-fds",
+  "cap": true,
+  "reason": "KVM ElfExecutor personality returns deterministic ENOSYS for close_range; ptrace and DBT forwar"
+ },
+ {
+  "id": "backend-parity-c/epoll-pwait2",
+  "cap": true,
+  "reason": "KVM ElfExecutor returns deterministic ENOSYS for epoll_pwait2 (syscall 441); it implements the "
+ },
+ {
+  "id": "backend-parity-c/fsync-durability",
+  "cap": true,
+  "reason": "KVM ElfExecutor forwards fsync and fdatasync but returns deterministic ENOSYS for syncfs"
+ },
+ {
+  "id": "backend-parity-c/inotify-watch",
+  "cap": true,
+  "reason": "KVM ElfExecutor returns a deterministic error for the inotify family (inotify_init1), so the fi"
+ },
+ {
+  "id": "backend-parity-c/ioctl-fionread",
+  "cap": true,
+  "reason": "KVM ElfExecutor returns ENOTTY for the FIONREAD pipe ioctl; FIONBIO is supported"
+ },
+ {
+  "id": "backend-parity-c/memfd-create",
+  "cap": true,
+  "reason": "KVM ElfExecutor personality returns deterministic ENOSYS for memfd_create; ptrace and DBT forwa"
+ },
+ {
+  "id": "backend-parity-c/prctl-pdeathsig",
+  "cap": true,
+  "reason": "KVM ElfExecutor returns deterministic ENOSYS for prctl PR_SET_PDEATHSIG/PR_GET_PDEATHSIG; ptrac"
+ },
+ {
+  "id": "backend-parity-c/preadv2-flags",
+  "cap": true,
+  "reason": "KVM ElfExecutor does not implement preadv2/pwritev2 (syscalls 327/328); it returns ENOSYS, mirr"
+ },
+ {
+  "id": "backend-parity-c/stat-metadata-identity",
+  "cap": true,
+  "reason": "KVM does not complete a guest on the authoring host; qualify KVM separately"
+ },
+ {
+  "id": "backend-parity-c/mmap-layout-pointer-order",
+  "cap": true,
+  "reason": "KVM livelocks at guest startup on the current host; qualify KVM separately -- also a priority f"
+ },
+ {
+  "id": "backend-parity-c/signal-waitstatus-identity",
+  "cap": true,
+  "reason": "Cannot complete a guest on the current host (startup livelock); no wait-status observation exis"
+ },
+ {
+  "id": "c-programs/getcpu",
+  "cap": false,
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately"
+ },
+ {
+  "id": "backend-parity-c/sysv-ipc-refusal",
+  "cap": false,
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qu"
+ },
+ {
+  "id": "c-programs/lsm-set-self-attr-enosys",
+  "cap": false,
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately"
+ },
+ {
+  "id": "c-programs/setitimer-determinism",
+  "cap": false,
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately"
+ }
+]

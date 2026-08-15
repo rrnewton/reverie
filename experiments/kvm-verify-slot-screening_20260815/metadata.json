@@ -1,0 +1,109 @@
+{
+  "agent": "hermit-kvm2",
+  "check_mutation_buckets": {
+    "CANNOT_FAIL_not_exit_gated": 34,
+    "NOT_DETERMINABLE": 114,
+    "REFUSABLE_exit_status_gated": 86,
+    "recorded_kvm_capability_limit": 79,
+    "total": 313
+  },
+  "date_utc": "2026-08-15",
+  "files": {
+    "README.md": {
+      "lines": 127,
+      "sha256": "8828559d9011b3cce4e369490234e1820ea0de5dfa946462fab9528355d62d0a"
+    },
+    "controls/neg_cannotfail.c": {
+      "lines": 2,
+      "sha256": "82c1a6feaa27bb55ed686a08ebd92c92a9261e819ba74ea7a014f9825181bb13"
+    },
+    "controls/neg_stderr_only.c": {
+      "lines": 2,
+      "sha256": "af1a33912cf3af7892750e21537fe1f5fe08f7d79ffb1bacc0fddcfb57dadef9"
+    },
+    "controls/pos_known_refusable.c": {
+      "lines": 31,
+      "sha256": "97b1525b3fd4c7e744ff6f416e8f285dd8e4cb91766a65d5e74030fcf132f2c5"
+    },
+    "controls/pos_ternary.c": {
+      "lines": 2,
+      "sha256": "24dcef595767f43febbf73b646fa9b9a12889c7479b23a2882f293c03371b01f"
+    },
+    "controls/val_must_be_caught.c": {
+      "lines": 8,
+      "sha256": "a2b26e5a903dca4e392efe26b3d7310629b291e8058e5593b96a78c35e7f4ab8"
+    },
+    "controls/val_must_not_be_caught.c": {
+      "lines": 7,
+      "sha256": "71fd54abc3c464af0287f7aca9f835391bf805a9e6c19bd3e9e2d4b5aa892005"
+    },
+    "operators/probe_batch.sh": {
+      "lines": 14,
+      "sha256": "3ab3f30b75ca4bd5dec20269d95fda16e46f0741e5165c3da165af47858cd1da"
+    },
+    "operators/run_value.py": {
+      "lines": 10,
+      "sha256": "edb4ee340c8ad59174a62ce4a5749e137ae53648b9db2e7dc8ca6253e9af025a"
+    },
+    "operators/screen.py": {
+      "lines": 169,
+      "sha256": "9e991a55a37b3ad8d8e9bbdf41bb1216800fe1c9b8b3dbe88f7690e0006ecf62"
+    },
+    "operators/value_mutate.py": {
+      "lines": 201,
+      "sha256": "514a19df01a57cc02da43bf7c96579fdc751f86a1caed901ca88963c3e3368e9"
+    },
+    "results/population.json": {
+      "lines": 1880,
+      "sha256": "a799956f080c9a8428afc48941dc66575a4325fb290fa5e86b8f27e13b3538de"
+    },
+    "results/probe-batch.jsonl": {
+      "lines": 15,
+      "sha256": "bf2ec661380845c284f1eb6c244c70f1024b4428efb7edabbb03cd360aeed017"
+    },
+    "results/probe_sample.json": {
+      "lines": 77,
+      "sha256": "67a5b13f8f3dc17d361e76d933293e646b012d09bdaf4223dfb5dda16ab47783"
+    },
+    "results/refusable86.json": {
+      "lines": 582,
+      "sha256": "04e10ca743ad2c85c718dea2829ba101573b83e38d56ddf5290a784914ad13d3"
+    },
+    "results/results.json": {
+      "lines": 3285,
+      "sha256": "5a8951b6eda787484955da51b5ef43af91d4ac77537ee41f400860632a3f56f4"
+    },
+    "results/value_pass2.json": {
+      "lines": 2246,
+      "sha256": "9ef8e00476d2773cae12269eb76764c6f038ccae69c578269116383ccd3bed3d"
+    },
+    "results/value_pass3.json": {
+      "lines": 2246,
+      "sha256": "f28484977a7b37600e5b0096abb195f147e59d89a5ed821f38e9ebf7101fcac4"
+    }
+  },
+  "hermit_origin_main_at_capture": "61b9ba7aa4dd763c1bda091316852d5290f9466c",
+  "hermit_sha": "e18acde586f72829e4a96d92b57b78f3abe21b2c",
+  "host": "devbig030.atn3.facebook.com",
+  "name": "kvm-verify-slot-screening",
+  "population": {
+    "tests_with_verify_mode": 336,
+    "verify_kvm_disabled_slots": 313,
+    "verify_kvm_enabled": 23
+  },
+  "probe_disabled_sample": {
+    "FAIL": 3,
+    "PASS": 12,
+    "cells": 15,
+    "falsifiable_PASS": 9,
+    "falsifiable_reason_cells": 11
+  },
+  "reverie_pin": "c261050cfd41bec67e31bfd0cf6f56be008d0ebb",
+  "schema": 1,
+  "value_mutation_on_the_86": {
+    "NOT_DETERMINABLE": 52,
+    "NOT_VALUE_GATED": 24,
+    "VALUE_GATED": 10,
+    "bound": "[10, 62]"
+  }
+}

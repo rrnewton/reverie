@@ -1,0 +1,3285 @@
+[
+ {
+  "program": "tests/backend-parity/fixtures/aio_refusal.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "backend-parity-c/aio-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/set_tid_address.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "2aad6d7ecfdca7e7",
+   "outlen": 21
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/set-tid-address"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/cachestat_refusal.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "fc24e228a50e9901",
+   "outlen": 15
+  },
+  "bucket": "CANNOT-FAIL",
+  "sites_tried": 9,
+  "mutants_built": 9,
+  "why": "9 single-site mutants compiled and ran; exit status AND observed stdout unchanged in every one",
+  "id": "backend-parity-c/cachestat-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/child_subreaper_refusal.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "backend-parity-c/child-subreaper-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/copy_file_range_refusal.c",
+  "mutation_sites": 10,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "ca12952ea299172f",
+   "outlen": 54
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/copy-file-range-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/cpuid_probe.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "backend-parity-c/cpuid-probe"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/epoll_readiness.c",
+  "mutation_sites": 6,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "23196787f8261c59",
+   "outlen": 11
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/epoll-readiness"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/faccessat2_flags.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "b15fb9b21254af6f",
+   "outlen": 16
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/faccessat2-flags"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/fadvise_hints.c",
+  "mutation_sites": 6,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "af59c583cff4ad38",
+   "outlen": 13
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/fadvise-hints"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/fallocate_extents.c",
+  "mutation_sites": 10,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "dbc4cc6329fc40bb",
+   "outlen": 15
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/fallocate-extents"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/fchmod_bits.c",
+  "mutation_sites": 14,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "706e0ac314a4864e",
+   "outlen": 26
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/fchmod-bits"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/file_backed_mmap.c",
+  "mutation_sites": 18,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "879f0906d404ea41",
+   "outlen": 44
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 3,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/file-backed-mmap"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/flock_lifecycle.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "f43f60c6097aa90e",
+   "outlen": 11
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/flock-lifecycle"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/getrusage_self_accounting.c",
+  "mutation_sites": 11,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "f187066612effdec",
+   "outlen": 15
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "backend-parity-c/getrusage-self-accounting"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/kcmp_refusal.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "9a3e86d9cbefaf19",
+   "outlen": 10
+  },
+  "bucket": "CANNOT-FAIL",
+  "sites_tried": 2,
+  "mutants_built": 2,
+  "why": "2 single-site mutants compiled and ran; exit status AND observed stdout unchanged in every one",
+  "id": "backend-parity-c/kcmp-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/linkat_flags.c",
+  "mutation_sites": 15,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "1274f27bfbf3f977",
+   "outlen": 12
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/linkat-flags"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/mce_kill_policy.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "backend-parity-c/mce-kill-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/mempolicy_default.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "121054d132f130f9",
+   "outlen": 15
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/mempolicy-default"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/mincore_residency.c",
+  "mutation_sites": 11,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "9f61e1e6b6fa1a5a",
+   "outlen": 13
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/mincore-residency"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/mkdir_rmdir.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "0199853773fc8508",
+   "outlen": 17
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/mkdir-rmdir"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/mknod_special.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "e7c80e2659aa8308",
+   "outlen": 11
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/mknod-special"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/name_to_handle.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "backend-parity-c/name-to-handle-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/no_new_privs_refusal.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "41f02b05acc73d61",
+   "outlen": 9
+  },
+  "bucket": "CANNOT-FAIL",
+  "sites_tried": 2,
+  "mutants_built": 2,
+  "why": "2 single-site mutants compiled and ran; exit status AND observed stdout unchanged in every one",
+  "id": "backend-parity-c/no-new-privs-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/openat2_refusal.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "060f48b83f071fc8",
+   "outlen": 13
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 2,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/openat2-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/path_file_ops.c",
+  "mutation_sites": 19,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "dab29b8d0edcd7c3",
+   "outlen": 39
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/path-file-ops"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/pid_probe.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "backend-parity-c/pid-probe"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/pipe2_flags.c",
+  "mutation_sites": 19,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "32ae4a531423c6c7",
+   "outlen": 17
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/pipe2-flags"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/pthread_lifecycle.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "6f916c392b593c28",
+   "outlen": 19
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/pthread-lifecycle"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/readdir_entries.c",
+  "mutation_sites": 16,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "a9a2623e7f2c6483",
+   "outlen": 36
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/readdir-entries"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/rename_ops.c",
+  "mutation_sites": 16,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "2e66b7f546269cde",
+   "outlen": 16
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/rename-ops"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/renameat2_flags.c",
+  "mutation_sites": 14,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "ace77303ef27dd17",
+   "outlen": 15
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 2,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/renameat2-flags"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/robust_list.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "43b259778db1cd5f",
+   "outlen": 16
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/robust-list"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/seccomp_refusal.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "backend-parity-c/seccomp-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/signalfd_create.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "3f01021028d7b6e4",
+   "outlen": 9
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/signalfd-create"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/statfs_free_determinism.c",
+  "mutation_sites": 6,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "eaf44b013e243c4c",
+   "outlen": 12
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/statfs-free-determinism"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/statx_metadata.c",
+  "mutation_sites": 13,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "bf453d88b23df75b",
+   "outlen": 40
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/statx-metadata"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/symlink_ops.c",
+  "mutation_sites": 22,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "7f5b28ac0d339b47",
+   "outlen": 37
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/symlink-ops"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/sync_file_range.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "8bcc15cd283521df",
+   "outlen": 15
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/sync-file-range"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/sysv_ipc_refusal.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "backend-parity-c/sysv-ipc-refusal"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/umask_mode.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "54ff909eb4cd90fd",
+   "outlen": 11
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/umask-mode"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/uname_identity.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "8d10a788d1b16fbe",
+   "outlen": 11
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 5,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/uname-identity"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/utimensat_determinism.c",
+  "mutation_sites": 6,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "52fe11e56aec0f69",
+   "outlen": 15
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/utimensat-determinism"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/shutdown_socketpair.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "00461ede49b7128f",
+   "outlen": 14
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/shutdown-socketpair"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/bind_getsockname.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "8a3ca7778442aaa4",
+   "outlen": 15
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "backend-parity-c/bind-getsockname"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/append_pwrite.c",
+  "mutation_sites": 17,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "fdd53c54e1de742f",
+   "outlen": 39
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/append-pwrite"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/vectored_io.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "1977680168f58c39",
+   "outlen": 37
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 2,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/vectored-io"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/eventfd_probe.c",
+  "mutation_sites": 10,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "512cdeb4f896e607",
+   "outlen": 25
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/eventfd-semantics"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/ftruncate_sparse.c",
+  "mutation_sites": 15,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "76c5fee24eed9369",
+   "outlen": 42
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/ftruncate-sparse"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/openat_flags.c",
+  "mutation_sites": 18,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "c044d67b6195f6c1",
+   "outlen": 38
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/openat-flags"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/cwd_roundtrip.c",
+  "mutation_sites": 17,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "545488106ed9b113",
+   "outlen": 24
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/cwd-roundtrip"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/o_tmpfile_anon.c",
+  "mutation_sites": 13,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "cbf7c806a65fdb47",
+   "outlen": 14
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/o-tmpfile-anon"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/membarrier_query.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "ec64ca0cc413da9d",
+   "outlen": 17
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "backend-parity-c/membarrier-query"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/fork_exec_pipeline.c",
+  "mutation_sites": 10,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "d34b7759e6084e0a",
+   "outlen": 48
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/fork-exec-pipeline"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/signal_delivery_sequence.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "3ed67c5cc78dabff",
+   "outlen": 48
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/signal-delivery-sequence"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/file_io_roundtrip.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "a9eff8b571526d28",
+   "outlen": 74
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "backend-parity-c/file-io-roundtrip"
+ },
+ {
+  "program": "tests/bin/posix_timer_test.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "73bc36274f961af2",
+   "outlen": 53
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 2",
+  "id": "bin-c/posix-timer-test"
+ },
+ {
+  "program": "tests/bin/robust_futex_test.c",
+  "mutation_sites": 13,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "85d414c18cc63dc0",
+   "outlen": 46
+  },
+  "bucket": "REFUSABLE",
+  "channel": "timeout",
+  "sites_tried": 1,
+  "why": "a single-site mutant hangs where baseline exits 0 (observable via harness timeout)",
+  "id": "bin-c/robust-futex-test"
+ },
+ {
+  "program": "tests/c/acct_refusal_probe.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/acct-refusal-probe"
+ },
+ {
+  "program": "tests/c/add_key_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/add-key-enosys"
+ },
+ {
+  "program": "tests/c/adjtimex_deterministic.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "6f295acafd1cbe8b",
+   "outlen": 40
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/adjtimex-deterministic"
+ },
+ {
+  "program": "tests/c/arch_prctl_determinism.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/arch-prctl-determinism"
+ },
+ {
+  "program": "tests/c/bpf_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/bpf-enosys"
+ },
+ {
+  "program": "tests/c/cachestat_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/cachestat-enosys"
+ },
+ {
+  "program": "tests/c/clock_adjtime_deterministic.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "e650a5a84d34ec79",
+   "outlen": 45
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/clock-adjtime-deterministic"
+ },
+ {
+  "program": "tests/c/clone.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "6bed7c4e58faa0f6",
+   "outlen": 60
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/clone"
+ },
+ {
+  "program": "tests/c/copy_file_range_refusal_probe.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/copy-file-range-refusal-probe"
+ },
+ {
+  "program": "tests/c/dbt_copied_tiocgpgrp.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "d41c17290fb46f7e",
+   "outlen": 24
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "c-programs/dbt-copied-tiocgpgrp"
+ },
+ {
+  "program": "tests/c/dbt_exec_failure.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "d9255dd9cc061248",
+   "outlen": 28
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 2",
+  "id": "c-programs/dbt-exec-failure"
+ },
+ {
+  "program": "tests/c/dbt_execveat_unsupported.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "CANNOT-FAIL",
+  "sites_tried": 8,
+  "mutants_built": 8,
+  "why": "8 single-site mutants compiled and ran; exit status AND observed stdout unchanged in every one",
+  "id": "c-programs/dbt-execveat-unsupported"
+ },
+ {
+  "program": "tests/c/dbt_mmap_exec.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "c0a287384f8856ab",
+   "outlen": 17
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/dbt-mmap-exec"
+ },
+ {
+  "program": "tests/c/dbt_pid_virtualization.c",
+  "mutation_sites": 31,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "b5cde84d16812455",
+   "outlen": 657
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "c-programs/dbt-pid-virtualization"
+ },
+ {
+  "program": "tests/c/dbt_prlimit_self.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 6,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 6 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/dbt-prlimit-self"
+ },
+ {
+  "program": "tests/c/dbt_self_sigqueue.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "d69e01589d12bf1e",
+   "outlen": 21
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 2",
+  "id": "c-programs/dbt-self-sigqueue"
+ },
+ {
+  "program": "tests/c/dbt_unsupported_syscall.c",
+  "mutation_sites": 24,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "14ac2a0b3d73155f",
+   "outlen": 19
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> -11",
+  "id": "c-programs/dbt-unsupported-syscall"
+ },
+ {
+  "program": "tests/c/dbt_wait_lifecycle.c",
+  "mutation_sites": 22,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 3,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 3 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/dbt-wait-lifecycle"
+ },
+ {
+  "program": "tests/c/fp_reduction_nondeterminism.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/fp-reduction-nondeterminism"
+ },
+ {
+  "program": "tests/c/futex_requeue_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/futex-requeue-enosys"
+ },
+ {
+  "program": "tests/c/futex_waitv_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/futex-waitv-enosys"
+ },
+ {
+  "program": "tests/c/futex_wake_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/futex-wake-enosys"
+ },
+ {
+  "program": "tests/c/get_robust_list_child.c",
+  "mutation_sites": 11,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "379982e3aff5bd35",
+   "outlen": 26
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/get-robust-list-child"
+ },
+ {
+  "program": "tests/c/get_robust_list_self.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "8a606e83612b4b4c",
+   "outlen": 25
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/get-robust-list-self"
+ },
+ {
+  "program": "tests/c/get_robust_list_thread.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "281d743aba1e1247",
+   "outlen": 27
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/get-robust-list-thread"
+ },
+ {
+  "program": "tests/c/getCpu.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/getcpu"
+ },
+ {
+  "program": "tests/c/getitimer_determinism_probe.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "17720cebaa5ab1c9",
+   "outlen": 27
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/getitimer-determinism-probe"
+ },
+ {
+  "program": "tests/c/getsockopt_null.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "b8636471f62fb5c8",
+   "outlen": 19
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 3",
+  "id": "c-programs/getsockopt-null"
+ },
+ {
+  "program": "tests/c/hello_alarm.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "69771519a00dad7a",
+   "outlen": 115
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/hello-alarm"
+ },
+ {
+  "program": "tests/c/simple/hello_nostdlib.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/hello-nostdlib"
+ },
+ {
+  "program": "tests/c/hello_signals.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "2b4df140dfdd472e",
+   "outlen": 134
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/hello-signals"
+ },
+ {
+  "program": "tests/c/io_uring_fallback.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/io-uring-fallback"
+ },
+ {
+  "program": "tests/c/io_uring_ring_determinism.c",
+  "mutation_sites": 6,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "899f1b1a56accf4e",
+   "outlen": 97
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/io-uring-ring-determinism"
+ },
+ {
+  "program": "tests/c/ioctl_fioclex.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "ed203ed9433cb973",
+   "outlen": 11
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/ioctl-fioclex"
+ },
+ {
+  "program": "tests/c/ioctl_siocethtool.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/ioctl-siocethtool"
+ },
+ {
+  "program": "tests/c/ipc_determinism.c",
+  "mutation_sites": 32,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/ipc-determinism"
+ },
+ {
+  "program": "tests/c/just_spin.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/just-spin"
+ },
+ {
+  "program": "tests/c/kcmp_eperm.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "288278193317b71e",
+   "outlen": 31
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/kcmp-eperm"
+ },
+ {
+  "program": "tests/c/keyctl_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/keyctl-enosys"
+ },
+ {
+  "program": "tests/c/keyctl_passthrough.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "384907f52501b4fc",
+   "outlen": 16
+  },
+  "bucket": "CANNOT-FAIL",
+  "sites_tried": 2,
+  "mutants_built": 2,
+  "why": "2 single-site mutants compiled and ran; exit status AND observed stdout unchanged in every one",
+  "id": "c-programs/keyctl-passthrough"
+ },
+ {
+  "program": "tests/c/listmount_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/listmount-enosys"
+ },
+ {
+  "program": "tests/c/liteinst_advanced.c",
+  "mutation_sites": 48,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/liteinst-advanced"
+ },
+ {
+  "program": "tests/c/lsm_get_self_attr_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/lsm-get-self-attr-enosys"
+ },
+ {
+  "program": "tests/c/lsm_list_modules_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/lsm-list-modules-enosys"
+ },
+ {
+  "program": "tests/c/lsm_set_self_attr_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/lsm-set-self-attr-enosys"
+ },
+ {
+  "program": "tests/c/map_shadow_stack_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "97ae187dd98c3d4b",
+   "outlen": 47
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/map-shadow-stack-enosys"
+ },
+ {
+  "program": "tests/c/memfd_secret_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "dcbbb5f4e71889cb",
+   "outlen": 43
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/memfd-secret-enosys"
+ },
+ {
+  "program": "tests/c/meminfo_available_deterministic.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/meminfo-available-deterministic"
+ },
+ {
+  "program": "tests/c/meminfo_cached_deterministic.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/meminfo-cached-deterministic"
+ },
+ {
+  "program": "tests/c/meminfo_free_deterministic.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/meminfo-free-deterministic"
+ },
+ {
+  "program": "tests/c/memoryPress.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> -6",
+  "id": "c-programs/memorypress"
+ },
+ {
+  "program": "tests/c/mmap_stress_determinism.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "890065cac586dbea",
+   "outlen": 63
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/mmap-stress-determinism"
+ },
+ {
+  "program": "tests/c/name_to_handle_at_eopnotsupp.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/name-to-handle-at-eopnotsupp"
+ },
+ {
+  "program": "tests/c/name_to_handle_directory_eopnotsupp.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/name-to-handle-directory-eopnotsupp"
+ },
+ {
+  "program": "tests/c/name_to_handle_empty_path_eopnotsupp.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/name-to-handle-empty-path-eopnotsupp"
+ },
+ {
+  "program": "tests/c/name_to_handle_regular_eopnotsupp.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/name-to-handle-regular-eopnotsupp"
+ },
+ {
+  "program": "tests/c/nanosleep-par.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": false,
+   "cc_err": "/tmp/scr-01gcc_ke/base.c:41:10: fatal error: util/assert.h: No such file or directory\n   41 | #include \"util/assert.h\"\n      |          ^~~~~~~~~~~~~~~\ncompilation terminated.\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone: /tmp/scr-01gcc_ke/base.c:41:10: fatal error: util/assert.h: No such file or directory\n   41 | #include \"util/assert.h\"\n      |          ^~~~~~~~~~~~~~",
+  "id": "c-programs/nanosleep-par"
+ },
+ {
+  "program": "tests/c/simple/nanosleep-threads-nocrash.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/nanosleep-threads-nocrash"
+ },
+ {
+  "program": "tests/c/simple/nanosleep-threads-simple.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/nanosleep-threads-simple"
+ },
+ {
+  "program": "tests/c/netns_cookie_tcp4.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/netns-cookie-tcp4"
+ },
+ {
+  "program": "tests/c/netns_cookie_tcp6.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/netns-cookie-tcp6"
+ },
+ {
+  "program": "tests/c/netns_cookie_udp4.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/netns-cookie-udp4"
+ },
+ {
+  "program": "tests/c/pause_alarm_interrupt.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "4fa5d0cc39f4c59f",
+   "outlen": 59
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/pause-alarm-interrupt"
+ },
+ {
+  "program": "tests/c/perf_event_hardware_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/perf-event-hardware-enosys"
+ },
+ {
+  "program": "tests/c/perf_event_open_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/perf-event-open-enosys"
+ },
+ {
+  "program": "tests/c/perf_event_software_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/perf-event-software-enosys"
+ },
+ {
+  "program": "tests/c/perf_event_watchpoint_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/perf-event-watchpoint-enosys"
+ },
+ {
+  "program": "tests/c/periodic_setitimer_delivery.c",
+  "mutation_sites": 6,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "db1d924766d35b4e",
+   "outlen": 46
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/periodic-setitimer-delivery"
+ },
+ {
+  "program": "tests/c/pidfd_open_self.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "eb85b13112d24bf3",
+   "outlen": 29
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/pidfd-open-self"
+ },
+ {
+  "program": "tests/c/pidfd_poll_self.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "d9c4e30a92ce688e",
+   "outlen": 27
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/pidfd-poll-self"
+ },
+ {
+  "program": "tests/c/pidfd_waitid_child.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "a5312c9bad9f61e0",
+   "outlen": 41
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/pidfd-waitid-child"
+ },
+ {
+  "program": "tests/c/ppoll_readv.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "c03be617b251e1b3",
+   "outlen": 28
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/ppoll-readv"
+ },
+ {
+  "program": "tests/c/ppoll_simulation.c",
+  "mutation_sites": 22,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/ppoll-simulation"
+ },
+ {
+  "program": "tests/c/prctl_dumpable.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "789f3fd97e00c2b3",
+   "outlen": 32
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/prctl-dumpable"
+ },
+ {
+  "program": "tests/c/simple/pread64_nostdlib.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": false,
+   "cc_err": "efinition of `_start'; /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o:(.text+0x0): first defined here\n/usr/bin/ld: /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o: in function `_start':\n(.text+0x1b): undefined reference to `main'\ncollect2: error: ld returned 1 exit status\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone: efinition of `_start'; /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o:(.text+0x0): first defined here\n/usr/bin/ld: /usr/lib/gcc/x86_64-r",
+  "id": "c-programs/pread64-nostdlib"
+ },
+ {
+  "program": "tests/c/print_memaddrs.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/print-memaddrs"
+ },
+ {
+  "program": "tests/c/printf_with_threads.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/printf-with-threads"
+ },
+ {
+  "program": "tests/c/proc_fd_link_aliases.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "a54aec5d7147422f",
+   "outlen": 230
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/proc-fd-link-aliases"
+ },
+ {
+  "program": "tests/c/proc_fdinfo.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": false,
+   "cc_err": " (2), or memfd_create (3)\"\n    8 | #error \"FD_SOURCE must select open (1), openat (2), or memfd_create (3)\"\n      |  ^~~~~\n/tmp/scr-pmcbw830/base.c: In function \u2018open_test_fd\u2019:\n/tmp/scr-pmcbw830/base.c:24:2: error: #error \"unsupported FD_SOURCE\"\n   24 | #error \"unsupported FD_SOURCE\"\n      |  ^~~~~\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone:  (2), or memfd_create (3)\"\n    8 | #error \"FD_SOURCE must select open (1), openat (2), or memfd_create (3)\"\n      |  ^~~~~\n/tmp/scr-pmcbw830/base.c: I",
+  "id": "c-programs/proc-fdinfo"
+ },
+ {
+  "program": "tests/c/proc_locks.c",
+  "mutation_sites": 29,
+  "base": {
+   "compiled": false,
+   "cc_err": "99 |   snprintf(first_path, sizeof(first_path), \"/tmp/hermit-proc-locks-%d-a\", LOCK_API);\n      |                                                                           ^~~~~~~~\n/tmp/scr-wzeclx_h/base.c:99:75: note: each undeclared identifier is reported only once for each function it appears in\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone: 99 |   snprintf(first_path, sizeof(first_path), \"/tmp/hermit-proc-locks-%d-a\", LOCK_API);\n      |                                                     ",
+  "id": "c-programs/proc-locks"
+ },
+ {
+  "program": "tests/c/process_mrelease_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/process-mrelease-enosys"
+ },
+ {
+  "program": "tests/c/process_vm_readv_refusal_probe.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/process-vm-readv-refusal-probe"
+ },
+ {
+  "program": "tests/c/process_vm_writev_refusal_probe.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/process-vm-writev-refusal-probe"
+ },
+ {
+  "program": "tests/c/procfs_positioned_probe.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/procfs-positioned-probe"
+ },
+ {
+  "program": "tests/c/prodcons_determinism.c",
+  "mutation_sites": 6,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "81282a1fb8147d5c",
+   "outlen": 68
+  },
+  "bucket": "REFUSABLE",
+  "channel": "timeout",
+  "sites_tried": 1,
+  "why": "a single-site mutant hangs where baseline exits 0 (observable via harness timeout)",
+  "id": "c-programs/prodcons-determinism"
+ },
+ {
+  "program": "tests/c/pselect6_simulation.c",
+  "mutation_sites": 51,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "67433759fd492e6d",
+   "outlen": 23
+  },
+  "bucket": "REFUSABLE",
+  "channel": "timeout",
+  "sites_tried": 1,
+  "why": "a single-site mutant hangs where baseline exits 0 (observable via harness timeout)",
+  "id": "c-programs/pselect6-simulation"
+ },
+ {
+  "program": "tests/c/ptrace_attach_eperm.c",
+  "mutation_sites": 11,
+  "base": {
+   "compiled": true,
+   "timeout": true
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline times out standalone (needs harness env)",
+  "id": "c-programs/ptrace-attach-eperm"
+ },
+ {
+  "program": "tests/c/ptrace_eperm.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "4357c8a18b9107c5",
+   "outlen": 33
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/ptrace-eperm"
+ },
+ {
+  "program": "tests/c/ptrace_seize_eperm.c",
+  "mutation_sites": 11,
+  "base": {
+   "compiled": true,
+   "timeout": true
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline times out standalone (needs harness env)",
+  "id": "c-programs/ptrace-seize-eperm"
+ },
+ {
+  "program": "tests/c/ptrace_traceme_eperm.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/ptrace-traceme-eperm"
+ },
+ {
+  "program": "tests/c/pty_nr_count.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/pty-nr-count"
+ },
+ {
+  "program": "tests/c/simple/racewrite_nostdlib.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/racewrite-nostdlib"
+ },
+ {
+  "program": "tests/c/random_sources.c",
+  "mutation_sites": 55,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "ad44056a02663aee",
+   "outlen": 1375
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 2",
+  "id": "c-programs/random-sources"
+ },
+ {
+  "program": "tests/c/rcx_canonicalization.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "60ab39b068f20e83",
+   "outlen": 49
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/rcx-canonicalization"
+ },
+ {
+  "program": "tests/c/record_replay_fd_close.c",
+  "mutation_sites": 20,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/record-replay-fd-close"
+ },
+ {
+  "program": "tests/c/record_replay_file_state.c",
+  "mutation_sites": 43,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "d268fdbcb2aaea51",
+   "outlen": 60
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/record-replay-file-state"
+ },
+ {
+  "program": "tests/c/record_replay_lseek_seek_cur.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/record-replay-lseek-seek-cur"
+ },
+ {
+  "program": "tests/c/record_replay_setsockopt.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "81a01674bdbc3ed8",
+   "outlen": 21
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 5",
+  "id": "c-programs/record-replay-setsockopt"
+ },
+ {
+  "program": "tests/c/recvmsg_scm_rights_mmap.c",
+  "mutation_sites": 17,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "50212370d90ce8b6",
+   "outlen": 27
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/recvmsg-scm-rights-mmap"
+ },
+ {
+  "program": "tests/c/remap_file_pages_anonymous_enosys.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/remap-file-pages-anonymous-enosys"
+ },
+ {
+  "program": "tests/c/remap_file_pages_memfd_enosys.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/remap-file-pages-memfd-enosys"
+ },
+ {
+  "program": "tests/c/remap_file_pages_tmpfile_enosys.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/remap-file-pages-tmpfile-enosys"
+ },
+ {
+  "program": "tests/c/request_key_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/request-key-enosys"
+ },
+ {
+  "program": "tests/c/resource_determinism.c",
+  "mutation_sites": 58,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "7fff395f3cce97c3",
+   "outlen": 757
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/resource-determinism"
+ },
+ {
+  "program": "tests/c/sched_setattr_batch.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/sched-setattr-batch"
+ },
+ {
+  "program": "tests/c/sched_setattr_idle.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/sched-setattr-idle"
+ },
+ {
+  "program": "tests/c/sched_setattr_other.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/sched-setattr-other"
+ },
+ {
+  "program": "tests/c/sched_yield_progress.c",
+  "mutation_sites": 11,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "0cf05b84c117bf29",
+   "outlen": 38
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 2",
+  "id": "c-programs/sched-yield-progress"
+ },
+ {
+  "program": "tests/c/scheduler_policy_queries.c",
+  "mutation_sites": 15,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/scheduler-policy-queries"
+ },
+ {
+  "program": "tests/c/setitimer_determinism.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "aa8afff1d4a0e293",
+   "outlen": 78
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 2,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/setitimer-determinism"
+ },
+ {
+  "program": "tests/c/sigmask_preemption.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "33120d6f8e5896b4",
+   "outlen": 62
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 2,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "c-programs/sigmask-preemption"
+ },
+ {
+  "program": "tests/c/signal_determinism.c",
+  "mutation_sites": 122,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/signal-determinism"
+ },
+ {
+  "program": "tests/c/sigpipe_siginfo.c",
+  "mutation_sites": 53,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "57183d003d231921",
+   "outlen": 18
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/sigpipe-siginfo"
+ },
+ {
+  "program": "tests/c/sigtimedwait-no-timeout.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": false,
+   "cc_err": "/tmp/scr-43o53dl9/base.c:42:10: fatal error: util/assert.h: No such file or directory\n   42 | #include \"util/assert.h\"\n      |          ^~~~~~~~~~~~~~~\ncompilation terminated.\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone: /tmp/scr-43o53dl9/base.c:42:10: fatal error: util/assert.h: No such file or directory\n   42 | #include \"util/assert.h\"\n      |          ^~~~~~~~~~~~~~",
+  "id": "c-programs/sigtimedwait-no-timeout"
+ },
+ {
+  "program": "tests/c/sigtimedwait-timeout-0s.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": false,
+   "cc_err": "/tmp/scr-w5hf0c2k/base.c:43:10: fatal error: util/assert.h: No such file or directory\n   43 | #include \"util/assert.h\"\n      |          ^~~~~~~~~~~~~~~\ncompilation terminated.\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone: /tmp/scr-w5hf0c2k/base.c:43:10: fatal error: util/assert.h: No such file or directory\n   43 | #include \"util/assert.h\"\n      |          ^~~~~~~~~~~~~~",
+  "id": "c-programs/sigtimedwait-timeout-0s"
+ },
+ {
+  "program": "tests/c/sigtimedwait-timeout-1s.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": false,
+   "cc_err": "/tmp/scr-_c6as9_0/base.c:42:10: fatal error: util/assert.h: No such file or directory\n   42 | #include \"util/assert.h\"\n      |          ^~~~~~~~~~~~~~~\ncompilation terminated.\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone: /tmp/scr-_c6as9_0/base.c:42:10: fatal error: util/assert.h: No such file or directory\n   42 | #include \"util/assert.h\"\n      |          ^~~~~~~~~~~~~~",
+  "id": "c-programs/sigtimedwait-timeout-1s"
+ },
+ {
+  "program": "tests/c/so_incoming_cpu_tcp4.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/so-incoming-cpu-tcp4"
+ },
+ {
+  "program": "tests/c/so_incoming_cpu_tcp6.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/so-incoming-cpu-tcp6"
+ },
+ {
+  "program": "tests/c/so_incoming_cpu_udp4.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/so-incoming-cpu-udp4"
+ },
+ {
+  "program": "tests/c/socket_cookie_tcp.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/socket-cookie-tcp"
+ },
+ {
+  "program": "tests/c/socket_cookie_udp.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/socket-cookie-udp"
+ },
+ {
+  "program": "tests/c/socket_cookie_unix.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": false,
+   "cc_err": "/tmp/scr-jq1kruiz/base.c:1:10: fatal error: socket_cookie_common.h: No such file or directory\n    1 | #include \"socket_cookie_common.h\"\n      |          ^~~~~~~~~~~~~~~~~~~~~~~~\ncompilation terminated.\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone: /tmp/scr-jq1kruiz/base.c:1:10: fatal error: socket_cookie_common.h: No such file or directory\n    1 | #include \"socket_cookie_common.h\"\n      |       ",
+  "id": "c-programs/socket-cookie-unix"
+ },
+ {
+  "program": "tests/c/socket_ioctl_timestamp.c",
+  "mutation_sites": 29,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/socket-ioctl-timestamp"
+ },
+ {
+  "program": "tests/c/socket_timestamp_edge_cases.c",
+  "mutation_sites": 20,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "237ff1081253f64a",
+   "outlen": 31
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 2",
+  "id": "c-programs/socket-timestamp-edge-cases"
+ },
+ {
+  "program": "tests/c/socket_timestamp_timespec.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "4a5eae51288da929",
+   "outlen": 15
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/socket-timestamp-timespec"
+ },
+ {
+  "program": "tests/c/socket_timestamp_timeval.c",
+  "mutation_sites": 10,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "2a6d69ec1e299059",
+   "outlen": 13
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/socket-timestamp-timeval"
+ },
+ {
+  "program": "tests/c/splice_enosys.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/splice-enosys"
+ },
+ {
+  "program": "tests/c/statmount_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/statmount-enosys"
+ },
+ {
+  "program": "tests/c/syscall_file_io.c",
+  "mutation_sites": 14,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "632d0f8b9698ef98",
+   "outlen": 27
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/syscall-file-io"
+ },
+ {
+  "program": "tests/c/syscall_file_metadata.c",
+  "mutation_sites": 21,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "57a74d78ecf93f4f",
+   "outlen": 34
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/syscall-file-metadata"
+ },
+ {
+  "program": "tests/c/syscall_quick_wins.c",
+  "mutation_sites": 28,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/syscall-quick-wins"
+ },
+ {
+  "program": "tests/c/sysfs_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "77a60c6b8a6c3c90",
+   "outlen": 36
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/sysfs-enosys"
+ },
+ {
+  "program": "tests/c/sysinfo.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/sysinfo"
+ },
+ {
+  "program": "tests/c/sysinfo_uptime.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/sysinfo-uptime"
+ },
+ {
+  "program": "tests/c/syslog_deterministic.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/syslog-deterministic"
+ },
+ {
+  "program": "tests/c/sysv_sem_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/sysv-sem-enosys"
+ },
+ {
+  "program": "tests/c/sysv_shm_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/sysv-shm-enosys"
+ },
+ {
+  "program": "tests/c/tcp_info_accept4.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/tcp-info-accept4"
+ },
+ {
+  "program": "tests/c/tcp_info_accept6.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/tcp-info-accept6"
+ },
+ {
+  "program": "tests/c/tcp_info_client4.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/tcp-info-client4"
+ },
+ {
+  "program": "tests/c/tee_enosys.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/tee-enosys"
+ },
+ {
+  "program": "tests/c/thread_self_procfs_handoff.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "4ec014d923f7213d",
+   "outlen": 38
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/thread-self-procfs-handoff"
+ },
+ {
+  "program": "tests/c/threadExhaustion.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/threadexhaustion"
+ },
+ {
+  "program": "tests/c/timer_create_determinism.c",
+  "mutation_sites": 6,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "88d3c6bddc5cce60",
+   "outlen": 61
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/timer-create-determinism"
+ },
+ {
+  "program": "tests/c/uname.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "8ab7c7b4879f4632",
+   "outlen": 217
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "c-programs/uname"
+ },
+ {
+  "program": "tests/c/unix_autobind_dgram.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/unix-autobind-dgram"
+ },
+ {
+  "program": "tests/c/unix_autobind_seqpacket.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/unix-autobind-seqpacket"
+ },
+ {
+  "program": "tests/c/unix_autobind_stream.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "c-programs/unix-autobind-stream"
+ },
+ {
+  "program": "tests/c/ustat_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/ustat-enosys"
+ },
+ {
+  "program": "tests/c/vforkExec.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "73358da21b4d1857",
+   "outlen": 39
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> -11",
+  "id": "c-programs/vforkexec"
+ },
+ {
+  "program": "tests/c/vmsplice_enosys.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "c-programs/vmsplice-enosys"
+ },
+ {
+  "program": "tests/c/wait_on_child.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "33fbfd1ca93163cb",
+   "outlen": 47
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/wait-on-child"
+ },
+ {
+  "program": "tests/c/writev_determinism.c",
+  "mutation_sites": 65,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "eb8a913e793713b8",
+   "outlen": 36
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "c-programs/writev-determinism"
+ },
+ {
+  "program": "tests/chaos/lock_granularity.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "1cd27b440cf0189a",
+   "outlen": 78
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "chaos-c/lock-granularity"
+ },
+ {
+  "program": "tests/debugger/guests/debuggee.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "debugger-c/debuggee"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/fork_tree.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "8ddf8b17d77780a3",
+   "outlen": 113
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "determinism-stress-c/fork-tree"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/guests/lock_free.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "d6c1a097f316b197",
+   "outlen": 58
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 4",
+  "id": "determinism-stress-c/lock-free"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/mmap_fork_shared.c",
+  "mutation_sites": 11,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "cc89b297383dff63",
+   "outlen": 119
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "determinism-stress-c/mmap-fork-shared"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/guests/pid_tid.c",
+  "mutation_sites": 13,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "caed425e9be04760",
+   "outlen": 221
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "determinism-stress-c/pid-tid"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/pipe_chain.c",
+  "mutation_sites": 19,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "46835a9f9f1301b7",
+   "outlen": 195
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 2,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "determinism-stress-c/pipe-chain"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/pipe_prefill.c",
+  "mutation_sites": 10,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "85f07bae7e5247a9",
+   "outlen": 62
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "determinism-stress-c/pipe-prefill"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/producer_consumer.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "720c926a0ed1642b",
+   "outlen": 940
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "determinism-stress-c/producer-consumer"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/guests/signal_order.c",
+  "mutation_sites": 13,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "08f3c29e95ca52c4",
+   "outlen": 23
+  },
+  "bucket": "REFUSABLE",
+  "channel": "timeout",
+  "sites_tried": 1,
+  "why": "a single-site mutant hangs where baseline exits 0 (observable via harness timeout)",
+  "id": "determinism-stress-c/signal-order"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/thread_contention.c",
+  "mutation_sites": 27,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "id": "determinism-stress-c/thread-contention"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/thread_stress.c",
+  "mutation_sites": 32,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "324b5bd4a7e41de4",
+   "outlen": 223
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "determinism-stress-c/thread-stress"
+ },
+ {
+  "program": "tests/shared-futex-verify/qemu_exec_init.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": false,
+   "cc_err": "efinition of `_start'; /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o:(.text+0x0): first defined here\n/usr/bin/ld: /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o: in function `_start':\n(.text+0x1b): undefined reference to `main'\ncollect2: error: ld returned 1 exit status\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone: efinition of `_start'; /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o:(.text+0x0): first defined here\n/usr/bin/ld: /usr/lib/gcc/x86_64-r",
+  "id": "shared-futex-c/qemu-exec-init"
+ },
+ {
+  "program": "tests/shared-futex-verify/qemu_hello.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "id": "shared-futex-c/qemu-hello"
+ },
+ {
+  "program": "tests/shared-futex-verify/qemu_init.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": false,
+   "cc_err": "efinition of `_start'; /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o:(.text+0x0): first defined here\n/usr/bin/ld: /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o: in function `_start':\n(.text+0x1b): undefined reference to `main'\ncollect2: error: ld returned 1 exit status\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone: efinition of `_start'; /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o:(.text+0x0): first defined here\n/usr/bin/ld: /usr/lib/gcc/x86_64-r",
+  "id": "shared-futex-c/qemu-init"
+ },
+ {
+  "program": "tests/shared-futex-verify/qemu_net_init.c",
+  "mutation_sites": 26,
+  "base": {
+   "compiled": false,
+   "cc_err": "efinition of `_start'; /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o:(.text+0x0): first defined here\n/usr/bin/ld: /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o: in function `_start':\n(.text+0x1b): undefined reference to `main'\ncollect2: error: ld returned 1 exit status\n"
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline does not compile standalone: efinition of `_start'; /usr/lib/gcc/x86_64-redhat-linux/11/../../../../lib64/crt1.o:(.text+0x0): first defined here\n/usr/bin/ld: /usr/lib/gcc/x86_64-r",
+  "id": "shared-futex-c/qemu-net-init"
+ },
+ {
+  "program": "tests/c/clock_determinism.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": true
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline times out standalone (needs harness env)",
+  "id": "system-utils/clock-determinism"
+ },
+ {
+  "program": "",
+  "bucket": "NOT-DETERMINABLE",
+  "why": "manifest test has no program field; no fixture source to mutate",
+  "id": "system-utils/du-tree-summary"
+ },
+ {
+  "program": "",
+  "bucket": "NOT-DETERMINABLE",
+  "why": "manifest test has no program field; no fixture source to mutate",
+  "id": "system-utils/find-tree-metadata"
+ },
+ {
+  "program": "tests/c/file_timestamp_identity.c",
+  "mutation_sites": 13,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "5e7c7d37fbb065cd",
+   "outlen": 1989
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "system-utils/file-timestamp-identity"
+ },
+ {
+  "program": "tests/c/startup_surface_identity.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "f0716cb4bc942fe4",
+   "outlen": 11623
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "system-utils/startup-surface-identity"
+ },
+ {
+  "program": "tests/c/shm_coherency_identity.c",
+  "mutation_sites": 19,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "d772330a63fc82fc",
+   "outlen": 1238
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "system-utils/shm-coherency-identity"
+ },
+ {
+  "program": "tests/c/clock_exec_continuity.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "cef5558a80c1a432",
+   "outlen": 229
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "id": "system-utils/clock-exec-continuity"
+ },
+ {
+  "program": "tests/util/pmu_skid.c",
+  "mutation_sites": 43,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "f68b7945250dca6c",
+   "outlen": 321
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "id": "util-c/pmu-skid"
+ }
+]

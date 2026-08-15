@@ -1,0 +1,582 @@
+[
+ {
+  "id": "backend-parity-c/set-tid-address",
+  "program": "tests/backend-parity/fixtures/set_tid_address.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/copy-file-range-refusal",
+  "program": "tests/backend-parity/fixtures/copy_file_range_refusal.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/epoll-readiness",
+  "program": "tests/backend-parity/fixtures/epoll_readiness.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/faccessat2-flags",
+  "program": "tests/backend-parity/fixtures/faccessat2_flags.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/fadvise-hints",
+  "program": "tests/backend-parity/fixtures/fadvise_hints.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/fallocate-extents",
+  "program": "tests/backend-parity/fixtures/fallocate_extents.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/fchmod-bits",
+  "program": "tests/backend-parity/fixtures/fchmod_bits.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/file-backed-mmap",
+  "program": "tests/backend-parity/fixtures/file_backed_mmap.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/flock-lifecycle",
+  "program": "tests/backend-parity/fixtures/flock_lifecycle.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/linkat-flags",
+  "program": "tests/backend-parity/fixtures/linkat_flags.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/mempolicy-default",
+  "program": "tests/backend-parity/fixtures/mempolicy_default.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/mincore-residency",
+  "program": "tests/backend-parity/fixtures/mincore_residency.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/mkdir-rmdir",
+  "program": "tests/backend-parity/fixtures/mkdir_rmdir.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/mknod-special",
+  "program": "tests/backend-parity/fixtures/mknod_special.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/openat2-refusal",
+  "program": "tests/backend-parity/fixtures/openat2_refusal.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/path-file-ops",
+  "program": "tests/backend-parity/fixtures/path_file_ops.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/pipe2-flags",
+  "program": "tests/backend-parity/fixtures/pipe2_flags.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/pthread-lifecycle",
+  "program": "tests/backend-parity/fixtures/pthread_lifecycle.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/readdir-entries",
+  "program": "tests/backend-parity/fixtures/readdir_entries.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/rename-ops",
+  "program": "tests/backend-parity/fixtures/rename_ops.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/renameat2-flags",
+  "program": "tests/backend-parity/fixtures/renameat2_flags.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/robust-list",
+  "program": "tests/backend-parity/fixtures/robust_list.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/signalfd-create",
+  "program": "tests/backend-parity/fixtures/signalfd_create.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/statfs-free-determinism",
+  "program": "tests/backend-parity/fixtures/statfs_free_determinism.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/statx-metadata",
+  "program": "tests/backend-parity/fixtures/statx_metadata.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/symlink-ops",
+  "program": "tests/backend-parity/fixtures/symlink_ops.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/sync-file-range",
+  "program": "tests/backend-parity/fixtures/sync_file_range.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/umask-mode",
+  "program": "tests/backend-parity/fixtures/umask_mode.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/uname-identity",
+  "program": "tests/backend-parity/fixtures/uname_identity.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/utimensat-determinism",
+  "program": "tests/backend-parity/fixtures/utimensat_determinism.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/shutdown-socketpair",
+  "program": "tests/backend-parity/fixtures/shutdown_socketpair.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/bind-getsockname",
+  "program": "tests/backend-parity/fixtures/bind_getsockname.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "backend-parity-c/append-pwrite",
+  "program": "tests/backend-parity/fixtures/append_pwrite.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/vectored-io",
+  "program": "tests/backend-parity/fixtures/vectored_io.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/eventfd-semantics",
+  "program": "tests/backend-parity/fixtures/eventfd_probe.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/ftruncate-sparse",
+  "program": "tests/backend-parity/fixtures/ftruncate_sparse.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/openat-flags",
+  "program": "tests/backend-parity/fixtures/openat_flags.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/cwd-roundtrip",
+  "program": "tests/backend-parity/fixtures/cwd_roundtrip.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/o-tmpfile-anon",
+  "program": "tests/backend-parity/fixtures/o_tmpfile_anon.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/fork-exec-pipeline",
+  "program": "tests/backend-parity/fixtures/fork_exec_pipeline.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/signal-delivery-sequence",
+  "program": "tests/backend-parity/fixtures/signal_delivery_sequence.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "backend-parity-c/file-io-roundtrip",
+  "program": "tests/backend-parity/fixtures/file_io_roundtrip.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "bin-c/posix-timer-test",
+  "program": "tests/bin/posix_timer_test.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "bin-c/robust-futex-test",
+  "program": "tests/bin/robust_futex_test.c",
+  "check_channel": "timeout"
+ },
+ {
+  "id": "c-programs/adjtimex-deterministic",
+  "program": "tests/c/adjtimex_deterministic.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/clock-adjtime-deterministic",
+  "program": "tests/c/clock_adjtime_deterministic.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/clone",
+  "program": "tests/c/clone.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/dbt-copied-tiocgpgrp",
+  "program": "tests/c/dbt_copied_tiocgpgrp.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "c-programs/dbt-exec-failure",
+  "program": "tests/c/dbt_exec_failure.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/dbt-execveat-unsupported",
+  "program": "tests/c/dbt_execveat_unsupported.c",
+  "check_channel": null
+ },
+ {
+  "id": "c-programs/dbt-mmap-exec",
+  "program": "tests/c/dbt_mmap_exec.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/dbt-pid-virtualization",
+  "program": "tests/c/dbt_pid_virtualization.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "c-programs/dbt-self-sigqueue",
+  "program": "tests/c/dbt_self_sigqueue.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/dbt-unsupported-syscall",
+  "program": "tests/c/dbt_unsupported_syscall.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/get-robust-list-child",
+  "program": "tests/c/get_robust_list_child.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/get-robust-list-self",
+  "program": "tests/c/get_robust_list_self.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/get-robust-list-thread",
+  "program": "tests/c/get_robust_list_thread.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/getitimer-determinism-probe",
+  "program": "tests/c/getitimer_determinism_probe.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/getsockopt-null",
+  "program": "tests/c/getsockopt_null.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/hello-alarm",
+  "program": "tests/c/hello_alarm.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/hello-signals",
+  "program": "tests/c/hello_signals.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/io-uring-ring-determinism",
+  "program": "tests/c/io_uring_ring_determinism.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/ioctl-fioclex",
+  "program": "tests/c/ioctl_fioclex.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/kcmp-eperm",
+  "program": "tests/c/kcmp_eperm.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/map-shadow-stack-enosys",
+  "program": "tests/c/map_shadow_stack_enosys.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/memfd-secret-enosys",
+  "program": "tests/c/memfd_secret_enosys.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/memorypress",
+  "program": "tests/c/memoryPress.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/mmap-stress-determinism",
+  "program": "tests/c/mmap_stress_determinism.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/pause-alarm-interrupt",
+  "program": "tests/c/pause_alarm_interrupt.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/periodic-setitimer-delivery",
+  "program": "tests/c/periodic_setitimer_delivery.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/pidfd-open-self",
+  "program": "tests/c/pidfd_open_self.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/pidfd-poll-self",
+  "program": "tests/c/pidfd_poll_self.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/pidfd-waitid-child",
+  "program": "tests/c/pidfd_waitid_child.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/ppoll-readv",
+  "program": "tests/c/ppoll_readv.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/prctl-dumpable",
+  "program": "tests/c/prctl_dumpable.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/proc-fd-link-aliases",
+  "program": "tests/c/proc_fd_link_aliases.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/prodcons-determinism",
+  "program": "tests/c/prodcons_determinism.c",
+  "check_channel": "timeout"
+ },
+ {
+  "id": "c-programs/pselect6-simulation",
+  "program": "tests/c/pselect6_simulation.c",
+  "check_channel": "timeout"
+ },
+ {
+  "id": "c-programs/ptrace-eperm",
+  "program": "tests/c/ptrace_eperm.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/random-sources",
+  "program": "tests/c/random_sources.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/rcx-canonicalization",
+  "program": "tests/c/rcx_canonicalization.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/record-replay-fd-close",
+  "program": "tests/c/record_replay_fd_close.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/record-replay-file-state",
+  "program": "tests/c/record_replay_file_state.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/record-replay-setsockopt",
+  "program": "tests/c/record_replay_setsockopt.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/recvmsg-scm-rights-mmap",
+  "program": "tests/c/recvmsg_scm_rights_mmap.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/sched-yield-progress",
+  "program": "tests/c/sched_yield_progress.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/setitimer-determinism",
+  "program": "tests/c/setitimer_determinism.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/sigmask-preemption",
+  "program": "tests/c/sigmask_preemption.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "c-programs/sigpipe-siginfo",
+  "program": "tests/c/sigpipe_siginfo.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/socket-timestamp-edge-cases",
+  "program": "tests/c/socket_timestamp_edge_cases.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/socket-timestamp-timespec",
+  "program": "tests/c/socket_timestamp_timespec.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/socket-timestamp-timeval",
+  "program": "tests/c/socket_timestamp_timeval.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/syscall-file-io",
+  "program": "tests/c/syscall_file_io.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/syscall-file-metadata",
+  "program": "tests/c/syscall_file_metadata.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/sysfs-enosys",
+  "program": "tests/c/sysfs_enosys.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/thread-self-procfs-handoff",
+  "program": "tests/c/thread_self_procfs_handoff.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/timer-create-determinism",
+  "program": "tests/c/timer_create_determinism.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/uname",
+  "program": "tests/c/uname.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "c-programs/vforkexec",
+  "program": "tests/c/vforkExec.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/wait-on-child",
+  "program": "tests/c/wait_on_child.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "c-programs/writev-determinism",
+  "program": "tests/c/writev_determinism.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "chaos-c/lock-granularity",
+  "program": "tests/chaos/lock_granularity.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "determinism-stress-c/fork-tree",
+  "program": "tests/e2e/determinism-stress/fork_tree.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "determinism-stress-c/lock-free",
+  "program": "tests/e2e/determinism-stress/guests/lock_free.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "determinism-stress-c/mmap-fork-shared",
+  "program": "tests/e2e/determinism-stress/mmap_fork_shared.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "determinism-stress-c/pid-tid",
+  "program": "tests/e2e/determinism-stress/guests/pid_tid.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "determinism-stress-c/pipe-chain",
+  "program": "tests/e2e/determinism-stress/pipe_chain.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "determinism-stress-c/pipe-prefill",
+  "program": "tests/e2e/determinism-stress/pipe_prefill.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "determinism-stress-c/producer-consumer",
+  "program": "tests/e2e/determinism-stress/producer_consumer.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "determinism-stress-c/signal-order",
+  "program": "tests/e2e/determinism-stress/guests/signal_order.c",
+  "check_channel": "timeout"
+ },
+ {
+  "id": "determinism-stress-c/thread-stress",
+  "program": "tests/e2e/determinism-stress/thread_stress.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "system-utils/file-timestamp-identity",
+  "program": "tests/c/file_timestamp_identity.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "system-utils/startup-surface-identity",
+  "program": "tests/c/startup_surface_identity.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "system-utils/shm-coherency-identity",
+  "program": "tests/c/shm_coherency_identity.c",
+  "check_channel": "stdout"
+ },
+ {
+  "id": "system-utils/clock-exec-continuity",
+  "program": "tests/c/clock_exec_continuity.c",
+  "check_channel": "status"
+ },
+ {
+  "id": "util-c/pmu-skid",
+  "program": "tests/util/pmu_skid.c",
+  "check_channel": "stdout"
+ }
+]

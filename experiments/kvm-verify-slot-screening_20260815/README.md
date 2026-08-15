@@ -1,0 +1,127 @@
+# Screening the disabled `verify/kvm` slots for whether a fixture can refuse
+
+Captured 2026-08-15 by `hermit-kvm2` on `devbig030.atn3.facebook.com`.
+Hermit `e18acde586f72829e4a96d92b57b78f3abe21b2c`; `origin/main` at capture was
+`61b9ba7aa4dd763c1bda091316852d5290f9466c`; Reverie pin `c261050cfd41bec67e31bfd0cf6f56be008d0ebb`.
+
+## Hypothesis
+
+Enabling a cell is only worth doing if that cell can go red when the backend is wrong. These
+operators measure, per fixture, whether a defect would reach the channel the verdict reads.
+
+## What the verdict actually reads
+
+Established from `ci/test_harness.sh`, not assumed. The gate is an `elif` chain (~3785-3810):
+
+1. guest-launch-refused
+2. timeout → `FAIL`
+3. **`elif [[ $status != 0 ]] → FAIL`** — exit status, unconditional, every mode
+4. `elif [[ $mode == verify && verify_asserts_bitwise_parity ]]` → require full parity
+
+Step 4 is a per-cell manifest opt-in (`verify_asserts_bitwise_parity`, line 3185, defaults false)
+used by **2** cells in the whole tree on `origin/main`. So for ~every cell here, **exit status is the
+operative channel**. All 313 slots carry an identical `observation = {status=true, stdout=true,
+stderr=false}` — **stderr is not observed**, so a fixture whose only failure report is
+`fprintf(stderr, ...)` while returning 0 cannot express failure at all.
+
+Note also: a `verify` cell runs the same backend twice and compares run-to-run, so stdout catches
+*variation*, never *wrongness* — a deterministic wrong answer compares equal to itself.
+
+## Two operators, and why both are needed
+
+| | `operators/screen.py` | `operators/value_mutate.py` |
+|---|---|---|
+| mutation | flip one `==`/`!=` (check sense) | `+1` on an integer reaching stdout |
+| question | does *some condition* reach exit status? | would a *wrong value* be caught? |
+
+**They give opposite verdicts on the same fixture.** Many fixtures check that a syscall *succeeded*
+and never compare the value — the expected value lives only in a header comment. `vectored_io.c`
+(`checksum=32640 → 32641`) and `eventfd_probe.c` (`counter=36 → 37`) both survive at rc 0.
+
+Check mutation is strictly *more* sensitive, so its REFUSABLE count is an **upper bound** and its
+CANNOT-FAIL verdicts are safe.
+
+## Results
+
+Population: the 313 manifest entries with a `kvm` key under
+`[test.modes.verify.backends_disabled]` (313 disabled + 23 enabled = 336).
+
+Check mutation over 313 — REFUSABLE (exit-status gated) **86** · CANNOT-FAIL (not exit-gated) **34** ·
+recorded KVM capability limit **79** · NOT-DETERMINABLE **114**.
+
+Value mutation over the 86 — VALUE-GATED **10** · NOT-VALUE-GATED **24** · NOT-DETERMINABLE **52**.
+So the bound tightens from `≤86` to **`[10, 62]`**; 24 slots move out of REFUSABLE on measurement.
+
+`--probe-disabled` sample (15 cells) — 12 PASS, 3 FAIL. Of the 11 whose justification *asserts* an
+observed KVM failure, **9 now PASS**: those justifications are stale. `--probe-disabled` is a
+selector (it only sets `classification=disabled` and swaps `emit_required_plan` for `emit_gap_plan`);
+it does not touch the verdict path.
+
+## Two caveats a later user needs
+
+**1. Load manufactures failures, not passes.** Under host contention a PASS is robust — it completed
+and satisfied every gate, and an idle host would only make that easier. A FAIL is *unattributable*:
+it may be a timeout or launch refusal caused by load. This is why the 12 PASSes above stand while the
+3 FAILs must be re-run before anyone records them as KVM gaps. The probe sample was taken at load
+average 20/51/57.
+
+**2. One row was screened against source one line older than `origin/main`.** The capture checkout
+differs from `origin/main` by exactly two lines: the second `assert = { bitwise_parity = true }` in
+`backend-parity-c.toml`, and one line in `tests/backend-parity/fixtures/set_tid_address.c`. That
+fixture sits in the REFUSABLE bucket, so its verdict was computed against the older source. One row
+of 313. `ci/test_harness.sh` was byte-identical to `origin/main` at capture.
+
+## Operator gotchas, each one measured rather than anticipated
+
+- **Mutate one site at a time.** Flipping every `==` at once lets mutations cancel: on
+  `return ok == 4 ? 0 : 1`, two flips restored a 0 return and the fixture scored CANNOT-FAIL. Wrong,
+  and in the dangerous direction.
+- **Strip string literals before finding write sites.** `printf("counter=%llu", ...)` matches as a
+  write to `counter`.
+- **Try every write site**, not first and last — the genuine one is often in the middle.
+- **Exclude pointers and array indices.** `state += 1` on `struct s *state` is pointer arithmetic
+  (hang); `id += 1` used as `arr[id]` segfaults. Both fake a VALUE-GATED verdict.
+- **Inject after the write, never at the printf** — the printf is downstream of any check, so
+  injecting there steps over the very check you are testing for.
+- Keep "mutation never applied" strictly apart from "applied, nothing changed". Only the second is
+  evidence; the first is NOT-DETERMINABLE.
+
+## Controls
+
+`controls/` holds the ground-truth pair for each operator. Each pair differs in **exactly one**
+respect — the presence of the check — so it pins the operator; fixtures differing in more than one
+respect would pin nothing.
+
+- check operator: `pos_ternary.c` (must be caught) · `neg_cannotfail.c`, `neg_stderr_only.c`
+- value operator: `val_must_be_caught.c` (has `if (total != 36) return 1;`) ·
+  `val_must_not_be_caught.c` (identical, 36 only in a comment)
+- `pos_known_refusable.c` is the corpus fixture that the check operator **fails** to detect (it exits
+  1 standalone, needing the harness environment). Kept as a recorded negative result.
+
+Run the controls first. They caught four defects in these operators before any result was believed.
+
+## Reproducing
+
+Operators run fixtures **natively** — they never invoke hermit or the harness, because the question
+is about the fixture's source, not the backend.
+
+These files are byte-identical to the ones that produced the results in `results/`, hardcoded paths
+included, so the record matches what was measured. Two edits are therefore needed before reuse: set
+`REPO` at the top of `screen.py` and `value_mutate.py`, and fix the absolute `sys.path.insert` and
+output filename in `run_value.py`. Then:
+
+```bash
+python3 operators/screen.py        # reads results/population.json, writes results.json
+python3 operators/run_value.py     # reads results/refusable86.json, writes value_results.json
+```
+
+`operators/probe_batch.sh` drives `ci/test_harness.sh run --probe-disabled` one cell at a time
+(that selector requires exact `--test`, `--mode` and `--backend`).
+
+Stability: the value operator was run twice over all 116 rows with **0 verdict disagreements**, so
+one pass suffices. Per-row stability is *not* guaranteed for the concurrency fixtures —
+`lock_granularity.c` was observed once with a flaky standalone baseline.
+
+## Files
+
+`metadata.json` records a `sha256` and line count for every file here.
