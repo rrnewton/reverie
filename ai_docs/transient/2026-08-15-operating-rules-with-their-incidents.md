@@ -34,8 +34,16 @@ the API and grepping for the word, then repaired with a quoted heredoc.
 
 The identical class had already been recorded for `tg note` bodies earlier the
 same night — plain `<<EOF` expands, only `<<'EOF'` is safe — and *was still not
-generalised from* until it recurred on a different channel. Read back what you
-posted, on every channel, not just the exit code.
+generalised from* until it recurred on a different channel.
+
+A third instance the same session, on a different mechanism: a backgrounded
+`tg show | grep` finished with **exit code 0 and produced no data**, because the
+regex hit ugrep's complexity limit and both patterns refused to run. The task
+reported "completed (exit code 0)". Nothing had been searched. **A filter that
+declines to run and a filter that finds nothing are the same exit code and, at a
+glance, the same empty output.**
+
+Read back what you posted or retrieved, on every channel, not just the exit code.
 
 ### When a filtered run shows fewer lines than expected, the missing lines are the finding
 
@@ -61,6 +69,66 @@ identity in a handoff task filed for another agent. **The version the hash names
 was never preserved and is gone.** Six of eight artifacts still verified; the two
 that failed were the ones the author had touched most recently.
 
+### An audit that reports zero negatives over a population known to contain them is reporting its own binding, not the population
+
+**[recorded]** `ancestry_audit.py` reported **58 LANDED / 0 NOT-LANDED while 17
+pull requests were still open**. Acting on it would have phantom-closed 58 tasks
+and undone the same day's closure fix. The audit bound "landed" to any associated
+SHA, so every task with a SHA attached satisfied it.
+
+A zero in the refusal column is not a clean bill of health; it is the first thing
+to disbelieve. Ask what input would have produced a negative, and check that such
+an input exists in the population.
+
+After the fix — admit a candidate only if a linked PR's own `mergeCommit` or a
+commit carrying `Task: <task-id>` binds it to the task — the same population moved
+**34 LANDED→LANDED, 13 LANDED→NOT-LANDED, 11 LANDED→NOT-DETERMINABLE, 1
+UNKNOWN→NOT-DETERMINABLE**. The 0 was never the population's shape; it was the
+binding's.
+
+### Before tightening a check, measure how much of the population the tightened rule keeps
+
+**[recorded]** From the same repair, in the fixing agent's words: *"I measured
+before choosing the rule, so the audit would not be gutted: of the 58, 19 had a
+linked-PR mergeCommit and 15 had a commit naming the task. A sound rule keeps 34+,
+not 0."*
+
+A check that produces false positives is fixed by making it stricter, and the
+obvious failure is overshooting into a check that refuses everything. Both
+directions are wrong and only a measurement distinguishes them. This is the
+accept-case discipline applied to a gate's own tightening.
+
+### When candidates exist but none is attributable, the honest verdict is a third one
+
+**[recorded]** The repaired audit added a `NOT-DETERMINABLE` bucket — *"never
+LANDED, never NOT-LANDED"* — plus a `refused` field listing what was inspected and
+why it did not count. Eleven of the 58 landed there.
+
+Forcing an unattributable case into pass or fail manufactures a claim. Note-quoted
+SHAs, merge commits of incidentally-mentioned PRs, and SHAs tested against a
+repository they did not come from are non-evidence; recording them as *refused*
+keeps the audit trail without letting them vote.
+
+### A record in a coordination tool is not the authority; check the channel that actually binds
+
+**[recorded]** An approval recorded in TaskGraph **did not exist in the canonical
+binding on the pull request.** The lane had done the review; the authority channel
+had never received it. Adjacent and measured the same night: `approval_binding
+--gate` inspects labels, not thread comments, so an un-attested `APPROVED-AT` in a
+PR thread reads as CRITICAL-REVIEW-MISSING.
+
+### The practice we require can be the thing that creates the defect
+
+**[recorded]** Agents are required to cite PR URLs, branches and head SHAs in task
+notes. `pile()` flattens all task-note prose, so **an unrelated quoted PR URL plus
+a branch name or a 12-character head is enough to attribute work to the wrong
+task.** The citation discipline that makes findings auditable is what feeds the
+misattribution.
+
+When a tool consumes prose that a policy requires agents to write, the policy and
+the parser are one system. Check that the parser can distinguish a citation from a
+quotation before requiring more citations.
+
 ### A load-bearing figure must be traceable to a producer artifact
 
 **[recorded]** Of 13 load-bearing figures in one lane's reporting, **1** could be
@@ -71,9 +139,14 @@ that lives only in prose from a number that was never produced.
 
 ### A count of things beats a measurement of seconds when the question is whether something changed
 
-**[recorded]** A ~50-second swing between two otherwise identical runs made every
-single-run CPU-seconds figure uninterpretable. The discrete probe count
-`7 -> 8` at `91533e73` survived the same noise and answered the question.
+**[recorded]** The same-revision noise band was measured directly: four arms at a
+fixed head `233c0f144` spread **+71.94 CPU-seconds, +43.5%**. That made every
+single-run cost figure of the night uninterpretable, including ones already
+reported.
+
+**Three times a count outlived a duration in the same session**: the probe count
+`7 -> 8` at `91533e73`, the `336 tests / 5376 cells` population, and `55` die-sites.
+When the question is *did this change*, choose the discrete observable.
 
 ---
 
@@ -117,9 +190,13 @@ the plausible test and it was the wrong one.
 
 ### A guest whose contract violation does not change its exit status cannot be refused by a verdict that keys on exit status
 
-**[recorded]** Recorded against a verify-allow certification path. The verdict
-channel has to observe the property being asserted, not a proxy that the
-violation leaves untouched.
+**[recorded]** Case: startup-surface-identity. The accept arm was sound — 5/5
+matched with bitwise parity. The mutant was **proved to bite**: `ENVCOUNT 121 vs
+122`, with both binaries confirmed to have run. **And the mutant still exited 0.**
+
+So the gate was well-formed, the mutation was real, and the verdict could not see
+it, because the channel it keys on is one the violation does not disturb. The
+verdict has to observe the property being asserted, not a proxy.
 
 ### Re-measure on the head that will ship, not the head you measured an hour ago
 
@@ -249,7 +326,42 @@ beside it were already correct, which is what made the wrong labels effective.
 fixture refusing**. Under `ENOTCONN` on a `PATH` entry, absolute paths do not help
 — `/usr/bin/env` itself cannot resolve `bash` — and an unchanged retry succeeds.
 The same error code took out tmux, the `meta` CLI, and script spawning the same
-night.
+night. **Absent a gate that classifies this as infrastructure, it reads as every
+shell fixture refusing** — a whole-population red produced by one disconnected
+filesystem.
+
+### A universal failure cannot separate the work from the environment — only a second host can
+
+**[recorded]** `gate.manifest` failed on **every** local run for twelve hours,
+voiding local receipts. devbig014 ran the identical head `2b9f1de0ca2c` and **it
+cleared** — no 53-planned / 2-passed / 50-skipped, no NOT-VALIDATED. The fault was
+the host, not the work.
+
+A failure with no passing case in view carries no information about its own cause.
+The discriminator is not more runs on the same box; it is one run somewhere else.
+
+### An uncommitted edit to a shared hook under `core.hooksPath` is a fleet-wide outage, not one lane's work in progress
+
+**[measured]** `git config core.hooksPath` is `.githooks`, so git executes the
+**working-tree** copy of a hook, not the committed one. During this session the
+working-tree `.githooks/pre-push` was modified — uncommitted — to exec
+`scripts/main_write.py`, which does not exist at that path and was never committed
+there; the file lives at `agent-utils/scripts/main_write.py`. Every push to parent
+main from this checkout failed.
+
+**It then deadlocked writes entirely.** `parent-main-write commit` refuses unless
+local main equals freshly fetched `origin/main`; an unpushable local commit breaks
+that; the push that would clear it is the blocked one; and plain `git commit` is
+independently refused with "missing serialized-writer lock receipt". The first
+agent to attempt a parent-main write after the edit appeared gets stuck and stays
+stuck, with no sanctioned path out from inside the checkout.
+
+An uncommitted change to a versioned hook is not private to the lane making it. It
+is already live for everyone sharing the checkout.
+
+*Attribution of the edit is open at time of writing and routed to the lane owning
+serialized parent-repo writes. The mechanism above is measured; the ownership is
+not.*
 
 ### A write that returns success can still have been truncated
 
@@ -263,6 +375,18 @@ driver script `cd`-ing relative to an unstable base) and the `ENOTCONN` fault
 above. **They overlap and were explicitly recorded as needing separate
 confirmation rather than assumption.** Recorded here as an open attribution, not a
 settled one.
+
+### Persisted to an untracked path is not persisted
+
+**[measured]** Three artifacts were written under `ignored/` during the session
+specifically to rescue findings from agent-context loss. **`ignored/` is
+gitignored.** They survive context loss and die with the host.
+
+This applies to the present author's own evidence: the measurement instruments,
+prototype patches and run directories cited throughout the session all live under
+`ignored/revents-measure/`. They are durable against one failure mode and not the
+other. **Durable-against-context and durable-against-host are different
+properties, and only the second survives the machine.**
 
 ### Do not re-run or regenerate a missing or truncated artifact — report it where it sits
 
@@ -279,6 +403,13 @@ session: the two failing checksums were reported, not refreshed.
 
 **[recorded]** Without this, an agent asked to find something finds something.
 
+### When one half of a sentence in a handoff note is disproved, the other half is not independent evidence
+
+**[recorded]** Raised by hermit-bytes on the third stale blocker of the night. A
+compound claim written by one agent in one moment shares one act of observation.
+Refuting part of it does not leave the remainder standing on its own footing — it
+leaves the whole sentence needing re-verification.
+
 ### A note is one agent's unverified belief; verify the premise before acting on it
 
 **[measured]** A design document asserting that a configuration choice was
@@ -291,6 +422,18 @@ the reserved fixture domain `example.com`, and the disclosure prefix is explicit
 "disclosure, not authentication". **No repository artifact can distinguish
 human-owner intent from coordinator-agent intent** — for this or anything else. If
 human sign-off is required, it must come from the owner directly.
+
+### Knowing the pattern does not prevent the error; only checking does
+
+**[recorded]** The coordinator relayed a bounded-search result — "1 of 13 figures
+traceable" — to the owner as a verdict, **one hour after telling another agent that
+"not found by this search" is only useful if the search is named.** The expanded
+search then recovered the seven cells, `96.835%`, and `56`.
+
+This is the most repeated error of the session and it was made by the participant
+who had just articulated the rule against it. Treat familiarity with a failure mode
+as no defence against it. The control is the check, performed, every time — not the
+knowledge that the check exists.
 
 ### A rule without its incident becomes a ritual
 
