@@ -62,6 +62,33 @@
 #   behaviour; it does NOT prove that a real backend defect would move it. So 141 IS NOT A SECOND FLOOR -- the 58 are candidates
 #   needing their own screen against the stdout channel, and that screen has not been run.
 # =======================================================================================================================
+#
+# ======= FOLLOW-UP 2026-08-15: THE 58 STDOUT-CHANNEL CANDIDATES REMAIN UNSCREENED, AND THIS IS A STRUCTURAL LIMIT =======
+# The caveat above sized 58 programs that moved stdout while exit stayed 0. THEY HAVE NOT BEEN SCREENED AND THE COMBINED
+# FIGURE ON THE ORDER OF 141 IS STILL NOT A FLOOR. The reason is worth recording because it will not change by trying harder.
+#
+# WHAT A FAITHFUL STIMULUS WOULD HAVE TO BE: verify compares TWO RUNS OF THE SAME BINARY, so the perturbation must be applied
+#   to the DETERMINIZATION, not to the source. A source mutation shows a fixture's stdout is sensitive to program behaviour;
+#   it does not model what verify sees. The right stimulus is a relaxation that makes the backend fail to determinize something,
+#   after which a discriminating fixture's stdout should differ between the two runs.
+# SUCH RELAXATIONS EXIST AS FLAGS, AND EVERY ONE TESTED FAILED ONE OF THE TWO REQUIREMENTS -- keep the run alive, and be able to
+#   move a sensitive guest's stdout:
+#     --no-virtualize-time (+ --no-virtualize-metadata, which it requires): on a clock_gettime-printing guest the run ERRORS,
+#         "Sandbox container exited unexpectedly / Exited(1)". That is a broken run, not a divergence.
+#     --no-rcb-time, --no-virtualize-metadata, --chaos: the run stays alive and the constant-output control stays matched, but
+#         NONE of them moved stdout even for that maximally time-sensitive guest. verdict=matched in all three.
+#     --no-deterministic-io, --no-sequentialize-threads: rejected by the CLI for this subcommand.
+# LIMIT OF THE CHAOS PROBE, STATED SO IT IS NOT OVERREAD: the racy guest used to probe --chaos (tests/chaos/thread_interleaving.c)
+#   printed IDENTICALLY ACROSS TWO NATIVE RUNS, so it was never a valid probe for a scheduling stimulus. --chaos IS NOT REFUTED;
+#   it is untested against a guest whose output genuinely varies with scheduling.
+# STIMULUS VALIDATION DISCIPLINE USED THROUGHOUT: a stimulus counts only if the NEGATIVE CONTROL (a constant-output guest) stays
+#   matched under it. Two candidates were discarded on that ground alone.
+#
+# THE DETERMINATE FINDING: NO FAITHFUL SINGLE-BACKEND STDOUT-CHANNEL STIMULUS WAS FOUND. Screening the 58 requires either a
+#   second backend to compare against, or a guest-level probe proven to diverge natively through a mechanism Hermit is supposed
+#   to determinize and then used to validate a relaxation. The stdout channel is verify's comparison of two runs, and a
+#   single-backend screen has only one run to work with -- which is the structural reason, not a gap in effort.
+# =======================================================================================================================
 backend	mode	cell	fixture	mutation_family	evidence
 dbt	verify	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
 dbt	verify	backend-parity-c/child-subreaper-refusal	tests/backend-parity/fixtures/child_subreaper_refusal.c	ok-init	baseline already exits 1 natively
