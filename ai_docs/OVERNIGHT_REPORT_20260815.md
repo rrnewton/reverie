@@ -1,6 +1,6 @@
 <!-- PROVENANCE: snapshot of ignored/overnight-report-2026-08-15.md promoted 2026-08-15 by hermit-coord
-     source sha256 d6feb4fca774a66c2a93c0732d3e13226fabf392f2f3ee9c394a21b2694fc126
-     source lines 635
+     source sha256 1e1a55526e4ee2deaa9ffd4bcdb098fac27bb8334bf9ac9fbd0c60338b284997
+     source lines 641
      START WITH THE HANDOFF BLOCK AT THE TOP, then the COMPLETED THIS SESSION section at
      the bottom, which supersedes the handoff on one point: the ledger publisher repair
      needed neither devbig014 nor an owner decision and is done.
@@ -15,7 +15,13 @@
      the hash above, THIS COPY IS STALE. -->
 # HANDOFF — read this, not the 566 lines below
 
-**ONE RECEIPT UNBLOCKS THREE PRs.** #2279 (DRAFT, 8 cells, 170→178), #2276 (APPROVED AND ATTESTED AT `b2bbeb6de`), #2277 (**32 fixtures**, measured from the diff against `origin/main` at head `8fbed049f`: 32 files changed, all 32 C fixtures, all 32 gaining an `EXPECTED_CHECKS` gate, none already gated at base. Its title says 31 and its branch name says 26 — both were correct when written and neither was updated; the diff is the authority). All three need a full-profile receipt from a CPUID-capable host. **devbig014 is down and is the only one.**
+**ONE RECEIPT UNBLOCKS THREE PRs.** #2279 (DRAFT — **now 13 cells, 170→183 at head `85ffdce9d`, independently verified; the `8 cells, 170→178` written here earlier was correct at an earlier head and is superseded**), #2276 (APPROVED AND ATTESTED AT `b2bbeb6de`), #2277 (**32 fixtures**, measured from the diff against `origin/main` at head `8fbed049f`: 32 files changed, all 32 C fixtures, all 32 gaining an `EXPECTED_CHECKS` gate, none already gated at base. Its title says 31 and its branch name says 26 — both were correct when written and neither was updated; the diff is the authority). All three need a full-profile receipt from a CPUID-capable host. **devbig014 is down and is the only one.**
+
+**LANDING ORDER IS LOAD-BEARING — #2276 AND #2277 BEFORE #2279.** They add the fixture gates; #2279 enables cells. **[RELAYED from hermit-sabre, magnitude NOT independently verified:]** landing in that order is reported to convert roughly sixty further cells from blocked to cheap; landing #2279 first or alone buys thirteen and leaves the rest blocked. **The reason lives here because it is not visible from the PRs themselves** — someone rebasing #2279 onto `main` to tidy it would silently discard the gates the *sequence* depends on, and that would look like housekeeping.
+
+**ONE CORRECTION TO THAT DEPENDENCY, MEASURED BY hermit-coord:** #2279 is **not** itself downstream of #2276/#2277. Of its 13 cells, **7 have fixtures already gated on `main` and 6 are gated by none of the three PRs** — zero depend on #2276 or #2277, consistent with the earlier finding of zero cell-level and zero fixture-file overlap. **So #2279 can land in any order without losing anything of its own.** The sequence matters for the ~60 *other* cells, not for these 13. Order the stack for that reason, not for a dependency #2279 does not have.
+
+**AND A LIVE FLAG ON #2279, NOT A BLOCKER:** those 6 cells are being enabled with no `EXPECTED_CHECKS` gate on their fixtures. That is *not* proof they are inert — refusal-style fixtures were measured this session to express failure by exit status with no such gate — but **whether these 6 can express failure is unverified**, and enabling a cell that cannot is the inert-coverage trap catalogued all night. Worth one screen before landing.
 
 **TWO OWNER DECISIONS, written down rather than remembered:** branch protection on an unprotected `main`, and trigger-based re-promotion so artifacts in `ignored/` do not depend on someone asking.
 
