@@ -44,6 +44,84 @@
 # e0536eeb0, ff386d4df, b5b69eb94, d981a4089 and HEAD, so this is not snapshot drift;
 # ci_true has never been 134 at any recent commit. NO FIXTURE OR MANIFEST WAS EDITED.
 # ====================================================================================
+#
+# ============ THE UNLISTED BUCKET, NOW NAMED — 49 CELLS ============
+# Published 2026-08-15 by hermit-coord. THIS IS MEMBERSHIP THAT ALREADY EXISTED AND WAS
+# NEVER WRITTEN DOWN. It is not a new classification: every id below is the set difference
+#   { ptrace-only verify cells with ci = true }  MINUS  { the 87 mechanical rows below }.
+#
+# THE COMPLEMENT IS 49, NOT 47, AND THAT TWO-CELL DIFFERENCE IS EXACTLY CAUSE 2 ABOVE.
+# This header previously said "needs-judgement 47". 136 - 87 = 49. So the 2 cells that
+# appear in neither bucket are somewhere INSIDE this list of 49 -- they are no longer
+# missing from the record, only no longer distinguishable from their 47 neighbours.
+# I DELIBERATELY DO NOT SAY WHICH 47 OF THESE 49 THE ORIGINAL AUTHOR MEANT. Guessing would
+# be new classification wearing the clothes of publication, and the author's list does not
+# exist to check a guess against.
+#
+# WHY MEMBERSHIP AND NOT JUST A COUNT: a count cannot be audited, cannot be split across
+# agents, and cannot say WHICH cell moved when the number moves. With the ids present, a
+# future regeneration that shifts this bucket reads as a specific cell changing state
+# rather than as unexplained progress.
+#
+# ALL 49 ARE C. 48 backend-parity-c + 1 c-programs, 0 non-C -- consistent with the whole
+# 171-vs-134 divergence being confined to the C half.
+#
+# 10 OF THE 49 ALREADY CARRY AN EMPIRICAL MUTATION VERDICT from hermit-sabre's exit-gating
+# screen (REFUSABLE 1, RECOVERED_BY_MUTATION 1, CANNOT_FAIL_STRUCTURAL_SAMPLE 8). Those are
+# reproduced below as a POINTER to that screen, which remains the authoritative instrument;
+# the other 39 are unscreened and are marked so rather than assumed.
+#
+# columns: unlisted_cell<TAB>mutation_screen_verdict_if_any
+# UNLISTED	backend-parity-c/aio-refusal	not-screened
+# UNLISTED	backend-parity-c/append-pwrite	CANNOT_FAIL_STRUCTURAL_SAMPLE
+# UNLISTED	backend-parity-c/bind-getsockname	CANNOT_FAIL_STRUCTURAL_SAMPLE
+# UNLISTED	backend-parity-c/child-subreaper-refusal	not-screened
+# UNLISTED	backend-parity-c/close-range-fds	CANNOT_FAIL_STRUCTURAL_SAMPLE
+# UNLISTED	backend-parity-c/copy-file-range-refusal	CANNOT_FAIL_STRUCTURAL_SAMPLE
+# UNLISTED	backend-parity-c/epoll-pwait2	not-screened
+# UNLISTED	backend-parity-c/epoll-readiness	CANNOT_FAIL_STRUCTURAL_SAMPLE
+# UNLISTED	backend-parity-c/faccessat2-flags	CANNOT_FAIL_STRUCTURAL_SAMPLE
+# UNLISTED	backend-parity-c/fadvise-hints	CANNOT_FAIL_STRUCTURAL_SAMPLE
+# UNLISTED	backend-parity-c/fallocate-extents	CANNOT_FAIL_STRUCTURAL_SAMPLE
+# UNLISTED	backend-parity-c/fchmod-bits	not-screened
+# UNLISTED	backend-parity-c/fchmodat2-flags	not-screened
+# UNLISTED	backend-parity-c/file-backed-mmap	not-screened
+# UNLISTED	backend-parity-c/flock-lifecycle	not-screened
+# UNLISTED	backend-parity-c/fsync-durability	not-screened
+# UNLISTED	backend-parity-c/ftruncate-sparse	not-screened
+# UNLISTED	backend-parity-c/inotify-watch	not-screened
+# UNLISTED	backend-parity-c/ioctl-fionread	not-screened
+# UNLISTED	backend-parity-c/linkat-flags	not-screened
+# UNLISTED	backend-parity-c/mce-kill-refusal	not-screened
+# UNLISTED	backend-parity-c/memfd-create	not-screened
+# UNLISTED	backend-parity-c/mincore-residency	not-screened
+# UNLISTED	backend-parity-c/mknod-special	not-screened
+# UNLISTED	backend-parity-c/msync-writeback	not-screened
+# UNLISTED	backend-parity-c/name-to-handle-refusal	not-screened
+# UNLISTED	backend-parity-c/openat-flags	not-screened
+# UNLISTED	backend-parity-c/path-file-ops	not-screened
+# UNLISTED	backend-parity-c/pipe2-flags	not-screened
+# UNLISTED	backend-parity-c/poll-readiness	not-screened
+# UNLISTED	backend-parity-c/prctl-pdeathsig	not-screened
+# UNLISTED	backend-parity-c/readdir-entries	not-screened
+# UNLISTED	backend-parity-c/rename-ops	not-screened
+# UNLISTED	backend-parity-c/renameat2-flags	not-screened
+# UNLISTED	backend-parity-c/robust-list	not-screened
+# UNLISTED	backend-parity-c/seccomp-refusal	not-screened
+# UNLISTED	backend-parity-c/set-tid-address	RECOVERED_BY_MUTATION
+# UNLISTED	backend-parity-c/shutdown-socketpair	not-screened
+# UNLISTED	backend-parity-c/signalfd-create	not-screened
+# UNLISTED	backend-parity-c/socket-options	not-screened
+# UNLISTED	backend-parity-c/socketpair-flags	not-screened
+# UNLISTED	backend-parity-c/sockname-unnamed	not-screened
+# UNLISTED	backend-parity-c/statx-metadata	not-screened
+# UNLISTED	backend-parity-c/sync-file-range	not-screened
+# UNLISTED	backend-parity-c/sysv-ipc-refusal	not-screened
+# UNLISTED	backend-parity-c/thp-disable	not-screened
+# UNLISTED	backend-parity-c/utimensat-determinism	not-screened
+# UNLISTED	backend-parity-c/vectored-file-io	not-screened
+# UNLISTED	c-programs/pause-alarm-interrupt	REFUSABLE
+# ===================================================================
 # MECHANICAL CELLS -- the manifest line is the ONLY edit needed (no fixture repair).
 # SUPERSEDES the earlier 78-row list. Corrected 2026-08-15: 9 cells were wrongly
 # called cannot-fail because the detector matched only `if (ok != N)` and missed
