@@ -337,3 +337,68 @@ they were technical unknowns.
    visible failure into an invisible one and destroys the only instrument watching the cost.
 3. **A write lane for `agent-utils`** so `f00c3135` and the emit it depends on can land (§2).
    `agent-utils` is product code and needs a PR; none is assigned.
+
+---
+
+## 9. Foreign dirt in the parent tree — it predates you
+
+**MEASURED HERE, and independently observed by three agents.** `hermit-bytes` and `hermit-revents`
+each reported the following without consulting each other, and I observe the same:
+
+```
+ M  hermit                    (modified submodule pointer)
+?? hermit-stat-fixture.tmp    (untracked)
+```
+
+**Nobody claims either one. All three of us left them untouched, which is correct** — unexpected
+changes are somebody else's work, and the rule is record and stop, not tidy.
+
+**Recorded here so that whoever resumes does not attribute them to their own run.** This matters
+more than usual right now because **the residue gate and the unpushed-commits gate are both dark**,
+so these observations are the only visibility anyone has on parent-tree state.
+
+On the submodule pointer specifically (§7): it is a **forward** pin — the hermit checkout is *ahead*
+of the parent's recorded gitlink `e2f9a36b`. It is not a backward pin, and it should not be `git
+add`ed to "fix" it.
+
+---
+
+## 10. A commit can vanish from `main` while its content lands — and byte-identity is the wrong test
+
+**RELAYED** from `hermit-revents`, **then corrected in three places by measurement here.** The
+substance is right and important; the details would mislead a naive check.
+
+`d40dce4b` (*"ai_docs: persist the 2026-08-15 operating rules with their incidents"*) is **not an
+ancestor of `origin/main`** — **MEASURED HERE**. Its content nonetheless landed. **Anyone searching
+`origin/main` for `d40dce4b` would conclude the work was lost. It was not.**
+
+Three corrections, each **MEASURED HERE**:
+
+1. **The commit object did not vanish.** `d40dce4b` still resolves, and it is reachable from **three
+   pushed refs on origin**: `refs/remotes/origin/rescue/auto-d40dce4b`,
+   `refs/remotes/origin/rescue/auto-26ff743e`, `refs/remotes/origin/rescue/auto-dcf6ad27`. So
+   "did not survive as a commit object" is too strong. It survives *on origin*, just not on `main`.
+   **Search all refs, not just `main`, before concluding a commit is gone.**
+
+2. **`98c16a31` did not add the 38th rule.** Its parent `98c16a31^` already had **38 rules** (531
+   lines). `98c16a31` kept the count at 38 and added **20 lines** to an existing file. The rule
+   count reached 38 before it.
+
+3. **A byte-identity check would FAIL here and wrongly read as lost content.** The file at
+   `origin/main` and at `98c16a31` is **38 rules / 551 lines**, sha256 `fcda7364…`. The file at
+   `d40dce4b` is **27 rules / 300 lines**, sha256 `1521f178…`. **These are not byte-identical, and
+   they should not be** — `origin/main` carries a *superset*.
+
+**The correct survival test is containment, not equality.** **MEASURED HERE:** of `d40dce4b`'s 27
+rule headings, the number absent from `origin/main` is **zero**. That is what establishes the
+content survived.
+
+**MEASURED HERE — current state of the file** at `origin/main`
+(`ai_docs/transient/2026-08-15-operating-rules-with-their-incidents.md`): **551 lines, 38 rules**
+(38 `###` headings under 6 `##` sections), sha256
+`fcda7364d63492225ec795212cc8eb973306871da08529c4c2508509c46f8580`.
+
+**A counting hazard I hit while checking this, worth carrying:** my first rule count returned **6**,
+because the regex matched the `##` section headings and numbered list items instead of the `###`
+rule headings. The document's own structure defeated a plausible-looking count. **Name the heading
+level you are counting.**
