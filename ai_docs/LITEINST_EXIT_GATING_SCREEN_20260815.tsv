@@ -311,11 +311,19 @@
 # FOURTH-STATUS	DECISION (owner, this session): DO NOT FOLD AND DO NOT REBASE #2279 ONTO #2277. The +2 buys nothing while #2279 already waits on a receipt, whereas the coupling would be PERMANENT -- it would make #2279 unlandable independently even after the receipt arrives.
 # FOURTH-STATUS	  Precedent cited and honoured: hermit-liteinst rejected exactly this coupling for #2263.
 # FOURTH-STATUS	THE ANCHORING RECIPE IS PROVEN, NOT PROPOSED -- anchor the mutation on the CALL SITE, never a bare symbol, because in this fixture family the first occurrence of a symbol is usually a line-1 comment. Two cells recovered by it are already enabled.
+# PREQUALIFIED 2026-08-15 (hermit-sabre): FRONT-LOADED THE ORDER-BLOCKED CELLS. FOUR MORE MEASURED AGAINST #2277's GATE, READY TO FOLD THE MOMENT IT LANDS.
+# PREQUALIFIED	RATIONALE: the addressable-now pool is exhausted, so the remaining useful work is qualifying cells that CANNOT be folded yet, so the post-#2277 step is a fold rather than a night of measurement.
+# PREQUALIFIED	ALL FOUR: accept exit 0 on ptrace AND liteinst with verdict=matched and bitwise_parity=true; refuse exit 1 on both. Step 1 enforced and passed on all four.
+# PREQUALIFIED	THE QUALIFIED-AND-WAITING SET IS NOW SIX: mincore-residency, epoll-pwait2-readiness, utimensat-determinism, fchmod-bits, fchmodat2-flags, linkat-flags.
+# PREQUALIFIED	ONE DELTA IS OFF-PATTERN AND I AM RECORDING IT RATHER THAN ROUNDING IT: fchmodat2-flags is +802, the FIRST value outside {795,797,799} in 27 measurements.
+# PREQUALIFIED	  n=27 now reads {795 x1, 797 x1, 799 x24, 802 x1}. The offset remains additive and near-constant; 802 does not overturn that, but it is a real outlier and the next characterisation should not silently drop it.
+# PREQUALIFIED	file-timestamp-identity IS IN NEITHER PR and stays an owner question: repairing it means asserting virtualized timestamp values, which Hermit does not document as a contract.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/utimensat-determinism	measured vs #2277 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 130->929 delta 799. Setup-only gates on main; needs #2277.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fchmod-bits	measured vs #2277 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->937 delta 799. Setup-only gate on main; needs #2277.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fchmodat2-flags	measured vs #2277 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->940 delta 802 (OUTLIER). Setup-only gate on main; needs #2277.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/linkat-flags	measured vs #2277 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 152->951 delta 799. Setup-only gate on main; needs #2277.
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/mincore-residency	Bar B measured against #2277's fixture: ptrace accept 0/refuse 1, liteinst accept 0/refuse 1, accept matched+parity, 128->927 delta 799. Gate is in #2277; main ends 'return 0;'. Enable only AFTER #2277 lands.
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/epoll-pwait2-readiness	Bar B measured against #2277's fixture: ptrace accept 0/refuse 1, liteinst accept 0/refuse 1, accept matched+parity, 133->932 delta 799. Gate is in #2277; main ends 'return 0;'. Enable only AFTER #2277 lands.
-BLOCKED_ON_LANDING_ORDER_NOT_YET_QUALIFIED	backend-parity-c/fchmod-bits	gate is in #2277; on main the only non-zero exit is a setup failure, so a mutation cannot be refused. Qualify after #2277 lands.
-BLOCKED_ON_LANDING_ORDER_NOT_YET_QUALIFIED	backend-parity-c/fchmodat2-flags	gate is in #2277; same reason as fchmod-bits.
-BLOCKED_ON_LANDING_ORDER_NOT_YET_QUALIFIED	backend-parity-c/linkat-flags	gate is in #2277; same reason as fchmod-bits.
 NEITHER_QUALIFIED_NOR_DISQUALIFIED	backend-parity-c/name-to-handle-refusal	two mutations tried: one a compile error by construction, one inert because Hermit's refusal is path-independent
 NEITHER_QUALIFIED_NOR_DISQUALIFIED	backend-parity-c/event-delivery-ordering	mutant HANGS under ptrace (exit 124 at 90s); a hang is not a gate refusal
 REFUSABLE	determinism-stress-c/lock-free
