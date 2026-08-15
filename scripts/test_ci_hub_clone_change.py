@@ -445,6 +445,120 @@ class Fixture(unittest.TestCase):
         self.assertEqual(retained["opened_at"], "2026-01-01T00:00:00Z")
         self.assertEqual(retained["overall_state"], "open")
 
+    # Disposal's predicate. The refuse arm is the floor and is bracketed three
+    # ways -- attached branch, non-HEAD branch, detached HEAD -- because the
+    # scope is a disjunction and a single refusal case would pin neither half.
+    # The accept arm is bracketed once per cause, since scope and staleness made
+    # the two real clones undisposable for different reasons.
+
+    def test_dispose_refuses_an_unpushed_commit_on_its_own_branch(self) -> None:
+        repo = self.clone()
+        head = self.commit(repo, "ci-hub/bin/tool", "unpushed\n")
+        result = command(str(SOURCE), "dispose", "--clone", str(repo))
+        self.assertNotEqual(result.returncode, 0)
+        # The refresh ran and succeeded, so this count is the remote's own
+        # answer; disposal must not launder real work through a fetch.
+        self.assertIn("PRESERVE THEM FIRST", result.stderr)
+        self.assertIn(head, result.stderr)
+        self.assertTrue(repo.is_dir())
+
+    def test_dispose_refuses_unpushed_work_on_a_branch_that_is_not_head(self) -> None:
+        repo = self.clone()
+        git(repo, "switch", "-c", "side")
+        head = self.commit(repo, "ci-hub/bin/tool", "work parked on a side branch\n")
+        git(repo, "switch", "ci-hub/fixture-change")
+        # Scoping to HEAD alone would see nothing here and delete the branch.
+        self.assertEqual(git(repo, "rev-list", "HEAD", "--not", "--remotes"), "")
+        result = command(str(SOURCE), "dispose", "--clone", str(repo))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PRESERVE THEM FIRST", result.stderr)
+        self.assertIn(head, result.stderr)
+        self.assertTrue(repo.is_dir())
+
+    def test_dispose_refuses_unpushed_work_on_a_detached_head(self) -> None:
+        repo = self.clone()
+        head = self.commit(repo, "ci-hub/bin/tool", "work left on a detached HEAD\n")
+        git(repo, "switch", "--detach", head)
+        git(repo, "branch", "-D", "ci-hub/fixture-change")
+        # Scoping to --branches alone would see nothing here, and a detached
+        # HEAD is exactly the state an interrupted change leaves behind.
+        self.assertEqual(git(repo, "rev-list", "--branches", "--not", "--remotes"), "")
+        result = command(str(SOURCE), "dispose", "--clone", str(repo))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PRESERVE THEM FIRST", result.stderr)
+        self.assertIn(head, result.stderr)
+        self.assertTrue(repo.is_dir())
+
+    def test_dispose_accepts_a_clone_whose_only_unpushed_ref_is_a_fetch_destination(self) -> None:
+        repo = self.clone()
+        git(repo, "switch", "-c", "scratch")
+        fetched = self.commit(repo, "ci-hub/bin/tool", "a fetched pull-request head\n")
+        git(repo, "update-ref", "refs/pr-landing-planner/pr-1", fetched)
+        git(repo, "switch", "ci-hub/fixture-change")
+        git(repo, "branch", "-D", "scratch")
+        # Precondition: the previous `--all` scope saw this and refused.
+        self.assertIn(
+            fetched,
+            git(repo, "rev-list", "--exclude=refs/tags/*", "--all", "--not", "--remotes").split(),
+        )
+        self.assertEqual(git(repo, "rev-list", "--branches", "HEAD", "--not", "--remotes"), "")
+        result = command(str(SOURCE), "dispose", "--clone", str(repo))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(repo.exists())
+        # Narrowed, not blinded: what was not weighed is still reported.
+        self.assertIn("unconsidered=1", result.stdout)
+        # Exact, not a substring: the fixture branch is `ci-hub/fixture-change`,
+        # so a namespace filter that mishandles a slash in a branch name shows
+        # up here as a spurious `refs/heads/*`.
+        self.assertIn("namespaces=refs/pr-landing-planner/* (", result.stdout)
+
+    def test_dispose_accepts_after_the_refresh_shows_the_commit_is_pushed(self) -> None:
+        repo = self.clone()
+        snapshot = git(repo, "rev-parse", "refs/remotes/origin/main")
+        head = self.commit(repo, "ci-hub/bin/tool", "pushed, but not seen yet\n")
+        git(repo, "push", "origin", f"{head}:refs/heads/main")
+        # Rewind only the remote-tracking ref, reproducing the measured state of
+        # dev-hermit-p1-a-producer-path: the commit is on the remote while this
+        # clone's snapshot of the remote predates it.
+        git(repo, "update-ref", "refs/remotes/origin/main", snapshot)
+        self.assertEqual(
+            git(repo, "rev-list", "--branches", "HEAD", "--not", "--remotes"), head
+        )
+        result = command(str(SOURCE), "dispose", "--clone", str(repo))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(repo.exists())
+        self.assertIn(f"recovery_sha={head}", result.stdout)
+
+    def test_dispose_refuses_when_the_remote_cannot_be_reached(self) -> None:
+        repo = self.clone()
+        self.commit(repo, "ci-hub/bin/tool", "unpushed\n")
+        git(repo, "remote", "set-url", "origin", str(self.root / "absent.git"))
+        result = command(str(SOURCE), "dispose", "--clone", str(repo))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot reach the remote", result.stderr)
+        self.assertTrue(repo.is_dir())
+
+    def test_dispose_refuses_an_unreachable_remote_even_with_nothing_unpushed(self) -> None:
+        repo = self.clone()
+        # Nothing local is at risk by the clone's own snapshot, which is exactly
+        # when an unverifiable answer is tempting to accept. A snapshot can also
+        # over-report containment -- the remote ref it still shows may have been
+        # moved off the commit since -- so unverifiable must refuse here too.
+        self.assertEqual(git(repo, "rev-list", "--branches", "HEAD", "--not", "--remotes"), "")
+        git(repo, "remote", "set-url", "origin", str(self.root / "absent.git"))
+        result = command(str(SOURCE), "dispose", "--clone", str(repo))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot reach the remote", result.stderr)
+        self.assertTrue(repo.is_dir())
+
+    def test_recovery_refs_lead_with_main_and_count_the_rest(self) -> None:
+        many = [f"origin/rescue/auto-{n:04d}" for n in range(9)] + ["origin/main"]
+        summary = TOOL.summarize_refs(many)
+        self.assertTrue(summary.startswith("origin/main,"))
+        self.assertEqual(len(summary.split(",")), 6)
+        self.assertTrue(summary.endswith(",+5-more"))
+        self.assertEqual(TOOL.summarize_refs(["origin/main"]), "origin/main")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -852,17 +852,106 @@ def command_status(args: argparse.Namespace) -> None:
 
 
 def unpushed_in_clone(repo: Path) -> list[str]:
-    """Commits in `repo` reachable from no remote-tracking ref.
+    """Commits on this clone's OWN branches that no remote-tracking ref contains.
 
-    Uses the same enumeration as the parent's unpushed-commits health gate:
-    `--exclude=refs/tags/*` before `--all` so that branches, HEAD, and every
-    worktree's HEAD are all considered while tags are not. Tags are excluded
-    because a tag can point into a submodule's history and report commits that
-    no push could ever retire; `--branches` alone would drop a detached HEAD,
-    which is exactly the state a clone is left in by an interrupted change.
+    The scope is `--branches` plus `HEAD`: every local branch, and also the
+    detached HEAD an interrupted change leaves behind, which `--branches` alone
+    would drop. Both halves are load-bearing and are bracketed separately.
+
+    The scope is deliberately NOT `--all`. `--all` additionally sweeps
+    fetch-destination ref namespaces, whose contents exist on a remote by
+    construction: `agent-utils/py/pr_landing_planner/collect.py` fetches
+    `refs/pull/<n>/head` into `refs/pr-landing-planner/pr-<n>` and a base
+    `refs/heads/<ref>` into `refs/pr-landing-planner/base-<digest>`. Those
+    commits are reachable from no *remote-tracking* ref only because they were
+    filed outside `refs/remotes/`, so `--all` reported them as at risk when
+    nothing was. Measured 2026-08-15 on two real clones:
+    `dev-hermit-p1-a-producer-path` 38 under `--all` versus 1 here, and
+    `dev-hermit-p1-validate-writes-receipts` 36 versus 0.
+
+    Tags stay out of scope for the reason the parent's unpushed-commits health
+    gate excludes them: a tag can point into a submodule's history and report
+    commits that no push could ever retire.
+
+    This answers against the clone's remote-tracking refs, which are only a
+    snapshot from its last fetch, so `command_dispose` refreshes them first.
     """
-    out = git(repo, "rev-list", "--exclude=refs/tags/*", "--all", "--not", "--remotes")
+    out = git(repo, "rev-list", "--branches", "HEAD", "--not", "--remotes")
     return [line for line in out.splitlines() if line]
+
+
+SCOPED_REF_PREFIXES = ("refs/heads/", "refs/remotes/", "refs/tags/")
+
+
+def unconsidered_unpushed(repo: Path) -> tuple[int, list[str]]:
+    """Commits `unpushed_in_clone` does not consider, and the namespaces present.
+
+    Narrowing the refusal must not make anything invisible, so disposal reports
+    what it declined to weigh instead of silently dropping it. The namespaces
+    are the out-of-scope ones this clone has, which is where such commits live;
+    it is a place to look, not a per-commit attribution.
+
+    The filtering is done here rather than with `for-each-ref --exclude`,
+    because `--exclude=refs/heads/*` does not match a branch whose name itself
+    contains a slash -- `refs/heads/ci-hub/p1-a-producer-path` survived it -- so
+    that spelling reports local branches as out of scope when they are not.
+    """
+    out = git(
+        repo, "rev-list", "--exclude=refs/tags/*", "--all",
+        "--not", "--branches", "HEAD", "--remotes",
+    )
+    commits = [line for line in out.splitlines() if line]
+    if not commits:
+        return 0, []
+    refs = git(repo, "for-each-ref", "--format=%(refname)").splitlines()
+    spaces = sorted(
+        {
+            "/".join(ref.split("/")[:2]) + "/*"
+            for ref in refs
+            if ref and not ref.startswith(SCOPED_REF_PREFIXES)
+        }
+    )
+    return len(commits), spaces
+
+
+def summarize_refs(refs: Sequence[str], limit: int = 5) -> str:
+    """Name where a disposed commit can be found again, readably.
+
+    Recovery refs exist so a human can retrieve the commit, and fetching every
+    head to answer containment can make that list enormous: measured
+    2026-08-15, one clone's head sat on 130 refs, mostly `origin/rescue/auto-*`.
+    A wall of names is not a recovery instruction, so lead with `main` where it
+    qualifies and count the rest.
+    """
+    preferred = [ref for ref in refs if ref.rsplit("/", 1)[-1] == "main"]
+    ordered = preferred + [ref for ref in refs if ref not in preferred]
+    shown = ",".join(ordered[:limit])
+    return f"{shown},+{len(ordered) - limit}-more" if len(ordered) > limit else shown
+
+
+def refresh_remote_tracking(repo: Path) -> bool:
+    """Bring `refs/remotes/origin/*` up to date with the remote; report success.
+
+    A clone's remote-tracking refs record what the remote looked like when it
+    last fetched, and disposal must not decide containment from that snapshot in
+    EITHER direction. Stale refs under-report what is pushed: measured
+    2026-08-15, clone `dev-hermit-p1-a-producer-path` carried exactly one
+    remote-tracking ref, `origin/main` pinned at e8ba1762 (2026-08-12), while
+    its own commit 80e50e9e was by then on the remote's `main` and on its own
+    remote branch. They can equally over-report it, because a ref the snapshot
+    still shows may since have been moved off that commit.
+
+    Fetching every head rather than just `main` asks the accurate question: a
+    clone's work may have been pushed to any branch, and guessing the wrong one
+    produces exactly the false refusal this is fixing. The cost is that a
+    refused clone keeps the remote-tracking refs and objects this brought in;
+    they hold no local work and any later fetch would recreate them.
+    """
+    try:
+        network_git(repo, "fetch", "--quiet", "origin", "+refs/heads/*:refs/remotes/origin/*")
+    except Refusal:
+        return False
+    return True
 
 
 def command_dispose(args: argparse.Namespace) -> None:
@@ -898,27 +987,42 @@ def command_dispose(args: argparse.Namespace) -> None:
             f"clone {destination} has {count} uncommitted or untracked path(s); "
             "commit or remove them deliberately, never by disposal"
         )
+    # Every containment answer below is only as good as this clone's picture of
+    # the remote, so refresh it first and refuse outright when that is not
+    # possible. Unverifiable is not the same as safe.
+    if not refresh_remote_tracking(repo):
+        raise Refusal(
+            f"cannot reach the remote from clone {destination}, so nothing here "
+            "can be shown to exist anywhere else; disposal decides containment "
+            "against the remote, never against a snapshot of unknown age"
+        )
     unpushed = unpushed_in_clone(repo)
     if unpushed:
         branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
         raise Refusal(
-            f"clone {destination} holds {len(unpushed)} commit(s) on no remote "
-            f"ref (branch {branch}, task {manifest.get('task')}, tip "
-            f"{unpushed[0]}); PRESERVE THEM FIRST -- disposal never removes "
-            "work that exists nowhere else"
+            f"clone {destination} holds {len(unpushed)} commit(s) on its own "
+            f"branches that no remote contains (branch {branch}, task "
+            f"{manifest.get('task')}, tip {unpushed[0]}); PRESERVE THEM FIRST "
+            "-- disposal never removes work that exists nowhere else"
         )
     head = git(repo, "rev-parse", "HEAD^{commit}")
-    reachable = git(repo, "branch", "--remotes", "--contains", head)
-    if not reachable.strip():
+    reachable = git(repo, "branch", "--remotes", "--contains", head).split()
+    if not reachable:
         raise Refusal(
             f"clone {destination} HEAD {head} is on no remote-tracking branch, "
             "so there would be no recovery commit to record"
         )
+    skipped, namespaces = unconsidered_unpushed(repo)
     shutil.rmtree(destination)
     print(
         f"CI_HUB_CHANGE disposed={destination} task={manifest.get('task')} "
-        f"recovery_sha={head} recovery_refs={','.join(reachable.split())}"
+        f"recovery_sha={head} recovery_refs={summarize_refs(reachable)}"
     )
+    if skipped:
+        print(
+            f"CI_HUB_CHANGE unconsidered={skipped} namespaces={','.join(namespaces)} "
+            "(outside this clone's branches; not weighed in the decision)"
+        )
 
 
 def command_activation_obligations(args: argparse.Namespace) -> int:
