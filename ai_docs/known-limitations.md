@@ -199,3 +199,9 @@ depend on the tick.
 
 Neither has been diagnosed. Recorded so the next reader does not spend the
 investigation twice, and so an absent alarm is not mistaken for a resolved one.
+
+- **Related method finding:** three defects this session were caught by
+  mechanical checks after the responsible agent had already diagnosed that exact
+  failure mode. Recorded with its incidents and its `n=3` caveat under "A machine
+  check catches what knowing the lesson does not" in
+  [2026-08-15-operating-rules-with-their-incidents.md](transient/2026-08-15-operating-rules-with-their-incidents.md).

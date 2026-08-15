@@ -435,6 +435,43 @@ who had just articulated the rule against it. Treat familiarity with a failure m
 as no defence against it. The control is the check, performed, every time — not the
 knowledge that the check exists.
 
+### A machine check catches what knowing the lesson does not
+
+**[measured, n=3]** Three times in one session a mechanical check caught a defect
+the agent had *already diagnosed* and walked into anyway.
+
+1. **Prefix collision, caught by the manifest validator.** hermit-sabre's edit
+   sliced the verify block at the next `\n[test.`, which also matches
+   `[test.modes.verify.backends_disabled]`. The validator refused it —
+   `modes.verify must partition` — **one hour after sabre had named that exact
+   trap out loud.**
+2. **Stale local ref, caught by the serialized writer.** `parent-main-write:
+   REFUSED: local main is not the freshly fetched origin/main`, local
+   `1a913eaf` against origin `1130fe9c`. That is **the same stale-ref condition
+   that had produced a false absence earlier the same night**, by the same agent,
+   who had already diagnosed it and written it up.
+3. **Non-firing replacement, caught by a sanity assert.** Cells carrying
+   `backends_enabled = ["ptrace", "dbt", "sabre"]` meant a literal `["ptrace"]`
+   match never fired, and the edit would have removed `liteinst` from disabled
+   without adding it to enabled — **the inverse of sabre's own earlier partition
+   bug, caught by the guard it had built from that bug.**
+
+**The contrast is the argument.** Seven matcher failures in the same session were
+caught by a person noticing an implausible result — that is, *after the wrong
+answer already existed*. These three were caught before anything was written.
+In all three the agent knew the lesson; knowing it did not help and the check did.
+
+**n=3 is not a rate, and this does not claim machine checks outperform attention
+in general.** What is claimed is only what was observed, plus the asymmetry that
+makes it matter: **a human catch requires a wrong result to exist first, and some
+wrong results are writes.** A noticed-afterwards catch on a read costs a re-run;
+the same catch on a manifest edit or a `main` commit costs a repair.
+
+**Second-order, and the reason case 3 does not recur:** sabre fixed it by
+generalising the match rather than special-casing the three cells it found, so
+the next fixture with an unexpected backend list will not need this rediscovered.
+A guard that encodes the shape outlives a guard that encodes the instances.
+
 ### A rule without its incident becomes a ritual
 
 **[recorded]** Stated during the session as: *if we started requiring 100 runs of
