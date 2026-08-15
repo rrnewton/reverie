@@ -65,15 +65,38 @@ it may be a timeout or launch refusal caused by load. This is why the 12 PASSes 
 3 FAILs must be re-run before anyone records them as KVM gaps. The probe sample was taken at load
 average 20/51/57.
 
-**2. One row was screened against source one line older than `origin/main`.** The capture checkout
-differs from `origin/main` by exactly two lines: the second `assert = { bitwise_parity = true }` in
-`backend-parity-c.toml`, and one line in `tests/backend-parity/fixtures/set_tid_address.c`. That
-fixture sits in the REFUSABLE bucket, so its verdict was computed against the older source. One row
-of 313. `ci/test_harness.sh` was byte-identical to `origin/main` at capture.
+**2. One row was screened against older source — now resolved, and the resolution is the more
+interesting half.** At capture the checkout differed from `origin/main` by exactly two lines, both in
+`tests/backend-parity/fixtures/set_tid_address.c` and `backend-parity-c.toml`. Hermit `main` has
+since advanced to `302a1a9c` and those two lines are what changed:
+
+```
+-    return 0;
++    return ok == 4 ? 0 : 1;
++assert = { bitwise_parity = true }
+```
+
+The older source had **no non-zero exit path at all**. This screen bucketed it
+`REFUSABLE / channel=stdout` — "mutation left exit status 0 but changed observed stdout" — and the
+final partition moves every stdout-channel row *out* of the exit-status-gated 86. So the verdict was
+correct for the source it was measured against, and **no number in this directory changes.**
+
+What happened in the tree is better than a caveat resolving: someone **converted that fixture from
+not-exit-gated to exit-gated and paired it with the parity assert**, which is exactly the defect
+class this screen identifies — acted on in the tree while the screen was running, rather than merely
+recorded. `ci/test_harness.sh` was byte-identical to `origin/main` at capture, and at `302a1a9c` its
+verdict chain, probe selector, relaxation profile and parity gate are all still untouched.
 
 ## Operator gotchas, each one measured rather than anticipated
 
-- **Mutate one site at a time.** Flipping every `==` at once lets mutations cancel: on
+- **`return ok == 4 ? 0 : 1` is the canonical case for why a static pattern undercounts.** It has
+  no `return [1-9]`, so a grep for that scores the fixture as unable to fail while it refuses
+  perfectly well. Check any pattern against this form before trusting it. This one shape has now
+  caught this fleet out three separate times in a single day: it defeated an earlier lane's static
+  screen, it defeated the first version of the operator here, and it is the form the tree chose when
+  fixing `set_tid_address.c` (see caveat 2). Treat it as the standing control case, not an anecdote.
+- **Mutate one site at a time.** A naive mutation misses it too, so this is not solved merely by
+  preferring mutation over grep. Flipping every `==` at once lets mutations cancel: on
   `return ok == 4 ? 0 : 1`, two flips restored a 0 return and the fixture scored CANNOT-FAIL. Wrong,
   and in the dangerous direction.
 - **Strip string literals before finding write sites.** `printf("counter=%llu", ...)` matches as a

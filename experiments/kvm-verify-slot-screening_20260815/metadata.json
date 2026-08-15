@@ -10,8 +10,8 @@
   "date_utc": "2026-08-15",
   "files": {
     "README.md": {
-      "lines": 173,
-      "sha256": "dc7ef142fd2a60701fcc57ce656df574503740036aa4860433cc809361de178d"
+      "lines": 231,
+      "sha256": "fb2e560591109e870a6563340e67212214570134076a3d475863568dad9596c0"
     },
     "controls/neg_cannotfail.c": {
       "lines": 2,
@@ -118,6 +118,7 @@
       "sha256": "f28484977a7b37600e5b0096abb195f147e59d89a5ed821f38e9ebf7101fcac4"
     }
   },
+  "hermit_main_at_readme_update": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
   "hermit_origin_main_at_capture": "61b9ba7aa4dd763c1bda091316852d5290f9466c",
   "hermit_sha": "e18acde586f72829e4a96d92b57b78f3abe21b2c",
   "host": "devbig030.atn3.facebook.com",
