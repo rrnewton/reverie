@@ -1,0 +1,174 @@
+# PROVENANCE	snapshot of ignored/liteinst-mechanical-cells.tsv promoted 2026-08-15 by hermit-coord
+# PROVENANCE	source sha256 c6cf380147e725488b45518db5a0d1c4bd2ba82ae3484954840d146fe9c880b8
+# PROVENANCE	source lines 128, data rows 87, count lives HERE not in the filename
+# PROVENANCE	THIS IS A SNAPSHOT OF A FILE THAT MAY STILL BE WRITTEN. If `sha256sum ignored/liteinst-mechanical-cells.tsv`
+# PROVENANCE	no longer equals the hash above, THIS COPY IS STALE. That check is the seam:
+# PROVENANCE	a snapshot with no embedded source hash is indistinguishable from a current file.
+# PROVENANCE	Supersedes the copy at dev-hermit 05023b21; this one carries the denominator block below.
+#
+# ============ DENOMINATOR RECONCILIATION — READ BEFORE QUOTING ANY RATIO ============
+# Resolved 2026-08-15 by hermit-coord, task reconcile-134-versus-171-ptrace-only-verify-candidates.
+# An independent derivation found 171 ptrace-only verify candidates against this file's 134.
+# THE 37-ROW GAP IS TWO UNRELATED CAUSES, 35 + 2. Neither figure is simply wrong; they
+# count different things, and one of them is not a census at all.
+#
+#   171   every cell whose verify block has backends_enabled == ["ptrace"] exactly
+#   -35   ci = false in that block: present in the manifest, NOT exercised in CI
+#   ---
+#   136   ptrace-only verify cells actually run in CI  <-- USE THIS AS THE DENOMINATOR
+#    -2   cells appearing in NEITHER bucket of this file
+#   ---
+#   134   the figure in the line below
+#
+# CAUSE 1, THE 35 — A CORRECT FILTER WHOSE REASON WAS NEVER RECORDED. All 35 excluded
+# cells are .c; all 46 non-C cells are ci=true, which is why an independent count agreed
+# exactly on the non-C half and diverged only on C. THE FILTER IS RIGHT AND SHOULD STAY:
+# a cell not run in CI is not a candidate for enablement work. Only the rationale was
+# missing, and an unexplained filter is operationally identical to an accidental one.
+#
+# CAUSE 2, THE 2 — AND THIS IS THE PART THAT MATTERS. 134 IS NOT A MEASUREMENT OF THE
+# UNIVERSE. It is the SUM OF TWO BUCKET COUNTS: 87 mechanical + 47 needs-judgement, and
+# 78 + 56 before the correction. A bucket sum answers "how many cells did I classify",
+# never "how many cells exist", so a cell falling out of both buckets vanishes from the
+# total and no arithmetic inside this file can reveal it. Two did.
+#
+# THE 2 CANNOT BE NAMED, AND THAT IS THE FINDING: the 87 mechanical cells are listed
+# here; THE 47 NEEDS-JUDGEMENT CELLS ARE LISTED NOWHERE. A no-truncation search of
+# ignored/ and ai_docs/ finds the string "needs-judgement" in exactly one place in the
+# whole tree: the single header line quoting the number. 47 of the 134 have no names,
+# so 134 is unauditable by anyone including its author, which is why a 2-cell error
+# survived: there was never a list to diff against.
+#
+# VERIFIED: all 87 rows below are inside both the 171 and the 136. Counts are stable at
+# 171/136 across ab6bbe15b, 61b9ba7aa, 1b98ccef5, a5a219c84, 1f4e430c1, 41be1f01f,
+# e0536eeb0, ff386d4df, b5b69eb94, d981a4089 and HEAD, so this is not snapshot drift;
+# ci_true has never been 134 at any recent commit. NO FIXTURE OR MANIFEST WAS EDITED.
+# ====================================================================================
+# MECHANICAL CELLS -- the manifest line is the ONLY edit needed (no fixture repair).
+# SUPERSEDES the earlier 78-row list. Corrected 2026-08-15: 9 cells were wrongly
+# called cannot-fail because the detector matched only `if (ok != N)` and missed
+# the TERNARY gate `return ok == EXPECTED_CHECKS ? EXIT_SUCCESS : EXIT_FAILURE`.
+# Mechanical 78 -> 87; needs-judgement 56 -> 47. Of 134 ptrace-only verify cands.
+# THIS IS A STATIC ESTIMATE AND IT HAS NOW BEEN WRONG TWICE, both times
+# UNDERCOUNTING the good set. A MUTATION TEST IS THE AUTHORITATIVE INSTRUMENT
+# (see hermit-sabre's empirical exit-gating screen). Do not treat this as proof.
+# columns: test<TAB>mode<TAB>backend<TAB>class<TAB>shape<TAB>already_asserted
+applications/c-toolchain-workflow	verify	ptrace	A	shell	no
+applications/git-repository-workflow	verify	ptrace	A	shell	no
+applications/timed-progress-bar	verify	ptrace	A	direct-command	no
+backend-parity-c/cachestat-refusal	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/cpuid-probe	verify	ptrace	B	c-exits-nonzero	no
+backend-parity-c/cwd-roundtrip	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/event-delivery-ordering	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/eventfd-semantics	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/fcntl-owner	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/file-io-roundtrip	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/fork-exec-pipeline	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/getrusage-self-accounting	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/kcmp-refusal	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/membarrier-query	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/mempolicy-default	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/mkdir-rmdir	verify	ptrace	B	c-gated-if-or-ternary	YES
+backend-parity-c/no-new-privs-refusal	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/o-tmpfile-anon	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/openat2-refusal	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/personality-domain	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/pipe-capacity	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/pipe-ipc	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/preadv2-flags	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/record-lock	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/sendfile-copy	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/short-io-split-identity	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/signal-delivery-sequence	verify	ptrace	B	c-gated-if-or-ternary	no
+backend-parity-c/statfs-free-determinism	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/symlink-ops	verify	ptrace	B	c-gated-if-or-ternary	YES
+backend-parity-c/umask-mode	verify	ptrace	B	c-gated-if-or-ternary	YES
+backend-parity-c/uname-identity	verify	ptrace	A	c-emits-values-always-returns-0	no
+backend-parity-c/vectored-io	verify	ptrace	A	c-emits-values-always-returns-0	no
+c-programs/random-sources	verify	ptrace	A	c-emits-values-always-returns-0	no
+data-handling/archive-roundtrip	verify	ptrace	A	shell	no
+data-handling/jq-json-transform	verify	ptrace	A	shell	no
+data-handling/shell-pipeline	verify	ptrace	A	shell	no
+data-handling/sqlite-query-determinism	verify	ptrace	A	shell	no
+data-handling/zstd-multithread	verify	ptrace	A	shell	no
+determinism-stress-c/lock-free	verify	ptrace	B	c-exits-nonzero	no
+determinism-stress-c/pid-tid	verify	ptrace	B	c-exits-nonzero	no
+determinism-stress-c/pid-tid-identity	verify	ptrace	B	c-exits-nonzero	no
+determinism-stress-c/pipe-prefill	verify	ptrace	B	c-exits-nonzero	no
+determinism-stress-c/producer-consumer	verify	ptrace	B	c-exits-nonzero	no
+determinism-stress-c/signal-order	verify	ptrace	B	c-exits-nonzero	no
+determinism-stress/order-violation	verify	ptrace	A	c-emits-values-always-returns-0	no
+determinism-stress/process-chains	verify	ptrace	A	shell	no
+determinism-stress/thread-contention	verify	ptrace	A	shell	no
+determinism-stress/thread-output	verify	ptrace	A	shell	no
+language-runtimes/bash-loop-pipe-time	verify	ptrace	A	shell	no
+language-runtimes/bash-random	verify	ptrace	A	shell	no
+language-runtimes/cpp-stl-determinism	verify	ptrace	A	shell	no
+language-runtimes/gawk-random	verify	ptrace	A	shell	no
+language-runtimes/lua-random	verify	ptrace	A	shell	no
+language-runtimes/m4-macro-mkstemp	verify	ptrace	A	shell	no
+language-runtimes/node-v8-jit	verify	ptrace	A	shell	no
+language-runtimes/perl-hash-order	verify	ptrace	A	shell	no
+language-runtimes/perl-io-subprocess-time	verify	ptrace	A	shell	no
+language-runtimes/perl-random	verify	ptrace	A	shell	no
+language-runtimes/python-dict-hash-iteration	verify	ptrace	A	shell	no
+language-runtimes/python-hash-determinism	verify	ptrace	A	shell	no
+language-runtimes/python-hashseed	verify	ptrace	A	shell	no
+language-runtimes/python-io-subprocess-time	verify	ptrace	A	shell	no
+language-runtimes/python-random	verify	ptrace	A	shell	YES
+language-runtimes/ruby-random	verify	ptrace	A	shell	no
+language-runtimes/rust-hashmap-iteration	verify	ptrace	A	rust	no
+language-runtimes/tcl-rand-clock	verify	ptrace	A	shell	no
+system-utils/clock-exec-continuity	verify	ptrace	B	c-exits-nonzero	no
+system-utils/date-nanoseconds	verify	ptrace	A	shell	no
+system-utils/du-tree-summary	verify	ptrace	A	direct-command	no
+system-utils/file-timestamp-identity	verify	ptrace	B	c-exits-nonzero	no
+system-utils/find-tree-metadata	verify	ptrace	A	direct-command	no
+system-utils/mcookie-random	verify	ptrace	A	shell	no
+system-utils/mktemp-name	verify	ptrace	A	shell	YES
+system-utils/openssl-enc	verify	ptrace	A	shell	no
+system-utils/openssl-genpkey	verify	ptrace	A	shell	no
+system-utils/openssl-passwd	verify	ptrace	A	shell	no
+system-utils/openssl-rand	verify	ptrace	A	shell	YES
+system-utils/openssl-x509	verify	ptrace	A	shell	no
+system-utils/proc-random-uuid	verify	ptrace	A	shell	no
+system-utils/proc-uptime	verify	ptrace	A	shell	no
+system-utils/random-device	verify	ptrace	A	shell	no
+system-utils/shm-coherency-identity	verify	ptrace	A	c-emits-values-always-returns-0	no
+system-utils/shuf-permutation	verify	ptrace	A	shell	no
+system-utils/sort-random	verify	ptrace	A	shell	no
+system-utils/ssh-keygen-ed25519	verify	ptrace	A	shell	no
+system-utils/startup-surface-identity	verify	ptrace	A	c-emits-values-always-returns-0	no
+system-utils/uuidgen-random	verify	ptrace	A	shell	YES
+# TOTAL 87  classA=62  classB=25  already_asserted=7
+# ================= CAVEAT — READ BEFORE ADDING ANY MANIFEST LINE =================
+# "mechanical" answers ONLY: is the manifest line the sole edit? It does NOT mean
+# qualifiable. A cell is qualifiable only with a working REFUSE direction.
+#
+# TWO DIFFERENT PROPERTIES, AND THEY NEED DIFFERENT MUTANTS:
+#   (1) DETERMINISM / parity  -- what `assert = { bitwise_parity = true }` protects.
+#       Refuse direction = make the guest's output VARY BETWEEN THE TWO --verify
+#       RUNS. Method used for the 7 already asserted: an inert wrapper that keeps
+#       the cell's own workload and prepends one run-varying line (a byte appended
+#       to a host file that persists across both runs). Confirmed to diverge
+#       natively first, so a refusal cannot be a broken fixture.
+#   (2) CORRECTNESS / exit-gating -- whether a WRONG-BUT-CONSISTENT guest is caught.
+#       Refuse direction = a semantic mutant. Class A cells CANNOT catch this:
+#       both runs print the same wrong value, parity holds, exit stays 0.
+#
+# hermit-sabre measured (2) on system-utils/startup-surface-identity: the mutant
+# bit (ENVCOUNT 121 vs 122, both binaries ran) and the guest STILL EXITED 0. That
+# is a true finding about property (2). It does NOT invalidate a parity assert,
+# because a real DETERMINISM regression on that cell would make argc/env/auxv vary
+# run-to-run and parity WOULD fail.
+#
+# SO: do not screen these with a correctness mutant and conclude the assert is
+# inert -- that tests the wrong oracle. Screen with a parity violation.
+# Conversely, do not claim a Class A cell gates correctness. It does not.
+#
+# class A = emits observed values, no expected-value assertion (parity oracle only)
+# class B = asserts expected values and exits nonzero on mismatch (both properties)
+#
+# already_asserted=YES marks the 7 qualified at Bar B with BOTH directions measured
+# (3 needed a fixture repair first and were Class C, not listed here).
+# ==============================================================================
