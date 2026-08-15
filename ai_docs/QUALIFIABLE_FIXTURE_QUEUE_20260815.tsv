@@ -116,6 +116,45 @@
 #   HERMIT-LEVEL. The counter guest was not run through the harness as a cell. "hermit refuses it" is established;
 #   "the harness books it as a red cell" is established for replay only. THE FIRST MUST NOT BORROW THE SECOND'S STRENGTH.
 # =================================================================================================================
+#
+# ===== CORRECTION 2026-08-15: THE POPULATION NOW RECONCILES. 86 PROGRAMS WERE NEVER NAMED IN THIS HEADER. =====
+# Found by hermit-teardown, and the defect was REPRODUCIBILITY, not soundness: a reader who added up the published
+# numbers got 83 + 105 + 6 + 2 + 1 = 197 of 283 and had to conclude the file was wrong. The queue was substantially
+# sound the whole time; the header simply never stated two of the four buckets. That is the harmful version, because
+# it costs a careful reader their confidence.
+#
+# THE COMPLETE SCREEN OF 283 C PROGRAMS, ALL FOUR BUCKETS, SUMMING TO 283:
+#     qualifiable (exit-gated)     83      <- the 380 rows below are these programs' cells
+#     not-exit-gated               29      <- NOT previously stated in this header
+#     cannot-fail                  57      <- NOT previously stated in this header
+#     NOT-DETERMINABLE            114      = 105 no mutation pattern matched + 6 mutation applied but no observable
+#                                             change + 2 build failed (original) + 1 mutant timed out
+#     -------------------------------
+#     TOTAL                       283      83 + 29 + 57 + 114 = 283. THE ARITHMETIC CLOSES.
+# THE 86 THAT WERE MISSING ARE 29 not-exit-gated + 57 cannot-fail.
+#
+# AND THE 58 IS A CROSS-CUT, NOT A BUCKET -- WHICH IS WHY ADDING IT TO THE OTHERS DOES NOT WORK. The 58 named in the
+# caveat above are the programs whose mutation MOVED OUTPUT WHILE EXIT STAYED 0. They span two buckets:
+#     29 of them are the entire not-exit-gated bucket
+#     29 of them are inside cannot-fail
+#     the remaining 28 cannot-fail programs are a different case: no mutation pattern matched AND main cannot
+#        terminate non-zero, so no output movement was observed for them at all
+#     29 + 29 + 28 = 86.  DO NOT ADD 58 TO A BUCKET TOTAL; IT OVERLAPS TWO OF THEM.
+# hermit-teardown's reading -- that the 86 were presumably not-exit-gated, leaving 28 unaccounted -- arrived at a real
+# number by a slightly different route: the 28 is genuine, but the 86 is not one bucket.
+#
+# A METHOD POINT FROM THE SAME REVIEW, KEPT BECAUSE IT GENERALISES: GRADE YOUR ZEROS, DO NOT REPORT THEM FLAT.
+#     WEAK zero: "no rows lacking 'exit' in evidence: 0" -- the evidence vocabulary is five strings and ALL FIVE
+#        contain "exit", so that zero could not have come out any other way. It confirms nothing.
+#     STRONG zeros: "deleted lines: 0", which enumerates diff lines directly, and "unmatched: 0 of 380",
+#        corroborated by byte-identical data rows.
+#   A zero is only evidence if the measurement could have produced a non-zero.
+#
+# REVIEWER INDEPENDENCE, RECORDED HERE BECAUSE THE NEXT PERSON ASKING FOR A CHECK NEEDS IT: hermit-teardown has now
+# TOUCHED backend-parity-c/eventfd-semantics and backend-parity-c/vectored-io -- the two rows named applied-but-inert
+# above, and the subject of its PR #2282. IT DISQUALIFIED ITSELF, UNPROMPTED, FROM FUTURE INDEPENDENT REVIEW OF THOSE
+# TWO ROWS. It remains independent for the rest of the queue. None of the defects it found was bar-lowering.
+# =============================================================================================================
 backend	mode	cell	fixture	mutation_family	evidence
 dbt	verify	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
 dbt	verify	backend-parity-c/child-subreaper-refusal	tests/backend-parity/fixtures/child_subreaper_refusal.c	ok-init	baseline already exits 1 natively
