@@ -401,6 +401,16 @@
 # DELTA-DISTRIBUTION-CORRECTED	ALSO FOUND WHILE CHECKING: verify's compared_log_messages is NOT the same population as grepping INFO lines from --log=info. For fchmodat2-flags the log-line count gives ptrace 140 / liteinst 939 while verify reports 138 / 937. TWO DIFFERENT MEASURES; do not mix them.
 # DELTA-DISTRIBUTION-CORRECTED	WHAT SURVIVES, MEASURED ON BOTH A 799 AND AN 802 CELL: the liteinst-vs-ptrace breakdown is IDENTICAL -- DETLOG delta 738, non-DETLOG INFO delta 61. The preamble is constant and is NOT where the variation lives.
 # DELTA-DISTRIBUTION-CORRECTED	STANDING CORRECTION TO ANY READER: treat every single-run delta in the PREQUALIFIED blocks as provisional. The qualification verdicts (accept/refuse/parity) were each observed directly and are NOT affected; only the message-count deltas are.
+# ACCEPT-ARM-STABILITY-AUDIT 2026-08-15 (hermit-sabre): MY 43 QUALIFICATIONS EACH RESTED ON ONE ACCEPT-ARM RUN. I SAMPLED SIX AND REPEATED THEM.
+# ACCEPT-ARM-STABILITY-AUDIT	WHY THIS AUDIT EXISTS: readdir-entries diverges 1 in 12 liteinst runs. A single matched run therefore cannot distinguish a stable cell from an intermittently divergent one, and every one of my 43 qualifications was a single run.
+# ACCEPT-ARM-STABILITY-AUDIT	RESULT: 6 cells x 5 liteinst --verify runs = 30 runs. matched 30, diverged 0, other 0.
+# ACCEPT-ARM-STABILITY-AUDIT	  close-range-fds 5/5, flock-lifecycle 5/5, openat-flags 5/5, rename-ops 5/5, socket-options 5/5, uname-identity 5/5.
+# ACCEPT-ARM-STABILITY-AUDIT	WHAT THIS DOES AND DOES NOT ESTABLISH, STATED AS A SAMPLE RATHER THAN A CLEARANCE:
+# ACCEPT-ARM-STABILITY-AUDIT	  IT DOES support that intermittent divergence is not widespread: at readdir-entries' observed 1-in-12 rate, 30 runs would be expected to surface roughly 2-3 divergences and surfaced none.
+# ACCEPT-ARM-STABILITY-AUDIT	  IT DOES NOT clear the other 37 qualified cells. THEY REMAIN SINGLE-RUN. A 1-in-12 defect in any of them would not have been detected by this audit, because they were not in it.
+# ACCEPT-ARM-STABILITY-AUDIT	  IT DOES NOT establish a rate for the six sampled either. 5 runs bounds a defect loosely at best; 0 of 5 is consistent with rates well above zero.
+# ACCEPT-ARM-STABILITY-AUDIT	readdir-entries REMAINS THE ONLY CELL OBSERVED TO DIVERGE, at 1 of 12.
+# ACCEPT-ARM-STABILITY-AUDIT	STANDING NOTE FOR WHOEVER FOLDS THESE AFTER #2276/#2277 LAND: the accept arms are single-run evidence except for the six above. Repeating them before enabling would cost 37 runs and is the cheapest remaining hardening of this batch.
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/vectored-file-io	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 137->939 delta 802 (SECOND 802)
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/signalfd-create	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
