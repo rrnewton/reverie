@@ -164,3 +164,31 @@ Future work:
 - Mark every claim as landed, draft, local experiment, or proposal.
 - Include exact repository SHAs, hardware/kernel/runtime state, commands,
   counts, and known skips in future handoffs.
+
+## Monitors that fail quietly
+
+Two ci-hub gates share a defect class that is not about the thing they monitor:
+**a monitor that fails silently is indistinguishable from a healthy system.**
+Both were observed on 2026-08-15.
+
+- **`ledger_spool_backlog` intermittently skips an emission while its condition
+  still holds.** Observed: the alarm fired every ops tick, was absent for
+  exactly one tick, then returned with the same `depth=8` and the same
+  `oldest_entry`, its age advanced by one tick interval. Checked directly during
+  the gap, the spool was unchanged — depth 8, `published/` empty, directory
+  mtime unmoved — and the detector itself ran fine and returned
+  `state: "stalled"` with rc 0. So the instrument is healthy and the emission
+  path is not. **A reader who happens to check during the gap concludes the
+  condition cleared.** That nearly happened.
+- **`gate_runner_presence` emitted no-signal all night against an unresolved
+  placeholder**, which reads the same way: absence of an alarm consumed as
+  absence of a problem.
+
+The operative rule: **for these two gates, an absent alarm is not evidence.
+Confirm the underlying condition directly before concluding it cleared** — for
+the spool that is `ls` on the spool directory plus a direct run of
+`ci-hub/health/ledger_spool_backlog.py`, which is a few seconds and does not
+depend on the tick.
+
+Neither has been diagnosed. Recorded so the next reader does not spend the
+investigation twice, and so an absent alarm is not mistaken for a resolved one.
