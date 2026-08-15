@@ -336,6 +336,19 @@
 # PREQUALIFIED-4	  ftruncate-sparse 138->937; inotify-watch 119->918; ioctl-fionread 129->928; memfd-create 127->926; mempolicy-default 116->915; mknod-special 140->939. All +799.
 # PREQUALIFIED-4	POOL: 40 pre-qualifiable, 24 measured, 16 remain. Zero host time consumed by any of it.
 # PREQUALIFIED-4	DELTA n=45: {795 x1, 797 x1, 799 x42, 802 x1}. 42 identical values across five fixture families is not noise, and the case for someone owning the investigation is stronger than at n=8. STILL NOT MY CAUSE TO NAME.
+# PREQUALIFIED-5 2026-08-15 (hermit-sabre): SIX MORE. THIRTY MEASURED. AND A POOL-SIZE CORRECTION AGAINST MY OWN EARLIER FIGURE.
+# PREQUALIFIED-5	POOL FIGURE CORRECTED: I reported the pre-qualifiable pool as 40. A recount at this point gives 24 already measured PLUS 22 still remaining = 46, so 40 WAS AN UNDERCOUNT.
+# PREQUALIFIED-5	  I am not adopting 46 silently either -- it is a recount taken at a different moment with cells having moved into 'enabled'. THE HONEST STATEMENT IS THAT THE POOL IS AT LEAST 46 AND MY 40 WAS WRONG.
+# PREQUALIFIED-5	  Same shape as the eligible 78-vs-86 error: a set counted without asserting that its parts sum to the whole.
+# PREQUALIFIED-5	All six this pass: step 1 enforced and passed; accept exit 0 on ptrace AND liteinst with verdict=matched and bitwise_parity=true; refuse exit 1 on both.
+# PREQUALIFIED-5	  msync-writeback 134->933; no-new-privs-refusal 114->913; openat2-refusal 114->913; openat-flags 163->962; path-file-ops 146->945; pipe2-flags 172->971. All +799.
+# PREQUALIFIED-5	DELTA n=51: {795 x1, 797 x1, 799 x48, 802 x1}. openat-flags at 163 and pipe2-flags at 172 are the widest ptrace baselines yet and STILL land on +799, which strengthens 'additive constant' over 'proportional'.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/msync-writeback	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 134->933 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/no-new-privs-refusal	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 114->913 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/openat2-refusal	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 114->913 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/openat-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 163->962 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/path-file-ops	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 146->945 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/pipe2-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 172->971 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/ftruncate-sparse	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->937 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/inotify-watch	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 119->918 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/ioctl-fionread	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 129->928 delta 799
