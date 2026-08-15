@@ -27,10 +27,25 @@ files, and all four hits were prose:
 healthy.** Pass 2 adds a comment/docstring filter and an invocation-shaped
 requirement; the probe then correctly returns 0.
 
-**PASS 2 STILL HAS A KNOWN FALSE-POSITIVE MODE.** `close-task` returns 1, and
-that 1 is an `echo` line in `orphaned-task-detector.sh` — a quoted path in a
-message, not an invocation. **Counts of 1-2 are unreliable; 0 and large counts
-are the trustworthy readings.**
+**PASS 2 HAS TWO KNOWN FAILURE MODES, BOTH FOUND BY COMPLETING THE SURVEY.**
+
+- **FALSE POSITIVE on echoed paths.** `close-task` returns 1, and that 1 is an
+  `echo` line in `orphaned-task-detector.sh`. **Counts of 1-2 are unreliable.**
+- **FALSE ZERO on imported modules.** `validate_rows.py` returns 0 invocation
+  callers and **has 15 importers** (`import validate_rows as canonical_ledger`
+  across `ci-hub/validate/`, `history/`, `remediation/`, `health/`, `ledger/`).
+  A Python module is IMPORTED, not invoked, and an invocation-shaped matcher
+  cannot see that. Same for `validate_status.rs`, which is not invoked at all —
+  it is compiled in via `#[path] mod validate_status` at `ci-hub.rs:49`.
+  **A zero means "no invocation", NOT "no caller".**
+
+**SELF-CORRECTION TO THE FIRST PUBLICATION OF THIS SURVEY.** It reported
+`scripts/check-reverie-pin.rs` as `exists=NO-FILE` and flagged that as
+"exactly the shape this survey exists to find". **That was MY path error, not a
+defect.** The file is at `hermit/scripts/check-reverie-pin.rs`; `AGENTS.md` links
+it by its correct GitHub URL under `rrnewton/hermit`. I had put a parent-relative
+path in the input list. Its 6 "callers" are self-references inside the file. **The
+alarm was mine and the mechanism is fine.**
 
 ## THE CLASS SPLIT THAT MATTERS: A MISSING CALLER MEANS DIFFERENT THINGS
 
@@ -44,7 +59,7 @@ hand-applied label: an assertion with no oracle behind it.
 consulted by a decision procedure. **Here a missing caller means the mechanism is
 inert.** This is the defect found on the probe, and only this one.
 
-## RESULT — 11 OF 16 SURVEYED
+## RESULT — 16 OF 16 SURVEYED
 
 | mechanism | invocation-callers | class | verdict |
 |---|---|---|---|
@@ -59,6 +74,12 @@ inert.** This is the defect found on the probe, and only this one.
 | `scripts/allocate-worktree.rs` | 8 | programmatic | called |
 | `scripts/setup-hooks.sh` | 64 | programmatic | called |
 | `ci-hub/bin/gh` | 802 | wrapper | called |
+| `scripts/allocate-worktree.rs` | 8 | programmatic | called |
+| `ci-hub/landing/land-pr.sh` | 5 | programmatic | called |
+| `hermit/scripts/check-reverie-pin.rs` | n/a | programmatic | **present**; earlier NO-FILE was a path error of mine |
+| `ci-hub/ledger/validate_rows.py` | 0 invocations / **15 imports** | programmatic | called, via import |
+| `ci-hub/lib/validate_status.rs` | 0 invocations / compiled in | programmatic | called, via `mod` |
+| `ci-hub/health/approval_binding.py` | 3 invocations + 1 import | programmatic | called |
 
 ## THE INTERACTIVE GROUP IS HEALTHY — ALL THREE HAVE ORACLES
 
@@ -102,25 +123,57 @@ rather than the enforcement being missing. Detail in
    `close-task`, `review-attest`. **Not defects**, and lumping them with class 2
    would have manufactured three.
 
-## UNSURVEYED — FIVE, NAMED
+## FINAL CLASSIFICATION
 
-It was seven when first reported; the background scan completed two more, so the
-honest number is now five:
+1. **No implementation at all** — the approval blob rule. Calibration case,
+   established separately; not an executable, so outside this method's reach and
+   included only because it was seeded.
+2. **Intended-programmatic and INERT** — `ci-hub/health/agent_liveness_probe.py`.
+   **The only confirmed defect in 16.**
+3. **Intended-interactive WITH an enforcer** — `who-am-i`, `close-task`,
+   `review-attest`. Not defects.
+4. **Intended-interactive WITHOUT an enforcer** — **EMPTY.** This was the bucket
+   expected to be interesting and nothing landed in it. Every mandated CLI tool
+   surveyed has something that verifies it was used.
+5. **AMBIGUOUS, not forced** — `.orc/plugins/hermit-dev/gh-pr-close-test.sh`,
+   0 callers. Its name suggests a test harness, in which case zero callers is
+   correct and it belongs in no defect class; but it sits in a plugin directory
+   beside a mandated wrapper. **Intent unresolved and NOT guessed.**
 
-1. `scripts/check-reverie-pin.rs` — **`exists=NO-FILE` at the path `AGENTS.md`
-   links.** May live under `hermit/`; unresolved. Exactly the shape this survey
-   exists to find.
-2. `ci-hub/landing/land-pr.sh`
-3. `ci-hub/ledger/validate_rows.py`
-4. `ci-hub/lib/validate_status.rs`
-5. `ci-hub/health/approval_binding.py`
+Everything else (11 of 16) is programmatic and genuinely called.
 
-Also unsurveyed: the intent classification of `.orc/.../gh-pr-close-test.sh`, and
-**every prose authority**, per the scope statement above.
+## LIVE-OBSERVATION STATUS, PER MECHANISM
 
-<!-- PROVENANCE: promoted 2026-08-15 by hermit-coord. Finished artifact.
+Observing an enforcer refuse is worth more than reading that it exists. Where
+that was available cheaply it was done; where not, it is said rather than
+silently downgraded.
+
+- **`who-am-i` — OBSERVED REFUSING, twice this session.** A malformed role/team
+  line and a stale-local-main commit were both rejected by
+  `check_commit_attribution.py` via `.githooks/commit-msg`.
+- **`review-attest` — OBSERVED ENFORCING.** `approval_binding --gate` read an
+  attestation posted minutes earlier and returned `state=ok`; the same tool's
+  `--who`/`--reviewer` guard refused a self-attestation earlier in the session.
+- **`close-task` — SOURCE READ ONLY, no live observation.** The detector at
+  `operational_health.py:1013` queries task notes for missing `CLOSURE-VERIFIED`.
+  Triggering it would require closing a task incorrectly, which is a mutation and
+  was not done. **Marked unobserved rather than downgraded silently.**
+- **`agent_liveness_probe.py` — OBSERVED, and its rc semantics measured directly**
+  (rc 1 alive on a live owner; rc 0 from a mistyped flag through a pipe).
+
+## SCOPE THAT COMPLETING THE SEVEN DOES *NOT* CLOSE
+
+The header caveat stands unchanged and completing the table does not weaken it:
+**this survey covers executable authorities only and structurally cannot
+rediscover the `virtualize_time` case.** 16 of 16 executables is not 16 of 16
+authorities. **Every prose authority in `AGENTS.md` and the canonical skills
+remains unsurveyed**, and a different method is required for them.
+
+<!-- PROVENANCE: promoted 2026-08-15 by hermit-coord. Finished artifact; scan 16 of 16 complete.
      AGENTS.md                                    sha256 50b9f56e89f1d9cfa54a85e33e86003d1442314f68607f012f5b721aeb7ccc18
      ci-hub/health/agent_liveness_probe.py        sha256 2bf2d9190da1e28978619b37eb456134fb6d9666f2fd1ef9befa48ae618f3528
      scripts/release-worktree.rs                  sha256 2f4d3806efb57e13fd413248d629f92379c8ae3029f53869972aa24eca69c0f2
-     Method: invocation-shaped grep with comment/docstring exclusion; counts of 1-2 unreliable.
-     If a hash no longer matches, re-run before relying on a verdict here. -->
+     hermit/scripts/check-reverie-pin.rs          sha256 f24aeff6c48e9c054283b7680d908814046a92a7e7a9ae5e1405210e43940b09
+     Method: invocation-shaped grep, comment/docstring excluded. KNOWN LIMITS: counts of 1-2
+     unreliable (echoed paths); a 0 means no INVOCATION and misses Python imports and Rust
+     `mod` inclusion. Executable authorities only; prose authorities are out of reach. -->
