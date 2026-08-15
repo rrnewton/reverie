@@ -461,6 +461,32 @@ caught by a person noticing an implausible result — that is, *after the wrong
 answer already existed*. These three were caught before anything was written.
 In all three the agent knew the lesson; knowing it did not help and the check did.
 
+**AND THERE IS A CONTROLLED CASE, WHICH IS WORTH MORE THAN THE THREE ANECDOTES.**
+Inside a single PR (#2279), describing a single change, by a single author, on the
+same night: **the cell counter was exact at 14/14/14/+14 across four independent
+readings — manifest, SCORECARD green, plan total, plan liteinst entries — while
+the PR title was stale by six, still saying "eight".** The author's diagnosis,
+verbatim: *"the counter had an oracle — `scorecard.rs update`, checked every
+amend, exact each time. The title had none. That asymmetry is the finding, not
+the six."*
+
+Care, competence, attention and stakes are held constant across those two fields.
+**The only variable is whether anything checked.** That is why the three catches
+above are an argument rather than four anecdotes: they show a guard succeeding
+where knowledge failed, and this shows the same author succeeding and failing
+simultaneously, split exactly along the guarded/unguarded line.
+
+Note also why neither stale title surfaced on its own: **both understated their
+content.** #2277 said 31 for 32; #2279 said 8 for 14. A label that claims less
+than it delivers attracts no complaint, so the benign direction is what let both
+persist — the same reason an inert green is harder to notice than a false red.
+
+**And the repair generalises: the count was DELETED from the title rather than
+corrected**, because a corrected count goes stale on the next amend, which is
+precisely how it reached six out of date. **A field that cannot go stale beats a
+field that is currently accurate.** Same move as deleting a duplicated literal so
+two readers cannot disagree by construction.
+
 **n=3 is not a rate, and this does not claim machine checks outperform attention
 in general.** What is claimed is only what was observed, plus the asymmetry that
 makes it matter: **a human catch requires a wrong result to exist first, and some
