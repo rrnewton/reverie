@@ -256,9 +256,18 @@ maps `.build.cflags` into `compile_args`, applied at `:3143`). A screen that bui
 the harness is predicting a binary nobody runs, so the divergence was measured over all 267 C
 fixtures screened here.
 
-**The expected direction does not occur.** The concern was that `-w` hides warnings `-Werror` would
-turn into errors, so a fixture that cannot build for real would read as a clean result here.
-Measured: **0 fixtures build under the operator flags and fail under the harness flags.** The reason
+**The expected direction does not occur, and the measurement carries a positive control.** The
+concern was that `-w` hides warnings `-Werror` would turn into errors, so a fixture that cannot build
+for real would read as a clean result here. Measured: **0 fixtures build under the operator flags and
+fail under the harness flags.**
+
+That zero is only worth reading because the same measurement *can* return non-zero: omitting each
+cell's declared `build.cflags` from the harness command produces **54 failures over these 267
+fixtures**. The mechanism is real and the test would have detected it. hermit-teardown reached the
+same conclusion independently on the narrower population of the 25 passing cells — 25 of 25 compile
+both ways with the declarations, **5 failures without them**. Two populations, two positive controls,
+same verdict: **the mechanism is real but does not bite here.** Keep the control attached to this
+result, because a population that declares `cflags` differently would make it bite. The reason
 is that the harness is *not* uniformly stricter — 69 of 283 C fixtures carry `build.cflags`, and 35
 of those carry six `-Wno-error=` relaxations precisely so `-Werror` does not reject them. Reproducing
 the harness command without `build.cflags` produces 54 spurious failures and is simply the wrong
