@@ -1,0 +1,15 @@
+Positive control on the "baseline already exits N natively" inclusion route.
+Question: does the exit status DISCRIMINATE, or is the fixture stuck non-zero?
+Method: compile each fixture with cc -std=c11 -O2 -g -w [-D_GNU_SOURCE], run
+natively, then under the release hermit built at hermit main 61b9ba7aa with
+--backend ptrace --strict --no-virtualize-cpuid --max-timeslice=disabled.
+Host devbig030, load average 22-39, no run timed out.
+
+  add_key_enosys              native=1  hermit=0   DISCRIMINATES
+  aio_refusal                 native=1  hermit=0   DISCRIMINATES
+  getrusage_self_accounting   native=1  hermit=0   DISCRIMINATES
+  membarrier_query            native=1  hermit=0   DISCRIMINATES
+  host_identity               native=1  hermit=0   DISCRIMINATES
+
+5 of 5. The 231 baseline-route rows are sound in substance; the defect is that
+the header's stated definition of "qualifiable" does not describe them.

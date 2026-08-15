@@ -1,0 +1,5 @@
+### be05e446 -> 730aa749  (+25 / -0)
+### 730aa749 -> cb6a3914  (+27 / -0)
+### cb6a3914 -> 578e9b08  (+27 / -0)
+Zero deletions in all three amendments. The 380 data rows are byte-identical
+between be05e446 and 578e9b08 (verified with diff over the non-comment lines).

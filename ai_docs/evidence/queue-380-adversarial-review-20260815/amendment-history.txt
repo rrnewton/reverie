@@ -1,0 +1,4 @@
+578e9b08eb2ea45738f718f04bd6bbc1c38f33ce 2026-08-15 13:29:38 -0700 [hermit2, hermit-bytes, unresolved, devbig030, role=impl] Correct the queue: one channel, hermit's exit, not the guest's
+cb6a3914daf7886959a74a107143c0ed68051ef9 2026-08-15 13:28:18 -0700 [hermit2, hermit-bytes, unresolved, devbig030, role=impl] Record that the stdout channel has no faithful single-backend stimulus
+730aa749bb8156486a5ac5fcaa77e0e79256cbe4 2026-08-15 13:22:06 -0700 [hermit2, hermit-bytes, unresolved, devbig030, role=impl] Caveat the qualifiable queue: verify also refuses on stdout divergence
+be05e44668ef38765b5f995d9b1cb18f8057c22f 2026-08-15 13:15:02 -0700 [hermit2, hermit-bytes, unresolved, devbig030, role=impl] Add the qualifiable fixture queue: 83 confirmed programs, 380 cells
