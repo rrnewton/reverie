@@ -32,7 +32,7 @@ different answers.
 
 | # | Item | Size | Why the scorecard does not count it | Blocked on |
 |---|---|---|---|---|
-| 1 | liteinst cells eligible but not in #2279 | **71** (85 − 14) · MEASURED | Qualification is not landing, and they cannot fold into #2279 until #2276/#2277 land | Judgement — see caveat |
+| 1 | liteinst cells eligible but not in #2279 | **71** by my predicate (85 − 14) · MEASURED; **72** by sabre's (86 − 14) · RELAYED — one-cell gap, both published | Qualification is not landing, and they cannot fold into #2279 until #2276/#2277 land | Judgement — see caveat |
 | 2 | `backend-limitation` disabled slots | **55** · MEASURED | No cell work can fix them; they are capability facts | **Time** |
 | 3 | Mixed-oracle DAG nodes | **13** of 60 · RELAYED (devbig014) | Node health is not a cell | Time, then per-node judgement |
 | 4 | DAG nodes never examined for self-certification | **~50** of 60 · RELAYED, unsized | Same | **Time** |
@@ -46,7 +46,7 @@ different answers.
 | 12 | Branch protection on unprotected `main` | — | Safety is not a cell | **Owner** |
 | 13 | Content-conditioned landing floor | — | Would unblock the stack | **Owner** — recommended against |
 | 14 | Not-determinable non-C cells | **4** · MEASURED | Currently classified unknown | **Time** (3 need the cell fixture dir built, 1 needs rust-script) |
-| 15 | Reconcile the 85-vs-78 eligibility predicates | unsized | Not a cell | Judgement — gates item 1 |
+| 15 | Reconcile the two eligibility predicates | **1 cell** · MEASURED (was ~7; sabre corrected 78→86) | Not a cell | Judgement — gates item 1 |
 
 **Owner decisions: 8, 9, 10, 12, 13 — five, and 9 and 10 want the same trigger,
 so four conversations.**
@@ -64,10 +64,43 @@ one already demonstrated on the 47, so this flag predicts its own remedy.
 not-exit-gated.** Consistent, but **not the same population**, and the two must
 not be added or compared without saying which is which.
 
-**Item 1's caveat:** the 71 are eligible by MY predicate — a source-text scan
-with no notion of whether liteinst can actually run the fixture. sabre's stricter
-predicate returned 78 of 147 where mine returned 85. **That ~7-cell gap was never
-reconciled, so 71 is an UPPER BOUND, not a work queue.** Item 15 gates item 1.
+**Item 1's caveat — PARTIALLY RESOLVED, and the residue is ONE cell.**
+
+hermit-sabre re-derived and corrected itself from 78 to 86 after finding a filter
+leak, **so the live gap against my 85 is one cell, not seven.** Both figures are
+over the same 147 disabled `verify/liteinst` slots.
+
+**The candidate cause was tested here and is REFUTED.** The hypothesis was that
+my predicate counts `backend-parity-c/cpuid-probe` while sabre's excludes it as
+host-blocked. It is in my 85 — but removing it gives **84**, which *widens* the
+gap to two rather than closing it. sabre has one cell MORE than me, so an
+exclusion on my side cannot be the explanation.
+
+**My likeliest over-exclusion was tested and is also refuted.** My threads
+pattern includes `#include <pthread.h>`, which would wrongly exclude a fixture
+that includes the header without creating a thread. **Zero cells are caught only
+by the header:** every one of my 14 exclusions has a substantive call.
+
+**MY PREDICATE, FULLY ACCOUNTED SO THE REMAINING CELL CAN BE FOUND BY DIFF:**
+147 slots − 48 non-C-or-missing = 99 C-backed − 14 disqualified = **85**. The 14,
+with the call that triggered each: `no-new-privs-refusal` exec · `pipe-ipc` fork ·
+`short-io-split-identity` fork · `fork-exec-pipeline` fork+exec ·
+`random-sources` pthread_create · `lock-free` pthread_create · `pid-tid`
+pthread_create+fork · `pid-tid-identity` pthread_create+fork+execl ·
+`pipe-prefill` fork · `producer-consumer` pthread_create · `signal-order`
+pthread_create · `order-violation` pthread_create ·
+`shm-coherency-identity` fork · `clock-exec-continuity` exec.
+
+**BOTH NUMBERS STAND WITH THEIR PREDICATES ATTACHED. NEITHER IS AVERAGED AND
+NEITHER IS CHOSEN** — the same treatment as thirteen-and-fourteen, and for the
+same reason: a one-cell disagreement between two defensible predicates is a
+definition to publish, not an error to correct. **I cannot say which of us is
+right without sabre's cell list**, and I have made mine diffable so that one
+comparison settles it.
+
+**So item 1 is 71 by my predicate (85 − 14 in #2279) and 72 by sabre's (86 − 14).
+It remains an upper bound under either.** Item 15 is now a one-cell diff rather
+than a survey.
 
 ## NO EFFORT ESTIMATES, DELIBERATELY
 
