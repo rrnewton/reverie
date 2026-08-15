@@ -89,6 +89,33 @@
 #   to determinize and then used to validate a relaxation. The stdout channel is verify's comparison of two runs, and a
 #   single-backend screen has only one run to work with -- which is the structural reason, not a gap in effort.
 # =======================================================================================================================
+#
+# ==== CORRECTION 2026-08-15: THERE IS ONE CHANNEL, NOT TWO, AND IT IS HERMIT'S EXIT STATUS -- NOT THE GUEST'S ====
+# Verified from source at hermit-cli/src/bin/hermit/verify.rs:415, into_exit_status:
+#     Verdict::Matched  -> Ok(self.guest_status)      hermit's exit becomes THE GUEST'S status
+#     Verdict::Diverged -> Err("Mismatch between run 1 and run 2 outputs.")   hermit exits NON-ZERO regardless of the guest
+#     Verdict::NoResult -> Err(...)                    fail-closed
+# So the stdout comparison happens INSIDE hermit and surfaces as HERMIT'S exit status. IT IS NOT A SEPARATE STDOUT CHANNEL,
+# and the "58 stdout-channel candidates" framing in the block below is superseded: those cells reach hermit's exit THROUGH
+# stdout. Same single channel. (Finding relayed from hermit-revents and re-derived here from the source, not inherited.)
+#
+# WHAT THIS SCREEN ACTUALLY OBSERVED, STATED UNAMBIGUOUSLY BECAUSE THE DISTINCTION IS THE WHOLE POINT:
+#   THIS SCREEN OBSERVES THE GUEST'S EXIT STATUS. It compiles each fixture and runs the BINARY DIRECTLY, with no hermit in
+#   the loop at all. Every "exit 0->1" in the evidence column below is a GUEST exit transition.
+#   The 83 rows remain CORRECT: a guest exit transition does reach hermit's exit, because Matched returns guest_status.
+#   BUT "cannot-fail" IS DEFINITIVELY THE WRONG LABEL. It means only "the GUEST always exits 0". A fixture that always exits 0
+#   can still be perfectly refusable, because a divergence between the two runs makes HERMIT exit non-zero irrespective of it.
+#
+# AND THE REFRAME DOES NOT MAKE THE 58 CHEAP TO SCREEN -- THE STRUCTURAL LIMIT BELOW STILL STANDS. Switching the screen to
+#   observe hermit's exit does not resolve them: under `hermit run --verify` a MUTATED fixture produces the same wrong output
+#   in BOTH runs, so the verdict is still Matched and hermit still exits 0. Making hermit's exit move requires the two runs to
+#   genuinely differ, which requires a real nondeterminism source -- exactly the stimulus that could not be induced.
+#   The correction fixes the MECHANISM and the LABEL. It does not supply the missing stimulus.
+#
+# BOUND CARRIED FROM THE SOURCE OF THE FINDING, SO IT IS NOT OVERREAD: the evidence that hermit refuses a stdout divergence is
+#   HERMIT-LEVEL. The counter guest was not run through the harness as a cell. "hermit refuses it" is established;
+#   "the harness books it as a red cell" is established for replay only. THE FIRST MUST NOT BORROW THE SECOND'S STRENGTH.
+# =================================================================================================================
 backend	mode	cell	fixture	mutation_family	evidence
 dbt	verify	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
 dbt	verify	backend-parity-c/child-subreaper-refusal	tests/backend-parity/fixtures/child_subreaper_refusal.c	ok-init	baseline already exits 1 natively
