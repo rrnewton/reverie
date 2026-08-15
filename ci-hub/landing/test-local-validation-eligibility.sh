@@ -296,12 +296,13 @@ else
 fi
 
 if grep -Fq 'health/approval_binding.py"' "$lander" &&
-   grep -Fq -- '--repo "$R" --pr "$PR" --gate' "$lander" &&
-   grep -Fq 'review_rc=$?' "$lander" &&
-   grep -Fq 'exact-head review authority REFUSED' "$lander"; then
-  audit "final boundary re-derives passed-review cache authority from APPROVED-AT" ok
+   grep -Fq -- '--repo "$R" --pr "$PR" --json' "$lander" &&
+   grep -Fq 'review_rebase.py"' "$lander" &&
+   grep -Fq -- '--current-base "$current_base" --current-head "$HEAD"' "$lander" &&
+   grep -Fq 'review applicability REFUSED' "$lander"; then
+  audit "final boundary requires current approval or an empty mechanical range-diff" ok
 else
-  audit "final boundary can consume an unbound passed-review cache label" bad
+  audit "final boundary can consume review evidence without proving patch equivalence" bad
 fi
 
 if grep -Fq 'bin/pr-head-ci"' "$lander" &&
@@ -316,10 +317,10 @@ fi
 
 if ! grep -Fq 'cherry_pick_context.py"' "$lander" &&
    ! grep -Fq 'cherry-pick context contract REFUSED' "$lander" &&
-   grep -Fq 'health/approval_binding.py"' "$lander"; then
-  audit "final boundary relies on exact-head review, not cherry-pick digest ceremony" ok
+   grep -Fq 'review_rebase.py"' "$lander"; then
+  audit "final boundary relies on approval bindings plus range-diff, not cherry-pick digest ceremony" ok
 else
-  audit "cherry-pick digest ceremony still blocks an exact-head-approved PR" bad
+  audit "cherry-pick digest ceremony still blocks a reviewed patch series" bad
 fi
 
 merge_prefix='gh pr '

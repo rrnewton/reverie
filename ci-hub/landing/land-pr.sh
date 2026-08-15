@@ -492,16 +492,27 @@ live_head=$(with-proxy gh pr view "$PR" -R "$R" --json headRefOid -q .headRefOid
 [ "$live_head" = "$HEAD" ] \
   || abandon "PR head moved before receipt authorization (expected $HEAD, observed ${live_head:-missing})" 5
 
-# Review labels are caches, never authority. Re-read this PR through the one
-# APPROVED-AT verifier at the final mutation boundary. A passed-review-* label
-# with no exact-head binding is ABSENT approval and refuses the merge; it is not
-# softened into a present-but-unverified state. No label is planted or deleted.
-review_detail=$(python3 "$ROOT/ci-hub/health/approval_binding.py" \
-  --repo "$R" --pr "$PR" --gate 2>&1)
+# Review labels are caches, never authority. Re-read their APPROVED-AT sources
+# at the final mutation boundary. An exact current-head binding passes directly.
+# A binding at an older head passes only when git range-diff proves that every
+# reviewed patch was replayed unchanged onto current main. Missing,
+# undetermined, conflicted, or semantically changed review evidence refuses;
+# no label or comment is planted or deleted here.
+approval_json=$(mktemp) \
+  || abandon "could not allocate the approval-binding observation file" 5
+if ! python3 "$ROOT/ci-hub/health/approval_binding.py" \
+    --repo "$R" --pr "$PR" --json >"$approval_json"; then
+  rm -f -- "$approval_json"
+  abandon "could not read approval-binding evidence for $HEAD" 5
+fi
+review_detail=$(python3 "$SCRIPT_DIR/review_rebase.py" \
+  --approval-json "$approval_json" --repo-checkout "$WT" \
+  --current-base "$current_base" --current-head "$HEAD" 2>&1)
 review_rc=$?
-say "exact-head review authority(head=$HEAD) rc=$review_rc: $review_detail"
+rm -f -- "$approval_json"
+say "review applicability(head=$HEAD) rc=$review_rc: $review_detail"
 [ "$review_rc" -eq 0 ] \
-  || abandon "exact-head review authority REFUSED for $HEAD: ${review_detail:-no result}" 5
+  || abandon "review applicability REFUSED for $HEAD: ${review_detail:-no result}" 5
 
 receipt_comments=$(mktemp) \
   || abandon "could not allocate the receipt-comment observation file" 5

@@ -218,7 +218,7 @@ The land sequence itself lives here too, not only in `scratch/`:
 
 | script | role |
 | --- | --- |
-| `ci-hub/landing/land-pr.sh <PR> <BRANCH> --checkout <reviewer-hermit-slot> [--union\|--no-rebase]` | reviewer-owned, detached-by-default single-PR lander: self-wraps in `land-lock run --child-deadline`, follows skill `hermit-validation-authority`, verifies exact-head review authority, performs a head-matched merge, and proves ancestry. |
+| `ci-hub/landing/land-pr.sh <PR> <BRANCH> --checkout <reviewer-hermit-slot> [--union\|--no-rebase]` | reviewer-owned, detached-by-default single-PR lander: self-wraps in `land-lock run --child-deadline`, follows skill `hermit-validation-authority`, requires either current-head review authority or an empty range-diff proving a mechanical replay of the reviewed patch series, performs a head-matched merge, and proves ancestry. |
 | `ci-hub/landing/union-rebase.sh <hermit-wt> <BRANCH> [--push]` | authoritative additive union-rebase of the shared manifest registries (`*.toml` by `[[test]]` id, `test-files.json` by path, `matrix.tsv` by row); the derived `ci/expected-e2e-plan.json` is regenerated, never hand-unioned |
 
 ### Reviewer lands or bounces
@@ -227,8 +227,9 @@ The implementer runs VALIDATE and hands the conceptual landing responsibility
 to the reviewer. An approving reviewer invokes this lander from their own
 registered Hermit slot; a rejecting reviewer returns the change to the
 implementer. There is no separate activator handoff or token artifact. The
-reviewer supplies their process-resolved identity for comments, while exact-head
-review and LEDGER authority remain the merge predicates.
+reviewer supplies their process-resolved identity for comments. Review authority
+must bind the current head or a patch-equivalent pre-rebase head proven by an
+empty range-diff; LEDGER authority remains the validation predicate.
 
 `collect_outer -> verify_outer -> enter_land_lock -> verify_final -> normal_non_admin_merge -> refresh_main -> prove_ancestry -> read_main_gate_blob -> patch_registration -> verify_registration`
 
