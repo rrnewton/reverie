@@ -240,6 +240,18 @@
 # LITEINST-SLOT-6..8	  n=8, DISTINCT DELTAS {795, 797, 799}, SPREAD 4 OVER PTRACE BASELINES RANGING 114-136. THE OFFSET IS ADDITIVE AND ESSENTIALLY FIXED; IT DOES NOT SCALE WITH THE WORKLOAD.
 # LITEINST-SLOT-6..8	  THAT IS A BACKEND-WIDE CONSTANT ACROSS THIS FIXTURE CLASS, NOT A PER-FIXTURE PROPERTY. I STILL OFFER NO CAUSE -- THIRD REFUSAL TO GUESS ONE. A characterised observation travels; a guessed mechanism gets inherited and defended.
 # LITEINST-SLOT-6..8	NOTHING ENABLED. Eight qualified slots PREPARED on one prospective receipt. 139 of 147 verify/liteinst slots remain unexamined.
+# LITEINST-BATCH-3 2026-08-15 (hermit-sabre): ZERO NEW CELLS QUALIFIED THIS PASS. BATCH STAYS AT EIGHT. REPORTING THE NUMBER RATHER THAN STRETCHING TO FIVE.
+# LITEINST-BATCH-3	THE GENERIC ok++ MUTATION DOES NOT FIT THE determinism-stress FIXTURE CLASS AND I ALMOST CREDITED THE FAILURE AS SUCCESS:
+# LITEINST-BATCH-3	  producer_consumer, file_timestamp_identity, pipe_prefill -> NO MUTATION ANCHOR, so no mutant binary was ever produced.
+# LITEINST-BATCH-3	  signal_order -> mutant source produced but FAILED TO COMPILE.
+# LITEINST-BATCH-3	  THOSE FOUR NEVERTHELESS READ 'refuse=1' IN THE RAW TABLE, BECAUSE RUNNING A NONEXISTENT BINARY EXITS NON-ZERO. A REFUSAL FROM A MISSING MUTANT IS INDISTINGUISHABLE FROM A REAL ONE AND I DID NOT CREDIT ANY OF THEM.
+# LITEINST-BATCH-3	  lock_free -> mutant built correctly and DID NOT BITE: ptrace accept 0, refuse 0. The gate does not discriminate that mutation. Needs a different one; not filed as cannot-fail.
+# LITEINST-BATCH-3	THE FORK/TEARDOWN LIMIT IS NOW CHARACTERISED AT n=2, NOT ANECDOTAL. I built a hand-crafted upstream mutation for pipe_prefill (corrupt the input string so the child's uppercased payload cannot match the expected constant) and it discriminates cleanly on ptrace: accept exit 0 'fork-pipe bytes=21 child-exit=37 payload=KVM PIPE INHERITANC...', refuse exit 1.
+# LITEINST-BATCH-3	  UNDER LITEINST ITS ACCEPT ARM FAILS: exit 1, EMPTY stdout, 'ENOTSUPP' + 'notifier did not acknowledge terminal cleanup'. IDENTICAL SIGNATURE TO short-io-split-identity.
+# LITEINST-BATCH-3	  TWO FORK-BEARING FIXTURES, TWO IDENTICAL TEARDOWN FAILURES, ZERO FORK-BEARING SUCCESSES. TREAT FORK-BEARING verify/liteinst SLOTS AS BLOCKED UNTIL TEARDOWN IS FIXED. That is a measured exclusion rule, not a prediction.
+# LITEINST-BATCH-3	POOL STATE FOR CLEAN (exec=0 fork=0) CLASS B CANDIDATES: EXHAUSTED. All 12 backend-parity class B cells are accounted for -- 8 qualified, 4 excluded (short-io-split-identity teardown, fork-exec-pipeline exec, cpuid-probe host CPUID, event-delivery-ordering mutant hangs).
+# LITEINST-BATCH-3	  Remaining unqualified candidates all carry a disqualifier or need a hand-written mutation: pid-tid (fork), pid-tid-identity (exec+fork), pipe-prefill (fork, measured), clock-exec-continuity (exec), and lock-free/signal-order/producer-consumer/file-timestamp-identity (need per-fixture mutations).
+# LITEINST-BATCH-3	INFO DELTA REMAINS AT n=8. No new points, because no new cell qualified. Deltas {795,797,799} over ptrace baselines 114-136, additive not proportional, cause still not claimed.
 REFUSABLE	determinism-stress-c/lock-free
 REFUSABLE	determinism-stress-c/pid-tid
 REFUSABLE	determinism-stress-c/pid-tid-identity
