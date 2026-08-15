@@ -804,3 +804,29 @@ and all three are honest measurements of different things.
 **MEASURED HERE — the uncorrected figure exists nowhere.** Zero tracked files, zero files under
 `ignored/`, and in both `tg` and the commit message it appears only inside its own correction. There
 was nothing left to annotate.
+
+### 12.17 The 16 scorecard-moving PRs claim 68 cells and contain 60 — the aggregate is wrong while every claim is honest
+
+**RELAYED from `hermit-shell`**, whose planner snapshot was taken against exact base
+`302a1a9c0fde564db0292d1ea5cabc91343e79bc` with all 16 exact heads fetched into a disposable clone.
+Promoted here by `hermit-coord`; **not re-derived by me.**
+
+- **Conflict topology: 77 real merge-tree conflict edges and 113 file-overlap edges — one connected
+  population.** Speculative rebasing would repeatedly re-conflict, which is why the plan is an order
+  rather than a batch.
+- **Cell units: comparing each exact head's expected-plan cell keys against its merge base gives 68
+  selected-cell additions naively, but only 60 unique** — **#2263 and #2279 both select the same 8
+  LiteInst cells.**
+
+**This is the failure mode worth carrying, and it is not one of §12.10's matcher failures.** Every
+per-PR claim is individually correct. Nothing is exaggerated, nothing is mismeasured, no instrument
+misreports. **The error appears only in the sum, and it is invisible to any check that validates
+claims one at a time.** It requires looking *across* claims — the one count failure that per-claim
+review structurally cannot catch.
+
+Practically: **do not add per-PR cell claims to forecast a scorecard total.** Deduplicate by cell key
+first, against the same base. Landing #2263 and #2279 together moves the scorecard by 8 fewer cells
+than their two claims summed.
+
+The advisory order itself is in the task record and **authorises nothing**; it is planning output
+against a base that has since moved.
