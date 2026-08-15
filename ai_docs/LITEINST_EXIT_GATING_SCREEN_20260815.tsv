@@ -429,10 +429,18 @@
 # SECOND-DIVERGENT-CELL	AND IT SHARPENS THE LIMIT ON THE ENABLED BATCH: 23 enabled cells passed 4 runs each. AT A 1-IN-12 RATE, 4 RUNS MISSES A DIVERGENT CELL ROUGHLY 70% OF THE TIME. 92 runs across the batch is decent aggregate evidence and WEAK per-cell evidence.
 # SECOND-DIVERGENT-CELL	  I am not withdrawing the enabled batch on this -- no divergence was observed in 92 runs -- but 4-per-cell should not be read as clearing any individual cell.
 # SECOND-DIVERGENT-CELL	PROGRESS ON THE OWED HARDENING: 16 of the 37 single-run waiting cells now have 3 runs each. 1 divergent found. 21 remain single-run.
+# HARDENING-COMPLETE 2026-08-15 (hermit-sabre): EVERY WAITING CELL NOW HAS REPEAT RUNS. THREE DIVERGENT CELLS FOUND IN TOTAL, ALL BY REPEATING.
+# HARDENING-COMPLETE	THIRD DIVERGENT CELL: backend-parity-c/signalfd-create, DIVERGED on run 2 of 3 after a clean single-run qualification. Rate 1 of 12 liteinst runs (1 of first 3, then 0 of 9); ptrace 3/3 matched.
+# HARDENING-COMPLETE	  Removed from QUALIFIED_BLOCKED_ON_LANDING_ORDER. Same rate and shape as readdir-entries and file-backed-mmap: 1-in-12, liteinst only, ptrace clean.
+# HARDENING-COMPLETE	THE THREE DIVERGENT CELLS ALL SHARE ONE RATE, WHICH IS ITSELF THE FINDING: readdir-entries 1/12, file-backed-mmap 1/12, signalfd-create 1/12. Three independent fixtures, same observed frequency, ptrace unaffected in all three.
+# HARDENING-COMPLETE	  I AM NOT NAMING A CAUSE. But 'three unrelated fixtures each diverging at the same 1-in-12 under one backend' is a sharper handoff than three separate flakes.
+# HARDENING-COMPLETE	FINAL HARDENING TALLY: 40 waiting cells repeated (3 runs each) plus 23 enabled cells (4 runs each). ROUGHLY 212 liteinst --verify RUNS. 3 divergences, all in the waiting set, NONE in the enabled batch.
+# HARDENING-COMPLETE	THE HIT RATE JUSTIFIES THE PASS: 3 of 43 waiting cells were divergent and ALL THREE had passed single-run qualification. Roughly 7% of my qualifications were wrong and only repetition exposed them.
+# HARDENING-COMPLETE	STATED LIMIT, UNCHANGED: 3 runs per cell misses a 1-in-12 defect about 77% of the time. The 40 cells that passed 3/3 are NOT cleared -- more likely clean than before, not proven clean. A fourth divergent cell in that set would not surprise me.
+INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/signalfd-create	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
 INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/file-backed-mmap	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/vectored-file-io	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 137->939 delta 802 (SECOND 802)
-QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/signalfd-create	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/socket-options	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 140->939 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/socketpair-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 128->927 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/sockname-unnamed	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
