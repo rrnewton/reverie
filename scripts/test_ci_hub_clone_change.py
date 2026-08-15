@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -98,6 +99,98 @@ class Fixture(unittest.TestCase):
         git(repo, "add", path)
         git(repo, "commit", "-m", "candidate")
         return git(repo, "rev-parse", "HEAD")
+
+    # ---- submodules, because the repository's own tests import them ----
+    #
+    # Local paths as submodule URLs need `protocol.file.allow`, which real
+    # remotes do not; that is a fixture accommodation, passed through the
+    # environment so the tool under test is invoked exactly as in production.
+
+    FILE_PROTOCOL_ENV = {
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "protocol.file.allow",
+        "GIT_CONFIG_VALUE_0": "always",
+    }
+
+    def add_submodule(self, name: str = "sub", payload: str = "from the submodule\n") -> Path:
+        """Give the fixture remote a submodule carrying one recognizable file."""
+        inner_remote = self.root / f"{name}-remote.git"
+        inner = self.root / f"{name}-seed"
+        command("git", "init", "--bare", str(inner_remote))
+        command("git", "init", "-b", "main", str(inner))
+        git(inner, "config", "user.name", "Test Agent")
+        git(inner, "config", "user.email", "test@example.invalid")
+        (inner / "payload.txt").write_text(payload)
+        git(inner, "add", "payload.txt")
+        git(inner, "commit", "-m", "submodule seed")
+        git(inner, "remote", "add", "origin", str(inner_remote))
+        git(inner, "push", "-u", "origin", "main")
+        env = {**os.environ, **self.FILE_PROTOCOL_ENV}
+        added = subprocess.run(
+            ["git", "-C", str(self.seed), "submodule", "add", str(inner_remote), name],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(added.returncode, 0, added.stderr)
+        git(self.seed, "commit", "-m", "add submodule")
+        git(self.seed, "push", "origin", "main")
+        return inner_remote
+
+    def create_clone(self, name: str, *, env: dict[str, str] | None = None):
+        return subprocess.run(
+            [str(SOURCE), "create", "--task", "fixture-change", "--path", "ci-hub/bin",
+             "--clone", str(self.root / name), "--remote", str(self.remote)],
+            capture_output=True, text=True,
+            env={**os.environ, **self.FILE_PROTOCOL_ENV, **(env or {})},
+        )
+
+    def test_create_checks_out_submodules_so_the_repo_tests_can_run(self) -> None:
+        self.add_submodule()
+        result = self.create_clone("with-sub")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path = self.root / "with-sub"
+        # The file the tests would import must be THERE, not merely the gitlink.
+        self.assertTrue((path / "sub" / "payload.txt").is_file())
+        self.assertEqual((path / "sub" / "payload.txt").read_text(), "from the submodule\n")
+        self.assertEqual(TOOL.uninitialized_submodules(path), [])
+        # `create` refuses an unclean fresh clone, so recursion must not dirty it.
+        self.assertTrue(TOOL.is_clean(path))
+
+    def test_create_refuses_rather_than_producing_a_clone_missing_a_submodule(self) -> None:
+        """The failure that "stops erroring" would hide: a silently absent submodule.
+
+        `submodule.<name>.active=false` makes `git clone --recurse-submodules`
+        SUCCEED while skipping that submodule, which is a real silent-skip path
+        and not a contrived one. Without the post-condition the tool would hand
+        back a clone that looks fine and cannot run the repository's tests.
+
+        An earlier version of this test used `submodule.recurse=false`, which the
+        explicit command-line flag overrides, so recursion happened anyway and
+        the test passed without ever reaching the guard.
+        """
+        self.add_submodule()
+        result = self.create_clone(
+            "no-sub", env={"GIT_CONFIG_COUNT": "2",
+                           "GIT_CONFIG_KEY_0": "protocol.file.allow",
+                           "GIT_CONFIG_VALUE_0": "always",
+                           "GIT_CONFIG_KEY_1": "submodule.sub.active",
+                           "GIT_CONFIG_VALUE_1": "false"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("uninitialized", result.stderr)
+        self.assertIn("cannot run the repository's own tests", result.stderr)
+        self.assertIn("sub", result.stderr)
+        # The clone git did produce is missing exactly what the tests import.
+        self.assertFalse((self.root / "no-sub" / "sub" / "payload.txt").is_file())
+
+    def test_uninitialized_submodules_reads_the_status_prefix(self) -> None:
+        self.add_submodule()
+        result = self.create_clone("prefix")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path = self.root / "prefix"
+        self.assertEqual(TOOL.uninitialized_submodules(path), [])
+        # Deinit reproduces exactly what the guard must catch.
+        git(path, "submodule", "deinit", "-f", "sub")
+        self.assertEqual(TOOL.uninitialized_submodules(path), ["sub"])
 
     def test_positive_one_commit_claimed_and_tested_seals(self) -> None:
         repo = self.clone()

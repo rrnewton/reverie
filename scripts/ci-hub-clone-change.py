@@ -358,6 +358,34 @@ def initialize_manifest(repo: Path, task: str, claims: list[str], base: str) -> 
     )
 
 
+def uninitialized_submodules(repo: Path) -> list[str]:
+    """Top-level submodule paths `git submodule status` reports as not checked out.
+
+    A separate post-condition rather than trust in the update's exit code,
+    because the failure this guards against is a clone that succeeds while
+    quietly lacking what the tests import. `git submodule status` prefixes an
+    uninitialized entry with `-`; `+` and `U` mean checked out but moved or
+    conflicted, which `is_clean` already refuses.
+
+    Deliberately NOT `--recursive`, matching the non-recursive update it checks.
+    An earlier revision used `--recursive` and refused every real clone, naming
+    `hermit/agent-utils`, `hermit/third-party/rr` and reverie's `dynamorio`,
+    `e9patch` and `sabre`. Those are nested build dependencies of the products;
+    no test here reaches them, the working tree is clean without them, and
+    fetching them would cost far more than the top-level four. A guard wider
+    than the thing it guards is a false alarm, and a false alarm on every clone
+    is worse than none.
+    """
+    listing = git(repo, "submodule", "status")
+    missing = []
+    for line in listing.splitlines():
+        if line.startswith("-"):
+            parts = line[1:].split()
+            if len(parts) > 1:
+                missing.append(parts[1])
+    return missing
+
+
 def command_create(args: argparse.Namespace) -> None:
     destination = Path(args.clone).expanduser().resolve()
     if destination.exists() or destination.is_symlink():
@@ -379,6 +407,36 @@ def command_create(args: argparse.Namespace) -> None:
         args.remote,
         str(destination),
     )
+    # Submodules arrive in a SECOND step because THE REPOSITORY'S OWN TESTS need
+    # them, not because a ci-hub change does. `--no-recurse-submodules` above was
+    # here in this tool's first commit 31cf7b51, with no comment and no mention
+    # in the protocol doc, and its charitable reading -- a change scoped to
+    # `ci-hub/` does not need product source -- is true of the change and false
+    # of the tests, so the flag stays and the tests' need is met explicitly.
+    #
+    # Measured against rrnewton/dev-hermit on 2026-08-15.
+    # `ci-hub/health/tests/test_bounded_gate.py` ran 0 tests and one collection
+    # error without `agent-utils/py/tick_hub`, and 12 with it;
+    # `test_merge_gate_authority.py` failed 7 of 11 without
+    # `hermit/scripts/configure-merge-gate-ruleset.sh`, and passed 11 with it.
+    #
+    # Two mechanisms reach the same four submodules with identical test results,
+    # and they do NOT cost the same. `git clone --recurse-submodules` produced a
+    # 566M clone in 34s; clone-then-update produced 212M in 11s, most of the
+    # difference being reverie's object store at 178M versus 14M. Hence this
+    # shape. Over the no-submodule clone (3s, 100M) the cost is about +8s and
+    # +112M.
+    #
+    # All four rather than only the two the current tests need: +3s and +62M
+    # buys the next test that reaches for `reverie` or `liteinst2` not failing
+    # this same way.
+    network_git(destination, "submodule", "update", "--init")
+    uninitialized = uninitialized_submodules(destination)
+    if uninitialized:
+        raise Refusal(
+            "clone left submodule(s) uninitialized, so this clone cannot run the "
+            "repository's own tests: " + ", ".join(uninitialized)
+        )
     base = git(destination, "rev-parse", "HEAD^{commit}")
     remote = git(destination, "rev-parse", "refs/remotes/origin/main^{commit}")
     if base != remote or not is_clean(destination):
