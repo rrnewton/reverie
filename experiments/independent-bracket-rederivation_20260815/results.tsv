@@ -1,0 +1,22 @@
+group	cell	arm	rc	observed	verdict
+fixtureassert	eventfd_probe	accept (fixed base)	0	eventfd counter=36 sem=5	PASS as required
+fixtureassert	vectored_io	accept (fixed base)	0	vectored_io bytes=256 checksum=32640	PASS as required
+fixtureassert	sendfile_copy	accept (fixed base)	0	sendfile copied=256 checksum=32640 pos=50 own_offset_kept=1	PASS as required
+fixtureassert	m_a1 counter+=1	refuse (fixed)	1	invariant counter: observed 37, wanted 36	CAUGHT
+fixtureassert	m_a2 checksum+=1	refuse (fixed)	1	invariant checksum: observed 32641, wanted 32640	CAUGHT
+fixtureassert	m_a3 checksum+=1	refuse (fixed)	1	invariant checksum: observed 32641, wanted 32640	CAUGHT
+fixtureassert	m_a4 own_offset_kept=0	refuse (fixed)	1	invariant own_offset_kept: observed 0, wanted 1	CAUGHT
+fixtureassert	m_b1 sem_sum+=1	refuse (fixed)	1	invariant sem: observed 6, wanted 5	CAUGHT
+fixtureassert	m_b2 bytes-=1	refuse (fixed)	1	invariant bytes: observed 255, wanted 256	CAUGHT
+fixtureassert	m_b3 pos+=1	refuse (fixed)	1	invariant pos: observed 51, wanted 50	CAUGHT
+fixtureassert	m_a1 on PRE-FIX source	control	0	eventfd counter=37 sem=5	NOT caught (as required)
+fixtureassert	m_a2 on PRE-FIX source	control	0	vectored_io bytes=256 checksum=32641	NOT caught (as required)
+fixtureassert	m_a3 on PRE-FIX source	control	0	sendfile checksum=32641	NOT caught (as required)
+fixtureassert	m_a4 on PRE-FIX source	control	0	sendfile own_offset_kept=0	NOT caught (as required)
+fixtureassert	m_b1 on PRE-FIX source	control	0	eventfd counter=36 sem=6	NOT caught (as required)
+fixtureassert	m_b2 on PRE-FIX source	control	0	vectored_io bytes=255	NOT caught (as required)
+fixtureassert	m_b3 on PRE-FIX source	control	0	sendfile pos=51	NOT caught (as required)
+umask	baseline	accept	0	umask ok=5	PASS
+umask	fixed	accept	0	umask ok=5	PASS (fix does not break the passing case)
+umask	baseline_setupfail	defect reproduction	0	umask ok=0 + ":: Success: deterministic. Determinism verified."	FALSE GREEN reproduced
+umask	fixed_setupfail	refuse	1	mkdtemp: No such file or directory	CAUGHT
