@@ -300,8 +300,22 @@
 # COMMENT-ANCHORING-CONFIRMED	CONSEQUENCE FOR SIZING, STATED SO IT IS NOT OVERREAD: THE ANCHORING DEFECT ACCOUNTS FOR 4 CELLS, NOT A CHUNK. It does NOT materially change any bucket estimate. 155 of 160 mutations reached code.
 # COMMENT-ANCHORING-CONFIRMED	  Every one of the four was CAUGHT BY THE FAIL-CLOSED STEP 1 rather than reaching a verdict. The guard is doing exactly its job; the two still-open cells are open because I have not retried them, not because anything is undiagnosed.
 # COMMENT-ANCHORING-CONFIRMED	RECORDED AS THE THIRD CATEGORY, NEITHER QUALIFIED NOR DISQUALIFIED, because forcing them either way manufactures a claim nobody made:
-NEITHER_QUALIFIED_NOR_DISQUALIFIED	backend-parity-c/mincore-residency	mutation landed in a line-1 comment; binary byte-identical; gate never exercised; retry with a call-site anchor
-NEITHER_QUALIFIED_NOR_DISQUALIFIED	backend-parity-c/epoll-pwait2-readiness	mutation landed in a line-1 comment; binary byte-identical; gate never exercised; retry with a call-site anchor
+# FOURTH-STATUS 2026-08-15 (hermit-sabre): QUALIFIED_BLOCKED_ON_LANDING_ORDER IS A DISTINCT STATUS. CONFLATING IT WITH THE OTHER THREE LOSES THE DISTINCTION.
+# FOURTH-STATUS	THE FOUR STATUSES NOW IN USE, AND WHY EACH IS SEPARATE:
+# FOURTH-STATUS	  QUALIFIED           -- both directions measured; enabled in #2279.
+# FOURTH-STATUS	  cannot-fail         -- measured unable to discriminate a semantic regression; needs a fixture repair.
+# FOURTH-STATUS	  NEITHER_QUALIFIED_NOR_DISQUALIFIED -- the instrument failed, not the cell; no verdict was reached.
+# FOURTH-STATUS	  QUALIFIED_BLOCKED_ON_LANDING_ORDER -- NEW. Both directions measured and PASSING, but the gate they depend on lives in an unlanded PR, so enabling them before it lands would create inert coverage.
+# FOURTH-STATUS	THE HAZARD, CONCRETELY: mincore_residency and epoll_pwait2_readiness END 'return 0;' ON main. Their EXPECTED_CHECKS gate exists only in #2277. #2279 branches from main.
+# FOURTH-STATUS	  Enabling them in #2279 today would make two cells GREEN AND UNABLE TO GO RED -- the inert-coverage trap, introduced by me, in the pull request whose purpose is removing it elsewhere.
+# FOURTH-STATUS	DECISION (owner, this session): DO NOT FOLD AND DO NOT REBASE #2279 ONTO #2277. The +2 buys nothing while #2279 already waits on a receipt, whereas the coupling would be PERMANENT -- it would make #2279 unlandable independently even after the receipt arrives.
+# FOURTH-STATUS	  Precedent cited and honoured: hermit-liteinst rejected exactly this coupling for #2263.
+# FOURTH-STATUS	THE ANCHORING RECIPE IS PROVEN, NOT PROPOSED -- anchor the mutation on the CALL SITE, never a bare symbol, because in this fixture family the first occurrence of a symbol is usually a line-1 comment. Two cells recovered by it are already enabled.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/mincore-residency	Bar B measured against #2277's fixture: ptrace accept 0/refuse 1, liteinst accept 0/refuse 1, accept matched+parity, 128->927 delta 799. Gate is in #2277; main ends 'return 0;'. Enable only AFTER #2277 lands.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/epoll-pwait2-readiness	Bar B measured against #2277's fixture: ptrace accept 0/refuse 1, liteinst accept 0/refuse 1, accept matched+parity, 133->932 delta 799. Gate is in #2277; main ends 'return 0;'. Enable only AFTER #2277 lands.
+BLOCKED_ON_LANDING_ORDER_NOT_YET_QUALIFIED	backend-parity-c/fchmod-bits	gate is in #2277; on main the only non-zero exit is a setup failure, so a mutation cannot be refused. Qualify after #2277 lands.
+BLOCKED_ON_LANDING_ORDER_NOT_YET_QUALIFIED	backend-parity-c/fchmodat2-flags	gate is in #2277; same reason as fchmod-bits.
+BLOCKED_ON_LANDING_ORDER_NOT_YET_QUALIFIED	backend-parity-c/linkat-flags	gate is in #2277; same reason as fchmod-bits.
 NEITHER_QUALIFIED_NOR_DISQUALIFIED	backend-parity-c/name-to-handle-refusal	two mutations tried: one a compile error by construction, one inert because Hermit's refusal is path-independent
 NEITHER_QUALIFIED_NOR_DISQUALIFIED	backend-parity-c/event-delivery-ordering	mutant HANGS under ptrace (exit 124 at 90s); a hang is not a gate refusal
 REFUSABLE	determinism-stress-c/lock-free
