@@ -210,6 +210,14 @@ investigation twice, and so an absent alarm is not mistaken for a resolved one.
   positional; passed as `--agent` argparse errors, and an exit status read
   through a pipeline reports **rc 0**, which in that probe's vocabulary means
   **verified dead** — the one code that permits reclaim. **Capture the probe's
-  status directly, never through a pipe.** Full case, correct invocation and
-  scope in
+  status directly, never through a pipe.** **Severity is bounded: the probe is
+  ADVISORY and `release-worktree.rs` enforces independently via
+  `verify_recorded_owners_absent`, so a mistyped probe misleads a reader but does
+  not defeat reclaim enforcement.** Full case, correct invocation and scope in
   [LIVENESS_PROBE_USAGE_ERROR_FAILS_OPEN_20260815.md](LIVENESS_PROBE_USAGE_ERROR_FAILS_OPEN_20260815.md).
+
+- **Before relying on a named authority, grep for a caller.** Three instances in
+  one session of documentation naming an authority the code does not implement:
+  the approval blob rule (named in policy and a skill file, no implementation),
+  the `virtualize_time` rationale, and `agent_liveness_probe.py` (named in
+  `AGENTS.md:81` as the reclaim authority; no production caller invokes it).

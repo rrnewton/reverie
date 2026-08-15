@@ -1,6 +1,7 @@
-# The liveness probe fails OPEN on a mistyped flag
+# The liveness probe fails OPEN on a mistyped flag — advisory layer only
 
-A latent safety defect in the fail-closed slot-reclaim path, found 2026-08-15 by
+A latent safety defect in the ADVISORY layer of the slot-reclaim path. The
+enforcement is independent and unaffected; see the corrected severity below. Found found 2026-08-15 by
 hermit-coord (devbig030) while inspecting `codex-verifyallow907`. Read-only
 finding; nothing was released, deleted, or changed.
 
@@ -25,14 +26,51 @@ the one code that PERMITS reclaim.
 **Same agent, same moment. The mistyped invocation says reclaim is permitted;
 the correct one says the owner is alive and reclaim is refused.**
 
-## WHY THIS IS THE DANGEROUS SHAPE
+## WHY IT MATTERS — AND THE SEVERITY, CORRECTED
 
 ***** **THE FAILURE MODE IS NOT NO ANSWER, IT IS THE MOST PERMISSIVE ANSWER.** *****
 
-**A fail-closed system whose probe fails open on a mistyped flag is not
-fail-closed.** The trigger is trivial — one wrong flag — and the wrong result is
+The trigger is trivial — one wrong flag — and the wrong result is
 indistinguishable from a real verdict unless the reader already knows the
-vocabulary. rc 0 is not a neutral "error"; it is an affirmative clearance.
+vocabulary. **rc 0 is not a neutral "error"; it is an affirmative clearance.**
+
+**SEVERITY CORRECTED, AND THE ORIGINAL FRAMING WAS WRONG IN THE WAY THAT MATTERS.**
+This was first recorded — and relayed to the owner — as *"a fail-closed system
+whose probe fails open"*. **That overstates it: the probe is not the enforcement.**
+
+- **THE PROBE IS ADVISORY.** It is what an agent or coordinator runs to decide
+  whether to *attempt* a reclaim. A typo hands that reader the most permissive
+  answer, so **the defect is real and unchanged at the human/agent layer.**
+- **THE ENFORCEMENT IS INDEPENDENT AND DOES NOT CONSULT THE PROBE.**
+  `scripts/release-worktree.rs` calls `verify_release_authority_absent` from
+  `live_process_users` before anything else, which walks `/proc` directly via
+  `verify_recorded_owners_absent(root, proc_root, cgroup_root, &authorities.orc)`.
+  `live_process_users` then refuses **every readable same-UID reference into the
+  target**, tolerating only a named watcher whose exact executable identity and
+  descriptor flags prove the reference non-writable — *"every tolerance is
+  printed; missing or changing evidence remains a refusal."* A separate Codex
+  sentinel path requires durable revocation and re-proves `unit_id`,
+  `recorded_main_pid`, `recorded_main_pid_starttime` and `cgroup_path`.
+- **SO A MISTYPED PROBE DOES NOT DEFEAT RECLAIM ENFORCEMENT.** The authority is
+  also STRICTER than the probe: the probe asks *is this agent alive*, the
+  authority asks *is anything at all holding this path*, plus cgroup and
+  container checks.
+
+**BOTH FACTS STAND: the defect is real at the advisory layer, and it does not
+reach the enforcement layer.**
+
+## THE PROSE AND THE CODE DISAGREE, WHICH IS THE SECOND FINDING
+
+`AGENTS.md:81` names `agent_liveness_probe.py` as the authority for exactly this
+decision and spells out its rc semantics. **The reclaim path never calls it, and
+no production caller does.** A reader of the policy would reasonably conclude the
+probe is what stops a bad release. It is not.
+
+***** **RULE, STATED IN ITS OWN RIGHT: BEFORE RELYING ON A NAMED AUTHORITY, GREP
+FOR A CALLER.** ***** Third instance in one session — the approval blob rule named
+in policy and in a skill file with no implementation; the `virtualize_time`
+rationale; and now this. **Three is a pattern and it should not have to be
+rediscovered a fourth time.**
 
 ## THE RULE
 
@@ -61,8 +99,19 @@ Two adjacent files were checked and neither reproduces the shape:
 does not invoke it; `scripts/release-worktree.rs`, the reclaim authority, reads
 subprocess status via `.output()` and `.code()` rather than through a shell pipe.
 
-**Not surveyed:** every other health check under `ci-hub/health/`, and whether
-any of them assigns a permissive meaning to rc 0. That is a separate pass.
+**Not surveyed, named explicitly rather than omitted:**
+
+1. **Every other health check under `ci-hub/health/`**, and whether any assigns a
+   permissive meaning to rc 0. A separate pass.
+2. **Whether `verify_recorded_owners_absent` uses the same `DG_AGENT_NAME` signal
+   the probe does, or a different owner record.** Its call site and signature
+   were read; **its body was not.** So "the enforcement is independent" is
+   established structurally — it does not invoke the probe — but whether the two
+   agree on what an owner IS remains open. If they disagree, the advisory and the
+   enforcing layers could reach different verdicts about the same slot.
+3. **Whether any OTHER authority named in `AGENTS.md` lacks a caller.** Unsurveyed,
+   and cheap to check as a set rather than one at a time — which is the natural
+   next step given the rule above.
 
 ## THE SLOT VERDICT THIS CAME FROM
 
