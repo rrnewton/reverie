@@ -1,0 +1,55 @@
+# LiteInst non-C candidate survey — 46 of 171 ptrace-only verify candidates
+# Produced 2026-08-15 by hermit-coord (devbig030), hermit head 61b9ba7aa4dd763c1bda091316852d5290f9466c
+# INSTRUMENT: run each fixture natively twice, diff stdout; plus inspect the --run branch
+#   and any exec'd guest for a non-zero exit path. No truncating filter in any step.
+# BUCKETS  refusable=37  cannot_fail=0  not_exit_gated=5  not_determinable=4
+# CANNOT-FAIL IS ZERO BY A REAL PROPERTY: every .sh opens 'set -euo pipefail', so there is
+#   no implicit return 0. The C population's defect has no analogue here.
+# NO ASSERT ADDED, NO FIXTURE MODIFIED. Survey only.
+bucket	cell	channel	reason
+NOT-DETERMINABLE	determinism-stress/process-chains	unmeasured	see task note: needs the built cell fixture dir, or rust-script; static EXIT_FAILURE signal NOT promoted to a verdict
+NOT-DETERMINABLE	determinism-stress/thread-contention	unmeasured	see task note: needs the built cell fixture dir, or rust-script; static EXIT_FAILURE signal NOT promoted to a verdict
+NOT-DETERMINABLE	language-runtimes/cpp-stl-determinism	unmeasured	see task note: needs the built cell fixture dir, or rust-script; static EXIT_FAILURE signal NOT promoted to a verdict
+NOT-DETERMINABLE	language-runtimes/rust-hashmap-iteration	unmeasured	see task note: needs the built cell fixture dir, or rust-script; static EXIT_FAILURE signal NOT promoted to a verdict
+NOT-EXIT-GATED	applications/c-toolchain-workflow	none	stdout identical natively and no self-check beyond set -e; exits non-zero only on a crash
+NOT-EXIT-GATED	applications/timed-progress-bar	none	direct= command, stdout identical natively, no self-check; coverage not a determinism oracle
+NOT-EXIT-GATED	data-handling/shell-pipeline	none	stdout identical natively and no self-check beyond set -e; exits non-zero only on a crash
+NOT-EXIT-GATED	system-utils/du-tree-summary	none	direct= command, stdout identical natively, no self-check; coverage not a determinism oracle
+NOT-EXIT-GATED	system-utils/find-tree-metadata	none	direct= command, stdout identical natively, no self-check; coverage not a determinism oracle
+REFUSABLE	applications/git-repository-workflow	exit	natively deterministic but has a real self-check under set -e; refuses a wrong-but-successful result
+REFUSABLE	data-handling/archive-roundtrip	exit	natively deterministic but has a real self-check under set -e; refuses a wrong-but-successful result
+REFUSABLE	data-handling/jq-json-transform	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	data-handling/sqlite-query-determinism	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	data-handling/zstd-multithread	exit	natively deterministic but has a real self-check under set -e; refuses a wrong-but-successful result
+REFUSABLE	determinism-stress/thread-output	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/bash-loop-pipe-time	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/bash-random	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/gawk-random	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/lua-random	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/m4-macro-mkstemp	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/node-v8-jit	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/perl-hash-order	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/perl-io-subprocess-time	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/perl-random	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/python-dict-hash-iteration	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/python-hash-determinism	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/python-hashseed	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/python-io-subprocess-time	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/python-random	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/ruby-random	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	language-runtimes/tcl-rand-clock	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/date-nanoseconds	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/mcookie-random	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/mktemp-name	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/openssl-enc	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/openssl-genpkey	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/openssl-passwd	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/openssl-rand	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/openssl-x509	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/proc-random-uuid	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/proc-uptime	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/random-device	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/shuf-permutation	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/sort-random	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/ssh-keygen-ed25519	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
+REFUSABLE	system-utils/uuidgen-random	stdout	native stdout differs run-to-run; the compared channel carries the targeted nondeterminism
