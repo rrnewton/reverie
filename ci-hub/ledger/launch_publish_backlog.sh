@@ -25,6 +25,45 @@ set -uo pipefail
 UNIT=${LEDGER_PUBLISH_UNIT:-ledger-publish-backlog}
 ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 
+# WHERE THE SWEEP'S OUTPUT GOES, AND WHY IT IS NOT THE JOURNAL.
+#
+# A `systemd-run --user` unit sends stdout/stderr to the journal by default. On
+# this host that is a write-only destination for the account that needs it:
+# `journalctl --user` answers "No journal files were opened due to insufficient
+# permissions" for EVERY user unit, because the account is in none of `adm`,
+# `systemd-journal` or `wheel`. So the sweep has been describing its own failure
+# on every run and putting the description somewhere unreadable.
+#
+# That is what made the credential fault below cost a day: the error was not
+# missing and not wrong, it was addressed to a reader who could not open it.
+# Appending to a plain file costs nothing and makes the next fault legible.
+LOG_DIR=${LEDGER_PUBLISH_LOG_DIR:-$ROOT/ignored/ci-hub}
+LOG=$LOG_DIR/ledger-publish-backlog.log
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
+# WHY THE UNIT NEEDS AN EXPLICIT PATH, AND WHY ONLY WRITES FAILED.
+#
+# Publication pushes through `parent-main-write`, whose git credential helper
+# shells out to `gh`. A `systemd --user` unit inherits the user manager's PATH,
+# which on this host is `/home/newton/orc-bin:/usr/local/sbin:/usr/local/bin:
+# /usr/sbin:/usr/bin` and does NOT contain `$HOME/bin`, where `gh` lives. An
+# interactive shell picks it up from the profile, so the sweep succeeded
+# whenever a human ran it and failed silently whenever the unit did -- a
+# credential failure ON THE WRITE PATH ONLY, invisible to any read-only
+# reachability probe, because fetch and ls-remote need no credential helper.
+#
+# Resolve it here, in the caller's environment, and hand the absolute directory
+# to the unit. REFUSE LOUDLY IF gh IS ABSENT rather than launching a sweep that
+# is guaranteed to fail at the push: a silent absence is the exact defect this
+# comment exists to explain.
+GH_BIN=$(command -v gh 2>/dev/null || true)
+if [[ -z $GH_BIN ]]; then
+  echo "state=refused summary=gh not found on PATH; a detached sweep would fail at the push. Not launched; spool retained." \
+    | tee -a "$LOG" 2>/dev/null || true
+  exit 0
+fi
+UNIT_PATH="$(dirname -- "$GH_BIN"):${PATH}"
+
 if systemctl --user is-active --quiet "$UNIT.service" 2>/dev/null; then
   echo "state=running summary=ledger publish sweep already active as $UNIT"
   exit 0
@@ -37,14 +76,22 @@ if ! command -v systemd-run >/dev/null 2>&1; then
   exit 0
 fi
 
-if systemd-run --user --quiet --collect \
+launch_error=$(systemd-run --user --quiet --collect \
     --unit="$UNIT" \
     --description="drain ledger spool backlog across producing parents" \
     --property=CPUQuota=100% \
-    -- python3 "$ROOT/ci-hub/ledger/publish_backlog.py" >/dev/null 2>&1; then
-  echo "state=launched summary=ledger publish sweep launched detached as $UNIT"
+    --property="StandardOutput=append:$LOG" \
+    --property="StandardError=append:$LOG" \
+    --setenv="PATH=$UNIT_PATH" \
+    -- python3 "$ROOT/ci-hub/ledger/publish_backlog.py" 2>&1 >/dev/null)
+if [[ $? -eq 0 ]]; then
+  echo "state=launched summary=ledger publish sweep launched detached as $UNIT; output appended to $LOG"
   exit 0
 fi
 
-echo "state=refused summary=could not launch $UNIT; spool retained for the next tick"
+# Keep the launcher's OWN failure too. It was previously discarded by
+# `>/dev/null 2>&1`, so a refused launch and a launch that ran and failed were
+# indistinguishable from the outside.
+echo "state=refused summary=could not launch $UNIT; spool retained for the next tick; systemd-run said: ${launch_error:-<no output>}" \
+  | tee -a "$LOG" 2>/dev/null || true
 exit 0
