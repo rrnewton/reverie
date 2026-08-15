@@ -608,6 +608,39 @@ def dirty_candidate_paths(primary: Path, paths: list[str]) -> list[str]:
     return [line for line in result.splitlines() if line]
 
 
+def already_holds_candidate(primary: Path, entries: list[str], candidate: str,
+                            paths: list[str]) -> bool:
+    """True when the reported paths hold the candidate's own content, unsaved-free.
+
+    `dirty_candidate_paths` answers "does `git status` report anything here", and
+    that one question covers two situations whose right responses are opposite:
+
+    - somebody's uncommitted work sits in a path this activation would overwrite,
+      which must be inspected and preserved before anything else happens; and
+    - the index and working tree already carry the candidate's own content while
+      HEAD has not moved yet, which is what a `parent-main-write sync` running
+      concurrently looks like part-way through, and where there is nothing to
+      preserve and nothing to inspect.
+
+    The observed case, recorded in the activation obligation store at
+    2026-08-15T22:51:06Z, was the second: `A  <path> | M  <path> | M  <path>`,
+    every entry with a blank second column. Porcelain v1's two columns are index
+    versus HEAD and working tree versus index, so a blank second column means
+    nothing is unsaved; and comparing the index against the candidate commit
+    settles whose content it is. Untracked files report `??`, whose second column
+    is not blank, so they never reach the comparison.
+
+    This decides WORDING ONLY. Both situations still refuse.
+    """
+    if not all(len(entry) > 1 and entry[1] == " " for entry in entries):
+        return False
+    staged = run(
+        ("git", "-C", str(primary), "diff", "--cached", "--quiet", candidate, "--", *paths),
+        check=False,
+    )
+    return staged.returncode == 0
+
+
 def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     result = run(
         ("git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, descendant),
@@ -774,9 +807,21 @@ def command_activate(args: argparse.Namespace) -> None:
             )
         dirty = dirty_candidate_paths(primary, paths)
         if dirty:
+            # Same refusal either way; only the stated cause differs, because a
+            # reader sent looking for dirty paths that do not exist stops
+            # believing the tool that sent them.
+            if already_holds_candidate(primary, dirty, candidate, paths):
+                raise Refusal(
+                    "primary candidate paths already hold this candidate's content with "
+                    "nothing unsaved, but HEAD has not moved yet -- a parent-main-write "
+                    "sync is most likely running concurrently. Nothing here is at risk "
+                    "and there is nothing to preserve; re-run activation once the "
+                    "primary settles: " + " | ".join(dirty)
+                )
             raise Refusal(
-                "primary candidate paths are dirty; refusing to sweep them into activation: "
-                + " | ".join(dirty)
+                "primary candidate paths carry work that is not this candidate's; "
+                "refusing to sweep it into activation -- inspect and preserve it "
+                "first: " + " | ".join(dirty)
             )
         sync_result = run(
             (str(primary / "scripts/parent-main-write"), "sync", "--automatic"),

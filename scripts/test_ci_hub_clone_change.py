@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -293,6 +294,124 @@ class Fixture(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("current main to contain candidate", result.stderr)
+
+    # ---- what the dirty-paths refusal SAYS. It always refuses; only the stated
+    # cause moves, because `git status` reporting an entry covers two situations
+    # whose right response is opposite. Recorded live at 2026-08-15T22:51:06Z in
+    # the activation obligation store: `A  <path> | M  <path> | M  <path>`, every
+    # second column blank, described as dirty paths that did not exist.
+
+    def _published_candidate(self, name: str = "change",
+                             path: str = "ci-hub/bin/tool") -> tuple[Path, Path, str, str]:
+        """A sealed candidate that is on main, and a primary that predates it."""
+        repo = self.clone(name)
+        # Content must differ per call: a later call clones a main that already
+        # holds the earlier one, and an identical write commits nothing.
+        candidate = self.commit(repo, path, f"candidate {name}\n")
+        sealed = command(str(SOURCE), "seal", "--clone", str(repo), "--test", "true")
+        self.assertEqual(sealed.returncode, 0, sealed.stderr)
+        primary = self.root / f"primary-{name}"
+        self.assertEqual(command("git", "clone", str(self.remote), str(primary)).returncode, 0)
+        git(repo, "push", "origin", "HEAD:main")
+        return repo, primary, candidate, path
+
+    def _activate(self, repo: Path, primary: Path) -> subprocess.CompletedProcess[str]:
+        return command(str(SOURCE), "activate", "--clone", str(repo),
+                       "--primary", str(primary))
+
+    def test_a_mid_sync_index_is_not_described_as_dirty_paths(self) -> None:
+        repo, primary, candidate, _ = self._published_candidate()
+        # Index and working tree already carry the candidate while HEAD has not
+        # moved: exactly the shape a concurrent parent-main-write sync presents.
+        git(primary, "fetch", "origin")
+        git(primary, "checkout", candidate, "--", "ci-hub/bin/tool")
+        entries = TOOL.dirty_candidate_paths(primary, ["ci-hub/bin/tool"])
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0][1], " ")  # nothing unsaved
+        result = self._activate(repo, primary)
+        # STILL REFUSES. The safe behaviour is not what is being changed.
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("already hold this candidate's content", result.stderr)
+        self.assertIn("re-run activation once the primary settles", result.stderr)
+        self.assertNotIn("inspect and preserve it first", result.stderr)
+
+    def test_genuinely_unsaved_work_is_still_described_as_work_to_preserve(self) -> None:
+        repo, primary, _, _ = self._published_candidate()
+        (primary / "ci-hub/bin/tool").write_text("somebody else's unsaved edit\n")
+        result = self._activate(repo, primary)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("inspect and preserve it first", result.stderr)
+        self.assertNotIn("already hold this candidate", result.stderr)
+
+    def test_staged_content_that_is_not_the_candidate_is_work_to_preserve(self) -> None:
+        """The adversarial case: blank second column, but somebody else's content.
+
+        Column shape alone would call this a sync in flight and tell the reader
+        there is nothing to preserve, which is the very error being fixed.
+        """
+        repo, primary, _, _ = self._published_candidate()
+        (primary / "ci-hub/bin/tool").write_text("somebody else's staged work\n")
+        git(primary, "add", "--", "ci-hub/bin/tool")
+        entries = TOOL.dirty_candidate_paths(primary, ["ci-hub/bin/tool"])
+        self.assertEqual(entries[0][1], " ")  # indistinguishable by columns alone
+        result = self._activate(repo, primary)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("inspect and preserve it first", result.stderr)
+        self.assertNotIn("already hold this candidate", result.stderr)
+
+    def test_an_untracked_file_at_a_candidate_path_is_work_to_preserve(self) -> None:
+        """The candidate ADDS a path the primary already holds untracked.
+
+        Scoping note established while writing this: the check reads the seal's
+        exact changed files, not the manifest's claimed directory, so an
+        untracked SIBLING under `ci-hub/bin` never reaches it. Only a collision
+        at a changed path itself does.
+        """
+        repo, primary, _, path = self._published_candidate(name="added", path="ci-hub/bin/fresh")
+        (primary / path).write_text("somebody else's untracked file\n")
+        result = self._activate(repo, primary)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("inspect and preserve it first", result.stderr)
+        self.assertNotIn("already hold this candidate", result.stderr)
+
+    def test_unsaved_edits_on_top_of_candidate_content_are_work_to_preserve(self) -> None:
+        """The case where getting the wording wrong would cost somebody their work.
+
+        The index holds the candidate, so "whose content is this" answers
+        "ours" -- but the working tree has unsaved edits on top of it. Telling
+        that reader there is nothing to preserve is the one wrong answer with a
+        real cost, and only the second porcelain column distinguishes it.
+        """
+        repo, primary, candidate, _ = self._published_candidate(name="ontop")
+        git(primary, "fetch", "origin")
+        git(primary, "checkout", candidate, "--", "ci-hub/bin/tool")
+        (primary / "ci-hub/bin/tool").write_text("unsaved edit on top\n")
+        entries = TOOL.dirty_candidate_paths(primary, ["ci-hub/bin/tool"])
+        self.assertEqual(entries[0][:2], "MM")  # staged AND unsaved
+        result = self._activate(repo, primary)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("inspect and preserve it first", result.stderr)
+        self.assertNotIn("already hold this candidate", result.stderr)
+
+    def test_both_wordings_defer_the_obligation_identically(self) -> None:
+        """Wording is the only thing that moved: each still records a deferral."""
+        for label, prepare in (
+            ("midsync", lambda p, c: (git(p, "fetch", "origin"),
+                                      git(p, "checkout", c, "--", "ci-hub/bin/tool"))),
+            ("realdirt", lambda p, c: (p / "ci-hub/bin/tool").write_text("theirs\n")),
+        ):
+            with self.subTest(label):
+                repo, primary, candidate, _ = self._published_candidate(name=label)
+                store = self.root / f"obligations-{label}.jsonl"
+                prepare(primary, candidate)
+                result = command(str(SOURCE), "activate", "--clone", str(repo),
+                                 "--primary", str(primary), "--store", str(store))
+                self.assertEqual(result.returncode, 2)
+                record = next(iter(TOOL.activation_latest(store).values()))
+                self.assertEqual(record["event_type"], "activation_deferred")
+                self.assertEqual(record["overall_state"], "open")
+                self.assertEqual(record["activation"]["state"], "deferred")
+                shutil.rmtree(primary)
 
     def test_deferred_activation_remains_open_until_primary_contains_it(self) -> None:
         """A correct refusal is durable, and later completion closes it."""
