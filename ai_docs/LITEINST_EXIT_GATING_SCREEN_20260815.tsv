@@ -363,6 +363,21 @@
 # PREQUALIFIED-8	  THAT CHANGES THE SHAPE OF THE OBSERVATION AND I AM NOT SMOOTHING IT: the offset is not one constant with a stray reading, it takes at least four discrete values {795,797,799,802} with 799 dominant at 60 of 64.
 # PREQUALIFIED-8	  I HAVE DECLINED TO NAME A CAUSE NINE TIMES AND STILL DECLINE. But 'near-constant additive offset' is now the weaker description; 'small set of discrete offsets' fits the data better and any proposed mechanism must produce four values, not one.
 # PREQUALIFIED-8	WHAT IS LEFT UNMEASURED, NAMED RATHER THAN IMPLIED CLEAN: aio-refusal (owned by #2263), name-to-handle-refusal (third category, two failed mutation attempts), readdir-entries (intermittently divergent, 1 of 12).
+# DELTA-CHARACTERISED 2026-08-15 (hermit-sabre): THE ~799 EXTRA MESSAGES ARE IDENTIFIED. STILL NO CAUSE NAMED -- THIS IS WHAT THEY ARE, NOT WHY.
+# DELTA-CHARACTERISED	METHOD: same fixture (uname-identity), hermit --log=info run --strict on each backend, compare the DETLOG stream.
+# DELTA-CHARACTERISED	  log lines: ptrace 132, liteinst 982.   DETLOG records: ptrace 81, liteinst 817.
+# DELTA-CHARACTERISED	THE EXTRA MESSAGES ARE DETLOG SYSCALL RECORDS, AND THEY ARE DOMINATED BY ONE CALL:
+# DELTA-CHARACTERISED	  read     ptrace 0   -> liteinst 468
+# DELTA-CHARACTERISED	  mmap     ptrace 16  -> liteinst 72
+# DELTA-CHARACTERISED	  close    ptrace 4   -> liteinst 72
+# DELTA-CHARACTERISED	  openat   ptrace 4   -> liteinst 56
+# DELTA-CHARACTERISED	AND THE OPENED PATHS NAME THE SOURCE PRECISELY: /proc/self/maps IS OPENED 48 TIMES UNDER LITEINST AND NEVER UNDER PTRACE.
+# DELTA-CHARACTERISED	  Other liteinst-only opens: libreverie_liteinst.so (2), libgcc_s.so.1 (2). ptrace opens only libc.so.6 and ld.so.cache.
+# DELTA-CHARACTERISED	  48 opens of /proc/self/maps against 468 reads is ~9.75 reads per open, consistent with reading a multi-page pseudo-file to EOF.
+# DELTA-CHARACTERISED	WHY THIS FITS AN ADDITIVE OFFSET RATHER THAN A PROPORTIONAL ONE: the count is driven by a fixed number of /proc/self/maps scans, not by the guest's own workload. That is an OBSERVATION ABOUT THE DATA, NOT A MECHANISM.
+# DELTA-CHARACTERISED	AND IT GIVES THE DISCRETE VALUES A PLACE TO COME FROM: /proc/self/maps LENGTH VARIES WITH THE MAPPING COUNT, so a fixture that maps more memory needs more reads to reach EOF. {795,797,799,802} would then be read-count differences. I AM NOT ASSERTING THIS -- IT IS A TESTABLE PREDICTION AND I HAVE NOT TESTED IT.
+# DELTA-CHARACTERISED	  THE TEST THAT WOULD SETTLE IT: compare read-counts against mapping-counts across the two +802 cells (fchmodat2-flags, vectored-file-io) and several +799 cells. NOT RUN.
+# DELTA-CHARACTERISED	TENTH PASS WITHOUT NAMING A CAUSE. What changed is that the observation is now specific enough for the backend owner to act on: 48 reads of /proc/self/maps to EOF per run.
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/vectored-file-io	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 137->939 delta 802 (SECOND 802)
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/signalfd-create	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
