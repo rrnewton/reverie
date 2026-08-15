@@ -458,6 +458,16 @@
 # DIVERGENCE-CAPTURED	I AM NOT NAMING A CAUSE. Why virtual time for those reads varies by ~120ns between two runs of the same binary is unexplained, and 'it is on /proc/self/maps' is an observation about location, not mechanism.
 # DIVERGENCE-CAPTURED	WHY IT MATTERS BEYOND THESE THREE CELLS: a virtual-time discrepancy on a preamble EVERY liteinst run performs is not fixture-specific. THE THREE KNOWN DIVERGENT CELLS MAY SIMPLY BE THE ONES WHERE IT HAPPENED TO BE OBSERVED. That is a prediction, untested.
 # DIVERGENCE-CAPTURED	EVIDENCE PRESERVED at ignored/divcap2/: both stripped logs (r1.txt, r2.txt), substantive.diff, the verify JSON, and the raw stderr. The harness's own /tmp copies will be reclaimed.
+# DIVERGENCE-NARROWED 2026-08-15 (hermit-sabre): TWO CANDIDATE MECHANISMS ELIMINATED BY MEASUREMENT. THE VIRTUAL-TIME DIVERGENCE IS NOT SYSCALL-DERIVED.
+# DIVERGENCE-NARROWED	ELIMINATED 1 -- MAPS LENGTH / READ VOLUME. The two diverging runs have IDENTICAL read sequences: 235 read() calls, 107904 bytes total, and the normalised call sequences diff clean.
+# DIVERGENCE-NARROWED	  This is the SECOND time a maps-length explanation has been tested and refuted. I proposed it once for the {795,797,799,802} deltas and again here; both times measurement killed it.
+# DIVERGENCE-NARROWED	ELIMINATED 2 -- RCB / PERF COUNTS. The 12 rcb/retired/branch/perf lines are byte-identical between the two runs.
+# DIVERGENCE-NARROWED	THE SYSCALL STREAM AROUND THE FIRST DIVERGENCE IS BYTE-IDENTICAL: syscall #110 read(3, 0x40a938, 296) = Ok(0), #111 close(3) = Ok(0), then openat("/proc/self/maps") -- same in both runs. ONLY THE COMMITTED VIRTUAL TIME DIFFERS.
+# DIVERGENCE-NARROWED	SCOPE, MEASURED: 34 COMMIT lines in the run; 24 of them differ. The first 9 turns AGREE EXACTLY (turn 0 at .000_000_000s, turn 1 at .000_500_000s, turn 2 at .001_544_535s in both).
+# DIVERGENCE-NARROWED	  DIVERGENCE BEGINS AT TURN 10, the first COMMIT whose resource is /proc/self/maps, and every later COMMIT inherits the drift.
+# DIVERGENCE-NARROWED	SO: virtual time is deterministic for the first nine turns and becomes nondeterministic at the first /proc/self/maps commit, WITHOUT any difference in the syscalls, bytes, or perf counters logged.
+# DIVERGENCE-NARROWED	I STILL DO NOT NAME A CAUSE. Two mechanisms are now excluded by measurement rather than by argument, which is narrower than where this pass started and is the useful part.
+# DIVERGENCE-NARROWED	WHAT I HAVE NOT DONE, NAMED SO IT IS NOT ASSUMED: I have not read the detcore code that computes committed virtual time for a file-resource commit. That is where the next person should start, with turn 10 and the 120ns first delta as the anchor.
 INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/signalfd-create	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
 INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/file-backed-mmap	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
