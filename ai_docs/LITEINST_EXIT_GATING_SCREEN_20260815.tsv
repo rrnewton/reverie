@@ -445,6 +445,19 @@
 # SHARED-RATE-CLAIM-WITHDRAWN	WHAT SURVIVES, AND IT IS STILL WORTH THE HANDOFF: three unrelated fixtures each diverged at least once under liteinst, and NONE has ever diverged under ptrace across every control run in this file. THE BACKEND ASYMMETRY IS REAL; THE RATE IS NOT ESTABLISHED.
 # SHARED-RATE-CLAIM-WITHDRAWN	ATTEMPTED AND FAILED THIS PASS: capturing a divergence to see WHAT differs. 14 runs produced none, so the divergence detail is still unexamined. Naming it as attempted-and-not-obtained rather than leaving it implied.
 # SHARED-RATE-CLAIM-WITHDRAWN	CONSEQUENCE FOR THE 3-RUN HARDENING: if the true rate is nearer 1-in-26 than 1-in-12, then 3 runs per cell misses a divergent cell roughly 89% of the time, not 77%. THE 41 CELLS THAT PASSED 3/3 ARE WEAKER EVIDENCE THAN I STATED, NOT STRONGER.
+# DIVERGENCE-CAPTURED 2026-08-15 (hermit-sabre): A DIVERGENCE WAS CAPTURED AND THE DIFFERING FIELD IS IDENTIFIED. WHAT DIFFERS, NOT WHY.
+# DIVERGENCE-CAPTURED	CELL: backend-parity-c/file-backed-mmap. Captured on run 17 of 22 liteinst --verify runs. Its record is now 2 divergences in 46 runs.
+# DIVERGENCE-CAPTURED	VERDICT FIELDS: verdict=diverged, verified=false, bitwise_parity=false, guest_exit_code=0, first_divergent_scheduler_turn=10, compared_log_messages 937 | 937.
+# DIVERGENCE-CAPTURED	  THE MESSAGE COUNTS ARE EQUAL. This is a CONTENT difference, not a count difference -- the runs emit the same 937 messages and one field inside them differs.
+# DIVERGENCE-CAPTURED	WITH THE WALL-CLOCK PREFIX STRIPPED (the comparator strips it), 68 lines differ of ~2000. THE DOMINANT KIND IS ONE LINE SHAPE, 40 OF THE 68:
+# DIVERGENCE-CAPTURED	  COMMIT turn N, dettid 3 using resources {Path("/proc/self/maps"): R}, on previously committed <VIRTUAL TIME>
+# DIVERGENCE-CAPTURED	THE FIELD THAT DIFFERS IS VIRTUAL TIME, AND THE FIRST DIFFERENCE IS 120 NANOSECONDS AT TURN 10:
+# DIVERGENCE-CAPTURED	  run 1: ...007_705_530s     run 2: ...007_705_410s
+# DIVERGENCE-CAPTURED	THE REMAINING 28 DIFFERING LINES ARE DOWNSTREAM OF IT: clock_gettime(CLOCK_MONOTONIC) results, Timeslice stats, Final and Elapsed virtual global time, and two COMMIT lines for the fixture's own temp file.
+# DIVERGENCE-CAPTURED	THIS CONNECTS TO THE EARLIER DELTA WORK RATHER THAN BEING SEPARATE: the resource in the diverging COMMIT lines is /proc/self/maps, THE SAME FILE the liteinst preamble opens 48 times and reads 468 times. The nondeterminism sits on the preamble's own reads.
+# DIVERGENCE-CAPTURED	I AM NOT NAMING A CAUSE. Why virtual time for those reads varies by ~120ns between two runs of the same binary is unexplained, and 'it is on /proc/self/maps' is an observation about location, not mechanism.
+# DIVERGENCE-CAPTURED	WHY IT MATTERS BEYOND THESE THREE CELLS: a virtual-time discrepancy on a preamble EVERY liteinst run performs is not fixture-specific. THE THREE KNOWN DIVERGENT CELLS MAY SIMPLY BE THE ONES WHERE IT HAPPENED TO BE OBSERVED. That is a prediction, untested.
+# DIVERGENCE-CAPTURED	EVIDENCE PRESERVED at ignored/divcap2/: both stripped logs (r1.txt, r2.txt), substantive.diff, the verify JSON, and the raw stderr. The harness's own /tmp copies will be reclaimed.
 INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/signalfd-create	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
 INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/file-backed-mmap	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
