@@ -1,0 +1,272 @@
+# hermit-sabre exit-gating screen, hermit head ab6bbe15bb7e1d97c4a1c3b680ac5cf923d6bb69, host devbig030
+# COUNTS	C_fixtures_screened=99	cannot_fail_structural=50	might_fail=49
+# COUNTS	two_step_over_49	refusable=18	mutation_inert=26	not_exit_gated=5	build_failed=0
+# LIMIT	REFUSABLE is a NATIVE result: fixture contract is exit-gated. NOT proof the cell passes under liteinst, NOT proof the backend can run it (shm-coherency-identity fails teardown -524 ENOTSUPP).
+# LIMIT	CANNOT_FAIL rows below are a 10-of-50 SAMPLE; the full 50 was not persisted and is rederivable only by re-enumeration.
+# LIMIT	the 26 mutation-inert are a defect in MY transform, NOT the cells; they are UNRESOLVED, not cannot-fail.
+# INPUT	ignored/gate49/list.txt (49 cells) + ignored/gate49/*.m.c (49 mutant sources)
+# CORRECTION 2026-08-15 (hermit-sabre): THE cannot_fail_structural BUCKET WAS RE-SCREENED WITH THE MUTATION METHOD.
+# CORRECTION	static detector 'grep return [1-9]' UNDERCOUNTS: it does NOT match a TERNARY return.
+# CORRECTION	worked example: backend-parity-c/set-tid-address ends 'return ok == 4 ? 0 : 1;' -- exit-gated, but invisible to the pattern.
+# RESCREEN	of 50: RECOVERED=1  mutation_inert=11(UNRESOLVED)  confirmed_cannot_fail=37  build_failed=1
+# RESCREEN	SO 37 ARE CONFIRMED BY MUTATION, NOT 50. 13 are no longer written off.
+# RESCREEN	CAVEAT: screened against worktree ab6bbe15b, whose set-tid-address fixture carries MY OWN fail-closed repair; main's copy returns 0 unconditionally.
+# RESCREEN	RECOVERED is a NATIVE result and does NOT establish backend capability (exec preload, teardown -524 ENOTSUPP still disqualify separately).
+# RESCREEN	input: ignored/recheck50/list.tsv (50 cells) + ignored/recheck50/*.m.c (mutant sources)
+# CORRECTION-2 2026-08-15: 'confirmed_cannot_fail' IS RELATIVE TO THE MUTATION USED, NOT ABSOLUTE.
+# CORRECTION-2	A SECOND transform (flip the first '==' in main to '!=') over the SAME 50 recovered a DIFFERENT cell:
+# CORRECTION-2	determinism-stress/order-violation (mutant rc=1). Transform A had recovered backend-parity-c/set-tid-address.
+# CORRECTION-2	transform A: recovered=1 inert=11 confirmed=37 buildfail=1 | transform B: recovered=1 inert=48 confirmed=1 buildfail=0
+# CORRECTION-2	NEITHER TRANSFORM DOMINATES. A cell is only shown hopeless if SOME mutation BIT and the exit still did not move.
+# CORRECTION-2	OPEN: whether order-violation sat in A's confirmed-37 or A's inert-11 is NOT established. If the former, A produced a FALSE 'confirmed'.
+# CORRECTION-2	THEREFORE TREAT 37 AS AN UPPER BOUND ON HOPELESSNESS UNDER TRANSFORM A ONLY, not as a settled count.
+# CORRECTION-2	input: ignored/recheck50b/*.m.c (equality-flip mutants)
+# DIAGNOSIS 2026-08-15 (hermit-sabre): WHY THE MUTATION LEFT CELLS UNRESOLVED. MEASURED, NOT GUESSED.
+# DIAGNOSIS	Compared each mutant SOURCE against its fixture with cmp over transform A's 50:
+# DIAGNOSIS	  10 mutant sources are BYTE-IDENTICAL to the fixture -> THE PATTERN NEVER MATCHED (a true sed no-op).
+# DIAGNOSIS	  40 mutant sources DID change textually -> the edit applied but was SEMANTICALLY INERT or gated elsewhere.
+# DIAGNOSIS	SO 'mutation_inert' IS TWO DISTINCT DEFECTS AND THEY NEED DIFFERENT FIXES:
+# DIAGNOSIS	  (a) NO-MATCH: fixture uses none of ENOSYS / 'ok == N' / 'ok++'. Fix = widen the pattern set per fixture family.
+# DIAGNOSIS	  (b) APPLIED-BUT-INERT: text changed, observable did not. Fix = mutate a value that reaches stdout, not a branch that does not.
+# DIAGNOSIS	RULED OUT: stale-binary reuse. Every mutant was compiled to its own -o path in a freshly rm -rf'd dir, so a cached binary cannot explain it.
+# DIAGNOSIS	NEXT STEP, NOT TAKEN HERE: split the unresolved set by this cmp test before choosing a transform; the two halves need different work.
+# RESOLVED 2026-08-15 (hermit-bytes): THE 10 NO-MATCH FIXTURES ARE ALL RESOLVED. 8 REFUSABLE, 2 CANNOT-FAIL, 0 LEFT UNRESOLVED.
+# RESOLVED	Method: per-fixture-family widened mutation, NOT one global transform (Transform B's trade was not reproduced).
+# RESOLVED	Two-step honoured per cell: build BOTH binaries, run BOTH, compare exit AND stdout. A mutation that did not change the file was reported as still-no-match, never as a refusal.
+# RESOLVED	family T1 'static int violations;' -> '= 1'  : signal-delivery-sequence REFUSABLE exit 0->1 | file-io-roundtrip REFUSABLE exit 0->1
+# RESOLVED	family D  invert first guard feeding fail()/exit(): ioctl-fioclex 0->1 | eventfd-semantics 0->1 | sendfile-copy 0->1 | vectored-io 0->1  ALL REFUSABLE
+# RESOLVED	determinism-stress/order-violation REFUSABLE exit 0->3 -- WEAKER EVIDENCE THAN THE OTHERS: the mutation forced exit PROPAGATION ('return 0'->'return 3'), it did not simulate a semantic violation. Its NATIVE gate is the exit(1) at order_violation.c:34.
+# RESOLVED	backend-parity-c/host-identity REFUSABLE BY BASELINE, NOT BY MUTATION DELTA: the UNMUTATED fixture already exits 1 outside Hermit (it detects host identity leakage: 'uname.nodename leaked or diverged: devbig030...'). Seeding bad=1 changed nothing because bad was already non-zero. Exit-gating is demonstrated by the fixture itself. Needs -D_GNU_SOURCE to build (CPU_ZERO).
+# RESOLVED	backend-parity-c/kcmp-refusal CANNOT-FAIL: 'int ok' feeds only printf and main ends in an UNCONDITIONAL 'return 0'. Mutating ok 0->7 moved stdout, exit stayed 0.
+# RESOLVED	system-utils/startup-surface-identity CANNOT-FAIL: no exit()/abort()/non-zero return anywhere in the file. Mutation moved stdout, exit stayed 0.
+# RESOLVED	SCOPE, UNCHANGED: REFUSABLE remains a NATIVE result -- the fixture can express failure by exit status. It is NOT evidence LiteInst can run the cell (exec cannot preserve the preload runtime; teardown -524 ENOTSUPP disqualifies separately).
+# RESOLVED	ANSWERS THE OPEN QUESTION AT 'CORRECTION-2 ... OPEN': determinism-stress/order-violation SAT IN TRANSFORM A'S INERT SET (it is one of the 10 byte-identical no-match fixtures), NOT in A's confirmed-37. SO TRANSFORM A DID NOT PRODUCE A FALSE 'confirmed' FOR IT.
+# RESOLVED	STILL OPEN AND NOT TOUCHED HERE: the OTHER half, the 40 applied-but-inert mutants (diagnosis (b)). Different fix, different task.
+# RESOLVED	inputs: mutants + both binaries + captured stdout per cell under ignored/nomatch10/ ; fixture tree worktrees/ci/hermit @ ab6bbe15b
+# CORRECTION-3 2026-08-15 (hermit-sabre): THE SCREEN'S INSTRUMENT IS WRONG FOR AT LEAST ONE CELL CLASS. MEASURED.
+# CORRECTION-3	backend-parity-c/kcmp-refusal, a TRANSFORM_NO_MATCH cell, with widened pattern errno==EPERM -> errno==ENOSYS:
+# CORRECTION-3	  valid: hermit run --strict -> exit=0 stdout='kcmp ok=3'
+# CORRECTION-3	  mutant: hermit run --strict -> exit=0 stdout='kcmp ok=0'
+# CORRECTION-3	THE MUTANT BITES ON STDOUT AND NOT ON EXIT CODE. My screen asked only whether the EXIT CODE moves.
+# CORRECTION-3	SO 'cannot_fail' AS MEASURED BY THIS SCREEN MEANS ONLY 'exit code does not move'. It DOES NOT mean the cell is undiscriminating.
+# CORRECTION-3	The ternary 'return (r == -1 && errno == EPERM) ? 1 : 0;' is the predicted computed-return blind spot, present in BOTH the static detector and transform A.
+# CORRECTION-3	NOT ESTABLISHED HERE: whether the parity harness actually COMPARES stdout for this cell. Step 1 of the two-step test (mutant bites) PASSES; step 2 (gate refuses) IS UNRUN.
+# CORRECTION-3	This is Bar-B-relevant: a stdout-comparing gate would refuse this mutant. Re-screening must observe stdout, not exit status alone.
+# DIAGNOSIS-40 2026-08-15 (hermit-sabre): THE 40 APPLIED-BUT-INERT MUTANTS ARE NOT INERT. THE INSTRUMENT WAS.
+# DIAGNOSIS-40	STEP A, BUILD PROBLEM RULED OUT AT BINARY LEVEL (both compiled from an identical relative filename 't.c' with -g0 so no path string can forge a diff):
+# DIAGNOSIS-40	  39/40 BINARY_DIFFERS, 1/40 BUILD_FAIL, 0/40 BINARY_IDENTICAL. THE MUTATION REACHED THE EXECUTABLE. Cached-binary reuse is NOT the mechanism for any of these.
+# DIAGNOSIS-40	STEP B, RAN BOTH BINARIES AND COMPARED exit+stdout+stderr (the two-step's step 1):
+# DIAGNOSIS-40	  BITES_STDOUT_ONLY = 35/39   BITES_EXIT = 1/39   NO_OBSERVABLE_CHANGE = 3/39
+# DIAGNOSIS-40	SO THE DOMINANT MECHANISM IS THE THIRD CANDIDATE, NAMED PRECISELY: THE MUTATED VALUE NEVER REACHES THE EXIT STATUS, BUT IT DOES REACH STDOUT.
+# DIAGNOSIS-40	These 35 mutants BITE. They were filed 'inert' only because the screen observed exit status alone. THIS GENERALISES CORRECTION-3 FROM ONE CELL TO 35.
+# DIAGNOSIS-40	DEAD/UNREACHABLE CODE IS NOT THE MECHANISM FOR THOSE 35 EITHER: dead code cannot move stdout. It remains a candidate ONLY for the 3 NO_OBSERVABLE_CHANGE cells.
+# DIAGNOSIS-40	STEP 2 (does the verdict REFUSE them) IS SEPARATE AND IS RECORDED BELOW; a mutant that bites is not yet a refused mutant.
+# DIAGNOSIS-40	EVIDENCE: ignored/inert40/binary-split.tsv (per-cell binary verdict), ignored/inert40/observable.tsv (per-cell exit/stdout/stderr verdict). Disjoint from hermit-bytes' ignored/nomatch10/.
+# DIAGNOSIS-40-FINAL 2026-08-15 (hermit-sabre): SELF-CORRECTION AND FINAL RESOLUTION OF ALL 40.
+# DIAGNOSIS-40-FINAL	CORRECTING MY OWN STEP B: I ran the 3 NO_OBSERVABLE_CHANGE cells NATIVELY. That was the wrong environment.
+# DIAGNOSIS-40-FINAL	  They are *-refusal cells: natively the syscall SUCCEEDS so the accept arm never fires and both arms print ok=0. Under hermit the arm fires:
+# DIAGNOSIS-40-FINAL	  cachestat-refusal v=[cachestat ok=2] m=[cachestat ok=0]; no-new-privs-refusal v=[nnp ok=3] m=[nnp ok=0]; openat2-refusal v=[openat2 ok=3] m=[openat2 ok=0]. ALL THREE DIFFER.
+# DIAGNOSIS-40-FINAL	FINAL TALLY OF THE 40: 39 MUTANTS BITE THE OBSERVABLE (38 stdout-only, 1 exit). 1 UNRESOLVED, NAMED BELOW. ZERO ARE SEMANTICALLY INERT.
+# DIAGNOSIS-40-FINAL	STEP 2, THE VERDICT: IT DOES NOT REFUSE THEM. Tested 5 stdout-biting mutants under hermit run --strict --verify --verify-strict --verify-json:
+# DIAGNOSIS-40-FINAL	  close-range-fds, copy-file-range-refusal, epoll-readiness, faccessat2-flags, fadvise-hints -> ALL rc=0 AND bitwise_parity=True WHILE PRINTING THE WRONG ANSWER (e.g. close_range_fds ok=0 instead of ok=6).
+# DIAGNOSIS-40-FINAL	MECHANISM, STATED EXACTLY: bitwise_parity compares run1 against run2 OF THE SAME BINARY. A DETERMINISTICALLY WRONG MUTANT IS ACCEPTED. The comparator is a DETERMINISM assert, not a correctness oracle.
+# DIAGNOSIS-40-FINAL	CENSUS: 0 of the 92 files in tests/backend-parity/fixtures/ contain EXPECTED_STEPS or expected_steps. No expected-value gate is present in this tree.
+# DIAGNOSIS-40-FINAL	RESOLUTION FOR THE 39: cannot-fail UNDER THE CURRENT VERDICT, and refusable the moment an expected-value gate compares the printed count to a constant. The unknown is REMOVED either way.
+# DIAGNOSIS-40-FINAL	RULED OUT FOR ALL 39, WITH EVIDENCE: cached-binary reuse (39/39 BINARY_DIFFERS at -g0 from an identical relative filename); dead/unreachable code (dead code cannot move stdout).
+# DIAGNOSIS-40-FINAL	UNRESOLVED AND NAMED, NOT FORCED INTO A BUCKET: backend-parity-c/openat-flags. The transform produced UNCOMPILABLE source -- gcc: t.c:76:3: error: 'else' without a previous 'if'.
+# DIAGNOSIS-40-FINAL	  Its earlier 'inert' verdict was MEANINGLESS because the mutant never became an executable. It needs a syntax-preserving edit, which I did not attempt (broadening the transform trades coverage).
+# DIAGNOSIS-40-FINAL	EVIDENCE: ignored/inert40/{binary-split.tsv,observable.tsv} and per-cell dirs. Disjoint from hermit-bytes' ignored/nomatch10/. No product file, fixture, manifest or tracked source was modified.
+# QUALIFIED 2026-08-15 (hermit-bytes): of the 8 refusable, 6 QUALIFY as verify/liteinst cells with BOTH arms measured; 2 DO NOT.
+# QUALIFIED	qualified: signal-delivery-sequence, file-io-roundtrip, eventfd-semantics, sendfile-copy, vectored-io, ioctl-fioclex -- accept matched/parity=true, refuse rc=1/no_result. Deterministic: these VERIFY A MATCHER, they do not sample a rate.
+# QUALIFIED	NOT qualified: determinism-stress/order-violation -- liteinst teardown -524 ENOTSUPP, cannot run, capability not fixture. backend-parity-c/host-identity -- accept arm fails 3/3 with 'sysinfo.uptime leaked or diverged'; LITEINST DOES NOT VIRTUALIZE sysinfo.uptime. Stable gap, not a rate.
+# QUALIFIED	Backend capability was probed FIRST: 7 of 8 ran clean under liteinst; the exec-preload gate fired on none. NO MANIFEST EDIT MADE -- the six are handed to hermit-liteinst (de2b15fe2) rather than collided into one shared file.
+# CORRECTION-4 2026-08-15 (hermit-sabre): THE LINE-10 WORKED EXAMPLE IS RETRACTED. IT WAS NEVER VALID -- NOT MERELY STALE.
+# CORRECTION-4	Line 10 offers backend-parity-c/set-tid-address as a PRE-EXISTING ternary the detector missed. IT IS NOT PRE-EXISTING. I WROTE IT.
+# CORRECTION-4	git log --follow on tests/backend-parity/fixtures/set_tid_address.c: the ternary was ADDED by 61b9ba7aa (my own landed PR #2258). At parent 1b98ccef and every earlier commit the file ends 'return 0;'.
+# CORRECTION-4	SO AT SCREEN TIME THE DETECTOR WAS RIGHT ABOUT THIS CELL: it was genuinely not exit-gated, and there was nothing to miss. Line 13's caveat already said so and was correct.
+# CORRECTION-4	LINE 13 IS NOW ITSELF PARTLY STALE: its clause "main's copy returns 0 unconditionally" was true when written and is FALSE as of 61b9ba7aa, which landed the ternary onto main.
+# CORRECTION-4	THE UNDERLYING FINDING SURVIVES AND IS NOW MEASURED, NOT ILLUSTRATED BY A CELL I AUTHORED. At 1b98ccef, BEFORE my commit:
+# CORRECTION-4	  23 backend-parity fixtures contain a ternary return; only 5 are visible to grep 'return [1-9]'. 18 ARE INVISIBLE TO THE DETECTOR.
+# CORRECTION-4	REPLACEMENT WORKED EXAMPLES, ALL PRE-EXISTING AT 1b98ccef AND NONE AUTHORED BY ME (main() ends in a ternary, so genuinely exit-gated):
+# CORRECTION-4	  getrusage_self_accounting.c 'return ok == 6 ? 0 : 1;'  <- structurally identical to the shape I mistakenly cited
+# CORRECTION-4	  cwd_roundtrip.c / fcntl_owner.c / membarrier_query.c 'return ok == EXPECTED_CHECKS ? EXIT_SUCCESS : EXIT_FAILURE;'
+# CORRECTION-4	  host_identity.c 'return bad ? 1 : 0;'   file_io_roundtrip.c and fork_exec_pipeline.c 'return violations == 0 ? 0 : 1;'
+# CORRECTION-5 2026-08-15 (hermit-sabre): MY DIAGNOSIS-40 CLAIM 'No expected-value gate is present in this tree' IS WRONG. I GREPPED THE WRONG TOKEN.
+# CORRECTION-5	I searched EXPECTED_STEPS (0 hits, correct) and generalised to 'no expected-value gate exists'. The in-tree idiom is EXPECTED_CHECKS:
+# CORRECTION-5	  8 of the backend-parity fixtures at 1b98ccef already use it, e.g. cwd_roundtrip.c 'enum { EXPECTED_CHECKS = 6 };' then 'return ok == EXPECTED_CHECKS ? EXIT_SUCCESS : EXIT_FAILURE;'
+# CORRECTION-5	THIS MAKES THE 39-CELL REPAIR CHEAPER AND BETTER FOUNDED: it applies an EXISTING in-tree idiom rather than introducing a new mechanism. A zero-hit grep on one token is not a census.
+# CORRECTION-6 2026-08-15 (hermit-sabre): THE TRACKED COPY IS A FROZEN SNAPSHOT AND IS ALREADY BEHIND THIS FILE.
+# CORRECTION-6	hermit-coord promoted this screen at 716808ad as ai_docs/LITEINST_EXIT_GATING_SCREEN_20260815.tsv. That copy is 62 lines; this original is now 112.
+# CORRECTION-6	IT CARRIES LINE 10 AND ALSO LINE 13, SO ITS READER SEES THE BAD EXAMPLE THREE LINES ABOVE ITS OWN REFUTATION -- the caveat travelled, which is the practice working.
+# CORRECTION-6	BUT EVERYTHING AFTER PROMOTION IS STRANDED: CORRECTION-3, DIAGNOSIS-40, DIAGNOSIS-40-FINAL, and CORRECTION-4/5 exist ONLY here. The tracked copy needs re-promotion; that file is hermit-coord's and I did not edit it.
+# CORRECTION-6	716808ad is NOT an ancestor of this checkout's HEAD (a96f5351); the parent checkout is merely behind. That absence was not escalated.
+# CORRECTION-7 2026-08-15 (hermit-sabre): LINE 13'S CAVEAT IS RESOLVED BY 61b9ba7aa. LINE 13 IS KEPT DELIBERATELY, NOT DELETED.
+# CORRECTION-7	Line 13 recorded: "main's copy returns 0 unconditionally" while the fail-closed repair sat unlanded in the ci worktree. THAT GAP IS CLOSED UPSTREAM, NOT OUTSTANDING.
+# CORRECTION-7	61b9ba7aa is on rrnewton/hermit:main and carries BOTH halves of one change: set_tid_address.c 'return 0;' -> 'return ok == 4 ? 0 : 1;' AND backend-parity-c.toml gaining 'assert = { bitwise_parity = true }'.
+# CORRECTION-7	NEITHER HALF IS MEANINGFUL ALONE: an able-to-fail fixture with no strict comparator, or a strict comparator over a fixture that cannot fail, each still admits the defect. TOGETHER THEY ARE THE NO-EXTERNAL-ORACLE REMEDY.
+# CORRECTION-7	ATTRIBUTION, BECAUSE IT WAS RELAYED AS SOMEONE ELSE'S COMMIT: 61b9ba7aa IS MINE. It is hermit-sabre's PR #2258, head ab6bbe15b, which I owned through landing this session. It is not a third party's change.
+# CORRECTION-7	THE TERNARY IS NOT GONE FROM main -- IT IS NOW PRESENT ON main, because that commit put it there. So line 10's literal DESCRIPTION matches main today.
+# CORRECTION-7	THE UNDERCOUNT FINDING IS UNAFFECTED AND IS NOT WITHDRAWN: grep 'return [1-9]' STILL DOES NOT MATCH A TERNARY RETURN. Measured at 1b98ccef: 23 ternary-return fixtures, ONLY 5 DETECTOR-VISIBLE, 18 INVISIBLE.
+# CORRECTION-7	WHAT EXPIRED IS THE ILLUSTRATION, NOT THE DEFECT. Line 10 is unusable AS EVIDENCE because the ternary is my own repair (see CORRECTION-4), so citing it would be circular. Use the pre-existing examples in CORRECTION-4 instead.
+# CORRECTION-7	READING ORDER FOR ANYONE ARRIVING HERE: line 10 = original claim; line 13 = its dated caveat; CORRECTION-4 = why it is not evidence; CORRECTION-7 = the caveat's resolution. All four are kept so this header's own history stays readable.
+# APPLIED-38 2026-08-15 (hermit-sabre): THE EXPECTED_CHECKS IDIOM IS APPLIED TO 38 CELLS. PR #2276, commit 1a06c9a15, NOT YET LANDED.
+# APPLIED-38	NO NEW MECHANISM. Used the shipping idiom exactly as its 8 existing users do (cwd_roundtrip, fcntl_owner, membarrier_query, o_tmpfile_anon, pipe_capacity, personality_domain, record_lock, short_io_split_identity):
+# APPLIED-38	  'enum { EXPECTED_CHECKS = N };' in main, and 'return ok == EXPECTED_CHECKS ? EXIT_SUCCESS : EXIT_FAILURE;'
+# APPLIED-38	THE CONSTANT IS AN EXTERNAL ORACLE AND I PROVED IT RATHER THAN ASSERTING IT: N is derived from the fixture's OWN SOURCE (count of ok++/++ok/ok+= sites), not from a run,
+# APPLIED-38	  and the refusal is produced by A SINGLE 'hermit run --strict' PER ARM with NO SECOND RUN AVAILABLE TO COMPARE AGAINST. A repeat comparison could not have produced it.
+# APPLIED-38	  THIS IS THE TRAP DIAGNOSIS-40-FINAL NAMED: bitwise_parity compares a binary against itself and therefore ACCEPTS a deterministically wrong mutant. EXPECTED_CHECKS does not.
+# APPLIED-38	TWO-STEP PER CELL, ALL 38, ptrace backend: accept = exit 0; refuse = mutant neutralising one ok site exits non-zero AND stdout differs. RESULT 38/38 QUALIFIED, 0 NOT QUALIFIED.
+# APPLIED-38	RE-VERIFIED AFTER A LATE WHITESPACE REINDENT OF 24 FILES RATHER THAN ASSUMING WHITESPACE IS SAFE: mutants regenerated from post-reindent sources, two-step re-run, again 38/38.
+# APPLIED-38	ACCEPT ARM STILL L2-CLEAN (sampled 3 under --strict --verify --verify-strict): epoll-readiness, uname-identity, openat2-refusal all verdict=matched bitwise_parity=true guest_exit_code=0.
+# APPLIED-38	CROSS-CHECK THAT CAUGHT A REAL ERROR IN MY OWN METHOD: source-count vs observed-count disagreed on 3 cells (copy-file-range-refusal 3v1, statfs-free-determinism 6v2, uname-identity 4v2).
+# APPLIED-38	  CAUSE: I had measured NATIVELY and these cells run UNDER HERMIT. Under hermit they reach 3, 6 and 4 exactly. They are virtualized-identity cells that only pass under hermit -- which is their point.
+# APPLIED-38	  HAD I GATED ON THE NATIVE NUMBERS I WOULD HAVE BAKED IN THREE WRONG CONSTANTS. The disagreement was the signal; forcing either number would have manufactured a passing cell.
+# APPLIED-38	BAR: these 38 meet the REFUSABLE half of Bar B natively (accept + refuse + parity on the accept arm). REFUSABLE IS A NATIVE RESULT AND DOES NOT ESTABLISH LiteInst BACKEND CAPABILITY -- exec/preload and teardown -524 ENOTSUPP are separate and unaddressed here.
+# APPLIED-38	NOT LANDED. CELLS LANDED REMAINS 1 (61b9ba7aa). #2276 is implementation evidence only; I own it through review and landing.
+# BITWISE-PARITY 2026-08-15 (hermit-sabre): bitwise_parity IS A DETERMINISM ASSERT, NOT A CORRECTNESS ORACLE. PROVEN, THREE STEPS BRACKETED.
+# BITWISE-PARITY	SUBJECT: main's epoll_readiness.c, which is UNGATED on main (main() ends 'return 0;'). Mutation: printf reports 'ok - 3' instead of 'ok'.
+# BITWISE-PARITY	  STEP 0 mutation applied to SOURCE (not a silent no-op): yes, cmp differs.
+# BITWISE-PARITY	  STEP 1 ARTIFACT CHANGED (binaries differ): yes. Without this the acceptance would prove nothing.
+# BITWISE-PARITY	  STEP 2 valid : exit=0 verdict=matched bitwise_parity=True stdout='epoll ok=6'
+# BITWISE-PARITY	  STEP 2 mutant: exit=0 verdict=matched bitwise_parity=True stdout='epoll ok=3'  <-- ACCEPTED WHILE REPORTING HALF ITS CHECKS FAILED
+# BITWISE-PARITY	MECHANISM FROM SOURCE, NOT INFERENCE. ci/test_harness.sh: a verify cell is gated by exactly two things -- 'status != 0 -> FAIL', and if asserted, assert_bitwise_parity_verdict reading the run's OWN verify-1.json.
+# BITWISE-PARITY	  observation_hash (test_harness.sh:2973) digests status+stdout+stderr, but in the single-run verify path the column is read into '_hash' AND DISCARDED (test_harness.sh:3784). It gates nothing there.
+# BITWISE-PARITY	  That digest is compared ONLY in multi-run paths (repeat_identical/chaos/stress), and there only against OTHER RUNS OF THE SAME BINARY. Still no external reference.
+# BITWISE-PARITY	CONSEQUENCE: THE ONLY EXTERNAL ORACLE A verify CELL HAS IS ITS EXIT STATUS. bitwise_parity compares run1 to run2 of one binary, so a WRONG-BUT-CONSISTENT program is accepted by construction.
+# BITWISE-PARITY	CENSUS -- AND IT REFINES THE ALARM RATHER THAN CONFIRMING IT. Exactly 2 cells in the whole manifest tree carry assert = { bitwise_parity = true }:
+# BITWISE-PARITY	  backend-parity-c/set-tid-address (backend-parity-c.toml:84) -- EXIT-GATED since 61b9ba7aa, 'return ok == 4 ? 0 : 1;'
+# BITWISE-PARITY	  c-programs/pause-alarm-interrupt (c-programs.toml:3734) -- EXIT-GATED via early 'return 1;' failure paths
+# BITWISE-PARITY	SO ZERO CELLS CURRENTLY RELY ON bitwise_parity AS THEIR ONLY GATE. THE INERT-COVERAGE TRAP IS A REAL MECHANISM WITH NO LIVE INSTANCE TODAY. The hazard is PROSPECTIVE: the assert reads as a correctness gate and is inert when paired with an ungated fixture.
+# BITWISE-PARITY	61b9ba7aa IS THEREFORE CORRECTLY ORDERED, NOT OVERSCORED: its fixture half supplies the oracle and its comparator half adds determinism strictness. THE HAZARD IS COPYING ONLY THE COMPARATOR HALF.
+# BITWISE-PARITY	PROPOSAL, NOT DEPLOYED: make the pairing structural -- manifest validation should REFUSE 'assert = { bitwise_parity = true }' on a cell whose fixture is not exit-gated. ci/manifest-plan already validates observation (main.rs:613), so this is one more rule in a shipping validator, NOT a new mechanism.
+# BITWISE-PARITY	DO NOT RETIRE bitwise_parity. It is sound for what it measures. The defect is the INFERENCE that it discriminates correctness. Pair it with EXPECTED_CHECKS, which already ships.
+# BITWISE-PARITY	CI-INFRASTRUCTURE CHANGE -> out-of-place clone protocol + owner. NOT implemented here.
+# BITWISE-PARITY	SEPARATE OBSERVATION, NOT PART OF THIS FINDING: main's set_tid_address under --verify TIMED OUT repeatedly today on devbig030 (>420s, twice), while a control cell verified in seconds and load was 18.95 on 316 cores. It verified fine earlier tonight. Unexplained; flagged, not diagnosed.
+# STID-TIMEOUT-RETRACTED 2026-08-15 (hermit-sabre): I FLAGGED main's set_tid_address AS HANGING UNDER --verify. I CANNOT REPRODUCE IT AND I AM DOWNGRADING MY OWN FLAG.
+# STID-TIMEOUT-RETRACTED	RE-TEST FROM origin/main's FIXTURE: plain run rc=0 'set_tid_address ok=4'; --verify rc=0, '116 | 116 INFO messages compared', 'Success: deterministic.'
+# STID-TIMEOUT-RETRACTED	THEN 10 CONSECUTIVE --verify RUNS: pass=10 timeout=0 other=0, AT LOAD 27.46 -- HIGHER than the 18.95 present when it timed out. LOAD DOES NOT EXPLAIN THE ORIGINAL OBSERVATION EITHER.
+# STID-TIMEOUT-RETRACTED	SO THE EARLIER 3 TIMEOUTS WERE REAL OBSERVATIONS BUT ARE NOT A PERSISTENT DEFECT: 12/12 PASS NOW. The cell is not currently a CI hazard on this evidence.
+# STID-TIMEOUT-RETRACTED	CAUSE UNKNOWN AND I AM NOT GUESSING ONE. A candidate consistent with 'invisible to load average' is contention on the PMU/perf counters hermit uses for RCB preemption -- UNTESTED, stated as a hypothesis, not a finding.
+# STID-TIMEOUT-RETRACTED	WHY THIS CORRECTION MATTERS MORE THAN THE ORIGINAL FLAG: an unreproducible hang left standing against a just-landed cell would make a future agent distrust 61b9ba7aa on my say-so. A non-reproduction is a result and belongs in the record.
+# GATED7 2026-08-15 (hermit-sabre): MUTATION-SCREENED THE 7 FIXTURES I HAD WRITTEN OFF AS 'no ok counter, needs a different gate'. MY WRITE-OFF WAS WRONG AGAIN, SAME DIRECTION.
+# GATED7	MY OWN CLASSIFIER ERRED THE SAME WAY THE grep 'return [1-9]' DETECTOR DID: I tested only the LAST return in main, so a fixture with EARLIER 'return 1;' failure paths read as ungated. cpuid_probe returns 1 and 2 and I called it ungated.
+# GATED7	SO EVERY 'cannot fail' VERDICT I HAVE PRODUCED IS A LOWER BOUND ON REFUSABILITY, NEVER AN UPPER ONE. The error is directional. That is worth more than the cells.
+# GATED7	MUTATION SCREEN (invert first inequality; valid vs mutant, both built, binaries proven to differ; run under hermit --strict):
+# GATED7	  REFUSES 5/6 -- cpu_virtualization, eventfd_probe, pipe_ipc, pthread_lifecycle, stat_metadata_identity: valid exit 0, mutant exit 1, output differs.
+# GATED7	  THESE 5 NEED NO WORK. Their refuse arm is demonstrated by mutation, not by grep. They were already refusable while sitting in my written-off pile.
+# GATED7	cpuid_probe IS A GENUINELY FAILING CELL ON THIS HOST, AND IT IS THE CELL DOING ITS JOB CORRECTLY:
+# GATED7	  it demands Hermit's synthetic identity 'eax != 0x0000000d || strcmp(vendor,"GenuineIntel")' and gets 'unexpected CPUID identity: max=00000010 vendor=AuthenticAMD', rc=1.
+# GATED7	  IDENTICAL UNDER hermit AND NATIVE, because ARCH_SET_CPUID returns ENODEV and hermit continues WITHOUT CPUID interception, so the REAL host CPUID leaks to the guest.
+# GATED7	  THIS IS THE privileged-cpuid.faulting WALL MADE CONCRETE AT CELL LEVEL: devbig030 cannot pass this cell for a HOST reason, not a product defect. The fixture is correct and is detecting exactly what it should.
+# GATED7	  BAR LABEL, HONESTLY LIMITED: refuse arm is visible, ACCEPT ARM IS NOT DEMONSTRABLE FROM THIS HOST, so I CANNOT claim Bar B for cpuid_probe from devbig030. A CPUID-capable host must establish the accept arm.
+# GATED7	mmap_layout_pointer_order 'valid build failure' WAS MY ERROR, NOT A FIXTURE DEFECT: gcc warns 'implicit declaration of mremap'; the fixture needs _GNU_SOURCE, which the harness supplies and my standalone gcc line did not.
+# GATED7	pid_probe REMAINS GENUINELY UNGATED AND I DELIBERATELY DID NOT GATE IT: it has ZERO non-zero exit routes, but the obvious gate would assert a virtualized pid, and docs/SYSCALL_COVERAGE.md:88 states 'PID/TID values are not virtualized' (open P1 at :201, future work at :230, TODO(T78538674) at 7 source sites).
+# GATED7	  The pid=3 I measured 5/5 under hermit is detcore/src/consts.rs:30 ROOT_DETPID (the container root pid), NOT a translated getpid(). ASSERTING IT WOULD HAVE INVENTED A CONTRACT HERMIT EXPLICITLY DOES NOT OFFER. Owner decision, not a fix.
+# RESCREEN-CORRECTED 2026-08-15 (hermit-sabre): RE-SCREENED MY OWN cannot-fail VERDICTS WITH A CORRECTED MATCHER. RESULT IS 3 RECOVERED LITERALLY, 0 RECOVERED MEANINGFULLY, AND THE LABEL WAS THE REAL DEFECT.
+# RESCREEN-CORRECTED	CORRECTED METHOD: parse main's BODY specifically; follow local #include headers transitively; follow a helper that main RETURNS; and detect helpers CALLED from main that themselves exit() or abort().
+# RESCREEN-CORRECTED	I VALIDATED THE MATCHER BOTH DIRECTIONS BEFORE TRUSTING IT, WHICH CAUGHT MY OWN SECOND MATCHER FAILURE:
+# RESCREEN-CORRECTED	  MY FIRST corrected matcher counted ANY non-literal return anywhere in the file, and 'recovered' fp_reduction_nondeterminism and just_spin. FALSE. Their hits were 'return value ^ (value >> 16);' in a HELPER and 'return NULL;' in a THREAD FUNCTION; main returns 0 in both.
+# RESCREEN-CORRECTED	  THAT IS THE OPPOSITE-DIRECTION ERROR AND IT IS THE FIFTH MATCHER FAILURE TONIGHT ACROSS THREE AGENTS. Caught by inspecting the only two hits I had not gated myself, not by the aggregate looking wrong.
+# RESCREEN-CORRECTED	  Final matcher re-verified: still catches the header case (sched_setattr_batch -> lit:1) AND rejects both false recoveries.
+# RESCREEN-CORRECTED	A FOURTH MISSED ROUTE CLASS, FOUND BY THIS RE-SCREEN AND NOT IN MY EARLIER LIST OF THREE: A HELPER CALLED FROM main THAT ITSELF CALLS exit(1). It appears nowhere in main's returns.
+# RESCREEN-CORRECTED	RESULT ON THE 10 ROWS I RECORDED AS CANNOT_FAIL_STRUCTURAL_SAMPLE (9 screenable, eventfd-semantics has no matching file):
+# RESCREEN-CORRECTED	  HAS_ROUTE 3 -- append-pwrite, close-range-fds, copy-file-range-refusal, all via 'calls-exiting:fail' (fail() does fprintf then exit(1)).
+# RESCREEN-CORRECTED	  NO_ROUTE 6 -- bind-getsockname, cachestat-refusal, epoll-readiness, faccessat2-flags, fadvise-hints, fallocate-extents.
+# RESCREEN-CORRECTED	BUT THE RECOVERY IS LITERAL, NOT MEANINGFUL, AND SAYING OTHERWISE WOULD OVERSTATE IT. Those same 3 are recorded in ignored/inert40/observable.tsv as BITES_STDOUT_ONLY with exit_v=0 exit_m=0:
+# RESCREEN-CORRECTED	  they DO exit 1 when a syscall ERRORS, and they DO NOT move exit status when a semantic result is WRONG. Mutation established that; the grep could not.
+# RESCREEN-CORRECTED	SO 'cannot fail' WAS DOING DUTY FOR TWO DIFFERENT PROPERTIES: (A) cannot exit non-zero under any circumstance, and (B) cannot discriminate a semantic regression.
+# RESCREEN-CORRECTED	  RE-SCREEN RECOVERS 3 UNDER (A) AND 0 UNDER (B). (B) is the property the coverage claim depends on, and (B) was established by MUTATION, which is why the corrected grep does not overturn it.
+# RESCREEN-CORRECTED	WHY ZERO UNDER (B) IS NOT THE SUSPICIOUS ZERO I WAS WARNED ABOUT: the ~10 known misses were ALREADY folded in before I recorded these verdicts (21 -> 14 -> 11 for tests/c), so they cannot be recovered twice.
+# RESCREEN-CORRECTED	CORRECTED tests/c FIGURE WITH THE FINAL MATCHER: 11 NO_ROUTE of 176 files scanned. Reported as an absolute count.
+# RESCREEN-CORRECTED	DENOMINATOR CORRECTED ON AUTHORITY OF hermit-coord's RECONCILIATION: THE C POPULATION IS 136, BUCKETS 87 AND 47. THE FIGURES 85 AND 131 HAVE NO LOCATABLE PRODUCER AND ARE RETIRED, NOT RE-DERIVED. 171 answers a different question.
+# RESCREEN-CORRECTED	NO NEW PR, NO ASSERTS. The correction went into #2277's body (denominator, the fourth route class, and the (A)/(B) label distinction) and into this header.
+# NOUN-AND-ABSENT-SET 2026-08-15 (hermit-sabre): THE DEFINITION OF A GREEN CELL, AND THE SIZE OF THE SET THAT CAN MOVE 'CELLS LANDED'. READ THIS BEFORE COUNTING CELLS.
+# NOUN-AND-ABSENT-SET	THE NOUN, SETTLED FROM SOURCE NOT ARGUMENT -- ci/compat-envelope/scorecard.rs:54: "Green means that the cell is in ci/expected-e2e-plan.json and is therefore required to pass".
+# NOUN-AND-ABSENT-SET	  GREEN IS PLAN MEMBERSHIP, NOT A MEASUREMENT. A cell can be green and unable to fail; repairing it changes evidence quality and moves NO count.
+# NOUN-AND-ABSENT-SET	  WORKED EXAMPLE, VERIFIED FROM COMMITTED BYTES: SCORECARD.md is BYTE-IDENTICAL at 1b98ccef and 61b9ba7aa, and 61b9ba7aa touched NEITHER SCORECARD.md NOR cells.json NOR expected-e2e-plan.json.
+# NOUN-AND-ABSENT-SET	  set-tid-address was plan-selected BEFORE and AFTER. So 'cells landed = 1' counts MERGED CELL WORK; under the scorecard noun the count is 0 and always was.
+# NOUN-AND-ABSENT-SET	THE ABSENT SET IS 2. Parsed with tomllib (NOT a regex -- '[test.modes.verify.backends_disabled]' shares the '[test.modes.' prefix and breaks naive matchers):
+# NOUN-AND-ABSENT-SET	  declared ci=true cells across 13 manifests = 174 ; cells in expected-e2e-plan.json = 172 ; DECLARED-BUT-ABSENT = 2 ; IN-PLAN-BUT-NOT-DECLARED = 0 (the plan is a strict subset).
+# NOUN-AND-ABSENT-SET	  THE TWO: applications/kvm-python-examples and applications/kvm-shell-environment, both verify/kvm, lane=privileged, occasional=true, ptrace DISABLED.
+# NOUN-AND-ABSENT-SET	THEY ARE ABSENT BY DESIGN, NOT BY OVERSIGHT, AND THEY ARE NAMED DEBT: ci/matrix-symmetry-baseline.json lists exactly these two under asymmetric_manifest_tests, enforced by enforce_exact_ratchet("manifest ptrace-front-door debt") at manifest-plan/src/main.rs:395.
+# NOUN-AND-ABSENT-SET	  Their shape is a verify mode enabled on a non-ptrace backend with NO PTRACE FRONT DOOR -- ptrace is the golden reference and a backend is qualified against it.
+# NOUN-AND-ABSENT-SET	CLASSIFICATION REQUESTED: 'already passing and merely unlisted' = ZERO. THE CHEAP ROUTE TO A NON-ZERO METRIC IS EMPTY. Neither absentee is an omission; both are held by an architectural ratchet.
+# NOUN-AND-ABSENT-SET	  Whether they would pass is MOOT: adding them requires retiring the ptrace-front-door debt, an owner/architecture decision, and KVM cannot claim L2 (it compares only exit status/stdout/stderr).
+# NOUN-AND-ABSENT-SET	SO THE METRIC CANNOT BE MOVED BY LISTING AN EXISTING UNLISTED CELL. THE ONLY ROUTE IS CREATING CELLS, AND THE POPULATION FOR THAT IS BACKEND SLOTS THAT ARE DECLARED DISABLED:
+# NOUN-AND-ABSENT-SET	  591 disabled backend slots across 153 ci=true modes -- verify/kvm 147, verify/liteinst 147, verify/dbt 140, verify/sabre 140, and 17 across chaos/custom/replay.
+# NOUN-AND-ABSENT-SET	  EACH IS A CELL THAT DOES NOT EXIST YET. Today the plan holds ptrace 151, dbt 9, sabre 9, liteinst 3, kvm 0. QUALIFYING A DISABLED SLOT AND ENABLING IT IS THE ONLY WORK THAT MOVES THIS COUNT.
+# NOUN-AND-ABSENT-SET	NOTHING WAS ADDED TO THE PLAN IN THIS SURVEY. Sizing only.
+# LITEINST-SLOT-1 2026-08-15 (hermit-sabre): ONE DISABLED verify/liteinst SLOT QUALIFIED AT BAR B. NOT ENABLED -- QUALIFICATION ONLY.
+# LITEINST-SLOT-1	CELL: backend-parity-c/membarrier-query, mode verify, backend liteinst. One of the 147 disabled verify/liteinst slots.
+# LITEINST-SLOT-1	WHY THIS ONE, SCREENED AGAINST MY OWN DOCUMENTED LiteInst LIMITS BEFORE SPENDING THE RUN: 43 lines, and exec=0 fork=0 pthread_create=0.
+# LITEINST-SLOT-1	  It therefore touches NEITHER limit I recorded: LiteInst cannot preserve the preload runtime across exec, and teardown fails -524 ENOTSUPP. A fixture that never execs and never forks avoids both.
+# LITEINST-SLOT-1	  Its manifest disable reason is 'Not evaluated in the source backend-parity matrix; qualify LiteInst separately' -- NEVER ASSESSED, not a known limitation. That is the cheapest class of disabled slot.
+# LITEINST-SLOT-1	PTRACE CONTROL FIRST, because liteinst must be qualified AGAINST the golden reference rather than on its own: valid exit 0 'memb ok=2 q=31'; mutant exit 1 'memb ok=1 q=31'.
+# LITEINST-SLOT-1	TWO-STEP UNDER LITEINST, MUTATION PROVEN TO BITE BEFORE THE GATE WAS CONSULTED:
+# LITEINST-SLOT-1	  STEP 0 mutant SOURCE differs from fixture: yes.  STEP 1 ARTIFACT changed (binaries differ): yes.
+# LITEINST-SLOT-1	  ACCEPT  liteinst: exit 0, verdict=matched, verified=True, bitwise_parity=True, guest_exit_code=0, compared_log_messages 911|911.
+# LITEINST-SLOT-1	  REFUSE  liteinst: exit 1, output 'memb ok=1 q=31' differing from the accept arm.
+# LITEINST-SLOT-1	  LiteInst REPRODUCED THE PTRACE REFERENCE EXACTLY ON BOTH ARMS -- same stdout, same exit status, on the valid and on the mutant.
+# LITEINST-SLOT-1	HONEST LIMIT ON THE REFUSE ARM, SAME AS EVERY OTHER CELL I HAVE QUALIFIED: under --verify the mutant returns verdict=no_result with guest_exit_code=null, so its bitwise_parity=False is THE ABSENCE OF A COMPARISON, NOT A FAILED ONE. THE REFUSAL IS ATTRIBUTABLE TO THE EXIT GATE, NOT THE COMPARATOR.
+# LITEINST-SLOT-1	OBSERVATION, NOT A FINDING: the same fixture compared 114 INFO messages under ptrace and 911 under liteinst -- roughly 8x. Different backends emit different event volumes; I did not investigate and make no claim about it.
+# LITEINST-SLOT-1	NOT ENABLED AND MUST NOT BE. This is a local native-host result with NO qualifying receipt. Adding it to expected-e2e-plan.json on this evidence would risk turning main red, which is worse than a zero metric.
+# LITEINST-SLOT-1	WHAT IT WOULD TAKE: a full-profile receipt at the enabling commit from a CPUID-capable host, then a manifest change moving liteinst from backends_disabled to backends_enabled for this cell. THAT would move CELLS LANDED by one, by the scorecard-plan-membership definition.
+# LITEINST-SLOT-2..5 2026-08-15 (hermit-sabre): FOUR MORE DISABLED verify/liteinst SLOTS QUALIFIED AT BAR B. BATCH IS NOW FIVE. NOTHING ENABLED.
+# LITEINST-SLOT-2..5	CELLS: backend-parity-c/{cwd-roundtrip, fcntl-owner, o-tmpfile-anon, personality-domain}, mode verify, backend liteinst.
+# LITEINST-SLOT-2..5	LIMIT SCREEN ACROSS ALL 92 backend-parity FIXTURES, RUN BEFORE SPENDING ANY RUN. EXEC RULES OUT EXACTLY ONE: fork_exec_pipeline (LiteInst cannot preserve the preload runtime across exec).
+# LITEINST-SLOT-2..5	  2 further fixtures fork without exec; NOT auto-excluded, but they carry the teardown -524 ENOTSUPP risk and I did not pick them. All four chosen have exec=0 fork=0 pthread_create=0.
+# LITEINST-SLOT-2..5	PTRACE CONTROL FIRST FOR EACH: accept exit 0, refuse exit 1, 4/4.
+# LITEINST-SLOT-2..5	TWO-STEP UNDER LITEINST, MUTATION PROVEN TO BITE BEFORE THE GATE WAS CREDITED: STEP 0 all 4 mutant sources differ; STEP 1 all 4 artifacts differ and build.
+# LITEINST-SLOT-2..5	  ACCEPT 4/4: exit 0, verdict=matched, bitwise_parity=True.  REFUSE 4/4: exit 1.  STDOUT MATCHES THE PTRACE REFERENCE BYTE-FOR-BYTE ON ALL FOUR.
+# LITEINST-SLOT-2..5	SAME HONEST ATTRIBUTION AS SLOT 1, AND IT IS NOT BOILERPLATE: under --verify a refused mutant returns verdict=no_result with guest_exit_code=null, so bitwise_parity=False THERE IS THE ABSENCE OF A COMPARISON, NOT A FAILED ONE. THE REFUSAL IS CREDITED TO THE EXIT GATE, NOT THE COMPARATOR.
+# LITEINST-SLOT-2..5	THE 114-vs-911 INFO GAP RECURS ON ALL FOUR AND THE DELTA IS NEAR-CONSTANT, WHICH IS MORE INTERESTING THAN THE GAP ITSELF:
+# LITEINST-SLOT-2..5	  membarrier-query 114->911 (+797); cwd-roundtrip 136->935 (+799); fcntl-owner 130->929 (+799); o-tmpfile-anon 124->923 (+799); personality-domain 118->917 (+799).
+# LITEINST-SLOT-2..5	  A FIXED OFFSET RATHER THAN A MULTIPLIER SUGGESTS A CONSTANT BLOCK OF BACKEND EVENTS INDEPENDENT OF THE WORKLOAD, NOT PER-SYSCALL OVERHEAD. STATED AS A PATTERN ONLY -- I WAS INSTRUCTED NOT TO INVESTIGATE IT AND I DID NOT.
+# LITEINST-SLOT-2..5	NOTHING ENABLED. Five qualified slots are PREPARED, not landed. All five are local native-host results with NO qualifying receipt.
+# LITEINST-SLOT-2..5	LEVERAGE, WHICH IS THE POINT OF BATCHING: ONE full-profile receipt at a single enabling commit would cover all five, so the same scarce receipt moves CELLS LANDED by 5 rather than by 1. 142 verify/liteinst slots remain unexamined.
+# LITEINST-SLOT-6..8 2026-08-15 (hermit-sabre): THREE MORE QUALIFIED, BATCH IS NOW EIGHT. TWO CANDIDATES EXCLUDED WITH THE LIMIT MEASURED, NOT PREDICTED.
+# LITEINST-SLOT-6..8	QUALIFIED: backend-parity-c/{getrusage-self-accounting, pipe-capacity, record-lock}, verify/liteinst.
+# LITEINST-SLOT-6..8	  ptrace control accept 0 / refuse 1 on all three; liteinst accept 0 / refuse 1; stdout matches the ptrace reference byte-for-byte; accept verdict=matched bitwise_parity=True.
+# LITEINST-SLOT-6..8	  REFUSAL ATTRIBUTION UNCHANGED: a refused mutant returns verdict=no_result with guest_exit_code=null, so bitwise_parity=False IS THE ABSENCE OF A COMPARISON, NOT A FAILED ONE. THE EXIT GATE REFUSES, NOT THE COMPARATOR.
+# LITEINST-SLOT-6..8	EXCLUDED 1 -- backend-parity-c/short-io-split-identity. THE DOCUMENTED TEARDOWN LIMIT IS NOW MEASURED RATHER THAN CITED. Its accept arm FAILS under liteinst (exit 1, EMPTY stdout where ptrace prints 'shortio split A=8/7 B=103/102shortio ok=6'):
+# LITEINST-SLOT-6..8	    ERROR reverie_ptrace::tracer: LiteInst cancellation cleanup failed pid=3 error=notifier did not acknowledge terminal cleanup for LiteInst tracee 3
+# LITEINST-SLOT-6..8	    Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported)
+# LITEINST-SLOT-6..8	  IT IS THE ONLY FORK-BEARING FIXTURE I ATTEMPTED (fork=1, exec=0). I INCLUDED IT DELIBERATELY TO TEST THE LIMIT RATHER THAN ASSUME IT, AND THE LIMIT HELD. Fork-bearing verify/liteinst slots should be treated as blocked until teardown is fixed.
+# LITEINST-SLOT-6..8	EXCLUDED 2 -- backend-parity-c/event-delivery-ordering. ITS MUTANT HANGS UNDER PTRACE (exit 124 = my 90s timeout, not exit 1). A HANG IS NOT A GATE REFUSAL AND I DID NOT CREDIT IT AS ONE. The cell may be fine; the MUTATION is unusable, and a different mutation would be needed to qualify it.
+# LITEINST-SLOT-6..8	ALSO EXCLUDED UP FRONT, LIMITS NAMED: fork-exec-pipeline (EXEC -- no preload runtime across exec) and cpuid-probe (HOST -- ARCH_SET_CPUID ENODEV, accept arm cannot pass here).
+# LITEINST-SLOT-6..8	INFO DELTA, NOW 8 POINTS -- THE CONSTANT IS CHARACTERISED AND STILL UNEXPLAINED, WHICH IS THE CORRECT STATE:
+# LITEINST-SLOT-6..8	  membarrier-query 114->911 (+797); cwd-roundtrip 136->935 (+799); fcntl-owner 130->929 (+799); o-tmpfile-anon 124->923 (+799);
+# LITEINST-SLOT-6..8	  personality-domain 118->917 (+799); getrusage-self-accounting 120->915 (+795); pipe-capacity 122->921 (+799); record-lock 130->929 (+799).
+# LITEINST-SLOT-6..8	  n=8, DISTINCT DELTAS {795, 797, 799}, SPREAD 4 OVER PTRACE BASELINES RANGING 114-136. THE OFFSET IS ADDITIVE AND ESSENTIALLY FIXED; IT DOES NOT SCALE WITH THE WORKLOAD.
+# LITEINST-SLOT-6..8	  THAT IS A BACKEND-WIDE CONSTANT ACROSS THIS FIXTURE CLASS, NOT A PER-FIXTURE PROPERTY. I STILL OFFER NO CAUSE -- THIRD REFUSAL TO GUESS ONE. A characterised observation travels; a guessed mechanism gets inherited and defended.
+# LITEINST-SLOT-6..8	NOTHING ENABLED. Eight qualified slots PREPARED on one prospective receipt. 139 of 147 verify/liteinst slots remain unexamined.
+REFUSABLE	determinism-stress-c/lock-free
+REFUSABLE	determinism-stress-c/pid-tid
+REFUSABLE	determinism-stress-c/pid-tid-identity
+REFUSABLE	determinism-stress-c/pipe-prefill
+REFUSABLE	determinism-stress-c/producer-consumer
+REFUSABLE	determinism-stress-c/signal-order
+REFUSABLE	c-programs/get-robust-list-self
+REFUSABLE	c-programs/pause-alarm-interrupt
+REFUSABLE	c-programs/random-sources
+REFUSABLE	system-utils/file-timestamp-identity
+REFUSABLE	system-utils/shm-coherency-identity
+REFUSABLE	system-utils/clock-exec-continuity
+REFUSABLE	backend-parity-c/pipe-ipc
+REFUSABLE	backend-parity-c/pipe-capacity
+REFUSABLE	backend-parity-c/fcntl-owner
+REFUSABLE	backend-parity-c/short-io-split-identity
+REFUSABLE	backend-parity-c/event-delivery-ordering
+REFUSABLE	backend-parity-c/fork-exec-pipeline
+CANNOT_FAIL_STRUCTURAL_SAMPLE	backend-parity-c/append-pwrite
+CANNOT_FAIL_STRUCTURAL_SAMPLE	backend-parity-c/bind-getsockname
+CANNOT_FAIL_STRUCTURAL_SAMPLE	backend-parity-c/cachestat-refusal
+CANNOT_FAIL_STRUCTURAL_SAMPLE	backend-parity-c/close-range-fds
+CANNOT_FAIL_STRUCTURAL_SAMPLE	backend-parity-c/copy-file-range-refusal
+CANNOT_FAIL_STRUCTURAL_SAMPLE	backend-parity-c/epoll-readiness
+CANNOT_FAIL_STRUCTURAL_SAMPLE	backend-parity-c/eventfd-semantics
+CANNOT_FAIL_STRUCTURAL_SAMPLE	backend-parity-c/faccessat2-flags
+CANNOT_FAIL_STRUCTURAL_SAMPLE	backend-parity-c/fadvise-hints
+CANNOT_FAIL_STRUCTURAL_SAMPLE	backend-parity-c/fallocate-extents
+RECOVERED_BY_MUTATION	backend-parity-c/set-tid-address
+RECOVERED_BY_MUTATION	determinism-stress/order-violation
