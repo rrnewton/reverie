@@ -411,6 +411,16 @@
 # ACCEPT-ARM-STABILITY-AUDIT	  IT DOES NOT establish a rate for the six sampled either. 5 runs bounds a defect loosely at best; 0 of 5 is consistent with rates well above zero.
 # ACCEPT-ARM-STABILITY-AUDIT	readdir-entries REMAINS THE ONLY CELL OBSERVED TO DIVERGE, at 1 of 12.
 # ACCEPT-ARM-STABILITY-AUDIT	STANDING NOTE FOR WHOEVER FOLDS THESE AFTER #2276/#2277 LAND: the accept arms are single-run evidence except for the six above. Repeating them before enabling would cost 37 runs and is the cheapest remaining hardening of this batch.
+# ENABLED-CELLS-HARDENED 2026-08-15 (hermit-sabre): ALL 23 CELLS IN #2279 RE-RUN. 92 RUNS, ZERO DIVERGENCES.
+# ENABLED-CELLS-HARDENED	PRIORITY CORRECTED MID-AUDIT: I had started hardening the 43 WAITING cells. The 23 ENABLED cells matter more -- those are the ones that would land and could turn main red. Switched to them.
+# ENABLED-CELLS-HARDENED	RESULT: 23 cells x 4 liteinst --verify runs = 92 runs. matched 92, diverged 0, other 0. Every enabled cell in #2279 is now multi-run evidence rather than single-run.
+# ENABLED-CELLS-HARDENED	  membarrier-query, cwd-roundtrip, fcntl-owner, o-tmpfile-anon, personality-domain, getrusage-self-accounting, pipe-capacity, record-lock,
+# ENABLED-CELLS-HARDENED	  add-key-enosys, cachestat-enosys, futex-waitv-enosys, keyctl-enosys, listmount-enosys, mce-kill-refusal, child-subreaper-refusal, seccomp-refusal,
+# ENABLED-CELLS-HARDENED	  kcmp-eperm, get-robust-list-self, sysv-ipc-refusal, prctl-pdeathsig, robust-list, sync-file-range, thp-disable -- all 4/4.
+# ENABLED-CELLS-HARDENED	WHY THIS MATTERS FOR LANDING: readdir-entries shows intermittent divergence is REAL on this backend at 1-in-12. Landing a cell with that property would put an intermittent red on main that nobody could attribute.
+# ENABLED-CELLS-HARDENED	  At a 1-in-12 rate, 92 runs would be expected to surface roughly 7-8 divergences. ZERO were seen. That is meaningful evidence for the shipping batch specifically.
+# ENABLED-CELLS-HARDENED	STILL NOT A PROOF, AND THE LIMIT IS STATED: 4 runs per cell bounds a per-cell defect loosely. A rare enough intermittency would still pass 4/4. The claim is 'no divergence observed in 92 runs', not 'these cells cannot diverge'.
+# ENABLED-CELLS-HARDENED	THE 43 WAITING CELLS REMAIN SINGLE-RUN except the six sampled earlier. That hardening is still owed before they are folded, and is ~37 runs.
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/vectored-file-io	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 137->939 delta 802 (SECOND 802)
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/signalfd-create	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
