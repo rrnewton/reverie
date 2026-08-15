@@ -343,6 +343,20 @@
 # PREQUALIFIED-5	All six this pass: step 1 enforced and passed; accept exit 0 on ptrace AND liteinst with verdict=matched and bitwise_parity=true; refuse exit 1 on both.
 # PREQUALIFIED-5	  msync-writeback 134->933; no-new-privs-refusal 114->913; openat2-refusal 114->913; openat-flags 163->962; path-file-ops 146->945; pipe2-flags 172->971. All +799.
 # PREQUALIFIED-5	DELTA n=51: {795 x1, 797 x1, 799 x48, 802 x1}. openat-flags at 163 and pipe2-flags at 172 are the widest ptrace baselines yet and STILL land on +799, which strengthens 'additive constant' over 'proportional'.
+# PREQUALIFIED-6 2026-08-15 (hermit-sabre): FIVE MORE QUALIFIED, AND THE FIRST REAL DETERMINISM FAILURE OF THE SWEEP.
+# PREQUALIFIED-6	backend-parity-c/readdir-entries DIVERGED UNDER LITEINST. This is NOT the no_result transient: verdict=diverged with bitwise_parity=false and 961 messages COMPARED, so the comparator ran and found real differences.
+# PREQUALIFIED-6	  RATE, MEASURED RATHER THAN GUESSED FROM ONE HIT: 1 diverged in the first 4 liteinst runs, then matched 8/8 and matched 3/3 on the immediate retry. TOTAL 1 DIVERGED IN 12 LITEINST RUNS. ptrace matched 2/2.
+# PREQUALIFIED-6	  I AM NOT QUALIFYING IT. A cell that diverges intermittently is not Bar B, and 1-in-12 is a rate, not a flake to retry past. It is also NOT disqualified -- 11 of 12 runs matched.
+# PREQUALIFIED-6	  THE DISTINCTION THAT MATTERS: no_result means NO comparison happened and must be retried; diverged means a comparison happened and FAILED. Treating the second like the first would have hidden a real determinism defect behind a retry.
+# PREQUALIFIED-6	THE OTHER FIVE ALL QUALIFY: step 1 enforced; accept exit 0 on both backends with matched and bitwise_parity=true; refuse exit 1 on both.
+# PREQUALIFIED-6	  poll-readiness 142->941; preadv2-flags 133->932; rename-ops 168->967; renameat2-flags 184->983; shutdown-socketpair 134->933. All +799.
+# PREQUALIFIED-6	DELTA n=56: {795 x1, 797 x1, 799 x53, 802 x1}. renameat2-flags at a ptrace baseline of 184 is the widest yet and still +799.
+INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/readdir-entries	1 diverged of 12 liteinst --verify runs (verdict=diverged, bitwise_parity=false, 961 msgs compared); ptrace 2/2 matched; NOT qualified, NOT disqualified
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/poll-readiness	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 142->941 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/preadv2-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 133->932 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/rename-ops	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 168->967 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/renameat2-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 184->983 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/shutdown-socketpair	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 134->933 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/msync-writeback	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 134->933 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/no-new-privs-refusal	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 114->913 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/openat2-refusal	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 114->913 delta 799
