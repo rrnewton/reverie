@@ -1,6 +1,6 @@
 <!-- PROVENANCE: snapshot of ignored/overnight-report-2026-08-15.md promoted 2026-08-15 by hermit-coord
-     source sha256 a14a6158ed8a3c248e0dc3ffd1b55ee23eed7898738b341715d4edd3052e368b
-     source lines 566
+     source sha256 b1f26879ae217feaf52473245dc4113acfc25727ffe70314622f002231fd6194
+     source lines 585
      START WITH THE HANDOFF BLOCK AT THE TOP: what is blocked and on what, in ten lines.
      READING ORDER BELOW IT: hourly sections are superseded by the CORRECTION section
      (cells landed is ZERO, not 1); the CORRECTION is qualified by its RESERVATIONS
@@ -13,7 +13,7 @@
      the hash above, THIS COPY IS STALE. -->
 # HANDOFF — read this, not the 566 lines below
 
-**ONE RECEIPT UNBLOCKS THREE PRs.** #2279 (DRAFT, 8 cells, 170→178), #2276 (APPROVED AND ATTESTED AT `b2bbeb6de`), #2277 (COUNT UNVERIFIED — read 26, 32, and a title saying 31). All three need a full-profile receipt from a CPUID-capable host. **devbig014 is down and is the only one.**
+**ONE RECEIPT UNBLOCKS THREE PRs.** #2279 (DRAFT, 8 cells, 170→178), #2276 (APPROVED AND ATTESTED AT `b2bbeb6de`), #2277 (**32 fixtures**, measured from the diff against `origin/main` at head `8fbed049f`: 32 files changed, all 32 C fixtures, all 32 gaining an `EXPECTED_CHECKS` gate, none already gated at base. Its title says 31 and its branch name says 26 — both were correct when written and neither was updated; the diff is the authority). All three need a full-profile receipt from a CPUID-capable host. **devbig014 is down and is the only one.**
 
 **TWO OWNER DECISIONS, written down rather than remembered:** branch protection on an unprotected `main`, and trigger-based re-promotion so artifacts in `ignored/` do not depend on someone asking.
 
@@ -577,3 +577,22 @@ NAMED REASONS, one per blocked artifact:
 - ***** **ADDRESSABLE FIGURE, NOW EARNED: 367 NOW WITH NO MACHINE AND NO OWNER DECISION; +80 MACHINE-SEQUENCED BEHIND THE PRIVILEGED RUNNER (kvm 47, sabre 33); 144 NOT ADDRESSABLE BY CELL WORK AT ALL. QUOTING 591 AS OPPORTUNITY OVERSTATES IT BY 38%.** *****
 - **AND THE MIX IS TWO CONVERSATIONS, NOT ONE AND NOT FOUR: kvm AND sabre ARE MACHINE-GATED (host-capability 31% and 23%, owned-elsewhere ~0). liteinst AND dbt ARE NOT MACHINE-GATED AT ALL (host-capability EXACTLY ZERO, owned-elsewhere 27% and 30%). 'NOBODY DID THE WORK' IS THE WRONG CONVERSATION FOR KVM AND THE RIGHT ONE FOR LiteInst AND DBT.**
 - **FULL PER-SLOT DATA: `ai_docs/DISABLED_SLOT_PARTITION_20260815.tsv`, 591 rows, one bucket each.**
+
+
+## #2277 SETTLED — 32 FIXTURES, AND THE DRIFT IS ROUTINE STALENESS IN TRIPLICATE
+
+### **32 IS CORRECT. MEASURED FROM THE DIFF AGAINST `origin/main` AT HEAD `8fbed049f` (head unchanged since 10:30:20Z): 32 files changed, all 32 C fixtures, ALL 32 GAINING AN `EXPECTED_CHECKS` GATE — zero already gated at base, zero changed without gaining one, zero non-C files. NO AMBIGUITY IN THE DIFF.**
+
+### WHERE EACH WRONG VALUE CAME FROM — SEQUENTIAL GROWTH, EVERY NUMBER CORRECT WHEN WRITTEN
+- **`fd7734ad4` +26 files, cumulative 26** — "Gate 26 more backend-parity-c fixtures"
+- **`44478fff3` +5 files, cumulative 31** — "Repair five cannot-fail C fixtures"
+- **`8fbed049f` +1 file, cumulative 32** — "Gate pipe_ipc on the transfer values it already measured"
+
+### IT IS THE ROUTINE HYPOTHESIS, NOT THE FALSE-LABEL ONE — AND I CHECKED RATHER THAN INFERRED
+- **NO CONSOLIDATION. Author and committer timestamps are identical on two of three commits and 3m34s apart on the middle one, consistent with an amend, not a cherry-pick. All three commits exist on exactly one branch, `feature/expected-checks-gate-26-more-backend-parity`, and on no other ref. Nothing was moved in from elsewhere.**
+- **SO A REVIEWER READING THE TITLE UNDERSTATES THE SCOPE BY ONE FIXTURE. The reviewed content is a SUPERSET of what the headline advertises, which is the direction that fails safe. This is NOT the false-label defect found in four instruments tonight — those claimed MORE than they could support; this claims LESS than it delivers.**
+
+### BUT THE STALENESS IS IN TRIPLICATE, WHICH IS THE PART WORTH KEEPING
+- **THREE ARTIFACTS CARRY THREE DIFFERENT COUNTS AND EACH WAS CORRECT WHEN WRITTEN: the branch name says **26**, the PR title says **31**, the diff says **32**. The branch name is the most stale because it is the thing nobody can update without a force-push.**
+- **A LABEL THAT CANNOT BE CHEAPLY UPDATED WILL BE THE STALEST LABEL IN ANY SYSTEM, AND A BRANCH NAME IS THE EXTREME CASE. That is the same shape as the tracked-mirror staleness this night's provenance seams exist to expose — except a branch name has no seam and no hash, so nothing makes its staleness visible.**
+- **NOT REPAIRED: no edit to the PR, its title, or its branch. #2277 is hermit-sabre's baton and this was a measurement. The stale title is reported for its owner to fix or to leave.**
