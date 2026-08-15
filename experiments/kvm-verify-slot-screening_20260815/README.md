@@ -168,6 +168,41 @@ open, so the read blocks past the timeout and the classifier wedges — it stall
 three orphaned hermit processes. Before running this at scale, give it `start_new_session=True` and
 kill the process group.
 
+
+## Fourth operator: `operators/qualify.py` — a candidate is not a qualified cell
+
+A justification that no longer holds makes a cell a **candidate**. Enabling needs both directions
+measured, so this operator runs two arms per cell:
+
+- **ACCEPT** — the real fixture passes `--strict --verify` on kvm.
+- **REFUSE** — an **inert violating copy** of the same fixture *fails* the same command. The copy is
+  a mutant staged in scratch; no manifest and no real cell is ever touched.
+
+A cell that passes but cannot be made to fail would book a green that can never go red, which is
+worse than leaving it disabled.
+
+Over the 22 candidates (all of them C fixtures), at load 17-25:
+
+| | |
+|---|---|
+| qualified — both arms measured | **9** |
+| refuse arm measured, **could not be made to fail** | **11** |
+| refuse arm **not measured** (no mutation sites) | **2** |
+| accept arm passed | **22 of 22** |
+
+All 22 passing the accept arm re-confirms the staleness result by a second route. The 2 with no
+mutation sites are *not measured*, kept apart from the 11 that were measured and did not refuse —
+"mutation never applied" is never evidence.
+
+**No cross-validation against the check-mutation screen is available**, and the reason is worth
+recording: that screen gave the recorded-capability-limit reasons their own bucket and did not
+mutate them, while all 22 candidates come from exactly that bucket. The two populations are
+disjoint. A first cross-check appeared to yield "11 consistent, 9 divergent"; it was vacuous.
+
+This operator also carries the fix for the defect in `direct.py`: children run via
+`start_new_session=True` and a timeout kills the whole process group, so hermit's grandchildren
+holding the stderr pipe can no longer wedge the run.
+
 ## Files
 
 `metadata.json` records a `sha256` and line count for every file here.

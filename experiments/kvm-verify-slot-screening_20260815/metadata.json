@@ -45,6 +45,10 @@
       "lines": 14,
       "sha256": "3ab3f30b75ca4bd5dec20269d95fda16e46f0741e5165c3da165af47858cd1da"
     },
+    "operators/qualify.py": {
+      "lines": 134,
+      "sha256": "7eed2e854592924aed2b051b664639060dc6bc40fa8dcc58561fce300f70588a"
+    },
     "operators/run_value.py": {
       "lines": 10,
       "sha256": "edb4ee340c8ad59174a62ce4a5749e137ae53648b9db2e7dc8ca6253e9af025a"
@@ -69,6 +73,14 @@
       "lines": 77,
       "sha256": "67a5b13f8f3dc17d361e76d933293e646b012d09bdaf4223dfb5dda16ab47783"
     },
+    "results/qualification-22-candidates.json": {
+      "lines": 262,
+      "sha256": "e0e10f2bb96f41f05768d31206614e11ada9cd7ec1df30813e755389df4b027a"
+    },
+    "results/qualification-candidate-list.json": {
+      "lines": 112,
+      "sha256": "f7e32748dc2d17e6c27b54fbbc1a0656de5cbc65eaf3ffde75e74e59d7760812"
+    },
     "results/refusable86.json": {
       "lines": 582,
       "sha256": "04e10ca743ad2c85c718dea2829ba101573b83e38d56ddf5290a784914ad13d3"
@@ -90,6 +102,10 @@
       "sha256": "e1330326be68d7e9560c040c00e8b9688d7ef68db61996bb11b8b50816595439"
     },
     "results/survey-notyetqualified-truncated.log": {
+      "lines": 8,
+      "sha256": "8b00fd44284517a3265be5aa9227431d659a0ca40d9eb1f1990749c2efeb9e53"
+    },
+    "results/survey-notyetqualified-truncated.txt": {
       "lines": 8,
       "sha256": "8b00fd44284517a3265be5aa9227431d659a0ca40d9eb1f1990749c2efeb9e53"
     },
@@ -124,6 +140,14 @@
     "cells": 15,
     "falsifiable_PASS": 9,
     "falsifiable_reason_cells": 11
+  },
+  "qualification_of_22_candidates": {
+    "accept_arm_passed": 22,
+    "note": "accept = real fixture passes kvm --strict --verify; refuse = an inert violating copy fails it",
+    "qualified_both_arms": 9,
+    "refuse_arm_measured_cannot_be_failed": 11,
+    "refuse_arm_not_measured_no_mutation_sites": 2,
+    "total": 22
   },
   "reverie_pin": "c261050cfd41bec67e31bfd0cf6f56be008d0ebb",
   "schema": 1,
