@@ -312,6 +312,69 @@ fn verify_repair_checkout_published(
     Ok(())
 }
 
+/// Whether a recorded branch cell is an intent that was asked for but never created.
+///
+/// `--repair` reconciles the RECORD to the CHECKOUT. That is right when the record holds a stale
+/// branch name and the checkout is the current truth. It is WRONG in one specific case, and the
+/// two are the same observation (`recorded != actual`) to everything upstream of here:
+///
+///   * STALE RECORD. The slot was repurposed, the recorded branch is a real prior branch, and the
+///     checkout has already moved on. Reconciling registry->disk is correct, and the `drift70`
+///     fixture brackets it.
+///   * UNFULFILLED INTENT. Re-allocating an already-owned slot writes the NEW branch into the
+///     registry but does not create it in the checkout, which is still on the OLD branch. Here
+///     reconciling registry->disk records the previous task's branch as correct, so the divergence
+///     becomes self-consistent and the verifier goes quiet. The record is fixed; the intent is lost.
+///
+/// The test is whether the recorded name resolves as a ref in that product's checkout. A branch
+/// that was asked for and never created does not.
+///
+/// BE HONEST ABOUT WHAT THIS TEST IS. It is a SUPERSET, not a separator. From disk state alone the
+/// two cases above are indistinguishable, because a stale record can also name a branch that was
+/// deleted after the slot moved on, and that does not resolve either. This refuses that case too,
+/// deliberately: when the recorded name resolves nowhere, the recorded string is the LAST REMAINING
+/// POINTER to it, and overwriting it destroys the name. That is the same thing the "unpushed local
+/// refs survive" guarantee above protects, one level up.
+///
+/// IT IS ALSO NOT COMPLETE. If the branch the re-allocation asked for happens to already resolve --
+/// created by an earlier allocation, or by hand -- the hazard is real and this does not catch it.
+/// The narrower shape where a re-allocation keeps the same branch NAME and only the head is stale
+/// is not drift at all (recorded == actual) and is outside repair's reach entirely.
+///
+/// This deliberately does NOT try to correct toward the intent: doing so would need either a
+/// `git branch`/`checkout` (forbidden above) or a rewrite of ownership (also forbidden above,
+/// because repurposing intent lives with a human). So the answer is to refuse and leave the cell
+/// alone, which keeps the drift VISIBLE to `check-worktree-registry.rs` rather than teaching
+/// anything to tolerate it.
+fn recorded_branch_is_unfulfilled_intent(
+    root: &Path,
+    slot: &str,
+    product: &str,
+    recorded: &str,
+) -> bool {
+    // "-" is the absent-product placeholder and "detached"/"detached:<sha>" is a state, not a
+    // branch that could have been asked for. Neither can be an unfulfilled intent.
+    if recorded == "-" || recorded.is_empty() || recorded.starts_with("detached") {
+        return false;
+    }
+    let path = root.join(format!("worktrees/{slot}/{product}"));
+    // An unreadable checkout is already skipped upstream; be conservative here and do not claim
+    // an intent we cannot check for.
+    if exact_checkout_root(&path).is_err() {
+        return false;
+    }
+    let (resolved, _, _) = git(
+        &path,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{recorded}"),
+        ],
+    );
+    !resolved
+}
+
 /// Whether a `coordinator_lease_revocation` journal should still block `--repair`.
 ///
 /// The refusal list this feeds is an IN-FLIGHT TRANSACTION guard, not an audit
@@ -897,6 +960,11 @@ fn validate_canonical_slot_paths(slot: &str, record: &Value) -> Result<(), Strin
 ///     because repair only rewrites recorded strings, never git objects.
 ///   * An Unreadable child leaves its recorded value untouched (skip + warn),
 ///     so a transient fault cannot erase a legitimate record.
+///   * A recorded branch that DOES NOT EXIST in its checkout is an intent that was asked for and
+///     never created, not stale drift, so the whole scope REFUSES and nothing is written. See
+///     recorded_branch_is_unfulfilled_intent. Reconciling it would record the previous task's
+///     branch as correct and make the divergence self-consistent, which is strictly worse than
+///     leaving it visible: refusing keeps check-worktree-registry.rs reporting the drift.
 /// Runs the verifier before and after so the drift delta is observable, not
 /// inferred.
 fn repair_registry(
@@ -983,6 +1051,7 @@ fn repair_registry(
     let mut skipped = 0usize;
     let mut changes: Vec<(String, String, String)> = Vec::new();
     let mut observed: Vec<(String, String, String)> = Vec::new();
+    let mut unfulfilled: Vec<String> = Vec::new();
     for slot in &slot_names {
         if let Err(error) = validate_canonical_slot_paths(slot, &state["slots"][slot]) {
             skipped += 3;
@@ -1010,6 +1079,20 @@ fn repair_registry(
                     let already_ok = recorded == actual
                         || (actual == "detached" && recorded.starts_with("detached"));
                     if !already_ok {
+                        if recorded_branch_is_unfulfilled_intent(root, slot, product, &recorded) {
+                            // Do NOT count this as a change: the cell is left exactly as recorded,
+                            // so the verifier keeps reporting the drift.
+                            unfulfilled.push(format!(
+                                "{slot}/{product}: recorded branch '{recorded}' does not exist in \
+                                 the checkout, which is on '{actual}'. This is a branch that was \
+                                 asked for but never created, so reconciling the record to the \
+                                 checkout would cement '{actual}' and discard the intent. Create \
+                                 '{recorded}' in worktrees/{slot}/{product} and switch to it, or \
+                                 have the owner correct the recorded cell; repair will not choose \
+                                 between them."
+                            ));
+                            continue;
+                        }
                         changed += 1;
                         println!("  reconcile {slot}/{product}: '{recorded}' -> '{actual}'");
                         changes.push((slot.clone(), product.to_string(), actual));
@@ -1050,6 +1133,19 @@ fn repair_registry(
             eprintln!("REFUSING repair: unpublished work check failed: {finding}");
         }
         die("repair scope contains unpublished or unverifiable work; registry left unchanged");
+    }
+
+    // Refuse the whole scope, not just the offending cell. A partial repair that fixed the other
+    // cells would report success and leave the operator believing the slot was reconciled.
+    if !unfulfilled.is_empty() {
+        for finding in &unfulfilled {
+            eprintln!("REFUSING repair: recorded branch was never created: {finding}");
+        }
+        die(
+            "repair scope contains a recorded branch that does not exist in its checkout; \
+             registry left unchanged. Reconciling it would record the previous task's branch as \
+             correct and hide the divergence from check-worktree-registry.rs.",
+        );
     }
 
     if dry_run {

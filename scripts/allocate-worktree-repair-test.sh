@@ -278,6 +278,12 @@ grep -Fq 'REFUSING repair while slot release transaction(s) require guarded reco
 # TWO-FAULT POSITIVE: an armed journal in ok71 and an unrelated drift in
 # drift70 no longer deadlock. The exclusion is explicit in output, the excluded
 # row/journal is untouched, and only the clean, remote-contained drift is fixed.
+#
+# The recorded name is created as a real ref first. This fixture exercises exclusion scoping, and
+# it re-arms drift by planting a recorded branch; a name that resolves is the shape a repurposed
+# slot actually has (see stale-unpushed-70 above). A recorded name that resolves nowhere is a
+# separate case with its own fixture below, where repair must refuse rather than reconcile.
+git -C "$root/worktrees/drift70/hermit" branch stale-again
 python3 - "$root/worktree-state.json" <<'PY'
 import json
 import pathlib
@@ -310,6 +316,9 @@ jq -e '.slots.drift70.hermit_branch == "physical-70"' \
 printf 'local-only\n' >"$root/worktrees/drift70/hermit/local-only"
 git -C "$root/worktrees/drift70/hermit" add local-only
 git -C "$root/worktrees/drift70/hermit" commit -q -m 'local only fixture'
+# Real ref, for the same reason as the fixture above: this case is about the unpublished-HEAD
+# refusal, not about a recorded name that resolves nowhere.
+git -C "$root/worktrees/drift70/hermit" branch stale-unpublished
 python3 - "$root/worktree-state.json" <<'PY'
 import json
 import pathlib
@@ -469,4 +478,98 @@ grep -Fq 'require guarded recovery: drift70' "$root/revoke-dirty.out" \
        cat "$root/revoke-dirty.out" >&2; exit 1; }
 rm -f "$root/worktrees/drift70/hermit/uncommitted-file"
 
-echo "allocate-worktree-repair-test: PASS (scoped two-fault exclusion and named-slot repair; unpushed + ACTIVE-only uncommitted work REFUSED without mutation; excluded journal/row preserved; POSITIVE: 1 planted drift reconciled -> 0 drift; parent-ascent/path-alias residue skipped/refused; CONTROL: 1/1 correct row untouched; revocation phase gate bracketed 3 ways; human content preserved; idempotent)"
+# ============================================================================
+# UNFULFILLED-INTENT NEGATIVE: the recorded branch does not exist in the checkout.
+#
+# This is the re-allocation shape: a slot handed to a new task gets the NEW branch written into the
+# registry, but the branch is never created and the checkout is still on the PREVIOUS task's branch.
+# Reconciling registry->disk here would record the previous task's branch as correct, which is worse
+# than the divergence it "fixes" because the result is self-consistent and the verifier goes quiet.
+#
+# Bracketed three ways, because a change that simply made repair refuse everything would pass a
+# refusal-only test:
+#   (a) REFUSE with a message naming both branches, and write NOTHING;
+#   (b) the drift is STILL VISIBLE to the verifier afterwards (repair did not launder it, and the
+#       detector was not taught to tolerate it);
+#   (c) the mechanism STILL FIRES for a recorded branch that does resolve -- proving the refusal
+#       discriminates on ref existence rather than disabling repair.
+# ============================================================================
+git -C "$root/worktrees/drift70/hermit" checkout -q previous-task-branch 2>/dev/null \
+  || git -C "$root/worktrees/drift70/hermit" switch -q -c previous-task-branch
+git -C "$root/worktrees/drift70/hermit" push -q -u origin previous-task-branch
+python3 - "$root/worktree-state.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+# The branch the re-allocation asked for. Deliberately never created as a ref.
+state["slots"]["drift70"]["hermit_branch"] = "agent/new-task-never-created"
+path.write_text(json.dumps(state, indent=2) + "\n")
+PY
+git -C "$root/worktrees/drift70/hermit" rev-parse --verify --quiet \
+  refs/heads/agent/new-task-never-created >/dev/null \
+  && { echo 'FAIL: fixture is inert -- the "never created" branch exists' >&2; exit 1; }
+
+intent_state_hash=$(sha256sum "$root/worktree-state.json")
+intent_active_hash=$(sha256sum "$root/worktrees/ACTIVE.md")
+
+# (a) REFUSE, and name both sides so the operator can act.
+if (cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --slot drift70) \
+    >"$root/intent.out" 2>&1; then
+  echo 'FAIL: repair reconciled a recorded branch that was never created' >&2
+  cat "$root/intent.out" >&2; exit 1
+fi
+grep -Fq "recorded branch 'agent/new-task-never-created' does not exist in the checkout" \
+  "$root/intent.out" \
+  || { echo 'FAIL: refusal did not name the recorded branch' >&2; cat "$root/intent.out" >&2; exit 1; }
+grep -Fq "which is on 'previous-task-branch'" "$root/intent.out" \
+  || { echo 'FAIL: refusal did not name the branch actually checked out' >&2; \
+       cat "$root/intent.out" >&2; exit 1; }
+[[ $(sha256sum "$root/worktree-state.json") == "$intent_state_hash" ]] \
+  || { echo 'FAIL: unfulfilled-intent refusal mutated worktree-state.json' >&2; exit 1; }
+[[ $(sha256sum "$root/worktrees/ACTIVE.md") == "$intent_active_hash" ]] \
+  || { echo 'FAIL: unfulfilled-intent refusal mutated ACTIVE.md' >&2; exit 1; }
+
+# (b) The divergence is still VISIBLE -- refusing must not quiet the detector.
+if "$root/scripts/check-worktree-registry.rs" --root "$root" --slot drift70 \
+    >"$root/intent-verify.out" 2>&1; then
+  echo 'FAIL: verifier reports clean after a refused repair; the drift was hidden' >&2
+  cat "$root/intent-verify.out" >&2; exit 1
+fi
+grep -Fq 'DRIFT slot=drift70 hermit recorded=agent/new-task-never-created actual=previous-task-branch' \
+  "$root/intent-verify.out" \
+  || { echo 'FAIL: verifier did not still report the drift' >&2; \
+       cat "$root/intent-verify.out" >&2; exit 1; }
+
+# (c) DELETION-MUTATION GUARD: the same slot, same drift, but now the recorded branch EXISTS.
+# Repair must FIRE. If this reconcile stops happening, the fix has become a blanket disable.
+git -C "$root/worktrees/drift70/hermit" branch agent/new-task-actually-created
+python3 - "$root/worktree-state.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+state["slots"]["drift70"]["hermit_branch"] = "agent/new-task-actually-created"
+path.write_text(json.dumps(state, indent=2) + "\n")
+PY
+(cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --slot drift70) \
+  >"$root/intent-fires.out" 2>&1 \
+  || { echo 'FAIL: repair refused even though the recorded branch resolves' >&2; \
+       cat "$root/intent-fires.out" >&2; exit 1; }
+grep -Fq "reconcile drift70/hermit: 'agent/new-task-actually-created' -> 'previous-task-branch'" \
+  "$root/intent-fires.out" \
+  || { echo 'FAIL: repair did not reconcile a resolvable recorded branch' >&2; \
+       cat "$root/intent-fires.out" >&2; exit 1; }
+jq -e '.slots.drift70.hermit_branch == "previous-task-branch"' \
+  "$root/worktree-state.json" >/dev/null \
+  || { echo 'FAIL: resolvable-branch reconcile did not reach the registry' >&2; exit 1; }
+# ...and the ref it stopped recording still resolves: repair rewrote a string, not a ref.
+git -C "$root/worktrees/drift70/hermit" rev-parse --verify --quiet \
+  refs/heads/agent/new-task-actually-created >/dev/null \
+  || { echo 'FAIL: repair deleted the ref it stopped recording' >&2; exit 1; }
+
+echo "allocate-worktree-repair-test: PASS (scoped two-fault exclusion and named-slot repair; unpushed + ACTIVE-only uncommitted work REFUSED without mutation; excluded journal/row preserved; POSITIVE: 1 planted drift reconciled -> 0 drift; parent-ascent/path-alias residue skipped/refused; CONTROL: 1/1 correct row untouched; revocation phase gate bracketed 3 ways; UNFULFILLED INTENT refused without mutation, drift still visible to the verifier, and reconcile still fires for a resolvable recorded branch; human content preserved; idempotent)"
