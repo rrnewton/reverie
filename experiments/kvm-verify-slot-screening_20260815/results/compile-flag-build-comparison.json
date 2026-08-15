@@ -1,0 +1,2085 @@
+{
+ "tests/backend-parity/fixtures/aio_refusal.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/append_pwrite.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/bind_getsockname.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/cachestat_refusal.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/child_subreaper_refusal.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/close_range_fds.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/copy_file_range_refusal.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/cpuid_probe.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/cwd_roundtrip.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/epoll_pwait2_readiness.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/epoll_readiness.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/event_delivery_ordering.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/eventfd_probe.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/faccessat2_flags.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/fadvise_hints.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/fallocate_extents.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/fchmod_bits.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/fchmodat2_flags.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/fcntl_owner.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/file_backed_mmap.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/file_io_roundtrip.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/flock_lifecycle.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/fork_exec_pipeline.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/fsync_durability.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/ftruncate_sparse.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/getrusage_self_accounting.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/host_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/inotify_watch.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/ioctl_fionread.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/kcmp_refusal.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/linkat_flags.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/mce_kill_policy.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/membarrier_query.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/memfd_create.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/mempolicy_default.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/mincore_residency.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/mkdir_rmdir.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/mknod_special.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/mmap_layout_pointer_order.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/msync_writeback.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/name_to_handle.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/no_new_privs_refusal.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/o_tmpfile_anon.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/openat2_refusal.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/openat_flags.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/path_file_ops.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/personality_domain.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/pid_probe.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/pipe2_flags.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/pipe_capacity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/pipe_ipc.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/poll_readiness.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/prctl_pdeathsig.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/preadv2_flags.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/pthread_lifecycle.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/readdir_entries.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/record_lock.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/rename_ops.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/renameat2_flags.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/robust_list.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/seccomp_refusal.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/sendfile_copy.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/set_tid_address.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/short_io_split_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/shutdown_socketpair.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/signal_delivery_sequence.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/signalfd_create.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/socket_options.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/socketpair_flags.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/sockname_unnamed.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/stat_metadata_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/statfs_free_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/statx_metadata.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/symlink_ops.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/sync_file_range.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/sysv_ipc_refusal.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/thp_disable.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/umask_mode.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/uname_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/utimensat_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/vectored_file_io.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/backend-parity/fixtures/vectored_io.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/bin/posix_timer_test.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/bin/robust_futex_test.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/acct_refusal_probe.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/add_key_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/adjtimex_deterministic.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/arch_prctl_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/bpf_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/cachestat_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/clock_adjtime_deterministic.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/clock_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-O0",
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/c/clock_exec_continuity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-O0",
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/c/clone.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/copy_file_range_refusal_probe.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/dbt_copied_tiocgpgrp.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/dbt_exec_failure.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/dbt_execveat_unsupported.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/dbt_mmap_exec.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/dbt_pid_virtualization.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/dbt_prlimit_self.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/dbt_self_sigqueue.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/dbt_unsupported_syscall.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/dbt_wait_lifecycle.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/file_timestamp_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-O0",
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/c/fp_reduction_nondeterminism.c": {
+  "mine": false,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare",
+   "-fopenmp"
+  ],
+  "err": ""
+ },
+ "tests/c/futex_requeue_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/futex_waitv_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/futex_wake_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/getCpu.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/get_robust_list_child.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/get_robust_list_self.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/get_robust_list_thread.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/getitimer_determinism_probe.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/getpid.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/getsockopt_null.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/hardware_trap_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/c/hello_alarm.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/hello_signals.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/io_uring_fallback.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/io_uring_ring_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/ioctl_fioclex.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/ioctl_siocethtool.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/ipc_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/just_spin.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/kcmp_eperm.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/keyctl_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/keyctl_passthrough.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/listmount_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/liteinst_advanced.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/lsm_get_self_attr_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/lsm_list_modules_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/lsm_set_self_attr_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/map_shadow_stack_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/memfd_secret_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/meminfo_available_deterministic.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/meminfo_cached_deterministic.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/meminfo_free_deterministic.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/memoryPress.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/mmap_stress_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/name_to_handle_at_eopnotsupp.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/name_to_handle_directory_eopnotsupp.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/name_to_handle_empty_path_eopnotsupp.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/name_to_handle_regular_eopnotsupp.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/nanosleep-par.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/netns_cookie_tcp4.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/netns_cookie_tcp6.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/netns_cookie_udp4.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/numa_node_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/pause_alarm_interrupt.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/perf_event_hardware_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/perf_event_open_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/perf_event_software_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/perf_event_watchpoint_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/periodic_setitimer_delivery.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/pidfd_open_self.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/pidfd_poll_self.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/pidfd_waitid_child.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/ppoll_readv.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/ppoll_simulation.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/prctl_dumpable.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/prctl_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/print_memaddrs.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/printf_with_threads.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/proc_fd_link_aliases.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/proc_fdinfo.c": {
+  "mine": false,
+  "harness": true,
+  "cflags": [
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare",
+   "-DFD_SOURCE=1"
+  ],
+  "err": ""
+ },
+ "tests/c/proc_locks.c": {
+  "mine": false,
+  "harness": true,
+  "cflags": [
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare",
+   "-DLOCK_API=1"
+  ],
+  "err": ""
+ },
+ "tests/c/process_mrelease_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/process_vm_readv_refusal_probe.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/process_vm_writev_refusal_probe.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/procfs_positioned_probe.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/prodcons_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/pselect6_simulation.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/ptrace_attach_eperm.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/ptrace_eperm.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/ptrace_seize_eperm.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/ptrace_traceme_eperm.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/pty_nr_count.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/random_sources.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/rcx_canonicalization.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/record_replay_fd_close.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/record_replay_file_state.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/record_replay_lseek_seek_cur.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/record_replay_setsockopt.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/recvmsg_scm_rights_mmap.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/remap_file_pages_anonymous_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/remap_file_pages_memfd_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/remap_file_pages_tmpfile_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/request_key_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/resource_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/sched_setattr_batch.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/sched_setattr_idle.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/sched_setattr_other.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/sched_yield_progress.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/scheduler_policy_queries.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/setitimer_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/shm_coherency_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-O0",
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/c/sigmask_preemption.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/signal_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/signal_waitstatus_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread"
+  ],
+  "err": ""
+ },
+ "tests/c/sigpipe_siginfo.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/sigtimedwait-no-timeout.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/sigtimedwait-timeout-0s.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/sigtimedwait-timeout-1s.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/simple/hello_nostdlib.c": {
+  "mine": false,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare",
+   "-std=gnu11",
+   "-nostdlib",
+   "-static",
+   "-fno-stack-protector",
+   "-fno-pie",
+   "-no-pie"
+  ],
+  "err": ""
+ },
+ "tests/c/simple/nanosleep-threads-nocrash.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/simple/nanosleep-threads-simple.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/simple/pread64_nostdlib.c": {
+  "mine": false,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare",
+   "-std=gnu11",
+   "-nostdlib",
+   "-static",
+   "-fno-stack-protector",
+   "-fno-pie",
+   "-no-pie"
+  ],
+  "err": ""
+ },
+ "tests/c/simple/racewrite_nostdlib.c": {
+  "mine": false,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare",
+   "-std=gnu11",
+   "-nostdlib",
+   "-static",
+   "-fno-stack-protector",
+   "-fno-pie",
+   "-no-pie"
+  ],
+  "err": ""
+ },
+ "tests/c/so_incoming_cpu_tcp4.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/so_incoming_cpu_tcp6.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/so_incoming_cpu_udp4.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/socket_cookie_tcp.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/socket_cookie_udp.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/socket_cookie_unix.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/socket_ioctl_timestamp.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/socket_timestamp_edge_cases.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/socket_timestamp_timespec.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/socket_timestamp_timeval.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/splice_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/startup_surface_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-O0",
+   "-D_GNU_SOURCE"
+  ],
+  "err": ""
+ },
+ "tests/c/statmount_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/syscall_file_io.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/syscall_file_metadata.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/syscall_quick_wins.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/sysfs_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/sysinfo.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/sysinfo_uptime.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/syslog_deterministic.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/sysv_sem_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/sysv_shm_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/tcp_info_accept4.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/tcp_info_accept6.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/tcp_info_client4.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/tee_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/threadExhaustion.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/thread_self_procfs_handoff.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/timer_create_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/uname.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/unix_autobind_dgram.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/unix_autobind_seqpacket.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/unix_autobind_stream.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/ustat_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/vforkExec.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/c/vmsplice_enosys.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/wait_on_child.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/c/writev_determinism.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/chaos/lock_granularity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/chaos/order_violation.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-pthread",
+   "-Wno-unused-parameter"
+  ],
+  "err": ""
+ },
+ "tests/chaos/thread_interleaving.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-pthread",
+   "-Wno-unused-parameter"
+  ],
+  "err": ""
+ },
+ "tests/debugger/guests/debuggee.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/fork_tree.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/guests/lock_free.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/guests/pid_tid.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/guests/signal_order.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/mmap_fork_shared.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/pid_tid_identity.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-variable",
+   "-Wno-error=sign-compare"
+  ],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/pipe_chain.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/pipe_prefill.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/producer_consumer.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/thread_contention.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/e2e/determinism-stress/thread_stress.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/shared-futex-verify/qemu_exec_init.c": {
+  "mine": false,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare",
+   "-std=gnu11",
+   "-nostdlib",
+   "-static",
+   "-fno-stack-protector",
+   "-fno-pie",
+   "-no-pie"
+  ],
+  "err": ""
+ },
+ "tests/shared-futex-verify/qemu_hello.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ },
+ "tests/shared-futex-verify/qemu_init.c": {
+  "mine": false,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare",
+   "-std=gnu11",
+   "-nostdlib",
+   "-static",
+   "-fno-stack-protector",
+   "-fno-pie",
+   "-no-pie"
+  ],
+  "err": ""
+ },
+ "tests/shared-futex-verify/qemu_net_init.c": {
+  "mine": false,
+  "harness": true,
+  "cflags": [
+   "-D_GNU_SOURCE",
+   "-pthread",
+   "-Wno-error=unused-parameter",
+   "-Wno-error=unused-function",
+   "-Wno-error=unused-variable",
+   "-Wno-error=attributes",
+   "-Wno-error=unknown-pragmas",
+   "-Wno-error=sign-compare",
+   "-std=gnu11",
+   "-nostdlib",
+   "-static",
+   "-fno-stack-protector",
+   "-fno-pie",
+   "-no-pie"
+  ],
+  "err": ""
+ },
+ "tests/util/pmu_skid.c": {
+  "mine": true,
+  "harness": true,
+  "cflags": [],
+  "err": ""
+ }
+}

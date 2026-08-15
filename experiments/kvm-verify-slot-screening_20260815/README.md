@@ -247,6 +247,60 @@ one, and it is the evidence that matters: those 11 pass today, so a staleness ch
 them enablable, and enabling them would book a green that can never go red. Measured at host load
 16-22, hermit `e18acde5` (verdict chain unchanged at `302a1a9c`).
 
+
+## Compile-flag divergence between this screen and the harness — measured, and it inverts
+
+The operators compile `cc -std=gnu11 -O1 -w -D_GNU_SOURCE -pthread`. The harness compiles
+`cc -std=c11 -O2 -g -Wall -Wextra -Werror` **plus each cell's `build.cflags`** (`test_harness.sh:341`
+maps `.build.cflags` into `compile_args`, applied at `:3143`). A screen that builds differently from
+the harness is predicting a binary nobody runs, so the divergence was measured over all 267 C
+fixtures screened here.
+
+**The expected direction does not occur.** The concern was that `-w` hides warnings `-Werror` would
+turn into errors, so a fixture that cannot build for real would read as a clean result here.
+Measured: **0 fixtures build under the operator flags and fail under the harness flags.** The reason
+is that the harness is *not* uniformly stricter — 69 of 283 C fixtures carry `build.cflags`, and 35
+of those carry six `-Wno-error=` relaxations precisely so `-Werror` does not reject them. Reproducing
+the harness command without `build.cflags` produces 54 spurious failures and is simply the wrong
+command; that mistake was made here first and caught by a contradiction, since one of the "failing"
+fixtures had already PASSED through the real harness probe.
+
+**The real divergence runs the other way: 9 fixtures the operator flags cannot build, the harness
+builds fine** — they need `-fopenmp`, `-nostdlib -static`, or a `-D` the operator does not pass. All
+9 were scored `NOT-DETERMINABLE` ("does not compile standalone"), so the cost was avoidable unknowns,
+never a false clean result. Re-screened under the harness flags, 2 of the 9 yield a real verdict
+(`proc_fdinfo`, `pread64_nostdlib`, both REFUSABLE via exit status) and 7 stay undecidable for
+unrelated reasons.
+
+**For fixtures that build under both flag sets the divergence is verdict-neutral, and that is
+measured rather than argued:** the same operator was re-run under harness flags on a 45-fixture
+sample and returned **45 of 45 identical verdicts, 0 changed**. `-O1` versus `-O2` did not move a
+verdict on any of them. That is evidence about this sample, not a proof for every fixture; a
+fixture with undefined behaviour could in principle differ under a different optimisation level.
+
+### Corrected counts
+
+| | |
+|---|---|
+| REFUSABLE (exit-status gated) | 86 → **88** |
+| NOT-DETERMINABLE | 114 → **112** |
+| CANNOT-FAIL (not exit-gated) | 34, unchanged |
+| recorded KVM capability limit | 79, unchanged |
+
+The value-mutation bound was computed over the old 86; the 2 additions are unmeasured on that axis,
+so it becomes **`[10, 64]`**. No staleness or qualification verdict is affected — none of the 9
+carried one, so **25 / 22 / 9 all stand.**
+
+### Two nouns that are easy to swap, stated explicitly
+
+- **25** cells returned `DOES-NOT-HOLD` — that is the count of cells that *pass today*.
+- **22** of those 25 are `cap=True`, i.e. cells whose recorded reason actually asserts a failure.
+  **22 is the count of stale justifications**; the other 3 are "not yet qualified" reasons, which
+  cannot go stale because they never claimed the cell fails. 22 is also, coincidentally, the number
+  carried into qualification — because qualification only took the falsifiable ones.
+- **9** of those 22 qualified on both arms. **Reading 22 as "enablable" overreads by more than
+  double**: 11 pass but cannot be made to fail under either operator, and 2 are unmeasurable.
+
 ## Files
 
 `metadata.json` records a `sha256` and line count for every file here.

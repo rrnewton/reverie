@@ -2,16 +2,29 @@
   "agent": "hermit-kvm2",
   "check_mutation_buckets": {
     "CANNOT_FAIL_not_exit_gated": 34,
-    "NOT_DETERMINABLE": 114,
-    "REFUSABLE_exit_status_gated": 86,
+    "NOT_DETERMINABLE": 112,
+    "REFUSABLE_exit_status_gated": 88,
+    "note": "corrected after the compile-flag re-screen; 86/114 were the pre-correction values",
     "recorded_kvm_capability_limit": 79,
     "total": 313
   },
+  "compile_flag_divergence": {
+    "fixtures_compared": 267,
+    "harness_only_build_failures": 0,
+    "operator_only_build_failures": 9,
+    "verdict_stability_sample": {
+      "changed": 0,
+      "identical": 45,
+      "n": 45
+    },
+    "verdicts_recovered": 2
+  },
   "date_utc": "2026-08-15",
+  "does_not_hold_25_of_which_22_are_stale_justifications": true,
   "files": {
     "README.md": {
-      "lines": 252,
-      "sha256": "454d4771c7915890dafc054ca06deeadcc5c4c722cf32a1d9832baa670562ec0"
+      "lines": 306,
+      "sha256": "37e52c34e7656eb0f751ce137f30ca1f80e04ec3b8b159fad5322be8165175f2"
     },
     "controls/neg_cannotfail.c": {
       "lines": 2,
@@ -49,6 +62,10 @@
       "lines": 134,
       "sha256": "7eed2e854592924aed2b051b664639060dc6bc40fa8dcc58561fce300f70588a"
     },
+    "operators/reflag.py": {
+      "lines": 25,
+      "sha256": "f77075339947ef8dbb32753b0b3162e6cb2defc011edf75be56276e79c7be805"
+    },
     "operators/refuse2.py": {
       "lines": 59,
       "sha256": "7a2fff200465d283329cc00c9abec264e2d96d631274fd4e219294aa58156812"
@@ -64,6 +81,14 @@
     "operators/value_mutate.py": {
       "lines": 201,
       "sha256": "514a19df01a57cc02da43bf7c96579fdc751f86a1caed901ca88963c3e3368e9"
+    },
+    "results/compile-flag-build-comparison.json": {
+      "lines": 2085,
+      "sha256": "859a133290023bc5f0396cdca99be13fc740813aeffdbaf89dbc287158f1be66"
+    },
+    "results/compile-flag-reflag-verdicts.json": {
+      "lines": 740,
+      "sha256": "de069ac880c98e266925b6f618eefdd3242683d3d086c92d72408d019ae54027"
     },
     "results/population.json": {
       "lines": 1880,
@@ -167,6 +192,6 @@
     "NOT_DETERMINABLE": 52,
     "NOT_VALUE_GATED": 24,
     "VALUE_GATED": 10,
-    "bound": "[10, 62]"
+    "bound": "[10, 64]"
   }
 }

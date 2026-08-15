@@ -1,0 +1,740 @@
+[
+ {
+  "program": "tests/c/fp_reduction_nondeterminism.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/proc_fdinfo.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "3876ca810cddcfd7",
+   "outlen": 50
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/proc_locks.c",
+  "mutation_sites": 29,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/simple/hello_nostdlib.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/simple/pread64_nostdlib.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 2",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/simple/racewrite_nostdlib.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/shared-futex-verify/qemu_exec_init.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": true
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline times out standalone (needs harness env)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/shared-futex-verify/qemu_init.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": true
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline times out standalone (needs harness env)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/shared-futex-verify/qemu_net_init.c",
+  "mutation_sites": 26,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": -11,
+   "out": "aabe24765fd6ede5",
+   "outlen": 168
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits -11 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/arch_prctl_determinism.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/remap_file_pages_anonymous_enosys.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/ptrace_attach_eperm.c",
+  "mutation_sites": 11,
+  "base": {
+   "compiled": true,
+   "timeout": true
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline times out standalone (needs harness env)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/path_file_ops.c",
+  "mutation_sites": 19,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "dab29b8d0edcd7c3",
+   "outlen": 39
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/just_spin.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/request_key_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/perf_event_software_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/scheduler_policy_queries.c",
+  "mutation_sites": 15,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/record_replay_lseek_seek_cur.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/flock_lifecycle.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "f43f60c6097aa90e",
+   "outlen": 11
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/resource_determinism.c",
+  "mutation_sites": 58,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "7fff395f3cce97c3",
+   "outlen": 757
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/cachestat_refusal.c",
+  "mutation_sites": 9,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "fc24e228a50e9901",
+   "outlen": 15
+  },
+  "bucket": "CANNOT-FAIL",
+  "sites_tried": 9,
+  "mutants_built": 9,
+  "why": "9 single-site mutants compiled and ran; exit status AND observed stdout unchanged in every one",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/perf_event_open_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/clone.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "6bed7c4e58faa0f6",
+   "outlen": 60
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/ptrace_seize_eperm.c",
+  "mutation_sites": 11,
+  "base": {
+   "compiled": true,
+   "timeout": true
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline times out standalone (needs harness env)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/adjtimex_deterministic.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "6f295acafd1cbe8b",
+   "outlen": 40
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/sync_file_range.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "8bcc15cd283521df",
+   "outlen": 15
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/statmount_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/debugger/guests/debuggee.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/pselect6_simulation.c",
+  "mutation_sites": 51,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "67433759fd492e6d",
+   "outlen": 23
+  },
+  "bucket": "REFUSABLE",
+  "channel": "timeout",
+  "sites_tried": 1,
+  "why": "a single-site mutant hangs where baseline exits 0 (observable via harness timeout)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/ptrace_eperm.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "4357c8a18b9107c5",
+   "outlen": 33
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/pipe_chain.c",
+  "mutation_sites": 19,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "46835a9f9f1301b7",
+   "outlen": 195
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 2,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/lsm_list_modules_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/sigmask_preemption.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "33120d6f8e5896b4",
+   "outlen": 62
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 2,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/rename_ops.c",
+  "mutation_sites": 16,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "2e66b7f546269cde",
+   "outlen": 16
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/wait_on_child.c",
+  "mutation_sites": 3,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "7092e23a37388796",
+   "outlen": 47
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/shm_coherency_identity.c",
+  "mutation_sites": 19,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "d772330a63fc82fc",
+   "outlen": 1238
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/thread_self_procfs_handoff.c",
+  "mutation_sites": 7,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "4ec014d923f7213d",
+   "outlen": 38
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 2,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/process_mrelease_enosys.c",
+  "mutation_sites": 2,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/liteinst_advanced.c",
+  "mutation_sites": 48,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/sysinfo_uptime.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/fork_tree.c",
+  "mutation_sites": 12,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "8ddf8b17d77780a3",
+   "outlen": 113
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/so_incoming_cpu_tcp4.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/e2e/determinism-stress/guests/pid_tid.c",
+  "mutation_sites": 13,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "7b4f9affe795cbc6",
+   "outlen": 220
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/robust_list.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "43b259778db1cd5f",
+   "outlen": 16
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/shared-futex-verify/qemu_hello.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/faccessat2_flags.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "b15fb9b21254af6f",
+   "outlen": 16
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/file_timestamp_identity.c",
+  "mutation_sites": 13,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "10df1cc23946aaa5",
+   "outlen": 1989
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/backend-parity/fixtures/cwd_roundtrip.c",
+  "mutation_sites": 17,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "545488106ed9b113",
+   "outlen": 24
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/dbt_copied_tiocgpgrp.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "d41c17290fb46f7e",
+   "outlen": 24
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/unix_autobind_dgram.c",
+  "mutation_sites": 0,
+  "bucket": "NOT-DETERMINABLE",
+  "why": "conditional-negation mutation never applied (no ==/!= sites outside strings/preprocessor)",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/remap_file_pages_memfd_enosys.c",
+  "mutation_sites": 4,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 1,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 1 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/tcp_info_accept4.c",
+  "mutation_sites": 5,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 2,
+   "out": "e3b0c44298fc1c14",
+   "outlen": 0
+  },
+  "bucket": "NOT-DETERMINABLE",
+  "why": "baseline exits 2 standalone (needs harness env); a mutation delta would not be attributable",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/mmap_stress_determinism.c",
+  "mutation_sites": 8,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "890065cac586dbea",
+   "outlen": 63
+  },
+  "bucket": "REFUSABLE",
+  "channel": "status",
+  "sites_tried": 1,
+  "why": "single-site mutation changed exit status 0 -> 1",
+  "flags": "harness"
+ },
+ {
+  "program": "tests/c/uname.c",
+  "mutation_sites": 1,
+  "base": {
+   "compiled": true,
+   "timeout": false,
+   "rc": 0,
+   "out": "8ab7c7b4879f4632",
+   "outlen": 217
+  },
+  "bucket": "REFUSABLE",
+  "channel": "stdout",
+  "sites_tried": 1,
+  "why": "single-site mutation left exit status 0 but changed observed stdout",
+  "flags": "harness"
+ }
+]
