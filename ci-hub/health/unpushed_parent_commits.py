@@ -77,13 +77,38 @@ def git(*args: str, cwd: str = PARENT) -> str:
 
 
 def local_only(scope: str) -> list[dict[str, str]]:
-    """Commits reachable from `scope` but from no remote-tracking ref."""
+    """Commits reachable from `scope` but from no remote-tracking ref.
+
+    Describes every commit in ONE `git log` rather than one per commit. The
+    per-commit form cost ~14.5 ms each, so its runtime scaled linearly with the
+    number of unpushed commits -- **this gate got slower exactly as the
+    condition it watches got worse**. At the 25 commits recorded when it was
+    written that was ~0.4 s and invisible; at 1316 it was ~19 s and the gate
+    exceeded its 30 s bound and went dark. Measured on the same 1316 commits,
+    batching is ~19 s -> ~0.14 s. The scan itself was never the cost: the
+    `rev-list` walk above measures 0.11 s, matching the 0.13 s recorded in this
+    module's own header, so narrowing scope would not have helped and would have
+    cost the coverage that header defends.
+
+    `--no-walk=unsorted` preserves `rev-list` order, and `%H` is read back from
+    the output so each row is paired with its own commit rather than by
+    position. `%s` is a subject line and cannot contain a newline, so one line
+    per commit parses unambiguously; a subject containing tabs still survives
+    because the split is bounded.
+    """
     spec = ["--all"] if scope == "all" else ["HEAD"]
-    shas = git("rev-list", *spec, "--not", "--remotes").splitlines()
+    shas = [s for s in git("rev-list", *spec, "--not", "--remotes").splitlines() if s]
+    if not shas:
+        return []
+    listed = subprocess.run(
+        ["git", "-C", PARENT, "log", "--no-walk=unsorted", "--stdin",
+         "--format=%H\t%h\t%an\t%ad\t%s", "--date=short"],
+        input="\n".join(shas) + "\n", capture_output=True, text=True)
     rows = []
-    for sha in [s for s in shas if s]:
-        line = git("log", "-1", "--format=%h\t%an\t%ad\t%s", "--date=short", sha)
-        h, an, ad, subj = (line.split("\t", 3) + ["", "", "", ""])[:4]
+    for line in listed.stdout.splitlines():
+        if not line:
+            continue
+        sha, h, an, ad, subj = (line.split("\t", 4) + ["", "", "", "", ""])[:5]
         rows.append({"sha": sha, "short": h, "author": an, "date": ad, "subject": subj})
     return rows
 
