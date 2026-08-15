@@ -718,3 +718,89 @@ devbig014.
 
 **If a full run is genuinely needed here: say so and stop. Do not run it.** The owner authorises or
 reroutes in one message.
+
+### 12.13 A refusal message is a claim about what is forbidden, never a complete claim about what is available
+
+Four separate failures today share this one shape, and none of them was an instrument being wrong.
+In every case the message was accurate and incomplete, and a reader treated it as exhaustive.
+
+| refusal | what it said | what it withheld |
+|---|---|---|
+| `normalize_claim` | claims must stay below `ci-hub/` | that there is no route at all for the tool's own source — a genuine gap, worth saying |
+| `create` on an occupied clone | "a coordinator must disposition the per-change clone" | **`--clone` exists**; the protocol sanctions alternate destinations for coordinators |
+| a dispatch brief | "report only" | what to do if reporting surfaced something actionable |
+| `activate` | its own stated cause | the actual cause |
+
+**MEASURED HERE, and it is a correction to my own earlier report:** I recorded that the sanctioned
+out-of-place path was unavailable twice today for two reasons. **It was unavailable once.**
+`ci-hub-clone-change.py:1087` takes `--clone` with `~/temp/dev-hermit` as a *default*, and I proved
+it: the default destination refuses, while `--clone <fresh>` gets past the gate and fails only at
+`git clone`. The protocol says so at `:67-68` — *"Explicit alternate clones require coordinator path
+claims."* I read `:37` ("the default destination is deliberately fixed"), stopped, and treated a
+default as a constraint. Only the self-modification gap is real.
+
+**The fixed default is deliberate and should stay:** it is the mutual-exclusion device that
+*"prevents a second normal clone"* on one box. Auto-picking a fresh name on collision would dissolve
+the only such guard. The improvement is one string: **name both remedies in the refusal**, not only
+the destructive one.
+
+### 12.14 The same confusion has now arrived through four channels, and the fourth is inside a correct record
+
+Each time the artifact was honest and the reading was the hazard:
+
+1. **A status line** — main's green attributed to the head rather than to `1b98ccef5` (§12.1).
+2. **A published ledger row** — `result=fail` against current main that actually says *this host
+   lacks a CPU feature* (§12.2, §12.12).
+3. **A profile label in a summary** — a portable-only green that reads as a full green (§12.12).
+4. **An adjacent field inside a correct record** — **RELAYED from `hermit-sabre`:**
+   `selection_mode: "full"` sitting beside `profile: "portable-only"`. Both fields are correct. The
+   row is not wrong in any part. But a skim, and every substring matcher, sees `full`.
+
+> **sabre's sharpening, which is the operative rule: the guard must be *read the profile field*, not
+> *look for `full`*.** A search for `full` cannot distinguish the two fields, and neither can a
+> reader scanning for a familiar word. This is §12.10's matcher family arriving inside a record
+> rather than inside a query.
+
+**Almost nothing today was a fabrication or a broken instrument.** The artifacts were true and the
+quantifier dropped out between the artifact and the reader.
+
+### 12.15 Two live items a fresh coordinator should know
+
+**The scorecard-moving population is small — RELAYED, unit is manifest-touching:** **16 of 75 open
+PRs can move the scorecard; 59 cannot.** Do not read total open-PR count as landing pressure on the
+compat envelope.
+
+**`hermit-stat-fixture.tmp` is a five-byte untracked file that has deferred four landed commits from
+activation — RELAYED for the count, MEASURED HERE for the mechanism.** It is untracked *and not
+gitignored*, mtime 03:01, and `parent-main-write sync --automatic` refuses over it by name:
+`hermit-stat-fixture.tmp [DIRTY OUTSIDE EXACT FETCHED TARGET]`. Ordinary `sync` proceeds; automation
+correctly will not reason past it. **Landed is not running** — at the time of writing the primary sat
+one commit behind `origin/main` for this reason alone. Nobody has claimed the file, so nobody has
+removed it.
+
+### 12.16 The 3.1G hermit figure was corrected by its author, and I confirmed both ends
+
+**Recorded because a corrected figure that travels without its correction is the hazard, and this one
+did not travel.** `hermit-revents` sized hermit at **3.1G** by reading the *primary's accumulated*
+`.git`, in the note that raised the clone-submodule work.
+
+**It annotated its own error in place before deciding** — the commit message of `ac181ae8` carries
+the failed measurement, the correct one, and the consequence: *"wrong by about 130x, and it would
+have argued for a narrower fix on false grounds."*
+
+**MEASURED HERE, independently, both ends:**
+
+| basis | size |
+|---|---|
+| primary `hermit/.git`, accumulated | **3.1G** — the reported figure is a real measurement of the wrong thing |
+| fresh clone, `.git` only | **11M** |
+| fresh clone, including working tree | **26M** — the basis matching revents' 24M |
+
+So the correction is sound and its ratio (~130×) is right for the tree-inclusive basis; on an
+objects-only basis it is nearer 280×. **Do not plan around the 3.1G figure without re-measuring, and
+state the basis when you do** — the three numbers above differ by more than two orders of magnitude
+and all three are honest measurements of different things.
+
+**MEASURED HERE — the uncorrected figure exists nowhere.** Zero tracked files, zero files under
+`ignored/`, and in both `tg` and the commit message it appears only inside its own correction. There
+was nothing left to annotate.
