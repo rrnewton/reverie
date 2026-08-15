@@ -1,0 +1,420 @@
+# QUALIFIABLE FIXTURE QUEUE -- never-evaluated cells whose fixture is PROVEN able to express failure via exit status.
+# Produced 2026-08-15 by hermit-bytes. Source of truth read at origin/main 61b9ba7aa (cells.json + tests/e2e/manifests/*.toml).
+#
+# THIS LIST IS A FLOOR, NOT THE POPULATION. Do not plan as if it were complete.
+#   83 of 283 screened C programs are CONFIRMED qualifiable. Measured screen sensitivity 14/26 = 0.54, exact 95% CI [0.33, 0.73].
+#   The true qualifiable count is therefore probably between roughly 117 and 259 of the 283. NO POINT ESTIMATE IS SUPPORTED and none is given.
+#
+# UNIT, BECAUSE TWO COUNTS ARE IN PLAY AND THEY ARE NOT INTERCHANGEABLE:
+#   83 is a count of PROGRAMS. Exit-gating is a property of the program, not of a cell.
+#   Those 83 programs carry 380 never-evaluated CELLS (test x mode x backend), which is what this file lists and what a lane agent acts on.
+#   PER-BACKEND COUNTS BELOW SUM TO 380, NOT TO 83.
+#
+# DO NOT EXPECT ONE MORE MUTATION FAMILY TO CLOSE THE GAP. Of the 13 calibration misses, 10 were 'no mutation pattern matched',
+#   and those 10 are spread across FOUR manifest categories (backend-parity-c, c-programs, determinism-stress-c, system-utils)
+#   rather than clustering in one. That is evidence against a single missing family and for several.
+#
+# WHAT 'qualifiable' MEANS HERE: a semantic mutation of the fixture changed its EXIT STATUS, with both binaries built and run and their
+#   exit and output compared. It means the fixture CAN express failure in the channel the verdict keys on. IT IS NOT a claim that the cell
+#   passes, that the backend can run it, or that it is ready to enable. Backend capability is a separate and independent gate.
+#
+# A GUARD WITH ZERO HITS THAT IS NOT DEAD WEIGHT: a mutant that dies by SIGNAL is recorded NOT-DETERMINABLE and never qualifiable,
+#   because a crash induced by the mutation is not the fixture expressing failure. It fired 0 times across every run.
+#   THE ZERO IS A MEASUREMENT, NOT AN ABSENCE: the guard was in place BEFORE any count was taken, not added afterwards.
+#
+# RESIDUAL OF THE 283-PROGRAM SCREEN, SHOWN RATHER THAN DISTRIBUTED: 105 no mutation pattern matched | 6 mutation applied but no observable
+#   change | 2 build failed | 1 timeout. The 105 are the instrument, not the fixtures, and must not be read as 'probably not qualifiable'.
+#   backend-parity-c/eventfd-semantics and backend-parity-c/vectored-io are APPLIED-BUT-INERT, not unscreened: the mutation fired and the
+#   program behaved identically. Different defect, different remedy. NOT FIXED AND NOT CLAIMED.
+#
+# CALIBRATION: 38 points, 27 known exit-gated and 11 known cannot-fail, from hermit-sabre's exit-gating screen (external) plus 10
+#   hand-established verdicts. ZERO calibration points were drawn from the screen being measured. False positives: 0 of 11, re-checked
+#   after every widening. One source conflict is on record: backend-parity-c/eventfd-semantics is CANNOT_FAIL in sabre's screen and
+#   exit-gated by hand; sensitivity is reported both ways (0.52 including it, 0.54 excluding it).
+#
+# NOT SCREENED AND OUTSIDE EVERY COUNT ABOVE: 42 shell programs and 1 Rust program behind the same never-evaluated population.
+#
+# PER-BACKEND CELLS: dbt=47  kvm=71  liteinst=79  native=73  ptrace=81  sabre=29   TOTAL=380
+# PER-MODE CELLS:    naked=73  replay=81  verify=226   TOTAL=380
+#
+backend	mode	cell	fixture	mutation_family	evidence
+dbt	verify	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
+dbt	verify	backend-parity-c/child-subreaper-refusal	tests/backend-parity/fixtures/child_subreaper_refusal.c	ok-init	baseline already exits 1 natively
+dbt	verify	backend-parity-c/cwd-roundtrip	tests/backend-parity/fixtures/cwd_roundtrip.c	ok-init	exit 0->1
+dbt	verify	backend-parity-c/fcntl-owner	tests/backend-parity/fixtures/fcntl_owner.c	ok-init	exit 0->1
+dbt	verify	backend-parity-c/file-io-roundtrip	tests/backend-parity/fixtures/file_io_roundtrip.c	violations-static	exit 0->1
+dbt	verify	backend-parity-c/fork-exec-pipeline	tests/backend-parity/fixtures/fork_exec_pipeline.c	violations-static	exit 0->1
+dbt	verify	backend-parity-c/getrusage-self-accounting	tests/backend-parity/fixtures/getrusage_self_accounting.c	ok-init	baseline already exits 1 natively
+dbt	verify	backend-parity-c/mce-kill-refusal	tests/backend-parity/fixtures/mce_kill_policy.c	ok-init	baseline already exits 1 natively
+dbt	verify	backend-parity-c/membarrier-query	tests/backend-parity/fixtures/membarrier_query.c	ok-init	baseline already exits 1 natively
+dbt	verify	backend-parity-c/name-to-handle-refusal	tests/backend-parity/fixtures/name_to_handle.c	ok-init	baseline already exits 1 natively
+dbt	verify	backend-parity-c/o-tmpfile-anon	tests/backend-parity/fixtures/o_tmpfile_anon.c	ok-init	exit 0->1
+dbt	verify	backend-parity-c/pipe-capacity	tests/backend-parity/fixtures/pipe_capacity.c	ok-init	exit 0->1
+dbt	verify	backend-parity-c/record-lock	tests/backend-parity/fixtures/record_lock.c	ok-init	exit 0->1
+dbt	verify	backend-parity-c/seccomp-refusal	tests/backend-parity/fixtures/seccomp_refusal.c	ok-init	baseline already exits 1 natively
+dbt	verify	backend-parity-c/sendfile-copy	tests/backend-parity/fixtures/sendfile_copy.c	guard-inversion	exit 0->1
+dbt	verify	backend-parity-c/set-tid-address	tests/backend-parity/fixtures/set_tid_address.c	ok-init	exit 0->1
+dbt	verify	backend-parity-c/signal-delivery-sequence	tests/backend-parity/fixtures/signal_delivery_sequence.c	violations-static	exit 0->1
+dbt	verify	backend-parity-c/sysv-ipc-refusal	tests/backend-parity/fixtures/sysv_ipc_refusal.c	ok-init	baseline already exits 1 natively
+dbt	verify	bin-c/robust-futex-test	tests/bin/robust_futex_test.c	guard-inversion	exit 0->1
+dbt	verify	c-programs/clone	tests/c/clone.c	guard-inversion	exit 0->1
+dbt	verify	c-programs/dbt-mmap-exec	tests/c/dbt_mmap_exec.c	guard-inversion	exit 0->1
+dbt	verify	c-programs/dbt-wait-lifecycle	tests/c/dbt_wait_lifecycle.c	guard-inversion	baseline already exits 3 natively
+dbt	verify	c-programs/epoll-determinism	tests/c/epoll_determinism.c	enosys	baseline already exits 2 natively
+dbt	verify	c-programs/io-uring-fallback	tests/c/io_uring_fallback.c	enosys	baseline already exits 1 natively
+dbt	verify	c-programs/ipc-determinism	tests/c/ipc_determinism.c	guard-inversion	baseline already exits 2 natively
+dbt	verify	c-programs/liteinst-advanced	tests/c/liteinst_advanced.c	guard-inversion	baseline already exits 2 natively
+dbt	verify	c-programs/madvise-determinism	tests/c/madvise_determinism.c	enosys	baseline already exits 13 natively
+dbt	verify	c-programs/mmap-determinism	tests/c/mmap_determinism.c	guard-inversion	baseline already exits 2 natively
+dbt	verify	c-programs/ppoll-simulation	tests/c/ppoll_simulation.c	enosys	baseline already exits 1 natively
+dbt	verify	c-programs/proc-fd-link-aliases	tests/c/proc_fd_link_aliases.c	guard-inversion	exit 0->1
+dbt	verify	c-programs/procfs-positioned-probe	tests/c/procfs_positioned_probe.c	enosys	baseline already exits 1 natively
+dbt	verify	c-programs/recvmsg-scm-rights-mmap	tests/c/recvmsg_scm_rights_mmap.c	guard-inversion	exit 0->1
+dbt	verify	c-programs/resource-determinism	tests/c/resource_determinism.c	guard-inversion	baseline already exits 1 natively
+dbt	verify	c-programs/signal-determinism	tests/c/signal_determinism.c	guard-inversion	baseline already exits 2 natively
+dbt	verify	c-programs/syscall-file-io	tests/c/syscall_file_io.c	guard-inversion	exit 0->1
+dbt	verify	c-programs/syscall-quick-wins	tests/c/syscall_quick_wins.c	guard-inversion	baseline already exits 1 natively
+dbt	verify	c-programs/thread-sync-determinism	tests/c/thread_sync_determinism.c	guard-inversion	baseline already exits 2 natively
+dbt	verify	c-programs/wait-on-child	tests/c/wait_on_child.c	guard-inversion	exit 0->1
+dbt	verify	determinism-stress-c/fork-tree	tests/e2e/determinism-stress/fork_tree.c	guard-inversion	exit 0->1
+dbt	verify	determinism-stress-c/mmap-fork-shared	tests/e2e/determinism-stress/mmap_fork_shared.c	guard-inversion	exit 0->1
+dbt	verify	determinism-stress-c/pipe-chain	tests/e2e/determinism-stress/pipe_chain.c	guard-inversion	exit 0->1
+dbt	verify	determinism-stress-c/pipe-prefill	tests/e2e/determinism-stress/pipe_prefill.c	guard-inversion	exit 0->1
+dbt	verify	determinism-stress-c/producer-consumer	tests/e2e/determinism-stress/producer_consumer.c	guard-inversion	exit 0->1
+dbt	verify	determinism-stress-c/thread-contention	tests/e2e/determinism-stress/thread_contention.c	guard-inversion	baseline already exits 1 natively
+dbt	verify	determinism-stress-c/thread-stress	tests/e2e/determinism-stress/thread_stress.c	guard-inversion	exit 0->1
+dbt	verify	determinism-stress/order-violation	tests/chaos/order_violation.c	guard-inversion	exit 0->1
+dbt	verify	system-utils/clock-exec-continuity	tests/c/clock_exec_continuity.c	guard-inversion	exit 0->1
+kvm	verify	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
+kvm	verify	backend-parity-c/child-subreaper-refusal	tests/backend-parity/fixtures/child_subreaper_refusal.c	ok-init	baseline already exits 1 natively
+kvm	verify	backend-parity-c/cwd-roundtrip	tests/backend-parity/fixtures/cwd_roundtrip.c	ok-init	exit 0->1
+kvm	verify	backend-parity-c/file-io-roundtrip	tests/backend-parity/fixtures/file_io_roundtrip.c	violations-static	exit 0->1
+kvm	verify	backend-parity-c/fork-exec-pipeline	tests/backend-parity/fixtures/fork_exec_pipeline.c	violations-static	exit 0->1
+kvm	verify	backend-parity-c/getrusage-self-accounting	tests/backend-parity/fixtures/getrusage_self_accounting.c	ok-init	baseline already exits 1 natively
+kvm	verify	backend-parity-c/mce-kill-refusal	tests/backend-parity/fixtures/mce_kill_policy.c	ok-init	baseline already exits 1 natively
+kvm	verify	backend-parity-c/membarrier-query	tests/backend-parity/fixtures/membarrier_query.c	ok-init	baseline already exits 1 natively
+kvm	verify	backend-parity-c/name-to-handle-refusal	tests/backend-parity/fixtures/name_to_handle.c	ok-init	baseline already exits 1 natively
+kvm	verify	backend-parity-c/o-tmpfile-anon	tests/backend-parity/fixtures/o_tmpfile_anon.c	ok-init	exit 0->1
+kvm	verify	backend-parity-c/seccomp-refusal	tests/backend-parity/fixtures/seccomp_refusal.c	ok-init	baseline already exits 1 natively
+kvm	verify	backend-parity-c/sendfile-copy	tests/backend-parity/fixtures/sendfile_copy.c	guard-inversion	exit 0->1
+kvm	verify	backend-parity-c/set-tid-address	tests/backend-parity/fixtures/set_tid_address.c	ok-init	exit 0->1
+kvm	verify	backend-parity-c/signal-delivery-sequence	tests/backend-parity/fixtures/signal_delivery_sequence.c	violations-static	exit 0->1
+kvm	verify	backend-parity-c/sysv-ipc-refusal	tests/backend-parity/fixtures/sysv_ipc_refusal.c	ok-init	baseline already exits 1 natively
+kvm	verify	bin-c/robust-futex-test	tests/bin/robust_futex_test.c	guard-inversion	exit 0->1
+kvm	verify	c-programs/add-key-enosys	tests/c/add_key_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/bpf-enosys	tests/c/bpf_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/cachestat-enosys	tests/c/cachestat_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/clone	tests/c/clone.c	guard-inversion	exit 0->1
+kvm	verify	c-programs/copy-file-range-refusal-probe	tests/c/copy_file_range_refusal_probe.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/dbt-mmap-exec	tests/c/dbt_mmap_exec.c	guard-inversion	exit 0->1
+kvm	verify	c-programs/dbt-wait-lifecycle	tests/c/dbt_wait_lifecycle.c	guard-inversion	baseline already exits 3 natively
+kvm	verify	c-programs/futex-requeue-enosys	tests/c/futex_requeue_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/futex-waitv-enosys	tests/c/futex_waitv_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/futex-wake-enosys	tests/c/futex_wake_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/io-uring-fallback	tests/c/io_uring_fallback.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/ioctl-fioclex	tests/c/ioctl_fioclex.c	guard-inversion	exit 0->1
+kvm	verify	c-programs/ipc-determinism	tests/c/ipc_determinism.c	guard-inversion	baseline already exits 2 natively
+kvm	verify	c-programs/keyctl-enosys	tests/c/keyctl_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/listmount-enosys	tests/c/listmount_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/liteinst-advanced	tests/c/liteinst_advanced.c	guard-inversion	baseline already exits 2 natively
+kvm	verify	c-programs/lsm-get-self-attr-enosys	tests/c/lsm_get_self_attr_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/lsm-list-modules-enosys	tests/c/lsm_list_modules_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/lsm-set-self-attr-enosys	tests/c/lsm_set_self_attr_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/map-shadow-stack-enosys	tests/c/map_shadow_stack_enosys.c	enosys	exit 0->1
+kvm	verify	c-programs/memfd-secret-enosys	tests/c/memfd_secret_enosys.c	enosys	exit 0->1
+kvm	verify	c-programs/perf-event-hardware-enosys	tests/c/perf_event_hardware_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/perf-event-open-enosys	tests/c/perf_event_open_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/perf-event-software-enosys	tests/c/perf_event_software_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/perf-event-watchpoint-enosys	tests/c/perf_event_watchpoint_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/ppoll-simulation	tests/c/ppoll_simulation.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/proc-fd-link-aliases	tests/c/proc_fd_link_aliases.c	guard-inversion	exit 0->1
+kvm	verify	c-programs/process-mrelease-enosys	tests/c/process_mrelease_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/procfs-positioned-probe	tests/c/procfs_positioned_probe.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/recvmsg-scm-rights-mmap	tests/c/recvmsg_scm_rights_mmap.c	guard-inversion	exit 0->1
+kvm	verify	c-programs/remap-file-pages-anonymous-enosys	tests/c/remap_file_pages_anonymous_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/remap-file-pages-memfd-enosys	tests/c/remap_file_pages_memfd_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/remap-file-pages-tmpfile-enosys	tests/c/remap_file_pages_tmpfile_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/request-key-enosys	tests/c/request_key_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/resource-determinism	tests/c/resource_determinism.c	guard-inversion	baseline already exits 1 natively
+kvm	verify	c-programs/signal-determinism	tests/c/signal_determinism.c	guard-inversion	baseline already exits 2 natively
+kvm	verify	c-programs/splice-enosys	tests/c/splice_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/statmount-enosys	tests/c/statmount_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/syscall-file-io	tests/c/syscall_file_io.c	guard-inversion	exit 0->1
+kvm	verify	c-programs/syscall-quick-wins	tests/c/syscall_quick_wins.c	guard-inversion	baseline already exits 1 natively
+kvm	verify	c-programs/sysfs-enosys	tests/c/sysfs_enosys.c	enosys	exit 0->1
+kvm	verify	c-programs/sysv-sem-enosys	tests/c/sysv_sem_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/sysv-shm-enosys	tests/c/sysv_shm_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/tee-enosys	tests/c/tee_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/ustat-enosys	tests/c/ustat_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/vmsplice-enosys	tests/c/vmsplice_enosys.c	enosys	baseline already exits 1 natively
+kvm	verify	c-programs/wait-on-child	tests/c/wait_on_child.c	guard-inversion	exit 0->1
+kvm	verify	determinism-stress-c/fork-tree	tests/e2e/determinism-stress/fork_tree.c	guard-inversion	exit 0->1
+kvm	verify	determinism-stress-c/mmap-fork-shared	tests/e2e/determinism-stress/mmap_fork_shared.c	guard-inversion	exit 0->1
+kvm	verify	determinism-stress-c/pipe-chain	tests/e2e/determinism-stress/pipe_chain.c	guard-inversion	exit 0->1
+kvm	verify	determinism-stress-c/pipe-prefill	tests/e2e/determinism-stress/pipe_prefill.c	guard-inversion	exit 0->1
+kvm	verify	determinism-stress-c/producer-consumer	tests/e2e/determinism-stress/producer_consumer.c	guard-inversion	exit 0->1
+kvm	verify	determinism-stress-c/thread-contention	tests/e2e/determinism-stress/thread_contention.c	guard-inversion	baseline already exits 1 natively
+kvm	verify	determinism-stress-c/thread-stress	tests/e2e/determinism-stress/thread_stress.c	guard-inversion	exit 0->1
+kvm	verify	system-utils/clock-exec-continuity	tests/c/clock_exec_continuity.c	guard-inversion	exit 0->1
+liteinst	verify	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
+liteinst	verify	backend-parity-c/child-subreaper-refusal	tests/backend-parity/fixtures/child_subreaper_refusal.c	ok-init	baseline already exits 1 natively
+liteinst	verify	backend-parity-c/cwd-roundtrip	tests/backend-parity/fixtures/cwd_roundtrip.c	ok-init	exit 0->1
+liteinst	verify	backend-parity-c/fcntl-owner	tests/backend-parity/fixtures/fcntl_owner.c	ok-init	exit 0->1
+liteinst	verify	backend-parity-c/file-io-roundtrip	tests/backend-parity/fixtures/file_io_roundtrip.c	violations-static	exit 0->1
+liteinst	verify	backend-parity-c/fork-exec-pipeline	tests/backend-parity/fixtures/fork_exec_pipeline.c	violations-static	exit 0->1
+liteinst	verify	backend-parity-c/getrusage-self-accounting	tests/backend-parity/fixtures/getrusage_self_accounting.c	ok-init	baseline already exits 1 natively
+liteinst	verify	backend-parity-c/host-identity	tests/backend-parity/fixtures/host_identity.c	bad-init	baseline already exits 1 natively
+liteinst	verify	backend-parity-c/mce-kill-refusal	tests/backend-parity/fixtures/mce_kill_policy.c	ok-init	baseline already exits 1 natively
+liteinst	verify	backend-parity-c/membarrier-query	tests/backend-parity/fixtures/membarrier_query.c	ok-init	baseline already exits 1 natively
+liteinst	verify	backend-parity-c/name-to-handle-refusal	tests/backend-parity/fixtures/name_to_handle.c	ok-init	baseline already exits 1 natively
+liteinst	verify	backend-parity-c/o-tmpfile-anon	tests/backend-parity/fixtures/o_tmpfile_anon.c	ok-init	exit 0->1
+liteinst	verify	backend-parity-c/personality-domain	tests/backend-parity/fixtures/personality_domain.c	ok-init	exit 0->1
+liteinst	verify	backend-parity-c/pipe-capacity	tests/backend-parity/fixtures/pipe_capacity.c	ok-init	exit 0->1
+liteinst	verify	backend-parity-c/record-lock	tests/backend-parity/fixtures/record_lock.c	ok-init	exit 0->1
+liteinst	verify	backend-parity-c/seccomp-refusal	tests/backend-parity/fixtures/seccomp_refusal.c	ok-init	baseline already exits 1 natively
+liteinst	verify	backend-parity-c/sendfile-copy	tests/backend-parity/fixtures/sendfile_copy.c	guard-inversion	exit 0->1
+liteinst	verify	backend-parity-c/set-tid-address	tests/backend-parity/fixtures/set_tid_address.c	ok-init	exit 0->1
+liteinst	verify	backend-parity-c/short-io-split-identity	tests/backend-parity/fixtures/short_io_split_identity.c	ok-init	exit 0->1
+liteinst	verify	backend-parity-c/signal-delivery-sequence	tests/backend-parity/fixtures/signal_delivery_sequence.c	violations-static	exit 0->1
+liteinst	verify	backend-parity-c/signal-waitstatus-identity	tests/c/signal_waitstatus_identity.c	guard-inversion	exit 0->1
+liteinst	verify	backend-parity-c/sysv-ipc-refusal	tests/backend-parity/fixtures/sysv_ipc_refusal.c	ok-init	baseline already exits 1 natively
+liteinst	verify	bin-c/robust-futex-test	tests/bin/robust_futex_test.c	guard-inversion	exit 0->1
+liteinst	verify	c-programs/add-key-enosys	tests/c/add_key_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/bpf-enosys	tests/c/bpf_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/cachestat-enosys	tests/c/cachestat_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/clone	tests/c/clone.c	guard-inversion	exit 0->1
+liteinst	verify	c-programs/copy-file-range-refusal-probe	tests/c/copy_file_range_refusal_probe.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/dbt-mmap-exec	tests/c/dbt_mmap_exec.c	guard-inversion	exit 0->1
+liteinst	verify	c-programs/dbt-wait-lifecycle	tests/c/dbt_wait_lifecycle.c	guard-inversion	baseline already exits 3 natively
+liteinst	verify	c-programs/futex-requeue-enosys	tests/c/futex_requeue_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/futex-waitv-enosys	tests/c/futex_waitv_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/futex-wake-enosys	tests/c/futex_wake_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/io-uring-fallback	tests/c/io_uring_fallback.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/ioctl-fioclex	tests/c/ioctl_fioclex.c	guard-inversion	exit 0->1
+liteinst	verify	c-programs/ipc-determinism	tests/c/ipc_determinism.c	guard-inversion	baseline already exits 2 natively
+liteinst	verify	c-programs/keyctl-enosys	tests/c/keyctl_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/listmount-enosys	tests/c/listmount_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/liteinst-advanced	tests/c/liteinst_advanced.c	guard-inversion	baseline already exits 2 natively
+liteinst	verify	c-programs/lsm-get-self-attr-enosys	tests/c/lsm_get_self_attr_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/lsm-list-modules-enosys	tests/c/lsm_list_modules_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/lsm-set-self-attr-enosys	tests/c/lsm_set_self_attr_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/madvise-determinism	tests/c/madvise_determinism.c	enosys	baseline already exits 13 natively
+liteinst	verify	c-programs/map-shadow-stack-enosys	tests/c/map_shadow_stack_enosys.c	enosys	exit 0->1
+liteinst	verify	c-programs/memfd-secret-enosys	tests/c/memfd_secret_enosys.c	enosys	exit 0->1
+liteinst	verify	c-programs/perf-event-hardware-enosys	tests/c/perf_event_hardware_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/perf-event-open-enosys	tests/c/perf_event_open_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/perf-event-software-enosys	tests/c/perf_event_software_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/perf-event-watchpoint-enosys	tests/c/perf_event_watchpoint_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/ppoll-simulation	tests/c/ppoll_simulation.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/process-mrelease-enosys	tests/c/process_mrelease_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/procfs-positioned-probe	tests/c/procfs_positioned_probe.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/recvmsg-scm-rights-mmap	tests/c/recvmsg_scm_rights_mmap.c	guard-inversion	exit 0->1
+liteinst	verify	c-programs/remap-file-pages-anonymous-enosys	tests/c/remap_file_pages_anonymous_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/remap-file-pages-memfd-enosys	tests/c/remap_file_pages_memfd_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/remap-file-pages-tmpfile-enosys	tests/c/remap_file_pages_tmpfile_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/request-key-enosys	tests/c/request_key_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/resource-determinism	tests/c/resource_determinism.c	guard-inversion	baseline already exits 1 natively
+liteinst	verify	c-programs/signal-determinism	tests/c/signal_determinism.c	guard-inversion	baseline already exits 2 natively
+liteinst	verify	c-programs/splice-enosys	tests/c/splice_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/statmount-enosys	tests/c/statmount_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/syscall-file-io	tests/c/syscall_file_io.c	guard-inversion	exit 0->1
+liteinst	verify	c-programs/syscall-quick-wins	tests/c/syscall_quick_wins.c	guard-inversion	baseline already exits 1 natively
+liteinst	verify	c-programs/sysfs-enosys	tests/c/sysfs_enosys.c	enosys	exit 0->1
+liteinst	verify	c-programs/sysv-sem-enosys	tests/c/sysv_sem_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/sysv-shm-enosys	tests/c/sysv_shm_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/tee-enosys	tests/c/tee_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/thread-sync-determinism	tests/c/thread_sync_determinism.c	guard-inversion	baseline already exits 2 natively
+liteinst	verify	c-programs/ustat-enosys	tests/c/ustat_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/vmsplice-enosys	tests/c/vmsplice_enosys.c	enosys	baseline already exits 1 natively
+liteinst	verify	c-programs/wait-on-child	tests/c/wait_on_child.c	guard-inversion	exit 0->1
+liteinst	verify	determinism-stress-c/fork-tree	tests/e2e/determinism-stress/fork_tree.c	guard-inversion	exit 0->1
+liteinst	verify	determinism-stress-c/mmap-fork-shared	tests/e2e/determinism-stress/mmap_fork_shared.c	guard-inversion	exit 0->1
+liteinst	verify	determinism-stress-c/pipe-chain	tests/e2e/determinism-stress/pipe_chain.c	guard-inversion	exit 0->1
+liteinst	verify	determinism-stress-c/pipe-prefill	tests/e2e/determinism-stress/pipe_prefill.c	guard-inversion	exit 0->1
+liteinst	verify	determinism-stress-c/producer-consumer	tests/e2e/determinism-stress/producer_consumer.c	guard-inversion	exit 0->1
+liteinst	verify	determinism-stress-c/thread-contention	tests/e2e/determinism-stress/thread_contention.c	guard-inversion	baseline already exits 1 natively
+liteinst	verify	determinism-stress-c/thread-stress	tests/e2e/determinism-stress/thread_stress.c	guard-inversion	exit 0->1
+liteinst	verify	determinism-stress/order-violation	tests/chaos/order_violation.c	guard-inversion	exit 0->1
+native	naked	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
+native	naked	backend-parity-c/child-subreaper-refusal	tests/backend-parity/fixtures/child_subreaper_refusal.c	ok-init	baseline already exits 1 natively
+native	naked	backend-parity-c/cwd-roundtrip	tests/backend-parity/fixtures/cwd_roundtrip.c	ok-init	exit 0->1
+native	naked	backend-parity-c/fcntl-owner	tests/backend-parity/fixtures/fcntl_owner.c	ok-init	exit 0->1
+native	naked	backend-parity-c/getrusage-self-accounting	tests/backend-parity/fixtures/getrusage_self_accounting.c	ok-init	baseline already exits 1 natively
+native	naked	backend-parity-c/mce-kill-refusal	tests/backend-parity/fixtures/mce_kill_policy.c	ok-init	baseline already exits 1 natively
+native	naked	backend-parity-c/membarrier-query	tests/backend-parity/fixtures/membarrier_query.c	ok-init	baseline already exits 1 natively
+native	naked	backend-parity-c/name-to-handle-refusal	tests/backend-parity/fixtures/name_to_handle.c	ok-init	baseline already exits 1 natively
+native	naked	backend-parity-c/o-tmpfile-anon	tests/backend-parity/fixtures/o_tmpfile_anon.c	ok-init	exit 0->1
+native	naked	backend-parity-c/pipe-capacity	tests/backend-parity/fixtures/pipe_capacity.c	ok-init	exit 0->1
+native	naked	backend-parity-c/record-lock	tests/backend-parity/fixtures/record_lock.c	ok-init	exit 0->1
+native	naked	backend-parity-c/seccomp-refusal	tests/backend-parity/fixtures/seccomp_refusal.c	ok-init	baseline already exits 1 natively
+native	naked	backend-parity-c/sendfile-copy	tests/backend-parity/fixtures/sendfile_copy.c	guard-inversion	exit 0->1
+native	naked	backend-parity-c/set-tid-address	tests/backend-parity/fixtures/set_tid_address.c	ok-init	exit 0->1
+native	naked	backend-parity-c/sysv-ipc-refusal	tests/backend-parity/fixtures/sysv_ipc_refusal.c	ok-init	baseline already exits 1 natively
+native	naked	bin-c/robust-futex-test	tests/bin/robust_futex_test.c	guard-inversion	exit 0->1
+native	naked	c-programs/add-key-enosys	tests/c/add_key_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/bpf-enosys	tests/c/bpf_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/cachestat-enosys	tests/c/cachestat_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/clone	tests/c/clone.c	guard-inversion	exit 0->1
+native	naked	c-programs/copy-file-range-refusal-probe	tests/c/copy_file_range_refusal_probe.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/dbt-mmap-exec	tests/c/dbt_mmap_exec.c	guard-inversion	exit 0->1
+native	naked	c-programs/dbt-wait-lifecycle	tests/c/dbt_wait_lifecycle.c	guard-inversion	baseline already exits 3 natively
+native	naked	c-programs/epoll-determinism	tests/c/epoll_determinism.c	enosys	baseline already exits 2 natively
+native	naked	c-programs/futex-requeue-enosys	tests/c/futex_requeue_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/futex-waitv-enosys	tests/c/futex_waitv_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/futex-wake-enosys	tests/c/futex_wake_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/io-uring-fallback	tests/c/io_uring_fallback.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/ioctl-fioclex	tests/c/ioctl_fioclex.c	guard-inversion	exit 0->1
+native	naked	c-programs/ipc-determinism	tests/c/ipc_determinism.c	guard-inversion	baseline already exits 2 natively
+native	naked	c-programs/keyctl-enosys	tests/c/keyctl_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/listmount-enosys	tests/c/listmount_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/liteinst-advanced	tests/c/liteinst_advanced.c	guard-inversion	baseline already exits 2 natively
+native	naked	c-programs/lsm-get-self-attr-enosys	tests/c/lsm_get_self_attr_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/lsm-list-modules-enosys	tests/c/lsm_list_modules_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/lsm-set-self-attr-enosys	tests/c/lsm_set_self_attr_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/madvise-determinism	tests/c/madvise_determinism.c	enosys	baseline already exits 13 natively
+native	naked	c-programs/map-shadow-stack-enosys	tests/c/map_shadow_stack_enosys.c	enosys	exit 0->1
+native	naked	c-programs/memfd-secret-enosys	tests/c/memfd_secret_enosys.c	enosys	exit 0->1
+native	naked	c-programs/mmap-determinism	tests/c/mmap_determinism.c	guard-inversion	baseline already exits 2 natively
+native	naked	c-programs/perf-event-hardware-enosys	tests/c/perf_event_hardware_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/perf-event-open-enosys	tests/c/perf_event_open_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/perf-event-software-enosys	tests/c/perf_event_software_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/perf-event-watchpoint-enosys	tests/c/perf_event_watchpoint_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/ppoll-simulation	tests/c/ppoll_simulation.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/proc-fd-link-aliases	tests/c/proc_fd_link_aliases.c	guard-inversion	exit 0->1
+native	naked	c-programs/process-mrelease-enosys	tests/c/process_mrelease_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/procfs-positioned-probe	tests/c/procfs_positioned_probe.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/recvmsg-scm-rights-mmap	tests/c/recvmsg_scm_rights_mmap.c	guard-inversion	exit 0->1
+native	naked	c-programs/remap-file-pages-anonymous-enosys	tests/c/remap_file_pages_anonymous_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/remap-file-pages-memfd-enosys	tests/c/remap_file_pages_memfd_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/remap-file-pages-tmpfile-enosys	tests/c/remap_file_pages_tmpfile_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/request-key-enosys	tests/c/request_key_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/resource-determinism	tests/c/resource_determinism.c	guard-inversion	baseline already exits 1 natively
+native	naked	c-programs/signal-determinism	tests/c/signal_determinism.c	guard-inversion	baseline already exits 2 natively
+native	naked	c-programs/splice-enosys	tests/c/splice_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/statmount-enosys	tests/c/statmount_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/syscall-file-io	tests/c/syscall_file_io.c	guard-inversion	exit 0->1
+native	naked	c-programs/syscall-quick-wins	tests/c/syscall_quick_wins.c	guard-inversion	baseline already exits 1 natively
+native	naked	c-programs/sysfs-enosys	tests/c/sysfs_enosys.c	enosys	exit 0->1
+native	naked	c-programs/sysv-sem-enosys	tests/c/sysv_sem_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/sysv-shm-enosys	tests/c/sysv_shm_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/tee-enosys	tests/c/tee_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/thread-sync-determinism	tests/c/thread_sync_determinism.c	guard-inversion	baseline already exits 2 natively
+native	naked	c-programs/ustat-enosys	tests/c/ustat_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/vmsplice-enosys	tests/c/vmsplice_enosys.c	enosys	baseline already exits 1 natively
+native	naked	c-programs/wait-on-child	tests/c/wait_on_child.c	guard-inversion	exit 0->1
+native	naked	determinism-stress-c/fork-tree	tests/e2e/determinism-stress/fork_tree.c	guard-inversion	exit 0->1
+native	naked	determinism-stress-c/mmap-fork-shared	tests/e2e/determinism-stress/mmap_fork_shared.c	guard-inversion	exit 0->1
+native	naked	determinism-stress-c/pipe-chain	tests/e2e/determinism-stress/pipe_chain.c	guard-inversion	exit 0->1
+native	naked	determinism-stress-c/pipe-prefill	tests/e2e/determinism-stress/pipe_prefill.c	guard-inversion	exit 0->1
+native	naked	determinism-stress-c/thread-contention	tests/e2e/determinism-stress/thread_contention.c	guard-inversion	baseline already exits 1 natively
+native	naked	determinism-stress-c/thread-stress	tests/e2e/determinism-stress/thread_stress.c	guard-inversion	exit 0->1
+ptrace	replay	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
+ptrace	replay	backend-parity-c/child-subreaper-refusal	tests/backend-parity/fixtures/child_subreaper_refusal.c	ok-init	baseline already exits 1 natively
+ptrace	replay	backend-parity-c/cwd-roundtrip	tests/backend-parity/fixtures/cwd_roundtrip.c	ok-init	exit 0->1
+ptrace	replay	backend-parity-c/fcntl-owner	tests/backend-parity/fixtures/fcntl_owner.c	ok-init	exit 0->1
+ptrace	replay	backend-parity-c/file-io-roundtrip	tests/backend-parity/fixtures/file_io_roundtrip.c	violations-static	exit 0->1
+ptrace	replay	backend-parity-c/fork-exec-pipeline	tests/backend-parity/fixtures/fork_exec_pipeline.c	violations-static	exit 0->1
+ptrace	replay	backend-parity-c/getrusage-self-accounting	tests/backend-parity/fixtures/getrusage_self_accounting.c	ok-init	baseline already exits 1 natively
+ptrace	replay	backend-parity-c/host-identity	tests/backend-parity/fixtures/host_identity.c	bad-init	baseline already exits 1 natively
+ptrace	replay	backend-parity-c/mce-kill-refusal	tests/backend-parity/fixtures/mce_kill_policy.c	ok-init	baseline already exits 1 natively
+ptrace	replay	backend-parity-c/membarrier-query	tests/backend-parity/fixtures/membarrier_query.c	ok-init	baseline already exits 1 natively
+ptrace	replay	backend-parity-c/name-to-handle-refusal	tests/backend-parity/fixtures/name_to_handle.c	ok-init	baseline already exits 1 natively
+ptrace	replay	backend-parity-c/o-tmpfile-anon	tests/backend-parity/fixtures/o_tmpfile_anon.c	ok-init	exit 0->1
+ptrace	replay	backend-parity-c/personality-domain	tests/backend-parity/fixtures/personality_domain.c	ok-init	exit 0->1
+ptrace	replay	backend-parity-c/pipe-capacity	tests/backend-parity/fixtures/pipe_capacity.c	ok-init	exit 0->1
+ptrace	replay	backend-parity-c/record-lock	tests/backend-parity/fixtures/record_lock.c	ok-init	exit 0->1
+ptrace	replay	backend-parity-c/seccomp-refusal	tests/backend-parity/fixtures/seccomp_refusal.c	ok-init	baseline already exits 1 natively
+ptrace	replay	backend-parity-c/sendfile-copy	tests/backend-parity/fixtures/sendfile_copy.c	guard-inversion	exit 0->1
+ptrace	replay	backend-parity-c/set-tid-address	tests/backend-parity/fixtures/set_tid_address.c	ok-init	exit 0->1
+ptrace	replay	backend-parity-c/short-io-split-identity	tests/backend-parity/fixtures/short_io_split_identity.c	ok-init	exit 0->1
+ptrace	replay	backend-parity-c/signal-delivery-sequence	tests/backend-parity/fixtures/signal_delivery_sequence.c	violations-static	exit 0->1
+ptrace	replay	backend-parity-c/sysv-ipc-refusal	tests/backend-parity/fixtures/sysv_ipc_refusal.c	ok-init	baseline already exits 1 natively
+ptrace	replay	bin-c/robust-futex-test	tests/bin/robust_futex_test.c	guard-inversion	exit 0->1
+ptrace	replay	c-programs/add-key-enosys	tests/c/add_key_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/bpf-enosys	tests/c/bpf_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/cachestat-enosys	tests/c/cachestat_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/clone	tests/c/clone.c	guard-inversion	exit 0->1
+ptrace	replay	c-programs/copy-file-range-refusal-probe	tests/c/copy_file_range_refusal_probe.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/dbt-mmap-exec	tests/c/dbt_mmap_exec.c	guard-inversion	exit 0->1
+ptrace	replay	c-programs/dbt-wait-lifecycle	tests/c/dbt_wait_lifecycle.c	guard-inversion	baseline already exits 3 natively
+ptrace	replay	c-programs/epoll-determinism	tests/c/epoll_determinism.c	enosys	baseline already exits 2 natively
+ptrace	replay	c-programs/futex-requeue-enosys	tests/c/futex_requeue_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/futex-waitv-enosys	tests/c/futex_waitv_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/futex-wake-enosys	tests/c/futex_wake_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/io-uring-fallback	tests/c/io_uring_fallback.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/ioctl-fioclex	tests/c/ioctl_fioclex.c	guard-inversion	exit 0->1
+ptrace	replay	c-programs/ipc-determinism	tests/c/ipc_determinism.c	guard-inversion	baseline already exits 2 natively
+ptrace	replay	c-programs/keyctl-enosys	tests/c/keyctl_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/listmount-enosys	tests/c/listmount_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/liteinst-advanced	tests/c/liteinst_advanced.c	guard-inversion	baseline already exits 2 natively
+ptrace	replay	c-programs/lsm-get-self-attr-enosys	tests/c/lsm_get_self_attr_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/lsm-list-modules-enosys	tests/c/lsm_list_modules_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/lsm-set-self-attr-enosys	tests/c/lsm_set_self_attr_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/madvise-determinism	tests/c/madvise_determinism.c	enosys	baseline already exits 13 natively
+ptrace	replay	c-programs/map-shadow-stack-enosys	tests/c/map_shadow_stack_enosys.c	enosys	exit 0->1
+ptrace	replay	c-programs/memfd-secret-enosys	tests/c/memfd_secret_enosys.c	enosys	exit 0->1
+ptrace	replay	c-programs/mmap-determinism	tests/c/mmap_determinism.c	guard-inversion	baseline already exits 2 natively
+ptrace	replay	c-programs/perf-event-hardware-enosys	tests/c/perf_event_hardware_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/perf-event-open-enosys	tests/c/perf_event_open_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/perf-event-software-enosys	tests/c/perf_event_software_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/perf-event-watchpoint-enosys	tests/c/perf_event_watchpoint_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/ppoll-simulation	tests/c/ppoll_simulation.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/proc-fd-link-aliases	tests/c/proc_fd_link_aliases.c	guard-inversion	exit 0->1
+ptrace	replay	c-programs/process-mrelease-enosys	tests/c/process_mrelease_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/procfs-positioned-probe	tests/c/procfs_positioned_probe.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/recvmsg-scm-rights-mmap	tests/c/recvmsg_scm_rights_mmap.c	guard-inversion	exit 0->1
+ptrace	replay	c-programs/remap-file-pages-anonymous-enosys	tests/c/remap_file_pages_anonymous_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/remap-file-pages-memfd-enosys	tests/c/remap_file_pages_memfd_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/remap-file-pages-tmpfile-enosys	tests/c/remap_file_pages_tmpfile_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/request-key-enosys	tests/c/request_key_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/resource-determinism	tests/c/resource_determinism.c	guard-inversion	baseline already exits 1 natively
+ptrace	replay	c-programs/signal-determinism	tests/c/signal_determinism.c	guard-inversion	baseline already exits 2 natively
+ptrace	replay	c-programs/splice-enosys	tests/c/splice_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/statmount-enosys	tests/c/statmount_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/syscall-file-io	tests/c/syscall_file_io.c	guard-inversion	exit 0->1
+ptrace	replay	c-programs/syscall-quick-wins	tests/c/syscall_quick_wins.c	guard-inversion	baseline already exits 1 natively
+ptrace	replay	c-programs/sysfs-enosys	tests/c/sysfs_enosys.c	enosys	exit 0->1
+ptrace	replay	c-programs/sysv-sem-enosys	tests/c/sysv_sem_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/sysv-shm-enosys	tests/c/sysv_shm_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/tee-enosys	tests/c/tee_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/thread-sync-determinism	tests/c/thread_sync_determinism.c	guard-inversion	baseline already exits 2 natively
+ptrace	replay	c-programs/ustat-enosys	tests/c/ustat_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/vmsplice-enosys	tests/c/vmsplice_enosys.c	enosys	baseline already exits 1 natively
+ptrace	replay	c-programs/wait-on-child	tests/c/wait_on_child.c	guard-inversion	exit 0->1
+ptrace	replay	determinism-stress-c/fork-tree	tests/e2e/determinism-stress/fork_tree.c	guard-inversion	exit 0->1
+ptrace	replay	determinism-stress-c/mmap-fork-shared	tests/e2e/determinism-stress/mmap_fork_shared.c	guard-inversion	exit 0->1
+ptrace	replay	determinism-stress-c/pipe-chain	tests/e2e/determinism-stress/pipe_chain.c	guard-inversion	exit 0->1
+ptrace	replay	determinism-stress-c/pipe-prefill	tests/e2e/determinism-stress/pipe_prefill.c	guard-inversion	exit 0->1
+ptrace	replay	determinism-stress-c/producer-consumer	tests/e2e/determinism-stress/producer_consumer.c	guard-inversion	exit 0->1
+ptrace	replay	determinism-stress-c/thread-contention	tests/e2e/determinism-stress/thread_contention.c	guard-inversion	baseline already exits 1 natively
+ptrace	replay	determinism-stress-c/thread-stress	tests/e2e/determinism-stress/thread_stress.c	guard-inversion	exit 0->1
+ptrace	replay	system-utils/clock-exec-continuity	tests/c/clock_exec_continuity.c	guard-inversion	exit 0->1
+sabre	verify	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
+sabre	verify	backend-parity-c/child-subreaper-refusal	tests/backend-parity/fixtures/child_subreaper_refusal.c	ok-init	baseline already exits 1 natively
+sabre	verify	backend-parity-c/cwd-roundtrip	tests/backend-parity/fixtures/cwd_roundtrip.c	ok-init	exit 0->1
+sabre	verify	backend-parity-c/fcntl-owner	tests/backend-parity/fixtures/fcntl_owner.c	ok-init	exit 0->1
+sabre	verify	backend-parity-c/file-io-roundtrip	tests/backend-parity/fixtures/file_io_roundtrip.c	violations-static	exit 0->1
+sabre	verify	backend-parity-c/fork-exec-pipeline	tests/backend-parity/fixtures/fork_exec_pipeline.c	violations-static	exit 0->1
+sabre	verify	backend-parity-c/getrusage-self-accounting	tests/backend-parity/fixtures/getrusage_self_accounting.c	ok-init	baseline already exits 1 natively
+sabre	verify	backend-parity-c/mce-kill-refusal	tests/backend-parity/fixtures/mce_kill_policy.c	ok-init	baseline already exits 1 natively
+sabre	verify	backend-parity-c/membarrier-query	tests/backend-parity/fixtures/membarrier_query.c	ok-init	baseline already exits 1 natively
+sabre	verify	backend-parity-c/name-to-handle-refusal	tests/backend-parity/fixtures/name_to_handle.c	ok-init	baseline already exits 1 natively
+sabre	verify	backend-parity-c/o-tmpfile-anon	tests/backend-parity/fixtures/o_tmpfile_anon.c	ok-init	exit 0->1
+sabre	verify	backend-parity-c/personality-domain	tests/backend-parity/fixtures/personality_domain.c	ok-init	exit 0->1
+sabre	verify	backend-parity-c/pipe-capacity	tests/backend-parity/fixtures/pipe_capacity.c	ok-init	exit 0->1
+sabre	verify	backend-parity-c/record-lock	tests/backend-parity/fixtures/record_lock.c	ok-init	exit 0->1
+sabre	verify	backend-parity-c/seccomp-refusal	tests/backend-parity/fixtures/seccomp_refusal.c	ok-init	baseline already exits 1 natively
+sabre	verify	backend-parity-c/sendfile-copy	tests/backend-parity/fixtures/sendfile_copy.c	guard-inversion	exit 0->1
+sabre	verify	backend-parity-c/set-tid-address	tests/backend-parity/fixtures/set_tid_address.c	ok-init	exit 0->1
+sabre	verify	backend-parity-c/short-io-split-identity	tests/backend-parity/fixtures/short_io_split_identity.c	ok-init	exit 0->1
+sabre	verify	backend-parity-c/signal-delivery-sequence	tests/backend-parity/fixtures/signal_delivery_sequence.c	violations-static	exit 0->1
+sabre	verify	backend-parity-c/sysv-ipc-refusal	tests/backend-parity/fixtures/sysv_ipc_refusal.c	ok-init	baseline already exits 1 natively
+sabre	verify	c-programs/clone	tests/c/clone.c	guard-inversion	exit 0->1
+sabre	verify	c-programs/ipc-determinism	tests/c/ipc_determinism.c	guard-inversion	baseline already exits 2 natively
+sabre	verify	c-programs/liteinst-advanced	tests/c/liteinst_advanced.c	guard-inversion	baseline already exits 2 natively
+sabre	verify	c-programs/resource-determinism	tests/c/resource_determinism.c	guard-inversion	baseline already exits 1 natively
+sabre	verify	c-programs/signal-determinism	tests/c/signal_determinism.c	guard-inversion	baseline already exits 2 natively
+sabre	verify	c-programs/wait-on-child	tests/c/wait_on_child.c	guard-inversion	exit 0->1
+sabre	verify	determinism-stress-c/pipe-prefill	tests/e2e/determinism-stress/pipe_prefill.c	guard-inversion	exit 0->1
+sabre	verify	determinism-stress-c/producer-consumer	tests/e2e/determinism-stress/producer_consumer.c	guard-inversion	exit 0->1
+sabre	verify	determinism-stress-c/thread-contention	tests/e2e/determinism-stress/thread_contention.c	guard-inversion	baseline already exits 1 natively
