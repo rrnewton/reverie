@@ -390,6 +390,17 @@
 # DELTA-PREDICTION-REFUTED	SO THE 3-MESSAGE DIFFERENCE MUST COME FROM THE FIXTURE'S OWN SYSCALLS BEING LOGGED DIFFERENTLY ON THE TWO BACKENDS -- not from the preamble. Counts: 138->940 and 137->939 for the +802 pair; 110->909 and 128->927 for the +799 pair.
 # DELTA-PREDICTION-REFUTED	  THAT IS A NEW AND UNTESTED STATEMENT. I am not claiming it as the answer; it is where the next experiment should look, and it is a different place from where I looked this time.
 # DELTA-PREDICTION-REFUTED	THE VALUE OF THIS PASS IS THE ELIMINATION, NOT AN ANSWER. Ten passes of refusing to name a cause, then one testable prediction, then a refutation of it -- that is cheaper than having shipped the prediction as a finding.
+# DELTA-DISTRIBUTION-CORRECTED 2026-08-15 (hermit-sabre): MY 'FOUR DISCRETE VALUES' CLAIM IS WRONG. IT RESTED ON SINGLE READINGS AND ONE OF THEM DOES NOT REPRODUCE.
+# DELTA-DISTRIBUTION-CORRECTED	EVERY delta in this file came from ONE verify run per cell. I never repeated a measurement before building a distribution out of them. That is the defect.
+# DELTA-DISTRIBUTION-CORRECTED	RE-MEASURED WITH 3 CONSECUTIVE RUNS PER BACKEND:
+# DELTA-DISTRIBUTION-CORRECTED	  fchmodat2-flags   recorded 802 -> ACTUALLY 799 (ptrace 138 x3, liteinst 937 x3). THE 940 READING DOES NOT REPRODUCE.
+# DELTA-DISTRIBUTION-CORRECTED	  vectored-file-io  recorded 802 -> CONFIRMED 802 (ptrace 137 x3, liteinst 939 x3). STABLE.
+# DELTA-DISTRIBUTION-CORRECTED	  membarrier-query  recorded 797 -> CONFIRMED 797 (ptrace 114, liteinst 911).
+# DELTA-DISTRIBUTION-CORRECTED	SO THE CORRECTED DISTRIBUTION IS {795 x1 UNVERIFIED, 797 x1, 799 x61, 802 x1}, NOT {…802 x2}. I said 'the 802 is no longer a lone outlier' -- IT IS ONE, AND I CORRECTED IN THE WRONG DIRECTION.
+# DELTA-DISTRIBUTION-CORRECTED	THE 795 ON getrusage-self-accounting REMAINS UNVERIFIED -- its build artifact is gone and I did not re-measure it. NAMED, NOT ASSUMED EITHER WAY.
+# DELTA-DISTRIBUTION-CORRECTED	ALSO FOUND WHILE CHECKING: verify's compared_log_messages is NOT the same population as grepping INFO lines from --log=info. For fchmodat2-flags the log-line count gives ptrace 140 / liteinst 939 while verify reports 138 / 937. TWO DIFFERENT MEASURES; do not mix them.
+# DELTA-DISTRIBUTION-CORRECTED	WHAT SURVIVES, MEASURED ON BOTH A 799 AND AN 802 CELL: the liteinst-vs-ptrace breakdown is IDENTICAL -- DETLOG delta 738, non-DETLOG INFO delta 61. The preamble is constant and is NOT where the variation lives.
+# DELTA-DISTRIBUTION-CORRECTED	STANDING CORRECTION TO ANY READER: treat every single-run delta in the PREQUALIFIED blocks as provisional. The qualification verdicts (accept/refuse/parity) were each observed directly and are NOT affected; only the message-count deltas are.
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/vectored-file-io	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 137->939 delta 802 (SECOND 802)
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/signalfd-create	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
