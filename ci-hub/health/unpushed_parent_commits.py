@@ -96,7 +96,18 @@ def local_only(scope: str) -> list[dict[str, str]]:
     per commit parses unambiguously; a subject containing tabs still survives
     because the split is bounded.
     """
-    spec = ["--all"] if scope == "all" else ["HEAD"]
+    # `--all` reaches TAGS, and tags here point into a submodule's history: it
+    # reported 1316 commits while zero branches were ahead of a remote, a
+    # constant no push could ever reduce. Scoping to `--branches` reports 0 but
+    # EXCLUDES A DETACHED HEAD, which is the case this gate exists for -- the
+    # shared parent checkout was accidentally detached earlier and a
+    # branch-scoped gate would have been silent through it. `--exclude` drops
+    # only tags from what the following `--all` considers, so branches, HEAD,
+    # every worktree's HEAD, and the rescue and pr-landing namespaces are all
+    # still enumerated. Bracketed both ways in a scratch repository: a detached
+    # HEAD in a SECONDARY WORKTREE carrying an unpushed commit is reported, and
+    # a commit reachable only from a tag is not.
+    spec = ["--exclude=refs/tags/*", "--all"] if scope == "all" else ["HEAD"]
     shas = [s for s in git("rev-list", *spec, "--not", "--remotes").splitlines() if s]
     if not shas:
         return []
