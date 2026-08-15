@@ -421,6 +421,15 @@
 # ENABLED-CELLS-HARDENED	  At a 1-in-12 rate, 92 runs would be expected to surface roughly 7-8 divergences. ZERO were seen. That is meaningful evidence for the shipping batch specifically.
 # ENABLED-CELLS-HARDENED	STILL NOT A PROOF, AND THE LIMIT IS STATED: 4 runs per cell bounds a per-cell defect loosely. A rare enough intermittency would still pass 4/4. The claim is 'no divergence observed in 92 runs', not 'these cells cannot diverge'.
 # ENABLED-CELLS-HARDENED	THE 43 WAITING CELLS REMAIN SINGLE-RUN except the six sampled earlier. That hardening is still owed before they are folded, and is ~37 runs.
+# SECOND-DIVERGENT-CELL 2026-08-15 (hermit-sabre): THE HARDENING FOUND WHAT IT WAS FOR. file-backed-mmap DIVERGES INTERMITTENTLY AND ITS SINGLE-RUN QUALIFICATION HAD PASSED.
+# SECOND-DIVERGENT-CELL	backend-parity-c/file-backed-mmap: DIVERGED on run 2 of a 3-run hardening pass, after qualifying cleanly on one run earlier.
+# SECOND-DIVERGENT-CELL	RATE: 1 diverged in 12 liteinst --verify runs (1 of the first 3, then 0 of 9). ptrace 3/3 matched. IDENTICAL RATE AND SHAPE TO readdir-entries.
+# SECOND-DIVERGENT-CELL	IT IS REMOVED FROM QUALIFIED_BLOCKED_ON_LANDING_ORDER. A cell that diverges 1-in-12 is not Bar B, and it would have been folded on single-run evidence when #2276 lands.
+# SECOND-DIVERGENT-CELL	THIS IS THE JUSTIFICATION FOR THE WHOLE HARDENING PASS, STATED PLAINLY: single-run qualification passed a cell that diverges. Two of the cells I measured this way are now known to diverge; both were found only by repeating.
+# SECOND-DIVERGENT-CELL	AND IT SHARPENS THE LIMIT ON THE ENABLED BATCH: 23 enabled cells passed 4 runs each. AT A 1-IN-12 RATE, 4 RUNS MISSES A DIVERGENT CELL ROUGHLY 70% OF THE TIME. 92 runs across the batch is decent aggregate evidence and WEAK per-cell evidence.
+# SECOND-DIVERGENT-CELL	  I am not withdrawing the enabled batch on this -- no divergence was observed in 92 runs -- but 4-per-cell should not be read as clearing any individual cell.
+# SECOND-DIVERGENT-CELL	PROGRESS ON THE OWED HARDENING: 16 of the 37 single-run waiting cells now have 3 runs each. 1 divergent found. 21 remain single-run.
+INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/file-backed-mmap	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/vectored-file-io	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 137->939 delta 802 (SECOND 802)
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/signalfd-create	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
@@ -450,7 +459,6 @@ QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/mknod-special	vs gated fixtu
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/faccessat2-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->937 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fadvise-hints	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 130->929 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fallocate-extents	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 135->934 delta 799
-QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/file-backed-mmap	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->937 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/flock-lifecycle	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 133->932 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fsync-durability	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 130->929 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/append-pwrite	vs #2276 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 145->944 delta 799
