@@ -289,6 +289,21 @@
 # ELIGIBLE-RECOUNT	ON THE SUSPICIOUS COINCIDENCE: my liteinst 78 and hermit-coord's dbt 78 matched because MINE WAS WRONG. With the leak fixed the figures are 86 (liteinst, mine) and 78 (dbt, coord's) -- no coincidence remains to explain.
 # ELIGIBLE-RECOUNT	AGAINST coord's liteinst 85 THE GAP IS ONE CELL, NOT SEVEN. That is a predicate question and I am not resolving it from my side alone: candidate differences are whether cpuid-probe is excluded as host-blocked, and whether slots measured in another partition are subtracted. MY PREDICATE SUBTRACTS NEITHER.
 # ELIGIBLE-RECOUNT	READ-ONLY PASS. No manifest, fixture or plan was modified.
+# COMMENT-ANCHORING-CONFIRMED 2026-08-15 (hermit-sabre): THE HYPOTHESIS IS CONFIRMED BY LOCATING THE TEXT, NOT INFERRED. AND THE BLAST RADIUS IS SMALL: 4 PAIRS OF 160.
+# COMMENT-ANCHORING-CONFIRMED	DISCRIMINATOR: show where the mutation text landed. BOTH LANDED ON LINE 1, A // COMMENT:
+# COMMENT-ANCHORING-CONFIRMED	  mincore_residency      '// mincore(2) determinization and error-path parity probe.'
+# COMMENT-ANCHORING-CONFIRMED	  epoll_pwait2_readiness '// epoll_pwait2(2) non-blocking readiness probe.'
+# COMMENT-ANCHORING-CONFIRMED	SO THESE CELLS ARE UNMUTATED, NOT UNQUALIFIABLE. A tooling defect wearing the costume of a cell property. THEY GO BACK IN THE POOL and are recoverable with a call-site anchor.
+# COMMENT-ANCHORING-CONFIRMED	SESSION-WIDE COUNT, MEASURED OVER EVERY valid/mutant PAIR ON DISK (160 pairs): code-affecting mutations 155 ; comment-only or source-identical 4 ; no mutant generated 1.
+# COMMENT-ANCHORING-CONFIRMED	  THE FOUR ARE EXACTLY: li8/child_subreaper_refusal, li8/seccomp_refusal, li12/mincore_residency, li12/epoll_pwait2_readiness. No others.
+# COMMENT-ANCHORING-CONFIRMED	TWO OF THE FOUR WERE ALREADY RECOVERED AND ARE NOW ENABLED IN #2279 (child-subreaper-refusal, seccomp-refusal), by re-anchoring on the prctl( call site. THE RECIPE IS PROVEN, NOT PROPOSED.
+# COMMENT-ANCHORING-CONFIRMED	CONSEQUENCE FOR SIZING, STATED SO IT IS NOT OVERREAD: THE ANCHORING DEFECT ACCOUNTS FOR 4 CELLS, NOT A CHUNK. It does NOT materially change any bucket estimate. 155 of 160 mutations reached code.
+# COMMENT-ANCHORING-CONFIRMED	  Every one of the four was CAUGHT BY THE FAIL-CLOSED STEP 1 rather than reaching a verdict. The guard is doing exactly its job; the two still-open cells are open because I have not retried them, not because anything is undiagnosed.
+# COMMENT-ANCHORING-CONFIRMED	RECORDED AS THE THIRD CATEGORY, NEITHER QUALIFIED NOR DISQUALIFIED, because forcing them either way manufactures a claim nobody made:
+NEITHER_QUALIFIED_NOR_DISQUALIFIED	backend-parity-c/mincore-residency	mutation landed in a line-1 comment; binary byte-identical; gate never exercised; retry with a call-site anchor
+NEITHER_QUALIFIED_NOR_DISQUALIFIED	backend-parity-c/epoll-pwait2-readiness	mutation landed in a line-1 comment; binary byte-identical; gate never exercised; retry with a call-site anchor
+NEITHER_QUALIFIED_NOR_DISQUALIFIED	backend-parity-c/name-to-handle-refusal	two mutations tried: one a compile error by construction, one inert because Hermit's refusal is path-independent
+NEITHER_QUALIFIED_NOR_DISQUALIFIED	backend-parity-c/event-delivery-ordering	mutant HANGS under ptrace (exit 124 at 90s); a hang is not a gate refusal
 REFUSABLE	determinism-stress-c/lock-free
 REFUSABLE	determinism-stress-c/pid-tid
 REFUSABLE	determinism-stress-c/pid-tid-identity
