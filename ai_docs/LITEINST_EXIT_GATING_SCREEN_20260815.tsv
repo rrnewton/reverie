@@ -318,6 +318,20 @@
 # PREQUALIFIED	ONE DELTA IS OFF-PATTERN AND I AM RECORDING IT RATHER THAN ROUNDING IT: fchmodat2-flags is +802, the FIRST value outside {795,797,799} in 27 measurements.
 # PREQUALIFIED	  n=27 now reads {795 x1, 797 x1, 799 x24, 802 x1}. The offset remains additive and near-constant; 802 does not overturn that, but it is a real outlier and the next characterisation should not silently drop it.
 # PREQUALIFIED	file-timestamp-identity IS IN NEITHER PR and stays an owner question: repairing it means asserting virtualized timestamp values, which Hermit does not document as a contract.
+# PREQUALIFIED-2 2026-08-15 (hermit-sabre): SIX MORE PRE-QUALIFIED AGAINST #2276's GATE. THE WAITING SET IS NOW TWELVE.
+# PREQUALIFIED-2	POOL DEPTH MEASURED: 40 liteinst-disabled cells have a gate in one of my two fixture PRs and are exec/fork/thread-free, so they are pre-qualifiable without a host. This is not a nearly-exhausted lane; it is a blocked one.
+# PREQUALIFIED-2	ALL SIX: step 1 enforced and passed; accept exit 0 on ptrace AND liteinst with verdict=matched and bitwise_parity=true; refuse exit 1 on both.
+# PREQUALIFIED-2	  append-pwrite 145->944 (+799); bind-getsockname 119->918 (+799); cachestat-refusal 130->929 (+799); close-range-fds 142->941 (+799); copy-file-range-refusal 142->941 (+799); epoll-readiness 131->930 (+799).
+# PREQUALIFIED-2	RECURRING TRANSIENT, NOW NAMED RATHER THAN RE-DISCOVERED EACH TIME: a --verify run intermittently returns verdict=no_result with guest_exit_code=null and NO comparison, and the SAME command succeeds on retry.
+# PREQUALIFIED-2	  Seen on sync-file-range, thp-disable and append-pwrite; every retry produced matched with a full message count. FOUR OCCURRENCES.
+# PREQUALIFIED-2	  THE HAZARD IS SPECIFIC AND WORTH STATING: a no_result on an ACCEPT arm looks exactly like a cell that cannot reach L2, and would wrongly disqualify it. Always retry before recording an accept-arm no_result. I have not investigated the cause and do not claim one.
+# PREQUALIFIED-2	DELTA n=33 NOW READS {795 x1, 797 x1, 799 x30, 802 x1}. The 802 outlier on fchmodat2-flags remains the only value outside the band.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/append-pwrite	vs #2276 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 145->944 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/bind-getsockname	vs #2276 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 119->918 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/cachestat-refusal	vs #2276 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 130->929 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/close-range-fds	vs #2276 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 142->941 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/copy-file-range-refusal	vs #2276 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 142->941 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/epoll-readiness	vs #2276 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 131->930 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/utimensat-determinism	measured vs #2277 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 130->929 delta 799. Setup-only gates on main; needs #2277.
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fchmod-bits	measured vs #2277 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->937 delta 799. Setup-only gate on main; needs #2277.
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fchmodat2-flags	measured vs #2277 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->940 delta 802 (OUTLIER). Setup-only gate on main; needs #2277.
