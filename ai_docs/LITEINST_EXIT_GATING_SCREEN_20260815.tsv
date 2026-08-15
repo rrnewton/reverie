@@ -486,8 +486,19 @@
 # ROOT-CAUSE-FOUND	PROPOSAL, NOT DEPLOYED -- THIS IS CORE COMPARATOR CODE AND BELONGS TO THE OWNER: either widen is_scheduler_committed_time to cover the sched-step5 COMMIT line, or stop printing committed_time there.
 # ROOT-CAUSE-FOUND	  WHY THIS IS NOT GOALPOST-MOVING, AND THE DISTINCTION MATTERS: the value is documented BY THE PRODUCT as host-timing-perturbed and an exclusion for it ALREADY EXISTS. Extending an existing exclusion to a second print site of the same known-nondeterministic value is completing it, not weakening the bar.
 # ROOT-CAUSE-FOUND	  THE CHECK THE OWNER SHOULD APPLY ANYWAY: after any such change, confirm a REAL determinism regression is still refused. I have not made the change and have not run that bracket.
-INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/signalfd-create	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
-INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/file-backed-mmap	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
+# EXPOSURE-QUANTIFIED 2026-08-15 (hermit-sabre): THE ROOT CAUSE PUTS MY OWN PR AT RISK AND I AM REPORTING THE NUMBER AGAINST IT.
+# EXPOSURE-QUANTIFIED	IF THE LEAK IS IN THE COMPARATOR, IT IS NOT CONFINED TO THREE CELLS. Every liteinst verify run prints 34 COMMIT lines carrying the host-timing-perturbed committed_time into the comparison, so EVERY liteinst cell is exposed.
+# EXPOSURE-QUANTIFIED	OBSERVED RATE ACROSS EVERY liteinst --verify RUN THIS SESSION: 4 divergences in 278 runs = 1.44% per run.
+# EXPOSURE-QUANTIFIED	  enabled batch 0/92 ; waiting hardening 3/120 ; readdir-entries 0/12 ; file-backed-mmap 1/31 ; signalfd-create 0/23.
+# EXPOSURE-QUANTIFIED	CONSEQUENCE FOR #2279, STATED AGAINST MY OWN WORK: at 1.44% per run over 23 enabled liteinst cells, THE PROBABILITY OF AT LEAST ONE RED PER FULL SUITE RUN IS ROUGHLY 28%.
+# EXPOSURE-QUANTIFIED	  That is an intermittent red on main roughly one run in four, attributable to no cell in particular, which is the hardest kind of failure to diagnose after the fact.
+# EXPOSURE-QUANTIFIED	SO THE LANDING ADVICE CHANGES AND I AM CHANGING IT: #2279 SHOULD NOT LAND BEFORE THE COMPARATOR LEAK IS FIXED, EVEN IF A RECEIPT ARRIVES. A receipt proves one run passed; it does not bound the rate.
+# EXPOSURE-QUANTIFIED	  I spent this session preparing 23 cells to land on the next receipt. THE CORRECT CALL IS NOW TO HOLD THEM, AND THAT COSTS THE THING I HAVE BEEN OPTIMISING FOR.
+# EXPOSURE-QUANTIFIED	THE THREE CELLS ARE RECLASSIFIED, NOT EXONERATED-AND-FORGOTTEN: readdir-entries, file-backed-mmap and signalfd-create were bucketed as intermittently divergent CELLS. The defect is not theirs. They return to qualified-and-waiting, blocked by the same comparator leak as the other 61.
+# EXPOSURE-QUANTIFIED	HONEST LIMIT ON THE RATE: 4 events in 278 runs is a wide interval, and the 28% figure inherits that width. It is the right order of magnitude for a landing decision, not a precise forecast.
+QUALIFIED_BLOCKED_ON_COMPARATOR_LEAK	backend-parity-c/readdir-entries	qualified at Bar B; divergence traced to committed_time leaking into the compared COMMIT line, not to the cell
+QUALIFIED_BLOCKED_ON_COMPARATOR_LEAK	backend-parity-c/file-backed-mmap	qualified at Bar B; divergence traced to committed_time leaking into the compared COMMIT line, not to the cell
+QUALIFIED_BLOCKED_ON_COMPARATOR_LEAK	backend-parity-c/signalfd-create	qualified at Bar B; divergence traced to committed_time leaking into the compared COMMIT line, not to the cell
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/vectored-file-io	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 137->939 delta 802 (SECOND 802)
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/socket-options	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 140->939 delta 799
@@ -495,7 +506,6 @@ QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/socketpair-flags	vs gated fi
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/sockname-unnamed	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/statfs-free-determinism	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 118->917 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/statx-metadata	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 128->927 delta 799
-INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/readdir-entries	1 diverged of 12 liteinst --verify runs (verdict=diverged, bitwise_parity=false, 961 msgs compared); ptrace 2/2 matched; NOT qualified, NOT disqualified
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/poll-readiness	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 142->941 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/preadv2-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 133->932 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/rename-ops	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 168->967 delta 799
