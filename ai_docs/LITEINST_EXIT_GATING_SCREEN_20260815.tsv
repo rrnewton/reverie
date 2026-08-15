@@ -468,6 +468,24 @@
 # DIVERGENCE-NARROWED	SO: virtual time is deterministic for the first nine turns and becomes nondeterministic at the first /proc/self/maps commit, WITHOUT any difference in the syscalls, bytes, or perf counters logged.
 # DIVERGENCE-NARROWED	I STILL DO NOT NAME A CAUSE. Two mechanisms are now excluded by measurement rather than by argument, which is narrower than where this pass started and is the useful part.
 # DIVERGENCE-NARROWED	WHAT I HAVE NOT DONE, NAMED SO IT IS NOT ASSUMED: I have not read the detcore code that computes committed virtual time for a file-resource commit. That is where the next person should start, with turn 10 and the 120ns first delta as the anchor.
+# ROOT-CAUSE-FOUND 2026-08-15 (hermit-sabre): THE INTERMITTENT DIVERGENCE HAS A CAUSE AND IT IS STATED IN THE SOURCE, NOT INFERRED BY ME.
+# ROOT-CAUSE-FOUND	detcore/src/scheduler.rs, at the committed_time assignment, carries this comment IN THE PRODUCT CODE:
+# ROOT-CAUSE-FOUND	  "NB: `committed_time` still tracks the (host-timing-perturbed) global clock ... It is therefore excluded from the deterministic `--verify` comparison in `logdiff::is_scheduler_committed_time`"
+# ROOT-CAUSE-FOUND	SO committed_time IS KNOWN-NONDETERMINISTIC BY DESIGN, AND AN EXCLUSION EXISTS FOR IT. THE EXCLUSION IS ONE LINE WIDE:
+# ROOT-CAUSE-FOUND	  fn is_scheduler_committed_time(line: &str) -> bool { line.contains("advancing committed_time from ") }   [logdiff.rs:438]
+# ROOT-CAUSE-FOUND	BUT committed_time IS PRINTED IN A SECOND PLACE THE EXCLUSION DOES NOT MATCH -- scheduler.rs:3348, the sched-step5 COMMIT line:
+# ROOT-CAUSE-FOUND	  "COMMIT turn {}, dettid {} using resources {:?}, on previously committed {}"  <- self.committed_time
+# ROOT-CAUSE-FOUND	MEASURED IN THE CAPTURED LOG: 0 occurrences of the EXCLUDED phrase 'advancing committed_time from' (it is detlog_debug, absent at INFO), and 34 occurrences of the COMPARED phrase 'on previously committed'.
+# ROOT-CAUSE-FOUND	  ALL 34 CARRY THE HOST-TIMING-PERTURBED VALUE INTO THE COMPARISON. 24 of the 34 differed in the captured divergence.
+# ROOT-CAUSE-FOUND	THIS EXPLAINS EVERY OBSERVATION IN THIS FILE WITHOUT ANY REMAINING GUESSWORK:
+# ROOT-CAUSE-FOUND	  intermittent rather than constant -- it diverges only when host timing perturbs the value enough to change a printed digit;
+# ROOT-CAUSE-FOUND	  identical syscalls, bytes and perf counters -- the guest is deterministic, only the scheduler's host-clock tracker is not;
+# ROOT-CAUSE-FOUND	  first divergence at the first /proc/self/maps commit -- that is simply where the liteinst preamble's IO-polling retries first accumulate;
+# ROOT-CAUSE-FOUND	  liteinst-only -- the preamble does 48 maps opens and 468 reads that ptrace never performs, giving far more retry opportunities.
+# ROOT-CAUSE-FOUND	NOT A FIXTURE DEFECT AND NOT A CELL PROPERTY. readdir-entries, file-backed-mmap and signalfd-create are not broken; they are where a comparator leak happened to be observed.
+# ROOT-CAUSE-FOUND	PROPOSAL, NOT DEPLOYED -- THIS IS CORE COMPARATOR CODE AND BELONGS TO THE OWNER: either widen is_scheduler_committed_time to cover the sched-step5 COMMIT line, or stop printing committed_time there.
+# ROOT-CAUSE-FOUND	  WHY THIS IS NOT GOALPOST-MOVING, AND THE DISTINCTION MATTERS: the value is documented BY THE PRODUCT as host-timing-perturbed and an exclusion for it ALREADY EXISTS. Extending an existing exclusion to a second print site of the same known-nondeterministic value is completing it, not weakening the bar.
+# ROOT-CAUSE-FOUND	  THE CHECK THE OWNER SHOULD APPLY ANYWAY: after any such change, confirm a REAL determinism regression is still refused. I have not made the change and have not run that bracket.
 INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/signalfd-create	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
 INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/file-backed-mmap	1 diverged of 12 liteinst --verify runs; ptrace 3/3 matched; found by repeat-run hardening after a clean single-run qualification; NOT qualified, NOT disqualified
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
