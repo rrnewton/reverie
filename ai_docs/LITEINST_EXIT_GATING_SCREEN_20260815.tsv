@@ -351,6 +351,17 @@
 # PREQUALIFIED-6	THE OTHER FIVE ALL QUALIFY: step 1 enforced; accept exit 0 on both backends with matched and bitwise_parity=true; refuse exit 1 on both.
 # PREQUALIFIED-6	  poll-readiness 142->941; preadv2-flags 133->932; rename-ops 168->967; renameat2-flags 184->983; shutdown-socketpair 134->933. All +799.
 # PREQUALIFIED-6	DELTA n=56: {795 x1, 797 x1, 799 x53, 802 x1}. renameat2-flags at a ptrace baseline of 184 is the widest yet and still +799.
+# PREQUALIFIED-7 2026-08-15 (hermit-sabre): SIX MORE. FORTY-ONE QUALIFIED-AND-WAITING.
+# PREQUALIFIED-7	All six: step 1 enforced and passed; accept exit 0 on ptrace AND liteinst with matched and bitwise_parity=true; refuse exit 1 on both.
+# PREQUALIFIED-7	  signalfd-create 122->921; socket-options 140->939; socketpair-flags 128->927; sockname-unnamed 122->921; statfs-free-determinism 118->917; statx-metadata 128->927. All +799.
+# PREQUALIFIED-7	REMAINING PRE-QUALIFIABLE: 2 (uname-identity, vectored-file-io), plus aio-refusal which is #2263's and name-to-handle-refusal which is in the third category.
+# PREQUALIFIED-7	DELTA n=62: {795 x1, 797 x1, 799 x59, 802 x1}.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/signalfd-create	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/socket-options	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 140->939 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/socketpair-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 128->927 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/sockname-unnamed	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/statfs-free-determinism	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 118->917 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/statx-metadata	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 128->927 delta 799
 INTERMITTENTLY_DIVERGENT_UNDER_LITEINST	backend-parity-c/readdir-entries	1 diverged of 12 liteinst --verify runs (verdict=diverged, bitwise_parity=false, 961 msgs compared); ptrace 2/2 matched; NOT qualified, NOT disqualified
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/poll-readiness	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 142->941 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/preadv2-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 133->932 delta 799
