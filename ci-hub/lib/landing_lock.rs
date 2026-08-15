@@ -3052,6 +3052,36 @@ pub(crate) fn capture_and_freeze_residuals(supervisor_pid: u32) -> ResidualCaptu
     }
 }
 
+/// Reap every exited child adopted by this subreaper without losing the direct
+/// payload child's status.
+///
+/// `Child::try_wait` followed by [`reap_exited_children`] is unsafe here: the
+/// direct child can exit between those calls, and `waitpid(-1)` can then consume
+/// the status that `Child` still needs. Use one `waitpid(-1, WNOHANG)` loop for
+/// both jobs and return the direct status to the caller when it appears.
+pub(crate) fn reap_while_supervising(direct_pid: u32) -> io::Result<Option<ExitStatus>> {
+    loop {
+        let mut raw_status: libc::c_int = 0;
+        // SAFETY: `raw_status` is writable for the duration of the call. This
+        // process deliberately acts as a child subreaper, so -1 names only its
+        // own direct or adopted children; WNOHANG never blocks supervision.
+        let reaped = unsafe { libc::waitpid(-1, &mut raw_status, libc::WNOHANG) };
+        if reaped == 0 {
+            return Ok(None);
+        }
+        if reaped < 0 {
+            let source = io::Error::last_os_error();
+            if source.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(source);
+        }
+        if reaped == direct_pid as libc::pid_t {
+            return Ok(Some(ExitStatus::from_raw(raw_status)));
+        }
+    }
+}
+
 pub(crate) fn reap_exited_children() {
     loop {
         let mut status = 0;
@@ -3525,7 +3555,7 @@ impl ChildOutcome {
 fn supervise_child(child: &mut Child, deadline_secs: u64, pr: &str) -> ChildOutcome {
     let deadline = Instant::now() + Duration::from_secs(deadline_secs);
     loop {
-        match child.try_wait() {
+        match reap_while_supervising(child.id()) {
             Ok(Some(status)) => {
                 return ChildOutcome::Exited {
                     status,
@@ -3534,23 +3564,11 @@ fn supervise_child(child: &mut Child, deadline_secs: u64, pr: &str) -> ChildOutc
             }
             Ok(None) => {}
             Err(source) => {
-                // Cannot supervise a child we can't wait on; block on it so we do
-                // not spin, and report whatever status it finally yields.
-                match child.wait() {
-                    Ok(status) => {
-                        return ChildOutcome::Exited {
-                            status,
-                            pgid: child.id(),
-                        }
-                    }
-                    Err(_) => {
-                        eprintln!("landing-lock: cannot wait on child: {source}");
-                        return ChildOutcome::Uncertain {
-                            pgid: child.id(),
-                            reason: source.to_string(),
-                        };
-                    }
-                }
+                eprintln!("landing-lock: cannot wait on child: {source}");
+                return ChildOutcome::Uncertain {
+                    pgid: child.id(),
+                    reason: source.to_string(),
+                };
             }
         }
         if Instant::now() >= deadline {
@@ -4010,6 +4028,8 @@ mod tests {
 
     const HARD_DEATH_ROOT_ENV: &str = "CI_HUB_LANDING_HARD_DEATH_ROOT";
     const HARD_DEATH_POINT_ENV: &str = "CI_HUB_LANDING_HARD_DEATH_POINT";
+    const PERIODIC_REAP_ROOT_ENV: &str = "CI_HUB_LANDING_PERIODIC_REAP_ROOT";
+    const PERIODIC_REAP_EXIT_ENV: &str = "CI_HUB_LANDING_PERIODIC_REAP_EXIT";
 
     fn paths_at(root: &Path) -> LockPaths {
         let lock = root.join(".landing-lock");
@@ -4038,6 +4058,7 @@ mod tests {
 
     #[test]
     fn process_group_signal_is_typed_and_target_scoped() {
+        let _domain_guard = process_domain_test_guard();
         let mut target = Command::new("/bin/sleep")
             .arg("60")
             .process_group(0)
@@ -4161,6 +4182,7 @@ mod tests {
 
     #[test]
     fn pidfd_signal_rejects_stale_identity_and_targets_exact_process() {
+        let _domain_guard = process_domain_test_guard();
         let mut target = Command::new("/bin/sleep").arg("30").spawn().unwrap();
         let mut control = Command::new("/bin/sleep").arg("30").spawn().unwrap();
         let identity = ProcessIdentity {
@@ -4903,6 +4925,142 @@ mod tests {
         );
         assert!(lock.read_holder().unwrap().is_none());
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    fn run_periodic_reap_case(root: &Path, expected_code: i32) {
+        let script = r#"
+import os
+import pathlib
+import sys
+import time
+
+direct_pid_path = pathlib.Path(sys.argv[1])
+grandchild_pid_path = pathlib.Path(sys.argv[2])
+release_path = pathlib.Path(sys.argv[3])
+exit_code = int(sys.argv[4])
+
+direct_pid_path.write_text(f"{os.getpid()}\n", encoding="utf-8")
+intermediate = os.fork()
+if intermediate == 0:
+    grandchild = os.fork()
+    if grandchild == 0:
+        os._exit(0)
+    grandchild_pid_path.write_text(f"{grandchild}\n", encoding="utf-8")
+    os._exit(0)
+
+os.waitpid(intermediate, 0)
+while not release_path.exists():
+    time.sleep(0.01)
+os._exit(exit_code)
+"#;
+        let paths = paths_at(root);
+        let lock = LandingLock {
+            paths: paths.clone(),
+        };
+        let direct_pid_path = root.join("direct.pid");
+        let grandchild_pid_path = root.join("grandchild.pid");
+        let release_path = root.join("release");
+        let observed_direct = direct_pid_path.clone();
+        let observed_grandchild = grandchild_pid_path.clone();
+        let observed_release = release_path.clone();
+
+        let observer = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(4);
+            let read_pid = |path: &Path, role: &str| loop {
+                if let Ok(text) = fs::read_to_string(path) {
+                    if let Ok(pid) = text.trim().parse::<u32>() {
+                        break pid;
+                    }
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "direct payload did not publish its {role} PID"
+                );
+                thread::sleep(Duration::from_millis(10));
+            };
+            let direct_pid = read_pid(&observed_direct, "direct");
+            let grandchild_pid = read_pid(&observed_grandchild, "grandchild");
+            let direct_proc = PathBuf::from(format!("/proc/{direct_pid}"));
+            let grandchild_proc = PathBuf::from(format!("/proc/{grandchild_pid}"));
+            while grandchild_proc.exists() {
+                assert!(
+                    direct_proc.exists(),
+                    "direct payload exited before its adopted child was reaped"
+                );
+                assert!(
+                    Instant::now() < deadline,
+                    "adopted exited child remained present during the live payload"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(
+                direct_proc.exists(),
+                "periodic reap was observed only after the direct payload exited"
+            );
+            fs::write(observed_release, b"release\n").unwrap();
+        });
+
+        let code = lock
+            .run(RunArgs {
+                agent: format!("periodic-reap-{expected_code}"),
+                pr: format!("periodic-reap-{expected_code}"),
+                wait: 0,
+                hold: 30,
+                child_deadline: 10,
+                child: vec![
+                    OsString::from("/usr/bin/python3"),
+                    OsString::from("-c"),
+                    OsString::from(script),
+                    direct_pid_path.into_os_string(),
+                    grandchild_pid_path.into_os_string(),
+                    release_path.into_os_string(),
+                    OsString::from(expected_code.to_string()),
+                ],
+            })
+            .unwrap();
+        observer.join().unwrap();
+        assert_eq!(code, expected_code);
+        assert!(lock.read_holder().unwrap().is_none());
+        assert!(!paths.cleanup.exists());
+    }
+
+    #[test]
+    fn run_periodic_reap_subprocess_entry() {
+        let Some(root) = env::var_os(PERIODIC_REAP_ROOT_ENV).map(PathBuf::from) else {
+            return;
+        };
+        let expected_code: i32 = env::var(PERIODIC_REAP_EXIT_ENV)
+            .expect("periodic reap subprocess requires an exit code")
+            .parse()
+            .expect("periodic reap exit code must be an integer");
+        run_periodic_reap_case(&root, expected_code);
+    }
+
+    /// The adopted grandchild must disappear while the direct payload is still
+    /// alive. An end-of-run reap cannot satisfy this bracket. Run it once with
+    /// success and once with a nonzero direct exit so periodic `waitpid(-1)`
+    /// cannot silently discard the payload's result. Both runs must release the
+    /// lease after preserving that result.
+    #[test]
+    fn run_reaps_adopted_exits_during_live_payload_and_preserves_status() {
+        let _domain_guard = process_domain_test_guard();
+        for expected_code in [0, 23] {
+            let paths = temp_paths(&format!("periodic-reap-{expected_code}"));
+            let root = paths.lock.parent().unwrap().to_path_buf();
+            let status = Command::new(env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("landing_lock::tests::run_periodic_reap_subprocess_entry")
+                .arg("--nocapture")
+                .env(PERIODIC_REAP_ROOT_ENV, &root)
+                .env(PERIODIC_REAP_EXIT_ENV, expected_code.to_string())
+                .status()
+                .unwrap();
+            assert!(
+                status.success(),
+                "periodic reap subprocess failed for direct exit {expected_code}: {status}"
+            );
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     #[test]

@@ -44,11 +44,11 @@ use crate::landing_lock::{
     census_cleanup_domain, census_disposition, current_host, enable_child_subreaper,
     exact_process_liveness, exit_status_code, foreign_box_claim, heartbeat_test_helper_delay,
     print_census_recovery, print_cleanup_record, process_group_exists, process_start_ticks,
-    reap_exited_children, register_box_claim, remove_cleanup_record_and_claim,
-    repository_lock_root, signal_group, spawn_gated_child, suffix, verify_cleanup_record,
-    write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor, CleanupDomain, CleanupPhase,
-    CleanupRecord, CleanupVerification, DomainAttestation, DomainEvidence, GatedChild,
-    ProcessIdentity, ResidualCapture,
+    reap_exited_children, reap_while_supervising, register_box_claim,
+    remove_cleanup_record_and_claim, repository_lock_root, signal_group, spawn_gated_child, suffix,
+    verify_cleanup_record, write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor,
+    CleanupDomain, CleanupPhase, CleanupRecord, CleanupVerification, DomainAttestation,
+    DomainEvidence, GatedChild, ProcessIdentity, ResidualCapture,
 };
 
 const DEFAULT_WAIT_SECONDS: u64 = 1_800;
@@ -5109,39 +5109,6 @@ fn install_termination_handlers() -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-/// Reap every exited child adopted by this subreaper without losing the direct
-/// payload child's status.
-///
-/// `Child::try_wait` followed by the shared `reap_exited_children` helper is
-/// unsafe here: the direct child can exit between those calls, and
-/// `waitpid(-1)` can then consume the status that `Child` still needs. Use one
-/// `waitpid(-1, WNOHANG)` loop for both jobs and return the direct status to the
-/// caller when it appears.
-fn reap_while_supervising(direct_pid: u32) -> io::Result<Option<ExitStatus>> {
-    loop {
-        let mut raw_status: libc::c_int = 0;
-        // SAFETY: `raw_status` is writable for the duration of the call. This
-        // process deliberately acts as a child subreaper, so -1 names only its
-        // own direct or adopted children; WNOHANG never blocks supervision.
-        let reaped = unsafe { libc::waitpid(-1, &mut raw_status, libc::WNOHANG) };
-        if reaped == 0 {
-            return Ok(None);
-        }
-        if reaped < 0 {
-            let source = io::Error::last_os_error();
-            if source.raw_os_error() == Some(libc::EINTR) {
-                continue;
-            }
-            return Err(source);
-        }
-        if reaped == direct_pid as libc::pid_t {
-            return Ok(Some(
-                <ExitStatus as std::os::unix::process::ExitStatusExt>::from_raw(raw_status),
-            ));
-        }
-    }
 }
 
 /// Wait for `child`, reaping adopted exits while it is live and killing its
