@@ -216,7 +216,12 @@ investigation twice, and so an absent alarm is not mistaken for a resolved one.
   not defeat reclaim enforcement.** Full case, correct invocation and scope in
   [LIVENESS_PROBE_USAGE_ERROR_FAILS_OPEN_20260815.md](LIVENESS_PROBE_USAGE_ERROR_FAILS_OPEN_20260815.md).
 
-- **Before relying on a named authority, grep for a caller.** Three instances in
+- **Before relying on a named authority, grep for a caller.** Surveyed as a set
+  in [NAMED_AUTHORITY_CALLER_SURVEY_20260815.md](NAMED_AUTHORITY_CALLER_SURVEY_20260815.md):
+  11 of 16 executable authorities checked, **one confirmed defect (the liveness
+  probe)**, and three zero-caller CLI tools found HEALTHY because they are
+  intended-interactive and each has a verifying oracle. The survey covers
+  executables only and structurally cannot find prose authorities. Three instances in
   one session of documentation naming an authority the code does not implement:
   the approval blob rule (named in policy and a skill file, no implementation),
   the `virtualize_time` rationale, and `agent_liveness_probe.py` (named in
