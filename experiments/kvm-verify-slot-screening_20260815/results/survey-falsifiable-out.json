@@ -1,0 +1,570 @@
+[
+ {
+  "id": "applications/timed-progress-bar",
+  "program": "",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "applications/c-toolchain-workflow",
+  "program": "tests/e2e/applications/c-toolchain-workflow.sh",
+  "reason": "KVM requires the privileged runner and must ratchet after the ptrace reference path",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "applications/git-repository-workflow",
+  "program": "tests/e2e/applications/git-repository-workflow.sh",
+  "reason": "KVM requires the privileged runner and must ratchet after the ptrace reference path",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "backend-parity-c/personality-domain",
+  "program": "tests/backend-parity/fixtures/personality_domain.c",
+  "reason": "Current KVM fixture and /bin/true controls time out before guest start on the validation host, so no personality-specific verdict is available",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "failed with a message that does not name the cited boundary: Error: First run during --verify exited in error",
+  "rc": 1
+ },
+ {
+  "id": "backend-parity-c/numa-node-identity",
+  "program": "tests/c/numa_node_identity.c",
+  "reason": "Fresh shared-manifest L2 revalidation timed out at the 90-second contract on current main; requalify KVM before enabling this cell",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/thp-disable",
+  "program": "tests/backend-parity/fixtures/thp_disable.c",
+  "reason": "KVM ElfExecutor returns deterministic ENOSYS for prctl PR_SET_THP_DISABLE/PR_GET_THP_DISABLE; ptrace and DBT drive the full transparent-hugepage flag round-trip",
+  "cap": true,
+  "verdict": "STILL-HOLDS",
+  "why": "message-bearing failure naming the cited boundary: ['ENOSYS(errno 38)', 'PR_SET_THP_DISABLE'] | Error: First run during --verify exited in error",
+  "rc": 1
+ },
+ {
+  "id": "backend-parity-c/socket-options",
+  "program": "tests/backend-parity/fixtures/socket_options.c",
+  "reason": "KVM ElfExecutor accepts setsockopt but getsockopt returns ENOPROTOOPT for SO_REUSEADDR/SO_KEEPALIVE/SO_BROADCAST, so the option round-trip observes ok=0 instead of ok=6",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/sockname-unnamed",
+  "program": "tests/backend-parity/fixtures/sockname_unnamed.c",
+  "reason": "KVM ElfExecutor implements getsockname but returns ENOSYS for getpeername on an AF_UNIX socket pair, so the peer-name checks fail and it observes ok=4 instead of ok=6",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/msync-writeback",
+  "program": "tests/backend-parity/fixtures/msync_writeback.c",
+  "reason": "KVM msync returns 0 but its in-memory mapping model does not flush MAP_SHARED writes to the backing file, so the pread write-through checks fail and it observes ok=3 instead of ok=5",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/sendfile-copy",
+  "program": "tests/backend-parity/fixtures/sendfile_copy.c",
+  "reason": "KVM ElfExecutor personality returns deterministic ENOSYS for sendfile(2); the in-kernel copy path is not yet emulated",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/poll-readiness",
+  "program": "tests/backend-parity/fixtures/poll_readiness.c",
+  "reason": "KVM ElfExecutor personality implements poll/ppoll readiness but returns deterministic ENOSYS for select(2)/pselect6",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "failed with a message that does not name the cited boundary: Error: First run during --verify exited in error",
+  "rc": 1
+ },
+ {
+  "id": "backend-parity-c/prctl-identity",
+  "program": "tests/c/prctl_identity.c",
+  "reason": "inherited from the L1 KVM prctl_identity gap: PR_SET_NAME returns ENOSYS so the guest exits non-zero and there is no L2 run to verify",
+  "cap": true,
+  "verdict": "STILL-HOLDS",
+  "why": "message-bearing failure naming the cited boundary: ['PR_SET_NAME'] | Error: First run during --verify exited in error",
+  "rc": 1
+ },
+ {
+  "id": "backend-parity-c/pipe-ipc",
+  "program": "tests/backend-parity/fixtures/pipe_ipc.c",
+  "reason": "KVM's child-process personality does not synchronize cross-process pipe I/O with the coordinator, so the parent's blocking read returns EAGAIN instead of the child's bytes",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "failed with a message that does not name the cited boundary: Error: First run during --verify exited in error",
+  "rc": 1
+ },
+ {
+  "id": "backend-parity-c/vectored-file-io",
+  "program": "tests/backend-parity/fixtures/vectored_file_io.c",
+  "reason": "KVM ElfExecutor returns deterministic ENOSYS for pwritev/preadv (positioned vectored I/O); plain writev/readv are supported but the positioned variants are not",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/fchmodat2-flags",
+  "program": "tests/backend-parity/fixtures/fchmodat2_flags.c",
+  "reason": "KVM ElfExecutor returns ENOSYS for fchmodat2 (syscall 452); ptrace and DBT forward it to the host",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/socketpair-flags",
+  "program": "tests/backend-parity/fixtures/socketpair_flags.c",
+  "reason": "KVM ElfExecutor getsockopt implements SO_TYPE but returns ENOPROTOOPT for SO_DOMAIN and SO_ACCEPTCONN, so the socket-introspection contract observes ok=5 instead of ok=7",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/pipe-capacity",
+  "program": "tests/backend-parity/fixtures/pipe_capacity.c",
+  "reason": "KVM ElfExecutor does not implement the F_GETPIPE_SZ/F_SETPIPE_SZ pipe-capacity fcntl commands and returns a deterministic error",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/record-lock",
+  "program": "tests/backend-parity/fixtures/record_lock.c",
+  "reason": "KVM ElfExecutor implements F_SETLK advisory locking but returns a deterministic ENOSYS for F_GETLK lock queries",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "failed with a message that does not name the cited boundary: Error: First run during --verify exited in error",
+  "rc": 1
+ },
+ {
+  "id": "backend-parity-c/fcntl-owner",
+  "program": "tests/backend-parity/fixtures/fcntl_owner.c",
+  "reason": "KVM ElfExecutor returns a deterministic error for the F_SETOWN/F_GETOWN async-I/O owner fcntl family, so the SIGIO/SIGURG owner round-trip is unavailable",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "failed with a message that does not name the cited boundary: Error: First run during --verify exited in error",
+  "rc": 1
+ },
+ {
+  "id": "backend-parity-c/hardware-trap-identity",
+  "program": "tests/c/hardware_trap_identity.c",
+  "reason": "Cannot complete a guest on the current host (startup livelock); no trap observation exists to compare",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "run timed out; a timeout carries no cause and under load is not attributable",
+  "rc": null
+ },
+ {
+  "id": "backend-parity-c/host-identity",
+  "program": "tests/backend-parity/fixtures/host_identity.c",
+  "reason": "KVM times out before guest start on the validation host, so no host-identity verdict is available; re-enable when the startup livelock is fixed",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/short-io-split-identity",
+  "program": "tests/backend-parity/fixtures/short_io_split_identity.c",
+  "reason": "KVM times out before guest start on the validation host, so no split-pattern verdict is available",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "failed with a message that does not name the cited boundary: Error: First run during --verify exited in error",
+  "rc": 1
+ },
+ {
+  "id": "backend-parity-c/event-delivery-ordering",
+  "program": "tests/backend-parity/fixtures/event_delivery_ordering.c",
+  "reason": "KVM does not start the guest on the validation host; the existing inotify_watch entry already records that its ElfExecutor personality omits the inotify family",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "failed with a message that does not name the cited boundary: Error: First run during --verify exited in error",
+  "rc": 1
+ },
+ {
+  "id": "data-handling/archive-roundtrip",
+  "program": "tests/e2e/data-handling/archive-roundtrip.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "data-handling/shell-pipeline",
+  "program": "tests/e2e/data-handling/shell-pipeline.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "data-handling/jq-json-transform",
+  "program": "tests/e2e/data-handling/jq-json-transform.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "data-handling/sqlite-query-determinism",
+  "program": "tests/e2e/data-handling/sqlite-query-determinism.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "data-handling/zstd-multithread",
+  "program": "tests/e2e/data-handling/zstd-multithread.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "determinism-stress-c/pid-tid-identity",
+  "program": "tests/e2e/determinism-stress/pid_tid_identity.c",
+  "reason": "KVM compares output only and cannot assert DETLOG identity yet",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "run timed out; a timeout carries no cause and under load is not attributable",
+  "rc": null
+ },
+ {
+  "id": "determinism-stress/thread-output",
+  "program": "tests/e2e/determinism-stress/thread-output.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "determinism-stress/thread-contention",
+  "program": "tests/e2e/determinism-stress/thread-contention.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "determinism-stress/process-chains",
+  "program": "tests/e2e/determinism-stress/process-chains.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "determinism-stress/order-violation",
+  "program": "tests/chaos/order_violation.c",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "determinism-stress/thread-interleaving",
+  "program": "tests/chaos/thread_interleaving.c",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "language-runtimes/bash-loop-pipe-time",
+  "program": "tests/e2e/language-runtimes/bash-loop-pipe-time.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/bash-random",
+  "program": "tests/e2e/language-runtimes/bash-random.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/cpp-stl-determinism",
+  "program": "tests/e2e/language-runtimes/cpp-stl-determinism.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/gawk-random",
+  "program": "tests/e2e/language-runtimes/gawk-random.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/m4-macro-mkstemp",
+  "program": "tests/e2e/language-runtimes/m4-macro-mkstemp.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/perl-io-subprocess-time",
+  "program": "tests/e2e/language-runtimes/perl-io-subprocess-time.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/perl-random",
+  "program": "tests/e2e/language-runtimes/perl-random.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/python-hash-determinism",
+  "program": "tests/e2e/language-runtimes/python-hash-determinism.sh",
+  "reason": "KVM Python coverage is in the privileged applications bucket",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/python-io-subprocess-time",
+  "program": "tests/e2e/language-runtimes/python-io-subprocess-time.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/python-random",
+  "program": "tests/e2e/language-runtimes/python-random.sh",
+  "reason": "KVM Python coverage is in the privileged applications bucket",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/rust-hashmap-iteration",
+  "program": "tests/e2e/language-runtimes/rust-hashmap-iteration.rs",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/ruby-random",
+  "program": "tests/e2e/language-runtimes/ruby-random.sh",
+  "reason": "KVM Ruby coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/perl-hash-order",
+  "program": "tests/e2e/language-runtimes/perl-hash-order.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/lua-random",
+  "program": "tests/e2e/language-runtimes/lua-random.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/python-hashseed",
+  "program": "tests/e2e/language-runtimes/python-hashseed.sh",
+  "reason": "KVM Python coverage is in the privileged applications bucket",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/python-dict-hash-iteration",
+  "program": "tests/e2e/language-runtimes/python-dict-hash-iteration.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/tcl-rand-clock",
+  "program": "tests/e2e/language-runtimes/tcl-rand-clock.sh",
+  "reason": "KVM interpreter coverage requires separate privileged qualification",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "language-runtimes/node-v8-jit",
+  "program": "tests/e2e/language-runtimes/node-v8-jit.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/date-nanoseconds",
+  "program": "tests/e2e/system-utils/date-nanoseconds.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/mcookie-random",
+  "program": "tests/e2e/system-utils/mcookie-random.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/mktemp-name",
+  "program": "tests/e2e/system-utils/mktemp-name.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/openssl-enc",
+  "program": "tests/e2e/system-utils/openssl-enc.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/openssl-genpkey",
+  "program": "tests/e2e/system-utils/openssl-genpkey.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/openssl-passwd",
+  "program": "tests/e2e/system-utils/openssl-passwd.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/openssl-rand",
+  "program": "tests/e2e/system-utils/openssl-rand.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/openssl-x509",
+  "program": "tests/e2e/system-utils/openssl-x509.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/proc-uptime",
+  "program": "tests/e2e/system-utils/proc-uptime.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/random-device",
+  "program": "tests/e2e/system-utils/random-device.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/record-getpid",
+  "program": "tests/c/getpid.c",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "system-utils/shuf-permutation",
+  "program": "tests/e2e/system-utils/shuf-permutation.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/sort-random",
+  "program": "tests/e2e/system-utils/sort-random.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/ssh-keygen-ed25519",
+  "program": "tests/e2e/system-utils/ssh-keygen-ed25519.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/uuidgen-random",
+  "program": "tests/e2e/system-utils/uuidgen-random.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ },
+ {
+  "id": "system-utils/proc-random-uuid",
+  "program": "tests/e2e/system-utils/proc-random-uuid.sh",
+  "reason": "KVM requires the privileged runner",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "fixture is not a C source in this checkout"
+ }
+]

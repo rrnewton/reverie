@@ -122,6 +122,52 @@ Stability: the value operator was run twice over all 116 rows with **0 verdict d
 one pass suffices. Per-row stability is *not* guaranteed for the concurrency fixtures —
 `lock_granularity.c` was observed once with a flaky standalone baseline.
 
+
+## Third operator: `operators/direct.py` — is a recorded justification still true?
+
+Added after the two mutation operators. A disabled entry's justification records why a cell was
+turned off **at authoring time** and cannot know about a fix landed later, so it goes stale by
+default. This classifier re-checks one, three ways:
+
+| verdict | meaning |
+|---|---|
+| `DOES-NOT-HOLD` | the cell now passes `--strict --verify` on kvm; the reason no longer describes reality |
+| `STILL-HOLDS` | it fails **and** the guest's own message names the boundary the reason cites |
+| `NOT-DETERMINABLE` | timeout, no message, or a message that does not correspond to the stated boundary |
+
+Result over the falsifiable subset — the 79 of 313 whose reason *asserts* a failure, all 79 run:
+**22 DOES-NOT-HOLD · 3 STILL-HOLDS · 54 NOT-DETERMINABLE.** Of the 25 decidable, 22 are stale.
+That is a floor, not a total, and 22/25 does **not** extrapolate onto the 54 — 44 of those are
+non-C fixtures, correlating with the privileged-runner reasons, so they are a systematically
+different class rather than a random remainder. The remaining 234 entries say "not yet qualified"
+and cannot go stale; a truncated sample of 8 of them is in
+`results/survey-notyetqualified-truncated.log` (N=8 carries no rate, only the existence claim).
+
+The 3 `STILL-HOLDS` are all prctl-family — `prctl-pdeathsig`, `thp-disable`, `prctl-identity` —
+each naming its cited boundary. Some justifications in one syscall family are current while others
+beside them are obsolete, so the axis must be measured per cell.
+
+### Two things this operator taught, both worth knowing before reusing it
+
+**The probe harness discards the discriminating evidence.** A failed `--probe-disabled` cell reports
+only `verify exited with status 1` in its results row and its junit; no guest stderr is retained.
+The boundary-naming message is obtainable *only* by re-running the cell directly. A staleness survey
+built on harness rows alone cannot apply the message-bearing test at all.
+
+**Validate the cheap path against the expensive one before scaling.** Direct runs cost seconds where
+the harness costs ~90s of setup, so the survey is only affordable directly. Checked against 15
+already-measured harness verdicts: the first pass disagreed **12 of 15**, every disagreement one
+cause — `tempfile` stages the guest under `/tmp`, which hermit isolates and refuses to launch from.
+After staging outside `/tmp`: **15/15 agree**. Without that check the survey would have reported
+near-total `NOT-DETERMINABLE` for a reason having nothing to do with the cells.
+
+### Known defect in this operator
+
+`subprocess.run(timeout=)` kills hermit but not its grandchildren, and they hold the stderr pipe
+open, so the read blocks past the timeout and the classifier wedges — it stalled one sample and left
+three orphaned hermit processes. Before running this at scale, give it `start_new_session=True` and
+kill the process group.
+
 ## Files
 
 `metadata.json` records a `sha256` and line count for every file here.

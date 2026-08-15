@@ -1,0 +1,152 @@
+[
+ {
+  "id": "backend-parity-c/close-range-fds",
+  "program": "tests/backend-parity/fixtures/close_range_fds.c",
+  "reason": "KVM ElfExecutor personality returns deterministic ENOSYS for close_range; ptrace and DBT forward the fd-table syscall",
+  "harness_outcome": "PASS",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/epoll-pwait2",
+  "program": "tests/backend-parity/fixtures/epoll_pwait2_readiness.c",
+  "reason": "KVM ElfExecutor returns deterministic ENOSYS for epoll_pwait2 (syscall 441); it implements the classic epoll_wait but not the newer wait entry point",
+  "harness_outcome": "PASS",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/fsync-durability",
+  "program": "tests/backend-parity/fixtures/fsync_durability.c",
+  "reason": "KVM ElfExecutor forwards fsync and fdatasync but returns deterministic ENOSYS for syncfs",
+  "harness_outcome": "PASS",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/inotify-watch",
+  "program": "tests/backend-parity/fixtures/inotify_watch.c",
+  "reason": "KVM ElfExecutor returns a deterministic error for the inotify family (inotify_init1), so the filesystem-watch descriptor lifecycle is unavailable",
+  "harness_outcome": "PASS",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/ioctl-fionread",
+  "program": "tests/backend-parity/fixtures/ioctl_fionread.c",
+  "reason": "KVM ElfExecutor returns ENOTTY for the FIONREAD pipe ioctl; FIONBIO is supported",
+  "harness_outcome": "PASS",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/memfd-create",
+  "program": "tests/backend-parity/fixtures/memfd_create.c",
+  "reason": "KVM ElfExecutor personality returns deterministic ENOSYS for memfd_create; ptrace and DBT forward the anonymous-memfd syscall",
+  "harness_outcome": "PASS",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/prctl-pdeathsig",
+  "program": "tests/backend-parity/fixtures/prctl_pdeathsig.c",
+  "reason": "KVM ElfExecutor returns deterministic ENOSYS for prctl PR_SET_PDEATHSIG/PR_GET_PDEATHSIG; ptrace and DBT drive the full parent-death-signal state machine",
+  "harness_outcome": "FAIL",
+  "cap": true,
+  "verdict": "STILL-HOLDS",
+  "why": "message-bearing failure naming the cited boundary: ['ENOSYS(errno 38)', 'PR_SET_PDEATHSIG'] | Error: First run during --verify exited in error",
+  "rc": 1
+ },
+ {
+  "id": "backend-parity-c/preadv2-flags",
+  "program": "tests/backend-parity/fixtures/preadv2_flags.c",
+  "reason": "KVM ElfExecutor does not implement preadv2/pwritev2 (syscalls 327/328); it returns ENOSYS, mirroring its missing classic pwritev/preadv",
+  "harness_outcome": "PASS",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/stat-metadata-identity",
+  "program": "tests/backend-parity/fixtures/stat_metadata_identity.c",
+  "reason": "KVM does not complete a guest on the authoring host; qualify KVM separately",
+  "harness_outcome": "PASS",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/mmap-layout-pointer-order",
+  "program": "tests/backend-parity/fixtures/mmap_layout_pointer_order.c",
+  "reason": "KVM livelocks at guest startup on the current host; qualify KVM separately -- also a priority for this guest",
+  "harness_outcome": "PASS",
+  "cap": true,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/signal-waitstatus-identity",
+  "program": "tests/c/signal_waitstatus_identity.c",
+  "reason": "Cannot complete a guest on the current host (startup livelock); no wait-status observation exists to compare",
+  "harness_outcome": "FAIL",
+  "cap": true,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "run timed out; a timeout carries no cause and under load is not attributable",
+  "rc": null
+ },
+ {
+  "id": "c-programs/getcpu",
+  "program": "tests/c/getCpu.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "harness_outcome": "PASS",
+  "cap": false,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "backend-parity-c/sysv-ipc-refusal",
+  "program": "tests/backend-parity/fixtures/sysv_ipc_refusal.c",
+  "reason": "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately",
+  "harness_outcome": "PASS",
+  "cap": false,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "c-programs/lsm-set-self-attr-enosys",
+  "program": "tests/c/lsm_set_self_attr_enosys.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "harness_outcome": "PASS",
+  "cap": false,
+  "verdict": "DOES-NOT-HOLD",
+  "why": "cell passes --strict --verify on kvm; the recorded justification no longer describes reality",
+  "rc": 0
+ },
+ {
+  "id": "c-programs/setitimer-determinism",
+  "program": "tests/c/setitimer_determinism.c",
+  "reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
+  "harness_outcome": "FAIL",
+  "cap": false,
+  "verdict": "NOT-DETERMINABLE",
+  "why": "failed with a message that does not name the cited boundary:      > Process exited with code: Signaled(SIGALRM, false)",
+  "rc": 1
+ }
+]
