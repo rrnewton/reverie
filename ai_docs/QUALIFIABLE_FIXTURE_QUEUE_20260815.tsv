@@ -154,6 +154,27 @@
 # TOUCHED backend-parity-c/eventfd-semantics and backend-parity-c/vectored-io -- the two rows named applied-but-inert
 # above, and the subject of its PR #2282. IT DISQUALIFIED ITSELF, UNPROMPTED, FROM FUTURE INDEPENDENT REVIEW OF THOSE
 # TWO ROWS. It remains independent for the rest of the queue. None of the defects it found was bar-lowering.
+# ---------------------------------------------------------------------------------------------------------------
+# AMENDMENT 2026-08-15 (hermit-coord, at hermit-teardown's request; the list above is NOT rewritten).
+# THE DISQUALIFICATION LIST ABOVE IS CORRECT ABOUT WHAT hermit-bytes WAS DESCRIBING AND INCOMPLETE FOR HOW THIS
+# ARTIFACT IS NOW BEING USED. ADD backend-parity-c/sendfile-copy TO IT.
+# teardown established this AGAINST ITS OWN INTEREST: it first wrote that vectored-io was among the liteinst 79
+# WITHOUT CHECKING, then checked, and widened its own conflict-of-interest declaration rather than narrowing it.
+# VERIFIED BY hermit-coord from THIS FILE's own rows, not relayed:
+#   backend-parity-c/eventfd-semantics   0 data rows in this artifact
+#   backend-parity-c/vectored-io         0 data rows in this artifact
+#   backend-parity-c/sendfile-copy       6 data rows -- dbt/verify, kvm/verify, liteinst/verify, native/naked,
+#                                        ptrace/replay, sabre/verify
+# SO THE HEADER DISQUALIFIES teardown FROM TWO CELLS THAT HAVE ZERO ROWS HERE, AND DOES NOT NAME THE ONE CELL
+# WHERE IT HAS SIX. eventfd-semantics and vectored-io are applied-but-inert, a different bucket from this queue.
+# RELAYED AND NOT CONFIRMED BY ME: that one of the six sendfile-copy rows is among the liteinst 79. I could not
+# locate that population -- LITEINST_EXIT_GATING_SCREEN_20260815.tsv is a DIFFERENT screen (99 C fixtures, 49
+# might-fail) and contains no sendfile row. The amendment does not depend on it: six rows in this file is
+# sufficient exposure on its own.
+# NO EFFECT ON THE SIZING. 79 stands; teardown remains independent for the rest of this queue and for the
+# arithmetic. A widened disqualification removes a reviewer from three cells, it does not impeach past work --
+# NOT REPRODUCED IS NOT FIXED has a converse here: a corrected declaration does not retroactively invalidate
+# reviews taken under the narrower one, it only removes their basis going forward.
 # =============================================================================================================
 backend	mode	cell	fixture	mutation_family	evidence
 dbt	verify	backend-parity-c/aio-refusal	tests/backend-parity/fixtures/aio_refusal.c	ok-init	baseline already exits 1 natively
