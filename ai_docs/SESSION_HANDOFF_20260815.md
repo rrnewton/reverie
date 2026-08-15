@@ -402,3 +402,46 @@ content survived.
 because the regex matched the `##` section headings and numbered list items instead of the `###`
 rule headings. The document's own structure defeated a plausible-looking count. **Name the heading
 level you are counting.**
+
+---
+
+## 11. The unpushed-commits gate reported a large false number and missed the one true case
+
+**This is the only genuinely stranded work anyone found on 2026-08-15**, and the gate built to find
+exactly this did not see it.
+
+**RELAYED** (owner): the unpushed-commits gate reported **1316**, which turned out to be a
+tag-reachability artifact — **zero real unpushed commits** within the population it scans.
+
+**MEASURED HERE:** meanwhile, two real commits sat on **zero origin refs** in a temp clone at
+`/home/newton/temp/dev-hermit` — a path the gate never looks at. `hermit-906`'s work:
+
+| | |
+|---|---|
+| commits | `cfd64cb77ca43f2ddbdd3b39c4658f7d7b146f7e`, `5ae9f7545b4bdbfae310f0fffd264d609b179bca` |
+| author tag | `[hermit2, hermit-906, unresolved, devbig030, role=impl]` |
+| touched | `ci-hub/lib/agent_identity.py`, `ci-hub/lib/tests/test_agent_identity.py` — **nothing else** |
+| base | `61663764596dd237953ec64360ea928abee799f4` |
+| tree | clean |
+
+**The lesson is about scope, not arithmetic.** A gate's number is a claim about the population it
+scans, and this gate's population excludes the temp clones where per-change work is deliberately
+done. **A large number from a gate and a true miss are not opposites; here they were simultaneous.**
+
+**Preserved, not vouched for.** On owner authorisation the tip was pushed **additively** — new ref,
+no force, no rebase, no amend — to
+`rescue/hermit-906-unreviewed-who-am-i-identity-resolver-brittleness` on `rrnewton/dev-hermit`.
+**MEASURED HERE by read-back from the remote:** both commits are now reachable from exactly one
+origin ref each. The `rescue/` prefix is the existing convention on this remote.
+
+**THE SEAL DOES NOT COVER THE CURRENT HEAD, AND THESE TWO COMMITS ARE UNATTESTED.** The clone's
+`.git/ci-hub-change-seal.json`, sealed **2026-08-13**, names candidate `5ae9f754` — but HEAD has
+since moved to `cfd64cb7`. **Preserving work is not the same as vouching for it.** Whoever picks
+this up is inheriting unreviewed, unsealed work under someone else's name; the branch name says so
+deliberately so it cannot be mistaken for authored or vetted.
+
+**One artifact to avoid on inspection:** `git diff origin/main..HEAD` in that clone shows 17 deleted
+`ledger/hermit/devbig014/2026-08.jsonl` lines. That is a **two-dot direct tree comparison against a
+stale cached `origin/main`**, not a deletion by these commits. Against the merge-base the diff is
+the two `agent_identity` files only. **`A..B` in `git diff` is not merge-base relative** — `git log`
+and `git diff` read the same syntax differently.

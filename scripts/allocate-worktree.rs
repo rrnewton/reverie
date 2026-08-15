@@ -341,6 +341,14 @@ fn verify_repair_checkout_published(
 /// The narrower shape where a re-allocation keeps the same branch NAME and only the head is stale
 /// is not drift at all (recorded == actual) and is outside repair's reach entirely.
 ///
+/// HOW MUCH THAT INCOMPLETENESS COSTS, MEASURED RATHER THAN ESTIMATED. Against the live registry on
+/// 2026-08-15 the four slots then showing `recorded != actual` -- cadence2/hermit, ci/hermit,
+/// claude-fixtureassert/hermit, fix-futex/hermit -- ALL FOUR had a recorded branch that RESOLVES, so
+/// this refusal fires on NONE of them. Read that in both directions: it is the evidence that the
+/// change does not disable repair in practice, AND it is the evidence that on the population
+/// actually present, this catches nothing. If a real re-allocation hazard existed in those four, the
+/// ref-existence test would not have found it.
+///
 /// This deliberately does NOT try to correct toward the intent: doing so would need either a
 /// `git branch`/`checkout` (forbidden above) or a rewrite of ownership (also forbidden above,
 /// because repurposing intent lives with a human). So the answer is to refuse and leave the cell
