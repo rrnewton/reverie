@@ -13,6 +13,12 @@ recorded so a fresh coordinator or a peer machine can resume without re-deriving
 - **NOT-DETERMINABLE** — the claim is in circulation but nothing available to me establishes it.
   It is recorded rather than dropped, because an absent caveat reads as confidence.
 
+> **READ §12 FIRST.** Several load-bearing facts below were corrected or superseded after §1–§11 were
+> written. §12 supersedes them and says which. The most important: **main's green belongs to
+> `1b98ccef5`, four commits back — not to any head named in §1–§11 — and NOT-VALIDATED is the absence
+> of a qualifying run, not a red result.** Sections §1–§11 are otherwise left as written; each figure
+> stays anchored to the SHA it was measured against, which is what keeps it usable.
+
 ---
 
 ## 1. Two blockers stand between a qualified cell and a landed cell, not one
@@ -212,7 +218,8 @@ an owner decision, not on measurement or effort.**
 
 ## 5. Verdict channel — settled, do not re-derive
 
-**MEASURED HERE** at hermit `origin/main` `61b9ba7aa`:
+**MEASURED HERE** at hermit `origin/main` `61b9ba7aa`. **Re-checked at `302a1a9c0` for §12: both
+facts below still hold, and the count is still 2.**
 
 - `ci/test_harness.sh` is an **elif chain**. `:3796` is `elif [[ $status != 0 ]]`; `:3799` is
   `elif [[ $mode == verify && $(verify_asserts_bitwise_parity "$metadata") == true ]]`.
@@ -281,13 +288,15 @@ Recorded because each one produced a wrong answer that looked right.
 - dev-hermit parent: on `main`, in sync with `origin/main` at the time of writing. The parent
   advanced during this task (`730aa749` → `578e9b08`), so **re-sync before reading `ledger/`** —
   it is tracked and advances only on pull.
-- hermit: `origin/main` = `61b9ba7aa`, equal to the local checkout.
+- hermit: `origin/main` = `61b9ba7aa` when this was written; **now `302a1a9c0` — see §12.**
 - reverie: checkout at `ee6716a65d41e8f1d65ee32efa4aafa910b9cf29` — the pin #2281 advances to.
 - agent-utils: local `c810ddb`, behind `origin/main` `b8b3274a`; nothing local is ahead.
 - **Parent shows ` M hermit`.** This is a **forward** pin — the hermit checkout is *ahead* of the
   parent's recorded gitlink `e2f9a36b`, not behind it. It is not a backward pin and it is not mine
   to commit.
-- **Cells landed remains zero.** `origin/main` is at 170 green and no liteinst cell has landed.
+- **Cells landed remains zero.** `origin/main` is at 170 green **cells on the scorecard** and no
+  liteinst cell has landed. **That is a cell count, not a validation verdict** — do not read it as
+  main being green. Where main's green actually lives is §12.
 - Slot `coord` (owned by `hermit-coord`, shared read-only with `codex-lander-audit` and
   `hermit-276`): branch **names** match — `worktrees/coord/hermit` and `worktrees/coord/reverie` are
   both on `codex/cross-client-skill-discovery` and `liteinst2` is detached, exactly as `ACTIVE.md`
@@ -412,6 +421,8 @@ exactly this did not see it.
 
 **RELAYED** (owner): the unpushed-commits gate reported **1316**, which turned out to be a
 tag-reachability artifact — **zero real unpushed commits** within the population it scans.
+**§12 corrects the scope of that zero: it is true of the parent repository and false of the fleet.**
+Six or seven change clones hold commits on no remote ref.
 
 **MEASURED HERE:** meanwhile, two real commits sat on **zero origin refs** in a temp clone at
 `/home/newton/temp/dev-hermit` — a path the gate never looks at. `hermit-906`'s work:
@@ -445,3 +456,135 @@ deliberately so it cannot be mistaken for authored or vetted.
 stale cached `origin/main`**, not a deletion by these commits. Against the merge-base the diff is
 the two `agent_identity` files only. **`A..B` in `git diff` is not merge-base relative** — `git log`
 and `git diff` read the same syntax differently.
+
+---
+
+## 12. Corrections — read this before acting on §1–§11
+
+Written by `hermit-coord` on 2026-08-15, task `refresh-the-session-handoff-with-corrections`, after
+§1–§11. **A handoff carrying a stale premise is worse than none**, because the next coordinator acts
+on it without re-testing — which is how three stale blockers cost hours today. Every figure below
+names its source and the SHA it is anchored to.
+
+### 12.1 Main's green belongs to `1b98ccef5`, four commits back — MEASURED HERE
+
+| | |
+|---|---|
+| last green | **`1b98ccef5d5098bbc3e72fba689b1a026aaeb780`** |
+| hermit `origin/main` now | **`302a1a9c0fde564db0292d1ea5cabc91343e79bc`** |
+| distance | **4 commits** |
+
+`git rev-list --count 1b98ccef5..origin/main` = **4**, and they are `302a1a9c0`, `61b9ba7aa`,
+`5465e1451`, `d6856c1f9`.
+
+**NOT-VALIDATED is not red. It is the absence of a qualifying run.** A head with no record is not a
+head that failed. Conflating the two turns a missing measurement into a defect that nobody can find.
+
+**That green is a local devbig014 receipt, not a GitHub verdict** — `profile full/full`, host
+`devbig014`, wall 1001 s. **RELAYED** via the evidence promoted at `d6258467`
+(`ai_docs/evidence/verify-main-green-and-scorecard-20260815/`), produced by `hermit-teardown`. The
+distinction matters because §12.2 shows there is no GitHub verdict to be had.
+
+### 12.2 GitHub Actions has been dead since 08-12, and landing was never blocked by it
+
+**MEASURED HERE** via the GitHub API at 2026-08-15:
+
+- `repos/rrnewton/hermit/actions/permissions` → `enabled=false`
+- `repos/rrnewton/reverie/actions/permissions` → `enabled=false`
+- the three most recent hermit workflow runs are all **2026-08-12**, all `status=queued`,
+  `conclusion=null` — dispatched and never executed.
+
+**So hosted CI could not be measured at all — there was nothing to measure.** An absent hosted
+verdict in any report from this period is that, not a failure.
+
+**MEASURED HERE — landing was not blocked by it.** `git log --since='2026-08-14 00:00:00' origin/main`
+= **10 commits** on hermit main.
+
+**RELAYED, and explicitly not established:** three services stopped on **three different dates**
+(08-11, 08-12, 08-14), which argues against a single sweep. **Who set `enabled:false` is
+NOT-DETERMINABLE** — nothing available to me establishes it.
+
+### 12.3 The drift over those four commits — MEASURED HERE, and "trivial" is a behavioural claim
+
+`git diff --stat 1b98ccef5..302a1a9c0`: **+326 / −70 across 7 files**. Per commit:
+
+| commit | shape |
+|---|---|
+| `d6856c1f9` | +391 / −2 |
+| `5465e1451` | +128 / −400 |
+| `61b9ba7aa` | +2 / −1 |
+| `302a1a9c0` | +198 / −60 |
+
+**"One commit entirely undone" is nearly right and I measured the exact remainder.** `d6856c1f9`
+added `scripts/lib/validate_e2e_coverage.rs` (+358) and `ci/expected-e2e-plan.json` (+16);
+`5465e1451` removed both. At the tip **`validate_e2e_coverage.rs` is absent** (undone) but
+**`ci/expected-e2e-plan.json` is present** — so it is *substantially* undone, not entirely.
+
+**`61b9ba7aa` really is two test-side lines**, and both matter: `set_tid_address.c` changed
+`return 0` → `return ok == 4 ? 0 : 1` (a fixture made able to fail), and
+`backend-parity-c.toml` gained `assert = { bitwise_parity = true }`.
+
+**The "trivial" characterisation is RELAYED and my line count does not corroborate it on its face** —
++326/−70 is not small. The two are not in conflict: a behavioural characterisation and a line count
+measure different things. **A characterisation is not a receipt**, and neither is a diffstat.
+
+### 12.4 §5's count of 2 is still correct at the new head — MEASURED HERE
+
+Manifests asserting `bitwise_parity`: **1** at `1b98ccef5`, **2** at `61b9ba7aa`, **2** at
+`302a1a9c0` (`backend-parity-c.toml:84`, `c-programs.toml:3734`). `61b9ba7aa` is the commit that
+added the second. §5 stands as written and is current.
+
+### 12.5 Change clones hold work the unpushed gate cannot see — and the count moved because I moved it
+
+**RELAYED:** seven change clones of 28 hold commits on no remote ref, two of them holding **38** and
+**36** commits; a disposal path now refuses all seven; devbig014 has the same blind spot and it has
+already cost them a label-publisher fix that exists only in a change clone.
+
+**MEASURED HERE, and it differs — the difference is me.** Enumerating `.git` directories under
+`/home/newton/temp`, `ignored/isolated-clones` and `ignored/ci-hub-changes` to depth 2 I find **40**
+clones, of which **6** hold commits on no *local remote-tracking* ref. **The seventh was
+hermit-906's clone, which now reports 0 because I fetched its own pushed rescue ref into it.**
+Different denominator (40 vs 28) is a different enumeration scope; I state mine rather than
+reconciling to a number I did not produce.
+
+**MY COUNT IS AN UPPER BOUND AND SO WAS THEIRS.** Both read the clone's *local* remote-tracking refs,
+which is exactly the check that produced a false refusal on hermit-906 — its work was on the remote
+while its cache said otherwise. I spot-checked one of the six against the remote with `ls-remote`
+(`dev-hermit-who-am-i-rebuild`, `6395b534`): **genuinely absent, a true positive.** The other five
+are **not** verified against the remote. Confirm each with `ls-remote` before treating it as lost.
+
+**The blind spot itself is structural and stands:** change clones are separate repositories, and no
+enumeration of one repository's refs reaches another's objects.
+
+### 12.6 The `1316` figure, with its scope corrected
+
+**RELAYED** (owner): `1316` was a tag-reachability artifact; **real unpushed work in the parent
+repository is zero.** §11 recorded that. **§11 understated the scope of the zero:** it is true *of
+the parent repository* and false *of the fleet* — six or seven change clones hold commits on no
+remote ref (§12.5). The two are consistent because they are different populations, which is §11's
+own point turned on §11.
+
+### 12.7 The kvm figure is 25, not 22 — RELAYED
+
+**RELAYED, source not available to me, so NOT independently verified:** the kvm figure is **25**;
+**22** is the count carried into qualification; and only **9 are qualified on both arms**. Three
+different numbers for three different populations — do not collapse them.
+
+### 12.8 hermit-906 — MEASURED HERE
+
+Rescue branch **exists**: `rescue/hermit-906-unreviewed-who-am-i-identity-resolver-brittleness` at
+**`cfd64cb77ca43f2ddbdd3b39c4658f7d7b146f7e`** on `rrnewton/dev-hermit`, confirmed via the GitHub API
+and by cloning the branch from the URL alone (both commits present, file content byte-identical).
+
+**The 08-13 seal attests only `5ae9f754`, the first of the two commits. Nothing attests HEAD at
+`cfd64cb7`.** Proved by recomputing the seal's digest with the tool's own algorithm: base
+`61663764` → `5ae9f754` = `316f8b5d…` (matches the seal); → `cfd64cb7` = `b1c894e0…` (does not).
+**Preserving is not vouching.**
+
+### 12.9 A fifth instrument misfire, same family as §6 — MEASURED HERE
+
+Counting commits since 08-14, `git log --since=2026-08-14` returned **8** while
+`git log --since='2026-08-14 00:00:00'` returned **10**. The bare date form is not the midnight
+boundary it looks like. I reported 8 first and caught it only because it disagreed with a figure I
+had been given. **Same shape as the other four: a property of the query read as a property of the
+repository.** Spell the boundary out.
