@@ -258,7 +258,10 @@ reminders:
   # `dispose` already refuses to remove a clone holding such work, but a refusal
   # protects work already at risk without telling anyone it exists -- two commits
   # sat in an abandoned clone for two days and were found twice by accident.
-  # Reporting only: this never pushes, disposes or preserves.
+  # Reporting only: this never pushes, disposes or preserves. It does fetch,
+  # which is how it reads the remote, and asks the same own-branch containment
+  # question `dispose` asks so the two instruments cannot report different
+  # counts for the same clones.
   - name: unpushed_change_clone_commits
     cadence_secs: 900
     gate:
@@ -270,7 +273,11 @@ reminders:
       skill: hard-warn-coordinator
       fields:
         component: unpushed-change-clone-commits
-      title: "ci-hub change clone(s) hold commits on no remote ref: {summary}"
+      # Deliberately neutral: this fires both when clones hold unpushed work and
+      # when a remote was unreachable so the condition could not be determined.
+      # The old wording asserted the first outcome for both, which would have
+      # read a NO_RESULT as work at risk.
+      title: "ci-hub change clones: {summary}"
 
   - name: unpushed_parent_commits
     cadence_secs: 900
