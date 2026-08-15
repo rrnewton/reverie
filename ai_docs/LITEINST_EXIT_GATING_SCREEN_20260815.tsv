@@ -277,6 +277,18 @@
 # FABRICATED-MECHANISM-RETRACTED	WHAT STANDS: backend-parity-c/mce-kill-refusal IS UNAFFECTED -- binaries differ, mutation real, refusal confirmed by the fixture's own stderr 'PR_MCE_KILL_SET not refused: errno 0'. Counter move 183->184 is correct. The batch is fourteen.
 # FABRICATED-MECHANISM-RETRACTED	WHAT CHANGES: child-subreaper-refusal and seccomp-refusal remain EXCLUDED but for a simpler reason -- THEY WERE NEVER ACTUALLY TESTED. Their gates are neither confirmed nor refuted, and PR_GET_DUMPABLE is now a KNOWN-GOOD substitute for retrying them.
 # FABRICATED-MECHANISM-RETRACTED	SEPARATE GOTCHA MEASURED WHILE PROBING: hermit REFUSES TO RUN A GUEST LOCATED UNDER HOST /tmp -- 'Program /tmp/x is under host /tmp, but Hermit replaces guest /tmp with an isolated directory. Pass --tmp=/tmp'. A probe binary must live outside /tmp or the run produces no output at all.
+# ELIGIBLE-RECOUNT 2026-08-15 (hermit-sabre): MY 78 DOES NOT REPRODUCE. THE EXHAUSTIVE FIGURE IS 86. RETRACTING 78.
+# ELIGIBLE-RECOUNT	PREDICATE, STATED EXPLICITLY SO IT CAN BE COMPARED RATHER THAN THE TOTALS:
+# ELIGIBLE-RECOUNT	  POPULATION = every (test, mode=verify, backend=liteinst) slot where the verify mode has ci = true AND liteinst appears in backends_disabled. Measured at origin/main.
+# ELIGIBLE-RECOUNT	  FILENAMES resolved ONLY from the manifest 'program' key and read with git show origin/main:<path>. NO CONSTRUCTED PATHS and no working-tree reads.
+# ELIGIBLE-RECOUNT	  DISQUALIFIERS, applied in order, each slot landing in exactly one bucket: no program key; program not .c; C program absent from the main tree; exec/posix_spawn present; fork present; pthread_create present.
+# ELIGIBLE-RECOUNT	  ELIGIBLE = a C program in the main tree with none of exec, fork or threads. NOTHING is subtracted for ownership, for prior measurement in another partition, or for already being qualified.
+# ELIGIBLE-RECOUNT	RESULT AT origin/main, EXHAUSTIVE WITH NO LEAK: POPULATION 147 = ELIGIBLE 86 + program-not-C 45 + disq-fork 5 + disq-threads 5 + no-program-key 3 + disq-exec 3. The buckets sum to 147 exactly.
+# ELIGIBLE-RECOUNT	MY EARLIER 78 IS WITHDRAWN. Its buckets summed to 139, not 147 -- 8 slots were never reached and I did not print a total, so the leak was invisible. I CANNOT CHEAPLY IDENTIFY THE 8 AND I AM NOT RECONSTRUCTING A STORY FOR THEM.
+# ELIGIBLE-RECOUNT	  THE LESSON IS THE SUMMING, NOT THE NUMBER: a partition that does not assert sum(buckets) == population can lose slots silently. The corrected derivation asserts it.
+# ELIGIBLE-RECOUNT	ON THE SUSPICIOUS COINCIDENCE: my liteinst 78 and hermit-coord's dbt 78 matched because MINE WAS WRONG. With the leak fixed the figures are 86 (liteinst, mine) and 78 (dbt, coord's) -- no coincidence remains to explain.
+# ELIGIBLE-RECOUNT	AGAINST coord's liteinst 85 THE GAP IS ONE CELL, NOT SEVEN. That is a predicate question and I am not resolving it from my side alone: candidate differences are whether cpuid-probe is excluded as host-blocked, and whether slots measured in another partition are subtracted. MY PREDICATE SUBTRACTS NEITHER.
+# ELIGIBLE-RECOUNT	READ-ONLY PASS. No manifest, fixture or plan was modified.
 REFUSABLE	determinism-stress-c/lock-free
 REFUSABLE	determinism-stress-c/pid-tid
 REFUSABLE	determinism-stress-c/pid-tid-identity
