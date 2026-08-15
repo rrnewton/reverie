@@ -1,5 +1,13 @@
 # Screening the disabled `verify/kvm` slots for whether a fixture can refuse
 
+**Profile: portable lane only. Not a receipt.** Every result here comes from single-cell runs —
+`hermit run --strict --verify` directly, or `ci/test_harness.sh run --probe-disabled` for one cell —
+all on portable-lane cells, which carry the `--no-virtualize-cpuid --max-timeslice=disabled` profile.
+No full or privileged profile was invoked, and none could succeed on this host: devbig030 lacks CPUID
+faulting, so full profile fails structurally here (35 full runs since reboot, 16 died on CPUID, zero
+passed). A portable-lane pass is **not** a qualifying receipt — `qualifying_receipt` requires
+result=pass and `reconcile_receipts` requires full+pass+checks==5, which route to devbig014.
+
 Captured 2026-08-15 by `hermit-kvm2` on `devbig030.atn3.facebook.com`.
 Hermit `e18acde586f72829e4a96d92b57b78f3abe21b2c`; `origin/main` at capture was
 `61b9ba7aa4dd763c1bda091316852d5290f9466c`; Reverie pin `c261050cfd41bec67e31bfd0cf6f56be008d0ebb`.

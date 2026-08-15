@@ -1,5 +1,13 @@
 # Independent re-derivation of two fixture brackets
 
+**Profile: portable lane only. Not a receipt.** Every result here comes from single-cell runs —
+`hermit run --strict --verify` directly, or `ci/test_harness.sh run --probe-disabled` for one cell —
+all on portable-lane cells, which carry the `--no-virtualize-cpuid --max-timeslice=disabled` profile.
+No full or privileged profile was invoked, and none could succeed on this host: devbig030 lacks CPUID
+faulting, so full profile fails structurally here (35 full runs since reboot, 16 died on CPUID, zero
+passed). A portable-lane pass is **not** a qualifying receipt — `qualifying_receipt` requires
+result=pass and `reconcile_receipts` requires full+pass+checks==5, which route to devbig014.
+
 Run 2026-08-15 by `hermit-kvm2` on `devbig030`, against hermit worktree `e18acde58`
 (`origin/main` was `302a1a9c0` at the time). The pre-fix sources are taken from `302a1a9c0`.
 

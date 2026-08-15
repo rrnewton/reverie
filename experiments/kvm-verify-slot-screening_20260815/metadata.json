@@ -23,8 +23,8 @@
   "does_not_hold_25_of_which_22_are_stale_justifications": true,
   "files": {
     "README.md": {
-      "lines": 306,
-      "sha256": "37e52c34e7656eb0f751ce137f30ca1f80e04ec3b8b159fad5322be8165175f2"
+      "lines": 323,
+      "sha256": "759e1a1e54697bd0d31fe93264434b76261cc62159c75f5d586662856f34ace0"
     },
     "controls/neg_cannotfail.c": {
       "lines": 2,
@@ -175,6 +175,7 @@
     "falsifiable_PASS": 9,
     "falsifiable_reason_cells": 11
   },
+  "profile": "portable-lane only; not a qualifying receipt",
   "qualification_of_22_candidates": {
     "accept_arm_passed": 22,
     "note": "accept = real fixture passes kvm --strict --verify; refuse = an inert violating copy fails it",
