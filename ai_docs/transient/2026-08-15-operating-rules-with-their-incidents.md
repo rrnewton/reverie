@@ -506,6 +506,26 @@ that survives its own best counterexample is worth more than one never tested
 against it, and it sharpens the claim: the predictor is not "checked" versus
 "unchecked" but "anchored" versus "present-tense".
 
+**AND THE THIRD PART: A CHECK HAS A SCOPE, AND THE SCOPE DIES IN RELAY.**
+A check beats diligence, and a claim anchored to a moment survives drift — but a
+verification is bound to a head exactly as an approval is, and **the bare phrase
+"independently verified" is the unqualified-figure defect one level up.** It is
+the phrase people trust *instead of* checking.
+
+Measured: a verification covered **14 cells at `898ff8827`**; the PR grew to **22
+at `bce1a6e99`**. The check stayed true of what it covered and stopped covering
+the artifact. **The qualifier was lost in relay, not in the report** — the head
+was named every time and the reader dropped it, which is the hedge dying in
+transmission. Naming a scope once is weaker than the reader carrying it forward.
+
+The standing proof was already visible: two open PRs carry approvals bound to
+superseded heads and read as current until something re-checks. **We had the
+defect on two artifacts and reproduced it in prose about a third.**
+
+**The rule: quote a verification as "N cells at `<head>`", never as
+"independently verified".** Cheap, and it makes staleness self-evident the way an
+embedded source hash does for a snapshot.
+
 **n=3 is not a rate, and this does not claim machine checks outperform attention
 in general.** What is claimed is only what was observed, plus the asymmetry that
 makes it matter: **a human catch requires a wrong result to exist first, and some
