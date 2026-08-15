@@ -645,3 +645,39 @@ number is simply wrong and entirely plausible.
 number and has no reason to question either. The only reason the 8 was caught is that it disagreed
 with a figure that came from somewhere else. **Spell the boundary out**, and treat any figure derived
 from a bare date as unanchored until it is.
+
+### 12.11 The hang-shaped heuristic has a hard limit: it cannot be applied by substring match
+
+The re-test heuristic that came out of this session is sound — **a hang or timeout carries no
+information about cause and is therefore re-testable, while a message-bearing failure names something
+that either still holds or does not.** It is why two long-standing record-hang blockers were re-tested
+today and did not reproduce.
+
+**MEASURED HERE — the annotation those two now carry.** Both
+`record-hangs-on-concurrent-pipes` and `record-hangs-on-concurrent-multiprocess` carry
+*"DID NOT REPRODUCE. TREAT THIS NOTE AS HISTORICAL."* **and** *"NOT REPRODUCED IS NOT FIXED. No cause
+was ever established for the original."* Exactly two notes carry that second phrase. **RELAYED:**
+devbig014 has adopted the annotation practice.
+
+**THE LIMIT, WHICH NEITHER MACHINE HAD STATED AND WHICH MATTERS MORE THAN THE HEURISTIC.** A keyword
+is exactly how the next person will try to scale this, and it does not work. **RELAYED:** devbig014
+ran one and got 20 rows, alphabetically truncated at the limit, **not one of them a genuine
+hang-shaped blocker.**
+
+**MEASURED HERE — I reproduced it on a different corpus and it is worse.** Matching
+`hang|timeout|hung|stall` case-insensitively across the 366-file memory corpus returns **242 files —
+66% of everything.** The two genuine entries sort at **positions 182 and 183 of 242**, so an
+alphabetically truncated top-20 captures **zero** of them. Precision of the naive match: **2 genuine
+out of 242 returned, 0.8%.**
+
+**Two independent failures on two corpora, in different directions**: theirs returned too few and all
+wrong; mine returned most of the corpus with the right answers unreachable behind truncation. Neither
+is fixable by a better keyword, because the discriminator is not lexical — *any* note that merely
+mentions a timeout matches, and a genuinely hang-shaped blocker need not use the word.
+
+> **devbig014's sentence is the one to keep:** *telling them apart requires reading what the note
+> claims, which is agent work, not a query.*
+
+**This also lands squarely in §12.10's family**, and is its ninth instance — a truncating filter
+asserting a negative, arrived at independently on another machine. The pattern now has an
+out-of-house witness.
