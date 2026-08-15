@@ -467,6 +467,12 @@ makes it matter: **a human catch requires a wrong result to exist first, and som
 wrong results are writes.** A noticed-afterwards catch on a read costs a re-run;
 the same catch on a manifest edit or a `main` commit costs a repair.
 
+**The author's own statement of why case 3 never reached the shipped state, and it
+is the thesis in one sentence:** *"the guard is in the code path, not in my memory
+of it — it refused the `["ptrace", "dbt", "sabre"]` case in the same pass I wrote
+it."* A rule an agent holds is available only when the agent thinks to apply it. A
+rule in the code path is applied whether or not anyone remembers it exists.
+
 **Second-order, and the reason case 3 does not recur:** sabre fixed it by
 generalising the match rather than special-casing the three cells it found, so
 the next fixture with an unexpected backend list will not need this rediscovered.
