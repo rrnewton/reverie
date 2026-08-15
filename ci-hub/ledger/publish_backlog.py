@@ -45,7 +45,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci-hub" / "health"))
 sys.path.insert(0, str(ROOT / "ci-hub" / "ledger"))
+sys.path.insert(0, str(ROOT / "scripts"))
 
+from check_commit_attribution import AttributionError, detect_machine  # noqa: E402
 from ledger_spool_backlog import producing_parents  # noqa: E402
 from validate_rows import live_spool_dir  # noqa: E402
 
@@ -76,7 +78,24 @@ def ensure_clone(clone: Path, *, net_wrapper: str) -> None:
     )
 
 
-def publish_parent(parent: Path, clone: Path, *, timeout: float) -> dict:
+def publishing_attribution() -> str:
+    """The canonical attribution line for the machine actually publishing.
+
+    NEVER a literal machine token. `parent-main-write` verifies the final
+    role/team line against THIS host via `check_commit_attribution.py
+    --expected-machine auto`, so a hardcoded token publishes from exactly one
+    box and is refused everywhere else. Measured 2026-08-14: the literal
+    `devbig014` here left devbig030's spool unpublished for 39 hours and 14
+    batches while every 15-minute sweep correctly refused. Deriving from
+    `detect_machine`, the same function the verifier resolves `auto` to, keeps
+    producer and verifier on ONE definition of machine identity; a second
+    hostname lookup here would reintroduce the divergence from the other end.
+    """
+    return f"[impl agent, automation] [ledger-publisher, {detect_machine()}]"
+
+
+def publish_parent(parent: Path, clone: Path, *, timeout: float,
+                   attribution: str) -> dict:
     spool = live_spool_dir(parent)
     result = subprocess.run(
         [
@@ -87,7 +106,7 @@ def publish_parent(parent: Path, clone: Path, *, timeout: float) -> dict:
             "--repo", str(clone),
             "--spool-dir", str(spool),
             "--writer", str(parent / "scripts" / "parent-main-write"),
-            "--attribution", "[impl agent, automation] [ledger-publisher, devbig014]",
+            "--attribution", attribution,
         ],
         capture_output=True,
         text=True,
@@ -128,6 +147,18 @@ def main(argv: list[str] | None = None) -> int:
         ))
         return 0
 
+    # Fail CLOSED on an underivable machine. Publishing under a guessed or blank
+    # token would be refused by the writer anyway, and a wrong token that did
+    # pass would misattribute the row.
+    try:
+        attribution = publishing_attribution()
+    except AttributionError as error:
+        print(json.dumps(
+            {"error": f"cannot derive the publishing machine: {error}"},
+            sort_keys=True,
+        ))
+        return 2
+
     try:
         ensure_clone(clone, net_wrapper=args.net_wrapper)
     except subprocess.CalledProcessError as error:
@@ -140,7 +171,8 @@ def main(argv: list[str] | None = None) -> int:
     failed = 0
     for parent in parents:
         try:
-            report = publish_parent(parent, clone, timeout=args.timeout_seconds)
+            report = publish_parent(parent, clone, timeout=args.timeout_seconds,
+                                    attribution=attribution)
         except subprocess.TimeoutExpired:
             report = {"parent": str(parent), "rc": 124, "error": "publish timed out"}
         # A refusal is never fatal to the sweep: the batch stays spooled and the
