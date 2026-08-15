@@ -681,3 +681,40 @@ mentions a timeout matches, and a genuinely hang-shaped blocker need not use the
 **This also lands squarely in §12.10's family**, and is its ninth instance — a truncating filter
 asserting a negative, arrived at independently on another machine. The pattern now has an
 out-of-house witness.
+
+### 12.12 STANDING RULE for devbig030: do not invoke full or privileged profile — use `--portable-only`
+
+**Owner directive, 2026-08-15, effective immediately.** It changes what we run here, not what counts.
+
+**Why — MEASURED HERE (§12 and the dispatch investigation):** **35 full-profile runs on this host
+since the 08-11 reboot; 16 died on `privileged-cpuid.faulting`; ZERO passed.** Nothing intermittent.
+This host lacks CPUID faulting, the full plan hard-requires that node, so a full run here is
+structurally guaranteed to fail — burning real CPU and minting a worthless ledger row each time.
+
+**What to run instead — RELAYED from `hermit-sabre`:** portable-only **completes** here. 1 pass in 7
+post-boot, and the six failures were **contingent** (real test failures, clippy, three CPU timeouts)
+rather than structural. **A determinate verdict beats a guaranteed non-result.**
+
+**The reporting rule, non-negotiable: never report a portable-only result without naming the profile
+beside it.** A portable-only green is indistinguishable from a full green in any summary that omits
+the profile. That is the same wrong-noun failure that produced a wrong green SHA reported hourly for
+most of 2026-08-15 (§12.1).
+
+**A portable-only pass is NOT a receipt.** Anything needing a qualifying receipt still routes to
+devbig014.
+
+**MEASURED HERE — the exact floors, because the two in circulation are not the same thing:**
+
+- `ci-hub/validate/qualifying-receipt.json` is the single canonical predicate and requires
+  `commit_anchored: true`, `tree_dirty: false`, **`profile: "full"`**, `selection_mode: "full"`,
+  `result: "pass"`, `failures_max: 0`, `executed_tests_min: 1`, plus `accepts_green_class: ["hard"]`
+  and a coverage block. **`profile: "full"` is why a portable-only pass can never be a receipt.**
+  **There is no `checks == 5` in it.**
+- `ci-hub/landing/reconcile_receipts.py:72-75` does test `profile == "full" and result == "pass" and
+  checks == 5` — but **that is a cheap local prefilter, deliberately looser, not a second floor.**
+  The file says so itself at `:22-23`: the `is_clean_full_pass` certifier (`ci-hub validate-status`)
+  is the arbiter and "local-history's `checks==5` prefilter is LOOSER". Do not quote `checks==5` as
+  a requirement to satisfy; it selects candidates the real certifier then narrows.
+
+**If a full run is genuinely needed here: say so and stop. Do not run it.** The owner authorises or
+reroutes in one message.
