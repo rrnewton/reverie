@@ -171,6 +171,99 @@ printf '{"checked_at": %s, "aggregate": "NO_RESULT", "surfaces": {}}\n' "$(date 
 expect "a fresh NO_RESULT record still fails closed" \
     2 "last recorded verdict was NO_RESULT" --admission-check --record "$record"
 
+# ------------------------------------------------- the tick-hub reporting contract
+# The probe worked for this whole session while the tick showed nothing, because
+# tick-hub resolves `{summary}` from stdout `key=value` lines and the probe
+# emitted none. These brackets cover the CONTRACT between probe and engine,
+# which the surface brackets above never touched: a gate that has never emitted
+# has never been validated.
+echo
+echo "[7] tick-hub reporting contract: summary= must render AND must report"
+
+harvest() { # harvest <args...> -- echo the parse_kv_lines field set, sorted
+    python3 - "$DETECTOR" "$@" <<'PY'
+import subprocess, sys
+out = subprocess.run([sys.executable, *sys.argv[1:]], capture_output=True,
+                     text=True).stdout
+fields = {}
+for line in out.splitlines():                 # mirrors tick_hub.engine.parse_kv_lines
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    if "=" in line:
+        key, _, value = line.partition("=")
+        if key.strip():
+            fields[key.strip()] = value.strip()
+print(",".join(sorted(fields)))
+PY
+}
+
+# Present direction, on the inert scratch fixture -- never a planted real runner.
+install_scratch_runner
+install_scratch_unit
+expect "summary names ONLY the surface that is not PRESENT" \
+    2 "summary=NO_RESULT on 1 of 4 surfaces -- registration" \
+    --install-root "$PROBE_ROOT" --service "$UNIT" --offline
+
+got=$(harvest --install-root "$PROBE_ROOT" --service "$UNIT" --offline)
+if [[ $got == "summary" ]]; then
+    echo "  PASS  stdout harvests EXACTLY one field and it is summary"
+    pass=$((pass + 1))
+else
+    echo "  FAIL  stdout harvests '$got', wanted exactly 'summary'"
+    fail=$((fail + 1))
+fi
+
+# Absent direction: same probe, a root that does not exist.
+# The scratch unit is still enabled+running here, so `service` is legitimately
+# PRESENT: the summary must name the three that are NOT, and must NOT claim four.
+# That it reads "1 of 4 ... registration" above and "3 of 4 ..." here is the
+# evidence that it reports state rather than rendering a constant.
+expect "summary reports the absence, naming exactly the three failing surfaces" \
+    2 "summary=NO_RESULT on 3 of 4 surfaces -- installation ABSENT, credentials ABSENT, registration NO_RESULT" \
+    --install-root "$PROBE_ROOT/does-not-exist" --service "$UNIT" --offline
+
+# A detail containing `=` must not become a field. This is the defect the
+# missing summary was masking: gate_runner_presence.py renders
+# "... is ENABLED but ActiveState={active}", and splitting on the FIRST `=`
+# would key a field on the whole leading sentence. Bracketed against the
+# REAL renderer (report_lines), not a copy of its format strings, and against
+# an all-PRESENT set that is unreachable offline because registration needs
+# GitHub -- so the positive direction is proven without planting a live runner.
+python3 - "$DETECTOR" <<'PY' && { echo "  PASS  hostile '=' detail yields only summary; all-PRESENT summarises as PRESENT"; pass=$((pass + 1)); } || { echo "  FAIL  reporting contract broken on hostile detail or all-PRESENT set"; fail=$((fail + 1)); }
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("grp", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+sys.modules["grp"] = m           # @dataclass resolves via sys.modules[__module__]
+spec.loader.exec_module(m)
+
+def harvest(lines):              # mirrors tick_hub.engine.parse_kv_lines
+    out = {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" in line:
+            key, _, value = line.partition("=")
+            if key.strip():
+                out[key.strip()] = value.strip()
+    return out
+
+hostile = [m.Surface("installation", m.PRESENT, "ok"),
+           m.Surface("credentials", m.PRESENT, "ok"),
+           m.Surface("service", m.ABSENT, "svc is ENABLED but ActiveState=inactive"),
+           m.Surface("registration", m.NO_RESULT, "offline")]
+fields = harvest(m.report_lines(m.NO_RESULT, "svc", "/root", hostile))
+assert set(fields) == {"summary"}, f"leaked fields: {sorted(fields)}"
+assert "ActiveState" not in "".join(fields), fields
+assert "service ABSENT" in fields["summary"], fields["summary"]
+
+allp = [m.Surface(n, m.PRESENT, "ok") for n in
+        ("installation", "credentials", "service", "registration")]
+got = harvest(m.report_lines(m.PRESENT, "svc", "/root", allp))["summary"]
+assert got == "PRESENT: all 4 surfaces PRESENT", got
+PY
+
 echo
 echo "brackets: ${pass} passed, ${fail} failed"
 [[ $fail -eq 0 ]]

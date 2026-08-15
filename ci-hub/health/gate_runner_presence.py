@@ -369,6 +369,46 @@ def read_cadence(path: Path, max_age: int) -> tuple[str, str]:
     return PRESENT, f"gate runner confirmed present {age}s ago, within the {max_age}s cadence"
 
 
+def summary_line(aggregate: str, surfaces: list[Surface]) -> str:
+    """The one machine-readable line tick-hub harvests for `{summary}`.
+
+    tick-hub resolves an emit title's placeholders from the gate command's
+    stdout `key=value` lines (agent-utils/py/tick_hub/engine.py:64,
+    `parse_kv_lines`). This probe printed a human report and no `key=value` line
+    at all, so `{summary}` never resolved and the configured action was replaced
+    by NO-SIGNAL every cycle -- the probe worked the whole time while the tick
+    showed nothing. The value must therefore carry the verdict AND which
+    surfaces carry it: a summary that renders but does not report would restore
+    emission while leaving the gate just as uninformative.
+    """
+    failing = [s for s in surfaces if not s.ok]
+    if not failing:
+        return f"{aggregate}: all {len(surfaces)} surfaces PRESENT"
+    named = ", ".join(f"{s.name} {s.verdict}" for s in failing)
+    text = f"{aggregate} on {len(failing)} of {len(surfaces)} surfaces -- {named}"
+    if failing[0].detail:
+        text += f"; first: {failing[0].detail}"
+    # One line, whitespace-squeezed: parse_kv_lines is line-oriented, and a
+    # title is not truncated downstream the way a detail field is.
+    return " ".join(text.split())[:240]
+
+
+def report_lines(aggregate: str, service: str, install_root, surfaces: list[Surface]) -> list[str]:
+    """Every stdout line of the human report, as tick-hub will see them.
+
+    Extracted so the probe/engine contract can be bracketed directly on hostile
+    input -- a detail containing `=` -- instead of by duplicating these format
+    strings in the test, which would assert the test's copy rather than this one.
+    """
+    lines = [f"# GATE RUNNER {aggregate} -- {service} @ {install_root}"]
+    lines += [f"#   {s.verdict:<9} {s.name:<13} {s.detail}" for s in surfaces]
+    if aggregate != PRESENT:
+        failed = ", ".join(s.name for s in surfaces if not s.ok)
+        lines.append(f"#   admission must treat this as NO_RESULT (surfaces: {failed})")
+    lines.append(f"summary={summary_line(aggregate, surfaces)}")
+    return lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -392,8 +432,13 @@ def main() -> int:
             return 3
         verdict, detail = read_cadence(Path(args.record), args.max_age)
         payload = {"aggregate": verdict, "detail": detail, "mode": "admission"}
-        print(json.dumps(payload, indent=2) if args.json
-              else f"GATE RUNNER {verdict}: {detail}")
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        else:
+            # Same contract as the full path below: report `#`-prefixed so it
+            # cannot be harvested, verdict carried on one `summary=` line.
+            print(f"# GATE RUNNER {verdict}: {detail}")
+            print(f"summary={' '.join(f'{verdict}: {detail}'.split())[:240]}")
         return 0 if verdict == PRESENT else 2
 
     aggregate, surfaces = evaluate(args)
@@ -402,12 +447,15 @@ def main() -> int:
         print(json.dumps({"aggregate": aggregate,
                           "surfaces": [asdict(s) for s in surfaces]}, indent=2))
     else:
-        print(f"GATE RUNNER {aggregate} -- {args.service} @ {args.install_root}")
-        for s in surfaces:
-            print(f"  {s.verdict:<9} {s.name:<13} {s.detail}")
-        if aggregate != PRESENT:
-            failed = ", ".join(s.name for s in surfaces if not s.ok)
-            print(f"  admission must treat this as NO_RESULT (surfaces: {failed})")
+        # The human report is `#`-prefixed because tick-hub harvests EVERY
+        # unprefixed stdout line containing `=` into a field, splitting on the
+        # FIRST `=`. A free-text detail such as "... is ENABLED but
+        # ActiveState=inactive" would otherwise become a field whose key is the
+        # whole leading sentence. Marking the report as comment lines -- which
+        # parse_kv_lines documents as ignored -- makes the boundary structural,
+        # so no future detail string can leak a field by containing `=`.
+        for line in report_lines(aggregate, args.service, args.install_root, surfaces):
+            print(line)
 
     if args.record:
         write_record(Path(args.record), aggregate, surfaces)
