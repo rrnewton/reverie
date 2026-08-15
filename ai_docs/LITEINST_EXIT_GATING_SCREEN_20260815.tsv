@@ -331,6 +331,17 @@
 # PREQUALIFIED-3	  faccessat2-flags 138->937; fadvise-hints 130->929; fallocate-extents 135->934; file-backed-mmap 138->937; flock-lifecycle 133->932; fsync-durability 130->929. All +799.
 # PREQUALIFIED-3	PROGRESS AGAINST THE POOL: 40 pre-qualifiable, 18 done, 22 remain. No host required for any of it.
 # PREQUALIFIED-3	DELTA n=39: {795 x1, 797 x1, 799 x36, 802 x1}. The band is holding across four fixture families; fchmodat2-flags at +802 is still the only exception.
+# PREQUALIFIED-4 2026-08-15 (hermit-sabre): SIX MORE. THE QUALIFIED-AND-WAITING SET IS TWENTY-FOUR OF FORTY.
+# PREQUALIFIED-4	All six: step 1 enforced and passed; accept exit 0 on ptrace AND liteinst with verdict=matched and bitwise_parity=true; refuse exit 1 on both.
+# PREQUALIFIED-4	  ftruncate-sparse 138->937; inotify-watch 119->918; ioctl-fionread 129->928; memfd-create 127->926; mempolicy-default 116->915; mknod-special 140->939. All +799.
+# PREQUALIFIED-4	POOL: 40 pre-qualifiable, 24 measured, 16 remain. Zero host time consumed by any of it.
+# PREQUALIFIED-4	DELTA n=45: {795 x1, 797 x1, 799 x42, 802 x1}. 42 identical values across five fixture families is not noise, and the case for someone owning the investigation is stronger than at n=8. STILL NOT MY CAUSE TO NAME.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/ftruncate-sparse	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->937 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/inotify-watch	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 119->918 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/ioctl-fionread	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 129->928 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/memfd-create	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 127->926 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/mempolicy-default	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 116->915 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/mknod-special	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 140->939 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/faccessat2-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->937 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fadvise-hints	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 130->929 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fallocate-extents	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 135->934 delta 799
