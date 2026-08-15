@@ -251,6 +251,27 @@ reminders:
   #   ./ci-hub/health/unpushed_parent_commits.py --scope all --rescue
   # (it bounds itself with --rescue-deadline and reports skipped-deadline rather
   # than implying coverage it never attempted).
+  # Change clones are SEPARATE REPOSITORIES: `git worktree list` in the parent
+  # lists none of them, so the gate above cannot see them however it is scoped.
+  # That gate's 0 is the true answer for the parent and stays that way; this is a
+  # second enumeration over a different population, not a widening of the first.
+  # `dispose` already refuses to remove a clone holding such work, but a refusal
+  # protects work already at risk without telling anyone it exists -- two commits
+  # sat in an abandoned clone for two days and were found twice by accident.
+  # Reporting only: this never pushes, disposes or preserves.
+  - name: unpushed_change_clone_commits
+    cadence_secs: 900
+    gate:
+      cmd: ./ci-hub/health/unpushed_change_clone_commits.py
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: unpushed-change-clone-commits
+      title: "ci-hub change clone(s) hold commits on no remote ref: {summary}"
+
   - name: unpushed_parent_commits
     cadence_secs: 900
     gate:
