@@ -851,6 +851,76 @@ def command_status(args: argparse.Namespace) -> None:
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
+def unpushed_in_clone(repo: Path) -> list[str]:
+    """Commits in `repo` reachable from no remote-tracking ref.
+
+    Uses the same enumeration as the parent's unpushed-commits health gate:
+    `--exclude=refs/tags/*` before `--all` so that branches, HEAD, and every
+    worktree's HEAD are all considered while tags are not. Tags are excluded
+    because a tag can point into a submodule's history and report commits that
+    no push could ever retire; `--branches` alone would drop a detached HEAD,
+    which is exactly the state a clone is left in by an interrupted change.
+    """
+    out = git(repo, "rev-list", "--exclude=refs/tags/*", "--all", "--not", "--remotes")
+    return [line for line in out.splitlines() if line]
+
+
+def command_dispose(args: argparse.Namespace) -> None:
+    """Retire one per-change clone, refusing whenever anything is at risk.
+
+    THE REFUSAL IS THE POINT. `create` already tells a caller that "a
+    coordinator must disposition the per-change clone before creating another",
+    and until now no operation did that, so clones accumulated and the
+    disposition decision rested on an agent noticing unpushed work by hand. One
+    such clone held two commits that existed on no remote ref for two days.
+    """
+    destination = Path(args.clone).expanduser().resolve()
+    if not destination.is_dir():
+        raise Refusal(f"clone path does not exist: {destination}")
+    # Check for the checkout before asking Git to resolve a root: pointed at a
+    # plain directory, root resolution surfaces an unrelated tool's hint rather
+    # than a refusal, and a refusal a caller cannot read is not a refusal.
+    if not (destination / ".git").exists():
+        raise Refusal(f"{destination} is not a Git checkout; dispose only retires change clones")
+    repo = repository_root(destination)
+    if repo != destination:
+        raise Refusal(
+            f"{destination} is not the root of a checkout (root is {repo}); "
+            "dispose only ever removes a change clone it was pointed at exactly"
+        )
+    # Refuses unless a change manifest names this exact path, so dispose can
+    # never be aimed at the primary or at an unrelated checkout.
+    manifest = load_manifest(repo)
+    if not is_clean(repo):
+        dirty = git(repo, "status", "--porcelain")
+        count = len([line for line in dirty.splitlines() if line])
+        raise Refusal(
+            f"clone {destination} has {count} uncommitted or untracked path(s); "
+            "commit or remove them deliberately, never by disposal"
+        )
+    unpushed = unpushed_in_clone(repo)
+    if unpushed:
+        branch = git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+        raise Refusal(
+            f"clone {destination} holds {len(unpushed)} commit(s) on no remote "
+            f"ref (branch {branch}, task {manifest.get('task')}, tip "
+            f"{unpushed[0]}); PRESERVE THEM FIRST -- disposal never removes "
+            "work that exists nowhere else"
+        )
+    head = git(repo, "rev-parse", "HEAD^{commit}")
+    reachable = git(repo, "branch", "--remotes", "--contains", head)
+    if not reachable.strip():
+        raise Refusal(
+            f"clone {destination} HEAD {head} is on no remote-tracking branch, "
+            "so there would be no recovery commit to record"
+        )
+    shutil.rmtree(destination)
+    print(
+        f"CI_HUB_CHANGE disposed={destination} task={manifest.get('task')} "
+        f"recovery_sha={head} recovery_refs={','.join(reachable.split())}"
+    )
+
+
 def command_activation_obligations(args: argparse.Namespace) -> int:
     primary = Path(args.primary).expanduser().resolve()
     store = activation_store_path(primary, args.store)
@@ -892,6 +962,13 @@ def parser() -> argparse.ArgumentParser:
     obligations.add_argument("--primary", default="/home/newton/work/dev-hermit")
     obligations.add_argument("--store", type=Path)
     obligations.set_defaults(func=command_activation_obligations)
+    dispose = commands.add_parser(
+        "dispose",
+        description="retire one per-change clone, refusing if anything is at risk",
+        help="retire one per-change clone, refusing if anything is at risk",
+    )
+    dispose.add_argument("--clone", required=True)
+    dispose.set_defaults(func=command_dispose)
     status = commands.add_parser("status", description="show manifest and seal state", help="show manifest and seal state")
     status.add_argument("--clone")
     status.set_defaults(func=command_status)
