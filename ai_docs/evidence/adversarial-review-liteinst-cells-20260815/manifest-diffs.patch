@@ -1,0 +1,279 @@
+diff --git a/tests/e2e/manifests/backend-parity-c.toml b/tests/e2e/manifests/backend-parity-c.toml
+index 98ec0749a..666d89a50 100644
+--- a/tests/e2e/manifests/backend-parity-c.toml
++++ b/tests/e2e/manifests/backend-parity-c.toml
+@@ -21,12 +21,12 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace"]
++backends_enabled = ["ptrace", "liteinst"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately"
+ sabre = "Not evaluated in the source backend-parity matrix; qualify SaBRe separately"
+-liteinst = "Not evaluated in the source backend-parity matrix; qualify LiteInst separately"
+ 
+ [test.modes.naked]
+ ci = false
+@@ -144,6 +144,7 @@ cflags = ["-D_GNU_SOURCE"]
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "DBT completes the five-step contract but its dedicated adapter publishes typed no_result with no INFO comparison, so it cannot establish L2"
+ kvm = "Current KVM fixture and /bin/true controls time out before guest start on the validation host, so no personality-specific verdict is available"
+@@ -1029,6 +1030,7 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately"
+@@ -1555,6 +1557,7 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately"
+@@ -2724,6 +2727,7 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately"
+@@ -2957,6 +2961,7 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately"
+@@ -3485,12 +3490,11 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace"]
++backends_enabled = ["ptrace", "liteinst"]
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "KVM ElfExecutor personality returns deterministic ENOSYS for sendfile(2); the in-kernel copy path is not yet emulated"
+ sabre = "Not evaluated in the source backend-parity matrix; qualify SaBRe separately"
+-liteinst = "Not evaluated in the source backend-parity matrix; qualify LiteInst separately"
+ 
+ [test.modes.naked]
+ ci = false
+@@ -3842,12 +3846,11 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace"]
++backends_enabled = ["ptrace", "liteinst"]
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately"
+ sabre = "Not evaluated in the source backend-parity matrix; qualify SaBRe separately"
+-liteinst = "Not evaluated in the source backend-parity matrix; qualify LiteInst separately"
+ 
+ [test.modes.naked]
+ ci = false
+@@ -3900,12 +3903,11 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace"]
++backends_enabled = ["ptrace", "liteinst"]
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately"
+ sabre = "Not evaluated in the source backend-parity matrix; qualify SaBRe separately"
+-liteinst = "Not evaluated in the source backend-parity matrix; qualify LiteInst separately"
+ 
+ [test.modes.naked]
+ ci = false
+@@ -4654,12 +4656,12 @@ cflags = ["-D_GNU_SOURCE"]
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace"]
++backends_enabled = ["ptrace", "liteinst"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "KVM ElfExecutor does not implement the F_GETPIPE_SZ/F_SETPIPE_SZ pipe-capacity fcntl commands and returns a deterministic error"
+ sabre = "Not evaluated in the source backend-parity matrix; qualify SaBRe separately"
+-liteinst = "Not evaluated in the source backend-parity matrix; qualify LiteInst separately"
+ 
+ [test.modes.naked]
+ ci = false
+@@ -4717,6 +4719,7 @@ cflags = ["-D_GNU_SOURCE"]
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "KVM ElfExecutor implements F_SETLK advisory locking but returns a deterministic ENOSYS for F_GETLK lock queries"
+@@ -4841,6 +4844,7 @@ cflags = ["-D_GNU_SOURCE"]
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately"
+@@ -4902,12 +4906,12 @@ cflags = ["-D_GNU_SOURCE"]
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace"]
++backends_enabled = ["ptrace", "liteinst"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "KVM ElfExecutor returns a deterministic error for the F_SETOWN/F_GETOWN async-I/O owner fcntl family, so the SIGIO/SIGURG owner round-trip is unavailable"
+ sabre = "Not evaluated in the source backend-parity matrix; qualify SaBRe separately"
+-liteinst = "Not evaluated in the source backend-parity matrix; qualify LiteInst separately"
+ 
+ [test.modes.naked]
+ ci = false
+@@ -4965,6 +4969,7 @@ cflags = ["-D_GNU_SOURCE"]
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately"
+ kvm = "L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately"
+@@ -5346,6 +5351,7 @@ cflags = ["-D_GNU_SOURCE"]
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "Measured: the guest produces NO stdout and hermit exits 1 under --backend dbi, so the fixture does not complete there. Recorded as an observed gap, not diagnosed by this change"
+ kvm = "KVM times out before guest start on the validation host, so no split-pattern verdict is available"
+@@ -5407,12 +5413,12 @@ cflags = ["-D_GNU_SOURCE"]
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace"]
++backends_enabled = ["ptrace", "liteinst"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "Measured: the guest produces NO stdout and the run is killed at 150s under --backend dbi, so the event-delivery legs never complete there. Observed gap, not diagnosed by this change"
+ kvm = "KVM does not start the guest on the validation host; the existing inotify_watch entry already records that its ElfExecutor personality omits the inotify family"
+ sabre = "Not yet qualified for inotify/signalfd event delivery"
+-liteinst = "Not yet qualified for inotify/signalfd event delivery"
+ 
+ [test.modes.naked]
+ ci = false
+@@ -5525,12 +5531,11 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace"]
++backends_enabled = ["ptrace", "liteinst"]
+ [test.modes.verify.backends_disabled]
+ dbt = "New top-of-funnel coverage is established on the ptrace reference first; DBI ratchets against it separately"
+ kvm = "New top-of-funnel coverage is established on the ptrace reference first; KVM ratchets against it separately"
+ sabre = "New top-of-funnel coverage is established on the ptrace reference first; SaBRe ratchets against it separately"
+-liteinst = "New top-of-funnel coverage is established on the ptrace reference first; LiteInst ratchets against it separately"
+ 
+ [test.modes.naked]
+ ci = false
+@@ -5584,12 +5589,11 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace"]
++backends_enabled = ["ptrace", "liteinst"]
+ [test.modes.verify.backends_disabled]
+ dbt = "New top-of-funnel coverage is established on the ptrace reference first; DBI ratchets against it separately"
+ kvm = "New top-of-funnel coverage is established on the ptrace reference first; KVM ratchets against it separately"
+ sabre = "New top-of-funnel coverage is established on the ptrace reference first; SaBRe ratchets against it separately"
+-liteinst = "New top-of-funnel coverage is established on the ptrace reference first; LiteInst ratchets against it separately"
+ 
+ [test.modes.naked]
+ ci = false
+diff --git a/tests/e2e/manifests/c-programs.toml b/tests/e2e/manifests/c-programs.toml
+index 6b4b794d4..39d561ab6 100644
+--- a/tests/e2e/manifests/c-programs.toml
++++ b/tests/e2e/manifests/c-programs.toml
+@@ -1885,10 +1885,9 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace", "dbt", "sabre"]
++backends_enabled = ["ptrace", "dbt", "sabre", "liteinst"]
+ [test.modes.verify.backends_disabled]
+ kvm = "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately"
+-liteinst = "Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately"
+ 
+ [test.modes.naked]
+ ci = false
+@@ -3727,7 +3726,7 @@ observation = { status = true, stdout = true, stderr = false, artifacts = [] }
+ 
+ [test.modes.verify]
+ ci = true
+-backends_enabled = ["ptrace"]
++backends_enabled = ["ptrace", "liteinst"]
+ # Run the canonical parity comparator and require the run's own verdict to
+ # report it. Plain `--verify` is the lossy Stripped comparator and would leave
+ # this cell asserting L1 while its justification claims L2.
+@@ -3736,7 +3735,6 @@ assert = { bitwise_parity = true }
+ dbt = "pause(2) scheduler interaction is qualified against the ptrace reference first; qualify DBT separately"
+ kvm = "pause(2) scheduler interaction is qualified against the ptrace reference first; qualify KVM separately"
+ sabre = "pause(2) scheduler interaction is qualified against the ptrace reference first; qualify SaBRe separately"
+-liteinst = "pause(2) scheduler interaction is qualified against the ptrace reference first; qualify LiteInst separately"
+ 
+ [test.modes.naked]
+ ci = false
+diff --git a/tests/e2e/manifests/language-runtimes.toml b/tests/e2e/manifests/language-runtimes.toml
+index 22657b3ad..8b5e08c61 100644
+--- a/tests/e2e/manifests/language-runtimes.toml
++++ b/tests/e2e/manifests/language-runtimes.toml
+@@ -577,6 +577,7 @@ backends_enabled = ["native"]
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "DBT Python support is tracked by backend compatibility"
+ kvm = "KVM Python coverage is in the privileged applications bucket"
+diff --git a/tests/e2e/manifests/system-utils.toml b/tests/e2e/manifests/system-utils.toml
+index 49dba1279..5280a3c03 100644
+--- a/tests/e2e/manifests/system-utils.toml
++++ b/tests/e2e/manifests/system-utils.toml
+@@ -299,6 +299,7 @@ backends_enabled = ["native"]
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "DBT coverage is owned by its backend parity partition"
+ kvm = "KVM requires the privileged runner"
+@@ -520,6 +521,7 @@ backends_enabled = ["native"]
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "DBT coverage is owned by its backend parity partition"
+ kvm = "KVM requires the privileged runner"
+@@ -962,6 +964,7 @@ backends_enabled = ["native"]
+ [test.modes.verify]
+ ci = true
+ backends_enabled = ["ptrace"]
++assert = { bitwise_parity = true }
+ [test.modes.verify.backends_disabled]
+ dbt = "DBT coverage is owned by its backend parity partition"
+ kvm = "KVM requires the privileged runner"

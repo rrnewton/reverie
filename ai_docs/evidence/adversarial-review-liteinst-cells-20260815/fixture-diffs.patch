@@ -1,0 +1,95 @@
+diff --git a/tests/backend-parity/fixtures/mkdir_rmdir.c b/tests/backend-parity/fixtures/mkdir_rmdir.c
+index b86dba33b..d6791be56 100644
+--- a/tests/backend-parity/fixtures/mkdir_rmdir.c
++++ b/tests/backend-parity/fixtures/mkdir_rmdir.c
+@@ -39,6 +39,10 @@
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
++/* Number of behavioral steps this fixture must complete; a lower count is a
++   failure, not a smaller success. */
++#define EXPECTED_CHECKS 6
++
+ static void fail(const char *message) {
+   fprintf(stderr, "%s: %s\n", message, strerror(errno));
+   exit(1);
+@@ -96,5 +100,18 @@ int main(void) {
+     fail("rmdir root");
+ 
+   printf("mkdir_rmdir ok=%d\n", ok);
++
++  /* Every step above must have succeeded. Without this check the guest exits 0
++     no matter how many steps failed, so a real semantic regression only lowers
++     the printed count -- and because both --verify runs lower it identically,
++     bitwise parity still holds and the cell passes green. */
++  if (ok != EXPECTED_CHECKS) {
++    fprintf(
++        stderr,
++        "mkdir_rmdir completed %d of %d steps\n",
++        ok,
++        EXPECTED_CHECKS);
++    return 1;
++  }
+   return 0;
+ }
+diff --git a/tests/backend-parity/fixtures/symlink_ops.c b/tests/backend-parity/fixtures/symlink_ops.c
+index 995b39bf9..326ba8b57 100644
+--- a/tests/backend-parity/fixtures/symlink_ops.c
++++ b/tests/backend-parity/fixtures/symlink_ops.c
+@@ -42,6 +42,10 @@
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
++/* Number of behavioral steps this fixture must complete; a lower count is a
++   failure, not a smaller success. */
++#define EXPECTED_CHECKS 6
++
+ #define PAYLOAD "abcdef"
+ #define PAYLOAD_LEN 6
+ 
+@@ -137,5 +141,15 @@ int main(void) {
+     fail("rmdir root");
+ 
+   printf("symlink_ops size=%ld checksum=%ld ok=%d\n", size, checksum, ok);
++
++  /* Every step above must have succeeded. Without this check the guest exits 0
++     no matter how many steps failed, so a real semantic regression only lowers
++     the printed count -- and because both --verify runs lower it identically,
++     bitwise parity still holds and the cell passes green. */
++  if (ok != EXPECTED_CHECKS) {
++    fprintf(
++        stderr, "symlink_ops completed %d of %d steps\n", ok, EXPECTED_CHECKS);
++    return 1;
++  }
+   return 0;
+ }
+diff --git a/tests/backend-parity/fixtures/umask_mode.c b/tests/backend-parity/fixtures/umask_mode.c
+index d31632354..40c81bf82 100644
+--- a/tests/backend-parity/fixtures/umask_mode.c
++++ b/tests/backend-parity/fixtures/umask_mode.c
+@@ -16,6 +16,10 @@
+ #include <sys/stat.h>
+ #include <unistd.h>
+ 
++/* Number of behavioral steps this fixture must complete; a lower count is a
++   failure, not a smaller success. */
++#define EXPECTED_CHECKS 5
++
+ /* Return the low permission bits (st_mode & 07777) for a path, or -1. */
+ static int perm_bits(const char *path) {
+   struct stat st;
+@@ -85,5 +89,14 @@ int main(void) {
+   rmdir(root);
+ 
+   printf("umask ok=%d\n", ok);
++
++  /* Every step above must have succeeded. Without this check the guest exits 0
++     no matter how many steps failed, so a real semantic regression only lowers
++     the printed count -- and because both --verify runs lower it identically,
++     bitwise parity still holds and the cell passes green. */
++  if (ok != EXPECTED_CHECKS) {
++    fprintf(stderr, "umask completed %d of %d steps\n", ok, EXPECTED_CHECKS);
++    return 1;
++  }
+   return 0;
+ }

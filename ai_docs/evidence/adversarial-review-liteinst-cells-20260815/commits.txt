@@ -1,0 +1,11 @@
+f40babbbb140a771b6080fd81f80d3b3c226f1c1 [hermit2, hermit-liteinst, unresolved, devbig030, role=impl] Enable LiteInst verify on three exit-gated backend-parity cells
+f588e85902a0a044d75b90adba2a870f4c3cd882 [hermit2, hermit-liteinst, unresolved, devbig030, role=impl] Merge origin/main into the LiteInst cell branch
+599182e13bce1c06211fde1415c220c248ffeac1 [hermit2, hermit-liteinst, unresolved, devbig030, role=impl] Use the established EXPECTED_CHECKS idiom in the three repaired fixtures
+93178d3e6bf0cd0d9d528ebe899627d59ca87d5b [hermit2, hermit-liteinst, unresolved, devbig030, role=impl] Enable LiteInst verify on six exit-gated cells qualified by hermit-bytes
+de2b15fe2e320b21a9bdec61b6e5c5986e305cc5 [hermit2, hermit-liteinst, unresolved, devbig030, role=impl] Assert canonical parity on five ternary-gated backend-parity cells
+984dc6c83026fc0106caae1ab2722638efd0d277 [hermit2, hermit-liteinst, unresolved, devbig030, role=impl] Assert canonical parity on four exit-gated backend-parity cells
+2b9f1de0ca2c8f54aabdee3f8cad036418dbcbb8 [hermit2, hermit-liteinst, unresolved, devbig030, role=impl] Assert canonical parity on four already-fail-closed shell cells
+5092583ca347e4ecadac6b87c86d747fbc4ec301 [hermit2, hermit-liteinst, unresolved, devbig030, role=impl] Make three backend-parity fixtures fail closed and assert canonical parity
+97d06af0a4d60a31a3a179d89cdfec9c4ce9c0e3 [hermit2, hermit-liteinst, unresolved, devbig030, role=impl] Emit the scheduler daemon startup line in deterministic program order
+6ece26637ec5674c6b5162d97f9f97ec12d52b0a [hermit2, hermit-sabre, unresolved, devbig030, role=impl] Enable LiteInst for backend-parity-c/aio-refusal verify
+3fc41d5ca2ca0a6900d875718ace3888eadb29f4 [hermit2, hermit-sabre, unresolved, devbig030, role=impl] Enable LiteInst for c-programs/pause-alarm-interrupt verify
