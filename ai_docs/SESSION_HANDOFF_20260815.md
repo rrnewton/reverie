@@ -830,3 +830,51 @@ than their two claims summed.
 
 The advisory order itself is in the task record and **authorises nothing**; it is planning output
 against a base that has since moved.
+
+### 12.18 The 59 non-scoring open PRs, triaged — and abandoned is zero
+
+**RELAYED from `hermit-shell`**, against exact base `302a1a9c0fde564db0292d1ea5cabc91343e79bc` with
+all 59 exact heads fetched. Promoted by `hermit-coord`; **not re-derived.** This is queue state and
+it ages — the base has already moved.
+
+**live 21 · superseded 2 · stale-but-wanted 36 · abandoned 0.** (21+2+36 = 59.)
+
+- **LIVE (21):** #2182, #2250, #2251, #2259, #2262, #2264→#2272 (a real Git ancestry stack — #2272
+  must not rebase directly to main), #2265, #2268→#2269 (also a real stack), #2270, #2271, #2273,
+  #2274, #2275, #2276, #2277, #2281, #2282, #2283, #2285. **Zero scorecard effect is not a value
+  judgement** — the #2276/#2277 fixture gates and #2282/#2283 fixture assertions are real non-cell
+  work.
+- **SUPERSEDED (2), by containment rather than SHA or byte identity:** **#2083** by open **#2240**
+  (named in #2240's own description; #2240 is the current-main successor, blocked on live Reverie
+  #430). **#2260** by landed main `5dde81d08b82754ba40fa00559b5e9581029704a` — main now derives
+  record/replay subscriptions from *every* Determinized syscall, which contains membarrier, and
+  carries `RECORD_VERSION 0x10a` plus an all-determinized subscription test. **Neither closure was
+  performed.**
+- **STALE-BUT-WANTED (36):** #1689, #1851, #2012, #2150, #2162, #2164, #2172, #2175, #2176, #2212,
+  #2215, #2216, #2217, #2218, #2221, #2222, #2224, #2225, #2226, #2227, #2228, #2229, #2230, #2231,
+  #2233, #2234, #2235, #2236, #2237, #2238, #2239, #2240, #2241, #2246, #2248, #2256.
+  **Do not reflexively rebase — first ask whether the approach is still wanted.** Each head has at
+  least one unique patch not patch-equivalent to main, and all are 10–68 commits behind with no
+  update since 2026-08-14, so current-base applicability is *unproved* rather than disproved.
+
+**`abandoned = 0`, and the reason is the discipline:** no authoritative withdrawal of an entire
+approach was found for any of the 59. **Missing validation or review is not death, and age alone is
+not abandonment** — the triage refused to infer withdrawal from silence.
+
+**Stated boundary, which is what makes the counts usable:** historical comment threads were not read,
+no tests were rerun, and semantic correctness was not certified. Supersession rests on source-level
+containment checks; Reverie dependency state was taken live for #430/#443/#453/#455.
+
+### 12.19 #2083 and #2260 are completely superseded — by containment
+
+**RELAYED from `hermit-shell`**, a deep-dive on two of the 59 above. **#2083 vs #2240:** completely
+superseded in the wanted behaviour — both make the same two LiteInst tests require exit 0 on the
+exact guest markers `threads-ok`/`fork-ok`. **#2260 vs landed main `5dde81d08`:** its narrower
+explicit membarrier subscription and version behaviour is contained by the landed general mechanism.
+
+**"Completely superseded by containment, not by SHA or byte identity"** is the operative phrasing,
+and it is the same distinction as §12.16's basis problem and §12.5's ancestor-versus-tip: *equal* and
+*contained* are different tests, and only one of them is the right question here.
+
+Recommended disposition is owner-authorised closure with the successor named. **Nothing was closed;
+these are recommendations, not actions.**
