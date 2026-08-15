@@ -549,9 +549,27 @@ reconciling to a number I did not produce.
 
 **MY COUNT IS AN UPPER BOUND AND SO WAS THEIRS.** Both read the clone's *local* remote-tracking refs,
 which is exactly the check that produced a false refusal on hermit-906 — its work was on the remote
-while its cache said otherwise. I spot-checked one of the six against the remote with `ls-remote`
-(`dev-hermit-who-am-i-rebuild`, `6395b534`): **genuinely absent, a true positive.** The other five
-are **not** verified against the remote. Confirm each with `ls-remote` before treating it as lost.
+while its cache said otherwise.
+
+> **CORRECTION, 2026-08-15, task `preserve-the-five-recommended-clones` — the paragraph above was
+> right to caveat and my own spot-check inside it was WRONG.** I originally reported
+> `dev-hermit-who-am-i-rebuild` / `6395b534` as *"genuinely absent, a true positive."* It is not.
+> `6395b534` is an **ancestor of `origin/hermit2/standing-dev-hermit-work`** (tip `05023b21`) and has
+> been preserved all along. My check was `ls-remote | grep "^<sha>"`, **which matches only refs whose
+> TIP is exactly that commit** — a commit preserved as an ancestor reads as absent. See §12.10.
+>
+> **All six clones are preserved. Not one holds unpushed work.** MEASURED HERE by reachability
+> (`git branch -r --contains`) and independently re-run from the primary checkouts rather than the
+> clones: `213c86a4` → hermit `ci-hub/resolve-task-closure-policy-contradiction` **and PR #2225**;
+> `e1efc42` → reverie same branch **and PR #445**; `80e50e9e` → `ci-hub/p1-a-producer-path` **and
+> PR #132**; `3d8b2339` → `recovery/primary-checkout-remote-config-3d8b2339`; `6395b534` → ancestor
+> of `hermit2/standing-dev-hermit-work`; and all four `agent-utils-publish.W4M2GC` commits are each
+> on 4 origin branches, its HEAD being an **ancestor of `agent-utils` `origin/main`** — that clone is
+> *behind* main, not ahead.
+>
+> **The whole "clones hold unpushed work" figure is an artifact of stale local remote-tracking
+> caches**, not of missing remote objects. The clones were made with narrow refspecs and the work
+> reached the remote by paths that wrote no tracking ref back. **Fetch before counting.**
 
 **The blind spot itself is structural and stands:** change clones are separate repositories, and no
 enumeration of one repository's refs reaches another's objects.
@@ -581,10 +599,49 @@ and by cloning the branch from the URL alone (both commits present, file content
 `61663764` → `5ae9f754` = `316f8b5d…` (matches the seal); → `cfd64cb7` = `b1c894e0…` (does not).
 **Preserving is not vouching.**
 
-### 12.9 A fifth instrument misfire, same family as §6 — MEASURED HERE
+### 12.9 Instrument misfires — see §12.10
 
-Counting commits since 08-14, `git log --since=2026-08-14` returned **8** while
-`git log --since='2026-08-14 00:00:00'` returned **10**. The bare date form is not the midnight
-boundary it looks like. I reported 8 first and caught it only because it disagreed with a figure I
-had been given. **Same shape as the other four: a property of the query read as a property of the
-repository.** Spell the boundary out.
+The fifth misfire (a bare `--since` date silently dropping two commits) was first recorded here.
+**It and the six others are collected in §12.10 with the worked example**, so the count and the
+conclusion sit together rather than being scattered.
+
+### 12.10 Seven misfires of one shape, and the only thing that has ever caught them
+
+Every one of these produced a confident wrong answer that looked right. They are collected because
+the count is the argument: **recognising the pattern did not prevent a single one of them.**
+
+| # | The instrument | It said | The truth |
+|---|---|---|---|
+| 1 | `head -40` on a ref sweep | 3 artifacts "on no ref" | all 3 were tracked |
+| 2 | `awk strftime()` / `uptime -s` | boot at `00:02:37` | `07:02:37Z` — both render **local** time |
+| 3 | `grep -c` on a `###`-structured file | 6 rules | **38** — the pattern matched `##` and list items |
+| 4 | `grep -c` on a table header | 55 closed tasks | **54** — it counted the column header as a row |
+| 5 | `git log --since=2026-08-14` | 8 commits | **10** — see the worked example below |
+| 6 | `grep` for a phrase across a line wrap | 0 occurrences | present — the text wrapped mid-phrase |
+| 7 | `ls-remote \| grep "^<sha>"` | commit not on the remote | preserved as an **ancestor**; tip-match ≠ reachability |
+
+**The conclusion, and it is not a counsel of vigilance.** A zero from a hand-written pattern is a
+claim about the pattern before it is a claim about the corpus. **The only thing that has ever caught
+one of these is a second check that disagrees** — not care, not knowing the failure mode, not
+re-reading. #5 was caught only because it contradicted a figure supplied from outside. #6 was caught
+while writing up #5. #7 was caught because a reachability test contradicted a tip-match, and it had
+*already been written into this document as a verified result* before the second check ran.
+
+**So: for any load-bearing negative, run a second measurement by a different method, and prefer one
+that would fail differently.** A repeat of the same method is not a check.
+
+#### Worked example: a date boundary that silently drops two commits
+
+```
+git log --since=2026-08-14            origin/main   ->  8 commits
+git log --since='2026-08-14 00:00:00' origin/main   -> 10 commits
+```
+
+Same repository, same ref, same intent, **two commits apart.** Git parses the bare form as an
+approximate date that does not resolve to midnight. Nothing errors and nothing warns; the smaller
+number is simply wrong and entirely plausible.
+
+**This is the shape that survives review.** A reviewer sees a reasonable command and a reasonable
+number and has no reason to question either. The only reason the 8 was caught is that it disagreed
+with a figure that came from somewhere else. **Spell the boundary out**, and treat any figure derived
+from a bare date as unanchored until it is.
