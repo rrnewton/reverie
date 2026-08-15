@@ -15,15 +15,25 @@ Reviewed at a pinned pair, recorded by the author:
     hermit main   61b9ba7aa   (still origin/main at promotion time)
     branch tip    f40babbbb   pinned at the author's 12:38 PDT fetch
 
-**THE BRANCH TIP HAS SINCE MOVED AND THE AUTHOR DID NOT RE-FETCH.**
-`origin/feature/liteinst-enable-two-verified-cells` is now **`b8bfa040d`**, one
-commit ahead: *"Enable LiteInst verify on six exit-gated backend-parity cells"*.
+**THE REMOTE BRANCH TIP IS NOT f40babbbb.** Measured here after
+`git fetch origin --prune` at promotion time:
+`origin/feature/liteinst-enable-two-verified-cells` is **`b8bfa040d`**, and
+`f40babbbb` is its ancestor. The local branch of the same name is also
+`b8bfa040d`, and no ref anywhere resolves to `f40babbbb`.
 
-**That commit is NOT covered by this review.** The 31/31 result is true of
-`f40babbbb` and says nothing about the six cells added after it. Quote this
-evidence as **"31/31 at `f40babbbb`"**, never as "the branch is reviewed" — a
-verification is bound to a head exactly as an approval is, and the bare phrase is
-the one people trust instead of checking.
+**A CONFLICT IS RECORDED HERE RATHER THAN ADJUDICATED.** The author reported
+re-establishing the tip before editing and finding it *still* `f40babbbb`. That is
+not reproducible by the method used here — a pruned fetch, then
+`git branch -r --contains`, then `rev-parse` on both the remote and local refs.
+Either the author read a different ref, or the tip moved between its check and
+mine. **I am not asserting which.** What is established is that at promotion time
+the tip is `b8bfa040d` and one commit sits above the reviewed point.
+
+That commit — *"Enable LiteInst verify on six exit-gated backend-parity cells"* —
+adds six cells the review did not examine. They are named in `RESULTS.md`.
+
+Quote this evidence as **"reviewed at `f40babbbb`"**, never as "the branch is
+reviewed": a verification binds to a head exactly as an approval does.
 
 ## INTEGRITY
 
@@ -40,14 +50,22 @@ promotion time**. A live author plus a short quiet window would normally refuse
 promotion; a complete, self-verifying checksum manifest is the author's own signal
 that the capture is closed.
 
-## WHY THE 27 `.c` FILES ARE HERE
+## WHY THE 27 `.c` FILES ARE **NOT** HERE
 
-They are the baseline/mutant pairs — the reviewer's constructed mutants and their
-unmutated counterparts. They are **not reconstructible** from `fixture-diffs.patch`,
-which is the pull request's own diff rather than the mutations. They are the proof
-of the refuse arm: without them the 31/31 claim cannot be re-verified. 3318 lines
-of C, 130 KB total, all text, no binaries and no build output.
+They were promoted in the first pass and have since been removed at the author's
+direction: the tracked form is the two diffs, the commit list, the extraction
+script and a results table — **the evidence and the means to reproduce it, not the
+bulk.**
+
+**A tension worth recording rather than smoothing over.** I had kept them on the
+grounds that they are the reviewer's constructed mutants, are not reconstructible
+from `fixture-diffs.patch` (which is the pull request's own diff, not the
+mutations), and are therefore the only proof of the refuse arm. The author's
+judgement about its own method governs, and it is the author's evidence. **The
+consequence is explicit: with the mutants gone, the 31/31 claim cannot be
+re-verified from this directory** — their exact bytes remain pinned by the
+checksum manifests, which is provenance without the content.
 
 `commits.txt` records the eleven commits in scope. `extract-cells.py` is the
-15-line helper that derived the cell list. `manifest-diffs.patch` and
-`fixture-diffs.patch` are the reviewed diffs.
+15-line helper that derives the enabled-cell set from any ref, and `RESULTS.md` is
+its output. `manifest-diffs.patch` and `fixture-diffs.patch` are the reviewed diffs.
