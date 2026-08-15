@@ -252,6 +252,20 @@
 # LITEINST-BATCH-3	POOL STATE FOR CLEAN (exec=0 fork=0) CLASS B CANDIDATES: EXHAUSTED. All 12 backend-parity class B cells are accounted for -- 8 qualified, 4 excluded (short-io-split-identity teardown, fork-exec-pipeline exec, cpuid-probe host CPUID, event-delivery-ordering mutant hangs).
 # LITEINST-BATCH-3	  Remaining unqualified candidates all carry a disqualifier or need a hand-written mutation: pid-tid (fork), pid-tid-identity (exec+fork), pipe-prefill (fork, measured), clock-exec-continuity (exec), and lock-free/signal-order/producer-consumer/file-timestamp-identity (need per-fixture mutations).
 # LITEINST-BATCH-3	INFO DELTA REMAINS AT n=8. No new points, because no new cell qualified. Deltas {795,797,799} over ptrace baselines 114-136, additive not proportional, cause still not claimed.
+# LITEINST-CONCURRENCY-LIMIT 2026-08-15 (hermit-sabre): A SECOND LiteInst LIMIT, DISTINCT FROM THE TEARDOWN ONE. MULTITHREADED GUESTS FAIL verify/liteinst.
+# LITEINST-CONCURRENCY-LIMIT	MEASURED ON TWO THREAD-BEARING, FORK-FREE FIXTURES: producer_consumer (pthread_create x2) and lock_free (x1). BOTH accept arms exit 1 with EMPTY stdout under liteinst.
+# LITEINST-CONCURRENCY-LIMIT	  'hermit: [liteinst host hybrid] activation verified (traps=1, hooks=31); Detcore Tool active in ptrace host'  then  'Error: -524 ENOTSUPP (Operation is not supported)'.
+# LITEINST-CONCURRENCY-LIMIT	  ACTIVATION SUCCEEDS AND EXECUTION THEN REFUSES. The failure is not at attach.
+# LITEINST-CONCURRENCY-LIMIT	THE SIGNATURE DIFFERS FROM THE FORK/TEARDOWN LIMIT AND THAT DISTINCTION IS THE POINT -- SAME ERRNO, DIFFERENT FAILURE:
+# LITEINST-CONCURRENCY-LIMIT	  FORK  (short-io-split-identity, pipe-prefill): 'LiteInst cancellation cleanup failed ... notifier did not acknowledge terminal cleanup' PLUS -524 ENOTSUPP.
+# LITEINST-CONCURRENCY-LIMIT	  THREAD (producer-consumer, lock-free): BARE -524 ENOTSUPP, NO notifier message, NO cleanup message.
+# LITEINST-CONCURRENCY-LIMIT	  Reporting them as one limit because the errno matches would merge two different defects. n=2 each, zero successes in either class.
+# LITEINST-CONCURRENCY-LIMIT	CONSEQUENCE FOR THE BATCH STRATEGY: verify/liteinst CURRENTLY REQUIRES A SINGLE-THREADED, NON-FORKING, NON-EXECING GUEST. My eight qualified cells all satisfy that -- I had selected for exec=0 fork=0 pthread_create=0 as a precaution and it turns out to be NECESSARY, not merely prudent.
+# LITEINST-CONCURRENCY-LIMIT	CEILING ON THE REMAINING POPULATION, MEASURED: of the disabled verify/liteinst slots backed by a C program -- ELIGIBLE (single-threaded, no fork, no exec) = 78 ; threads = 5 ; fork = 5 ; exec = 3 ; non-C or program not on disk = 48.
+# LITEINST-CONCURRENCY-LIMIT	  SO THE ADDRESSABLE POOL IS 78, NOT 147. 13 slots are blocked by a measured backend limit and 48 are not C fixtures at all and need a different instrument.
+# LITEINST-CONCURRENCY-LIMIT	producer-consumer's GATE IS SOUND AND IT IS THE BACKEND THAT BLOCKS IT: on ptrace, accept exit 0 'consumed 120 items...', refuse exit 1 with the producer mutated at line 124 and the oracle at line 190 left intact. It is a LiteInst limitation, NOT a fixture defect.
+# LITEINST-CONCURRENCY-LIMIT	file-timestamp-identity IS NOT QUALIFIABLE AS-IS: it prints statx fields and returns 0 unconditionally; its only non-zero exits are setup failures. Class A -- has property (A), lacks (B). Repairing it means asserting virtualized timestamp values, which is an owner decision.
+# LITEINST-CONCURRENCY-LIMIT	ZERO NEW CELLS QUALIFIED THIS PASS. BATCH REMAINS EIGHT. INFO delta remains n=8.
 REFUSABLE	determinism-stress-c/lock-free
 REFUSABLE	determinism-stress-c/pid-tid
 REFUSABLE	determinism-stress-c/pid-tid-identity
