@@ -378,6 +378,18 @@
 # DELTA-CHARACTERISED	AND IT GIVES THE DISCRETE VALUES A PLACE TO COME FROM: /proc/self/maps LENGTH VARIES WITH THE MAPPING COUNT, so a fixture that maps more memory needs more reads to reach EOF. {795,797,799,802} would then be read-count differences. I AM NOT ASSERTING THIS -- IT IS A TESTABLE PREDICTION AND I HAVE NOT TESTED IT.
 # DELTA-CHARACTERISED	  THE TEST THAT WOULD SETTLE IT: compare read-counts against mapping-counts across the two +802 cells (fchmodat2-flags, vectored-file-io) and several +799 cells. NOT RUN.
 # DELTA-CHARACTERISED	TENTH PASS WITHOUT NAMING A CAUSE. What changed is that the observation is now specific enough for the backend owner to act on: 48 reads of /proc/self/maps to EOF per run.
+# DELTA-PREDICTION-REFUTED 2026-08-15 (hermit-sabre): I RAN THE EXPERIMENT I NAMED AND IT REFUTED MY OWN PREDICTION.
+# DELTA-PREDICTION-REFUTED	PREDICTION WAS: {795,797,799,802} are read-count differences, because /proc/self/maps length varies with mapping count.
+# DELTA-PREDICTION-REFUTED	MEASURED across two +802 cells and two +799 cells under liteinst --log=info:
+# DELTA-PREDICTION-REFUTED	  fchmodat2-flags  delta 802  maps 72  reads 470  mmaps 72
+# DELTA-PREDICTION-REFUTED	  vectored-file-io delta 802  maps 72  reads 470  mmaps 72
+# DELTA-PREDICTION-REFUTED	  uname-identity   delta 799  maps 72  reads 470  mmaps 72
+# DELTA-PREDICTION-REFUTED	  statx-metadata   delta 799  maps 72  reads 470  mmaps 72
+# DELTA-PREDICTION-REFUTED	IDENTICAL ON EVERY PREAMBLE METRIC. The maps-scan volume does NOT vary with the delta, so the discrete values do not come from maps length. PREDICTION DEAD.
+# DELTA-PREDICTION-REFUTED	WHAT THE REFUTATION LEAVES STANDING, AND IT IS NARROWER THAN BEFORE: the liteinst preamble is a CONSTANT across fixtures (72 maps opens, 470 reads, 72 mmaps every time). That is measured, not inferred.
+# DELTA-PREDICTION-REFUTED	SO THE 3-MESSAGE DIFFERENCE MUST COME FROM THE FIXTURE'S OWN SYSCALLS BEING LOGGED DIFFERENTLY ON THE TWO BACKENDS -- not from the preamble. Counts: 138->940 and 137->939 for the +802 pair; 110->909 and 128->927 for the +799 pair.
+# DELTA-PREDICTION-REFUTED	  THAT IS A NEW AND UNTESTED STATEMENT. I am not claiming it as the answer; it is where the next experiment should look, and it is a different place from where I looked this time.
+# DELTA-PREDICTION-REFUTED	THE VALUE OF THIS PASS IS THE ELIMINATION, NOT AN ANSWER. Ten passes of refusing to name a cause, then one testable prediction, then a refutation of it -- that is cheaper than having shipped the prediction as a finding.
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/uname-identity	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 110->909 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/vectored-file-io	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 137->939 delta 802 (SECOND 802)
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/signalfd-create	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 122->921 delta 799
