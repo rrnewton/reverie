@@ -1,15 +1,15 @@
 <!-- PROVENANCE: snapshot of ignored/overnight-report-2026-08-15.md promoted 2026-08-15 by hermit-coord
-     source sha256 a39a3e43832f84c8f907b1961d645c76acb1855e2fd49fbdf651817fa6fb81d1
-     source lines 535
-     READING ORDER: the hourly sections are superseded by the CORRECTION section (cells
-     landed is ZERO, not 1); the CORRECTION is qualified by its RESERVATIONS section.
-     Earlier sections are deliberately NOT rewritten -- the nine-hour duration of the
-     error is part of the finding.
+     source sha256 622da788ec84f761d9564deb56796ae8be0134319b7443cde3a71002191479da
+     source lines 554
+     READING ORDER: hourly sections are superseded by the CORRECTION section (cells landed
+     is ZERO, not 1); the CORRECTION is qualified by its RESERVATIONS section; the three-
+     class blocker head-sample is superseded by the completed partition in
+     ai_docs/DISABLED_SLOT_PARTITION_20260815.tsv. Superseded text is deliberately NOT
+     rewritten -- how long each error ran is part of the finding.
      PROVENANCE OF FIGURES: sections are marked MEASURED BY hermit-coord or RELAYED with
      their source named. A relayed figure has not been independently reproduced here.
      THIS IS A SNAPSHOT OF A LIVE FILE. If `sha256sum ignored/overnight-report-2026-08-15.md` no longer equals
-     the hash above, THIS COPY IS STALE. A snapshot with no embedded source hash is
-     indistinguishable from a current file. -->
+     the hash above, THIS COPY IS STALE. -->
 
 
 ## Hour ending — coordinator report
@@ -545,3 +545,22 @@ NAMED REASONS, one per blocked artifact:
 ### PROVENANCE OF THE FIGURES IN THIS HOUR SECTION
 - **RELAYED, MEASURED BY hermit-sabre, NOT REPRODUCED HERE: the eight qualifications and their accept/refuse evidence, the two exclusions, and the ~797 INFO-event characterisation with its n=8 and {795,797,799} spread.**
 - **MEASURED BY hermit-coord: the 84 PR census with both timestamps; the 136 C-population denominator; the independent 151/21/591 derivation; and the blocker-class split. NOTE THAT THE THREE-CLASS SPLIT AND THE '22 liteinst' FIGURE ABOVE ARE THE INCOMPLETE HEAD-SAMPLE — A COMPLETED PARTITION EXISTS AND SUPERSEDES THEM, GIVING owned-elsewhere 88 TOTAL AND liteinst 41 RATHER THAN 22.**
+
+
+## SUPERSEDING THE HEAD-SAMPLE, AND SETTLING #2277's FIXTURE COUNT
+
+### **#2277 GATES 32 FIXTURES. MEASURED FROM THE DIFF AGAINST `origin/main`, NOT FROM THE TITLE — AND ALL THREE CIRCULATING NUMBERS WERE CORRECT AT SOME COMMIT.**
+- **32 files changed vs merge-base `61b9ba7aa`, ALL 32 C fixtures, and ALL 32 GAIN AN `EXPECTED_CHECKS` GATE: zero already gated at base, zero changed without gaining one. Split 27 `tests/backend-parity/fixtures` + 5 `tests/c`.**
+- **WHERE EACH WRONG NUMBER CAME FROM — the branch grew twice and the title was updated once: `fd7734ad4` cumulative 26, `44478fff3` cumulative 31, `8fbed049f` cumulative 32. The live title reads 'Gate 31 fixtures', which was CORRECT WHEN THE PR WAS OPENED AT 09:34:47Z AND WENT STALE WHEN THE THIRD COMMIT WAS PUSHED AROUND 10:30Z.**
+- **SO IT IS THE BENIGN OF THE TWO HYPOTHESES: A TITLE THAT WENT STALE AS COMMITS LANDED, NOT A CONSOLIDATION THAT MOVED CONTENT WITHOUT MOVING THE HEADLINE. A REVIEWER READING THE TITLE UNDERSTATES THE SCOPE BY ONE FIXTURE — IT DOES NOT MISDESCRIBE IT.**
+- **NO EDIT MADE TO #2277. IT IS hermit-sabre's BATON AND THIS IS A MEASUREMENT.**
+- **ONE EARLIER FIGURE OF MINE RECONCILED RATHER THAN LEFT DANGLING: I PREVIOUSLY REPORTED #2277 AS GATING 17 OF MY SCREENED 39; THE TRUE OVERLAP IS 19. NOT A CONTRADICTION — THE 17 USED FIRST-MATCH ATTRIBUTION ACROSS {2108, 2276, 2277}, SO CELLS GATED BY BOTH #2108 AND #2277 WERE CREDITED TO #2108. DIFFERENT QUESTION, BOTH ANSWERS CORRECT TO THEIR OWN QUESTION.**
+
+### THE COMPLETED DISABLED-SLOT PARTITION SUPERSEDES THE THREE-CLASS HEAD-SAMPLE ABOVE
+- **THE HEAD-SAMPLE IS LEFT IN PLACE AND MARKED SUPERSEDED, NOT DELETED. IT COUNTED ONLY THE MOST COMMON REASON STRING PER CLASS AND UNDERCOUNTED `owned-elsewhere` BY 4x.**
+- **THE NUMBERS A READER SHOULD USE, ALL 591 SLOTS IN EXACTLY ONE BUCKET ACROSS 141 DISTINCT REASON STRINGS: NOT-YET-QUALIFIED 367 (62.1%) · OWNED-ELSEWHERE 88 (14.9%) · HOST-CAPABILITY 80 (13.5%) · BACKEND-LIMITATION 55 (9.3%) · OWNER-GATED 1 (0.2%).**
+- **`owned-elsewhere` IS 88, NOT 22, AND LiteInst's SHARE IS 41 NOT 22 — the earlier figure missed a long tail of per-language strings each at n=1 or 2. dbt 43, liteinst 41, kvm 3, sabre 1.**
+- **TWO BUCKETS THE HEAD-SAMPLE HAD NO ROOM FOR, AND NEITHER WAS FORCED: BACKEND-LIMITATION 55 — cells the backend CANNOT run, not cells nobody reached — AND OWNER-GATED 1, the only slot in the corpus whose unblocker is a person.**
+- ***** **ADDRESSABLE FIGURE, NOW EARNED: 367 NOW WITH NO MACHINE AND NO OWNER DECISION; +80 MACHINE-SEQUENCED BEHIND THE PRIVILEGED RUNNER (kvm 47, sabre 33); 144 NOT ADDRESSABLE BY CELL WORK AT ALL. QUOTING 591 AS OPPORTUNITY OVERSTATES IT BY 38%.** *****
+- **AND THE MIX IS TWO CONVERSATIONS, NOT ONE AND NOT FOUR: kvm AND sabre ARE MACHINE-GATED (host-capability 31% and 23%, owned-elsewhere ~0). liteinst AND dbt ARE NOT MACHINE-GATED AT ALL (host-capability EXACTLY ZERO, owned-elsewhere 27% and 30%). 'NOBODY DID THE WORK' IS THE WRONG CONVERSATION FOR KVM AND THE RIGHT ONE FOR LiteInst AND DBT.**
+- **FULL PER-SLOT DATA: `ai_docs/DISABLED_SLOT_PARTITION_20260815.tsv`, 591 rows, one bucket each.**

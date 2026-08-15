@@ -1,0 +1,628 @@
+# DISABLED-SLOT PARTITION -- every ci=true backends_disabled entry in exactly one bucket
+# Produced 2026-08-15 by hermit-coord (devbig030). Read-only measurement; no manifest touched.
+# UNIT: one `<backend> = "<reason>"` line inside a [test.modes.<mode>.backends_disabled] table,
+#       counted only for modes with ci = true. 591 slots, 141 distinct reason strings, no truncation.
+#
+# *** THIS SUPERSEDES THE THREE-CLASS HEAD-SAMPLE (not-yet-qualified / host-capability /
+# *** owned-elsewhere with 'liteinst 22'). THE HEAD-SAMPLE IS NOT DELETED -- it is recorded
+# *** in the night report -- but it counted only the most common reason string per class and
+# *** UNDERCOUNTED owned-elsewhere BY 4x. USE THE TOTALS BELOW.
+#
+# TOTALS
+#   NOT-YET-QUALIFIED     367  62.1%
+#   OWNED-ELSEWHERE        88  14.9%
+#   HOST-CAPABILITY        80  13.5%
+#   BACKEND-LIMITATION     55  9.3%
+#   OWNER-GATED             1  0.2%
+#   TOTAL                 591
+#
+# ADDRESSABLE FIGURE: 367 now (no machine, no owner). +80 machine-sequenced behind the
+#   privileged runner (kvm 47, sabre 33). 144 not addressable by cell work at all.
+#   Quoting 591 as opportunity overstates it by 38%.
+#
+# PER-BACKEND MIX -- TWO CONVERSATIONS, NOT ONE AND NOT FOUR:
+#   kvm/sabre are machine-gated (host-capability 31%/23%, owned-elsewhere ~0)
+#   liteinst/dbt are NOT machine-gated at all (host-capability 0, owned-elsewhere 27%/30%)
+#   backend    total      NOT   OWNED    HOST  BACKEN   OWNER
+#   kvm          151       76       3      47      25       0
+#   liteinst     150      103      41       0       6       0
+#   dbt          144       92      43       0       9       0
+#   sabre        144       94       1      33      15       1
+#   ptrace         2        2       0       0       0       0
+#
+# THE FOURTH AND FIFTH BUCKETS HELD SOMETHING REAL AND WERE NOT FORCED:
+#   BACKEND-LIMITATION (55) = the backend CANNOT run the cell, not nobody-got-to-it.
+#   OWNER-GATED (1) = the only slot in the corpus whose unblocker is a person.
+#   Exactly 2 slots fell out of the automated classifier; both hand-adjudicated.
+test	mode	backend	bucket	reason
+applications/c-toolchain-workflow	verify	dbt	NOT-YET-QUALIFIED	Establish the shared C toolchain transaction on the ptrace reference path before backend ratchets
+applications/c-toolchain-workflow	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner and must ratchet after the ptrace reference path
+applications/c-toolchain-workflow	verify	liteinst	NOT-YET-QUALIFIED	LiteInst multi-exec toolchain qualification must ratchet after the ptrace reference path
+applications/c-toolchain-workflow	verify	sabre	NOT-YET-QUALIFIED	SaBRe multi-exec toolchain qualification must ratchet after the ptrace reference path
+applications/git-repository-workflow	verify	dbt	NOT-YET-QUALIFIED	Establish the shared Git transaction on the ptrace reference path before backend ratchets
+applications/git-repository-workflow	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner and must ratchet after the ptrace reference path
+applications/git-repository-workflow	verify	liteinst	NOT-YET-QUALIFIED	LiteInst multi-exec Git qualification must ratchet after the ptrace reference path
+applications/git-repository-workflow	verify	sabre	NOT-YET-QUALIFIED	SaBRe multi-exec Git qualification must ratchet after the ptrace reference path
+applications/kvm-python-examples	verify	dbt	NOT-YET-QUALIFIED	This test specifically asserts the KVM execution path
+applications/kvm-python-examples	verify	liteinst	NOT-YET-QUALIFIED	This test specifically asserts the KVM execution path
+applications/kvm-python-examples	verify	ptrace	NOT-YET-QUALIFIED	This test specifically asserts the KVM execution path
+applications/kvm-python-examples	verify	sabre	NOT-YET-QUALIFIED	This test specifically asserts the KVM execution path
+applications/kvm-shell-environment	verify	dbt	NOT-YET-QUALIFIED	This test specifically asserts the KVM execution path
+applications/kvm-shell-environment	verify	liteinst	NOT-YET-QUALIFIED	This test specifically asserts the KVM execution path
+applications/kvm-shell-environment	verify	ptrace	NOT-YET-QUALIFIED	This test specifically asserts the KVM execution path
+applications/kvm-shell-environment	verify	sabre	NOT-YET-QUALIFIED	This test specifically asserts the KVM execution path
+applications/timed-progress-bar	verify	dbt	OWNED-ELSEWHERE	DBT application coverage is owned by backend parity
+applications/timed-progress-bar	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+applications/timed-progress-bar	verify	liteinst	OWNED-ELSEWHERE	LiteInst application coverage is owned by backend compatibility
+applications/timed-progress-bar	verify	sabre	BACKEND-LIMITATION	SaBRe does not yet determinize busy-wait polling on virtual wall-clock advancement; main validation has observed verify failure under load
+backend-parity-c/aio-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/aio-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/aio-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/aio-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/append-pwrite	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/append-pwrite	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/append-pwrite	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/append-pwrite	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/bind-getsockname	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/bind-getsockname	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/bind-getsockname	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/bind-getsockname	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/cachestat-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/cachestat-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/cachestat-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/cachestat-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/child-subreaper-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/child-subreaper-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/child-subreaper-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/child-subreaper-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/close-range-fds	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/close-range-fds	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor personality returns deterministic ENOSYS for close_range; ptrace and DBT forward the fd-table syscall
+backend-parity-c/close-range-fds	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/close-range-fds	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/copy-file-range-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/copy-file-range-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/copy-file-range-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/copy-file-range-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/cpuid-probe	verify	dbt	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+backend-parity-c/cpuid-probe	verify	kvm	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+backend-parity-c/cpuid-probe	verify	liteinst	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+backend-parity-c/cpuid-probe	verify	sabre	BACKEND-LIMITATION	SaBRe does not virtualize CPUID; this oracle requires Hermit's synthetic CPU identity
+backend-parity-c/cwd-roundtrip	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/cwd-roundtrip	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/cwd-roundtrip	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/cwd-roundtrip	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/epoll-pwait2	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/epoll-pwait2	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor returns deterministic ENOSYS for epoll_pwait2 (syscall 441); it implements the classic epoll_wait but not the newer wait entry point
+backend-parity-c/epoll-pwait2	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/epoll-pwait2	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/epoll-readiness	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/epoll-readiness	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/epoll-readiness	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/epoll-readiness	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/event-delivery-ordering	verify	dbt	BACKEND-LIMITATION	Measured: the guest produces NO stdout and the run is killed at 150s under --backend dbi, so the event-delivery legs never complete there. Observed gap, not diagnosed by this change
+backend-parity-c/event-delivery-ordering	verify	kvm	HOST-CAPABILITY	KVM does not start the guest on the validation host; the existing inotify_watch entry already records that its ElfExecutor personality omits the inotify family
+backend-parity-c/event-delivery-ordering	verify	liteinst	NOT-YET-QUALIFIED	Not yet qualified for inotify/signalfd event delivery
+backend-parity-c/event-delivery-ordering	verify	sabre	NOT-YET-QUALIFIED	Not yet qualified for inotify/signalfd event delivery
+backend-parity-c/eventfd-semantics	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/eventfd-semantics	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/eventfd-semantics	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/eventfd-semantics	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/faccessat2-flags	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/faccessat2-flags	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/faccessat2-flags	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/faccessat2-flags	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/fadvise-hints	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/fadvise-hints	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/fadvise-hints	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/fadvise-hints	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/fallocate-extents	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/fallocate-extents	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/fallocate-extents	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/fallocate-extents	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/fchmod-bits	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/fchmod-bits	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/fchmod-bits	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/fchmod-bits	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/fchmodat2-flags	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/fchmodat2-flags	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor returns ENOSYS for fchmodat2 (syscall 452); ptrace and DBT forward it to the host
+backend-parity-c/fchmodat2-flags	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/fchmodat2-flags	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/fcntl-owner	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/fcntl-owner	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor returns a deterministic error for the F_SETOWN/F_GETOWN async-I/O owner fcntl family, so the SIGIO/SIGURG owner round-trip is unavailable
+backend-parity-c/fcntl-owner	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/fcntl-owner	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/file-backed-mmap	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/file-backed-mmap	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/file-backed-mmap	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/file-backed-mmap	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/file-io-roundtrip	verify	dbt	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; DBI ratchets against it separately
+backend-parity-c/file-io-roundtrip	verify	kvm	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; KVM ratchets against it separately
+backend-parity-c/file-io-roundtrip	verify	liteinst	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; LiteInst ratchets against it separately
+backend-parity-c/file-io-roundtrip	verify	sabre	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; SaBRe ratchets against it separately
+backend-parity-c/flock-lifecycle	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/flock-lifecycle	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/flock-lifecycle	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/flock-lifecycle	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/fork-exec-pipeline	verify	dbt	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; DBI ratchets against it separately
+backend-parity-c/fork-exec-pipeline	verify	kvm	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; KVM ratchets against it separately
+backend-parity-c/fork-exec-pipeline	verify	liteinst	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; LiteInst ratchets against it separately
+backend-parity-c/fork-exec-pipeline	verify	sabre	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; SaBRe ratchets against it separately
+backend-parity-c/fsync-durability	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/fsync-durability	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor forwards fsync and fdatasync but returns deterministic ENOSYS for syncfs
+backend-parity-c/fsync-durability	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/fsync-durability	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/ftruncate-sparse	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/ftruncate-sparse	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/ftruncate-sparse	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/ftruncate-sparse	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/getrusage-self-accounting	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/getrusage-self-accounting	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/getrusage-self-accounting	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/getrusage-self-accounting	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/host-identity	verify	kvm	HOST-CAPABILITY	KVM times out before guest start on the validation host, so no host-identity verdict is available; re-enable when the startup livelock is fixed
+backend-parity-c/host-identity	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/host-identity	verify	sabre	HOST-CAPABILITY	SaBRe loader is not staged in the default build, so the backend reports unavailable rather than a host-identity verdict
+backend-parity-c/inotify-watch	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/inotify-watch	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor returns a deterministic error for the inotify family (inotify_init1), so the filesystem-watch descriptor lifecycle is unavailable
+backend-parity-c/inotify-watch	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/inotify-watch	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/ioctl-fionread	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/ioctl-fionread	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor returns ENOTTY for the FIONREAD pipe ioctl; FIONBIO is supported
+backend-parity-c/ioctl-fionread	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/ioctl-fionread	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/kcmp-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/kcmp-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/kcmp-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/kcmp-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/linkat-flags	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/linkat-flags	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/linkat-flags	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/linkat-flags	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/mce-kill-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/mce-kill-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/mce-kill-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/mce-kill-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/membarrier-query	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/membarrier-query	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/membarrier-query	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/membarrier-query	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/memfd-create	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/memfd-create	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor personality returns deterministic ENOSYS for memfd_create; ptrace and DBT forward the anonymous-memfd syscall
+backend-parity-c/memfd-create	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/memfd-create	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/mempolicy-default	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/mempolicy-default	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/mempolicy-default	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/mempolicy-default	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/mincore-residency	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/mincore-residency	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/mincore-residency	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/mincore-residency	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/mkdir-rmdir	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/mkdir-rmdir	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/mkdir-rmdir	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/mkdir-rmdir	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/mknod-special	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/mknod-special	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/mknod-special	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/mknod-special	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/msync-writeback	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/msync-writeback	verify	kvm	BACKEND-LIMITATION	KVM msync returns 0 but its in-memory mapping model does not flush MAP_SHARED writes to the backing file, so the pread write-through checks fail and it observes ok=3 instead of ok=5
+backend-parity-c/msync-writeback	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/msync-writeback	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/name-to-handle-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/name-to-handle-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/name-to-handle-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/name-to-handle-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/no-new-privs-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/no-new-privs-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/no-new-privs-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/no-new-privs-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/o-tmpfile-anon	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/o-tmpfile-anon	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/o-tmpfile-anon	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/o-tmpfile-anon	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/openat-flags	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/openat-flags	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/openat-flags	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/openat-flags	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/openat2-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/openat2-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/openat2-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/openat2-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/path-file-ops	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/path-file-ops	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/path-file-ops	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/path-file-ops	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/personality-domain	verify	dbt	BACKEND-LIMITATION	DBT completes the five-step contract but its dedicated adapter publishes typed no_result with no INFO comparison, so it cannot establish L2
+backend-parity-c/personality-domain	verify	kvm	HOST-CAPABILITY	Current KVM fixture and /bin/true controls time out before guest start on the validation host, so no personality-specific verdict is available
+backend-parity-c/personality-domain	verify	liteinst	NOT-YET-QUALIFIED	Not yet qualified for the personality(2) execution-domain round-trip
+backend-parity-c/personality-domain	verify	sabre	NOT-YET-QUALIFIED	Not yet qualified for the personality(2) execution-domain round-trip
+backend-parity-c/pipe-capacity	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/pipe-capacity	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor does not implement the F_GETPIPE_SZ/F_SETPIPE_SZ pipe-capacity fcntl commands and returns a deterministic error
+backend-parity-c/pipe-capacity	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/pipe-capacity	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/pipe-ipc	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/pipe-ipc	verify	kvm	BACKEND-LIMITATION	KVM's child-process personality does not synchronize cross-process pipe I/O with the coordinator, so the parent's blocking read returns EAGAIN instead of the child's bytes
+backend-parity-c/pipe-ipc	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/pipe-ipc	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/pipe2-flags	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/pipe2-flags	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/pipe2-flags	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/pipe2-flags	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/poll-readiness	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/poll-readiness	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor personality implements poll/ppoll readiness but returns deterministic ENOSYS for select(2)/pselect6
+backend-parity-c/poll-readiness	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/poll-readiness	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/prctl-pdeathsig	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/prctl-pdeathsig	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor returns deterministic ENOSYS for prctl PR_SET_PDEATHSIG/PR_GET_PDEATHSIG; ptrace and DBT drive the full parent-death-signal state machine
+backend-parity-c/prctl-pdeathsig	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/prctl-pdeathsig	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/preadv2-flags	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/preadv2-flags	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor does not implement preadv2/pwritev2 (syscalls 327/328); it returns ENOSYS, mirroring its missing classic pwritev/preadv
+backend-parity-c/preadv2-flags	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/preadv2-flags	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/readdir-entries	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/readdir-entries	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/readdir-entries	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/readdir-entries	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/record-lock	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/record-lock	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor implements F_SETLK advisory locking but returns a deterministic ENOSYS for F_GETLK lock queries
+backend-parity-c/record-lock	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/record-lock	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/rename-ops	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/rename-ops	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/rename-ops	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/rename-ops	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/renameat2-flags	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/renameat2-flags	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/renameat2-flags	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/renameat2-flags	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/robust-list	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/robust-list	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/robust-list	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/robust-list	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/seccomp-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/seccomp-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/seccomp-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/seccomp-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/sendfile-copy	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/sendfile-copy	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor personality returns deterministic ENOSYS for sendfile(2); the in-kernel copy path is not yet emulated
+backend-parity-c/sendfile-copy	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/sendfile-copy	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/set-tid-address	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/set-tid-address	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/set-tid-address	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/set-tid-address	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/short-io-split-identity	verify	dbt	BACKEND-LIMITATION	Measured: the guest produces NO stdout and hermit exits 1 under --backend dbi, so the fixture does not complete there. Recorded as an observed gap, not diagnosed by this change
+backend-parity-c/short-io-split-identity	verify	kvm	HOST-CAPABILITY	KVM times out before guest start on the validation host, so no split-pattern verdict is available
+backend-parity-c/short-io-split-identity	verify	liteinst	NOT-YET-QUALIFIED	Not yet qualified for the partial-transfer split contract
+backend-parity-c/short-io-split-identity	verify	sabre	NOT-YET-QUALIFIED	Not yet qualified for the partial-transfer split contract
+backend-parity-c/shutdown-socketpair	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/shutdown-socketpair	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/shutdown-socketpair	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/shutdown-socketpair	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/signal-delivery-sequence	verify	dbt	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; DBI ratchets against it separately
+backend-parity-c/signal-delivery-sequence	verify	kvm	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; KVM ratchets against it separately
+backend-parity-c/signal-delivery-sequence	verify	liteinst	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; LiteInst ratchets against it separately
+backend-parity-c/signal-delivery-sequence	verify	sabre	NOT-YET-QUALIFIED	New top-of-funnel coverage is established on the ptrace reference first; SaBRe ratchets against it separately
+backend-parity-c/signalfd-create	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/signalfd-create	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/signalfd-create	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/signalfd-create	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/socket-options	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/socket-options	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor accepts setsockopt but getsockopt returns ENOPROTOOPT for SO_REUSEADDR/SO_KEEPALIVE/SO_BROADCAST, so the option round-trip observes ok=0 instead of ok=6
+backend-parity-c/socket-options	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/socket-options	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/socketpair-flags	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/socketpair-flags	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor getsockopt implements SO_TYPE but returns ENOPROTOOPT for SO_DOMAIN and SO_ACCEPTCONN, so the socket-introspection contract observes ok=5 instead of ok=7
+backend-parity-c/socketpair-flags	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/socketpair-flags	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/sockname-unnamed	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/sockname-unnamed	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor implements getsockname but returns ENOSYS for getpeername on an AF_UNIX socket pair, so the peer-name checks fail and it observes ok=4 instead of ok=6
+backend-parity-c/sockname-unnamed	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/sockname-unnamed	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/statfs-free-determinism	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/statfs-free-determinism	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/statfs-free-determinism	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/statfs-free-determinism	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/statx-metadata	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/statx-metadata	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/statx-metadata	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/statx-metadata	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/symlink-ops	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/symlink-ops	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/symlink-ops	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/symlink-ops	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/sync-file-range	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/sync-file-range	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/sync-file-range	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/sync-file-range	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/sysv-ipc-refusal	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/sysv-ipc-refusal	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/sysv-ipc-refusal	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/sysv-ipc-refusal	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/thp-disable	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/thp-disable	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor returns deterministic ENOSYS for prctl PR_SET_THP_DISABLE/PR_GET_THP_DISABLE; ptrace and DBT drive the full transparent-hugepage flag round-trip
+backend-parity-c/thp-disable	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/thp-disable	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/umask-mode	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/umask-mode	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/umask-mode	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/umask-mode	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/uname-identity	verify	dbt	BACKEND-LIMITATION	DBT forwards the host uname(2) nodename instead of pinning it; ptrace and KVM determinize the hostname, DBT leaks the real host name
+backend-parity-c/uname-identity	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/uname-identity	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/uname-identity	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/utimensat-determinism	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/utimensat-determinism	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/utimensat-determinism	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/utimensat-determinism	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/vectored-file-io	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/vectored-file-io	verify	kvm	BACKEND-LIMITATION	KVM ElfExecutor returns deterministic ENOSYS for pwritev/preadv (positioned vectored I/O); plain writev/readv are supported but the positioned variants are not
+backend-parity-c/vectored-file-io	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/vectored-file-io	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+backend-parity-c/vectored-io	verify	dbt	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify DBT separately
+backend-parity-c/vectored-io	verify	kvm	NOT-YET-QUALIFIED	L1 parity established in the source matrix row; the L2 --verify witness was not recorded, so qualify KVM separately
+backend-parity-c/vectored-io	verify	liteinst	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify LiteInst separately
+backend-parity-c/vectored-io	verify	sabre	NOT-YET-QUALIFIED	Not evaluated in the source backend-parity matrix; qualify SaBRe separately
+c-programs/add-key-enosys	verify	kvm	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+c-programs/add-key-enosys	verify	liteinst	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+c-programs/cachestat-enosys	verify	kvm	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+c-programs/cachestat-enosys	verify	liteinst	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+c-programs/futex-waitv-enosys	verify	kvm	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+c-programs/futex-waitv-enosys	verify	liteinst	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+c-programs/get-robust-list-self	verify	kvm	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+c-programs/get-robust-list-self	verify	liteinst	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+c-programs/ioctl-fioclex	verify	kvm	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+c-programs/ioctl-fioclex	verify	liteinst	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+c-programs/kcmp-eperm	verify	kvm	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+c-programs/kcmp-eperm	verify	liteinst	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+c-programs/keyctl-enosys	verify	kvm	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+c-programs/keyctl-enosys	verify	liteinst	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+c-programs/listmount-enosys	verify	kvm	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+c-programs/listmount-enosys	verify	liteinst	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+c-programs/pause-alarm-interrupt	verify	dbt	NOT-YET-QUALIFIED	pause(2) scheduler interaction is qualified against the ptrace reference first; qualify DBT separately
+c-programs/pause-alarm-interrupt	verify	kvm	NOT-YET-QUALIFIED	pause(2) scheduler interaction is qualified against the ptrace reference first; qualify KVM separately
+c-programs/pause-alarm-interrupt	verify	liteinst	NOT-YET-QUALIFIED	pause(2) scheduler interaction is qualified against the ptrace reference first; qualify LiteInst separately
+c-programs/pause-alarm-interrupt	verify	sabre	NOT-YET-QUALIFIED	pause(2) scheduler interaction is qualified against the ptrace reference first; qualify SaBRe separately
+c-programs/random-sources	verify	dbt	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+c-programs/random-sources	verify	kvm	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+c-programs/random-sources	verify	liteinst	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+c-programs/random-sources	verify	sabre	NOT-YET-QUALIFIED	Initial C-corpus migration preserves the established ptrace baseline; qualify SaBRe separately
+data-handling/archive-roundtrip	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+data-handling/archive-roundtrip	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+data-handling/archive-roundtrip	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+data-handling/archive-roundtrip	verify	sabre	BACKEND-LIMITATION	The exec socket is fixed, but SaBRe strict verification intermittently diverges in shell PATH lookup and multi-exec DETLOG ordering
+data-handling/jq-json-transform	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+data-handling/jq-json-transform	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+data-handling/jq-json-transform	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+data-handling/jq-json-transform	verify	sabre	OWNED-ELSEWHERE	SaBRe jq qualification is tracked by backend compatibility
+data-handling/shell-pipeline	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+data-handling/shell-pipeline	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+data-handling/shell-pipeline	verify	liteinst	BACKEND-LIMITATION	LiteInst omits the fork/clone/pipe process model this pipeline requires
+data-handling/shell-pipeline	verify	sabre	BACKEND-LIMITATION	Forwarded-DETLOG verification exposes nondeterministic multi-process scheduler and SIGCHLD ordering under SaBRe despite stable stdout
+data-handling/sqlite-query-determinism	verify	dbt	OWNED-ELSEWHERE	DBT SQLite qualification is tracked by backend compatibility
+data-handling/sqlite-query-determinism	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+data-handling/sqlite-query-determinism	verify	liteinst	OWNED-ELSEWHERE	LiteInst SQLite qualification is tracked by backend compatibility
+data-handling/sqlite-query-determinism	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+data-handling/zstd-multithread	verify	dbt	OWNED-ELSEWHERE	DBI coverage is owned by its backend parity partition
+data-handling/zstd-multithread	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+data-handling/zstd-multithread	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+data-handling/zstd-multithread	verify	sabre	BACKEND-LIMITATION	SaBRe strict verification intermittently diverges on multi-thread DETLOG ordering
+determinism-stress-c/lock-free	verify	dbt	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify DBT separately
+determinism-stress-c/lock-free	verify	kvm	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify KVM separately
+determinism-stress-c/lock-free	verify	liteinst	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify LiteInst separately
+determinism-stress-c/lock-free	verify	sabre	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify SaBRe separately
+determinism-stress-c/pid-tid	verify	dbt	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify DBT separately
+determinism-stress-c/pid-tid	verify	kvm	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify KVM separately
+determinism-stress-c/pid-tid	verify	liteinst	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify LiteInst separately
+determinism-stress-c/pid-tid	verify	sabre	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify SaBRe separately
+determinism-stress-c/pid-tid-identity	verify	dbt	BACKEND-LIMITATION	DBT was observed emitting a raw host tid in DETLOG records; this fixture is the gate for enabling it
+determinism-stress-c/pid-tid-identity	verify	kvm	BACKEND-LIMITATION	KVM compares output only and cannot assert DETLOG identity yet
+determinism-stress-c/pid-tid-identity	verify	liteinst	NOT-YET-QUALIFIED	Not yet qualified for the pid-identity fixture
+determinism-stress-c/pid-tid-identity	verify	sabre	NOT-YET-QUALIFIED	Not yet qualified for the pid-identity fixture
+determinism-stress-c/pipe-prefill	verify	dbt	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify DBT separately
+determinism-stress-c/pipe-prefill	verify	kvm	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify KVM separately
+determinism-stress-c/pipe-prefill	verify	liteinst	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify LiteInst separately
+determinism-stress-c/pipe-prefill	verify	sabre	BACKEND-LIMITATION	Forwarded-DETLOG SaBRe verification exits during the first run before producing guest output; the historical stdout-only qualification is insufficient
+determinism-stress-c/producer-consumer	verify	dbt	NOT-YET-QUALIFIED	This condvar/futex determinism cell calibrates the ptrace strict-verify baseline; qualify DBT separately
+determinism-stress-c/producer-consumer	verify	kvm	NOT-YET-QUALIFIED	This condvar/futex determinism cell calibrates the ptrace strict-verify baseline; qualify KVM separately
+determinism-stress-c/producer-consumer	verify	liteinst	NOT-YET-QUALIFIED	This condvar/futex determinism cell calibrates the ptrace strict-verify baseline; qualify LiteInst separately
+determinism-stress-c/producer-consumer	verify	sabre	NOT-YET-QUALIFIED	This condvar/futex determinism cell calibrates the ptrace strict-verify baseline; qualify SaBRe separately
+determinism-stress-c/signal-order	verify	dbt	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify DBT separately
+determinism-stress-c/signal-order	verify	kvm	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify KVM separately
+determinism-stress-c/signal-order	verify	liteinst	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify LiteInst separately
+determinism-stress-c/signal-order	verify	sabre	NOT-YET-QUALIFIED	This determinism cell calibrates the ptrace strict-verify baseline; qualify SaBRe separately
+determinism-stress/order-violation	chaos	dbt	BACKEND-LIMITATION	Chaos scheduling is unsupported by DBT
+determinism-stress/order-violation	chaos	kvm	BACKEND-LIMITATION	Chaos scheduling is unsupported by KVM
+determinism-stress/order-violation	chaos	liteinst	BACKEND-LIMITATION	Chaos scheduling is unsupported by LiteInst
+determinism-stress/order-violation	chaos	sabre	BACKEND-LIMITATION	Chaos scheduling is unsupported by SaBRe
+determinism-stress/order-violation	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+determinism-stress/order-violation	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+determinism-stress/order-violation	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+determinism-stress/order-violation	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+determinism-stress/process-chains	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+determinism-stress/process-chains	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+determinism-stress/process-chains	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+determinism-stress/process-chains	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+determinism-stress/thread-contention	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+determinism-stress/thread-contention	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+determinism-stress/thread-contention	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+determinism-stress/thread-contention	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+determinism-stress/thread-interleaving	chaos	dbt	BACKEND-LIMITATION	Chaos scheduling is unsupported by DBT
+determinism-stress/thread-interleaving	chaos	kvm	BACKEND-LIMITATION	Chaos scheduling is unsupported by KVM
+determinism-stress/thread-interleaving	chaos	liteinst	BACKEND-LIMITATION	Chaos scheduling is unsupported by LiteInst
+determinism-stress/thread-interleaving	chaos	sabre	BACKEND-LIMITATION	Chaos scheduling is unsupported by SaBRe
+determinism-stress/thread-output	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+determinism-stress/thread-output	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+determinism-stress/thread-output	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+determinism-stress/thread-output	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/bash-loop-pipe-time	verify	dbt	OWNED-ELSEWHERE	DBT Bash qualification is tracked by backend compatibility
+language-runtimes/bash-loop-pipe-time	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/bash-loop-pipe-time	verify	liteinst	OWNED-ELSEWHERE	LiteInst Bash qualification is tracked by backend compatibility
+language-runtimes/bash-loop-pipe-time	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/bash-random	verify	dbt	OWNED-ELSEWHERE	DBT Bash qualification is tracked by backend compatibility
+language-runtimes/bash-random	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/bash-random	verify	liteinst	OWNED-ELSEWHERE	LiteInst Bash qualification is tracked by backend compatibility
+language-runtimes/bash-random	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/cpp-stl-determinism	verify	dbt	OWNED-ELSEWHERE	DBT C++ qualification is tracked by backend compatibility
+language-runtimes/cpp-stl-determinism	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/cpp-stl-determinism	verify	liteinst	OWNED-ELSEWHERE	LiteInst C++ qualification is tracked by backend compatibility
+language-runtimes/cpp-stl-determinism	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/gawk-random	verify	dbt	OWNED-ELSEWHERE	DBT awk support is tracked by backend compatibility
+language-runtimes/gawk-random	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/gawk-random	verify	liteinst	OWNED-ELSEWHERE	LiteInst awk support is tracked by backend compatibility
+language-runtimes/gawk-random	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/lua-random	verify	dbt	OWNED-ELSEWHERE	DBT Lua qualification is tracked by backend compatibility
+language-runtimes/lua-random	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/lua-random	verify	liteinst	OWNED-ELSEWHERE	LiteInst Lua qualification is tracked by backend compatibility
+language-runtimes/lua-random	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/m4-macro-mkstemp	verify	dbt	OWNED-ELSEWHERE	DBT m4 qualification is tracked by backend compatibility
+language-runtimes/m4-macro-mkstemp	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/m4-macro-mkstemp	verify	liteinst	OWNED-ELSEWHERE	LiteInst m4 qualification is tracked by backend compatibility
+language-runtimes/m4-macro-mkstemp	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/node-v8-jit	verify	dbt	BACKEND-LIMITATION	DBI rewrites the code stream, so a JIT that writes its own code at run time needs separate qualification
+language-runtimes/node-v8-jit	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+language-runtimes/node-v8-jit	verify	liteinst	BACKEND-LIMITATION	LiteInst patches the code stream, so JIT-generated code needs separate qualification
+language-runtimes/node-v8-jit	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/perl-hash-order	verify	dbt	OWNED-ELSEWHERE	DBT perl support is tracked by backend compatibility
+language-runtimes/perl-hash-order	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/perl-hash-order	verify	liteinst	OWNED-ELSEWHERE	LiteInst perl support is tracked by backend compatibility
+language-runtimes/perl-hash-order	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/perl-io-subprocess-time	verify	dbt	OWNED-ELSEWHERE	DBT Perl qualification is tracked by backend compatibility
+language-runtimes/perl-io-subprocess-time	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/perl-io-subprocess-time	verify	liteinst	OWNED-ELSEWHERE	LiteInst Perl qualification is tracked by backend compatibility
+language-runtimes/perl-io-subprocess-time	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/perl-random	verify	dbt	OWNED-ELSEWHERE	DBT Perl support is tracked by backend compatibility
+language-runtimes/perl-random	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+language-runtimes/perl-random	verify	liteinst	OWNED-ELSEWHERE	LiteInst Perl support is tracked by backend compatibility
+language-runtimes/perl-random	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/python-dict-hash-iteration	verify	dbt	OWNED-ELSEWHERE	DBT Python qualification is tracked by backend compatibility
+language-runtimes/python-dict-hash-iteration	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/python-dict-hash-iteration	verify	liteinst	OWNED-ELSEWHERE	LiteInst Python qualification is tracked by backend compatibility
+language-runtimes/python-dict-hash-iteration	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/python-hash-determinism	verify	dbt	OWNED-ELSEWHERE	DBT Python support is tracked by backend compatibility
+language-runtimes/python-hash-determinism	verify	kvm	OWNED-ELSEWHERE	KVM Python coverage is in the privileged applications bucket
+language-runtimes/python-hash-determinism	verify	liteinst	OWNED-ELSEWHERE	LiteInst Python support is tracked by backend compatibility
+language-runtimes/python-hash-determinism	verify	sabre	BACKEND-LIMITATION	SaBRe and ptrace each reach L2, but consume different deterministic entropy positions at Python exec and produce different hash seeds and stdout
+language-runtimes/python-hashseed	verify	dbt	OWNED-ELSEWHERE	DBT Python support is tracked by backend compatibility
+language-runtimes/python-hashseed	verify	kvm	OWNED-ELSEWHERE	KVM Python coverage is in the privileged applications bucket
+language-runtimes/python-hashseed	verify	liteinst	OWNED-ELSEWHERE	LiteInst Python support is tracked by backend compatibility
+language-runtimes/python-hashseed	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/python-io-subprocess-time	verify	dbt	OWNED-ELSEWHERE	DBT Python qualification is tracked by backend compatibility
+language-runtimes/python-io-subprocess-time	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/python-io-subprocess-time	verify	liteinst	OWNED-ELSEWHERE	LiteInst Python qualification is tracked by backend compatibility
+language-runtimes/python-io-subprocess-time	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/python-random	verify	dbt	OWNED-ELSEWHERE	DBT Python support is tracked by backend compatibility
+language-runtimes/python-random	verify	kvm	OWNED-ELSEWHERE	KVM Python coverage is in the privileged applications bucket
+language-runtimes/python-random	verify	liteinst	OWNED-ELSEWHERE	LiteInst Python support is tracked by backend compatibility
+language-runtimes/python-random	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/ruby-random	verify	dbt	OWNED-ELSEWHERE	DBT Ruby support is tracked by backend compatibility
+language-runtimes/ruby-random	verify	kvm	HOST-CAPABILITY	KVM Ruby coverage requires separate privileged qualification
+language-runtimes/ruby-random	verify	liteinst	OWNED-ELSEWHERE	LiteInst Ruby support is tracked by backend compatibility
+language-runtimes/ruby-random	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/rust-hashmap-iteration	verify	dbt	OWNED-ELSEWHERE	DBT Rust qualification is tracked by backend compatibility
+language-runtimes/rust-hashmap-iteration	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/rust-hashmap-iteration	verify	liteinst	OWNED-ELSEWHERE	LiteInst Rust qualification is tracked by backend compatibility
+language-runtimes/rust-hashmap-iteration	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+language-runtimes/tcl-rand-clock	verify	dbt	OWNED-ELSEWHERE	DBT Tcl qualification is tracked by backend compatibility
+language-runtimes/tcl-rand-clock	verify	kvm	HOST-CAPABILITY	KVM interpreter coverage requires separate privileged qualification
+language-runtimes/tcl-rand-clock	verify	liteinst	OWNED-ELSEWHERE	LiteInst Tcl qualification is tracked by backend compatibility
+language-runtimes/tcl-rand-clock	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+system-utils/clock-determinism	custom	dbt	NOT-YET-QUALIFIED	The custom clock matrix baseline is ptrace-only
+system-utils/clock-determinism	custom	kvm	NOT-YET-QUALIFIED	The custom clock matrix baseline is ptrace-only
+system-utils/clock-determinism	custom	sabre	NOT-YET-QUALIFIED	The custom clock matrix baseline is ptrace-only
+system-utils/clock-determinism	verify	dbt	NOT-YET-QUALIFIED	Enable after the ptrace baseline for direct C guests is trusted
+system-utils/clock-determinism	verify	kvm	NOT-YET-QUALIFIED	Enable after the ptrace baseline for direct C guests is trusted
+system-utils/clock-determinism	verify	sabre	BACKEND-LIMITATION	SaBRe does not intercept RDTSCP; clock probes can leak raw host TSC
+system-utils/clock-exec-continuity	verify	dbt	NOT-YET-QUALIFIED	Enable once the DBI post-exec clock path is qualified against the ptrace baseline
+system-utils/clock-exec-continuity	verify	kvm	NOT-YET-QUALIFIED	Enable once the KVM post-exec clock path is qualified against the ptrace baseline
+system-utils/clock-exec-continuity	verify	liteinst	BACKEND-LIMITATION	The preload runtime does not survive the guest's own re-exec
+system-utils/clock-exec-continuity	verify	sabre	BACKEND-LIMITATION	SaBRe does not intercept RDTSCP; clock probes can leak raw host TSC
+system-utils/date-nanoseconds	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/date-nanoseconds	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/date-nanoseconds	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/date-nanoseconds	verify	sabre	OWNER-GATED	The exec socket is fixed, but required date/clock virtual-time support remains owner-gated for SaBRe
+system-utils/du-tree-summary	verify	dbt	NOT-YET-QUALIFIED	Qualify recursive du independently against the new ptrace golden baseline
+system-utils/du-tree-summary	verify	kvm	NOT-YET-QUALIFIED	Qualify recursive du independently against the new ptrace golden baseline
+system-utils/du-tree-summary	verify	liteinst	NOT-YET-QUALIFIED	Qualify recursive du independently against the new ptrace golden baseline
+system-utils/du-tree-summary	verify	sabre	NOT-YET-QUALIFIED	Qualify recursive du independently against the new ptrace golden baseline
+system-utils/file-timestamp-identity	verify	dbt	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline
+system-utils/file-timestamp-identity	verify	kvm	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline
+system-utils/file-timestamp-identity	verify	liteinst	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline
+system-utils/file-timestamp-identity	verify	sabre	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline
+system-utils/find-tree-metadata	verify	dbt	NOT-YET-QUALIFIED	Qualify recursive find independently against the new ptrace golden baseline
+system-utils/find-tree-metadata	verify	kvm	NOT-YET-QUALIFIED	Qualify recursive find independently against the new ptrace golden baseline
+system-utils/find-tree-metadata	verify	liteinst	NOT-YET-QUALIFIED	Qualify recursive find independently against the new ptrace golden baseline
+system-utils/find-tree-metadata	verify	sabre	NOT-YET-QUALIFIED	Qualify recursive find independently against the new ptrace golden baseline
+system-utils/mcookie-random	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/mcookie-random	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/mcookie-random	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/mcookie-random	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+system-utils/mktemp-name	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/mktemp-name	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/mktemp-name	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/mktemp-name	verify	sabre	BACKEND-LIMITATION	Ptrace and SaBRe each reach L2, but coreutils mktemp consumes different deterministic entropy positions and emits different name suffixes
+system-utils/openssl-enc	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/openssl-enc	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/openssl-enc	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/openssl-enc	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+system-utils/openssl-genpkey	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/openssl-genpkey	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/openssl-genpkey	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/openssl-genpkey	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+system-utils/openssl-passwd	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/openssl-passwd	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/openssl-passwd	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/openssl-passwd	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+system-utils/openssl-rand	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/openssl-rand	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/openssl-rand	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/openssl-rand	verify	sabre	BACKEND-LIMITATION	SaBRe and ptrace each reach L2, but libcrypto consumes different deterministic entropy positions and emits different hex stdout
+system-utils/openssl-x509	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/openssl-x509	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/openssl-x509	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/openssl-x509	verify	sabre	NOT-YET-QUALIFIED	Certificate issuance combines wall-clock validity with multiple entropy draws; clock, random-stream, and full-trace support remain unqualified
+system-utils/proc-random-uuid	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/proc-random-uuid	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/proc-random-uuid	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/proc-random-uuid	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+system-utils/proc-uptime	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/proc-uptime	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/proc-uptime	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/proc-uptime	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+system-utils/random-device	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/random-device	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/random-device	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/random-device	verify	sabre	BACKEND-LIMITATION	Path evidence found 33 raw syscall sites per execution in ld-linux and libc; trusted shared-object native execution is not SaBRe support
+system-utils/record-getpid	replay	dbt	BACKEND-LIMITATION	Record/replay is unsupported by DBT
+system-utils/record-getpid	replay	kvm	BACKEND-LIMITATION	Record/replay is unsupported by KVM
+system-utils/record-getpid	replay	liteinst	BACKEND-LIMITATION	Record/replay is unsupported by LiteInst
+system-utils/record-getpid	replay	sabre	BACKEND-LIMITATION	Record/replay is unsupported by SaBRe
+system-utils/record-getpid	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/record-getpid	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/shm-coherency-identity	verify	dbt	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline. A cross-backend difference in WHICH partial state a reader catches is a FINDING, not something to stabilise away
+system-utils/shm-coherency-identity	verify	kvm	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline. A cross-backend difference in WHICH partial state a reader catches is a FINDING, not something to stabilise away
+system-utils/shm-coherency-identity	verify	liteinst	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline. A cross-backend difference in WHICH partial state a reader catches is a FINDING, not something to stabilise away
+system-utils/shm-coherency-identity	verify	sabre	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline. A cross-backend difference in WHICH partial state a reader catches is a FINDING, not something to stabilise away
+system-utils/shuf-permutation	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/shuf-permutation	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/shuf-permutation	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/shuf-permutation	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+system-utils/sort-random	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/sort-random	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/sort-random	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/sort-random	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+system-utils/ssh-keygen-ed25519	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/ssh-keygen-ed25519	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/ssh-keygen-ed25519	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/ssh-keygen-ed25519	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
+system-utils/startup-surface-identity	verify	dbt	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline. A cross-backend difference in the RAW vDSO base or AT_RANDOM is a FINDING to report, never something to normalise away
+system-utils/startup-surface-identity	verify	kvm	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline. A cross-backend difference in the RAW vDSO base or AT_RANDOM is a FINDING to report, never something to normalise away
+system-utils/startup-surface-identity	verify	liteinst	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline. A cross-backend difference in the RAW vDSO base or AT_RANDOM is a FINDING to report, never something to normalise away
+system-utils/startup-surface-identity	verify	sabre	NOT-YET-QUALIFIED	Enable once measured on this backend; ptrace is the proven baseline. A cross-backend difference in the RAW vDSO base or AT_RANDOM is a FINDING to report, never something to normalise away
+system-utils/uuidgen-random	verify	dbt	OWNED-ELSEWHERE	DBT coverage is owned by its backend parity partition
+system-utils/uuidgen-random	verify	kvm	HOST-CAPABILITY	KVM requires the privileged runner
+system-utils/uuidgen-random	verify	liteinst	OWNED-ELSEWHERE	LiteInst coverage is owned by its backend compatibility partition
+system-utils/uuidgen-random	verify	sabre	HOST-CAPABILITY	SaBRe requires its external runtime
