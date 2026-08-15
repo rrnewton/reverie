@@ -326,6 +326,17 @@
 # PREQUALIFIED-2	  Seen on sync-file-range, thp-disable and append-pwrite; every retry produced matched with a full message count. FOUR OCCURRENCES.
 # PREQUALIFIED-2	  THE HAZARD IS SPECIFIC AND WORTH STATING: a no_result on an ACCEPT arm looks exactly like a cell that cannot reach L2, and would wrongly disqualify it. Always retry before recording an accept-arm no_result. I have not investigated the cause and do not claim one.
 # PREQUALIFIED-2	DELTA n=33 NOW READS {795 x1, 797 x1, 799 x30, 802 x1}. The 802 outlier on fchmodat2-flags remains the only value outside the band.
+# PREQUALIFIED-3 2026-08-15 (hermit-sabre): SIX MORE. THE QUALIFIED-AND-WAITING SET IS EIGHTEEN.
+# PREQUALIFIED-3	All six: step 1 enforced and passed; accept exit 0 on ptrace AND liteinst with verdict=matched and bitwise_parity=true; refuse exit 1 on both.
+# PREQUALIFIED-3	  faccessat2-flags 138->937; fadvise-hints 130->929; fallocate-extents 135->934; file-backed-mmap 138->937; flock-lifecycle 133->932; fsync-durability 130->929. All +799.
+# PREQUALIFIED-3	PROGRESS AGAINST THE POOL: 40 pre-qualifiable, 18 done, 22 remain. No host required for any of it.
+# PREQUALIFIED-3	DELTA n=39: {795 x1, 797 x1, 799 x36, 802 x1}. The band is holding across four fixture families; fchmodat2-flags at +802 is still the only exception.
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/faccessat2-flags	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->937 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fadvise-hints	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 130->929 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fallocate-extents	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 135->934 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/file-backed-mmap	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 138->937 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/flock-lifecycle	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 133->932 delta 799
+QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/fsync-durability	vs gated fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 130->929 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/append-pwrite	vs #2276 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 145->944 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/bind-getsockname	vs #2276 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 119->918 delta 799
 QUALIFIED_BLOCKED_ON_LANDING_ORDER	backend-parity-c/cachestat-refusal	vs #2276 fixture: ptrace+liteinst accept 0/refuse 1, accept matched+parity, 130->929 delta 799
