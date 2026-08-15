@@ -1,0 +1,58 @@
+# LiteInst cell backlog, sized from the landed 380-row artifact
+# 2026-08-15, hermit-teardown. Read at parent origin/main ac181ae83ac9; hermit-bytes not contacted.
+# Artifact is at its 4th amendment (7497ea25, 538 lines); the dispatch cites 730aa749 (445 lines).
+# The 380 data rows are unchanged between them.
+
+## Sizing
+  LITEINST CELLS IN THE QUEUE: 79   (all verify mode; no replay or naked rows)
+  distinct programs behind them: 79 -- one cell each; 4 of the 83 qualifiable programs have none
+  cells.json cross-check: all 79 are (status=red, enabled=false). None already enabled.
+  inclusion route: 49 baseline-already-nonzero, 30 mutation-moved-exit
+  population, re-measured at CURRENT hermit main 302a1a9c0:
+    336 liteinst x verify cells exist; 30 enabled; 306 disabled
+    the 79 are 26% of the disabled liteinst verify surface
+  same queue, other backends: ptrace 81, liteinst 79, native 73, kvm 71, dbt 47, sabre 29 = 380
+
+## 79 is a FLOOR, three times over (carried from the header, not re-derived)
+  1. screen sensitivity 14/26 = 0.54, exact 95% CI [0.33, 0.73] -> the 83 is a floor
+  2. the 105 no-pattern-matched are THE INSTRUMENT, not the fixtures
+  3. 42 shell + 1 Rust program sit outside every count
+A CENSUS IS NOT A SAMPLE: the 79 is a complete enumeration of this artifact's liteinst rows and
+carries no sampling interval. Its uncertainty is CLASSIFICATION uncertainty and lives one level up,
+in whether 83 is the right set of programs -- which is where the CI belongs.
+
+## Selection bias
+The screen ran over the 283 C programs the manifests already carry. This is a floor derived from
+the corpus that exists, not from where liteinst defects are. A gap in a syscall family with no C
+fixture is invisible to this number.
+
+## What it does NOT license
+  - NOT that 79 can be enabled. Qualifiable = the fixture CAN express failure via exit status.
+    Backend capability is a separate gate. Calibration: of kvm2's 22 candidates only 9 passed both
+    the accept and refuse arms.
+  - NOT that 79 would pass. None of the 79 has been run on liteinst.
+  - NOT adding 58 to a bucket total. The 58 is a CROSS-CUT: 29 IS the not-exit-gated bucket, 29 sit
+    inside cannot-fail, 28 further cannot-fail programs showed no output movement. 29+29+28 = 86.
+    Complete screen: 83 + 29 + 57 + 114 = 283.
+  - NOT that the 58 are screenable now. No stimulus makes two runs of one binary differ; observing
+    at hermit's level does not substitute. --chaos is UNTESTED, NOT REFUTED (its probe guest printed
+    identically across two native runs, so the probe was never valid).
+  - NOT a receipt and NOT a landing.
+
+## Independence
+CORRECTED AFTER CHECKING, because my first statement of it was wrong. PR #2282 touched THREE fixtures:
+eventfd_probe.c, vectored_io.c AND sendfile_copy.c. Measured against the 380:
+  eventfd_probe.c  -> 0 rows in the 380 (not in the queue at all; it is named in the header as
+                      applied-but-inert, which is a DIFFERENT bucket from the qualifiable 83)
+  vectored_io.c    -> 0 rows in the 380, same reason
+  sendfile_copy.c  -> 6 rows in the 380, one per backend, AND ONE OF THEM IS IN THE LITEINST 79
+So the row I am disqualified on inside this queue is backend-parity-c/sendfile-copy, NOT vectored-io.
+I had asserted "vectored-io IS among the 79" without checking; it is not, and neither is
+eventfd-semantics. The header's disqualification names the two applied-but-inert rows, which is
+correct for what it covers, but my actual exposure is three fixtures and the third is the one that
+is actually in this queue. Independent for the other 78 and for the sizing itself, which is
+arithmetic over the whole file.
+
+## Correction to my own earlier reading
+I reported the 86 as 'presumably not-exit-gated, leaving 28 unaccounted'. The 28 is genuine but the
+86 is NOT one bucket: it is 29 not-exit-gated + 57 cannot-fail.
