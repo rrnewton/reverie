@@ -496,6 +496,19 @@
 # EXPOSURE-QUANTIFIED	  I spent this session preparing 23 cells to land on the next receipt. THE CORRECT CALL IS NOW TO HOLD THEM, AND THAT COSTS THE THING I HAVE BEEN OPTIMISING FOR.
 # EXPOSURE-QUANTIFIED	THE THREE CELLS ARE RECLASSIFIED, NOT EXONERATED-AND-FORGOTTEN: readdir-entries, file-backed-mmap and signalfd-create were bucketed as intermittently divergent CELLS. The defect is not theirs. They return to qualified-and-waiting, blocked by the same comparator leak as the other 61.
 # EXPOSURE-QUANTIFIED	HONEST LIMIT ON THE RATE: 4 events in 278 runs is a wide interval, and the 28% figure inherits that width. It is the right order of magnitude for a landing decision, not a precise forecast.
+# FIX-PROTOTYPED-AND-TESTED 2026-08-15 (hermit-sabre): THE PROPOSED COMPARATOR FIX IS NOW PROPOSED WITH EVIDENCE. TESTED LOCALLY, REVERTED, NOT DEPLOYED.
+# FIX-PROTOTYPED-AND-TESTED	THE ONE-LINE CHANGE, detcore/src/logdiff.rs:438 -- and note the doc comment ABOVE it already says 'the per-turn committed time echoed on each COMMIT line', so the intent was there and the predicate did not implement it:
+# FIX-PROTOTYPED-AND-TESTED	   fn is_scheduler_committed_time(line: &str) -> bool {
+# FIX-PROTOTYPED-AND-TESTED	       line.contains("advancing committed_time from ")
+# FIX-PROTOTYPED-AND-TESTED	   +       || line.contains("on previously committed ")
+# FIX-PROTOTYPED-AND-TESTED	   }
+# FIX-PROTOTYPED-AND-TESTED	BOTH DIRECTIONS BRACKETED, WHICH IS WHAT I SAID I HAD NOT DONE:
+# FIX-PROTOTYPED-AND-TESTED	  REFUSE: cargo test -p hermit-detcore --lib logdiff -> 32 passed, 0 failed. Includes canonical_syscall_arg_hex_difference_compares_unequal, canonical_allocation_order_difference_compares_unequal, and first_log_divergence_reports_preceding_commit_turn_and_virtual_time. THE COMPARATOR STILL REFUSES REAL DIFFERENCES.
+# FIX-PROTOTYPED-AND-TESTED	  ACCEPT: file-backed-mmap x25 liteinst --verify with the patched binary -> matched 25, diverged 0. Its unpatched record was 2 diverged in 46.
+# FIX-PROTOTYPED-AND-TESTED	STATISTICAL HONESTY ON THAT 25: at the observed 1.44% per-run rate, 25 clean runs is what you would expect ~70% of the time WITHOUT any fix. 25/25 IS CONSISTENT WITH THE FIX WORKING AND DOES NOT ESTABLISH IT.
+# FIX-PROTOTYPED-AND-TESTED	  THE MECHANISM IS THE STRONGER EVIDENCE, NOT THE RUN COUNT: the excluded phrase is exactly the field that differed in the captured divergence, in all 40 of the 40 dominant differing lines.
+# FIX-PROTOTYPED-AND-TESTED	REVERTED. The scratch branch is deleted and the working tree is back on the enable branch. NOTHING WAS DEPLOYED and no PR carries this change.
+# FIX-PROTOTYPED-AND-TESTED	WHY I STOPPED AT A PROTOTYPE: this is core comparator code. The owner decides whether excluding a second print site of a value the product already documents as host-timing-perturbed is completion or weakening. I believe it is completion and I have said why; that belief is not authority.
 QUALIFIED_BLOCKED_ON_COMPARATOR_LEAK	backend-parity-c/readdir-entries	qualified at Bar B; divergence traced to committed_time leaking into the compared COMMIT line, not to the cell
 QUALIFIED_BLOCKED_ON_COMPARATOR_LEAK	backend-parity-c/file-backed-mmap	qualified at Bar B; divergence traced to committed_time leaking into the compared COMMIT line, not to the cell
 QUALIFIED_BLOCKED_ON_COMPARATOR_LEAK	backend-parity-c/signalfd-create	qualified at Bar B; divergence traced to committed_time leaking into the compared COMMIT line, not to the cell
