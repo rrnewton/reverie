@@ -18,6 +18,7 @@
 
 pub mod backend_stats;
 pub mod counter;
+mod evidence;
 mod launcher;
 pub mod sync_rpc;
 #[cfg(feature = "prototype-runtime")]
@@ -39,6 +40,9 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
+pub use evidence::DbtEvidence;
+pub use evidence::DbtEvidenceLogLevel;
+pub use evidence::decode_evidence;
 // TODO-HUMAN-REVIEW(PR-134): Review the native bootstrap failure ABI export.
 pub use launcher::CLIENT_THREAD_START_FAILURE_EXIT_CODE;
 pub use launcher::DbtRunner;
@@ -121,6 +125,12 @@ pub struct DbtRuntimeCallbacks {
     /// of the struct so the existing field layout matches the C
     /// `runtime_callbacks_t`.
     pub emit_stdout: RuntimeEmitter,
+    /// Emits one already-formatted structured tracing record into the protected
+    /// evidence transport. Raw lifecycle and unsupported-syscall diagnostics
+    /// continue to use [`Self::emit`].
+    pub emit_evidence: RuntimeEmitter,
+    /// Protected [`DbtEvidenceLogLevel`] discriminant selected by the launcher.
+    pub evidence_log_level: i32,
 }
 
 /// Result of dispatching a syscall through an external DBT Tool.
@@ -1448,7 +1458,13 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_init(
     // root) so every `DbtGuest` built afterwards reports it through
     // `Guest::ppid`. A per-process constant; each thread writes the same value.
     PROCESS_PPID.store(in_tree_ppid, Ordering::Relaxed);
-    unsafe { counters.write(PrototypeCounters::default()) };
+    // The native client publishes stable virtual identities in fields after
+    // this public three-counter prefix before entering Rust. Reset only the
+    // prototype-owned prefix: writing a fresh `PrototypeCounters` value is
+    // sufficient and deliberately leaves the native-only suffix untouched.
+    unsafe {
+        counters.write(PrototypeCounters::default());
+    }
     0
 }
 
@@ -1469,6 +1485,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_created(
     _pid: i32,
     _branches: u64,
     _child_tid: i32,
+    _virtual_child_tid: i32,
     _child_tid_addr: u64,
     _flags: u64,
     _invoke_syscall: SyscallInvoker,
@@ -1780,11 +1797,11 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
 /// Initializes the built-in prototype runtime on a native client thread.
 ///
 /// The `argument` is a `*const DbtRuntimeCallbacks` (the native
-/// `runtime_callbacks_t`). The only field consumed here is `emit_stdout`, a
-/// re-entrancy-safe DynamoRIO stdout emitter recorded so tools that suppress and
-/// re-emit guest stdout (e.g. `chunky_print`) can flush buffered bytes. This
-/// runs on the background client thread before any flush boundary, so the
-/// emitter is installed well ahead of the first `exit`/epoch flush.
+/// `runtime_callbacks_t`). It records the re-entrancy-safe stdout emitter and,
+/// when protected INFO evidence is enabled, emits one canonical prototype
+/// initialization record. This runs on the background client thread before any
+/// flush boundary, so the stdout emitter is installed well ahead of the first
+/// `exit`/epoch flush.
 ///
 /// # Safety
 ///
@@ -1797,6 +1814,10 @@ pub unsafe extern "C" fn reverie_dbt_runtime_background_init(argument: *mut c_vo
     if !argument.is_null() {
         let callbacks = unsafe { &*(argument as *const DbtRuntimeCallbacks) };
         tools::set_stdout_emitter(callbacks.emit_stdout);
+        if callbacks.evidence_log_level >= DbtEvidenceLogLevel::Info as i32 {
+            const RECORD: &[u8] = b"1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: prototype evidence initialized\n";
+            unsafe { (callbacks.emit_evidence)(RECORD.as_ptr(), RECORD.len()) };
+        }
     }
 }
 
