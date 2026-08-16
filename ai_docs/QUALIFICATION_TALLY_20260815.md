@@ -34,17 +34,29 @@ run should never look alike in a tally.
 | subset | scored | result | independently checked by | outcome of the check |
 |---|---:|---|---|---|
 | liteinst+verify 1-20 | 20 | 14 qualified **on the ptrace reference arm**, 6 not-exit-gated | — | **unchecked** |
-| liteinst+verify 21-40 | 20 | 17 qualified, 2 not-exit-gated, 1 message-bearing | — | **unchecked** |
+| liteinst+verify 21-40 | 20 | 17 qualified, 2 not-exit-gated, 1 message-bearing | **hermit-fixtures** | started, no results |
 | liteinst+verify 41-60 | 20 | 14 `QUALIFIED-LITEINST`, 1 ptrace-only, 1 not-qualified, 4 ND | — | **unchecked** |
-| liteinst+verify 61-79 | 0 | — | — | not started |
+| liteinst+verify 61-79 | 19 | **9 `REFUSES-LITEINST`** (rows 61-67, 69, 70) — RELAYED, see below | **hermit-fixtures** | started, no results |
 | **ptrace+replay** | 40 | 25 qualified, 6 not-exit-gated, 9 ND | **hermit-sabre**, on the 25 | **6 disagreements — SOFT** |
 | **kvm+verify** | 71 | 20 qualified, 16 not-qualified, 7 not-exit-gated, 28 ND | **hermit-revents**, on 43 | **6 disagreements — SOFT** |
 | native+naked | 73 | accept arm fails 71 of 73 | — | unchecked |
 | dbt+verify | partial | in progress | self re-run | **1 flake found** |
 | **sabre+verify** | 29 | 12 pass-refusable, 6 no-exit-gate, 8 accept-fail, 3 indeterminate | **hermit-li2**, on the 12 | **in progress** |
 
-**The 2 liteinst-enabling verdicts have no check at all.** That is not a criticism of anyone — it is
-the gap the column exists to show.
+**CORRECTION to the previous revision of this file, which said the 2 liteinst-enabling verdicts had
+no check at all.** They do. `hermit-fixtures` holds `cross-verify-the-liteinst-qualified-verdicts`,
+in progress, and has enumerated **26 cells to re-derive** — `hermit-sabre`'s 17 (rows 21-40) plus
+`hermit-li2`'s 9 (rows 61-79). It has derived none of them yet and says so.
+
+**AND THE 2 ARE SUBSUMED, NOT SEPARATE — DO NOT ADD THEM.** `hermit-liteinst`'s original 2,
+`tee-enosys` and `ustat-enosys`, **are rows 67 and 69 inside li2's 9.** li2's figure **replaces** the
+earlier 2-of-19 tally rather than adding to it. A tally that carried both would double-count.
+
+**Attribution, because it is not where you would look for it:** li2's 9 is recorded in
+`hermit-fixtures`' enumeration note, **not** in `qualify-queue-rows-61-79`, whose two notes are the
+reassignment and carry no result. **RELAYED, not read from the producing task.**
+
+**Slices still with no check: liteinst 1-20 and 41-60.**
 
 ## The two cross-verifications — SOFT, not revised, and NOT netted
 
