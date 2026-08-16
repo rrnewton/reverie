@@ -28,24 +28,48 @@ missing or has been legitimately superseded. Per-hunk rather than whole-patch, s
 answer carries a count and a denominator instead of a bare boolean — a partial loss is
 visible as 7/9 rather than collapsing to "failed".
 
-FOUR VERDICTS, DELIBERATELY NOT TWO
+FIVE VERDICTS, DELIBERATELY NOT TWO
 -----------------------------------
-  ABSENT        the SHA is not an ancestor of the target. Ancestry already catches this.
-  PRESENT       ancestor AND every hunk reverse-applies. Content survived.
-  CONTENT-LOST  *** ancestor BUT one or more hunks do not reverse-apply. ***
-                This is the case ancestry passes and this module exists to catch.
-  INDETERMINATE the diff could not be computed or the commit is not readable here.
-                A no-result is not a pass and not a failure; see the workspace-wide rule
-                that a gate which cannot distinguish these has too small a verdict space.
+  ABSENT          the SHA is not an ancestor of the target. Ancestry already catches this.
+  PRESENT         ancestor AND every hunk reverse-applies. Content survived.
+  CONTEXT-DRIFTED ancestor, one or more hunks do NOT reverse-apply, AND every one of
+                  those hunks' ADDED lines is confirmed present at the target. The
+                  content survived; only the surrounding context moved. See below.
+  CONTENT-LOST    *** ancestor BUT one or more hunks do not reverse-apply AND their
+                  added content could NOT be confirmed present. ***
+                  This is the case ancestry passes and this module exists to catch.
+  INDETERMINATE   the diff could not be computed or the commit is not readable here.
+                  A no-result is not a pass and not a failure; see the workspace-wide rule
+                  that a gate which cannot distinguish these has too small a verdict space.
 
-HONEST LIMITATION, STATED BECAUSE IT BOUNDS THE CLAIM
-------------------------------------------------------
+HONEST LIMITATION, AND THE PART OF IT THAT IS NOW MEASURED
+----------------------------------------------------------
 A hunk that fails to reverse-apply is not PROOF of loss. A later legitimate commit that
-rewrites the same region also breaks reverse-application. So CONTENT-LOST means "the
-commit's effect is not literally present at the target and a human must adjudicate", not
-"someone definitely dropped it". This check is a SCREEN that fires in the direction
-ancestry is blind to; it is deliberately conservative, because the failure it hunts is
-silent and the false-alarm cost is a review.
+rewrites the same region also breaks reverse-application. That limitation was stated here
+from the start and went on to fire: closing `activate-refusal-message-misstates-its-own-
+cause` against e3bd3a89 on 2026-08-15 reported CONTENT-LOST at 3 of 4 hunks. The whole
+"missing" hunk was one added line, `+import shutil`, and that line was present on main.
+ac181ae8 had added `import os` immediately above it, so the hunk's CONTEXT moved while its
+CONTENT did not. A false CONTENT-LOST on surviving content is the inverse of the failure
+this module hunts, and a two-valued present/lost split forces it onto the wrong side.
+
+CONTEXT-DRIFTED separates the two. It does NOT relax CONTENT-LOST: that verdict still
+fires whenever any failing hunk's added content cannot be confirmed present, and PRESENT
+still requires every hunk to reverse-apply. CONTEXT-DRIFTED is reached only by ALSO
+satisfying a new condition on top of the CONTENT-LOST trigger, so nothing that used to
+fire stops firing.
+
+The confirmation is deliberately strict, because "the added lines are somewhere in the
+file" is too weak in the CONCEALING direction:
+  - ZERO added lines is never drift. A pure-deletion hunk satisfies "all added lines are
+    present" vacuously, and a 0/0 pass is the no-result this module refuses elsewhere.
+  - The added lines must appear CONTIGUOUSLY and IN ORDER. A later commit that split them
+    apart has changed the effect, and that stays CONTENT-LOST.
+  - The match must be UNIQUE in the file. A hunk whose added line is `}` or a blank line
+    matches all over a file, and accepting such a match would report survival of content
+    that was genuinely dropped. A common-line hunk therefore fails confirmation and stays
+    CONTENT-LOST -- a false alarm, which is the safe direction.
+Each of these three sends an unconfirmable case to CONTENT-LOST, never the reverse.
 """
 
 from __future__ import annotations
@@ -64,12 +88,18 @@ import git_env  # noqa: E402
 
 ABSENT = "ABSENT"
 PRESENT = "PRESENT"
+CONTEXT_DRIFTED = "CONTEXT-DRIFTED"
 CONTENT_LOST = "CONTENT-LOST"
 INDETERMINATE = "INDETERMINATE"
 
 EXIT_OK = 0
 EXIT_CONTENT_LOST = 1
 EXIT_INDETERMINATE = 2
+#: Distinct from EXIT_OK because the reverse-apply DID fail and a reader deserves to know
+#: the answer came from the fallback confirmation, not from a clean match. Distinct from
+#: EXIT_CONTENT_LOST because the content is confirmed present. `verified_close` selects on
+#: the verdict string, not on this code, so closure is unaffected by the choice.
+EXIT_CONTEXT_DRIFTED = 3
 
 
 @dataclass
@@ -81,6 +111,10 @@ class Presence:
     hunks_total: int = 0
     hunks_present: int = 0
     missing: tuple[str, ...] = field(default_factory=tuple)
+    #: Hunks that did NOT reverse-apply but whose added lines were confirmed present.
+    #: Reported separately from `missing` rather than folded into `hunks_present`, so
+    #: that field keeps its one meaning: hunks that reverse-applied cleanly.
+    drifted: tuple[str, ...] = field(default_factory=tuple)
     reason: str = ""
 
     def render(self) -> str:
@@ -92,6 +126,8 @@ class Presence:
             f"HUNKS_PRESENT={self.hunks_present}/{self.hunks_total}\n"
             f"MISSING={len(self.missing)}"
             + (f" [{' '.join(self.missing)}]" if self.missing else "")
+            + f"\nDRIFTED={len(self.drifted)}"
+            + (f" [{' '.join(self.drifted)}]" if self.drifted else "")
             + f"\nREASON={self.reason}"
         )
 
@@ -100,6 +136,8 @@ class Presence:
             return EXIT_OK
         if self.verdict == CONTENT_LOST:
             return EXIT_CONTENT_LOST
+        if self.verdict == CONTEXT_DRIFTED:
+            return EXIT_CONTEXT_DRIFTED
         return EXIT_INDETERMINATE
 
 
@@ -143,6 +181,42 @@ def split_hunks(diff_text: str) -> list[tuple[str, str, str]]:
             header.append(line)
     flush()
     return out
+
+
+def added_lines(hunk: str) -> list[str]:
+    """The lines a hunk ADDS, with the `+` marker stripped.
+
+    The first line of a hunk block is its `@@` header and is skipped. `+++` file
+    headers live in the header block, never inside a hunk, so they cannot appear here.
+    """
+    return [line[1:] for line in hunk.splitlines()[1:] if line.startswith("+")]
+
+
+def added_block_uniquely_present(worktree: Path, path: str, added: list[str]) -> bool:
+    """Is this hunk's added text present at the target as ONE contiguous, in-order run?
+
+    This is the fallback that separates CONTEXT-DRIFTED from CONTENT-LOST, and it is
+    the only place where a hunk that failed reverse-apply can still be judged survived.
+    It must therefore fail CLOSED: every uncertain answer returns False and the hunk
+    stays CONTENT-LOST. The three refusals are the ones named in the module docstring --
+    no added lines, non-contiguous or reordered, or a match that is not unique.
+    """
+    if not added:
+        return False
+    target_file = worktree / path
+    if not target_file.is_file():
+        return False
+    try:
+        lines = target_file.read_text().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return False
+    hits = 0
+    for start in range(len(lines) - len(added) + 1):
+        if lines[start:start + len(added)] == added:
+            hits += 1
+            if hits > 1:
+                return False
+    return hits == 1
 
 
 def check(repo: Path, sha: str, target: str) -> Presence:
@@ -191,6 +265,7 @@ def check(repo: Path, sha: str, target: str) -> Presence:
     # honest way to ask "is this hunk present ON MAIN"; checking the caller's working
     # tree would answer a different question and would pass or fail for the wrong reason.
     missing: list[str] = []
+    drifted: list[str] = []
     present = 0
     with tempfile.TemporaryDirectory(prefix="content-presence-") as td:
         wt = Path(td) / "t"
@@ -222,8 +297,15 @@ def check(repo: Path, sha: str, target: str) -> Presence:
                 )
                 if rev.returncode == 0:
                     present += 1
+                    continue
+                # The hunk did not reverse-apply. Before calling that a loss, ask the
+                # weaker question the reverse-apply cannot: are this hunk's ADDED lines
+                # actually there? Only a confirmed yes downgrades it to context drift.
+                label = f"{path}@{hunk.splitlines()[0].strip()}"
+                if added_block_uniquely_present(wt, path, added_lines(hunk)):
+                    drifted.append(label)
                 else:
-                    missing.append(f"{path}@{hunk.splitlines()[0].strip()}")
+                    missing.append(label)
         finally:
             _git(repo, "worktree", "remove", "--force", str(wt))
 
@@ -238,19 +320,48 @@ def check(repo: Path, sha: str, target: str) -> Presence:
             reason="ancestor AND every hunk reverse-applies at the target",
         )
 
+    # ORDER MATTERS AND IS NOT COSMETIC. Any unconfirmable hunk decides the verdict, even
+    # when other hunks merely drifted. A commit that lost one hunk and drifted another has
+    # lost content, and reporting the gentler outcome would be exactly the concealment this
+    # module exists to prevent.
+    if missing:
+        return Presence(
+            sha=sha,
+            target=target,
+            verdict=CONTENT_LOST,
+            is_ancestor=True,
+            hunks_total=len(hunks),
+            hunks_present=present,
+            missing=tuple(missing),
+            drifted=tuple(drifted),
+            reason=(
+                f"THE SHA IS AN ANCESTOR BUT {len(missing)} OF {len(hunks)} HUNK(S) "
+                f"ARE NOT PRESENT AT THE TARGET. Ancestry passes this; the content did not "
+                f"survive intact. Adjudicate: either the hunk was dropped by a lossy "
+                f"reconcile, or a later commit legitimately superseded that region."
+                + (
+                    f" A FURTHER {len(drifted)} hunk(s) only drifted in context and are "
+                    "confirmed present; they are not the problem."
+                    if drifted
+                    else ""
+                )
+            ),
+        )
+
     return Presence(
         sha=sha,
         target=target,
-        verdict=CONTENT_LOST,
+        verdict=CONTEXT_DRIFTED,
         is_ancestor=True,
         hunks_total=len(hunks),
         hunks_present=present,
-        missing=tuple(missing),
+        drifted=tuple(drifted),
         reason=(
-            f"THE SHA IS AN ANCESTOR BUT {len(hunks) - present} OF {len(hunks)} HUNK(S) "
-            f"ARE NOT PRESENT AT THE TARGET. Ancestry passes this; the content did not "
-            f"survive intact. Adjudicate: either the hunk was dropped by a lossy "
-            f"reconcile, or a later commit legitimately superseded that region."
+            f"{len(drifted)} of {len(hunks)} hunk(s) no longer reverse-apply because "
+            f"later commits moved their surrounding context, but every line those hunks "
+            f"ADD is present at the target as a unique contiguous run. The content "
+            f"survived; only its context moved. NOT content loss, and not a clean match "
+            f"either -- reported as its own outcome so neither claim is made for it."
         ),
     )
 

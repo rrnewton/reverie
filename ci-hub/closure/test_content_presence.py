@@ -220,6 +220,142 @@ class ContentPresenceTests(unittest.TestCase):
         self.assertEqual(cp.check(self.r, feature, good).verdict, cp.PRESENT)
         self.assertEqual(cp.check(self.r, feature, bad).verdict, cp.CONTENT_LOST)
 
+    # ---------------- context drift, distinct from content loss ---------------------
+
+    def _one_line_add(self, after: str, line: str, message: str) -> str:
+        body = (self.r / "gate.py").read_text().splitlines()
+        body.insert(body.index(after) + 1, line)
+        (self.r / "gate.py").write_text("\n".join(body) + "\n")
+        git(self.r, "add", "gate.py")
+        git(self.r, "commit", "-qm", message)
+        return git(self.r, "rev-parse", "HEAD")
+
+    def test_adjacent_insertion_is_CONTEXT_DRIFTED_not_CONTENT_LOST(self) -> None:
+        """The measured 2026-08-15 case: e3bd3a89's whole `missing` hunk was one added
+        line that WAS on main, displaced by a later commit inserting a line above it.
+
+        Reverse-apply fails, the added line is present, and the two must not collapse
+        onto the same verdict.
+        """
+        feature = self._one_line_add("top", "import shutil", "feature: add shutil")
+        later = self._one_line_add("top", "import os", "later: add os above it")
+
+        self.assertTrue(is_ancestor(self.r, feature, later))
+        res = cp.check(self.r, feature, later)
+        self.assertEqual(res.verdict, cp.CONTEXT_DRIFTED, res.render())
+        self.assertEqual(res.hunks_present, 0, res.render())
+        self.assertEqual(len(res.drifted), 1, res.render())
+        self.assertEqual(len(res.missing), 0, res.render())
+        self.assertEqual(res.exit_code(), cp.EXIT_CONTEXT_DRIFTED)
+        # The added line really is at the target; the verdict is not merely a relabel.
+        self.assertIn("import shutil", (self.r / "gate.py").read_text())
+
+    def test_a_genuinely_dropped_added_line_is_STILL_CONTENT_LOST(self) -> None:
+        """THE BAR IS NOT LOWERED. Same shape as the drift case -- one added line whose
+        hunk fails to reverse-apply -- but the line is ABSENT. It must still refuse."""
+        feature = self._one_line_add("top", "import shutil", "feature: add shutil")
+        git(self.r, "checkout", "-q", "-b", "dropped", self.base)
+        git(self.r, "merge", "-q", "--no-commit", "--no-ff", feature)
+        body = [ln for ln in (self.r / "gate.py").read_text().splitlines()
+                if ln != "import shutil"]
+        (self.r / "gate.py").write_text("\n".join(body) + "\n")
+        git(self.r, "add", "gate.py")
+        git(self.r, "commit", "-qm", "reconcile: drop the import")
+        target = git(self.r, "rev-parse", "HEAD")
+
+        self.assertTrue(is_ancestor(self.r, feature, target))
+        res = cp.check(self.r, feature, target)
+        self.assertEqual(res.verdict, cp.CONTENT_LOST, res.render())
+        self.assertEqual(len(res.drifted), 0, res.render())
+        self.assertEqual(res.exit_code(), cp.EXIT_CONTENT_LOST)
+
+    def test_one_lost_hunk_beats_one_drifted_hunk(self) -> None:
+        """A commit that lost one hunk and drifted another has LOST CONTENT. Reporting
+        the gentler verdict would conceal exactly what this module exists to surface."""
+        body = (self.r / "gate.py").read_text().splitlines()
+        body.insert(1, "import shutil")
+        body[-1] = "bottom CHANGED-B"
+        (self.r / "gate.py").write_text("\n".join(body) + "\n")
+        git(self.r, "add", "gate.py")
+        git(self.r, "commit", "-qm", "feature: two hunks")
+        feature = git(self.r, "rev-parse", "HEAD")
+
+        git(self.r, "checkout", "-q", "-b", "mixed", self.base)
+        git(self.r, "merge", "-q", "--no-commit", "--no-ff", feature)
+        body = (self.r / "gate.py").read_text().splitlines()
+        body.insert(1, "import os")   # drifts the first hunk
+        body[-1] = "bottom"           # drops the second
+        (self.r / "gate.py").write_text("\n".join(body) + "\n")
+        git(self.r, "add", "gate.py")
+        git(self.r, "commit", "-qm", "reconcile: shift one, drop the other")
+        target = git(self.r, "rev-parse", "HEAD")
+
+        res = cp.check(self.r, feature, target)
+        self.assertEqual(res.verdict, cp.CONTENT_LOST, res.render())
+        self.assertEqual(len(res.missing), 1, res.render())
+        self.assertEqual(len(res.drifted), 1, res.render())
+        # The drifted hunk is still reported, so the adjudicator is not sent hunting
+        # through a hunk that is demonstrably fine.
+        self.assertIn("not the problem", res.reason)
+
+    def test_a_pure_deletion_hunk_is_NEVER_drift(self) -> None:
+        """Zero added lines satisfies `every added line is present` vacuously. That is
+        the 0/0 pass this module refuses elsewhere, so it must stay CONTENT-LOST."""
+        body = [ln for ln in (self.r / "gate.py").read_text().splitlines()
+                if ln != "pad5"]
+        (self.r / "gate.py").write_text("\n".join(body) + "\n")
+        git(self.r, "add", "gate.py")
+        git(self.r, "commit", "-qm", "feature: delete pad5")
+        feature = git(self.r, "rev-parse", "HEAD")
+
+        git(self.r, "checkout", "-q", "-b", "restored", self.base)
+        git(self.r, "merge", "-q", "--no-commit", "--no-ff", feature)
+        (self.r / "gate.py").write_text(
+            "\n".join(["top"] + [f"pad{i}" for i in range(20)] + ["bottom"]) + "\n"
+        )
+        git(self.r, "add", "gate.py")
+        git(self.r, "commit", "-qm", "reconcile: put pad5 back")
+        target = git(self.r, "rev-parse", "HEAD")
+
+        res = cp.check(self.r, feature, target)
+        self.assertEqual(res.verdict, cp.CONTENT_LOST, res.render())
+        self.assertEqual(len(res.drifted), 0, res.render())
+        self.assertFalse(cp.added_block_uniquely_present(self.r, "gate.py", []))
+
+    def test_a_non_unique_added_line_is_not_confirmed(self) -> None:
+        """`}` or a blank line matches all over a file. Accepting such a match would
+        report survival of content that was genuinely dropped, so it must not count."""
+        self.assertTrue(
+            cp.added_block_uniquely_present(self.r, "gate.py", ["pad7"]),
+            "control: a line that occurs exactly once IS confirmable",
+        )
+        (self.r / "dup.py").write_text("a\n}\nb\n}\nc\n")
+        self.assertFalse(
+            cp.added_block_uniquely_present(self.r, "dup.py", ["}"]),
+            "a line occurring twice must NOT be treated as confirmed",
+        )
+        self.assertFalse(
+            cp.added_block_uniquely_present(self.r, "missing.py", ["anything"]),
+            "a file absent at the target cannot confirm anything",
+        )
+
+    def test_added_lines_must_be_contiguous_and_in_order(self) -> None:
+        """A later commit that split the added lines apart changed the effect."""
+        (self.r / "split.py").write_text("x\nA\nWEDGE\nB\ny\n")
+        self.assertFalse(
+            cp.added_block_uniquely_present(self.r, "split.py", ["A", "B"]),
+            "split-apart added lines are not a surviving contiguous run",
+        )
+        self.assertFalse(
+            cp.added_block_uniquely_present(self.r, "split.py", ["B", "A"]),
+            "reordered added lines are not a surviving in-order run",
+        )
+        (self.r / "join.py").write_text("x\nA\nB\ny\n")
+        self.assertTrue(
+            cp.added_block_uniquely_present(self.r, "join.py", ["A", "B"]),
+            "control: contiguous and in order IS confirmable",
+        )
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

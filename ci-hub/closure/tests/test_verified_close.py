@@ -513,10 +513,6 @@ class VerifiedCloseTest(unittest.TestCase):
         self.assertEqual([], runner.commands, "refusal must precede any git call")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ContentLostRefusesClosure(unittest.TestCase):
     """THE CONSUMER TEST. Detectable-in-principle is not the same as refused-in-practice.
 
@@ -600,3 +596,66 @@ class ContentLostRefusesClosure(unittest.TestCase):
         )
         self.assertEqual(ev.state, "verified", ev.reason)
         self.assertEqual(ev.landing, "landed")
+        # A clean landing carries NO qualifier. This is the control for the drift case
+        # below: if `reason` were populated here too, "detail=" in the closure note
+        # would not distinguish a drifted close from a clean one.
+        self.assertIsNone(ev.reason)
+
+    def test_context_drift_CLOSES_but_is_RECORDED_not_silent(self) -> None:
+        """A hunk displaced by a later adjacent insertion is not content loss.
+
+        It must close -- the added content is confirmed present -- while still saying
+        so, because a closure that passed through a drift must not read afterwards as
+        a clean match nobody observed.
+        """
+        self.g("checkout", "-q", "-b", "drifted", self.feature)
+        b = (self.repo / "f.py").read_text().splitlines()
+        b.insert(0, "brand new first line")   # displaces the first hunk's context
+        (self.repo / "f.py").write_text("\n".join(b) + "\n")
+        self.g("add", "f.py")
+        self.g("commit", "-qm", "later: insert above")
+        target = self.g("rev-parse", "HEAD")
+
+        ev = verified_close.verify_code(
+            "PR-3", repo="rrnewton/dev-hermit", source=self.repo,
+            target=target, run=self._landed_verifier(),
+        )
+        self.assertEqual(ev.state, "verified", ev.reason)
+        self.assertEqual(ev.landing, "landed")
+        self.assertIsNotNone(ev.reason)
+        self.assertIn("CONTEXT-DRIFTED", ev.reason)
+        self.assertNotIn("CONTENT-LOST", ev.reason)
+
+    def test_the_drift_qualifier_reaches_the_durable_closure_note(self) -> None:
+        """The record is the point. An in-memory `reason` nobody writes down is not one."""
+        recorded: list[tuple[str, ...]] = []
+
+        def run(command, cwd=None, **kw):
+            import subprocess as _sp
+            recorded.append(tuple(command))
+            return _sp.CompletedProcess(list(command), 0, "", "")
+
+        ev = verified_close.Evidence(
+            "verified", "code", "PR-4", resolved="rrnewton/dev-hermit@" + self.feature,
+            reason="CONTEXT-DRIFTED: 1 of 2 hunk(s) no longer reverse-apply",
+            landing="landed",
+        )
+        verified_close.close_task("t", ev, run=run)
+        notes = [c for c in recorded if len(c) > 1 and c[1] == "note"]
+        self.assertTrue(notes, f"no tg note was written: {recorded}")
+        body = notes[0][-1]
+        self.assertIn("CLOSURE-VERIFIED", body)
+        self.assertIn("detail=CONTEXT-DRIFTED", body)
+        # The 40-hex must survive the append, because tg_landed.py regexes it out.
+        self.assertIn(self.feature, body)
+
+
+# THE DISPATCHER MUST BE THE LAST THING IN THE FILE. It previously sat above
+# ContentLostRefusesClosure, so running this file as a script -- which is how the seal and
+# every caller runs it -- executed unittest.main() before that class was defined and
+# collected 20 of 24 tests. The four it skipped included
+# test_lossy_reconcile_is_REFUSED_by_the_closure_gateway, the consumer-level proof that
+# CONTENT-LOST actually refuses a closure. It passed as a module and was never run as a
+# script, which is the shape of a check that exists and does not fire.
+if __name__ == "__main__":
+    unittest.main()

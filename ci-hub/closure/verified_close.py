@@ -174,6 +174,34 @@ def verify_code(
                     f"region. Missing: {'; '.join(presence.missing[:3])}"
                 ),
             )
+        if presence.verdict == content_presence.CONTEXT_DRIFTED:
+            # Some hunk failed to reverse-apply, but every line those hunks ADD was
+            # confirmed present at the target as a unique contiguous run. Later commits
+            # moved the surrounding context; the content is there.
+            #
+            # THE REFUSAL ABOVE IS UNCHANGED. CONTENT-LOST still fires whenever any hunk's
+            # added content cannot be confirmed, so nothing that used to refuse stops
+            # refusing; this branch is only reachable when that check has already been
+            # satisfied for every failing hunk. Measured case: e3bd3a89 refused at 3 of 4
+            # hunks on 2026-08-15 where the entire "missing" hunk was `+import shutil`,
+            # present on main, displaced by ac181ae8 adding `import os` above it.
+            #
+            # RECORDED, NOT SILENT. A closure that passed through a drift must not read
+            # identically to one where every hunk matched cleanly.
+            return Evidence(
+                "verified",
+                "code",
+                reference,
+                resolved=f"{repo}@{resolved}",
+                landing="landed",
+                reason=(
+                    f"CONTEXT-DRIFTED: {len(presence.drifted)} of "
+                    f"{presence.hunks_total} hunk(s) no longer reverse-apply at {target} "
+                    "because later commits moved their surrounding context; every added "
+                    "line was confirmed present. Drifted: "
+                    f"{'; '.join(presence.drifted[:3])}"
+                ),
+            )
         # INDETERMINATE is NOT converted into a refusal. A merge commit has zero hunks, and
         # a 0/0 content check is a NO-RESULT -- neither pass nor fail. Refusing on it would
         # reproduce the no-result-into-fail defect this check exists to expose, and would
@@ -458,6 +486,11 @@ def close_task(task: str, evidence: Evidence, *, run: Run = _run) -> int:
         # so a closure note that omits this would be read as a landing claim it
         # cannot support.
         f"landing={evidence.landing or 'n/a'} verifier=ci-hub/bin/close-task"
+        # Carry any qualifier the verification attached. A CONTEXT-DRIFTED closure is
+        # verified but not clean, and a note that omitted the qualifier would be read
+        # afterwards as a clean match nobody actually observed. Appended, so the 40-hex
+        # that ci-hub/directives/tg_landed.py regexes out is unaffected.
+        + (f" detail={evidence.reason}" if evidence.reason else "")
     )
     noted = run(("tg", "note", task, note), cwd=ROOT)
     if noted.returncode != 0:
