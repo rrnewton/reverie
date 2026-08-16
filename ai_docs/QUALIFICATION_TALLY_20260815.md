@@ -1,132 +1,57 @@
-# Running qualification tally — 380 rows, six subsets
+# Qualification tally — 380 rows, six subsets, 2026-08-15
 
-Maintained by `hermit-coord`. **Read from task notes; nothing here was re-scored by me.**
-**Re-promoted wholesale, not patched.**
+> **Every number here that survived contact with a second measurement got smaller or grew a caveat.
+> None got bigger.**
 
-## What "qualified" means here — say this with every figure
+Maintained by `hermit-coord` from task notes and the artifacts named below. **Nothing was re-scored by
+me.** Re-promoted wholesale at each revision, never patched.
+
+**The disagreements come first, deliberately.** They are the part of this record that a summary would
+destroy, and the counts further down are the part a reader would have trusted anyway.
+
+## What "qualified" means — say it with every figure
 
 > **Qualification is EXIT-STATUS REFUSABILITY UNDER THE STRIPPED COMPARATOR — `parity=false` on
 > every accept arm — NOT PARITY AND NOT L2.**
 
-`hermit-revents`' wording, adopted verbatim. **Nothing here is a qualifying receipt.**
+`hermit-revents`' wording, adopted verbatim across all subsets. **Nothing here is a qualifying
+receipt.**
 
-## Stamp
+---
 
-**Read 2026-08-16T00:57Z.** Note counts and status, because the corpus moves while it is read.
+# 1 · FIVE OPEN DISAGREEMENTS — carried unnetted
 
-| subset task | notes | status |
-|---|---:|---|
-| `qualify-queue-rows-01-20` | 6 | CLOSED |
-| `qualify-queue-rows-21-40` | 2 | in progress |
-| `qualify-queue-rows-41-60` | 4 | in progress |
-| `qualify-queue-rows-61-79` | 2 | in progress (`hermit-li2`) |
-| `qualify-ptrace-replay-81` | 4 | in progress |
-| `qualify-native-naked-73` | 1 | CLOSED |
-| `qualify-kvm-verify-71` | 3 | CLOSED |
-| `qualify-dbt-verify-47` | 6 | in progress |
-| `qualify-sabre-verify-29` | 14 | CLOSED |
+**These are competing readings, not defects to close.** None is subtracted from any count below.
+Collapsing any of them would destroy the fact that two careful agents read the same thing differently.
 
-## Results, with **who checked what** — an unchecked verdict and a checked one are not the same
+| # | disagreement | the competing readings |
+|---|---|---|
+| 1 | **cluster E** | **143 vs 150 vs `hermit-shell`'s independent read** — three values, not two |
+| 2 | **six triples** | **330 vs three** |
+| 3 | **product total** | a **14-cell difference** with devbig014 |
+| 4 | **`c-programs/clone`, row 27** | `hermit-fixtures` disagreed with `hermit-sabre`, **did not reconcile**, and said so: *"their reading and mine both stand on the record until someone adjudicates."* |
+| 5 | **CLI-gate exclusion** | **1,344 declarations** (dbt) vs **at most 1,306 cells** (revents) — **DIFFERENT UNITS.** Not subtracted, because *"subtracting a figure I can't reproduce is worse than overlapping."* |
 
-**This column is the point, and it now has FOUR states rather than two:** *unchecked* ·
-*checked-and-disagreed* · *checked-and-held* · *checked-and-strengthened-with-a-control*. A verdict
-nobody has re-derived, one that survived a check, and one a check made **stronger** are three
-different things.
+# 2 · ONE RETIRED FIGURE — recorded, not deleted
 
-| subset | scored | result | independently checked by | outcome of the check |
-|---|---:|---|---|---|
-| liteinst+verify 1-20 | 20 | 14 qualified **on the ptrace reference arm**, 6 not-exit-gated | **hermit-codexrev** | dispatched, not started |
-| liteinst+verify 21-40 | 20 | 17 qualified, 2 not-exit-gated, 1 message-bearing | **hermit-fixtures**, 26 cells | **1 disagreement — row 27, UNRECONCILED** |
-| liteinst+verify 41-60 | 20 | 14 `QUALIFIED-LITEINST`, 1 ptrace-only, 1 not-qualified, 4 ND | **hermit-codexrev** | dispatched, not started |
-| liteinst+verify 61-79 | 19 | **9 `REFUSES-LITEINST`** (rows 61-67, 69, 70) — RELAYED, see below | **hermit-fixtures**, in the same 26 | **held** |
-| **ptrace+replay** | 40 | 25 qualified, 6 not-exit-gated, 9 ND | **hermit-sabre**, on the 25 | **6 disagreements — SOFT** |
-| **kvm+verify** | 71 | 20 qualified, 16 not-qualified, 7 not-exit-gated, 28 ND | **hermit-revents**, on 43 | **6 disagreements — SOFT** |
-| native+naked | 73 | accept arm fails 71 of 73 | — | unchecked |
-| dbt+verify | 47 | CLOSED, then **amended after closing** | self re-check | **detector fault found — counts changed** |
-| **sabre+verify** | 29 | 12 pass-refusable, 6 no-exit-gate, 8 accept-fail, 3 indeterminate | **hermit-li2**, all 29 | **HELD — 0 disagreements; 1 verdict STRENGTHENED** |
+**`4,750` is retired: not reconstructible in any unit.** It was quoted as the largest unexplained
+population **and relayed to devbig014**, so it is in circulation and must be retired visibly.
 
-**CORRECTION to the previous revision of this file, which said the 2 liteinst-enabling verdicts had
-no check at all.** They do. `hermit-fixtures` holds `cross-verify-the-liteinst-qualified-verdicts`,
-in progress, and has enumerated **26 cells to re-derive** — `hermit-sabre`'s 17 (rows 21-40) plus
-`hermit-li2`'s 9 (rows 61-79). It has derived none of them yet and says so.
+- **Provenance:** `hermit-revents`' bound — *the CLI gate accounts for at most 1,306 and none of the
+  other 4,750.*
+- **Retired by** `hermit-dbt`: *not reconstructible from my counts as a pool containing replay and
+  chaos.* `6429 − 1306 = 5123`; the only clean route to 4750 is `6429 − 1679`, which subtracts
+  **replay** and so contradicts replay being a slice of it.
+- **The unit hypothesis was tested and REFUTED:** `1,306 + 4,750 = 6,056`, which matches no derivable
+  total — not 7,056 triples, 6,429 disabled declarations, 5,376 cells, 4,751 disabled cells, or 5,206
+  red. It cannot be two cell counts either: 6,056 exceeds the whole scorecard.
+- **Likely origin, hypothesis not finding:** `6429 − 1678 (custom) = 4751` closes three ways;
+  `6429 − 1679 (replay) = 4750` does not. **`custom` and `replay` differ by exactly one.**
 
-**AND THE 2 ARE SUBSUMED, NOT SEPARATE — DO NOT ADD THEM.** `hermit-liteinst`'s original 2,
-`tee-enosys` and `ustat-enosys`, **are rows 67 and 69 inside li2's 9.** li2's figure **replaces** the
-earlier 2-of-19 tally rather than adding to it. A tally that carried both would double-count.
+**A figure that vanishes silently is worse than one carried with a correction** — someone re-derives
+it in a week and nobody knows it was already tested.
 
-**Attribution, because it is not where you would look for it:** li2's 9 is recorded in
-`hermit-fixtures`' enumeration note, **not** in `qualify-queue-rows-61-79`, whose two notes are the
-reassignment and carry no result. **RELAYED, not read from the producing task.**
-
-**Slices still with no check: liteinst 1-20 and 41-60.**
-
-## The two cross-verifications — SOFT, not revised, and NOT netted
-
-**Both reviewers found disagreements in verdicts they did not derive. The direction is downward.**
-
-- **`hermit-revents` on KVM, 43 cells: 6 disagreements.** It caught **two faults in its own checker
-  first** — a comparator that named the file, so a comment-only edit read as *differs*; and a
-  mutation that hit prose at line 20 instead of the call at line 77. **Both would have manufactured a
-  false disagreement. Both were fixed, and the disagreement survived on real evidence.**
-- **`hermit-sabre` on ptrace, 25 cells: 6 disagreements, each backed by a run** — and it **declared a
-  conflict of interest**, being the author of the same defect earlier today.
-
-**THREE THINGS THIS TALLY DELIBERATELY DOES NOT DO:**
-
-1. **No disagreement rate.** revents was explicit: *6 of 43 is not a rate, and I'm not offering one.*
-   **Two samples are not a population**, and dividing them would invent one.
-2. **The disagreements are NOT netted against the qualified counts.** Neither reviewer has reconciled
-   with the original author. **There are currently two unreconciled readings of each set, and that is
-   the honest state** — both are recorded, neither is subtracted.
-3. **The affected sets are marked SOFT, not revised.** `hermit-kvm2` is sweeping the ptrace 25 and
-   `revents` the remaining 37 KVM cells for the shared shape. **The corrected figures come after
-   those sweeps, not now.**
-
-## The SaBRe 29 HELD — the first set tonight to survive an independent check
-
-**`hermit-li2` cross-verified `hermit-codexrev`'s 29 and found ZERO disagreements**, against 6 each in
-the ptrace 25 and the KVM 43. Recorded as its own state because a set that holds and a set nobody has
-looked at are not the same evidence.
-
-**One verdict was STRENGTHENED rather than confirmed.** The `clone` cell timed out for both agents —
-but **codexrev had no control, which cannot separate a cell property from a busy host.** li2 ran **a
-ptrace control on the same binary at the same moment: rc=0.** So the hang is **SaBRe-specific**, which
-is a stronger claim than the original verdict made.
-
-**It stated its prior and reported against it.** li2 **expected the verdict to break**, having
-overturned five inherited timeout verdicts an hour earlier, and reported that it did not. A negative
-from someone who expected a positive is worth more than one from someone who expected nothing.
-
-**Arithmetic checked two ways, neither of them file order.** The 37→29 reduction was re-derived
-against codexrev's **independently written class lists** — zero disagreements — and the four lists
-**partition the population with an empty set difference in both directions**.
-
-**MEASURED HERE, third route:** the four class lists hold **29 cells, 29 distinct, 0 duplicates
-across classes**, and set-difference against the queue's own `sabre`/`verify` population is **empty in
-both directions**. `12+3+8+6 = 29` closes.
-
-### The bound li2 put on its own result, which belongs beside the number
-
-> **21 of the 29 rest on a structural argument and bookkeeping, not on execution — 16 of 29 by the
-> structural route.**
-
-**A CONFIRMED SET IS NOT A FULLY-EXECUTED SET.** "Held under independent check" and "ran end to end"
-are different claims, and this set is the first and not the second. The two figures — 21 non-executed,
-of which 16 structural — are kept distinct rather than collapsed into one.
-
-## Also downward: a reproducibility re-run caught a flake
-
-`hermit-dbt` re-ran both arms on 5 refusable cells **purely to check its own numbers.** Four
-reproduced exactly. **`backend-parity-c/sendfile-copy` did not** — accept arm 0 on the first pass, 1
-on the re-run. **A stable green it would otherwise have shipped.**
-
-That cell keeps recurring: it is the row `hermit-teardown` is disqualified from reviewing, kvm2 scored
-it NOT-EXIT-GATED, and sabre+verify has it as pass-refusable. **Three subsets, three readings, and now
-a demonstrated flake.**
-
-## Every checked set changed — with one distinction the summary flattens
-
-**No verdict set has come back with nothing to say.** Running total across the checks:
+# 3 · VERIFICATION RESULT — four of five sets disagreed under independent check
 
 | check | outcome |
 |---|---|
@@ -134,118 +59,125 @@ a demonstrated flake.**
 | KVM 43 | **6 disagreements** |
 | KVM conversions | **5 disqualified of 9** |
 | liteinst 26 | **1 disagreement**, unreconciled |
-| — RELAYED, unsourced by me — | **three false `NOT-EXIT-GATED`** |
-| SaBRe 29 | **0 disagreements** — and 1 verdict **strengthened** |
+| — RELAYED, unsourced by me — | three false `NOT-EXIT-GATED` |
+| **SaBRe 29** | **0 disagreements — HELD, and one verdict STRENGTHENED** |
 
-**The distinction worth preserving: SaBRe HELD.** Zero disagreements is not the same result as six,
-and "every set was touched" is true only if you count a *strengthening* as a touch. It was touched in
-the sense that a control was added that codexrev did not have — **the verdict got stronger, not
-weaker.** Recording it in the same row as six disagreements would erase the only clean check of the
-night.
+**SaBRe alone held, and was strengthened rather than merely confirmed.** The `clone` cell timed out
+for both agents, but codexrev had **no control**, which cannot separate a cell property from a busy
+host. `hermit-li2` ran **a ptrace control on the same binary at the same moment: rc=0** — so the hang
+is **SaBRe-specific**, a stronger claim than the original verdict made. li2 also **stated its prior
+and reported against it**: it expected the verdict to break, having overturned five inherited timeout
+verdicts an hour earlier, and reported that it did not.
 
-**The last two unchecked sets are now dispatched** — `hermit-codexrev` has liteinst 1-20 and 41-60.
-**No tg task existed for it at this stamp**, so that row records a dispatch rather than a task id, and
-it should be re-read once one exists.
+**Its own bound, which belongs beside the number: 21 of the 29 rest on a structural argument and
+bookkeeping, not on execution — 16 of 29 by the structural route. A CONFIRMED SET IS NOT A
+FULLY-EXECUTED SET.**
 
-## ONE RETIRED FIGURE — recorded with its provenance, NOT deleted
+# 4 · RESULTS, with the four-state check column
 
-**`4,750` is retired.** It was quoted as the largest unexplained population and **relayed onward to
-devbig014**, so it is in circulation and must be retired visibly rather than dropped.
+**Four states, not two:** *unchecked* · *checked-and-disagreed* · *checked-and-held* ·
+*checked-and-strengthened-with-a-control*.
 
-**Provenance:** it came from `hermit-revents`' bound — *the CLI gate accounts for at most 1,306 and
-none of the other 4,750.* **Retired by `hermit-dbt`'s independent measurement:** *4,750 isn't
-reconstructible from my counts as a pool containing replay and chaos.*
+| subset | scored | result | checked by | outcome |
+|---|---:|---|---|---|
+| liteinst 1-20 | 20 | 14 qualified **on the ptrace reference arm**, 6 not-exit-gated | hermit-codexrev | dispatched |
+| liteinst 21-40 | 20 | 17 qualified, 2 not-exit-gated, 1 message-bearing | hermit-fixtures | **1 disagreement, unreconciled** |
+| liteinst 41-60 | 20 | 14 `QUALIFIED-LITEINST`, 1 ptrace-only, 1 not-qualified, 4 ND | hermit-codexrev | dispatched |
+| liteinst 61-79 | 19 | 9 `REFUSES-LITEINST` — **subsume the earlier 2, do not add** | hermit-fixtures | held |
+| ptrace+replay | 40 of 81 | 25 qualified, 6 not-exit-gated, 9 ND | hermit-sabre | **6 disagreements** |
+| kvm+verify | 71 | 20 qualified, 16 not-qualified, 7 not-exit-gated, 28 ND | hermit-revents | **6 disagreements** |
+| native+naked | 73 | accept arm fails **71 of 73**, for two opposite reasons | — | unchecked |
+| dbt+verify | 47 | closed, then **amended after closing** | self | **detector fault found** |
+| sabre+verify | 29 | 12 pass-refusable, 6 no-exit-gate, 8 accept-fail, 3 indeterminate | hermit-li2 | **HELD + strengthened** |
 
-**A figure that vanishes silently is worse than one carried with a correction** — someone re-derives
-it in a week and nobody knows it was already tested.
+**Do not sum the QUALIFIED column.** `-524` bars 21 of the liteinst 79 — **eligible is not
+qualified**. Of kvm's 28 ND, **23 are operator-side: unscored, not unqualifiable.** kvm2 measured
+what a substring count costs: **36 against a true 20**, because `NOT-QUALIFIED` nests `QUALIFIED`.
+**Count by exact match on the verdict token.**
 
-### An adjacency the next reader will hit, flagged and NOT adjudicated
+`native+naked` is on a different channel entirely: its oracle is **native nondeterminism**, requiring
+every run to exit 0 **and** ≥2 distinct hashes. **50 of 73 were admitted to the queue *because* they
+exit non-zero natively** — the property that qualified them disqualifies them here.
 
-`ai_docs/evidence/four-populations-map-20260815/MAP.txt` carries **4,751** — disabled-red scorecard
-cells — and reconciles it three ways: `disabled-red 4751 + enabled-red 455 = red 5206`, and
-`3853 + 213 + 685 = 4751`. **That is one off the retired 4,750.**
+# 5 · THE TWO DERIVATIONS OF THE C4 20 AGREE — and the agreement is worth less than it looks
 
-**I am not asserting they are the same population.** The map is internally consistent at 4,751 and the
-retired figure is 4,750, and nothing I can read settles whether that is the same set off by one or two
-different sets. **The map cannot adjudicate the other half either — it carries no CLI-gate figure at
-all.** Recorded so a re-derivation starts from the discrepancy rather than rediscovering it.
+**20 of 20 agree.** Containment holds: all 20 C4 cells are in the ptrace artifact, none missing.
 
-### Why the overlap was NOT netted, which is the core of it
+**They do not share an upstream artefact** — two distinct files, independent runs with their own
+timings and binary hashes. **But they share the METHOD completely:** same harness, same command
+(`--backend=ptrace record start --strict --verify --verify-json`), same commit `302a1a9c0`.
 
-**RELAYED, `hermit-dbt`:** the CLI-gate exclusion is **1,344 declarations by its measurement** versus
-**at most 1,306 cells** by revents'. **DIFFERENT UNITS — declarations are not cells.** It did not
-subtract, and said why:
+> **This is a repeat measurement, not an independent derivation.** It bounds flake and says nothing
+> about systematic error. Any fault in the harness, command, or oracle is present in both.
 
-> *subtracting a figure I can't reproduce is worse than overlapping.*
+**"The 20" is li2's probe set, not the artifact's QUALIFIED set** — they differ by 5
+(`file-io-roundtrip`, `fork-exec-pipeline`, `personality-domain`, `short-io-split-identity`,
+`signal-delivery-sequence`). **Anyone reading "+20" should know it is 20 of 25.**
 
-**The overlap stays visible.** This is the same discipline as the four open disagreements above: an
-unreconciled overlap that a reader can see beats a clean number that hides a unit mismatch.
+# 6 · THE MOST TRANSFERABLE THING IN THIS RECORD
 
-### What survives from that slice
+**My first comparison of those 20 cells reported 20 of 20 DISAGREE.**
 
-- **669 with no mechanism found.**
-- **Three timeout populations, uncharacterised** — and the bound is the agent's own: *I never moved
-  the deadline, so none can be called a hang.* **A timeout at an unchanged deadline is not evidence
-  of a hang**, and none of the three is described as one.
+> **Uniformity across all 20 is the tell — that's a comparator, not twenty independent
+> contradictions. It would have produced the single most alarming result available.**
 
-## FIVE OPEN DISAGREEMENTS — recorded to SURVIVE, not to be reconciled
+The field is `PASS -` (outcome plus an empty-reason dash) and I compared against `"PASS"`. The rule
+that fixed it, stated so it can be checked: **first whitespace token of each field** — `PASS - ` →
+`PASS`, `QUALIFIED under ptrace replay` → `QUALIFIED`. Not a substring test, so `NOT-QUALIFIED`
+tokenises to itself and cannot nest.
 
-**These are not defects to close. They are competing readings that must both stay on the record until
-someone adjudicates them.** Collapsing any of them into a single number would destroy the fact that
-two careful agents read the same thing differently.
+`hermit-fixtures` caught the same class ahead of me: the probe file has **21 lines and 20 cells** —
+line 21 is a literal `DONE` sentinel. **A row count taken on faith reports 21.**
 
-| disagreement | the competing readings |
+**Twenty-four instances of this family today.** The operational form is not *be careful* — vigilance
+failed all day. It is: **produce a second measurement by a different route and see whether it
+disagrees.**
+
+---
+
+# Provenance, sources, and what is still moving
+
+**Stamp — read 2026-08-16T02:14Z.** Note counts at read time, because the corpus moves while it is
+read and that is a property of the task, not something care fixes.
+
+| task | notes | status |
+|---|---:|---|
+| `qualify-queue-rows-01-20` / `21-40` / `41-60` / `61-79` | 6 / 2 / 4 / 3 | all CLOSED |
+| `qualify-ptrace-replay-81` | 4 | CLOSED |
+| `qualify-native-naked-73` | 1 | CLOSED |
+| `qualify-kvm-verify-71` | 3 | CLOSED |
+| `qualify-dbt-verify-47` | 10 | CLOSED |
+| `qualify-sabre-verify-29` | 14 | CLOSED |
+| `cross-verify-the-liteinst-qualified-verdicts` | 4 | CLOSED |
+| **`bound-the-flake-rate-on-the-20-c4-cells`** | 1 | **IN PROGRESS** |
+
+**ARE THE SOURCES STILL BEING WRITTEN? Mostly no, and one yes.** Ten of eleven producing tasks are
+closed. **`bound-the-flake-rate-on-the-20-c4-cells` is live**, and its result bears directly on §5 —
+the C4 verdicts are single observations awaiting exactly that bound. **Two closed slices were amended
+*after* closing** (`qualify-queue-rows-01-20`, `qualify-dbt-verify-47`), so closed does not mean
+frozen. **Re-read the notes rather than trusting this file, and re-promote wholesale rather than
+patching it.**
+
+**File-backed sources, with digests, so an integrity check means something:**
+
+| source | sha256 (first 16) |
 |---|---|
-| **cluster E** | **143 vs 150 vs `hermit-shell`'s independent read** — three values, not two |
-| **six triples** | **330 vs three** |
-| **product total** | a **14-cell difference with devbig014** |
+| `ai_docs/QUALIFIABLE_FIXTURE_QUEUE_20260815.tsv` | `a287d2361669d00b` |
+| `ai_docs/evidence/four-populations-map-20260815/reasons.json` | `6c8961bcd99c5002` |
+| `ignored/xc4-enable-20260815/probe-all.tsv` | `8069b6ba9ec056a7` |
+| `ignored/qualify-ptrace-replay-81-20260815/results.jsonl` | `e0a8f7424edb1953` |
 
-Plus the per-cell one from the liteinst cross-check: **`c-programs/clone`, row 27.** `hermit-fixtures`
-recorded a disagreement with `hermit-sabre`, **did not reconcile**, and said so: *"their reading and
-mine both stand on the record until someone adjudicates."* That is the correct handling and the reason
-this section exists.
+**The last two are gitignored** — they survive context loss, not host loss, and devbig014 cannot read
+them. **Promotion should be scheduled rather than discovered.**
 
-**None of the four is netted into any count above.**
+**A CHECKSUM COMPARES THE FILE, NOT THE KNOWLEDGE.** These digests detect drift in the inputs; they
+say nothing about whether a verdict inside them is right. That is what §3's check column is for.
 
-## Two more results, both downward
+**Verify this artifact by containment, not byte-identity.** Content promoted into a superset returns
+a mismatch, and the naive reading is that it was lost.
 
-**`hermit-codexrev`: 89 of 89 RED.** A whole population, no survivors.
-
-**`hermit-revents`: 5 disqualified of 9 KVM conversions.** More than half of a conversion batch
-removed on inspection — again the honest direction.
-
-## The dbt slice amended itself AFTER closing, and the caveat is precise
-
-`hermit-dbt` re-examined its own detector when kvm2's ternary correction landed, and found **the
-symbolic blind spot in its own guard picker — worse than the old detector's.** Measured against
-literal strings: `return EXIT_FAILURE;` → not matched; `return violations == 0 ? 0 : 1;` → not
-matched, **and the old detector caught that one.** **14 of its 47 fixtures use `return EXIT_FAILURE`
-as a guard error path.**
-
-**It bounded the blast radius rather than retracting everything:** the regex only chose *which guard
-to invert*; it never decided whether a fixture is exit-gated. **So it cannot have manufactured a
-refusal** — every refusal in its table is a measured non-zero exit. **A closed slice that amends
-itself is the system working.**
-
-## DO NOT SUM THE "QUALIFIED" COLUMN
-
-Verdict classes stay distinct: **QUALIFIED · NOT-DETERMINABLE · capability-blocked ·
-accept-only-outstanding · unscored-operator-side**. `-524` bars 21 of the liteinst 79; **eligible is
-not qualified.** Of kvm's 28 ND, **23 are operator-side — unscored, not unqualifiable.**
-
-Encodings differ per slice, and kvm2 measured what a substring count costs: **36 against a true 20**,
-because `NOT-QUALIFIED` nests `QUALIFIED`. **Count by exact match on the verdict token.**
-
-## Provenance — the failure this artifact is most exposed to
-
-**An existence check cannot see a file that was never written.** Promoting evidence earlier today I
-copied 12 files and **9 landed**; 187 and **186**. A global `*.log` in `.gitignore` applied inside
-`ai_docs/evidence/` and `git add` skipped five **without a word**. Every check passed, because they
-all asked about files that existed. **Only the count disagreed.**
-
-**Check the tracked count against the intended count.** And treat every figure here as provisional
-against the stamp above — four subsets are in progress, two closed sets are SOFT pending sweeps, and
-two closed slices were amended after closing.
-
-**Evidence still in gitignored paths:** `ignored/qualify-sabre-verify-29-20260815/results.jsonl`.
-Survives context loss, not host loss; devbig014 cannot read it. **Promotion should be scheduled.**
+**And check the tracked count against the intended count.** Promoting evidence earlier today I copied
+12 files and **9 landed**; 187 and **186**. A global `*.log` in `.gitignore` applied inside
+`ai_docs/evidence/` and `git add` skipped five **without a word**. The commit succeeded, ancestry
+verified, and every existence check passed — **because they all asked about files that existed. Only
+the count disagreed.**
