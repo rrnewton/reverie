@@ -1,0 +1,24 @@
+source: hermit @ 302a1a9c0fde564db0292d1ea5cabc91343e79bc, 13 manifests + ci/compat-envelope/cells.json
+tests 336 | declaration triples 7056 | scorecard cells 5376
+declarations: enabled 627 disabled 6429
+scorecard:    enabled 625 disabled 4751 | green 170 red 5206
+scorecard = declarations minus 1680 custom triples (1678 disabled + 2 enabled)
+red 5206 = disabled-red 4751 + enabled-red 455
+
+top-14 reason strings over the 4751 disabled scorecard cells (= 3853):
+  1   330  Record/replay is unsupported by KVM
+  2   330  Record/replay is unsupported by SaBRe
+  3   330  Record/replay is unsupported by LiteInst
+  4   330  Chaos scheduling is unsupported by KVM
+  5   330  Chaos scheduling is unsupported by SaBRe
+  6   330  Chaos scheduling is unsupported by LiteInst
+  7   316  Record/replay is unsupported by DBT
+  8   316  Chaos scheduling is unsupported by DBT
+  9   267  Chaos scheduling is only meaningful for guests with an explicit schedule-diversity oracle
+ 10   262  Record/replay qualification is separate from the initial strict-verification migration
+ 11   261  This migration inventories strict verification; it does not assert native nondeterminism
+ 12   169  Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
+ 13   150  Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+ 14   132  Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+
+singletons 213 | mid-frequency 685 across 69 strings | 3853+213+685 = 4751
