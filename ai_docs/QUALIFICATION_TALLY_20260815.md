@@ -1,134 +1,102 @@
 # Running qualification tally — 380 rows, six subsets
 
-Maintained by `hermit-coord`. **Read from task notes; nothing here was re-scored by me.** Every
-number is attributed to the agent that produced it. **Re-promoted wholesale, not patched.**
+Maintained by `hermit-coord`. **Read from task notes; nothing here was re-scored by me.**
+**Re-promoted wholesale, not patched.**
 
 ## What "qualified" means here — say this with every figure
 
 > **Qualification is EXIT-STATUS REFUSABILITY UNDER THE STRIPPED COMPARATOR — `parity=false` on
 > every accept arm — NOT PARITY AND NOT L2.**
 
-`hermit-revents`' wording, adopted verbatim across all slices. No subset is measuring bitwise
-parity. **Nothing here is a qualifying receipt.**
+`hermit-revents`' wording, adopted verbatim. **Nothing here is a qualifying receipt.**
 
-## Stamp — what this reading saw
+## Stamp
 
-**Read 2026-08-16T00:27Z.** Note counts and status at read time, because the corpus moves while it
-is being read and that is a property of the task, not something care fixes.
+**Read 2026-08-16T00:57Z.** Note counts and status, because the corpus moves while it is read.
 
 | subset task | notes | status |
 |---|---:|---|
 | `qualify-queue-rows-01-20` | 6 | CLOSED |
 | `qualify-queue-rows-21-40` | 2 | in progress |
 | `qualify-queue-rows-41-60` | 4 | in progress |
-| `qualify-queue-rows-61-79` | 2 | in progress — **reassigned to `hermit-li2`**, `hermit-liteinst` hit 100% context |
+| `qualify-queue-rows-61-79` | 2 | in progress (`hermit-li2`) |
 | `qualify-ptrace-replay-81` | 4 | in progress |
 | `qualify-native-naked-73` | 1 | CLOSED |
 | `qualify-kvm-verify-71` | 3 | CLOSED |
-| `qualify-dbt-verify-47` | 4 | in progress |
-| `qualify-sabre-verify-29` | 11 | in progress |
+| `qualify-dbt-verify-47` | 6 | in progress |
+| `qualify-sabre-verify-29` | 14 | CLOSED |
 
-## Population — MEASURED HERE from the queue
+## Results, with **who checked what** — an unchecked verdict and a checked one are not the same
 
-| subset | rows | owner | scored |
-|---|---:|---|---:|
-| liteinst + verify | 79 | kvm2 · sabre · revents · **li2** | 60 |
-| ptrace + replay | 81 | hermit-shell | 40 |
-| native + naked | 73 | hermit-sabre | 73 |
-| kvm + verify | 71 | hermit-kvm2 | 71 |
-| dbt + verify | 47 | hermit-dbt | 0 |
-| sabre + verify | 29 | hermit-codexrev | 0 |
-| **TOTAL** | **380** | | **244 (64%)** |
+**This column is the point.** A verdict nobody has re-derived and one that survived an independent
+run should never look alike in a tally.
 
-## Results by subset — **backend named, never summed across backends**
+| subset | scored | result | independently checked by | outcome of the check |
+|---|---:|---|---|---|
+| liteinst+verify 1-20 | 20 | 14 qualified **on the ptrace reference arm**, 6 not-exit-gated | — | **unchecked** |
+| liteinst+verify 21-40 | 20 | 17 qualified, 2 not-exit-gated, 1 message-bearing | — | **unchecked** |
+| liteinst+verify 41-60 | 20 | 14 `QUALIFIED-LITEINST`, 1 ptrace-only, 1 not-qualified, 4 ND | — | **unchecked** |
+| liteinst+verify 61-79 | 0 | — | — | not started |
+| **ptrace+replay** | 40 | 25 qualified, 6 not-exit-gated, 9 ND | **hermit-sabre**, on the 25 | **6 disagreements — SOFT** |
+| **kvm+verify** | 71 | 20 qualified, 16 not-qualified, 7 not-exit-gated, 28 ND | **hermit-revents**, on 43 | **6 disagreements — SOFT** |
+| native+naked | 73 | accept arm fails 71 of 73 | — | unchecked |
+| dbt+verify | partial | in progress | self re-run | **1 flake found** |
+| **sabre+verify** | 29 | 12 pass-refusable, 6 no-exit-gate, 8 accept-fail, 3 indeterminate | **hermit-li2**, on the 12 | **in progress** |
 
-### liteinst + verify (79) — 60 scored
+**The 2 liteinst-enabling verdicts have no check at all.** That is not a criticism of anyone — it is
+the gap the column exists to show.
 
-| slice | result | backend measured |
-|---|---|---|
-| kvm2 1-20 | 14 qualified **on the ptrace reference arm**; 6 not-exit-gated | **liteinst 0 of 20 — runtime unavailable** |
-| sabre 21-40 | 17 qualified; 2 not-exit-gated; 1 message-bearing | ptrace **and** liteinst — **3 accept on ptrace, FAIL on liteinst** |
-| revents 41-60 | 14 `QUALIFIED-LITEINST`; 1 `QUALIFIED-PTRACE-ONLY`; 1 `NOT-QUALIFIED`; 4 ND | ptrace and liteinst |
-| li2 61-79 | 0 of 19 | none yet |
+## The two cross-verifications — SOFT, not revised, and NOT netted
 
-**`-524` structurally bars 21 of the 79.** kvm2's 14 → **12 eligible**; revents' row 50 ptrace-only;
-row 58 barred *and* failing accept on ptrace — three distinct classes. **Eligible is not qualified.**
+**Both reviewers found disagreements in verdicts they did not derive. The direction is downward.**
 
-### ptrace + replay (81) — 40 scored, RELAYED from hermit-shell
+- **`hermit-revents` on KVM, 43 cells: 6 disagreements.** It caught **two faults in its own checker
+  first** — a comparator that named the file, so a comment-only edit read as *differs*; and a
+  mutation that hit prose at line 20 instead of the call at line 77. **Both would have manufactured a
+  false disagreement. Both were fixed, and the disagreement survived on real evidence.**
+- **`hermit-sabre` on ptrace, 25 cells: 6 disagreements, each backed by a run** — and it **declared a
+  conflict of interest**, being the author of the same defect earlier today.
 
-**QUALIFIED 25 · NOT-EXIT-GATED 6 · NOT-DETERMINABLE 9 = 40.** Counted by **exact equality on the
-classification field**. **These 25 are ptrace. The queue exists for liteinst.**
+**THREE THINGS THIS TALLY DELIBERATELY DOES NOT DO:**
 
-### kvm + verify (71) — 71 of 71 scored, CLOSED
+1. **No disagreement rate.** revents was explicit: *6 of 43 is not a rate, and I'm not offering one.*
+   **Two samples are not a population**, and dividing them would invent one.
+2. **The disagreements are NOT netted against the qualified counts.** Neither reviewer has reconciled
+   with the original author. **There are currently two unreconciled readings of each set, and that is
+   the honest state** — both are recorded, neither is subtracted.
+3. **The affected sets are marked SOFT, not revised.** `hermit-kvm2` is sweeping the ptrace 25 and
+   `revents` the remaining 37 KVM cells for the shared shape. **The corrected figures come after
+   those sweeps, not now.**
 
-**QUALIFIED 20 · NOT-QUALIFIED 16 · NOT-EXIT-GATED 7 · NOT-DETERMINABLE 28 = 71.** Backend KVM, both
-arms. Verdict read from exit status, not `--verify-json` — weaker than revents' JSON read, and named
-rather than glossed.
+## Also downward: a reproducibility re-run caught a flake
 
-**23 of the 28 NOT-DETERMINABLE are OPERATOR-SIDE:** the enosys/guard mutation patterns did not match
-those fixtures' shape, **so no mutant existed and no refuse arm was possible.**
+`hermit-dbt` re-ran both arms on 5 refusable cells **purely to check its own numbers.** Four
+reproduced exactly. **`backend-parity-c/sendfile-copy` did not** — accept arm 0 on the first pass, 1
+on the re-run. **A stable green it would otherwise have shipped.**
 
-> **UNSCORED IS NOT UNQUALIFIABLE.** This distinction is load-bearing and must not be collapsed. A
-> second-family task exists to convert them.
-
-**A correction to a figure in circulation:** *22 of 24 operator-side* is the **interim 63-row**
-number. The final, superseding count is **23 of 28**.
-
-**kvm2 measured the substring hazard directly: counting `QUALIFIED` by substring gives 36 against a
-true 20 — an 80% overstatement, because `NOT-QUALIFIED` (16) nests the string.** Count by exact
-match on the verdict token.
-
-### native + naked (73) — 73 scored, CLOSED, and the mode is on a different channel
-
-**The accept arm fails for 71 of 73, for two OPPOSITE reasons.** `naked` is not an exit-status
-oracle: per `ci/test_harness.sh:3570-3602` it is a conjunction — every native run must exit 0 **and**
-the runs must produce ≥2 distinct output hashes. Its oracle is **native nondeterminism**.
-
-- **50 of 73** were admitted to the queue *because they exit non-zero natively* — precisely what
-  `failed_runs > 0` fails on. **The property that qualified them for the queue disqualifies them in
-  this mode.** Not a defect in either artifact.
-- **21 of the remaining 23** are natively deterministic → fail the `min_distinct ≥ 2` conjunct.
-- **2 pass both conjuncts** (3 distinct outcomes each). Whole sub-population measured, 0 unmeasurable.
-
-**Not fixable by fixture gating:** naked wants nondeterminism, and these are determinism witnesses
-built to be deterministic. Gating them harder makes them worse candidates.
-
-### dbt + verify (47) and sabre + verify (29) — 0 scored
-
-dbt: backend probe first. codexrev: runnability established; cells 22/23/25 **unscored** pending a
-rerun with ptrace-calibrated `guest_args` (a manifest-calibration gap, not a cell property); cell 21
-timeout and cell 24 accept failure retained separately.
-
-## Fixture repair — RELAYED from hermit-fixtures, a different axis from qualification
-
-**16 fixtures made exit-gated, each at 80 runs with zero variation.** **Nine deliberately left
-ungated and named:** `cachestat-refusal`, `fallocate-extents`, `kcmp-refusal`, `mempolicy-default`,
-`mknod-special`, `no-new-privs-refusal`, `openat2-refusal`, `readdir-entries`,
-`statfs-free-determinism` — **because gating at a merely-observed number would make them flaky, and
-flaky is worse than unable to fail.**
+That cell keeps recurring: it is the row `hermit-teardown` is disqualified from reviewing, kvm2 scored
+it NOT-EXIT-GATED, and sabre+verify has it as pass-refusable. **Three subsets, three readings, and now
+a demonstrated flake.**
 
 ## DO NOT SUM THE "QUALIFIED" COLUMN
 
-Verdict classes are distinct and must not be collapsed: **QUALIFIED · NOT-DETERMINABLE ·
-capability-blocked · accept-only-outstanding · unscored-operator-side**.
+Verdict classes stay distinct: **QUALIFIED · NOT-DETERMINABLE · capability-blocked ·
+accept-only-outstanding · unscored-operator-side**. `-524` bars 21 of the liteinst 79; **eligible is
+not qualified.** Of kvm's 28 ND, **23 are operator-side — unscored, not unqualifiable.**
 
-Encodings differ per slice — a governing `PROFILE` line (kvm2), per-row `pt=`/`li=` columns (sabre),
-the backend in the verdict name (revents). **`QUALIFIED-PTRACE-ONLY` and `NOT-QUALIFIED` both contain
-`QUALIFIED`**, and kvm2 measured what that costs: **36 against a true 20.** Key on each slice's own
-encoding, by exact match.
+Encodings differ per slice, and kvm2 measured what a substring count costs: **36 against a true 20**,
+because `NOT-QUALIFIED` nests `QUALIFIED`. **Count by exact match on the verdict token.**
 
-## Provenance of this file — and the failure it is most exposed to
+## Provenance — the failure this artifact is most exposed to
 
-**An existence check cannot see a file that was never written.** Promoting the two evidence
-directories earlier today, I copied 12 files and **9 landed tracked**; 187 and **186**. A global
-`*.log` in `.gitignore` applied inside `ai_docs/evidence/` and `git add` skipped five files **without
-a word**. The commit succeeded, ancestry verified, and read-back matched on every file that was
-there — **every check passed, because they all asked about files that existed. Only the count
-disagreed.**
+**An existence check cannot see a file that was never written.** Promoting evidence earlier today I
+copied 12 files and **9 landed**; 187 and **186**. A global `*.log` in `.gitignore` applied inside
+`ai_docs/evidence/` and `git add` skipped five **without a word**. Every check passed, because they
+all asked about files that existed. **Only the count disagreed.**
 
-**This tally is exactly the kind of artifact that failure produces silently:** a total that looks
-complete because everything it lists is real. **Check the tracked count against the intended count**,
-and treat any figure here as provisional against the note counts in the stamp above.
+**Check the tracked count against the intended count.** And treat every figure here as provisional
+against the stamp above — four subsets are in progress, two closed sets are SOFT pending sweeps, and
+two closed slices were amended after closing.
 
-**Sources are still being written.** Four subsets are in progress and two closed slices were amended
-after closing. Re-read the notes; re-promote wholesale rather than patching.
+**Evidence still in gitignored paths:** `ignored/qualify-sabre-verify-29-20260815/results.jsonl`.
+Survives context loss, not host loss; devbig014 cannot read it. **Promotion should be scheduled.**
