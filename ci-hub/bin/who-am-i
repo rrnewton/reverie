@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Report the calling agent identity without guessing through blind spots."""
+"""Print the caller's five-field disclosure tag to stdout.
+
+A resolved agent defaults to ``role=impl``; for example, bare
+``./ci-hub/bin/who-am-i`` may print
+``[hermit2, codex-2, gpt-5.6-sol, devbig014, role=impl]``.  Use ``--role`` for
+another artifact role.  An interactive shell with no agent identity prints
+``agent=human`` and defaults to ``role=human``.  Uncertain agent identities
+remain visibly ``degraded-`` instead of being presented as resolved.
+"""
 
 from __future__ import annotations
 
@@ -15,8 +23,87 @@ import agent_identity  # noqa: E402
 import disclosure_tag  # noqa: E402
 
 
+SHELL_NAMES = frozenset({"bash", "dash", "fish", "ksh", "sh", "zsh"})
+AGENT_CLIENT_NAMES = frozenset({"claude", "codex"})
+
+
+def _program_name(raw: str) -> str:
+    return Path(raw).name.casefold().lstrip("-")
+
+
+def _has_interactive_flag(argv: tuple[str, ...]) -> bool:
+    return any(
+        arg == "-i"
+        or (
+            arg.startswith("-")
+            and not arg.startswith("--")
+            and "i" in arg[1:]
+        )
+        for arg in argv[1:]
+    )
+
+
+def _interactive_human(pid: int, proc_root: Path) -> bool:
+    try:
+        ancestry, _ = agent_identity.process_ancestry(pid, proc_root)
+    except (AttributeError, OSError):
+        return False
+    if not ancestry:
+        return False
+    if any(
+        context.cmdline is not None
+        and any(
+            _program_name(arg) in AGENT_CLIENT_NAMES
+            for arg in context.cmdline[:4]
+        )
+        for context in ancestry
+    ):
+        return False
+    shell = next(
+        (
+            context.cmdline
+            for context in ancestry
+            if context.cmdline is not None
+            and _program_name(context.cmdline[0]) in SHELL_NAMES
+        ),
+        None,
+    )
+    if shell is None:
+        return False
+    return _has_interactive_flag(shell) or any(
+        stream.isatty() for stream in (sys.stdin, sys.stdout, sys.stderr)
+    )
+
+
+def _print_diagnostics(result: agent_identity.Resolution) -> None:
+    print(f"state={result.state}", file=sys.stderr)
+    print(f"agent={result.agent or ''}", file=sys.stderr)
+    print(f"model={result.model}", file=sys.stderr)
+    print(f"model_source={result.model_source or ''}", file=sys.stderr)
+    print(f"primary_source={result.primary_source or ''}", file=sys.stderr)
+    print("basis=" + ",".join(result.basis), file=sys.stderr)
+    for signal in result.signals:
+        candidates = ",".join(signal.candidates)
+        print(
+            f"signal source={signal.source} state={signal.state} "
+            f"agent={signal.agent or ''} candidates={candidates} detail={signal.detail}",
+            file=sys.stderr,
+        )
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  ./ci-hub/bin/who-am-i\n"
+            "  [hermit2, codex-2, gpt-5.6-sol, devbig014, role=impl]\n\n"
+            "  ./ci-hub/bin/who-am-i --role reviewer\n"
+            "  [hermit2, codex-2, gpt-5.6-sol, devbig014, role=reviewer]\n\n"
+            "Use --diagnostics when you need the resolver state and signals."
+        ),
+    )
     parser.add_argument(
         "--pid",
         type=int,
@@ -33,23 +120,26 @@ def parse_args() -> argparse.Namespace:
     output.add_argument(
         "--tag",
         action="store_true",
-        help="print only the canonical who-is-talking tag, with no trailing newline",
+        help="print the default canonical tag (retained for compatibility)",
+    )
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="print resolver state and signals to stderr",
     )
     parser.add_argument(
         "--role",
         choices=sorted(disclosure_tag.ROLES),
-        help="artifact role; required with --tag and never defaulted",
+        help="artifact role (default: impl for agents; human for an interactive shell)",
     )
     parser.add_argument(
         "--team",
         default=disclosure_tag.DEFAULT_TEAM,
-        help=f"team slug for --tag (default: {disclosure_tag.DEFAULT_TEAM})",
+        help=f"team slug for the tag (default: {disclosure_tag.DEFAULT_TEAM})",
     )
     args = parser.parse_args()
-    if args.tag and args.role is None:
-        parser.error("--role is required with --tag")
-    if args.role is not None and not args.tag:
-        parser.error("--role is only meaningful with --tag")
+    if args.json and args.role is not None:
+        parser.error("--role is only meaningful for tag output")
     return args
 
 
@@ -63,40 +153,45 @@ def main() -> int:
         task_id=args.task,
         task_db=args.db,
     )
-    if args.tag:
+    if not args.json:
+        human = result.state == "UNRESOLVED" and _interactive_human(
+            args.pid, args.proc_root
+        )
         degraded = result.state != "AGREEMENT" or not result.agent
         try:
-            disclosure = disclosure_tag.from_resolution(
-                result,
-                team=args.team,
-                role=args.role,
-                degraded=degraded,
+            disclosure = (
+                disclosure_tag.for_human(
+                    team=args.team,
+                    role=args.role or "human",
+                )
+                if human
+                else disclosure_tag.from_resolution(
+                    result,
+                    team=args.team,
+                    role=args.role or "impl",
+                    degraded=degraded,
+                )
             )
         except disclosure_tag.DisclosureError as error:
             print(f"who-am-i: REFUSE: {error}", file=sys.stderr)
             return result.exit_code if result.state != "AGREEMENT" else 2
-        if degraded:
+        print(
+            "who-am-i: fields: team, agent, model, machine, role",
+            file=sys.stderr,
+        )
+        if degraded and not human:
             print(
                 f"who-am-i: DEGRADED: identity resolver returned {result.state}",
                 file=sys.stderr,
             )
+        if args.diagnostics:
+            _print_diagnostics(result)
         sys.stdout.write(disclosure.tag)
         return 0
-    elif args.json:
-        print(result.to_json())
-    else:
-        print(f"state={result.state}")
-        print(f"agent={result.agent or ''}")
-        print(f"model={result.model}")
-        print(f"model_source={result.model_source or ''}")
-        print(f"primary_source={result.primary_source or ''}")
-        print("basis=" + ",".join(result.basis))
-        for signal in result.signals:
-            candidates = ",".join(signal.candidates)
-            print(
-                f"signal source={signal.source} state={signal.state} "
-                f"agent={signal.agent or ''} candidates={candidates} detail={signal.detail}"
-            )
+
+    print(result.to_json())
+    if args.diagnostics:
+        _print_diagnostics(result)
     return result.exit_code
 
 

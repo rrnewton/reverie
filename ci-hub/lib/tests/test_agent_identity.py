@@ -411,7 +411,7 @@ class ResolutionTests(IdentityFixture):
 
 
 class CliTests(IdentityFixture):
-    def run_cli(self, *extra: str) -> subprocess.CompletedProcess[str]:
+    def run_json(self, *extra: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
                 sys.executable,
@@ -422,6 +422,23 @@ class CliTests(IdentityFixture):
                 "--state", str(self.state),
                 "--db", str(self.db),
                 "--json",
+                *extra,
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+    def run_default(self, *extra: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "ci-hub" / "bin" / "who-am-i"),
+                "--pid", "100",
+                "--proc-root", str(self.proc),
+                "--repo-root", str(self.repo),
+                "--state", str(self.state),
+                "--db", str(self.db),
                 *extra,
             ],
             text=True,
@@ -449,21 +466,154 @@ class CliTests(IdentityFixture):
 
     def test_cli_exit_codes_are_agreement_disagreement_unresolved(self) -> None:
         self.standard_processes()
-        agreed = self.run_cli("--task", "task-a")
+        agreed = self.run_json("--task", "task-a")
         self.assertEqual(0, agreed.returncode, agreed.stderr)
         self.assertEqual("agent-a", json.loads(agreed.stdout)["agent"])
 
         self.write_state(owners=("agent-b",), sidecar_agent="agent-b")
-        disagreed = self.run_cli()
+        disagreed = self.run_json()
         self.assertEqual(1, disagreed.returncode)
         self.assertIsNone(json.loads(disagreed.stdout)["agent"])
 
         self.write_state()
         (self.proc / "100" / "environ").write_bytes(b"TMUX_PANE=%7\0")
         (self.proc / "50" / "environ").write_bytes(b"\0")
-        unresolved = self.run_cli()
+        unresolved = self.run_json()
         self.assertEqual(2, unresolved.returncode)
         self.assertEqual("UNRESOLVED", json.loads(unresolved.stdout)["state"])
+
+    def test_default_is_canonical_impl_tag_and_exit_zero(self) -> None:
+        self.standard_processes(
+            caller_cmdline=("codex", "--model", "gpt-5.6-sol"),
+            parent_cmdline=("codex", "--model", "gpt-5.6-sol"),
+        )
+        result = self.run_default("--task", "task-a")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            "[hermit2, agent-a, gpt-5.6-sol, "
+            + __import__("socket").gethostname().split(".", 1)[0]
+            + ", role=impl]",
+            result.stdout,
+        )
+        self.assertEqual(
+            "who-am-i: fields: team, agent, model, machine, role\n",
+            result.stderr,
+        )
+
+    def test_default_accepts_role_without_requiring_tag_flag(self) -> None:
+        self.standard_processes()
+        result = self.run_default("--role", "reviewer")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("role=reviewer]", result.stdout)
+
+    def test_default_degrades_disagreement_without_failing(self) -> None:
+        self.standard_processes()
+        self.write_state(owners=("agent-b",), sidecar_agent="agent-b")
+        result = self.run_default()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("[hermit2, degraded-agent-a, unresolved, ", result.stdout)
+        self.assertTrue(result.stdout.endswith(", role=impl]"))
+        self.assertIn("fields: team, agent, model, machine, role", result.stderr)
+        self.assertIn("DEGRADED", result.stderr)
+        self.assertNotIn("signal source=", result.stdout)
+
+    def test_default_unresolved_never_invents_an_identity(self) -> None:
+        self.write_state(owners=(), sidecar_agent=None)
+        self.standard_processes(
+            caller_agent=None,
+            parent_agent=None,
+            cwd=self.repo,
+            pane=None,
+            cgroup=None,
+            caller_cmdline=("bash", "-c", "./ci-hub/bin/who-am-i"),
+            parent_cmdline=("fixture-process",),
+        )
+        result = self.run_default()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("[hermit2, degraded-unresolved, unresolved, ", result.stdout)
+        self.assertTrue(result.stdout.endswith(", role=impl]"))
+        self.assertIn("DEGRADED", result.stderr)
+
+    def test_interactive_shell_without_agent_identity_is_human(self) -> None:
+        self.write_state(owners=(), sidecar_agent=None)
+        self.standard_processes(
+            caller_agent=None,
+            parent_agent=None,
+            cwd=self.repo,
+            pane=None,
+            cgroup=None,
+            caller_cmdline=("bash", "-i"),
+            parent_cmdline=("fixture-process",),
+        )
+        result = self.run_default()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("[hermit2, human, unresolved, ", result.stdout)
+        self.assertTrue(result.stdout.endswith(", role=human]"))
+        self.assertIn("fields: team, agent, model, machine, role", result.stderr)
+        self.assertNotIn("DEGRADED", result.stderr)
+
+        explicit = self.run_default("--role", "reviewer")
+        self.assertEqual(0, explicit.returncode, explicit.stderr)
+        self.assertIn("[hermit2, human, unresolved, ", explicit.stdout)
+        self.assertTrue(explicit.stdout.endswith(", role=reviewer]"))
+
+    def test_interpreter_between_command_and_shell_is_still_human(self) -> None:
+        self.write_state(owners=(), sidecar_agent=None)
+        self.add_process(1, 0, environ=True)
+        self.add_process(50, 1, cmdline=("bash", "-i"))
+        self.add_process(
+            100,
+            50,
+            cwd=self.repo,
+            cmdline=("python3", "./ci-hub/bin/who-am-i"),
+        )
+        result = self.run_default()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("[hermit2, human, unresolved, ", result.stdout)
+        self.assertTrue(result.stdout.endswith(", role=human]"))
+
+    def test_agent_client_ancestry_is_not_misreported_as_human(self) -> None:
+        self.write_state(owners=(), sidecar_agent=None)
+        self.standard_processes(
+            caller_agent=None,
+            parent_agent=None,
+            cwd=self.repo,
+            pane=None,
+            cgroup=None,
+            caller_cmdline=("bash", "-i"),
+            parent_cmdline=("codex", "exec", "task"),
+        )
+        result = self.run_default()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("[hermit2, degraded-unresolved, unresolved, ", result.stdout)
+        self.assertTrue(result.stdout.endswith(", role=impl]"))
+        self.assertIn("DEGRADED", result.stderr)
+
+    def test_diagnostics_are_explicit_and_stay_off_stdout(self) -> None:
+        self.standard_processes()
+        result = self.run_default("--diagnostics")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("[hermit2, agent-a, unresolved, ", result.stdout)
+        self.assertTrue(result.stdout.endswith(", role=impl]"))
+        self.assertIn("state=AGREEMENT", result.stderr)
+        self.assertIn("signal source=caller-environ", result.stderr)
+
+    def test_help_describes_output_and_shows_a_worked_example(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "ci-hub" / "bin" / "who-am-i"), "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("Print the caller's five-field disclosure tag", result.stdout)
+        self.assertIn("./ci-hub/bin/who-am-i", result.stdout)
+        self.assertIn(
+            "[hermit2, codex-2, gpt-5.6-sol, devbig014, role=impl]",
+            result.stdout,
+        )
+        self.assertIn("default: impl for agents; human for an", result.stdout)
+        self.assertIn("interactive shell", result.stdout)
 
     def test_tag_is_exact_verbatim_model_and_has_no_trailing_newline(self) -> None:
         self.standard_processes(
@@ -480,12 +630,12 @@ class CliTests(IdentityFixture):
         )
         self.assertFalse(result.stdout.endswith("\n"))
 
-    def test_tag_requires_role_and_degrades_disagreement(self) -> None:
+    def test_tag_defaults_role_and_degrades_disagreement(self) -> None:
         self.standard_processes()
         missing_role = self.run_tag()
-        self.assertEqual(2, missing_role.returncode)
-        self.assertIn("--role is required", missing_role.stderr)
-        self.assertEqual("", missing_role.stdout)
+        self.assertEqual(0, missing_role.returncode, missing_role.stderr)
+        self.assertIn("role=impl]", missing_role.stdout)
+        self.assertIn("fields: team, agent, model, machine, role", missing_role.stderr)
 
         self.write_state(owners=("agent-b",), sidecar_agent="agent-b")
         disagreement = self.run_tag("--role", "impl")

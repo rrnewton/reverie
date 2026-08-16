@@ -61,6 +61,28 @@ def _best_degraded_agent(resolution: Any) -> str:
     return "degraded-unresolved"
 
 
+def for_human(
+    *,
+    team: str,
+    role: str = "human",
+    machine: str | None = None,
+) -> Disclosure:
+    """Build the canonical disclosure for an identified interactive human."""
+
+    if TOKEN_RE.fullmatch(team) is None:
+        raise DisclosureError(f"--team is not a safe team token: {team!r}")
+    if role not in ROLES:
+        raise DisclosureError(
+            f"--role must be one of {','.join(sorted(ROLES))}; got {role!r}"
+        )
+    machine = machine or socket.gethostname().split(".", 1)[0]
+    if TOKEN_RE.fullmatch(machine) is None:
+        raise DisclosureError(
+            f"derived machine shortname is not a safe token: {machine!r}"
+        )
+    return Disclosure(team, "human", "unresolved", machine, role)
+
+
 def from_resolution(
     resolution: Any,
     *,

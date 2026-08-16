@@ -311,11 +311,11 @@ class FleetGhTest(unittest.TestCase):
             "tag printer must not append a newline that changes command substitution",
         )
 
-    def test_tag_printer_requires_role_and_degrades_unresolved_or_disagreement(self) -> None:
+    def test_tag_printer_defaults_role_and_degrades_unresolved_or_disagreement(self) -> None:
         missing = self.run_printer("--tag")
-        self.assertEqual(2, missing.returncode)
-        self.assertIn("--role is required", missing.stderr)
-        self.assertEqual("", missing.stdout)
+        self.assertEqual(0, missing.returncode, missing.stderr)
+        self.assertIn("role=impl]", missing.stdout)
+        self.assertIn("fields: team, agent, model, machine, role", missing.stderr)
 
         machine = socket.gethostname().split(".", 1)[0]
         self.install_identity_stub(state="UNRESOLVED", agent=None)
