@@ -234,16 +234,49 @@ proof gives **SOUND POSITIVES AND UNTRUSTWORTHY NEGATIVES.** It does **not** ung
 **if the exit status moved, that IS the evidence.** Exposure is confined to the **NOT-EXIT-GATED**
 calls. An earlier reading that it ungraded everything was too broad and is corrected here.
 
-## The re-derivation that is still pending
+## The six-cell re-derivation: RESOLVED — all six are exit-gated
+
+**hermit-observable re-derived all six on the observable and all six hold.** Closed through
+`./ci-hub/bin/close-task`, code ref `5c5effde`, VERIFIED.
+
+| what | figure |
+|---|---:|
+| mutations moving the replay exit status `0 → 1` | **12 of 12** |
+| independent mutation families | **2** |
+| accept arms | replay rc=0 / verify rc=0 |
+| mutant arms | replay rc=1 / verify rc=1 |
+
+**Two families, not two runs of one:** **M1 is BEHAVIOUR** — a different call issued at the site.
+**M2 is ORACLE** — the same call with a changed expectation.
+
+**THIS IS GENUINE INDEPENDENT CONFIRMATION AND IT PASSED THE SHARED-ARTIFACT TEST EXPLICITLY.** In
+the agent's own words: it agrees with hermit-fixtures' verdict on **different mutations, a different
+binary, and a different observable record**; it did **not** reconcile with hermit-fixtures, and read
+that artifact **only to learn which six and which mutations to avoid duplicating.** **The agent
+stated the distinction rather than leaving us to infer it** — and confusing two observations with one
+observation reported twice is what produced the most confident wrong answer of the day (§5, §6).
+
+**RECORD BOTH HALVES.** hermit-fixtures restored the six on a `.text`-keyed proof and then **disowned
+its own result**, flagging it as resting on the wrong instrument. The re-derivation on the correct
+observable confirms all six. **The self-flag is resolved in hermit-fixtures' favour, and the
+disowning is why the confirmation is worth anything** — a tally carrying only the confirmation would
+be quoting a number whose author had withdrawn it, without the withdrawal or the repair.
+
+**This closes the tally's last live input.** What remains open are the seven disagreements in §1,
+which are carried, not pending.
+
+## How the two re-derivation claims resolved
 
 **Two claims arrived about re-derivation and I am recording them separately because I could not
 reconcile them and netting them would invent a number nobody measured.**
 
 - **From the owner's relay:** six cells restored, all six flagged by **hermit-fixtures** as resting on
   a `.text`-keyed bite proof and needing re-derivation; `c-programs/clone` reconfirmed
-  scaffolding-only through the replay path; **hermit-codexrev is re-deriving the six on the
-  observable.** **I could not verify this here:** `tg search "hermit-fixtures"` returns no results, so
-  there is no durable note in the corpus I can cite for it. It is recorded as relayed.
+  scaffolding-only through the replay path; the six being re-derived on the observable.
+  **RESOLVED — see the section above: all six re-derive as exit-gated, 12 of 12.** (When first
+  recorded at 02:55 I could not verify this: `tg search "hermit-fixtures"` returned no results and
+  there was no durable note to cite. The evidence landed as
+  `ai_docs/evidence/observable-rederive-six-restored-cells-20260815/` at `5c5effde`.)
 - **From `which-cannot-fail-verdicts-rest-on-a-binary-keyed-bite-proof` (CLOSED):** two binary-keyed
   sets cover **8 distinct cells**; **six of the eight have already been re-derived as QUALIFIED by an
   observable-keyed method** (hermit-sabre, via name-to-handle-refusal, seccomp-refusal and
@@ -251,9 +284,11 @@ reconcile them and netting them would invent a number nobody measured.**
   declared **no verdict false** — its output is which verdicts need re-derivation, not a claim that
   any is wrong.
 
-**Whether these two sixes are the same six is UNRESOLVED HERE.** One is described as pending, the
-other as already done; they may be the same set at different times, or different sets. **Do not add
-them and do not assume either supersedes the other.**
+**Whether these two sixes are the same six was UNRESOLVED at 02:55 and is now moot for the tally:**
+both routes end with the six confirmed on an observable-keyed method — hermit-sabre's earlier
+six-of-eight, and hermit-observable's 12-of-12 across two families. **They are still not proven to be
+the same set, and they are still not added together.** What changed is that the tally no longer waits
+on either.
 
 **AND THE AUDIT CAUGHT ITSELF MAKING THE DAY'S SIGNATURE MISTAKE:** its first pass grepped whole
 `tg -v` output **including each task's brief — and the briefs discuss `.text`** — so it attributed
@@ -264,14 +299,19 @@ reading the instructions rather than the evidence.** That is the same matcher fa
 
 # Provenance, sources, and what is still moving
 
-**Stamp — read 2026-08-16T02:14Z; amended 02:55Z to add §7; amended again 03:05Z.** Note counts at
-read time, because the corpus moves while it is read and that is a property of the task, not
-something care fixes. **The first amendment was additive. The second RETRACTED two things in §7 that
-had been recorded barely ten minutes earlier** — the `sendfile-copy` flag (derived and refuted) and
-"no task has been opened" (both faults now filed) — and **moved §1 from five open disagreements to
-seven.** Nothing in §1–§6 was edited except to add cross-references and the new rows. **A section
-this young needing retraction is the argument for re-reading sources rather than trusting this
-file.**
+**Stamp — read 2026-08-16T02:14Z; §7 added 02:55Z; retracted-and-extended 03:05Z; COMPLETED 03:12Z
+when the last live input landed.** Note counts at read time, because the corpus moves while it is
+read and that is a property of the task, not something care fixes.
+
+**§7 needed a retraction ten minutes after it was written** — the `sendfile-copy` flag (derived and
+refuted) and "no task has been opened" (both faults filed) — and §1 moved from five open
+disagreements to seven. **A section that young needing retraction is the argument for re-reading
+sources rather than trusting this file**, and it is the reason the closing instruction below says
+what it says.
+
+**THIS FILE IS NOW COMPLETE AND IS NOT THE PRIMARY SOURCE FOR ANY FIGURE IN IT.** Every producing
+task is closed; nothing is pending. **Verify against the artifacts that produced the numbers, not
+against the notes quoting them, and not against this file.**
 
 | task | notes | status |
 |---|---:|---|
@@ -285,11 +325,15 @@ file.**
 | **`bound-the-flake-rate-on-the-20-c4-cells`** | **3** | **CLOSED 2026-08-16** — result in §7 |
 | `which-cannot-fail-verdicts-rest-on-a-binary-keyed-bite-proof` | — | CLOSED — bears on §7 |
 
-**ARE THE SOURCES STILL BEING WRITTEN? All eleven producing tasks are now closed, and the tally is
-STILL NOT SETTLED.** `bound-the-flake-rate-on-the-20-c4-cells` closed on 2026-08-16 and its result is
-recorded in §7 — it did not confirm §5's 20, it split them into 19 bounded cells plus one measured
-flake and flagged two more as unable to fail. **A re-derivation of six cells on the observable is
-outstanding** (§7), and **closing the last producing task is not the same as the question closing.**
+**ARE THE SOURCES STILL BEING WRITTEN? No. Every producing task is closed and the last live input is
+in.** `bound-the-flake-rate-on-the-20-c4-cells` closed and its result is in §7 — it did not confirm
+§5's 20, it split them into 19 bounded cells plus one measured flake. The six-cell re-derivation
+closed at `5c5effde` with all six confirmed exit-gated, 12 of 12 across two families.
+
+**COMPLETE IS NOT SETTLED.** Seven disagreements in §1 are **carried, not pending** — nobody has
+adjudicated them and this file does not. **The mechanism behind the getrusage flake is contested
+(§1 row 7) and the `sendfile-copy` flag is refuted-but-unreconciled (§1 row 6).** A reader who wants
+one number from this file will not find one, and that is the result, not a gap in it.
 **Two closed slices were amended
 *after* closing** (`qualify-queue-rows-01-20`, `qualify-dbt-verify-47`), so closed does not mean
 frozen. **Re-read the notes rather than trusting this file, and re-promote wholesale rather than
@@ -303,6 +347,12 @@ patching it.**
 | `ai_docs/evidence/four-populations-map-20260815/reasons.json` | `6c8961bcd99c5002` |
 | `ignored/xc4-enable-20260815/probe-all.tsv` | `8069b6ba9ec056a7` |
 | `ignored/qualify-ptrace-replay-81-20260815/results.jsonl` | `e0a8f7424edb1953` |
+| `ai_docs/evidence/observable-rederive-six-restored-cells-20260815/REPORT.md` | `158b652baf1650ef` |
+| `ai_docs/evidence/observable-rederive-six-restored-cells-20260815/results-pass1.json` | `2c81bc31647d0fcd` |
+
+**The last two are TRACKED, landed at `5c5effde`** — unlike the gitignored sources above, they are
+readable from a fresh clone and by devbig014. That is the promotion this file kept asking for,
+performed by their author rather than discovered later.
 
 **The last two are gitignored** — they survive context loss, not host loss, and devbig014 cannot read
 them. **Promotion should be scheduled rather than discovered.**
