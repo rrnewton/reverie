@@ -1,0 +1,3 @@
+hermit: [liteinst host hybrid] activation verified (traps=1, hooks=31); Detcore Tool active in ptrace host
+:: Run1...
+Error: -524 ENOTSUPP (Operation is not supported)

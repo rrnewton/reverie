@@ -1,0 +1,160 @@
+[
+ {
+  "cell": "backend-parity-c/aio-refusal",
+  "fixture": "tests/backend-parity/fixtures/aio_refusal.c",
+  "family": "ok-init",
+  "queue_evidence": "baseline already exits 1 natively",
+  "cflags": []
+ },
+ {
+  "cell": "backend-parity-c/child-subreaper-refusal",
+  "fixture": "tests/backend-parity/fixtures/child_subreaper_refusal.c",
+  "family": "ok-init",
+  "queue_evidence": "baseline already exits 1 natively",
+  "cflags": []
+ },
+ {
+  "cell": "backend-parity-c/cwd-roundtrip",
+  "fixture": "tests/backend-parity/fixtures/cwd_roundtrip.c",
+  "family": "ok-init",
+  "queue_evidence": "exit 0->1",
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ]
+ },
+ {
+  "cell": "backend-parity-c/fcntl-owner",
+  "fixture": "tests/backend-parity/fixtures/fcntl_owner.c",
+  "family": "ok-init",
+  "queue_evidence": "exit 0->1",
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ]
+ },
+ {
+  "cell": "backend-parity-c/file-io-roundtrip",
+  "fixture": "tests/backend-parity/fixtures/file_io_roundtrip.c",
+  "family": "violations-static",
+  "queue_evidence": "exit 0->1",
+  "cflags": []
+ },
+ {
+  "cell": "backend-parity-c/fork-exec-pipeline",
+  "fixture": "tests/backend-parity/fixtures/fork_exec_pipeline.c",
+  "family": "violations-static",
+  "queue_evidence": "exit 0->1",
+  "cflags": []
+ },
+ {
+  "cell": "backend-parity-c/getrusage-self-accounting",
+  "fixture": "tests/backend-parity/fixtures/getrusage_self_accounting.c",
+  "family": "ok-init",
+  "queue_evidence": "baseline already exits 1 natively",
+  "cflags": []
+ },
+ {
+  "cell": "backend-parity-c/host-identity",
+  "fixture": "tests/backend-parity/fixtures/host_identity.c",
+  "family": "bad-init",
+  "queue_evidence": "baseline already exits 1 natively",
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ]
+ },
+ {
+  "cell": "backend-parity-c/mce-kill-refusal",
+  "fixture": "tests/backend-parity/fixtures/mce_kill_policy.c",
+  "family": "ok-init",
+  "queue_evidence": "baseline already exits 1 natively",
+  "cflags": []
+ },
+ {
+  "cell": "backend-parity-c/membarrier-query",
+  "fixture": "tests/backend-parity/fixtures/membarrier_query.c",
+  "family": "ok-init",
+  "queue_evidence": "baseline already exits 1 natively",
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ]
+ },
+ {
+  "cell": "backend-parity-c/name-to-handle-refusal",
+  "fixture": "tests/backend-parity/fixtures/name_to_handle.c",
+  "family": "ok-init",
+  "queue_evidence": "baseline already exits 1 natively",
+  "cflags": []
+ },
+ {
+  "cell": "backend-parity-c/o-tmpfile-anon",
+  "fixture": "tests/backend-parity/fixtures/o_tmpfile_anon.c",
+  "family": "ok-init",
+  "queue_evidence": "exit 0->1",
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ]
+ },
+ {
+  "cell": "backend-parity-c/personality-domain",
+  "fixture": "tests/backend-parity/fixtures/personality_domain.c",
+  "family": "ok-init",
+  "queue_evidence": "exit 0->1",
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ]
+ },
+ {
+  "cell": "backend-parity-c/pipe-capacity",
+  "fixture": "tests/backend-parity/fixtures/pipe_capacity.c",
+  "family": "ok-init",
+  "queue_evidence": "exit 0->1",
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ]
+ },
+ {
+  "cell": "backend-parity-c/record-lock",
+  "fixture": "tests/backend-parity/fixtures/record_lock.c",
+  "family": "ok-init",
+  "queue_evidence": "exit 0->1",
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ]
+ },
+ {
+  "cell": "backend-parity-c/seccomp-refusal",
+  "fixture": "tests/backend-parity/fixtures/seccomp_refusal.c",
+  "family": "ok-init",
+  "queue_evidence": "baseline already exits 1 natively",
+  "cflags": []
+ },
+ {
+  "cell": "backend-parity-c/sendfile-copy",
+  "fixture": "tests/backend-parity/fixtures/sendfile_copy.c",
+  "family": "guard-inversion",
+  "queue_evidence": "exit 0->1",
+  "cflags": []
+ },
+ {
+  "cell": "backend-parity-c/set-tid-address",
+  "fixture": "tests/backend-parity/fixtures/set_tid_address.c",
+  "family": "ok-init",
+  "queue_evidence": "exit 0->1",
+  "cflags": []
+ },
+ {
+  "cell": "backend-parity-c/short-io-split-identity",
+  "fixture": "tests/backend-parity/fixtures/short_io_split_identity.c",
+  "family": "ok-init",
+  "queue_evidence": "exit 0->1",
+  "cflags": [
+   "-D_GNU_SOURCE"
+  ]
+ },
+ {
+  "cell": "backend-parity-c/signal-delivery-sequence",
+  "fixture": "tests/backend-parity/fixtures/signal_delivery_sequence.c",
+  "family": "violations-static",
+  "queue_evidence": "exit 0->1",
+  "cflags": []
+ }
+]

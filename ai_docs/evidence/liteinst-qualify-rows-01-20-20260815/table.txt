@@ -1,0 +1,22 @@
+ 1 aio-refusal                      NOT-EXIT-GATED   mutation applied and binaries differ, but exit status stayed 0
+ 2 child-subreaper-refusal          NOT-EXIT-GATED   mutation applied and binaries differ, but exit status stayed 0
+ 3 cwd-roundtrip                    QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (int ok = 0 -> 1)
+ 4 fcntl-owner                      QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (int ok = 0 -> 1)
+ 5 file-io-roundtrip                QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (static int violations -> initialised to 1)
+ 6 fork-exec-pipeline               QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (static int violations -> initialised to 1)
+ 7 getrusage-self-accounting        QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (int ok = 0 -> 1)
+ 8 host-identity                    QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (int bad = 0 -> 1)
+ 9 mce-kill-refusal                 NOT-EXIT-GATED   mutation applied and binaries differ, but exit status stayed 0
+10 membarrier-query                 QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (int ok = 0 -> 1)
+11 name-to-handle-refusal           NOT-EXIT-GATED   mutation applied and binaries differ, but exit status stayed 0
+12 o-tmpfile-anon                   QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (int ok = 0 -> 1)
+13 personality-domain               QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (int ok = 0 -> 1)
+14 pipe-capacity                    QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (int ok = 0 -> 1)
+15 record-lock                      QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (int ok = 0 -> 1)
+16 seccomp-refusal                  NOT-EXIT-GATED   mutation applied and binaries differ, but exit status stayed 0
+17 sendfile-copy                    NOT-EXIT-GATED   mutation applied and binaries differ, but exit status stayed 0
+18 set-tid-address                  NOT-EXIT-GATED   mutation applied and binaries differ, but exit status stayed 0
+19 short-io-split-identity          QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (int ok = 0 -> 1)
+20 signal-delivery-sequence         QUALIFIED        ACCEPT rc=0; REFUSE rc=1 (static int violations -> initialised to 1)
+
+{'NOT-EXIT-GATED': 7, 'QUALIFIED': 13}

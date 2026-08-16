@@ -1,0 +1,20 @@
+41	c-programs/lsm-list-modules-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_lsm_list_modules	BIT	0	1	0/1	-
+42	c-programs/lsm-set-self-attr-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_lsm_set_self_attr	BIT	0	1	0/1	-
+43	c-programs/madvise-determinism	NOT-DETERMINABLE	no mutation pattern matched	-	-	-	-	-
+44	c-programs/map-shadow-stack-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_map_shadow_stack	BIT	0	1	0/1	-
+45	c-programs/memfd-secret-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_memfd_secret	BIT	0	1	0/1	-
+46	c-programs/perf-event-hardware-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_perf_event_open	BIT	0	1	0/1	-
+47	c-programs/perf-event-open-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_perf_event_open	BIT	0	1	0/1	-
+48	c-programs/perf-event-software-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_perf_event_open	BIT	0	1	0/1	-
+49	c-programs/perf-event-watchpoint-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_perf_event_open	BIT	0	1	0/1	-
+50	c-programs/ppoll-simulation	QUALIFIED-PTRACE-ONLY	both arms pass on the PTRACE reference; accept arm FAILS on liteinst (rc=1). NOT demonstrated to accept under liteinst and must not be enabled there on this evidence	SYS_ppoll	BIT	1	1	0/1	-
+51	c-programs/process-mrelease-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_process_mrelease	BIT	0	1	0/1	-
+52	c-programs/procfs-positioned-probe	NOT-DETERMINABLE	no mutation pattern matched	-	-	-	-	-
+53	c-programs/recvmsg-scm-rights-mmap	NOT-DETERMINABLE	no mutation pattern matched	-	-	-	-	-
+54	c-programs/remap-file-pages-anonymous-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_remap_file_pages	BIT	0	1	0/1	-
+55	c-programs/remap-file-pages-memfd-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_memfd_create	BIT	0	1	0/1	-
+56	c-programs/remap-file-pages-tmpfile-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_remap_file_pages	BIT	0	1	0/1	-
+57	c-programs/request-key-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_request_key	BIT	0	1	0/1	-
+58	c-programs/resource-determinism	NOT-QUALIFIED	accept arm fails on BOTH backends (liteinst=1 ptrace=1); any refuse result is meaningless	SYS_prlimit64	BIT	1	1	1/1	-D_GNU_SOURCE -pthread -Wno-error=unused-parameter -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=attributes -Wno-error=unknown-pragmas -Wno-error=sign-compare
+59	c-programs/signal-determinism	NOT-DETERMINABLE	no mutation pattern matched	-	-	-	-	-
+60	c-programs/splice-enosys	QUALIFIED-LITEINST	accept passes and behaviour mutant refused, both on liteinst	SYS_splice	BIT	0	1	0/1	-

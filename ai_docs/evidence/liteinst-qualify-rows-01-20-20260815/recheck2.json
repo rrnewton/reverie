@@ -1,0 +1,106 @@
+[
+ {
+  "cell": "backend-parity-c/cwd-roundtrip",
+  "rc": 1,
+  "out": "cwd ok=7 moved_dir=/tmp",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/fcntl-owner",
+  "rc": 1,
+  "out": "fowner ok=7",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/file-io-roundtrip",
+  "rc": 1,
+  "out": "fileio wrote=1024 read=1024 checksum=130560 end=1024",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/fork-exec-pipeline",
+  "rc": 1,
+  "out": "forkexec bytes=16 checksum=1594 exited=1 code=0",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/getrusage-self-accounting",
+  "rc": 1,
+  "out": "getrusage ok=7",
+  "err": "",
+  "arg_error": true,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/host-identity",
+  "rc": 1,
+  "out": "uname.sysname=Linux\nuname.nodename=hermetic-containe",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/membarrier-query",
+  "rc": 1,
+  "out": "memb ok=3 q=31",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/o-tmpfile-anon",
+  "rc": 1,
+  "out": "otmpfile ok=7",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/personality-domain",
+  "rc": 1,
+  "out": "pers ok=6 start=0x40000 final=0x40000",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/pipe-capacity",
+  "rc": 1,
+  "out": "pipecap ok=6",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/record-lock",
+  "rc": 1,
+  "out": "reclock ok=7",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/short-io-split-identity",
+  "rc": 1,
+  "out": "shortio split A=8/7 B=103/102\nshortio ok=7",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ },
+ {
+  "cell": "backend-parity-c/signal-delivery-sequence",
+  "rc": 1,
+  "out": "signals raised=5 pending=1 coalesced=1 direct=5",
+  "err": "",
+  "arg_error": false,
+  "property_ran": true
+ }
+]

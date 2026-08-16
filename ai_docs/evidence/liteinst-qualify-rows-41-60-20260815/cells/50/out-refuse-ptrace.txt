@@ -1,0 +1,7 @@
+:: Run1...
+First run errored during --verify, not continuing to a second. Stdout:
+
+Stderr:
+raw ppoll timeout was not consumed: 0.005000000
+
+Error: First run during --verify exited in error

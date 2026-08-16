@@ -1,0 +1,93 @@
+[
+ {
+  "cell": "backend-parity-c/cwd-roundtrip",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/fcntl-owner",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/file-io-roundtrip",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/fork-exec-pipeline",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/getrusage-self-accounting",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/host-identity",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/membarrier-query",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/o-tmpfile-anon",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/personality-domain",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/pipe-capacity",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/record-lock",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/short-io-split-identity",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ },
+ {
+  "cell": "backend-parity-c/signal-delivery-sequence",
+  "rc": 1,
+  "guest_stdout": "",
+  "guest_stderr": "",
+  "arg_error": false
+ }
+]

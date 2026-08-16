@@ -1,0 +1,8 @@
+hermit: [liteinst host hybrid] activation verified (traps=1, hooks=31); Detcore Tool active in ptrace host
+:: Run1...
+First run errored during --verify, not continuing to a second. Stdout:
+
+Stderr:
+temporary-file remap_file_pages returned 3 with errno 0 (Success), expected ENOSYS
+
+Error: First run during --verify exited in error

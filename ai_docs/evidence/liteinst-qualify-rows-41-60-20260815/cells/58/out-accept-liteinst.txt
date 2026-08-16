@@ -1,0 +1,3 @@
+hermit: [liteinst host hybrid] activation verified (traps=1, hooks=31); Detcore Tool active in ptrace host
+:: Run1...
+Error: LiteInst tracee cleanup failed after -524 ENOTSUPP (Operation is not supported): notifier did not acknowledge terminal cleanup for LiteInst tracee 3
