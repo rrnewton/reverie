@@ -114,6 +114,9 @@ timings and binary hashes. **But they share the METHOD completely:** same harnes
 (`file-io-roundtrip`, `fork-exec-pipeline`, `personality-domain`, `short-io-split-identity`,
 `signal-delivery-sequence`). **Anyone reading "+20" should know it is 20 of 25.**
 
+> **The bound §5 was waiting for has arrived — see §7. It did not confirm the 20; it split them
+> 19-and-1 and found two more that cannot fail.**
+
 # 6 · THE MOST TRANSFERABLE THING IN THIS RECORD
 
 **My first comparison of those 20 cells reported 20 of 20 DISAGREE.**
@@ -133,12 +136,88 @@ line 21 is a literal `DONE` sentinel. **A row count taken on faith reports 21.**
 failed all day. It is: **produce a second measurement by a different route and see whether it
 disagrees.**
 
+# 7 · THE LAST LIVE INPUT IS IN — AND IT MADE §5 SMALLER, NOT SURER
+
+**Recorded 2026-08-16, re-derivation PENDING. This section is not settled and must not be read as
+settled.** It is here because the input arrived, not because the question closed.
+
+**RELAYED, NOT MEASURED HERE.** Everything in this section was produced by other agents. I ran none
+of it. The flake numbers are read from `bound-the-flake-rate-on-the-20-c4-cells`'s own closeout note;
+the re-derivation status is read from the owner's relay and from
+`which-cannot-fail-verdicts-rest-on-a-binary-keyed-bite-proof`.
+
+## The bound: the +20 is 19 bounded cells and one measured flake
+
+| what | figure | denominator |
+|---|---:|---|
+| `backend-parity-c/getrusage-self-accounting` | **0.83%** | 5 failures / 600 runs |
+| each of the other 19, individually | **≤ 2.95%** | 100 runs per cell, upper bound |
+| the other 19, pooled | **≤ 0.158%** | 1,900 runs |
+
+**Mechanism, and it is not the fixture's fault:** a non-unwinding panic in
+`reverie_process::clone::clone_with_stack::callback`, surfacing as SIGSEGV. The fixture creates no
+child at all — no `fork`, `clone`, `vfork`, `posix_spawn` or `pthread_create` — so the clone is
+Hermit's, in its own container-creation path. **That is a product defect and no task has been opened
+for it.**
+
+**A UNIFORM RATE IS EXCLUDED, A SHARED LOWER RATE IS NOT.** If every cell had getrusage's rate,
+P(0 failures across the other 19 cells' 1,900 runs) = 1.2e-07. The author states plainly that the
+per-cell 2.95% bounds do **not** individually exclude a lower shared rate and does not claim they do.
+**100 runs cannot call a cell clean against a 0.83% rate** — P(0 failures in 100 runs) = 0.43.
+
+**SCOPE, because the profile decides what the number means:** devbig030, **PORTABLE LANE**, backend
+ptrace, mode replay, debug build at `302a1a9c0fde564db0292d1ea5cabc91343e79bc`, via
+`ci/test_harness.sh run --probe-disabled`, read-only, nothing enabled. **A PASS HERE IS NOT A
+RECEIPT.** Runs were 8-way concurrent at load 42–76, which biases against a clean result rather than
+toward one. Evidence at `ignored/evidence/c4-flake-bound-20260815/` — **gitignored, so it survives
+context loss but not host loss, and devbig014 cannot read it.**
+
+## Two of the 20 QUALIFIED cannot fail — and they are inside the 20, not the 6
+
+Under replay the harness verdict is **exit status and nothing else**, so a fixture whose only
+non-zero exits are scaffolding books a green no wrong answer can turn red.
+
+| cell | basis | status |
+|---|---|---|
+| `c-programs/clone` | derived by the author with a discriminating mutant pair: a PROPERTY mutation (the `CLONE_VM` child writes the wrong string through shared memory) is visible in stdout and **still exits 0**; only inverting the scaffolding guard `if (pid == -1)` moves the exit | **derived** |
+| `backend-parity-c/sendfile-copy` | reported by three other agents | **RELAYED — the author explicitly asks that it be checked rather than taken from them** |
+
+**This changes what "+20" buys and it is not netted into any count above.**
+
+## The re-derivation that is still pending
+
+**Two claims arrived about re-derivation and I am recording them separately because I could not
+reconcile them and netting them would invent a number nobody measured.**
+
+- **From the owner's relay:** six cells restored, all six flagged by **hermit-fixtures** as resting on
+  a `.text`-keyed bite proof and needing re-derivation; `c-programs/clone` reconfirmed
+  scaffolding-only through the replay path; **hermit-codexrev is re-deriving the six on the
+  observable.** **I could not verify this here:** `tg search "hermit-fixtures"` returns no results, so
+  there is no durable note in the corpus I can cite for it. It is recorded as relayed.
+- **From `which-cannot-fail-verdicts-rest-on-a-binary-keyed-bite-proof` (CLOSED):** two binary-keyed
+  sets cover **8 distinct cells**; **six of the eight have already been re-derived as QUALIFIED by an
+  observable-keyed method** (hermit-sabre, via name-to-handle-refusal, seccomp-refusal and
+  sysv-ipc-refusal). The remaining deliverable is **two cells nobody has challenged.** That audit
+  declared **no verdict false** — its output is which verdicts need re-derivation, not a claim that
+  any is wrong.
+
+**Whether these two sixes are the same six is UNRESOLVED HERE.** One is described as pending, the
+other as already done; they may be the same set at different times, or different sets. **Do not add
+them and do not assume either supersedes the other.**
+
+**AND THE AUDIT CAUGHT ITSELF MAKING THE DAY'S SIGNATURE MISTAKE:** its first pass grepped whole
+`tg -v` output **including each task's brief — and the briefs discuss `.text`** — so it attributed
+bite-proof language to tasks that had none, including one with no notes at all. **The instrument was
+reading the instructions rather than the evidence.** That is the same matcher family as §6.
+
 ---
 
 # Provenance, sources, and what is still moving
 
-**Stamp — read 2026-08-16T02:14Z.** Note counts at read time, because the corpus moves while it is
-read and that is a property of the task, not something care fixes.
+**Stamp — read 2026-08-16T02:14Z; amended 2026-08-16T02:55Z to add §7.** Note counts at read time,
+because the corpus moves while it is read and that is a property of the task, not something care
+fixes. **The amendment is additive: no figure above was edited, and §7's arrival did not retire
+anything in §1–§6.**
 
 | task | notes | status |
 |---|---:|---|
@@ -149,11 +228,15 @@ read and that is a property of the task, not something care fixes.
 | `qualify-dbt-verify-47` | 10 | CLOSED |
 | `qualify-sabre-verify-29` | 14 | CLOSED |
 | `cross-verify-the-liteinst-qualified-verdicts` | 4 | CLOSED |
-| **`bound-the-flake-rate-on-the-20-c4-cells`** | 1 | **IN PROGRESS** |
+| **`bound-the-flake-rate-on-the-20-c4-cells`** | **3** | **CLOSED 2026-08-16** — result in §7 |
+| `which-cannot-fail-verdicts-rest-on-a-binary-keyed-bite-proof` | — | CLOSED — bears on §7 |
 
-**ARE THE SOURCES STILL BEING WRITTEN? Mostly no, and one yes.** Ten of eleven producing tasks are
-closed. **`bound-the-flake-rate-on-the-20-c4-cells` is live**, and its result bears directly on §5 —
-the C4 verdicts are single observations awaiting exactly that bound. **Two closed slices were amended
+**ARE THE SOURCES STILL BEING WRITTEN? All eleven producing tasks are now closed, and the tally is
+STILL NOT SETTLED.** `bound-the-flake-rate-on-the-20-c4-cells` closed on 2026-08-16 and its result is
+recorded in §7 — it did not confirm §5's 20, it split them into 19 bounded cells plus one measured
+flake and flagged two more as unable to fail. **A re-derivation of six cells on the observable is
+outstanding** (§7), and **closing the last producing task is not the same as the question closing.**
+**Two closed slices were amended
 *after* closing** (`qualify-queue-rows-01-20`, `qualify-dbt-verify-47`), so closed does not mean
 frozen. **Re-read the notes rather than trusting this file, and re-promote wholesale rather than
 patching it.**
