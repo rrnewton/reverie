@@ -61,7 +61,8 @@ and language RNG cells, chosen precisely because they vary.
 
 **The 303 disabled cells.** 261 carry one bulk scope statement — *"This migration inventories strict
 verification; it does not assert native nondeterminism"* — which records that nobody asserted
-anything, not a block. The other 42 make falsifiable claims; 16 were tested at 5 native runs each.
+anything, not a block. The other 42 make falsifiable claims; **34 of them were tested** at 5 native
+runs each (the remaining 8 are non-program `direct` cells the driver cannot run).
 
 - **Group A, prose claims the guest is deterministic natively — 8 of 8 confirmed `distinct=1`.** The
   oracle is genuinely unsatisfiable, which is not a defect in the cell. Enabling these would
@@ -87,20 +88,30 @@ anything, not a block. The other 42 make falsifiable claims; 16 were tested at 5
 | --- | --- |
 | never selected (whole mode) | 336 of 336 naked |
 | would pass if selected (enabled subset, measured) | 33 of 33 |
-| oracle unsatisfiable, `distinct=1` (probed subset) | 10 of 16 |
+| oracle unsatisfiable, `distinct=1` (probed subset) | **20 of 34** |
 | oracle satisfiable, disabled for a role reason | 3 of 16 |
 | guest exits non-zero natively by design | 1 of 16 |
 | prose refuted by measurement | 1 of 16 |
 
-The 10 / 3 / 1 partition the 16; `shm-coherency-identity` is one of the 10 and is also the refuted one.
+The 20 / 12 / 2 partition the 34; `shm-coherency-identity` is one of the 20 and is also the refuted
+one. Both non-zero-exit cells can never pass regardless of distinctness: `host-identity` exits 1 by
+design, and `system-utils/clock-determinism` **timed out on all five native runs** (`rc=124`) — no
+completion observed, and the deadline was not moved, so that is not a duration.
+
+
+> **Correction, 2026-08-15, after extending the probe.** An earlier revision of this report said
+> *10 of 16* probed disabled cells had an unsatisfiable oracle. Recomputed from the stored per-cell
+> data rather than by counting groups, batch one was **11 of 16**, not 10 — an off-by-one that
+> understated the unsatisfiable count. Coverage was then extended from 16 to 34 of the 42
+> substantive-reason cells, giving **20 unsatisfiable, 12 met, 2 non-zero-exit**.
 
 ## How much remains unexplained
 
-**Measured: 49 of 336 naked cells (14.6%)** — the 33 enabled plus 16 probed disabled.
-**Not measured: 287**, of which 261 carry the bulk scope string and 26 are substantive reasons not
-probed (5 are non-program `direct` cells the driver cannot run; 21 were simply not reached).
+**Measured: 67 of 336 naked cells (19.9%)** — the 33 enabled plus 34 probed disabled.
+**Not measured: 269**, of which 261 carry the bulk scope string and 8 are non-program `direct` cells
+the driver cannot run.
 
-The 10-of-16 rate is **not** extrapolated onto the 261: that string says only that nobody asserted
+The 20-of-34 rate is **not** extrapolated onto the 261: that string says only that nobody asserted
 native nondeterminism for the fixture, which predicts nothing about whether it varies.
 
 The chaos side was established in `what-blocks-the-replay-and-chaos-declarations` and is not redone
@@ -117,7 +128,7 @@ or the chaos 1678 — three populations that give three different answers. Both 
 ## The two readings agree on the part that matters
 
 **Plan membership explains why these cells do not run. It does not predict that they would pass.**
-For the 33 enabled naked cells it does — 33 of 33. For the disabled cells probed here, 10 of 16 would
+For the 33 enabled naked cells it does — 33 of 33. For the disabled cells probed here, 20 of 34 would
 still be red after selection was fixed, because the oracle demands a diversity the guest cannot
 produce. Pass-if-selected and qualified are different claims, and for this class they come apart.
 
@@ -161,7 +172,7 @@ produce. Pass-if-selected and qualified are different claims, and for this class
 | `system-utils/ssh-keygen-ed25519` | 3 | 3 | ORACLE-MET |
 | `system-utils/uuidgen-random` | 3 | 3 | ORACLE-MET |
 
-### The 16 probed disabled naked cells (5 native runs each)
+### The first 16 probed disabled naked cells (5 native runs each)
 
 | group | cell | distinct/5 | oracle |
 | --- | --- | --- | --- |
@@ -181,6 +192,29 @@ produce. Pass-if-selected and qualified are different claims, and for this class
 | C-claims-differs-every-run | `system-utils/shm-coherency-identity` | 1 | UNSATISFIED(distinct=1) |
 | C-claims-differs-every-run | `backend-parity-c/stat-metadata-identity` | 5 | MET |
 | C-claims-differs-every-run | `backend-parity-c/host-identity` | 3 | NONZERO-EXIT |
+
+### The further 18 probed disabled naked cells (5 native runs each)
+
+| cell | distinct/5 | exits | oracle | manifest prose |
+| --- | --- | --- | --- | --- |
+| `system-utils/clock-determinism` | 1 | 124,124,124,124,124 | NONZERO-EXIT | The date-nanoseconds entry owns the native clock nondeterminism contro |
+| `applications/kvm-python-examples` | 5 | 0,0,0,0,0 | ORACLE-MET | The portable Python-random test owns the native nondeterminism control |
+| `determinism-stress-c/pid-tid-identity` | 5 | 0,0,0,0,0 | ORACLE-MET | Native pids are host values by definition; this fixture asserts virtua |
+| `language-runtimes/bash-loop-pipe-time` | 5 | 0,0,0,0,0 | ORACLE-MET | This regression establishes Hermit verification, not native nondetermi |
+| `language-runtimes/perl-io-subprocess-time` | 5 | 0,0,0,0,0 | ORACLE-MET | This regression establishes Hermit verification, not native nondetermi |
+| `language-runtimes/python-dict-hash-iteration` | 5 | 0,0,0,0,0 | ORACLE-MET | Native hash-seed variation is host/PYTHONHASHSEED sensitive; this regr |
+| `language-runtimes/python-io-subprocess-time` | 5 | 0,0,0,0,0 | ORACLE-MET | This regression establishes Hermit verification, not native nondetermi |
+| `system-utils/clock-exec-continuity` | 5 | 0,0,0,0,0 | ORACLE-MET | The guard asserts Hermit's virtual clock; the host clock is not the co |
+| `system-utils/record-getpid` | 5 | 0,0,0,0,0 | ORACLE-MET | The test asserts Hermit's virtualized process identity |
+| `applications/kvm-shell-environment` | 1 | 0,0,0,0,0 | ORACLE-UNSATISFIED | This is a privileged KVM backend integration test |
+| `backend-parity-c/file-io-roundtrip` | 1 | 0,0,0,0,0 | ORACLE-UNSATISFIED | This row asserts strict-verify determinism; it does not assert native  |
+| `backend-parity-c/fork-exec-pipeline` | 1 | 0,0,0,0,0 | ORACLE-UNSATISFIED | This row asserts strict-verify determinism; it does not assert native  |
+| `backend-parity-c/hardware-trap-identity` | 1 | 0,0,0,0,0 | ORACLE-UNSATISFIED | The native run is the reference this fixture is compared against, not  |
+| `backend-parity-c/personality-domain` | 1 | 0,0,0,0,0 | ORACLE-UNSATISFIED | Native Linux is used as a focused correctness oracle; repeated native  |
+| `backend-parity-c/signal-delivery-sequence` | 1 | 0,0,0,0,0 | ORACLE-UNSATISFIED | This row asserts strict-verify determinism; it does not assert native  |
+| `backend-parity-c/signal-waitstatus-identity` | 1 | 0,0,0,0,0 | ORACLE-UNSATISFIED | The native run is the reference this fixture is compared against, not  |
+| `c-programs/pause-alarm-interrupt` | 1 | 0,0,0,0,0 | ORACLE-UNSATISFIED | This guest asserts interrupted-pause semantics under strict verificati |
+| `determinism-stress/process-chains` | 1 | 0,0,0,0,0 | ORACLE-UNSATISFIED | The programs self-check invariants rather than requiring native output |
 
 ## Reproduction
 
