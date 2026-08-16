@@ -110,13 +110,46 @@ The three tokens are chosen so that none is a substring of any other.
 
 | verdict | n | meaning |
 | --- | --- | --- |
-| `REFUSABLE` | 38 — **37 stable + 1 unstable** | accept arm exits 0 under dbt and a mutation makes dbt exit non-zero |
+| `REFUSABLE` | 37 | accept arm exits 0 under dbt and a semantic mutation makes dbt exit non-zero |
+| `REFUSEARM-UNPROVEN` | 1 | accept arm green, but no valid refuse arm was established |
 | `PARITYASSERT-BLOCKED` | 1 | both exit arms hold, but the cell's own extra gate cannot pass under dbt |
 | `ACCEPTARM-RED` | 8 | the unmutated fixture already fails under dbt; nothing to qualify |
 | **total** | **47** | |
 
-**The `REFUSABLE` total is 38 or 37 depending on the draw, and it is reported that way
-deliberately.** `backend-parity-c/sendfile-copy` has an unstable accept arm (26 of 27 observed runs
+### Amendment: what each refuse arm actually exercised
+
+An initial pass reported `REFUSABLE 38`. Two corrections, both against my own result:
+
+**One cell is demoted to `REFUSEARM-UNPROVEN`.** `c-programs/dbt-wait-lifecycle`'s first mutation was
+inert, and the retry inverted `argc != 1` — so the mutant printed
+`usage: … [--accounting-only]` to **stderr** and exited **64**. That is a usage line from argument
+parsing, which is misclassification mode 5: a non-zero exit that is not a refusal. The
+ptrace-gated selector accepted it because it only asked whether ptrace refused, never *why*. No valid
+refuse arm exists for that cell.
+
+**The remaining 37 are not equally strong, and the difference is worth more than the total.** The
+guard-inversion family inverts the first guard whose error path is nearby, and on many of these
+fixtures the first such guard is *setup plumbing* rather than the parity assertion. Classifying each
+refuse arm by the error path it actually reaches:
+
+| what the refuse arm exercised | n | meaning |
+| --- | --- | --- |
+| semantic | 13 | the inverted guard, or the seeded counter, routes through the property the cell exists to test — e.g. `io_setup populated ctx=%lu on refusal`, `semget rc=%d errno=%d (want -1/ENOSYS)`, `madvise(%d) expected errno %d, got %d` |
+| plumbing | 22 | the inverted guard was a setup or I/O check — e.g. `mkstemp`, `pipe`, `socketpair`, `sysconf`, `pthread_barrier_wait`. Proves the fixture's `fail()` path reaches the exit gate under DBT; does **not** show the cell would catch a defect in the property it tests |
+| mechanical | 2 | terminal-exit rewrite; proves exit propagation and nothing else |
+
+`backend-parity-c/sendfile-copy` is the worked example and it converges with three independent
+routes that call the fixture scaffolding-only: its `checksum`, `pos` and `own_offset_kept` are
+**printed and never gated**, so `own_offset_kept == 0` still exits 0. The refuse arm I obtained came
+from inverting its `mkstemp` guard.
+
+**Reading the strongest subset off these two axes: 11 cells are `verify.ci = true`, semantic, and
+stable.** Of the 19 immediately-greenable `REFUSABLE` cells, 11 are semantic, 6 plumbing, 2
+mechanical.
+
+### The unstable cell
+
+**The classification of one cell depends on the draw, and it is reported that way deliberately.** `backend-parity-c/sendfile-copy` has an unstable accept arm (26 of 27 observed runs
 exit 0; the 27th exits 1). On a run where its accept arm exits 0 it classifies `REFUSABLE`; on the
 observed refusal it classifies `ACCEPTARM-RED`. A flat `38` would assert a stability that was
 measured not to hold. This disagreement was found by re-deriving the counts from the raw per-cell
@@ -230,55 +263,55 @@ channel but is weaker evidence:
 
 ## Per-cell results
 
-| verdict | cell | verify.ci | dbt accept | dbt refuse | ptrace accept | ptrace refuse | mutation | needs dbt guest_args |
+| verdict | refuse arm exercised | cell | verify.ci | dbt accept | dbt refuse | ptrace accept | ptrace refuse | needs dbt guest_args |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| REFUSABLE | `backend-parity-c/aio-refusal` | true | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `backend-parity-c/child-subreaper-refusal` | true | 0 | 23 | 0 | 1 | m1 | no |
-| REFUSABLE | `backend-parity-c/cwd-roundtrip` | true | 0 | 1 | 0 | 1 | m3 | no |
-| REFUSABLE | `backend-parity-c/fcntl-owner` | true | 0 | 1 | 0 | 1 | m3 | no |
-| REFUSABLE | `backend-parity-c/file-io-roundtrip` | true | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `backend-parity-c/fork-exec-pipeline` | true | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `backend-parity-c/getrusage-self-accounting` | true | 0 | 3 | 0 | 1 | m2:0 | no |
-| REFUSABLE | `backend-parity-c/mce-kill-refusal` | true | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `backend-parity-c/membarrier-query` | true | 0 | 1 | 0 | 1 | m3 | no |
-| REFUSABLE | `backend-parity-c/name-to-handle-refusal` | true | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `backend-parity-c/o-tmpfile-anon` | true | 0 | 1 | 0 | 1 | m3 | no |
-| REFUSABLE | `backend-parity-c/pipe-capacity` | true | 0 | 1 | 0 | 1 | m3 | no |
-| REFUSABLE | `backend-parity-c/record-lock` | true | 0 | 1 | 0 | 1 | m3 | no |
-| REFUSABLE | `backend-parity-c/seccomp-refusal` | true | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `backend-parity-c/sendfile-copy` | true | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `backend-parity-c/sysv-ipc-refusal` | true | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `c-programs/clone` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `c-programs/dbt-mmap-exec` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `c-programs/dbt-wait-lifecycle` | false | 0 | 64 | 0 | 1 | m2:1 | no |
-| REFUSABLE | `c-programs/epoll-determinism` | false | 0 | 1 | 0 | 1 | m2 | yes: multi |
-| REFUSABLE | `c-programs/io-uring-fallback` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `c-programs/ipc-determinism` | false | 0 | 124 | 0 | 124 | m2:0 | yes: pipe-order |
-| REFUSABLE | `c-programs/liteinst-advanced` | false | 0 | 124 | 0 | 1 | m2:0 | yes: threads |
-| REFUSABLE | `c-programs/madvise-determinism` | false | 0 | 13 | 0 | 1 | m2:0 | no |
-| REFUSABLE | `c-programs/mmap-determinism` | false | 0 | 1 | 0 | 1 | m2 | yes: multiple |
-| REFUSABLE | `c-programs/ppoll-simulation` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `c-programs/proc-fd-link-aliases` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `c-programs/procfs-positioned-probe` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `c-programs/recvmsg-scm-rights-mmap` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `c-programs/syscall-quick-wins` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `c-programs/thread-sync-determinism` | false | 0 | 1 | 0 | 1 | m2:2 | yes: cancellation |
-| REFUSABLE | `c-programs/wait-on-child` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `determinism-stress-c/fork-tree` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `determinism-stress-c/pipe-prefill` | true | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `determinism-stress-c/producer-consumer` | true | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `determinism-stress-c/thread-contention` | false | 0 | 1 | 0 | 1 | m2 | yes: contention |
-| REFUSABLE | `determinism-stress-c/thread-stress` | false | 0 | 1 | 0 | 1 | m2 | no |
-| REFUSABLE | `determinism-stress/order-violation` | true | 0 | 23 | 0 | 1 | m1 | no |
-| PARITYASSERT-BLOCKED | `backend-parity-c/set-tid-address` | true | 0 | 1 | 0 | 1 | m3 | no |
-| ACCEPTARM-RED | `backend-parity-c/signal-delivery-sequence` | true | 1 | 1 | 0 | 1 | m2 | no |
-| ACCEPTARM-RED | `bin-c/robust-futex-test` | false | 124 | 124 | 1 | 124 | m2 | no |
-| ACCEPTARM-RED | `c-programs/resource-determinism` | false | 1 | 1 | 0 | 0 | m2 | no |
-| ACCEPTARM-RED | `c-programs/signal-determinism` | false | 124 | 1 | 0 | 1 | m2 | yes: itimer-delivery |
-| ACCEPTARM-RED | `c-programs/syscall-file-io` | false | 1 | 1 | 0 | 1 | m2 | no |
-| ACCEPTARM-RED | `determinism-stress-c/mmap-fork-shared` | false | 124 | 1 | 0 | 1 | m2 | no |
-| ACCEPTARM-RED | `determinism-stress-c/pipe-chain` | false | 1 | 1 | 0 | 1 | m2 | no |
-| ACCEPTARM-RED | `system-utils/clock-exec-continuity` | true | 1 | 1 | 0 | 1 | m2 | no |
+| REFUSABLE | semantic | `backend-parity-c/aio-refusal` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | mechanical | `backend-parity-c/child-subreaper-refusal` | true | 0 | 23 | 0 | 1 | no |
+| REFUSABLE | semantic | `backend-parity-c/cwd-roundtrip` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | semantic | `backend-parity-c/fcntl-owner` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `backend-parity-c/file-io-roundtrip` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `backend-parity-c/fork-exec-pipeline` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `backend-parity-c/getrusage-self-accounting` | true | 0 | 3 | 0 | 1 | no |
+| REFUSABLE | semantic | `backend-parity-c/mce-kill-refusal` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | semantic | `backend-parity-c/membarrier-query` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | semantic | `backend-parity-c/name-to-handle-refusal` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | semantic | `backend-parity-c/o-tmpfile-anon` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | semantic | `backend-parity-c/pipe-capacity` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | semantic | `backend-parity-c/record-lock` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | semantic | `backend-parity-c/seccomp-refusal` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing (unstable accept arm) | `backend-parity-c/sendfile-copy` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | semantic | `backend-parity-c/sysv-ipc-refusal` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `c-programs/clone` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `c-programs/dbt-mmap-exec` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `c-programs/epoll-determinism` | false | 0 | 1 | 0 | 1 | yes: multi |
+| REFUSABLE | plumbing | `c-programs/io-uring-fallback` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `c-programs/ipc-determinism` | false | 0 | 124 | 0 | 124 | yes: pipe-order |
+| REFUSABLE | plumbing | `c-programs/liteinst-advanced` | false | 0 | 124 | 0 | 1 | yes: threads |
+| REFUSABLE | semantic | `c-programs/madvise-determinism` | false | 0 | 13 | 0 | 1 | no |
+| REFUSABLE | plumbing | `c-programs/mmap-determinism` | false | 0 | 1 | 0 | 1 | yes: multiple |
+| REFUSABLE | plumbing | `c-programs/ppoll-simulation` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `c-programs/proc-fd-link-aliases` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `c-programs/procfs-positioned-probe` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `c-programs/recvmsg-scm-rights-mmap` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `c-programs/syscall-quick-wins` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | semantic | `c-programs/thread-sync-determinism` | false | 0 | 1 | 0 | 1 | yes: cancellation |
+| REFUSABLE | plumbing | `c-programs/wait-on-child` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `determinism-stress-c/fork-tree` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `determinism-stress-c/pipe-prefill` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `determinism-stress-c/producer-consumer` | true | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | plumbing | `determinism-stress-c/thread-contention` | false | 0 | 1 | 0 | 1 | yes: contention |
+| REFUSABLE | plumbing | `determinism-stress-c/thread-stress` | false | 0 | 1 | 0 | 1 | no |
+| REFUSABLE | mechanical | `determinism-stress/order-violation` | true | 0 | 23 | 0 | 1 | no |
+| REFUSEARM-UNPROVEN | usage line on stderr, exit 64 -- argument parsing, not a refusal | `c-programs/dbt-wait-lifecycle` | false | 0 | 64 | 0 | 1 | no |
+| PARITYASSERT-BLOCKED | - | `backend-parity-c/set-tid-address` | true | 0 | 1 | 0 | 1 | no |
+| ACCEPTARM-RED | - | `backend-parity-c/signal-delivery-sequence` | true | 1 | 1 | 0 | 1 | no |
+| ACCEPTARM-RED | - | `bin-c/robust-futex-test` | false | 124 | 124 | 1 | 124 | no |
+| ACCEPTARM-RED | - | `c-programs/resource-determinism` | false | 1 | 1 | 0 | 0 | no |
+| ACCEPTARM-RED | - | `c-programs/signal-determinism` | false | 124 | 1 | 0 | 1 | yes: itimer-delivery |
+| ACCEPTARM-RED | - | `c-programs/syscall-file-io` | false | 1 | 1 | 0 | 1 | no |
+| ACCEPTARM-RED | - | `determinism-stress-c/mmap-fork-shared` | false | 124 | 1 | 0 | 1 | no |
+| ACCEPTARM-RED | - | `determinism-stress-c/pipe-chain` | false | 1 | 1 | 0 | 1 | no |
+| ACCEPTARM-RED | - | `system-utils/clock-exec-continuity` | true | 1 | 1 | 0 | 1 | no |
 
 ## Reproduction
 
