@@ -3,6 +3,9 @@
 Task: `what-blocks-the-replay-and-chaos-declarations`. Date: 2026-08-15. Host: devbig030.
 Read-only diagnosis; nothing proposed, nothing edited.
 
+> **Provenance.** Measured on devbig030 under the portable profile only — no `validate.sh`, no full and no privileged profile. **Nothing here is a receipt**, and nothing in it should be read as one now that a qualifying receipt on a red base binds its exact commit as hard green. devbig030 cannot mint full or privileged receipts: `arch_prctl(ARCH_SET_CPUID=0x1012, 0)` returns ENODEV here, re-measured 2026-08-15.
+
+
 ## Unit
 
 Every figure below counts **declarations**: one entry in a mode's `backends_disabled` dict, i.e. one
