@@ -480,7 +480,7 @@ class CliTests(IdentityFixture):
         )
         self.assertFalse(result.stdout.endswith("\n"))
 
-    def test_tag_refuses_without_role_or_resolved_identity(self) -> None:
+    def test_tag_requires_role_and_degrades_disagreement(self) -> None:
         self.standard_processes()
         missing_role = self.run_tag()
         self.assertEqual(2, missing_role.returncode)
@@ -489,9 +489,10 @@ class CliTests(IdentityFixture):
 
         self.write_state(owners=("agent-b",), sidecar_agent="agent-b")
         disagreement = self.run_tag("--role", "impl")
-        self.assertEqual(1, disagreement.returncode)
+        self.assertEqual(0, disagreement.returncode, disagreement.stderr)
+        self.assertIn("degraded-agent-a", disagreement.stdout)
+        self.assertIn("DEGRADED", disagreement.stderr)
         self.assertIn("DISAGREEMENT", disagreement.stderr)
-        self.assertEqual("", disagreement.stdout)
 
 
 if __name__ == "__main__":

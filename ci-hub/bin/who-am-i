@@ -64,16 +64,24 @@ def main() -> int:
         task_db=args.db,
     )
     if args.tag:
+        degraded = result.state != "AGREEMENT" or not result.agent
         try:
             disclosure = disclosure_tag.from_resolution(
                 result,
                 team=args.team,
                 role=args.role,
+                degraded=degraded,
             )
         except disclosure_tag.DisclosureError as error:
             print(f"who-am-i: REFUSE: {error}", file=sys.stderr)
             return result.exit_code if result.state != "AGREEMENT" else 2
+        if degraded:
+            print(
+                f"who-am-i: DEGRADED: identity resolver returned {result.state}",
+                file=sys.stderr,
+            )
         sys.stdout.write(disclosure.tag)
+        return 0
     elif args.json:
         print(result.to_json())
     else:

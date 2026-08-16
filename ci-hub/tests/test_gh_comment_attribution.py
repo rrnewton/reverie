@@ -141,11 +141,16 @@ class FleetGhTest(unittest.TestCase):
         state: str = "AGREEMENT",
         agent: str | None = TEST_AGENT,
         model: str = "unresolved",
+        signal_state: str = "unavailable",
+        signal_agent: str | None = None,
+        signal_candidates: tuple[str, ...] = (),
     ) -> None:
         (self.root / "ci-hub/lib/agent_identity.py").write_text(
             "MODEL_UNRESOLVED='unresolved'\n"
             "class Signal:\n"
-            "    source='caller-environ'; state='unavailable'; detail='fixture'\n"
+            "    source='caller-environ'; "
+            f"state={signal_state!r}; agent={signal_agent!r}; "
+            f"candidates={signal_candidates!r}; detail='fixture'\n"
             "class Resolution:\n"
             f"    state={state!r}; agent={agent!r}; model={model!r}; "
             "basis=('fixture',); signals=(Signal(),)\n"
@@ -306,19 +311,48 @@ class FleetGhTest(unittest.TestCase):
             "tag printer must not append a newline that changes command substitution",
         )
 
-    def test_tag_printer_requires_role_and_refuses_unresolved_or_disagreement(self) -> None:
+    def test_tag_printer_requires_role_and_degrades_unresolved_or_disagreement(self) -> None:
         missing = self.run_printer("--tag")
         self.assertEqual(2, missing.returncode)
         self.assertIn("--role is required", missing.stderr)
         self.assertEqual("", missing.stdout)
 
-        for state, expected_rc in (("UNRESOLVED", 2), ("DISAGREEMENT", 1)):
-            with self.subTest(state=state):
-                self.install_identity_stub(state=state, agent=None)
-                refused = self.run_printer("--tag", "--role", "impl")
-                self.assertEqual(expected_rc, refused.returncode, refused.stderr)
-                self.assertIn(state, refused.stderr)
-                self.assertEqual("", refused.stdout)
+        machine = socket.gethostname().split(".", 1)[0]
+        self.install_identity_stub(state="UNRESOLVED", agent=None)
+        unresolved = self.run_printer("--tag", "--role", "impl")
+        self.assertEqual(0, unresolved.returncode, unresolved.stderr)
+        self.assertEqual(
+            f"[hermit2, degraded-unresolved, unresolved, {machine}, role=impl]",
+            unresolved.stdout,
+        )
+        self.assertIn("DEGRADED", unresolved.stderr)
+        self.assertIn("UNRESOLVED", unresolved.stderr)
+
+        self.install_identity_stub(
+            state="DISAGREEMENT",
+            agent=None,
+            signal_state="resolved",
+            signal_agent="best-visible-agent",
+            signal_candidates=("other-visible-agent",),
+        )
+        disagreement = self.run_printer("--tag", "--role", "impl")
+        self.assertEqual(0, disagreement.returncode, disagreement.stderr)
+        self.assertEqual(
+            f"[hermit2, degraded-best-visible-agent, unresolved, {machine}, role=impl]",
+            disagreement.stdout,
+        )
+        self.assertIn("DEGRADED", disagreement.stderr)
+        self.assertIn("DISAGREEMENT", disagreement.stderr)
+
+    def test_shared_github_boundary_still_refuses_unresolved_identity(self) -> None:
+        self.install_identity_stub(state="UNRESOLVED", agent=None)
+        result = self.run_shim(
+            *self.identity(),
+            "pr", "comment", "42", "--body", "nobody established",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("owner unresolved", result.stderr)
+        self.assertFalse(self.capture.exists())
 
     def test_caller_supplied_model_is_refused(self) -> None:
         result = self.run_shim(

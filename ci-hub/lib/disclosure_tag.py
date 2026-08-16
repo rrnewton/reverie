@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One fail-closed formatter for the fleet who-is-talking disclosure tag."""
+"""Format the fleet who-is-talking disclosure tag."""
 
 from __future__ import annotations
 
@@ -43,6 +43,24 @@ def _signal_evidence(resolution: Any) -> str:
     )
 
 
+def _best_degraded_agent(resolution: Any) -> str:
+    candidates = [resolution.agent]
+    candidates.extend(
+        signal.agent
+        for signal in resolution.signals
+        if signal.state == "resolved"
+    )
+    candidates.extend(
+        candidate
+        for signal in resolution.signals
+        for candidate in signal.candidates
+    )
+    for candidate in candidates:
+        if candidate is not None and TOKEN_RE.fullmatch(candidate) is not None:
+            return f"degraded-{candidate}"
+    return "degraded-unresolved"
+
+
 def from_resolution(
     resolution: Any,
     *,
@@ -50,6 +68,7 @@ def from_resolution(
     role: str,
     claimed_agent: str | None = None,
     machine: str | None = None,
+    degraded: bool = False,
 ) -> Disclosure:
     """Validate process identity and build the only canonical disclosure.
 
@@ -58,12 +77,15 @@ def from_resolution(
     printer omits it and prints the process-resolved agent directly.
     """
 
-    if resolution.state != "AGREEMENT" or not resolution.agent:
+    if resolution.state == "AGREEMENT" and resolution.agent:
+        agent = resolution.agent
+    elif degraded:
+        agent = _best_degraded_agent(resolution)
+    else:
         raise DisclosureError(
             f"owner unresolved: identity resolver returned {resolution.state}; "
             f"signals={_signal_evidence(resolution)}"
         )
-    agent = resolution.agent
     if claimed_agent is not None and claimed_agent != agent:
         raise DisclosureError(
             f"--who mismatch: claimed {claimed_agent!r}, but process context "
