@@ -1,0 +1,25 @@
+# QUALIFICATION RESULTS -- 12 unworked ptrace+replay candidate cells, hermit main 302a1a9c0fde564db0292d1ea5cabc91343e79bc
+# Produced 2026-08-16 by hermit-observable, task qualify-more-non-privileged-cells.
+# SCOPE ON EVERY ROW: portable lane, devbig030, backend=ptrace, mode=replay. NOT A RECEIPT.
+# GATE: scripts/manifest-to-commands.rs:269-271 -- `hermit --log=info --backend ptrace record start
+#       --strict --verify --data-dir <d> --record-timeout <t> -- <guest>`. Verdict = EXIT STATUS ONLY.
+# COMPARATOR: the DETLOG/COMMIT-subset comparator (bare log-diff policy, strip_lines=false) in
+#       detcore/src/logdiff.rs. It RAN AND SUCCEEDED on both arms of every cell; the refuse arm still
+#       exits non-zero, so the exit status is propagated PAST a passing comparator.
+# BITE PROOF: guest stdout+stderr under `hermit run --backend ptrace --strict --no-virtualize-cpuid
+#       --max-timeslice=disabled`. NOT .text. Anchors asserted unique (count==1), never first-match.
+# TWO PASSES of all 12 cells: 0 disagreements.
+#
+cell	verdict	backend	mode	families_biting	accept_replay_rc	refuse_replay_rc	observable_delta	reason
+c-programs/dbt-execveat-unsupported	ACCEPT-ARM-DOES-NOT-EXERCISE-ITS-ASSERTION	ptrace	replay	behaviour	0	2/0	M1-behaviour: ''->''; M2-oracle: ''->''	execveat SUCCEEDS under ptrace on this build, so the guest execs /bin/true and never reaches its own assertion; accept rc=0 comes from /bin/true, not from a verified refusal. Proven by a discriminating probe: a guest exec'ing /bin/echo printed EXECVEAT-SUCCEEDED-PROCESS-REPLACED under hermit ptrace --strict. The refusal contract this cell asserts does not hold for ptrace.
+backend-parity-c/cachestat-refusal	NOT-EXIT-GATED	ptrace	replay	behaviour,oracle	0	0/0	M1-behaviour: 'cachestat ok=2'->'cachestat ok=0'; M2-oracle: 'cachestat ok=2'->'cachestat ok=0'	every biting mutant left the replay exit status at 0
+backend-parity-c/faccessat2-flags	NOT-EXIT-GATED	ptrace	replay	behaviour,oracle	0	0/0	M1-behaviour: 'faccessat2 ok=6'->'faccessat2 ok=0'; M2-oracle: 'faccessat2 ok=6'->'faccessat2 ok=5'	every biting mutant left the replay exit status at 0
+backend-parity-c/kcmp-refusal	NOT-EXIT-GATED	ptrace	replay	behaviour,oracle	0	0/0	M1-behaviour: 'kcmp ok=3'->'kcmp ok=0'; M2-oracle: 'kcmp ok=3'->'kcmp ok=0'	every biting mutant left the replay exit status at 0
+backend-parity-c/openat2-refusal	NOT-EXIT-GATED	ptrace	replay	behaviour,oracle	0	0/0	M1-behaviour: 'openat2 ok=3'->'openat2 ok=0'; M2-oracle: 'openat2 ok=3'->'openat2 ok=0'	every biting mutant left the replay exit status at 0
+backend-parity-c/pidfd-open-self	NOT-EXIT-GATED	ptrace	replay	oracle	0	0	M2-oracle: 'pidfd ok=6'->'pidfd ok=5'	every biting mutant left the replay exit status at 0
+c-programs/keyctl-passthrough	NOT-EXIT-GATED	ptrace	replay	behaviour,oracle	0	0/0	M1-behaviour: 'keyctl_enosys=1'->'keyctl_enosys=0'; M2-oracle: 'keyctl_enosys=1'->'keyctl_enosys=0'	every biting mutant left the replay exit status at 0
+c-programs/acct-refusal-probe	QUALIFIED-PTRACE	ptrace	replay	behaviour,oracle	0	1/1	M1-behaviour: 'acct-refused-ok'->'' +stderr 43B; M2-oracle: 'acct-refused-ok'->'' +stderr 44B	accept arm passes the replay gate and 2 biting mutant(s) across 2 independent famil(y/ies) drive it off 0
+c-programs/kcmp-eperm	QUALIFIED-PTRACE	ptrace	replay	behaviour,oracle	0	1/1	M1-behaviour: 'kcmp deterministically refused'->'' +stderr 43B; M2-oracle: 'kcmp deterministically refused'->'' +stderr 44B	accept arm passes the replay gate and 2 biting mutant(s) across 2 independent famil(y/ies) drive it off 0
+c-programs/process-vm-readv-refusal-probe	QUALIFIED-PTRACE	ptrace	replay	behaviour,oracle	0	1/1	M1-behaviour: 'process-vm-readv-refused-ok'->'' +stderr 80B; M2-oracle: 'process-vm-readv-refused-ok'->'' +stderr 81B	accept arm passes the replay gate and 2 biting mutant(s) across 2 independent famil(y/ies) drive it off 0
+c-programs/process-vm-writev-refusal-probe	QUALIFIED-PTRACE	ptrace	replay	behaviour,oracle	0	1/1	M1-behaviour: 'process-vm-writev-refused-ok'->'' +stderr 81B; M2-oracle: 'process-vm-writev-refused-ok'->'' +stderr 82B	accept arm passes the replay gate and 2 biting mutant(s) across 2 independent famil(y/ies) drive it off 0
+c-programs/ptrace-eperm	QUALIFIED-PTRACE	ptrace	replay	behaviour,oracle	0	1/1	M1-behaviour: 'ptrace deterministically refused'->'' +stderr 45B; M2-oracle: 'ptrace deterministically refused'->'' +stderr 46B	accept arm passes the replay gate and 2 biting mutant(s) across 2 independent famil(y/ies) drive it off 0

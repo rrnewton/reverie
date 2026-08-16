@@ -1,0 +1,670 @@
+[
+ {
+  "cell": "backend-parity-c/cachestat-refusal",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/backend-parity/fixtures/cachestat_refusal.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_cachestat -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_cachestat",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 0,
+     "stdout": "cachestat ok=0\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == ENOSYS -> EPERM: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == ENOSYS",
+    "replacement": "errno == EPERM",
+    "observable": {
+     "rc": 0,
+     "stdout": "cachestat ok=0\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "cachestat ok=2\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "NOT-EXIT-GATED",
+  "reason": "every biting mutant left the replay exit status at 0"
+ },
+ {
+  "cell": "backend-parity-c/faccessat2-flags",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/backend-parity/fixtures/faccessat2_flags.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_faccessat2 -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_faccessat2",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 0,
+     "stdout": "faccessat2 ok=0\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == ENOENT -> EPERM: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == ENOENT",
+    "replacement": "errno == EPERM",
+    "observable": {
+     "rc": 0,
+     "stdout": "faccessat2 ok=5\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "faccessat2 ok=6\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "NOT-EXIT-GATED",
+  "reason": "every biting mutant left the replay exit status at 0"
+ },
+ {
+  "cell": "backend-parity-c/kcmp-refusal",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/backend-parity/fixtures/kcmp_refusal.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_kcmp -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_kcmp",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 0,
+     "stdout": "kcmp ok=0\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == EPERM -> ENOSYS: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == EPERM",
+    "replacement": "errno == ENOSYS",
+    "observable": {
+     "rc": 0,
+     "stdout": "kcmp ok=0\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "kcmp ok=3\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "NOT-EXIT-GATED",
+  "reason": "every biting mutant left the replay exit status at 0"
+ },
+ {
+  "cell": "backend-parity-c/openat2-refusal",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/backend-parity/fixtures/openat2_refusal.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_openat2 -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_openat2",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 0,
+     "stdout": "openat2 ok=0\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == ENOSYS -> EPERM: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == ENOSYS",
+    "replacement": "errno == EPERM",
+    "observable": {
+     "rc": 0,
+     "stdout": "openat2 ok=0\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "openat2 ok=3\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "NOT-EXIT-GATED",
+  "reason": "every biting mutant left the replay exit status at 0"
+ },
+ {
+  "cell": "backend-parity-c/pidfd-open-self",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/backend-parity/fixtures/pidfd_open_self.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == EINVAL -> EPERM: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == EINVAL",
+    "replacement": "errno == EPERM",
+    "observable": {
+     "rc": 0,
+     "stdout": "pidfd ok=5\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "pidfd ok=6\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "NOT-EXIT-GATED",
+  "reason": "every biting mutant left the replay exit status at 0"
+ },
+ {
+  "cell": "c-programs/acct-refusal-probe",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/c/acct_refusal_probe.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_acct -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_acct",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "acct: expected EPERM, got result=1 errno=0\n"
+    },
+    "gate_replay": {
+     "rc": 1
+    },
+    "bites_observable": true,
+    "gates": true
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == EPERM -> ENOSYS: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == EPERM",
+    "replacement": "errno == ENOSYS",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "acct: expected EPERM, got result=-1 errno=1\n"
+    },
+    "gate_replay": {
+     "rc": 1
+    },
+    "bites_observable": true,
+    "gates": true
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "acct-refused-ok\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "QUALIFIED-PTRACE",
+  "reason": "accept arm passes the replay gate and 2 biting mutant(s) across 2 independent famil(y/ies) drive it off 0"
+ },
+ {
+  "cell": "c-programs/dbt-execveat-unsupported",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/c/dbt_execveat_unsupported.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_execveat -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_execveat",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 2,
+     "stdout": "",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 2
+    },
+    "bites_observable": true,
+    "gates": true
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == ENOSYS -> EPERM: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == ENOSYS",
+    "replacement": "errno == EPERM",
+    "observable": {
+     "rc": 0,
+     "stdout": "",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": false,
+    "gates": false
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "ACCEPT-ARM-DOES-NOT-EXERCISE-ITS-ASSERTION",
+  "reason": "execveat SUCCEEDS under ptrace on this build, so the guest execs /bin/true and never reaches its own assertion; accept rc=0 comes from /bin/true, not from a verified refusal. Proven by a discriminating probe: a guest exec'ing /bin/echo printed EXECVEAT-SUCCEEDED-PROCESS-REPLACED under hermit ptrace --strict. The refusal contract this cell asserts does not hold for ptrace.",
+  "superseded_verdict": "QUALIFIED-PTRACE (withdrawn by me before reporting)"
+ },
+ {
+  "cell": "c-programs/kcmp-eperm",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/c/kcmp_eperm.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_kcmp -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_kcmp",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "kcmp: expected EPERM, got result=1 errno=0\n"
+    },
+    "gate_replay": {
+     "rc": 1
+    },
+    "bites_observable": true,
+    "gates": true
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == EPERM -> ENOSYS: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == EPERM",
+    "replacement": "errno == ENOSYS",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "kcmp: expected EPERM, got result=-1 errno=1\n"
+    },
+    "gate_replay": {
+     "rc": 1
+    },
+    "bites_observable": true,
+    "gates": true
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "kcmp deterministically refused\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "QUALIFIED-PTRACE",
+  "reason": "accept arm passes the replay gate and 2 biting mutant(s) across 2 independent famil(y/ies) drive it off 0"
+ },
+ {
+  "cell": "c-programs/keyctl-passthrough",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/c/keyctl_passthrough.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_keyctl -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_keyctl",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 0,
+     "stdout": "keyctl_enosys=0\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == ENOSYS -> EPERM: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == ENOSYS",
+    "replacement": "errno == EPERM",
+    "observable": {
+     "rc": 0,
+     "stdout": "keyctl_enosys=0\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0
+    },
+    "bites_observable": true,
+    "gates": false
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "keyctl_enosys=1\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "NOT-EXIT-GATED",
+  "reason": "every biting mutant left the replay exit status at 0"
+ },
+ {
+  "cell": "c-programs/process-vm-readv-refusal-probe",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/c/process_vm_readv_refusal_probe.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_process_vm_readv -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_process_vm_readv",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "process_vm_readv: expected EPERM/no copy, got result=1 errno=0 destination=0xa5\n"
+    },
+    "gate_replay": {
+     "rc": 1
+    },
+    "bites_observable": true,
+    "gates": true
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == EPERM -> ENOSYS: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == EPERM",
+    "replacement": "errno == ENOSYS",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "process_vm_readv: expected EPERM/no copy, got result=-1 errno=1 destination=0xa5\n"
+    },
+    "gate_replay": {
+     "rc": 1
+    },
+    "bites_observable": true,
+    "gates": true
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "process-vm-readv-refused-ok\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "QUALIFIED-PTRACE",
+  "reason": "accept arm passes the replay gate and 2 biting mutant(s) across 2 independent famil(y/ies) drive it off 0"
+ },
+ {
+  "cell": "c-programs/process-vm-writev-refusal-probe",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/c/process_vm_writev_refusal_probe.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_process_vm_writev -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_process_vm_writev",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "process_vm_writev: expected EPERM/no copy, got result=1 errno=0 destination=0xa5\n"
+    },
+    "gate_replay": {
+     "rc": 1
+    },
+    "bites_observable": true,
+    "gates": true
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == EPERM -> ENOSYS: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == EPERM",
+    "replacement": "errno == ENOSYS",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "process_vm_writev: expected EPERM/no copy, got result=-1 errno=1 destination=0xa5\n"
+    },
+    "gate_replay": {
+     "rc": 1
+    },
+    "bites_observable": true,
+    "gates": true
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "process-vm-writev-refused-ok\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "QUALIFIED-PTRACE",
+  "reason": "accept arm passes the replay gate and 2 biting mutant(s) across 2 independent famil(y/ies) drive it off 0"
+ },
+ {
+  "cell": "c-programs/ptrace-eperm",
+  "mode": "replay",
+  "backend": "ptrace",
+  "lane": "portable",
+  "program": "tests/c/ptrace_eperm.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "timeout_seconds": 90,
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "SYS_ptrace -> SYS_getppid: the guest issues a permitted syscall, so the contracted refusal is never exercised",
+    "anchor": "syscall(SYS_ptrace",
+    "replacement": "syscall(SYS_getppid",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "ptrace: expected EPERM, got result=1 errno=0\n"
+    },
+    "gate_replay": {
+     "rc": 1
+    },
+    "bites_observable": true,
+    "gates": true
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "errno == EPERM -> ENOSYS: the same call is issued and really refused; only the demanded errno changes",
+    "anchor": "errno == EPERM",
+    "replacement": "errno == ENOSYS",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "ptrace: expected EPERM, got result=-1 errno=1\n"
+    },
+    "gate_replay": {
+     "rc": 1
+    },
+    "bites_observable": true,
+    "gates": true
+   }
+  ],
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "ptrace deterministically refused\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0
+   }
+  },
+  "verdict": "QUALIFIED-PTRACE",
+  "reason": "accept arm passes the replay gate and 2 biting mutant(s) across 2 independent famil(y/ies) drive it off 0"
+ }
+]
