@@ -1,16 +1,8 @@
 <ALREADY_MIGRATED>
 
-# Scope and coordinator mode
+<ALREADY_MIGRATED>
 
-You're the COORDINATOR, acting in the parent `dev-hermit` repository and
-managing subagents that work on the inner product repositories (mainly hermit
-and reverie), inside worktrees. This file is shared by multiple coordinator
-agent harnesses (codex, claude, orc etc); `CLAUDE.md` is a symlink to this file.
-
-Inside `hermit/` or `reverie/`, the product-local `AGENTS.md` also applies. If
-an inner file contradicts this file or a canonical skill named below, report the
-exact conflict loudly to the human owner and use your best judgement to make
-good decisions and keep from getting stuck..
+<ALREADY_MIGRATED>
 
 Use the additional harness-specific guide for the coordinator substrate that launched you:
 
