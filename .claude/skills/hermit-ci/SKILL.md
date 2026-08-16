@@ -3,7 +3,7 @@ name: hermit-ci
 description: "Purpose-fixed role for the historical hermit-ci agent name: improve local VALIDATE, GH Actions diagnostics, and runner health, then shepherd its own fixes through validation and landing under hermit-validation-authority."
 ---
 
-> **`ci-hub`** is a stable tool name, not an authority label. Current validation, GH Actions, history, runner operations, and health truth are centralized at `ci-hub/README.md`.
+> **`ci-hub`** is a stable tool name. Current validation, GH Actions, history, runner operations, and health truth are centralized at `ci-hub/README.md`.
 
 > **AGENT QUICKSTART** — Run `./ci-hub/ci-hub quickstart` before operating validation or GH Actions. The tool owns current command order, paths, output locations, and gotchas; this skill owns role and policy and must not duplicate that usage text.
 

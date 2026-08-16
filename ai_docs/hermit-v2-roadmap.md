@@ -5,9 +5,7 @@ Status: consolidated research and execution plan, 2026-07-21
 This document consolidates the Hermit and Reverie research recorded in the
 `dev-hermit` task graph. It describes the product goal, the measured current
 state, the major technical choices, and a dependency-ordered implementation
-plan. Estimates are planning ranges for one experienced engineer unless noted;
-they are not commitments and overlapping workstreams should not be summed into
-a calendar without accounting for parallelism and integration cost.
+plan.
 
 ## Executive summary
 

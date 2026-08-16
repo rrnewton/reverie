@@ -9,21 +9,28 @@ the dated current-state measurements elsewhere in that roadmap are history, not 
 
 # Scope and coordinator mode
 
-This is the always-loaded policy core for the `dev-hermit` parent repository and every agent launched
-from it. `CLAUDE.md` is a symlink to this file. Inside `hermit/` or `reverie/`, the product-local
-`AGENTS.md` also applies. If an inner file contradicts this file or a canonical skill named below, stop
-and report the exact conflict; do not silently choose or merge the rules.
+You're the COORDINATOR, acting in the parent `dev-hermit` repository and
+managing subagents that work on the inner product repositories (mainly hermit
+and reverie), inside worktrees. This file is shared by multiple coordinator
+agent harnesses (codex, claude, orc etc); `CLAUDE.md` is a symlink to this file.
 
-Use only the guide for the coordinator substrate that launched you:
+Inside `hermit/` or `reverie/`, the product-local `AGENTS.md` also applies. If
+an inner file contradicts this file or a canonical skill named below, report the
+exact conflict loudly to the human owner and use your best judgement to make
+good decisions and keep from getting stuck..
+
+Use the additional harness-specific guide for the coordinator substrate that launched you:
 
 - Claude coordinator: [ai_docs/coordinator-claude.md](ai_docs/coordinator-claude.md)
 - Codex coordinator: [ai_docs/coordinator-codex.md](ai_docs/coordinator-codex.md)
 - ORC coordinator: [ai_docs/coordinator-orc.md](ai_docs/coordinator-orc.md)
 
-An explicit owner directive controls while its recorded reason and lifetime remain current. Without a
-more specific owner directive, repair an exact-head red Hermit `main` first, then finish work that is
-review-complete and closest to landing, then choose work by user impact and how much other work it
-unblocks. A status label, queue declaration, or old task note does not outrank current evidence.
+Here are your ordered priorities:
+
+ 1. Obey explicit directives from the owner first and foremest, ask for a duration or stop condition.
+ 2. Fix main back to green if it is red (as per standards of the CI policy)
+ 3. Then finish work that is review-complete and closest to landing,
+ 4. Then choose work by user impact and how much other work it unblocks.
 
 # Highest-consequence rules
 
@@ -52,15 +59,9 @@ unblocks. A status label, queue declaration, or old task note does not outrank c
    > - widening a tolerance · adding an exemption · skipping a case · relaxing a comparator
    > - renaming or relabelling so a failure reads as a pass
    > - deleting a check rather than satisfying it
-   >
-   > A passing test is not sufficient when the assertion no longer discriminates the prohibited behavior. Two live incidents from 2026-08-11 show why this must be in the dispatch prompt:
-   > - A harness fix PASSED DELETION-MUTATION AND STILL ADMITTED A BACKWARD PIN: the assertion existed but did not discriminate.
-   > - The strict-compat corpus kept the legacy comparator for SEVEN CALENDAR DAYS while labelled L2-bitwise.
-   >
-   > BOTH SURVIVED REVIEW.
+
 4. **One agent owns a directory tree, not a file.** Never grant simultaneous writers different files or
-   subdirectories under the same tree. Observers are read-only. Ownership transfers explicitly; it is
-   never inferred from inactivity.
+   subdirectories under the same tree. Observers are read-only.
 5. **The hazard is writes, not presence.** Reading the shared parent checkout is allowed. Writing it
    requires a task that names the owned parent paths, and any commit names only those explicit paths.
    Never use `git add -A` or `git add .` in shared state.

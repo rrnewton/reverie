@@ -1,0 +1,8 @@
+{
+  "default_landed_ref": "refs/remotes/origin/main",
+  "default_remote": "origin",
+  "heartbeat_ttl_seconds": 3600,
+  "machine": "devbig014",
+  "schema": 1,
+  "worktrees_dir": "worktrees"
+}
