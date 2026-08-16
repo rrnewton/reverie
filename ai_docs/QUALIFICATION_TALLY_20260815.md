@@ -36,13 +36,13 @@ different things.
 | subset | scored | result | independently checked by | outcome of the check |
 |---|---:|---|---|---|
 | liteinst+verify 1-20 | 20 | 14 qualified **on the ptrace reference arm**, 6 not-exit-gated | — | **unchecked** |
-| liteinst+verify 21-40 | 20 | 17 qualified, 2 not-exit-gated, 1 message-bearing | **hermit-fixtures** | started, no results |
+| liteinst+verify 21-40 | 20 | 17 qualified, 2 not-exit-gated, 1 message-bearing | **hermit-fixtures**, 26 cells | **1 disagreement — row 27, UNRECONCILED** |
 | liteinst+verify 41-60 | 20 | 14 `QUALIFIED-LITEINST`, 1 ptrace-only, 1 not-qualified, 4 ND | — | **unchecked** |
-| liteinst+verify 61-79 | 19 | **9 `REFUSES-LITEINST`** (rows 61-67, 69, 70) — RELAYED, see below | **hermit-fixtures** | started, no results |
+| liteinst+verify 61-79 | 19 | **9 `REFUSES-LITEINST`** (rows 61-67, 69, 70) — RELAYED, see below | **hermit-fixtures**, in the same 26 | **held** |
 | **ptrace+replay** | 40 | 25 qualified, 6 not-exit-gated, 9 ND | **hermit-sabre**, on the 25 | **6 disagreements — SOFT** |
 | **kvm+verify** | 71 | 20 qualified, 16 not-qualified, 7 not-exit-gated, 28 ND | **hermit-revents**, on 43 | **6 disagreements — SOFT** |
 | native+naked | 73 | accept arm fails 71 of 73 | — | unchecked |
-| dbt+verify | partial | in progress | self re-run | **1 flake found** |
+| dbt+verify | 47 | CLOSED, then **amended after closing** | self re-check | **detector fault found — counts changed** |
 | **sabre+verify** | 29 | 12 pass-refusable, 6 no-exit-gate, 8 accept-fail, 3 indeterminate | **hermit-li2**, all 29 | **HELD — 0 disagreements; 1 verdict STRENGTHENED** |
 
 **CORRECTION to the previous revision of this file, which said the 2 liteinst-enabling verdicts had
@@ -123,6 +123,45 @@ on the re-run. **A stable green it would otherwise have shipped.**
 That cell keeps recurring: it is the row `hermit-teardown` is disqualified from reviewing, kvm2 scored
 it NOT-EXIT-GATED, and sabre+verify has it as pass-refusable. **Three subsets, three readings, and now
 a demonstrated flake.**
+
+## THREE OPEN DISAGREEMENTS — recorded to SURVIVE, not to be reconciled
+
+**These are not defects to close. They are competing readings that must both stay on the record until
+someone adjudicates them.** Collapsing any of them into a single number would destroy the fact that
+two careful agents read the same thing differently.
+
+| disagreement | the competing readings |
+|---|---|
+| **cluster E** | **143 vs 150 vs `hermit-shell`'s independent read** — three values, not two |
+| **six triples** | **330 vs three** |
+| **product total** | a **14-cell difference with devbig014** |
+
+Plus the per-cell one from the liteinst cross-check: **`c-programs/clone`, row 27.** `hermit-fixtures`
+recorded a disagreement with `hermit-sabre`, **did not reconcile**, and said so: *"their reading and
+mine both stand on the record until someone adjudicates."* That is the correct handling and the reason
+this section exists.
+
+**None of the four is netted into any count above.**
+
+## Two more results, both downward
+
+**`hermit-codexrev`: 89 of 89 RED.** A whole population, no survivors.
+
+**`hermit-revents`: 5 disqualified of 9 KVM conversions.** More than half of a conversion batch
+removed on inspection — again the honest direction.
+
+## The dbt slice amended itself AFTER closing, and the caveat is precise
+
+`hermit-dbt` re-examined its own detector when kvm2's ternary correction landed, and found **the
+symbolic blind spot in its own guard picker — worse than the old detector's.** Measured against
+literal strings: `return EXIT_FAILURE;` → not matched; `return violations == 0 ? 0 : 1;` → not
+matched, **and the old detector caught that one.** **14 of its 47 fixtures use `return EXIT_FAILURE`
+as a guard error path.**
+
+**It bounded the blast radius rather than retracting everything:** the regex only chose *which guard
+to invert*; it never decided whether a fixture is exit-gated. **So it cannot have manufactured a
+refusal** — every refusal in its table is a measured non-zero exit. **A closed slice that amends
+itself is the system working.**
 
 ## DO NOT SUM THE "QUALIFIED" COLUMN
 
