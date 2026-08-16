@@ -1,0 +1,16 @@
+cwd-roundtrip                rc=1 ran=True  arg_err=False out='cwd ok=7 moved_dir=/tmp' err=''
+fcntl-owner                  rc=1 ran=True  arg_err=False out='fowner ok=7' err=''
+file-io-roundtrip            rc=1 ran=True  arg_err=False out='fileio wrote=1024 read=1024 checksum=130560 ' err=''
+fork-exec-pipeline           rc=1 ran=True  arg_err=False out='forkexec bytes=16 checksum=1594 exited=1 cod' err=''
+getrusage-self-accounting    rc=1 ran=True  arg_err=True  out='getrusage ok=7' err=''
+host-identity                rc=1 ran=True  arg_err=False out='uname.sysname=Linux\nuname.nodename=hermetic-' err=''
+membarrier-query             rc=1 ran=True  arg_err=False out='memb ok=3 q=31' err=''
+o-tmpfile-anon               rc=1 ran=True  arg_err=False out='otmpfile ok=7' err=''
+personality-domain           rc=1 ran=True  arg_err=False out='pers ok=6 start=0x40000 final=0x40000' err=''
+pipe-capacity                rc=1 ran=True  arg_err=False out='pipecap ok=6' err=''
+record-lock                  rc=1 ran=True  arg_err=False out='reclock ok=7' err=''
+short-io-split-identity      rc=1 ran=True  arg_err=False out='shortio split A=8/7 B=103/102\nshortio ok=7' err=''
+signal-delivery-sequence     rc=1 ran=True  arg_err=False out='signals raised=5 pending=1 coalesced=1 direc' err=''
+
+property produced output: 13 / 13
+argument/usage errors   : 1 / 13

@@ -1,0 +1,16 @@
+41 c-programs/lsm-list-modules-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+42 c-programs/lsm-set-self-attr-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+44 c-programs/map-shadow-stack-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+45 c-programs/memfd-secret-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+46 c-programs/perf-event-hardware-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+47 c-programs/perf-event-open-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+48 c-programs/perf-event-software-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+49 c-programs/perf-event-watchpoint-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+50 c-programs/ppoll-simulation QUALIFIED-PTRACE-ONLY accept_li=1 refuse_li=1 ptrace=0/1
+51 c-programs/process-mrelease-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+54 c-programs/remap-file-pages-anonymous-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+55 c-programs/remap-file-pages-memfd-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+56 c-programs/remap-file-pages-tmpfile-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+57 c-programs/request-key-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1
+58 c-programs/resource-determinism NOT-QUALIFIED accept_li=1 refuse_li=1 ptrace=1/1
+60 c-programs/splice-enosys QUALIFIED-LITEINST accept_li=0 refuse_li=1 ptrace=0/1

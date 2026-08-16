@@ -44,3 +44,18 @@ Recompute over the source with the same exclusion; a mismatch means **re-promote
 `recheck.json`, `recheck2.json` (results), `table.txt` (the per-cell table), `run.log`, `run2.log`,
 `recheck.log`, `recheck2.log`, and `set_tid_address_main.c` — **the origin/main copy of the fixture
 whose staleness flipped row 18 from NOT-EXIT-GATED to QUALIFIED.**
+
+## A silent drop, caught by counting — `.gitignore` excluded the logs
+
+**The first promotion commit landed without the `.log` files.** `.gitignore:94` carries a global
+`*.log`, which applies inside `ai_docs/evidence/` too, so `git add` skipped them without a word and
+the commit reported success. **This provenance file listed them as present, so it was correct about
+the copy and wrong about the tracked tree** — precisely the failure the header exists to prevent,
+committed by the header itself.
+
+Caught by comparing the tracked file count against the copied count, not by reading the commit
+output. They are now force-added, because a run log promoted into a tracked evidence directory is
+evidence, not the runtime output that rule is for.
+
+**Anyone promoting evidence into a tracked path should check the tracked count against the copied
+count.** A gitignore rule written for one purpose applies everywhere, and `git add` does not say so.

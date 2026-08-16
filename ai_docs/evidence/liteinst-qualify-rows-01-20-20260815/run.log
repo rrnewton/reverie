@@ -1,0 +1,20 @@
+ 1/20 backend-parity-c/aio-refusal           NOT-EXIT-GATED
+ 2/20 backend-parity-c/child-subreaper-ref   NOT-EXIT-GATED
+ 3/20 backend-parity-c/cwd-roundtrip         NOT-DETERMINABLE
+ 4/20 backend-parity-c/fcntl-owner           NOT-DETERMINABLE
+ 5/20 backend-parity-c/file-io-roundtrip     QUALIFIED
+ 6/20 backend-parity-c/fork-exec-pipeline    QUALIFIED
+ 7/20 backend-parity-c/getrusage-self-acco   QUALIFIED
+ 8/20 backend-parity-c/host-identity         NOT-DETERMINABLE
+ 9/20 backend-parity-c/mce-kill-refusal      NOT-EXIT-GATED
+10/20 backend-parity-c/membarrier-query      NOT-DETERMINABLE
+11/20 backend-parity-c/name-to-handle-refu   NOT-EXIT-GATED
+12/20 backend-parity-c/o-tmpfile-anon        NOT-DETERMINABLE
+13/20 backend-parity-c/personality-domain    QUALIFIED
+14/20 backend-parity-c/pipe-capacity         NOT-DETERMINABLE
+15/20 backend-parity-c/record-lock           NOT-DETERMINABLE
+16/20 backend-parity-c/seccomp-refusal       NOT-EXIT-GATED
+17/20 backend-parity-c/sendfile-copy         NOT-EXIT-GATED
+18/20 backend-parity-c/set-tid-address       NOT-EXIT-GATED
+19/20 backend-parity-c/short-io-split-iden   NOT-DETERMINABLE
+20/20 backend-parity-c/signal-delivery-seq   QUALIFIED
