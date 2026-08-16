@@ -35,9 +35,9 @@ different things.
 
 | subset | scored | result | independently checked by | outcome of the check |
 |---|---:|---|---|---|
-| liteinst+verify 1-20 | 20 | 14 qualified **on the ptrace reference arm**, 6 not-exit-gated | — | **unchecked** |
+| liteinst+verify 1-20 | 20 | 14 qualified **on the ptrace reference arm**, 6 not-exit-gated | **hermit-codexrev** | dispatched, not started |
 | liteinst+verify 21-40 | 20 | 17 qualified, 2 not-exit-gated, 1 message-bearing | **hermit-fixtures**, 26 cells | **1 disagreement — row 27, UNRECONCILED** |
-| liteinst+verify 41-60 | 20 | 14 `QUALIFIED-LITEINST`, 1 ptrace-only, 1 not-qualified, 4 ND | — | **unchecked** |
+| liteinst+verify 41-60 | 20 | 14 `QUALIFIED-LITEINST`, 1 ptrace-only, 1 not-qualified, 4 ND | **hermit-codexrev** | dispatched, not started |
 | liteinst+verify 61-79 | 19 | **9 `REFUSES-LITEINST`** (rows 61-67, 69, 70) — RELAYED, see below | **hermit-fixtures**, in the same 26 | **held** |
 | **ptrace+replay** | 40 | 25 qualified, 6 not-exit-gated, 9 ND | **hermit-sabre**, on the 25 | **6 disagreements — SOFT** |
 | **kvm+verify** | 71 | 20 qualified, 16 not-qualified, 7 not-exit-gated, 28 ND | **hermit-revents**, on 43 | **6 disagreements — SOFT** |
@@ -123,6 +123,29 @@ on the re-run. **A stable green it would otherwise have shipped.**
 That cell keeps recurring: it is the row `hermit-teardown` is disqualified from reviewing, kvm2 scored
 it NOT-EXIT-GATED, and sabre+verify has it as pass-refusable. **Three subsets, three readings, and now
 a demonstrated flake.**
+
+## Every checked set changed — with one distinction the summary flattens
+
+**No verdict set has come back with nothing to say.** Running total across the checks:
+
+| check | outcome |
+|---|---|
+| ptrace 25 | **6 disagreements** |
+| KVM 43 | **6 disagreements** |
+| KVM conversions | **5 disqualified of 9** |
+| liteinst 26 | **1 disagreement**, unreconciled |
+| — RELAYED, unsourced by me — | **three false `NOT-EXIT-GATED`** |
+| SaBRe 29 | **0 disagreements** — and 1 verdict **strengthened** |
+
+**The distinction worth preserving: SaBRe HELD.** Zero disagreements is not the same result as six,
+and "every set was touched" is true only if you count a *strengthening* as a touch. It was touched in
+the sense that a control was added that codexrev did not have — **the verdict got stronger, not
+weaker.** Recording it in the same row as six disagreements would erase the only clean check of the
+night.
+
+**The last two unchecked sets are now dispatched** — `hermit-codexrev` has liteinst 1-20 and 41-60.
+**No tg task existed for it at this stamp**, so that row records a dispatch rather than a task id, and
+it should be re-read once one exists.
 
 ## THREE OPEN DISAGREEMENTS — recorded to SURVIVE, not to be reconciled
 
