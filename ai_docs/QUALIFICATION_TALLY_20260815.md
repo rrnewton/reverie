@@ -19,7 +19,7 @@ receipt.**
 
 ---
 
-# 1 · FIVE OPEN DISAGREEMENTS — carried unnetted
+# 1 · SEVEN OPEN DISAGREEMENTS — carried unnetted
 
 **These are competing readings, not defects to close.** None is subtracted from any count below.
 Collapsing any of them would destroy the fact that two careful agents read the same thing differently.
@@ -31,6 +31,11 @@ Collapsing any of them would destroy the fact that two careful agents read the s
 | 3 | **product total** | a **14-cell difference** with devbig014 |
 | 4 | **`c-programs/clone`, row 27** | `hermit-fixtures` disagreed with `hermit-sabre`, **did not reconcile**, and said so: *"their reading and mine both stand on the record until someone adjudicates."* |
 | 5 | **CLI-gate exclusion** | **1,344 declarations** (dbt) vs **at most 1,306 cells** (revents) — **DIFFERENT UNITS.** Not subtracted, because *"subtracting a figure I can't reproduce is worse than overlapping."* |
+| 6 | **`backend-parity-c/sendfile-copy` scaffolding-only flag** | `hermit-fixtures` relayed the flag and asked for a check; **`hermit-revents` derived it and REFUTED it** — *"the flag as stated doesn't block it."* **Did not reconcile.** Added 2026-08-16; see §7 |
+| 7 | **what fault produces the `getrusage-self-accounting` flake** | the measuring agent's note says `reverie_process::clone::clone_with_stack::callback`; the owner relay says **`timer.rs:982`, five captures, hermit #1845**, with `clone_with_stack` a SEPARATE fault held by hermit-panic and **an explicit instruction not to merge them.** Added 2026-08-16; see §7 |
+
+**Two disagreements were added on 2026-08-16 and NONE was closed.** The count moved 5 → 7 because
+new readings arrived, not because old ones were adjudicated.
 
 # 2 · ONE RETIRED FIGURE — recorded, not deleted
 
@@ -136,6 +141,13 @@ line 21 is a literal `DONE` sentinel. **A row count taken on faith reports 21.**
 failed all day. It is: **produce a second measurement by a different route and see whether it
 disagrees.**
 
+> **§7 carries the strongest instance of all, and it is not a matcher — it is an ORACLE.** A
+> `(char)i → (char)(i+1)` mutation changes `.text` and leaves a checksum invariant, because over
+> `0..255` it is a permutation. **The instrument that reads the binary says "bites"; the instrument
+> that reads the observable says "nothing happened."** Same rule, one layer down: the second
+> measurement has to come from a different ROUTE, and a different section of the same binary is not
+> a different route.
+
 # 7 · THE LAST LIVE INPUT IS IN — AND IT MADE §5 SMALLER, NOT SURER
 
 **Recorded 2026-08-16, re-derivation PENDING. This section is not settled and must not be read as
@@ -154,11 +166,22 @@ the re-derivation status is read from the owner's relay and from
 | each of the other 19, individually | **≤ 2.95%** | 100 runs per cell, upper bound |
 | the other 19, pooled | **≤ 0.158%** | 1,900 runs |
 
-**Mechanism, and it is not the fixture's fault:** a non-unwinding panic in
-`reverie_process::clone::clone_with_stack::callback`, surfacing as SIGSEGV. The fixture creates no
-child at all — no `fork`, `clone`, `vfork`, `posix_spawn` or `pthread_create` — so the clone is
-Hermit's, in its own container-creation path. **That is a product defect and no task has been opened
-for it.**
+**Mechanism: NOT SETTLED. Two attributions are on record and they name different faults.** Recorded
+unnetted; do not merge them, and note that an instruction not to merge them has been given
+explicitly.
+
+| source | fault named for getrusage's failures | disposition |
+|---|---|---|
+| `bound-the-flake-rate-on-the-20-c4-cells` closeout note | non-unwinding panic in `reverie_process::clone::clone_with_stack::callback`, surfacing as SIGSEGV | the measuring agent's own reading |
+| owner relay, 2026-08-16 | **`timer.rs:982`, five captures** — filed as **hermit #1845** | **`clone_with_stack` is a SEPARATE fault, held by hermit-panic** |
+
+**The counts line up with the second reading** — five captures against 5 failures / 600 runs — but
+**that is agreement in a count, not in a mechanism**, and it is not treated here as settling which
+fault produced the flake. **Whichever it is, it is not the fixture's fault:** the fixture creates no
+child at all — no `fork`, `clone`, `vfork`, `posix_spawn` or `pthread_create`.
+
+**Both faults are now filed** (#1845 for the timer panic; hermit-panic holds the `clone_with_stack`
+SIGSEGV), which supersedes this section's earlier note that no task had been opened.
 
 **A UNIFORM RATE IS EXCLUDED, A SHARED LOWER RATE IS NOT.** If every cell had getrusage's rate,
 P(0 failures across the other 19 cells' 1,900 runs) = 1.2e-07. The author states plainly that the
@@ -180,9 +203,36 @@ non-zero exits are scaffolding books a green no wrong answer can turn red.
 | cell | basis | status |
 |---|---|---|
 | `c-programs/clone` | derived by the author with a discriminating mutant pair: a PROPERTY mutation (the `CLONE_VM` child writes the wrong string through shared memory) is visible in stdout and **still exits 0**; only inverting the scaffolding guard `if (pid == -1)` moves the exit | **derived** |
-| `backend-parity-c/sendfile-copy` | reported by three other agents | **RELAYED — the author explicitly asks that it be checked rather than taken from them** |
+| `backend-parity-c/sendfile-copy` | ~~relayed by three agents, never derived~~ → **DERIVED ONCE AND REFUTED** | **the flag does NOT hold — see below** |
+
+**`sendfile-copy`'s flag was REFUTED, and the refutation is not reconciled.** hermit-revents derived
+it independently and reports: *"on my evidence the plan would not be enabling a cell that cannot
+express failure — the flag as stated doesn't block it."* **It did not reconcile with
+hermit-fixtures**, which relayed the flag and explicitly asked for the check. So the state is
+**derived once and refuted, with the disagreement standing** — not "relayed three times and never
+derived", which is what an earlier reading of this row said. **Both positions are recorded; neither
+is netted into a count.**
 
 **This changes what "+20" buys and it is not netted into any count above.**
+
+## The instrument finding the refutation produced — a permutation defeats a `.text`-keyed proof
+
+**This is the sharpest one in the record and it generalises past this cell.** hermit-revents' first
+ungated mutation was `(char)i → (char)(i+1)`.
+
+- **The `.text` section DIFFERED, so a binary-keyed bite proof PASSED.**
+- **The checksum stayed identical at 32640** — over `0..255` that mutation is a **permutation**, and
+  a **sum is invariant under a permutation**.
+
+In the author's words: *scoring on `.text` alone would have let me report "bites and still exits 0"
+from a mutation that changed nothing observable.* **A binary that differs is not a behaviour that
+differs.** This is the successor to the earlier finding that a whole-binary diff is defeated by the
+ELF build ID: comparing `.text` fixes that one and does **not** fix this one.
+
+**hermit-sabre bounded the damage, and the bound matters as much as the finding.** A `.text`-keyed
+proof gives **SOUND POSITIVES AND UNTRUSTWORTHY NEGATIVES.** It does **not** ungrade every verdict —
+**if the exit status moved, that IS the evidence.** Exposure is confined to the **NOT-EXIT-GATED**
+calls. An earlier reading that it ungraded everything was too broad and is corrected here.
 
 ## The re-derivation that is still pending
 
@@ -214,10 +264,14 @@ reading the instructions rather than the evidence.** That is the same matcher fa
 
 # Provenance, sources, and what is still moving
 
-**Stamp — read 2026-08-16T02:14Z; amended 2026-08-16T02:55Z to add §7.** Note counts at read time,
-because the corpus moves while it is read and that is a property of the task, not something care
-fixes. **The amendment is additive: no figure above was edited, and §7's arrival did not retire
-anything in §1–§6.**
+**Stamp — read 2026-08-16T02:14Z; amended 02:55Z to add §7; amended again 03:05Z.** Note counts at
+read time, because the corpus moves while it is read and that is a property of the task, not
+something care fixes. **The first amendment was additive. The second RETRACTED two things in §7 that
+had been recorded barely ten minutes earlier** — the `sendfile-copy` flag (derived and refuted) and
+"no task has been opened" (both faults now filed) — and **moved §1 from five open disagreements to
+seven.** Nothing in §1–§6 was edited except to add cross-references and the new rows. **A section
+this young needing retraction is the argument for re-reading sources rather than trusting this
+file.**
 
 | task | notes | status |
 |---|---:|---|
