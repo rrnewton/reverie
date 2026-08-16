@@ -110,10 +110,18 @@ The three tokens are chosen so that none is a substring of any other.
 
 | verdict | n | meaning |
 | --- | --- | --- |
-| `REFUSABLE` | 38 | accept arm exits 0 under dbt and a mutation makes dbt exit non-zero |
+| `REFUSABLE` | 38 — **37 stable + 1 unstable** | accept arm exits 0 under dbt and a mutation makes dbt exit non-zero |
 | `PARITYASSERT-BLOCKED` | 1 | both exit arms hold, but the cell's own extra gate cannot pass under dbt |
 | `ACCEPTARM-RED` | 8 | the unmutated fixture already fails under dbt; nothing to qualify |
 | **total** | **47** | |
+
+**The `REFUSABLE` total is 38 or 37 depending on the draw, and it is reported that way
+deliberately.** `backend-parity-c/sendfile-copy` has an unstable accept arm (26 of 27 observed runs
+exit 0; the 27th exits 1). On a run where its accept arm exits 0 it classifies `REFUSABLE`; on the
+observed refusal it classifies `ACCEPTARM-RED`. A flat `38` would assert a stability that was
+measured not to hold. This disagreement was found by re-deriving the counts from the raw per-cell
+capture files rather than from the results JSON — the two routes returned 38/8 and 37/9, and that one
+cell was the whole difference.
 
 `INERT`, `BUILD-FAILED` and `TIMEOUT` are tokens in the same vocabulary and their final
 counts are **zero** — measurements, not absences. Three first-attempt mutants were inert or
