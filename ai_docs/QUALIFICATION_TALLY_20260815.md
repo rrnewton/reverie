@@ -147,7 +147,48 @@ night.
 **No tg task existed for it at this stamp**, so that row records a dispatch rather than a task id, and
 it should be re-read once one exists.
 
-## THREE OPEN DISAGREEMENTS — recorded to SURVIVE, not to be reconciled
+## ONE RETIRED FIGURE — recorded with its provenance, NOT deleted
+
+**`4,750` is retired.** It was quoted as the largest unexplained population and **relayed onward to
+devbig014**, so it is in circulation and must be retired visibly rather than dropped.
+
+**Provenance:** it came from `hermit-revents`' bound — *the CLI gate accounts for at most 1,306 and
+none of the other 4,750.* **Retired by `hermit-dbt`'s independent measurement:** *4,750 isn't
+reconstructible from my counts as a pool containing replay and chaos.*
+
+**A figure that vanishes silently is worse than one carried with a correction** — someone re-derives
+it in a week and nobody knows it was already tested.
+
+### An adjacency the next reader will hit, flagged and NOT adjudicated
+
+`ai_docs/evidence/four-populations-map-20260815/MAP.txt` carries **4,751** — disabled-red scorecard
+cells — and reconciles it three ways: `disabled-red 4751 + enabled-red 455 = red 5206`, and
+`3853 + 213 + 685 = 4751`. **That is one off the retired 4,750.**
+
+**I am not asserting they are the same population.** The map is internally consistent at 4,751 and the
+retired figure is 4,750, and nothing I can read settles whether that is the same set off by one or two
+different sets. **The map cannot adjudicate the other half either — it carries no CLI-gate figure at
+all.** Recorded so a re-derivation starts from the discrepancy rather than rediscovering it.
+
+### Why the overlap was NOT netted, which is the core of it
+
+**RELAYED, `hermit-dbt`:** the CLI-gate exclusion is **1,344 declarations by its measurement** versus
+**at most 1,306 cells** by revents'. **DIFFERENT UNITS — declarations are not cells.** It did not
+subtract, and said why:
+
+> *subtracting a figure I can't reproduce is worse than overlapping.*
+
+**The overlap stays visible.** This is the same discipline as the four open disagreements above: an
+unreconciled overlap that a reader can see beats a clean number that hides a unit mismatch.
+
+### What survives from that slice
+
+- **669 with no mechanism found.**
+- **Three timeout populations, uncharacterised** — and the bound is the agent's own: *I never moved
+  the deadline, so none can be called a hang.* **A timeout at an unchanged deadline is not evidence
+  of a hang**, and none of the three is described as one.
+
+## FIVE OPEN DISAGREEMENTS — recorded to SURVIVE, not to be reconciled
 
 **These are not defects to close. They are competing readings that must both stay on the record until
 someone adjudicates them.** Collapsing any of them into a single number would destroy the fact that
