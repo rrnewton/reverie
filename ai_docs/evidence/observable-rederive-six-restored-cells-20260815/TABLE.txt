@@ -1,0 +1,55 @@
+cell                                       mutation      acc_replay mut_replay acc_verify mut_verify  verdict
+backend-parity-c/aio-refusal               M1-behaviour           0          1          0          1  EXIT-GATED
+backend-parity-c/aio-refusal               M2-oracle              0          1          0          1  EXIT-GATED
+backend-parity-c/child-subreaper-refusal   M1-behaviour           0          1          0          1  EXIT-GATED
+backend-parity-c/child-subreaper-refusal   M2-oracle              0          1          0          1  EXIT-GATED
+backend-parity-c/mce-kill-refusal          M1-behaviour           0          1          0          1  EXIT-GATED
+backend-parity-c/mce-kill-refusal          M2-oracle              0          1          0          1  EXIT-GATED
+backend-parity-c/name-to-handle-refusal    M1-behaviour           0          1          0          1  EXIT-GATED
+backend-parity-c/name-to-handle-refusal    M2-oracle              0          1          0          1  EXIT-GATED
+backend-parity-c/seccomp-refusal           M1-behaviour           0          1          0          1  EXIT-GATED
+backend-parity-c/seccomp-refusal           M2-oracle              0          1          0          1  EXIT-GATED
+backend-parity-c/sysv-ipc-refusal          M1-behaviour           0          1          0          1  EXIT-GATED
+backend-parity-c/sysv-ipc-refusal          M2-oracle              0          1          0          1  EXIT-GATED
+c-programs/clone                           M1-behaviour           0          0          0          0  NOT-EXIT-GATED
+
+OBSERVABLE DELTA (guest stdout+stderr under `hermit run --backend ptrace --strict`)
+backend-parity-c/aio-refusal  M1-behaviour
+    stdout 'aio ok=5\n' (9B) -> '' (0B)
+    stderr 0B -> 56B: 'io_submit returned 1 errno 0 (Success), expected ENOSYS'
+backend-parity-c/aio-refusal  M2-oracle
+    stdout 'aio ok=5\n' (9B) -> '' (0B)
+    stderr 0B -> 74B: 'io_setup returned -1 errno 38 (Function not implemented), expected ENOSYS'
+backend-parity-c/child-subreaper-refusal  M1-behaviour
+    stdout 'subreaper ok=2\n' (15B) -> '' (0B)
+    stderr 0B -> 53B: 'PR_GET_CHILD_SUBREAPER rc=1 errno=0 (want -1/ENOSYS)'
+backend-parity-c/child-subreaper-refusal  M2-oracle
+    stdout 'subreaper ok=2\n' (15B) -> '' (0B)
+    stderr 0B -> 55B: 'PR_SET_CHILD_SUBREAPER rc=-1 errno=38 (want -1/ENOSYS)'
+backend-parity-c/mce-kill-refusal  M1-behaviour
+    stdout 'mcekill ok=2\n' (13B) -> '' (0B)
+    stderr 0B -> 37B: 'PR_MCE_KILL_GET not refused: errno 0'
+backend-parity-c/mce-kill-refusal  M2-oracle
+    stdout 'mcekill ok=2\n' (13B) -> '' (0B)
+    stderr 0B -> 38B: 'PR_MCE_KILL_SET not refused: errno 38'
+backend-parity-c/name-to-handle-refusal  M1-behaviour
+    stdout 'name_to_handle ok=3\n' (20B) -> '' (0B)
+    stderr 0B -> 71B: 'name_to_handle_at(.) returned 3 errno 0 (Success), expected EOPNOTSUPP'
+backend-parity-c/name-to-handle-refusal  M2-oracle
+    stdout 'name_to_handle ok=3\n' (20B) -> '' (0B)
+    stderr 0B -> 89B: 'name_to_handle_at(/) returned -1 errno 95 (Operation not supported), expected EOPNOTSUPP'
+backend-parity-c/seccomp-refusal  M1-behaviour
+    stdout 'seccomp ok=2\n' (13B) -> '' (0B)
+    stderr 0B -> 48B: 'PR_GET_SECCOMP not refused with ENOSYS: errno 0'
+backend-parity-c/seccomp-refusal  M2-oracle
+    stdout 'seccomp ok=2\n' (13B) -> '' (0B)
+    stderr 0B -> 49B: 'seccomp(2) not refused with EOPNOTSUPP: errno 95'
+backend-parity-c/sysv-ipc-refusal  M1-behaviour
+    stdout 'sysvipc ok=3\n' (13B) -> '' (0B)
+    stderr 0B -> 37B: 'msgget rc=3 errno=0 (want -1/ENOSYS)'
+backend-parity-c/sysv-ipc-refusal  M2-oracle
+    stdout 'sysvipc ok=3\n' (13B) -> '' (0B)
+    stderr 0B -> 39B: 'semget rc=-1 errno=38 (want -1/ENOSYS)'
+c-programs/clone  M1-behaviour
+    stdout 'Child exited with status 0, set text to "Hello from child!"\n' (60B) -> 'Child exited with status 0, set text to "CORRUPTED by mutation"\n' (64B)
+    stderr 0B -> 0B: ''

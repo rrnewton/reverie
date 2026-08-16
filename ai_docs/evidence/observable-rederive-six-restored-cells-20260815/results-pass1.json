@@ -1,0 +1,458 @@
+[
+ {
+  "cell": "backend-parity-c/aio-refusal",
+  "program": "tests/backend-parity/fixtures/aio_refusal.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "src_bytes": 2532,
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "aio ok=5\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0,
+    "guest_stdout": "",
+    "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 94 | 94 messages total\nLogs contain 91 | 91 detcore-specific messages\nLogs contain 92 | 92 INFO messages\nLogs contain 82 | 82 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (82 | 82 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+   },
+   "gate_verify": {
+    "rc": 0
+   },
+   "native": {
+    "rc": 1,
+    "stdout": "",
+    "stderr": "io_setup returned 0 errno 0 (Success), expected ENOSYS\n"
+   }
+  },
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "check 3 issues getppid (which Hermit permits) instead of io_submit, so the contracted ENOSYS refusal is not exercised",
+    "anchor": "syscall(SYS_io_submit, (unsigned long)0x1234, 0L, (void *)0)",
+    "replacement": "syscall(SYS_getppid, (unsigned long)0x1234, 0L, (void *)0)",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "io_submit returned 1 errno 0 (Success), expected ENOSYS\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 84 | 84 messages total\nLogs contain 81 | 81 detcore-specific messages\nLogs contain 82 | 82 INFO messages\nLogs contain 72 | 72 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (72 | 72 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "check 1 still issues io_setup but demands EPERM, so the real ENOSYS refusal no longer satisfies the contract",
+    "anchor": "long result = syscall(SYS_io_setup, 128, &ctx);\n  if (result == -1 && errno == ENOSYS)",
+    "replacement": "long result = syscall(SYS_io_setup, 128, &ctx);\n  if (result == -1 && errno == EPERM)",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "io_setup returned -1 errno 38 (Function not implemented), expected ENOSYS\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 84 | 84 messages total\nLogs contain 81 | 81 detcore-specific messages\nLogs contain 82 | 82 INFO messages\nLogs contain 72 | 72 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (72 | 72 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   }
+  ]
+ },
+ {
+  "cell": "backend-parity-c/child-subreaper-refusal",
+  "program": "tests/backend-parity/fixtures/child_subreaper_refusal.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "src_bytes": 1824,
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "subreaper ok=2\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0,
+    "guest_stdout": "",
+    "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 90 | 90 messages total\nLogs contain 87 | 87 detcore-specific messages\nLogs contain 88 | 88 INFO messages\nLogs contain 78 | 78 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (78 | 78 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+   },
+   "gate_verify": {
+    "rc": 0
+   },
+   "native": {
+    "rc": 1,
+    "stdout": "",
+    "stderr": "PR_SET_CHILD_SUBREAPER rc=0 errno=0 (want -1/ENOSYS)\n"
+   }
+  },
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "check 2 issues PR_GET_DUMPABLE (permitted) instead of PR_GET_CHILD_SUBREAPER; `+ (value & 0)` is a no-op that keeps `value` live for -Werror",
+    "anchor": "prctl(PR_GET_CHILD_SUBREAPER, &value, 0, 0, 0)",
+    "replacement": "prctl(PR_GET_DUMPABLE, 0, 0, 0, 0) + (value & 0)",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "PR_GET_CHILD_SUBREAPER rc=1 errno=0 (want -1/ENOSYS)\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 86 | 86 messages total\nLogs contain 83 | 83 detcore-specific messages\nLogs contain 84 | 84 INFO messages\nLogs contain 74 | 74 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (74 | 74 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "check 1 still issues PR_SET_CHILD_SUBREAPER but demands EPERM",
+    "anchor": "int set_rc = prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);\n  if (set_rc == -1 && errno == ENOSYS)",
+    "replacement": "int set_rc = prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);\n  if (set_rc == -1 && errno == EPERM)",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "PR_SET_CHILD_SUBREAPER rc=-1 errno=38 (want -1/ENOSYS)\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 84 | 84 messages total\nLogs contain 81 | 81 detcore-specific messages\nLogs contain 82 | 82 INFO messages\nLogs contain 72 | 72 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (72 | 72 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   }
+  ]
+ },
+ {
+  "cell": "backend-parity-c/mce-kill-refusal",
+  "program": "tests/backend-parity/fixtures/mce_kill_policy.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "src_bytes": 2196,
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "mcekill ok=2\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0,
+    "guest_stdout": "",
+    "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 90 | 90 messages total\nLogs contain 87 | 87 detcore-specific messages\nLogs contain 88 | 88 INFO messages\nLogs contain 78 | 78 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (78 | 78 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+   },
+   "gate_verify": {
+    "rc": 0
+   },
+   "native": {
+    "rc": 1,
+    "stdout": "",
+    "stderr": "PR_MCE_KILL_SET not refused: errno 0\n"
+   }
+  },
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "check 2 issues PR_GET_DUMPABLE (permitted) instead of PR_MCE_KILL_GET",
+    "anchor": "prctl(PR_MCE_KILL_GET, 0, 0, 0, 0)",
+    "replacement": "prctl(PR_GET_DUMPABLE, 0, 0, 0, 0)",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "PR_MCE_KILL_GET not refused: errno 0\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 86 | 86 messages total\nLogs contain 83 | 83 detcore-specific messages\nLogs contain 84 | 84 INFO messages\nLogs contain 74 | 74 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (74 | 74 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "check 1 still issues PR_MCE_KILL/SET but demands EPERM",
+    "anchor": "PR_MCE_KILL_EARLY, 0, 0) == -1 &&\n      errno == ENOSYS",
+    "replacement": "PR_MCE_KILL_EARLY, 0, 0) == -1 &&\n      errno == EPERM",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "PR_MCE_KILL_SET not refused: errno 38\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 84 | 84 messages total\nLogs contain 81 | 81 detcore-specific messages\nLogs contain 82 | 82 INFO messages\nLogs contain 72 | 72 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (72 | 72 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   }
+  ]
+ },
+ {
+  "cell": "backend-parity-c/name-to-handle-refusal",
+  "program": "tests/backend-parity/fixtures/name_to_handle.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "src_bytes": 2540,
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "name_to_handle ok=3\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0,
+    "guest_stdout": "",
+    "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 90 | 90 messages total\nLogs contain 87 | 87 detcore-specific messages\nLogs contain 88 | 88 INFO messages\nLogs contain 78 | 78 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (78 | 78 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+   },
+   "gate_verify": {
+    "rc": 0
+   },
+   "native": {
+    "rc": 1,
+    "stdout": "",
+    "stderr": "name_to_handle_at(/) returned 0 errno 0 (Success), expected EOPNOTSUPP\n"
+   }
+  },
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "check 3 opens the directory (which succeeds) instead of calling name_to_handle_at, so no refusal is exercised",
+    "anchor": "name_to_handle_at(AT_FDCWD, \".\", &storage.handle, &mount_id, 0)",
+    "replacement": "open(\".\", O_RDONLY)",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "name_to_handle_at(.) returned 3 errno 0 (Success), expected EOPNOTSUPP\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 87 | 87 messages total\nLogs contain 84 | 84 detcore-specific messages\nLogs contain 85 | 85 INFO messages\nLogs contain 75 | 75 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (75 | 75 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "check 1 still calls name_to_handle_at but demands EPERM",
+    "anchor": "name_to_handle_at(AT_FDCWD, \"/\", &storage.handle, &mount_id, 0);\n  if (result == -1 && errno == EOPNOTSUPP)",
+    "replacement": "name_to_handle_at(AT_FDCWD, \"/\", &storage.handle, &mount_id, 0);\n  if (result == -1 && errno == EPERM)",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "name_to_handle_at(/) returned -1 errno 95 (Operation not supported), expected EOPNOTSUPP\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 84 | 84 messages total\nLogs contain 81 | 81 detcore-specific messages\nLogs contain 82 | 82 INFO messages\nLogs contain 72 | 72 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (72 | 72 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   }
+  ]
+ },
+ {
+  "cell": "backend-parity-c/seccomp-refusal",
+  "program": "tests/backend-parity/fixtures/seccomp_refusal.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "src_bytes": 2056,
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "seccomp ok=2\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0,
+    "guest_stdout": "",
+    "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 90 | 90 messages total\nLogs contain 87 | 87 detcore-specific messages\nLogs contain 88 | 88 INFO messages\nLogs contain 78 | 78 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (78 | 78 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+   },
+   "gate_verify": {
+    "rc": 0
+   },
+   "native": {
+    "rc": 1,
+    "stdout": "",
+    "stderr": "PR_GET_SECCOMP not refused with ENOSYS: errno 0\n"
+   }
+  },
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "check 1 issues PR_GET_DUMPABLE (permitted) instead of PR_GET_SECCOMP",
+    "anchor": "prctl(PR_GET_SECCOMP, 0, 0, 0, 0)",
+    "replacement": "prctl(PR_GET_DUMPABLE, 0, 0, 0, 0)",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "PR_GET_SECCOMP not refused with ENOSYS: errno 0\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 84 | 84 messages total\nLogs contain 81 | 81 detcore-specific messages\nLogs contain 82 | 82 INFO messages\nLogs contain 72 | 72 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (72 | 72 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "check 2 still issues seccomp(2) but demands EPERM instead of EOPNOTSUPP",
+    "anchor": "errno == EOPNOTSUPP",
+    "replacement": "errno == EPERM",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "seccomp(2) not refused with EOPNOTSUPP: errno 95\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 86 | 86 messages total\nLogs contain 83 | 83 detcore-specific messages\nLogs contain 84 | 84 INFO messages\nLogs contain 74 | 74 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (74 | 74 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   }
+  ]
+ },
+ {
+  "cell": "backend-parity-c/sysv-ipc-refusal",
+  "program": "tests/backend-parity/fixtures/sysv_ipc_refusal.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "src_bytes": 1844,
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "sysvipc ok=3\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0,
+    "guest_stdout": "",
+    "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 92 | 92 messages total\nLogs contain 89 | 89 detcore-specific messages\nLogs contain 90 | 90 INFO messages\nLogs contain 80 | 80 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (80 | 80 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+   },
+   "gate_verify": {
+    "rc": 0
+   },
+   "native": {
+    "rc": 1,
+    "stdout": "",
+    "stderr": "semget rc=14 errno=0 (want -1/ENOSYS)\n"
+   }
+  },
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "check 3 observes a successful-looking descriptor instead of the refused msgget return",
+    "anchor": "int msg = msgget(IPC_PRIVATE, IPC_CREAT | 0600);",
+    "replacement": "int msg = 3;",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "msgget rc=3 errno=0 (want -1/ENOSYS)\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 86 | 86 messages total\nLogs contain 83 | 83 detcore-specific messages\nLogs contain 84 | 84 INFO messages\nLogs contain 74 | 74 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (74 | 74 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   },
+   {
+    "label": "M2-oracle",
+    "family": "oracle",
+    "note": "check 1 still issues semget but demands EPERM",
+    "anchor": "int sem = semget(IPC_PRIVATE, 1, IPC_CREAT | 0600);\n  if (sem == -1 && errno == ENOSYS)",
+    "replacement": "int sem = semget(IPC_PRIVATE, 1, IPC_CREAT | 0600);\n  if (sem == -1 && errno == EPERM)",
+    "observable": {
+     "rc": 1,
+     "stdout": "",
+     "stderr": "semget rc=-1 errno=38 (want -1/ENOSYS)\n"
+    },
+    "gate_replay": {
+     "rc": 1,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 84 | 84 messages total\nLogs contain 81 | 81 detcore-specific messages\nLogs contain 82 | 82 INFO messages\nLogs contain 72 | 72 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (72 | 72 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 1
+    }
+   }
+  ]
+ },
+ {
+  "cell": "c-programs/clone",
+  "program": "tests/c/clone.c",
+  "blob_sha": "302a1a9c0fde564db0292d1ea5cabc91343e79bc",
+  "src_bytes": 1266,
+  "accept": {
+   "observable": {
+    "rc": 0,
+    "stdout": "Child exited with status 0, set text to \"Hello from child!\"\n",
+    "stderr": ""
+   },
+   "gate_replay": {
+    "rc": 0,
+    "guest_stdout": "",
+    "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 102 | 102 messages total\nLogs contain 98 | 98 detcore-specific messages\nLogs contain 100 | 100 INFO messages\nLogs contain 86 | 86 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (86 | 86 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+   },
+   "gate_verify": {
+    "rc": 0
+   },
+   "native": {
+    "rc": 0,
+    "stdout": "Child exited with status 0, set text to \"Hello from child!\"\n",
+    "stderr": ""
+   }
+  },
+  "mutants": [
+   {
+    "label": "M1-behaviour",
+    "family": "behaviour",
+    "note": "the CLONE_VM child writes a different string through the shared address space",
+    "anchor": "\"Hello from child!\"",
+    "replacement": "\"CORRUPTED by mutation\"",
+    "observable": {
+     "rc": 0,
+     "stdout": "Child exited with status 0, set text to \"CORRUPTED by mutation\"\n",
+     "stderr": ""
+    },
+    "gate_replay": {
+     "rc": 0,
+     "guest_stdout": "",
+     "guest_stderr": ":: Recording...\n:: Replaying...\n:: Comparing captured verification logs...\nLogs contain 102 | 102 messages total\nLogs contain 98 | 98 detcore-specific messages\nLogs contain 100 | 100 INFO messages\nLogs contain 86 | 86 DETLOG & scheduler COMMIT messages\nNormalizing known nondeterministic numerical data before comparison...\n  Comparing DETLOG messages...\nDone processing logs, no substantive differences found (86 | 86 DETLOG messages compared).\n:: Success: replay matched recording.\n"
+    },
+    "gate_verify": {
+     "rc": 0
+    }
+   }
+  ]
+ }
+]
