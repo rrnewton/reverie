@@ -28,8 +28,10 @@ Maintained by `hermit-coord`. **Read from task notes; nothing here was re-scored
 
 ## Results, with **who checked what** — an unchecked verdict and a checked one are not the same
 
-**This column is the point.** A verdict nobody has re-derived and one that survived an independent
-run should never look alike in a tally.
+**This column is the point, and it now has FOUR states rather than two:** *unchecked* ·
+*checked-and-disagreed* · *checked-and-held* · *checked-and-strengthened-with-a-control*. A verdict
+nobody has re-derived, one that survived a check, and one a check made **stronger** are three
+different things.
 
 | subset | scored | result | independently checked by | outcome of the check |
 |---|---:|---|---|---|
@@ -41,7 +43,7 @@ run should never look alike in a tally.
 | **kvm+verify** | 71 | 20 qualified, 16 not-qualified, 7 not-exit-gated, 28 ND | **hermit-revents**, on 43 | **6 disagreements — SOFT** |
 | native+naked | 73 | accept arm fails 71 of 73 | — | unchecked |
 | dbt+verify | partial | in progress | self re-run | **1 flake found** |
-| **sabre+verify** | 29 | 12 pass-refusable, 6 no-exit-gate, 8 accept-fail, 3 indeterminate | **hermit-li2**, on the 12 | **in progress** |
+| **sabre+verify** | 29 | 12 pass-refusable, 6 no-exit-gate, 8 accept-fail, 3 indeterminate | **hermit-li2**, all 29 | **HELD — 0 disagreements; 1 verdict STRENGTHENED** |
 
 **CORRECTION to the previous revision of this file, which said the 2 liteinst-enabling verdicts had
 no check at all.** They do. `hermit-fixtures` holds `cross-verify-the-liteinst-qualified-verdicts`,
@@ -79,6 +81,38 @@ reassignment and carry no result. **RELAYED, not read from the producing task.**
 3. **The affected sets are marked SOFT, not revised.** `hermit-kvm2` is sweeping the ptrace 25 and
    `revents` the remaining 37 KVM cells for the shared shape. **The corrected figures come after
    those sweeps, not now.**
+
+## The SaBRe 29 HELD — the first set tonight to survive an independent check
+
+**`hermit-li2` cross-verified `hermit-codexrev`'s 29 and found ZERO disagreements**, against 6 each in
+the ptrace 25 and the KVM 43. Recorded as its own state because a set that holds and a set nobody has
+looked at are not the same evidence.
+
+**One verdict was STRENGTHENED rather than confirmed.** The `clone` cell timed out for both agents —
+but **codexrev had no control, which cannot separate a cell property from a busy host.** li2 ran **a
+ptrace control on the same binary at the same moment: rc=0.** So the hang is **SaBRe-specific**, which
+is a stronger claim than the original verdict made.
+
+**It stated its prior and reported against it.** li2 **expected the verdict to break**, having
+overturned five inherited timeout verdicts an hour earlier, and reported that it did not. A negative
+from someone who expected a positive is worth more than one from someone who expected nothing.
+
+**Arithmetic checked two ways, neither of them file order.** The 37→29 reduction was re-derived
+against codexrev's **independently written class lists** — zero disagreements — and the four lists
+**partition the population with an empty set difference in both directions**.
+
+**MEASURED HERE, third route:** the four class lists hold **29 cells, 29 distinct, 0 duplicates
+across classes**, and set-difference against the queue's own `sabre`/`verify` population is **empty in
+both directions**. `12+3+8+6 = 29` closes.
+
+### The bound li2 put on its own result, which belongs beside the number
+
+> **21 of the 29 rest on a structural argument and bookkeeping, not on execution — 16 of 29 by the
+> structural route.**
+
+**A CONFIRMED SET IS NOT A FULLY-EXECUTED SET.** "Held under independent check" and "ran end to end"
+are different claims, and this set is the first and not the second. The two figures — 21 non-executed,
+of which 16 structural — are kept distinct rather than collapsed into one.
 
 ## Also downward: a reproducibility re-run caught a flake
 
