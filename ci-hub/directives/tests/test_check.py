@@ -111,6 +111,15 @@ def directive(
 
 
 class DirectiveCheckTest(unittest.TestCase):
+    def _item(self, report, directive_id):
+        return next(i for i in report.directives if i.id == directive_id)
+
+    def state_of(self, report, directive_id):
+        return self._item(report, directive_id).state
+
+    def reason_of(self, report, directive_id):
+        return self._item(report, directive_id).reason or ""
+
     def evaluate(self, directives):
         tasks = {item["task"] for item in directives if item.get("task")}
         runner = FakeRunner(tasks)
@@ -123,6 +132,59 @@ class DirectiveCheckTest(unittest.TestCase):
                 checked_at="2026-08-04T00:00:00+00:00",
             )
         return report, runner
+
+    # --- the third state: waiting on a named external condition ---------------
+    #
+    # BOTH DIRECTIONS. A merely-gated ledger must render the new state; a ledger
+    # with any real drift must still render red. Each test first asserts the
+    # per-item state, so a pass cannot come from the fixture failing to plant
+    # what it claims -- a refusing test that passes because nothing changed is
+    # indistinguishable from one that works.
+
+    def test_only_gated_rows_render_gated_not_red(self):
+        directives = [
+            directive("landed", identity="a" * 40),
+            directive("waiting", identity=None, gate="the PR queue has drained"),
+        ]
+        report, _ = self.evaluate(directives)
+        # the mutation took effect: the row really is gated, and names its condition
+        self.assertEqual("gated", self.state_of(report, "waiting"))
+        self.assertIn("the PR queue has drained", self.reason_of(report, "waiting"))
+        self.assertEqual("satisfied", self.state_of(report, "landed"))
+        # and the report separates it from drift
+        self.assertEqual("gated", report.overall_state)
+        self.assertEqual(0, len([i for i in report.directives
+                                 if i.state in directive_check.DRIFT_STATES]))
+
+    def test_gated_does_not_become_a_pass(self):
+        # The relabelling must not silence the gate: exit stays non-zero and the
+        # state is not green. This is the assertion that stops the repair from
+        # turning into the bar-lowering it exists to avoid.
+        directives = [directive("waiting", identity=None, gate="owner decision")]
+        report, _ = self.evaluate(directives)
+        self.assertEqual("gated", report.overall_state)
+        self.assertNotEqual("green", report.overall_state)
+        self.assertEqual(1, report.exit_code)
+
+    def test_real_drift_alongside_a_gate_still_renders_red(self):
+        # The discriminator that matters: one genuinely unsatisfied row must pull
+        # the whole report back to red even when everything else is gated.
+        directives = [
+            directive("waiting", identity=None, gate="owner decision"),
+            directive("drifted", identity="b" * 40),
+        ]
+        report, runner = self.evaluate(directives)
+        runner  # the fake resolves "drifted" as a non-ancestor
+        self.assertEqual("gated", self.state_of(report, "waiting"))
+        self.assertNotEqual("satisfied", self.state_of(report, "drifted"))
+        self.assertEqual("red", report.overall_state)
+        self.assertEqual(1, report.exit_code)
+
+    def test_all_satisfied_is_still_green(self):
+        # Untouched control: adding a state must not move the clean case.
+        report, _ = self.evaluate([directive("landed", identity="a" * 40)])
+        self.assertEqual("green", report.overall_state)
+        self.assertEqual(0, report.exit_code)
 
     def test_planted_nonancestor_is_refused_and_three_landed_stay_satisfied(self):
         directives = [

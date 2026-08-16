@@ -659,6 +659,27 @@ def evaluate(
         overall_state, exit_code = "unknown", 2
     elif all(item.state == "satisfied" for item in results):
         overall_state, exit_code = "green", 0
+    elif all(item.state in {"satisfied", "gated"} for item in results):
+        # WAITING ON A NAMED EXTERNAL CONDITION, WHICH IS NOT DRIFT.
+        #
+        # Every unsatisfied row here is `gated`, and a gate is only reachable
+        # after `unnamed_gate` has already rejected an empty one as invalid
+        # metadata (see the check above `return issues`), so each of these rows
+        # NAMES the condition it waits on. Nobody is failing to advance them;
+        # they are deferred on something outside this checker's control.
+        #
+        # Reported separately for the same reason `unverifiable`/`fetch_failed`
+        # are kept out of DRIFT_STATES: "the work regressed" and "the work is
+        # deliberately waiting" need OPPOSITE responses, so they must not share
+        # a bucket. Collapsing them made this gate render `red` while its own
+        # summary said `drift=0 open=0 needs_owner=0`, on every tick for hours --
+        # and a gate that is permanently red trains every reader to skip it.
+        #
+        # THE EXIT CODE IS DELIBERATELY UNCHANGED AT 1. This is a relabelling of
+        # a state that already refused, not a new pass: the obligation really is
+        # outstanding. Turning it green would silence a consumer this change
+        # cannot see, which is the failure the relabelling exists to prevent.
+        overall_state, exit_code = "gated", 1
     else:
         overall_state, exit_code = "red", 1
     return Report(
