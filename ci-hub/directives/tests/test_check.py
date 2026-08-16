@@ -226,7 +226,20 @@ class DirectiveCheckTest(unittest.TestCase):
         self.assertEqual("fetch_failed", broke.ancestry)
         self.assertNotEqual("not_checked", broke.ancestry)
         self.assertIn("fetch failed", broke.reason)
-        self.assertIn(broke.state, directive_check.DRIFT_STATES)
+        # `fetch_failed` is a no-result state, NOT drift: the checker could not
+        # look, which is not the same as the work having regressed. This pair of
+        # assertions was `assertIn(broke.state, DRIFT_STATES)` when written on
+        # 2026-08-04 (2b3248e7), and that was TRUE THEN -- `fetch_failed` was a
+        # member of DRIFT_STATES. 7af17d80 on 2026-08-09 ("an unfinished check is
+        # unverifiable, never drift") removed it from DRIFT_STATES without
+        # updating this line, 62f99796 on 2026-08-12 corrected the line to
+        # NO_RESULT_STATES, and a3adf1fe on 2026-08-13 reverted that correction
+        # while removing unrelated unactivated coordinator infrastructure.
+        # BOTH DIRECTIONS ARE ASSERTED because membership in one tuple does not
+        # exclude the other: the 2026-08-09 defect was a state being counted as
+        # drift, and only the negative assertion discriminates that.
+        self.assertIn(broke.state, directive_check.NO_RESULT_STATES)
+        self.assertNotIn(broke.state, directive_check.DRIFT_STATES)
         # Never green, and unknown (exit 2) rather than a confirmed not_landed red.
         self.assertEqual("unknown", report.overall_state)
         self.assertEqual(2, report.exit_code)
