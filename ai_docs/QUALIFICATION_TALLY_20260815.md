@@ -1,122 +1,134 @@
 # Running qualification tally — 380 rows, six subsets
 
 Maintained by `hermit-coord`. **Read from task notes; nothing here was re-scored by me.** Every
-number is attributed to the agent that produced it.
+number is attributed to the agent that produced it. **Re-promoted wholesale, not patched.**
 
 ## What "qualified" means here — say this with every figure
 
 > **Qualification is EXIT-STATUS REFUSABILITY UNDER THE STRIPPED COMPARATOR — `parity=false` on
 > every accept arm — NOT PARITY AND NOT L2.**
 
-`hermit-revents`' wording, adopted verbatim across all slices. A bare "QUALIFIED" invites the reader
-to assume bitwise parity, and **no subset is measuring that.** None of these runs is a validate
-profile and **nothing here is a qualifying receipt.**
+`hermit-revents`' wording, adopted verbatim across all slices. No subset is measuring bitwise
+parity. **Nothing here is a qualifying receipt.**
 
 ## Stamp — what this reading saw
 
-**Read 2026-08-16T00:12Z.** Note counts at read time, because the corpus moves while it is being
-read and that is not fixable by care:
+**Read 2026-08-16T00:27Z.** Note counts and status at read time, because the corpus moves while it
+is being read and that is a property of the task, not something care fixes.
 
-| subset task | notes read |
-|---|---|
-| `qualify-queue-rows-01-20` | 5 |
-| `qualify-queue-rows-21-40` | 2 |
-| `qualify-queue-rows-41-60` | 4 |
-| `qualify-queue-rows-61-79` | 2 |
-| `qualify-ptrace-replay-81` | 0 |
-| `qualify-native-naked-73` | 0 |
-| `qualify-kvm-verify-71` | 0 |
-| `qualify-dbt-verify-47` | 1 |
-| `qualify-sabre-verify-29` | 2 |
+| subset task | notes | status |
+|---|---:|---|
+| `qualify-queue-rows-01-20` | 6 | CLOSED |
+| `qualify-queue-rows-21-40` | 2 | in progress |
+| `qualify-queue-rows-41-60` | 4 | in progress |
+| `qualify-queue-rows-61-79` | 2 | in progress — **reassigned to `hermit-li2`**, `hermit-liteinst` hit 100% context |
+| `qualify-ptrace-replay-81` | 4 | in progress |
+| `qualify-native-naked-73` | 1 | CLOSED |
+| `qualify-kvm-verify-71` | 3 | CLOSED |
+| `qualify-dbt-verify-47` | 4 | in progress |
+| `qualify-sabre-verify-29` | 11 | in progress |
 
-## Population — MEASURED HERE from the queue, not taken
+## Population — MEASURED HERE from the queue
 
-Recounted from `ai_docs/QUALIFIABLE_FIXTURE_QUEUE_20260815.tsv`:
+| subset | rows | owner | scored |
+|---|---:|---|---:|
+| liteinst + verify | 79 | kvm2 · sabre · revents · **li2** | 60 |
+| ptrace + replay | 81 | hermit-shell | 40 |
+| native + naked | 73 | hermit-sabre | 73 |
+| kvm + verify | 71 | hermit-kvm2 | 71 |
+| dbt + verify | 47 | hermit-dbt | 0 |
+| sabre + verify | 29 | hermit-codexrev | 0 |
+| **TOTAL** | **380** | | **244 (64%)** |
 
-| subset | rows | owner | state |
-|---|---:|---|---|
-| liteinst + verify | **79** | kvm2 1-20 · sabre 21-40 · revents 41-60 · liteinst 61-79 | 54 of 79 scored |
-| ptrace + replay | **81** | hermit-shell | no notes |
-| native + naked | **73** | hermit-sabre | no notes |
-| kvm + verify | **71** | hermit-kvm2 | no notes |
-| dbt + verify | **47** | hermit-dbt | claimed; backend probe first |
-| sabre + verify | **29** | hermit-codexrev | backend runnability established; 0 cells scored |
-| **TOTAL** | **380** | | **54 of 380 scored (14%)** |
+## Results by subset — **backend named, never summed across backends**
 
-## liteinst + verify (79) — the only subset with verdicts
+### liteinst + verify (79) — 60 scored
 
-**Backend is named on every verdict, by three different encodings.** They do not aggregate; see the
-warning below.
+| slice | result | backend measured |
+|---|---|---|
+| kvm2 1-20 | 14 qualified **on the ptrace reference arm**; 6 not-exit-gated | **liteinst 0 of 20 — runtime unavailable** |
+| sabre 21-40 | 17 qualified; 2 not-exit-gated; 1 message-bearing | ptrace **and** liteinst — **3 accept on ptrace, FAIL on liteinst** |
+| revents 41-60 | 14 `QUALIFIED-LITEINST`; 1 `QUALIFIED-PTRACE-ONLY`; 1 `NOT-QUALIFIED`; 4 ND | ptrace and liteinst |
+| li2 61-79 | 0 of 19 | none yet |
 
-| slice | rows | result | backend measured |
-|---|---:|---|---|
-| kvm2 1-20 | 20 | **14** qualified on the **ptrace reference arm**; **6** not-exit-gated on ptrace; 0 not-determinable | **liteinst 0 of 20 — runtime unavailable on its binary** |
-| sabre 21-40 | 20 | **17** qualified; **2** not-exit-gated; **1** message-bearing | ptrace **and** liteinst; **3 accept under ptrace and FAIL under liteinst** (rows 21, 27, 30) |
-| revents 41-60 | 20 | **14** `QUALIFIED-LITEINST`; **1** `QUALIFIED-PTRACE-ONLY` (row 50); **1** `NOT-QUALIFIED` (row 58); 4 not-determinable | ptrace and liteinst |
-| liteinst 61-79 | 19 | **0** — runtime build interrupted at exit 130 | none |
+**`-524` structurally bars 21 of the 79.** kvm2's 14 → **12 eligible**; revents' row 50 ptrace-only;
+row 58 barred *and* failing accept on ptrace — three distinct classes. **Eligible is not qualified.**
 
-### Capability-blocked, kept separate from every other class
+### ptrace + replay (81) — 40 scored, RELAYED from hermit-shell
 
-- **kvm2:** of its 14, **2 are structurally barred for liteinst by `-524`** (`fork-exec-pipeline`,
-  `short-io-split-identity`). **14 → 12 eligible. A falling count, and the honest direction** —
-  nothing moved into qualified to compensate. Its ptrace verdicts for those two remain true; the
-  cells are re-scoped, not retracted.
-- **revents row 50** (`ppoll-simulation`): qualified on the ptrace reference **only**, structurally
-  barred on liteinst by `-524 ENOTSUPP`.
-- **revents row 58:** barred on liteinst **and** accept fails on ptrace — a distinct class again.
-- **`-524` structurally bars 21 of the 79.** **ELIGIBLE IS NOT QUALIFIED.**
+**QUALIFIED 25 · NOT-EXIT-GATED 6 · NOT-DETERMINABLE 9 = 40.** Counted by **exact equality on the
+classification field**. **These 25 are ptrace. The queue exists for liteinst.**
 
-### Verdict classes are NOT collapsed
+### kvm + verify (71) — 71 of 71 scored, CLOSED
 
-`QUALIFIED` · `NOT-DETERMINABLE` · **capability-blocked** · **accept-only-outstanding** are distinct,
-and within not-determinable the slices further distinguish *timeout with a passing accept arm* from
-*the mutation family did not apply*. **Merging any of these destroys the information.**
+**QUALIFIED 20 · NOT-QUALIFIED 16 · NOT-EXIT-GATED 7 · NOT-DETERMINABLE 28 = 71.** Backend KVM, both
+arms. Verdict read from exit status, not `--verify-json` — weaker than revents' JSON read, and named
+rather than glossed.
+
+**23 of the 28 NOT-DETERMINABLE are OPERATOR-SIDE:** the enosys/guard mutation patterns did not match
+those fixtures' shape, **so no mutant existed and no refuse arm was possible.**
+
+> **UNSCORED IS NOT UNQUALIFIABLE.** This distinction is load-bearing and must not be collapsed. A
+> second-family task exists to convert them.
+
+**A correction to a figure in circulation:** *22 of 24 operator-side* is the **interim 63-row**
+number. The final, superseding count is **23 of 28**.
+
+**kvm2 measured the substring hazard directly: counting `QUALIFIED` by substring gives 36 against a
+true 20 — an 80% overstatement, because `NOT-QUALIFIED` (16) nests the string.** Count by exact
+match on the verdict token.
+
+### native + naked (73) — 73 scored, CLOSED, and the mode is on a different channel
+
+**The accept arm fails for 71 of 73, for two OPPOSITE reasons.** `naked` is not an exit-status
+oracle: per `ci/test_harness.sh:3570-3602` it is a conjunction — every native run must exit 0 **and**
+the runs must produce ≥2 distinct output hashes. Its oracle is **native nondeterminism**.
+
+- **50 of 73** were admitted to the queue *because they exit non-zero natively* — precisely what
+  `failed_runs > 0` fails on. **The property that qualified them for the queue disqualifies them in
+  this mode.** Not a defect in either artifact.
+- **21 of the remaining 23** are natively deterministic → fail the `min_distinct ≥ 2` conjunct.
+- **2 pass both conjuncts** (3 distinct outcomes each). Whole sub-population measured, 0 unmeasurable.
+
+**Not fixable by fixture gating:** naked wants nondeterminism, and these are determinism witnesses
+built to be deterministic. Gating them harder makes them worse candidates.
+
+### dbt + verify (47) and sabre + verify (29) — 0 scored
+
+dbt: backend probe first. codexrev: runnability established; cells 22/23/25 **unscored** pending a
+rerun with ptrace-calibrated `guest_args` (a manifest-calibration gap, not a cell property); cell 21
+timeout and cell 24 accept failure retained separately.
+
+## Fixture repair — RELAYED from hermit-fixtures, a different axis from qualification
+
+**16 fixtures made exit-gated, each at 80 runs with zero variation.** **Nine deliberately left
+ungated and named:** `cachestat-refusal`, `fallocate-extents`, `kcmp-refusal`, `mempolicy-default`,
+`mknod-special`, `no-new-privs-refusal`, `openat2-refusal`, `readdir-entries`,
+`statfs-free-determinism` — **because gating at a merely-observed number would make them flaky, and
+flaky is worse than unable to fail.**
 
 ## DO NOT SUM THE "QUALIFIED" COLUMN
 
-Three encodings for one fact, and one is substring-hostile:
+Verdict classes are distinct and must not be collapsed: **QUALIFIED · NOT-DETERMINABLE ·
+capability-blocked · accept-only-outstanding · unscored-operator-side**.
 
-- kvm2 — a governing `PROFILE` line per note (*"on the PTRACE backend. NOT liteinst"*)
-- sabre — per-row `pt=` / `li=` columns
-- revents — the backend in the **verdict name**: `QUALIFIED-LITEINST` vs `QUALIFIED-PTRACE-ONLY`
+Encodings differ per slice — a governing `PROFILE` line (kvm2), per-row `pt=`/`li=` columns (sabre),
+the backend in the verdict name (revents). **`QUALIFIED-PTRACE-ONLY` and `NOT-QUALIFIED` both contain
+`QUALIFIED`**, and kvm2 measured what that costs: **36 against a true 20.** Key on each slice's own
+encoding, by exact match.
 
-**`QUALIFIED-PTRACE-ONLY` and `NOT-QUALIFIED` both contain the string `QUALIFIED`.** Any total
-matching on that string counts a ptrace-only row and a not-qualified row as qualified. Key on each
-slice's own encoding.
+## Provenance of this file — and the failure it is most exposed to
 
-## Invocations differ across subsets — state yours
+**An existence check cannot see a file that was never written.** Promoting the two evidence
+directories earlier today, I copied 12 files and **9 landed tracked**; 187 and **186**. A global
+`*.log` in `.gitignore` applied inside `ai_docs/evidence/` and `git add` skipped five files **without
+a word**. The commit succeeded, ancestry verified, and read-back matched on every file that was
+there — **every check passed, because they all asked about files that existed. Only the count
+disagreed.**
 
-| agent | invocation |
-|---|---|
-| revents | `hermit run --strict --verify --verify-json` per `ci/test_harness.sh:3467` — the harness's actual cell command |
-| kvm2 | `hermit run --strict --verify`, ptrace backend |
-| sabre (21-40) | `hermit run --strict` — **no `--verify`** |
-| codexrev (sabre+verify) | portable-only flags, focused SaBRe verify probe |
+**This tally is exactly the kind of artifact that failure produces silently:** a total that looks
+complete because everything it lists is real. **Check the tracked count against the intended count**,
+and treat any figure here as provisional against the note counts in the stamp above.
 
-All measure exit-status refusability and each says so; only revents' arm is the command the cell
-will actually face.
-
-## Misclassification modes checked, where stated
-
-**Five are now known — the fifth was found by sabre after the brief named four.**
-
-| mode | who checked / found it |
-|---|---|
-| refuse arm without an accept arm | kvm2 (all 20 accept arms passed) · sabre (rows 23/36/39 caught by it) |
-| ran natively / without `--strict` | sabre correction A · revents, before filing |
-| stale fixture reads as cannot-fail | kvm2 (found it, row 18) · revents (**graded negative**: all 20 byte-identical to main) · sabre (structurally excluded — reads fixtures via `git show origin/main:`) |
-| usage line matched as a cell defect | kvm2 (`usage` inside `getRUSAGE`) · sabre (matched stdout while the line goes to **stderr**) |
-| **mutation breaks the argument contract, not the property** | **sabre — the fifth mode.** Rows 36/39 gave clean-looking exit-2 refusals while the property never ran. Only appears on argument-taking cells. |
-| per-cell `build.cflags` omitted | kvm2 (8 false "will not compile" → 0) · revents (2 rows need `-pthread`) · sabre (5 rows affected) |
-
-## Durability — where the evidence actually lives
-
-**`revents`' artifacts are in gitignored `ignored/liteinst-qualify-20260815/`.** That survives context
-loss and **not host loss**, and devbig014 cannot read it. Same for `kvm2`'s `ignored/kvm2-q0120/`.
-**Promotion should be scheduled rather than discovered.**
-
-## Sources are still being written
-
-Every slice above except kvm2's is `IN_PROGRESS`, and kvm2's amended its closed slice after closing.
-**This file is a snapshot at the stamp above, not a live mirror.** Re-read the notes rather than
-trusting this total, and re-promote wholesale rather than patching it.
+**Sources are still being written.** Four subsets are in progress and two closed slices were amended
+after closing. Re-read the notes; re-promote wholesale rather than patching.
