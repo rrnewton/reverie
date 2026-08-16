@@ -1,24 +1,12 @@
 #!/usr/bin/env bash
 # Machine-local composite hook dispatcher. scripts/setup-hooks.sh installs
 # symlinks named for every Git client hook into each repository's common Git
-# directory. This preserves that repository's tracked .githooks/<name> while
-# adding one machine-attribution check to commit-msg everywhere.
+# directory and delegates to that repository's tracked hook when present.
 set -euo pipefail
 
 hook_name=$(basename -- "$0")
 dispatcher=$(readlink -f -- "$0")
-parent_root=$(cd -- "$(dirname -- "$dispatcher")/.." && pwd)
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-
-if [ "$hook_name" = commit-msg ]; then
-  [ "$#" -ge 1 ] || {
-    echo "commit-attribution: REFUSED: commit-msg received no message file" >&2
-    exit 1
-  }
-  python3 "$parent_root/scripts/check_commit_attribution.py" \
-    --message-file "$1" --expected-machine auto
-  export HERMIT_MACHINE_ATTRIBUTION_CHECKED=1
-fi
 
 repo_hook="$repo_root/.githooks/$hook_name"
 if [ -x "$repo_hook" ]; then

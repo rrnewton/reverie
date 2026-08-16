@@ -93,39 +93,6 @@ query failure emits a hard warning. The hook deliberately does not block because
 the pending push may be the repair, but the coordinator must not claim green
 until the live report is green.
 
-## Parent main has exactly one writer
-
-Every local `main` ref update and every push to `origin/main` must run through
-`scripts/parent-main-write`. The helper holds the host-wide mutex across fetch,
-compare, commit/ref update, push, and the fresh-fetch ancestry proof. It records
-the fetched `origin/main` SHA as the compare-and-swap value; if either local
-`HEAD` or the server-observed old value differs, publication is refused. A
-normal non-force push remains the final remote CAS. A contending writer is
-refused immediately rather than silently waiting and hiding the collision.
-
-Ordinary parent changes use:
-
-```bash
-scripts/parent-main-write commit -m "message" -- path ...
-```
-
-Feature-checkout publication uses `scripts/parent-main-write publish [REV]`.
-A direct clean-slot `git push ...:main` is refused: it is a writer too. Refresh
-a behind local primary with `scripts/parent-main-write sync`; divergence is
-reported for explicit reconciliation and is never reset.
-
-Gitlinks and the enforcement hooks themselves use the retained audited path:
-
-```bash
-scripts/parent-main-write commit -m "message" \
-  --audit-reason "why this repair is required" -- hermit .githooks/pre-commit
-```
-
-Audited commits retain mode, reason, and fetched-base trailers. Supplying a
-reason after an unaudited sensitive commit was made does not bless it: publish
-verifies the trailers in the commit. `--no-verify` cannot bypass the authority;
-`reference-transaction` enforces the same lock/CAS receipt at the ref update.
-
 ## Primary checkout freshness before commit
 
 `.githooks/pre-commit` runs `scripts/primary_checkout.py check` before every

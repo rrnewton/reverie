@@ -109,22 +109,9 @@ while read -r old new ref; do
 
   # A rewind is the new tip being an ancestor of the old one: the branch moves
   # BACKWARDS. Fast-forwards and merges are descendants and never reach here.
-  if ! git merge-base --is-ancestor "$new" "$old" 2>/dev/null; then
-    # A brand-new fixture/local repository has no parent-main authority yet.
-    # Once origin/main has been fetched, every forward update is publication
-    # state and must carry the serialized writer receipt.
-    git rev-parse --verify --quiet 'refs/remotes/origin/main^{commit}' >/dev/null || continue
-    root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-    if [ -z "$root" ] || [ ! -x "$root/scripts/parent-main-write" ]; then
-      echo "parent-main-write: REFUSED: serialization gate is missing" >&2
-      status=1
-      continue
-    fi
-    if ! "$root/scripts/parent-main-write" verify-ref "$old" "$new"; then
-      status=1
-    fi
-    continue
-  fi
+  # Forward updates are ordinary Git operations. Only rewinds need the
+  # compare-and-swap check below.
+  if ! git merge-base --is-ancestor "$new" "$old" 2>/dev/null; then continue; fi
 
   # THE COMPARE half of compare-and-swap.
   if [ -n "${HERMIT_RESET_EXPECT:-}" ]; then

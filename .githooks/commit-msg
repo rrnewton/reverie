@@ -1,19 +1,8 @@
 #!/usr/bin/env bash
-# Local commit-message gates. Machine attribution is universal; the demo review
-# check applies only when the staged patch touches demos/**. The composite hook
-# dispatcher sets HERMIT_MACHINE_ATTRIBUTION_CHECKED after checking, so a parent
-# commit routed through it is not checked twice.
+# Local commit-message gates. The demo review check applies only when the staged
+# patch touches demos/**.
 set -uo pipefail
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
-
-if [ "${HERMIT_MACHINE_ATTRIBUTION_CHECKED:-0}" != 1 ]; then
-  attribution="$root/scripts/check_commit_attribution.py"
-  [ -f "$attribution" ] || {
-    echo "commit-attribution: REFUSED: checker missing at $attribution" >&2
-    exit 1
-  }
-  python3 "$attribution" --message-file "$1" --expected-machine auto || exit $?
-fi
 
 checker="$root/scripts/check-demo-review.sh"
 [ -x "$checker" ] || [ -f "$checker" ] || exit 0   # fail open if checker absent

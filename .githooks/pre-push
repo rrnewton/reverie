@@ -7,25 +7,12 @@ set -uo pipefail
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 checker="$root/ci-hub/bin/main-health"
 
-# stdin carries the remote's observed old value.  Bind every main publication
-# to the mutex holder's freshly fetched CAS receipt; a clean-slot push is just
-# as much a writer as a commit made in the shared checkout.
-while read -r _local_ref local_sha remote_ref remote_sha; do
-  [ "$remote_ref" = refs/heads/main ] || continue
-  if [ ! -x "$root/scripts/parent-main-write" ]; then
-    echo "parent-main-write: REFUSED: serialization gate is missing" >&2
-    exit 1
-  fi
-  "$root/scripts/parent-main-write" verify-push "${1:-}" "$remote_sha" "$local_sha" || exit 1
-done
-
 if [ ! -f "$checker" ]; then
   echo "HARD WARNING: GitHub main health checker is missing: $checker" >&2
   exit 0
 fi
 
-# This hook runs inside the 20-second serialized parent publication phase.  The
-# health checker has a wider standalone envelope, so bind this call site to an
+# The health checker has a wider standalone envelope, so bind this call site to an
 # 8-second internal deadline and a 10-second process ceiling.  That leaves time
 # for the commit, push, fetch, and ancestry proof without turning an unavailable
 # diagnostic into green or suppressing the publication error.

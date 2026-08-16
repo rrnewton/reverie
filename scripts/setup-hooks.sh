@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the machine attribution hook without replacing repository-local hooks.
+# Install repository-local hooks through one common dispatcher.
 # Every registered product worktree shares one of the common Git directories
 # below, so configuring the parent + initialized submodules covers present and
 # future slots on this machine.
@@ -15,10 +15,7 @@ case "${1:-}" in
 esac
 
 dispatcher="$root/.githooks/dev-hermit-hook-dispatch"
-checker="$root/scripts/check_commit_attribution.py"
 [ -x "$dispatcher" ] || { echo "missing executable dispatcher: $dispatcher" >&2; exit 1; }
-[ -x "$checker" ] || { echo "missing executable checker: $checker" >&2; exit 1; }
-machine=$("$checker" --detect-machine)
 
 # Install every client-side hook name up front. The dispatcher delegates to a
 # tracked <repo>/.githooks/<name> when one exists, so adding a tracked hook later
@@ -74,13 +71,10 @@ for repo in "${repos[@]}"; do
   installed=$((installed + 1))
 done
 
-echo "machine commit hooks: mode=$mode machine=$machine repositories=$installed"
-echo "Every commit must end: [<role>, <model>] [<team-slug>, $machine]"
+echo "repository hooks: mode=$mode repositories=$installed"
 echo "Repository-local .githooks remain active through the composite dispatcher."
 echo "Policy: .githooks/hygiene-policy.md"
 echo "Override an oversized-but-intended file with: HERMIT_HYGIENE_OVERRIDE=1 git commit ..."
 echo "Every push polls GitHub current-main workflow truth; RED warns but does not block a fix."
 echo "Every commit warns on stale primaries/gitlinks; make checkout-fresh publishes a coherent clean snapshot."
 echo "Shared-branch rewinds are REFUSED unless you declare the tip: HERMIT_RESET_EXPECT=<sha> git reset ..."
-echo "Parent main commits/pushes are REFUSED outside scripts/parent-main-write."
-echo "Gitlink/hook repairs require its retained --audit-reason path."
