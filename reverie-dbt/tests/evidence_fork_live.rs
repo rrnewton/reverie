@@ -23,23 +23,28 @@ use std::process::Command;
 use reverie_dbt::Counter2Global;
 use reverie_dbt::DbtRunner;
 
+fn compile_fixture(source_name: &str, output: &Path, extra_arguments: &[&str]) {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(source_name);
+    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
+    let compile_status = Command::new(compiler)
+        .args(["-O2", "-g", "-std=c11", "-Wall", "-Wextra", "-Werror"])
+        .args(extra_arguments)
+        .arg(source)
+        .arg("-o")
+        .arg(output)
+        .status()
+        .expect("compile evidence fixture");
+    assert!(compile_status.success(), "fixture compilation failed");
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
 async fn protected_evidence_survives_fork_pthread_lifecycle() {
     let directory = tempfile::tempdir().expect("fixture tempdir");
     let fixture = directory.path().join("fork-pthread-identity");
-    let source =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fork_pthread_identity.c");
-    let compiler = std::env::var_os("CC").unwrap_or_else(|| "cc".into());
-    let compile_status = Command::new(compiler)
-        .args(["-O2", "-g", "-std=c11", "-Wall", "-Wextra", "-Werror"])
-        .arg("-pthread")
-        .arg(source)
-        .arg("-o")
-        .arg(&fixture)
-        .status()
-        .expect("compile fork/pthread fixture");
-    assert!(compile_status.success(), "fixture compilation failed");
+    compile_fixture("fork_pthread_identity.c", &fixture, &["-pthread"]);
 
     let mut evidence_file = tempfile::tempfile().expect("evidence tempfile");
     let runner = DbtRunner::from_env()
@@ -71,5 +76,50 @@ async fn protected_evidence_survives_fork_pthread_lifecycle() {
     assert!(
         !evidence.records().is_empty(),
         "fork/pthread run must publish protected evidence"
+    );
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_covers_vfork_open_and_exec() {
+    let directory = tempfile::tempdir().expect("fixture tempdir");
+    let fixture = directory.path().join("vfork-open-exec");
+    compile_fixture("evidence_vfork_open_exec.c", &fixture, &[]);
+
+    let mut evidence_file = tempfile::tempfile().expect("evidence tempfile");
+    let runner = DbtRunner::from_env()
+        .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .evidence_file(&evidence_file)
+        .expect("configure protected evidence");
+    let output = runner
+        .output(&Command::new(fixture))
+        .expect("vfork/open/exec evidence run should complete");
+    assert!(
+        output.status.success(),
+        "vfork/open/exec guest exited unsuccessfully: {output:?}"
+    );
+    assert_eq!(output.stdout, b"vfork-open-exec-ok\n");
+
+    evidence_file
+        .seek(std::io::SeekFrom::Start(0))
+        .expect("rewind evidence artifact");
+    let mut evidence_bytes = Vec::new();
+    evidence_file
+        .read_to_end(&mut evidence_bytes)
+        .expect("read evidence artifact");
+    let evidence = reverie_dbt::decode_evidence(&evidence_bytes)
+        .expect("vfork/open/exec evidence artifact must decode");
+    let initialized_images = evidence
+        .records()
+        .iter()
+        .filter(|record| {
+            record
+                .windows(b"prototype evidence initialized".len())
+                .any(|window| window == b"prototype evidence initialized")
+        })
+        .count();
+    assert!(
+        initialized_images >= 2,
+        "parent and exec child must both contribute protected evidence; got {initialized_images} initialization records"
     );
 }

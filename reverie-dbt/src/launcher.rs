@@ -1277,7 +1277,6 @@ fn require_file(path: &Path, description: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::io::Seek as _;
-    use std::os::unix::process::ExitStatusExt;
 
     use super::*;
 
@@ -1902,56 +1901,72 @@ mod tests {
     #[test]
     #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
     fn protected_evidence_rejects_direct_emitter_entry() {
-        let directory = tempfile::tempdir().unwrap();
-        let fixture = compile_evidence_forge_fixture(directory.path());
         let mut file = tempfile::tempfile().unwrap();
         let runner = DbtRunner::from_env()
             .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
             .evidence_file(&file)
-            .unwrap();
-        let marker = directory.path().join("direct-emitter-reached");
-        let mut guest = Command::new(fixture);
-        guest
-            .env("EVIDENCE_FORGE_MODE", "direct")
-            .env("EVIDENCE_DIRECT_MARKER", &marker);
-        disclose_evidence_credentials(&runner, &mut guest);
-
-        let outcome = runner.output(&guest);
-        assert_eq!(
-            std::fs::read(&marker).unwrap(),
-            b"direct-emitter-call-reached\n"
-        );
+            .unwrap()
+            .client_argument("-test-direct-evidence-entry");
+        let guest = Command::new("/bin/true");
+        let mut command = runner.command(&guest, None);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = runner.spawn_command(&mut command).unwrap();
+        let process_group = child.id() as i32;
+        let output = child.wait_with_output().unwrap();
+        wait_for_process_group_no_live_members(process_group).unwrap();
+        assert!(runner.finish_evidence(true).is_err());
         file.seek(std::io::SeekFrom::Start(0)).unwrap();
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes).unwrap();
-        match outcome {
-            Err(error) => {
-                let message = error.to_string();
-                assert!(
-                    message.contains("status Some(101)")
-                        && message.contains("protected evidence failed"),
-                    "direct emitter did not fail through the callback gate: {message}"
-                );
-                assert!(
-                    bytes.is_empty(),
-                    "failed evidence run published an artifact"
-                );
-            }
-            Ok(output) => {
-                // A raw app-context jump cannot resolve the client's private
-                // TLS and DynamoRIO reports the resulting SIGSEGV as 128+11.
-                // This is the private-loader fail-closed path before the
-                // callback-depth check itself becomes addressable.
-                assert_eq!(output.status.signal(), Some(libc::SIGSEGV));
-                assert_eq!(output.stdout, b"calling-direct-emitter\n");
-                let evidence = crate::decode_evidence(&bytes).unwrap();
-                assert!(!evidence.records().is_empty());
-                assert!(evidence.records().iter().all(|record| {
-                    !record
-                        .windows(b"direct-forge".len())
-                        .any(|window| window == b"direct-forge")
-                }));
-            }
-        }
+        assert_eq!(output.status.code(), Some(101));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("rejected evidence outside a protected callback"),
+            "direct emitter failed for the wrong reason: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            bytes.is_empty(),
+            "failed evidence run published an artifact"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn native_runtime_abi_mismatch_fails_before_guest_execution() {
+        let mut file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .client_argument("-test-runtime-abi-mismatch");
+        let guest = Command::new("/bin/true");
+        let mut command = runner.command(&guest, None);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = runner.spawn_command(&mut command).unwrap();
+        let process_group = child.id() as i32;
+        let output = child.wait_with_output().unwrap();
+        wait_for_process_group_no_live_members(process_group).unwrap();
+        assert!(runner.finish_evidence(true).is_err());
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert_eq!(output.status.code(), Some(101));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("native/runtime ABI version or callback size mismatch"),
+            "runtime ABI mismatch failed for the wrong reason: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            bytes.is_empty(),
+            "runtime ABI mismatch published an evidence artifact"
+        );
     }
 }

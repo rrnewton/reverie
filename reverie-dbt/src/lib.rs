@@ -102,6 +102,18 @@ pub type RuntimeEmitter = unsafe extern "C" fn(*const u8, usize);
 /// Native callback that yields a DBT client thread at a DynamoRIO-safe point.
 pub type RuntimeIdler = unsafe extern "C" fn();
 
+/// Version of the native-client/external-runtime callback ABI.
+pub const DBT_RUNTIME_ABI_VERSION: u32 = 2;
+
+#[repr(C)]
+struct DbtRuntimeCallbacksV1 {
+    emit: RuntimeEmitter,
+    idle: RuntimeIdler,
+    panic_on_unsupported_syscalls: i32,
+    unsupported_report_fd: i32,
+    emit_stdout: RuntimeEmitter,
+}
+
 // TODO-HUMAN-REVIEW(PR-66): Confirm the C-compatible callback layout.
 /// Callbacks supplied to an external Tool runtime on its background client thread.
 #[repr(C)]
@@ -131,6 +143,20 @@ pub struct DbtRuntimeCallbacks {
     pub emit_evidence: RuntimeEmitter,
     /// Protected [`DbtEvidenceLogLevel`] discriminant selected by the launcher.
     pub evidence_log_level: i32,
+}
+
+/// Reports the exact native-client/external-runtime ABI version.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_dbt_runtime_abi_version() -> u32 {
+    DBT_RUNTIME_ABI_VERSION
+}
+
+/// Reports the exact callback-structure size for the current ABI version.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub extern "C" fn reverie_dbt_runtime_callbacks_size() -> usize {
+    std::mem::size_of::<DbtRuntimeCallbacks>()
 }
 
 /// Result of dispatching a syscall through an external DBT Tool.
@@ -1478,7 +1504,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_init(
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments)]
-pub unsafe extern "C" fn reverie_dbt_runtime_thread_created(
+pub unsafe extern "C" fn reverie_dbt_runtime_thread_created_v2(
     _counters: *mut PrototypeCounters,
     _context: *mut c_void,
     _parent_tid: i32,
@@ -1493,6 +1519,48 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_created(
     _write_registers: RegisterWriter,
 ) -> i32 {
     0
+}
+
+/// Compatibility entry point for native clients using ABI version 1.
+///
+/// Version 1 had no separate virtual child identity. Its callers therefore
+/// preserve their original behavior by using the host child identity for both.
+///
+/// # Safety
+///
+/// The pointers and callbacks must satisfy the version-1 thread-created ABI.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn reverie_dbt_runtime_thread_created(
+    counters: *mut PrototypeCounters,
+    context: *mut c_void,
+    parent_tid: i32,
+    pid: i32,
+    branches: u64,
+    child_tid: i32,
+    child_tid_addr: u64,
+    flags: u64,
+    invoke_syscall: SyscallInvoker,
+    read_registers: RegisterReader,
+    write_registers: RegisterWriter,
+) -> i32 {
+    unsafe {
+        reverie_dbt_runtime_thread_created_v2(
+            counters,
+            context,
+            parent_tid,
+            pid,
+            branches,
+            child_tid,
+            child_tid,
+            child_tid_addr,
+            flags,
+            invoke_syscall,
+            read_registers,
+            write_registers,
+        )
+    }
 }
 
 /// Releases prototype state for an exiting application thread.
@@ -1810,7 +1878,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
 // TODO-HUMAN-REVIEW(PR-162): Review the stdout-emitter init delivery.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn reverie_dbt_runtime_background_init(argument: *mut c_void) {
+pub unsafe extern "C" fn reverie_dbt_runtime_background_init_v2(argument: *mut c_void) {
     if !argument.is_null() {
         let callbacks = unsafe { &*(argument as *const DbtRuntimeCallbacks) };
         tools::set_stdout_emitter(callbacks.emit_stdout);
@@ -1818,6 +1886,23 @@ pub unsafe extern "C" fn reverie_dbt_runtime_background_init(argument: *mut c_vo
             const RECORD: &[u8] = b"1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: prototype evidence initialized\n";
             unsafe { (callbacks.emit_evidence)(RECORD.as_ptr(), RECORD.len()) };
         }
+    }
+}
+
+/// Compatibility entry point for native clients using ABI version 1.
+///
+/// The version-1 callback structure ends after `emit_stdout`; this function
+/// must not read the protected-evidence fields added by ABI version 2.
+///
+/// # Safety
+///
+/// `argument` must be null or point to a valid version-1 callback structure.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbt_runtime_background_init(argument: *mut c_void) {
+    if !argument.is_null() {
+        let callbacks = unsafe { &*(argument as *const DbtRuntimeCallbacksV1) };
+        tools::set_stdout_emitter(callbacks.emit_stdout);
     }
 }
 

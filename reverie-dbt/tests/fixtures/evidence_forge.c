@@ -11,6 +11,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/mman.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -24,7 +25,6 @@
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/un.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef MREMAP_FIXED
@@ -40,6 +40,8 @@
 
 static const unsigned char channel_magic[8] = {'R', 'V', 'D', 'B',
                                                 'T', 'E', '1', 0};
+static sigjmp_buf direct_store_jump;
+static volatile sig_atomic_t direct_store_faulted;
 
 static void fail(const char *operation) {
   fprintf(stderr, "evidence_forge: %s failed: errno=%d (%s)\n", operation,
@@ -362,22 +364,30 @@ static void test_protected_page_guards(void *page, size_t page_size,
     fail("ordinary munmap control");
 }
 
+static void direct_store_signal(int signal) {
+  direct_store_faulted = signal;
+  siglongjmp(direct_store_jump, 1);
+}
+
 static void test_direct_store_guard(void *page) {
-  pid_t child = fork();
-  if (child < 0)
-    fail("callback page direct-store fork");
-  if (child == 0) {
+  struct sigaction action = {0};
+  struct sigaction previous;
+  action.sa_handler = direct_store_signal;
+  sigemptyset(&action.sa_mask);
+  if (sigaction(SIGSEGV, &action, &previous) != 0)
+    fail("install callback page direct-store guard");
+  direct_store_faulted = 0;
+  if (sigsetjmp(direct_store_jump, 1) == 0) {
     volatile unsigned char *target = (volatile unsigned char *)page;
     *target ^= 1;
-    _exit(9);
+    if (sigaction(SIGSEGV, &previous, NULL) != 0)
+      fail("restore callback page direct-store guard");
+    errno = 0;
+    fail("callback page direct store did not fault");
   }
-
-  int status;
-  pid_t waited;
-  do {
-    waited = waitpid(child, &status, 0);
-  } while (waited < 0 && errno == EINTR);
-  if (waited != child || !WIFSIGNALED(status) || WTERMSIG(status) != SIGSEGV) {
+  if (sigaction(SIGSEGV, &previous, NULL) != 0)
+    fail("restore callback page direct-store guard");
+  if (direct_store_faulted != SIGSEGV) {
     errno = 0;
     fail("callback page direct store did not fault");
   }
@@ -393,33 +403,7 @@ static void test_config_guards(void) {
   test_direct_store_guard(callbacks);
 }
 
-static void call_emitter_directly(void) {
-  typedef void (*emitter_t)(const char *, size_t);
-  static const char forged[] =
-      "1970-01-01T00:00:00.000000Z INFO detcore: direct-forge\n";
-  static const char reached[] = "direct-emitter-call-reached\n";
-  const char *marker_path = getenv("EVIDENCE_DIRECT_MARKER");
-  if (marker_path == NULL)
-    fail("direct emitter marker path");
-  int marker = open(marker_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
-                    0600);
-  if (marker < 0)
-    fail("direct emitter marker open");
-  write_all(marker, reached, sizeof(reached) - 1);
-  close(marker);
-  emitter_t emitter = (emitter_t)resolve_client_symbol("reverie_dbt_emit_evidence");
-  puts("calling-direct-emitter");
-  fflush(stdout);
-  emitter(forged, sizeof(forged) - 1);
-  fail("direct emitter returned");
-}
-
 int main(void) {
-  const char *mode = getenv("EVIDENCE_FORGE_MODE");
-  if (mode != NULL && strcmp(mode, "direct") == 0) {
-    call_emitter_directly();
-    return 3;
-  }
   test_socket_guards();
   test_memory_origin_guards();
   test_config_guards();

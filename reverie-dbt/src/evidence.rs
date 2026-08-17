@@ -46,6 +46,7 @@ const FRAME_EXEC: u8 = 3;
 const FRAME_EXEC_CANCEL: u8 = 4;
 const FRAME_FINAL: u8 = 5;
 const FRAME_ERROR: u8 = 6;
+const FRAME_CHILD: u8 = 7;
 
 const FILE_MAGIC: &[u8; 8] = b"RVDBTEF1";
 const FILE_VERSION: u16 = 1;
@@ -329,6 +330,7 @@ struct ProcessKey {
     start_time: u64,
 }
 
+#[derive(Debug)]
 struct ImageState {
     epoch: u64,
     next_sequence: u64,
@@ -344,6 +346,7 @@ struct CollectedEvidence {
 
 struct Collector {
     images: BTreeMap<ProcessKey, ImageState>,
+    expected_processes: BTreeSet<ProcessKey>,
     terminal_processes: BTreeSet<ProcessKey>,
     encoded_records: Vec<u8>,
     record_count: u64,
@@ -356,6 +359,7 @@ impl Collector {
     fn new() -> Self {
         Self {
             images: BTreeMap::new(),
+            expected_processes: BTreeSet::new(),
             terminal_processes: BTreeSet::new(),
             encoded_records: Vec::new(),
             record_count: 0,
@@ -382,8 +386,8 @@ impl Collector {
                         "DBT evidence process restarted after its FINAL frame",
                     ));
                 }
-                if !self.images.contains_key(&process)
-                    && self.images.len() + self.terminal_processes.len() >= MAX_EVIDENCE_PROCESSES
+                if !self.has_known_process(process)
+                    && self.process_state_count() >= MAX_EVIDENCE_PROCESSES
                 {
                     return Err(invalid_data(
                         "DBT evidence exceeded its process/image state bound",
@@ -462,6 +466,36 @@ impl Collector {
                     "DBT evidence client reported a transport error: {detail}"
                 )));
             }
+            FRAME_CHILD => {
+                if payload.len() != 12 {
+                    return Err(invalid_data("malformed DBT evidence CHILD frame"));
+                }
+                let child = ProcessKey {
+                    pid: u32::from_le_bytes(payload[..4].try_into().unwrap()),
+                    start_time: u64::from_le_bytes(payload[4..].try_into().unwrap()),
+                };
+                if child.pid == 0 || child == process {
+                    return Err(invalid_data("DBT evidence CHILD identity is invalid"));
+                }
+                let image = self.image_for(process, sequence)?;
+                if image.pending_exec {
+                    return Err(invalid_data(
+                        "DBT evidence announced a child while exec was pending",
+                    ));
+                }
+                image.next_sequence += 1;
+                if self.expected_processes.contains(&child) {
+                    return Err(invalid_data("DBT evidence announced a child twice"));
+                }
+                if !self.has_known_process(child)
+                    && self.process_state_count() >= MAX_EVIDENCE_PROCESSES
+                {
+                    return Err(invalid_data(
+                        "DBT evidence exceeded its process/image state bound",
+                    ));
+                }
+                self.expected_processes.insert(child);
+            }
             _ => return Err(invalid_data("DBT evidence frame kind is unknown")),
         }
         Ok(())
@@ -480,6 +514,20 @@ impl Collector {
 
     fn has_admitted(&self, process: ProcessKey) -> bool {
         self.images.contains_key(&process) || self.terminal_processes.contains(&process)
+    }
+
+    fn has_known_process(&self, process: ProcessKey) -> bool {
+        self.has_admitted(process) || self.expected_processes.contains(&process)
+    }
+
+    fn process_state_count(&self) -> usize {
+        self.images
+            .keys()
+            .chain(&self.expected_processes)
+            .chain(&self.terminal_processes)
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len()
     }
 
     fn absorb_records(&mut self, payload: &[u8]) -> io::Result<()> {
@@ -524,8 +572,17 @@ impl Collector {
             return Err(invalid_data("DBT evidence received no image START"));
         }
         if !self.images.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "DBT evidence is missing FINAL frames for process images {:?}",
+                    self.images
+                ),
+            ));
+        }
+        if !self.expected_processes.is_subset(&self.terminal_processes) {
             return Err(invalid_data(
-                "DBT evidence is missing one or more image FINAL frames",
+                "DBT evidence is missing a child process START or FINAL frame",
             ));
         }
         Ok(CollectedEvidence {
@@ -1017,6 +1074,52 @@ mod tests {
     }
 
     #[test]
+    fn collector_refuses_an_announced_child_without_final_evidence() {
+        let root = ProcessKey {
+            pid: 67,
+            start_time: 71,
+        };
+        let child = ProcessKey {
+            pid: 73,
+            start_time: 79,
+        };
+        let mut child_payload = Vec::from(child.pid.to_le_bytes());
+        child_payload.extend_from_slice(&child.start_time.to_le_bytes());
+
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
+        collector
+            .absorb(FRAME_CHILD, root, 1, &child_payload)
+            .unwrap();
+        collector.absorb(FRAME_FINAL, root, 2, &[]).unwrap();
+        assert!(collector.finish().is_err());
+    }
+
+    #[test]
+    fn collector_accepts_a_child_announced_after_its_final_frame() {
+        let root = ProcessKey {
+            pid: 83,
+            start_time: 89,
+        };
+        let child = ProcessKey {
+            pid: 97,
+            start_time: 101,
+        };
+        let mut child_payload = Vec::from(child.pid.to_le_bytes());
+        child_payload.extend_from_slice(&child.start_time.to_le_bytes());
+
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
+        collector.absorb(FRAME_START, child, 0, &[]).unwrap();
+        collector.absorb(FRAME_FINAL, child, 1, &[]).unwrap();
+        collector
+            .absorb(FRAME_CHILD, root, 1, &child_payload)
+            .unwrap();
+        collector.absorb(FRAME_FINAL, root, 2, &[]).unwrap();
+        collector.finish().unwrap();
+    }
+
+    #[test]
     fn reparented_group_member_can_send_its_first_start_and_data() {
         use std::io::BufRead as _;
         use std::os::unix::process::CommandExt as _;
@@ -1158,6 +1261,50 @@ mod tests {
     }
 
     #[test]
+    fn native_final_frame_is_idempotent_across_background_and_process_exit() {
+        let source = include_str!("../native/client.c");
+        let event_exit = source
+            .split_once("static void event_exit(void) {")
+            .unwrap()
+            .1
+            .split_once("static void runtime_idle(void)")
+            .unwrap()
+            .0;
+        let background = source
+            .split_once("static void runtime_background_init(void *argument) {")
+            .unwrap()
+            .1
+            .split_once("static void ensure_runtime_background(void)")
+            .unwrap()
+            .0;
+        assert!(background.contains("require_evidence_flush(EVIDENCE_FRAME_FINAL);"));
+        assert!(event_exit.contains("require_evidence_flush(EVIDENCE_FRAME_FINAL);"));
+        assert!(source.contains("if (terminal_kind == EVIDENCE_FRAME_FINAL && sender->finalized)"));
+    }
+
+    #[test]
+    fn native_runtime_abi_is_checked_before_runtime_callbacks() {
+        assert_eq!(
+            crate::reverie_dbt_runtime_abi_version(),
+            crate::DBT_RUNTIME_ABI_VERSION
+        );
+        assert_eq!(
+            crate::reverie_dbt_runtime_callbacks_size(),
+            std::mem::size_of::<crate::DbtRuntimeCallbacks>()
+        );
+        let source = include_str!("../native/client.c");
+        let main = source
+            .split_once("DR_EXPORT void dr_client_main")
+            .unwrap()
+            .1;
+        let version_check = main.find("reverie_dbt_runtime_abi_version()").unwrap();
+        let first_runtime_callback = main.find("reverie_dbt_runtime_image_init()").unwrap();
+        assert!(version_check < first_runtime_callback);
+        assert!(source.contains("reverie_dbt_runtime_thread_created_v2("));
+        assert!(source.contains("reverie_dbt_runtime_background_init_v2("));
+    }
+
+    #[test]
     fn native_runtime_callbacks_are_page_isolated_and_sealed_before_use() {
         let source = include_str!("../native/client.c");
         assert!(source.contains(
@@ -1168,7 +1315,8 @@ mod tests {
             "range_overlaps_page(address, length, &runtime_callbacks_page,\n                             sizeof(runtime_callbacks_page))"
         ));
         assert!(
-            source.contains("reverie_dbt_runtime_background_init(&runtime_callbacks_page.value);")
+            source
+                .contains("reverie_dbt_runtime_background_init_v2(&runtime_callbacks_page.value);")
         );
 
         let main = source
