@@ -1865,11 +1865,10 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
 /// Initializes the built-in prototype runtime on a native client thread.
 ///
 /// The `argument` is a `*const DbtRuntimeCallbacks` (the native
-/// `runtime_callbacks_t`). It records the re-entrancy-safe stdout emitter and,
-/// when protected INFO evidence is enabled, emits one canonical prototype
-/// initialization record. This runs on the background client thread before any
-/// flush boundary, so the stdout emitter is installed well ahead of the first
-/// `exit`/epoch flush.
+/// `runtime_callbacks_t`). It records the re-entrancy-safe stdout emitter. The
+/// native client emits image-initialization evidence from the first application
+/// thread, because DynamoRIO client threads have a distinct process identity
+/// and must not appear as guest-process evidence senders.
 ///
 /// # Safety
 ///
@@ -1882,10 +1881,6 @@ pub unsafe extern "C" fn reverie_dbt_runtime_background_init_v2(argument: *mut c
     if !argument.is_null() {
         let callbacks = unsafe { &*(argument as *const DbtRuntimeCallbacks) };
         tools::set_stdout_emitter(callbacks.emit_stdout);
-        if callbacks.evidence_log_level >= DbtEvidenceLogLevel::Info as i32 {
-            const RECORD: &[u8] = b"1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: prototype evidence initialized\n";
-            unsafe { (callbacks.emit_evidence)(RECORD.as_ptr(), RECORD.len()) };
-        }
     }
 }
 

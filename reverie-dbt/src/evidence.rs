@@ -470,9 +470,15 @@ impl Collector {
                 if payload.len() != 12 {
                     return Err(invalid_data("malformed DBT evidence CHILD frame"));
                 }
-                let child = ProcessKey {
-                    pid: u32::from_le_bytes(payload[..4].try_into().unwrap()),
-                    start_time: u64::from_le_bytes(payload[4..].try_into().unwrap()),
+                let child_pid = u32::from_le_bytes(payload[..4].try_into().unwrap());
+                let child_start_time = u64::from_le_bytes(payload[4..].try_into().unwrap());
+                let child = if child_start_time == 0 {
+                    self.unique_admitted_process_with_pid(child_pid)?
+                } else {
+                    ProcessKey {
+                        pid: child_pid,
+                        start_time: child_start_time,
+                    }
                 };
                 if child.pid == 0 || child == process {
                     return Err(invalid_data("DBT evidence CHILD identity is invalid"));
@@ -518,6 +524,24 @@ impl Collector {
 
     fn has_known_process(&self, process: ProcessKey) -> bool {
         self.has_admitted(process) || self.expected_processes.contains(&process)
+    }
+
+    fn unique_admitted_process_with_pid(&self, pid: u32) -> io::Result<ProcessKey> {
+        let mut matches = self
+            .images
+            .keys()
+            .chain(&self.terminal_processes)
+            .copied()
+            .filter(|process| process.pid == pid);
+        let process = matches.next().ok_or_else(|| {
+            invalid_data("DBT evidence CHILD lacks an admitted exact process identity")
+        })?;
+        if matches.next().is_some() {
+            return Err(invalid_data(
+                "DBT evidence CHILD pid matches multiple admitted process identities",
+            ));
+        }
+        Ok(process)
     }
 
     fn process_state_count(&self) -> usize {
@@ -1120,6 +1144,86 @@ mod tests {
     }
 
     #[test]
+    fn collector_resolves_a_vanished_child_from_its_authenticated_frames() {
+        let root = ProcessKey {
+            pid: 103,
+            start_time: 107,
+        };
+        let child = ProcessKey {
+            pid: 109,
+            start_time: 113,
+        };
+        let mut child_payload = Vec::from(child.pid.to_le_bytes());
+        child_payload.extend_from_slice(&0_u64.to_le_bytes());
+
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
+        collector.absorb(FRAME_START, child, 0, &[]).unwrap();
+        collector.absorb(FRAME_FINAL, child, 1, &[]).unwrap();
+        collector
+            .absorb(FRAME_CHILD, root, 1, &child_payload)
+            .unwrap();
+        collector.absorb(FRAME_FINAL, root, 2, &[]).unwrap();
+        collector.finish().unwrap();
+    }
+
+    #[test]
+    fn collector_refuses_a_vanished_child_without_authenticated_frames() {
+        let root = ProcessKey {
+            pid: 127,
+            start_time: 131,
+        };
+        let mut child_payload = Vec::from(137_u32.to_le_bytes());
+        child_payload.extend_from_slice(&0_u64.to_le_bytes());
+
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
+        let error = collector
+            .absorb(FRAME_CHILD, root, 1, &child_payload)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("lacks an admitted exact process identity"),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    #[test]
+    fn collector_refuses_an_ambiguous_reused_child_pid() {
+        let root = ProcessKey {
+            pid: 139,
+            start_time: 149,
+        };
+        let first = ProcessKey {
+            pid: 151,
+            start_time: 157,
+        };
+        let second = ProcessKey {
+            pid: 151,
+            start_time: 163,
+        };
+        let mut child_payload = Vec::from(first.pid.to_le_bytes());
+        child_payload.extend_from_slice(&0_u64.to_le_bytes());
+
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
+        collector.absorb(FRAME_START, first, 0, &[]).unwrap();
+        collector.absorb(FRAME_FINAL, first, 1, &[]).unwrap();
+        collector.absorb(FRAME_START, second, 0, &[]).unwrap();
+        collector.absorb(FRAME_FINAL, second, 1, &[]).unwrap();
+        let error = collector
+            .absorb(FRAME_CHILD, root, 1, &child_payload)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("matches multiple admitted process identities"),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    #[test]
     fn reparented_group_member_can_send_its_first_start_and_data() {
         use std::io::BufRead as _;
         use std::os::unix::process::CommandExt as _;
@@ -1236,6 +1340,13 @@ mod tests {
     #[test]
     fn native_exit_timeout_retains_background_owned_evidence_state() {
         let source = include_str!("../native/client.c");
+        let finalizer = source
+            .split_once("static void finalize_runtime_process(void) {")
+            .unwrap()
+            .1
+            .split_once("static void report_copied_unsupported_syscall")
+            .unwrap()
+            .0;
         let event_exit = source
             .split_once("static void event_exit(void) {")
             .unwrap()
@@ -1244,24 +1355,27 @@ mod tests {
             .unwrap()
             .0;
 
-        let timeout_refusal = event_exit
-            .find("evidence_state_quiesced = state != 1 && state != 2;")
+        let timeout_refusal = finalizer
+            .find("runtime background did not quiesce before exit")
+            .unwrap();
+        let finalization_marker = finalizer
+            .find("sender->finalization_started = true;")
             .unwrap();
         let cleanup_guard = event_exit
             .find(
-                "if (evidence_is_enabled() && !is_copied_vfork_process() &&\n      evidence_state_quiesced) {",
+                "if (evidence_is_enabled() && !is_copied_vfork_process() &&\n      evidence_current_process_finalized()) {",
             )
             .unwrap();
         let first_free = event_exit.find("dr_global_free(evidence_buffer").unwrap();
         let mutex_destroy = event_exit.find("dr_mutex_destroy(evidence_lock)").unwrap();
 
-        assert!(timeout_refusal < cleanup_guard);
+        assert!(timeout_refusal < finalization_marker);
         assert!(cleanup_guard < first_free);
         assert!(cleanup_guard < mutex_destroy);
     }
 
     #[test]
-    fn native_final_frame_is_idempotent_across_background_and_process_exit() {
+    fn native_process_finalization_follows_runtime_output() {
         let source = include_str!("../native/client.c");
         let event_exit = source
             .split_once("static void event_exit(void) {")
@@ -1277,9 +1391,22 @@ mod tests {
             .split_once("static void ensure_runtime_background(void)")
             .unwrap()
             .0;
-        assert!(background.contains("require_evidence_flush(EVIDENCE_FRAME_FINAL);"));
-        assert!(event_exit.contains("require_evidence_flush(EVIDENCE_FRAME_FINAL);"));
-        assert!(source.contains("if (terminal_kind == EVIDENCE_FRAME_FINAL && sender->finalized)"));
+        assert!(!background.contains("EVIDENCE_FRAME_FINAL"));
+        assert!(event_exit.contains("finalize_runtime_process();"));
+        let finalizer = source
+            .split_once("static void finalize_runtime_process(void) {")
+            .unwrap()
+            .1
+            .split_once("static void report_copied_unsupported_syscall")
+            .unwrap()
+            .0;
+        let process_exit = finalizer
+            .find("reverie_dbt_runtime_process_exit();")
+            .unwrap();
+        let final_frame = finalizer
+            .find("require_evidence_flush(EVIDENCE_FRAME_FINAL);")
+            .unwrap();
+        assert!(process_exit < final_frame);
     }
 
     #[test]

@@ -25,6 +25,7 @@
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef MREMAP_FIXED
@@ -370,24 +371,30 @@ static void direct_store_signal(int signal) {
 }
 
 static void test_direct_store_guard(void *page) {
-  struct sigaction action = {0};
-  struct sigaction previous;
-  action.sa_handler = direct_store_signal;
-  sigemptyset(&action.sa_mask);
-  if (sigaction(SIGSEGV, &action, &previous) != 0)
-    fail("install callback page direct-store guard");
-  direct_store_faulted = 0;
-  if (sigsetjmp(direct_store_jump, 1) == 0) {
-    volatile unsigned char *target = (volatile unsigned char *)page;
-    *target ^= 1;
-    if (sigaction(SIGSEGV, &previous, NULL) != 0)
-      fail("restore callback page direct-store guard");
-    errno = 0;
-    fail("callback page direct store did not fault");
+  pid_t child = fork();
+  if (child < 0)
+    fail("callback page direct-store fork");
+  if (child == 0) {
+    struct sigaction action = {0};
+    action.sa_handler = direct_store_signal;
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGSEGV, &action, NULL) != 0)
+      _exit(71);
+    direct_store_faulted = 0;
+    if (sigsetjmp(direct_store_jump, 1) == 0) {
+      volatile unsigned char *target = (volatile unsigned char *)page;
+      *target ^= 1;
+      _exit(72);
+    }
+    _exit(direct_store_faulted == SIGSEGV ? 0 : 73);
   }
-  if (sigaction(SIGSEGV, &previous, NULL) != 0)
-    fail("restore callback page direct-store guard");
-  if (direct_store_faulted != SIGSEGV) {
+
+  int status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  if (waited != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
     errno = 0;
     fail("callback page direct store did not fault");
   }
@@ -403,7 +410,32 @@ static void test_config_guards(void) {
   test_direct_store_guard(callbacks);
 }
 
+static void test_killed_child_control(void) {
+  pid_t child = fork();
+  if (child < 0)
+    fail("killed child fork");
+  if (child == 0) {
+    for (;;)
+      pause();
+  }
+  int status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  if (waited != child || !WIFSIGNALED(status) || WTERMSIG(status) != SIGKILL) {
+    errno = 0;
+    fail("announced child was not killed before evidence startup");
+  }
+  puts("killed-announced-child-ok");
+}
+
 int main(void) {
+  const char *mode = getenv("EVIDENCE_FORGE_MODE");
+  if (mode != NULL && strcmp(mode, "killed-child") == 0) {
+    test_killed_child_control();
+    return 0;
+  }
   test_socket_guards();
   test_memory_origin_guards();
   test_config_guards();

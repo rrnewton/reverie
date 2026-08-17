@@ -1870,11 +1870,26 @@ mod tests {
         let runner = DbtRunner::from_env()
             .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
             .evidence_file(&file)
-            .unwrap();
+            .unwrap()
+            .client_argument("-test-wait-for-background");
         let mut guest = Command::new(fixture);
         disclose_evidence_credentials(&runner, &mut guest);
 
-        let output = runner.output(&guest).unwrap();
+        let mut command = runner.command(&guest, None);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = runner.spawn_command(&mut command).unwrap();
+        let process_group = child.id() as i32;
+        let output = child.wait_with_output().unwrap();
+        wait_for_process_group_no_live_members(process_group).unwrap();
+        if let Err(error) = runner.finish_evidence(true) {
+            panic!(
+                "protected evidence guard run failed: {error}; stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
         assert!(
             output.status.success(),
             "guard fixture failed: status={:?} stdout={} stderr={}",
@@ -1896,6 +1911,50 @@ mod tests {
                 .windows(b"forged-evidence".len())
                 .any(|window| window == b"forged-evidence")
         }));
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_refuses_an_announced_child_killed_before_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = compile_evidence_forge_fixture(directory.path());
+        let mut file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .client_argument("-test-kill-announced-child");
+        let mut guest = Command::new(fixture);
+        guest.env("EVIDENCE_FORGE_MODE", "killed-child");
+        let mut command = runner.command(&guest, None);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = runner.spawn_command(&mut command).unwrap();
+        let process_group = child.id() as i32;
+        let output = child.wait_with_output().unwrap();
+        wait_for_process_group_no_live_members(process_group).unwrap();
+        assert!(
+            output.status.success(),
+            "killed-child control failed: {output:?}"
+        );
+        assert_eq!(output.stdout, b"killed-announced-child-ok\n");
+        let error = runner.finish_evidence(true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing a child process START or FINAL frame"),
+            "collector refused the killed child for the wrong reason: {error}; stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert!(
+            bytes.is_empty(),
+            "refused evidence run published an artifact"
+        );
     }
 
     #[test]

@@ -93,6 +93,10 @@ typedef struct {
   // `maybe_preempt` and restored by `preempt_return` so the injected syscall is
   // transparent to the guest. Allocated per thread when preemption is enabled.
   dr_mcontext_t *preempt_mcontext;
+  // Process identity whose protected-evidence thread count includes this
+  // client-owned thread state. Fork-child duplicate exit callbacks retain the
+  // parent's identity and therefore cannot decrement the child's count.
+  process_id_t evidence_thread_process;
 } prototype_counters_t;
 
 #define VIRTUAL_ROOT_PID INT32_C(3)
@@ -269,6 +273,7 @@ extern void reverie_dbt_runtime_totals(uint64_t *branches, uint64_t *syscalls,
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
 static _Atomic uint64_t pending_thread_starts;
+static _Atomic int32_t runtime_background_state;
 static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
 static _Atomic uint64_t image_generation;
 static int thread_state_index;
@@ -277,6 +282,8 @@ static ptr_uint_t cpuid_marker_note;
 static ptr_uint_t rdtsc_marker_note;
 static ptr_uint_t rdtscp_marker_note;
 static bool report_summary;
+static bool test_wait_for_background;
+static bool test_kill_announced_child;
 // Typed backend-statistics sink path. When the launcher passes
 // `-stats_path <path>`, each real runtime image appends exactly one fixed-size
 // binary record to this file at `event_exit`, using DynamoRIO's own
@@ -316,6 +323,9 @@ static _Atomic uint64_t virtual_tsc __attribute__((aligned(64)));
 #define VIRTUAL_TSC_STRIDE UINT64_C(100)
 static process_id_t runtime_owner_pid;
 static bool is_copied_vfork_process(void);
+static void finalize_runtime_process(void);
+static bool syscall_exits_process(const prototype_counters_t *counters,
+                                  int sysnum);
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-84): Review isolation-aware process-group termination.
 static process_id_t runtime_process_group;
@@ -398,7 +408,10 @@ typedef struct {
   bool exec_pending;
   bool overflow;
   bool transport_failed;
+  bool finalization_started;
   bool finalized;
+  bool initialization_record_sent;
+  uint32_t active_threads;
 } evidence_sender_state_t;
 
 static unsigned char *evidence_buffer;
@@ -651,15 +664,16 @@ static bool evidence_flush(unsigned char terminal_kind) {
   evidence_sender_state_t *sender;
   if (!evidence_is_enabled())
     return true;
+  // The live negative test withholds the child's frames after the parent has
+  // announced it, then kills it. Publication must refuse that missing process.
+  if (test_kill_announced_child && runtime_process_group != 0 &&
+      dr_get_process_id() != runtime_process_group)
+    return true;
   dr_mutex_lock(evidence_lock);
   sender = evidence_sender_locked();
   if (sender == NULL) {
     dr_mutex_unlock(evidence_lock);
     return false;
-  }
-  if (terminal_kind == EVIDENCE_FRAME_FINAL && sender->finalized) {
-    dr_mutex_unlock(evidence_lock);
-    return true;
   }
   if (terminal_kind == EVIDENCE_FRAME_EXEC_CANCEL && !sender->exec_pending) {
     dr_mutex_unlock(evidence_lock);
@@ -691,6 +705,9 @@ static void reverie_dbt_emit_evidence(const char *buf, size_t len) {
     reverie_dbt_emit(buf, len);
     return;
   }
+  if (test_kill_announced_child && runtime_process_group != 0 &&
+      dr_get_process_id() != runtime_process_group)
+    return;
   if (evidence_callback_depth == 0) {
     dr_fprintf(diagnostic_file,
                "reverie-dbt: rejected evidence outside a protected callback\n");
@@ -729,8 +746,15 @@ static bool evidence_announce_child(process_id_t child) {
   bool ok;
   if (!evidence_is_enabled())
     return true;
-  if (child <= 0 || !evidence_process_start_time(child, &child_start_time))
+  if (child <= 0)
     return false;
+  // A short-lived child can finish its authenticated START/FINAL exchange and
+  // disappear before the parent resumes from clone. In that case the
+  // collector already owns the exact pid+starttime identity, so send a zero
+  // start time and require it to resolve one unique admitted image. An unseen
+  // or pid-reused child is still refused rather than guessed.
+  if (!evidence_process_start_time(child, &child_start_time))
+    child_start_time = 0;
   put_u32_le(payload, (uint32_t)child);
   put_u64_le(payload + 4, child_start_time);
   dr_mutex_lock(evidence_lock);
@@ -755,6 +779,99 @@ static void require_evidence_child(process_id_t child) {
                "reverie-dbt: protected child evidence announcement failed\n");
     exit_runtime_tree(101);
   }
+}
+
+static void evidence_thread_enter(prototype_counters_t *counters) {
+  evidence_sender_state_t *sender;
+  if (!evidence_is_enabled())
+    return;
+  dr_mutex_lock(evidence_lock);
+  sender = evidence_sender_locked();
+  if (sender == NULL || sender->active_threads == UINT32_MAX) {
+    dr_mutex_unlock(evidence_lock);
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: protected evidence thread count failed\n");
+    exit_runtime_tree(101);
+    return;
+  }
+  ++sender->active_threads;
+  counters->evidence_thread_process = dr_get_process_id();
+  dr_mutex_unlock(evidence_lock);
+}
+
+static void evidence_count_fork_child_thread(prototype_counters_t *counters) {
+  evidence_sender_state_t *sender;
+  process_id_t process = dr_get_process_id();
+  if (!evidence_is_enabled() || counters->evidence_thread_process == process)
+    return;
+
+  // DynamoRIO keeps the calling application thread across fork without
+  // issuing a new thread_init callback in the child. Count that surviving
+  // thread at the child-side clone boundary, before it can create and join
+  // additional threads whose exits would otherwise look like the process end.
+  dr_mutex_lock(evidence_lock);
+  sender = evidence_sender_locked();
+  if (sender == NULL || sender->active_threads != 0) {
+    dr_mutex_unlock(evidence_lock);
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: protected fork-child thread count failed\n");
+    exit_runtime_tree(101);
+    return;
+  }
+  sender->active_threads = 1;
+  counters->evidence_thread_process = process;
+  dr_mutex_unlock(evidence_lock);
+}
+
+static void evidence_emit_image_initialization(void) {
+  static const char record[] =
+      "1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: "
+      "prototype evidence initialized\n";
+  evidence_sender_state_t *sender;
+  bool emit = false;
+  if (!evidence_is_enabled() ||
+      runtime_callbacks_page.value.evidence_log_level < 3)
+    return;
+  dr_mutex_lock(evidence_lock);
+  sender = evidence_sender_locked();
+  if (sender != NULL && !sender->initialization_record_sent) {
+    sender->initialization_record_sent = true;
+    emit = true;
+  }
+  dr_mutex_unlock(evidence_lock);
+  if (!emit) {
+    if (sender == NULL) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: protected evidence image initialization failed\n");
+      exit_runtime_tree(101);
+    }
+    return;
+  }
+  reverie_dbt_emit_evidence(record, sizeof(record) - 1);
+}
+
+static void evidence_thread_leave(prototype_counters_t *counters) {
+  evidence_sender_state_t *sender;
+  bool last_thread;
+  process_id_t process = dr_get_process_id();
+  if (!evidence_is_enabled() || counters->evidence_thread_process != process)
+    return;
+  dr_mutex_lock(evidence_lock);
+  sender = evidence_sender_locked();
+  if (sender == NULL || sender->active_threads == 0) {
+    dr_mutex_unlock(evidence_lock);
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: protected evidence thread exit was uncounted\n");
+    exit_runtime_tree(101);
+    return;
+  }
+  last_thread = --sender->active_threads == 0;
+  counters->evidence_thread_process = 0;
+  dr_mutex_unlock(evidence_lock);
+  if (last_thread &&
+      !(test_kill_announced_child && runtime_process_group != 0 &&
+        process != runtime_process_group))
+    finalize_runtime_process();
 }
 
 static void initialize_evidence_transport(void) {
@@ -1552,8 +1669,14 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
     return 0;
 
   if (result > 0) {
-    if ((flags & CLONE_THREAD) == 0)
+    if ((flags & CLONE_THREAD) == 0) {
       require_evidence_child((process_id_t)result);
+      if (test_kill_announced_child && kill((pid_t)result, SIGKILL) != 0) {
+        dr_fprintf(diagnostic_file,
+                   "reverie-dbt: failed to kill announced test child\n");
+        exit_runtime_tree(101);
+      }
+    }
     if ((flags & CLONE_THREAD) != 0 &&
         lookup_virtual_identity((int32_t)result, &mapped))
       virtual_child = mapped;
@@ -1561,6 +1684,8 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
       remember_virtual_identity((int32_t)result, virtual_child);
   } else if (result == 0) {
     int32_t host_tid = (int32_t)dr_get_thread_id(dr_get_current_drcontext());
+    if ((flags & CLONE_THREAD) == 0)
+      evidence_count_fork_child_thread(counters);
     if ((flags & CLONE_THREAD) != 0 &&
         lookup_virtual_identity(host_tid, &mapped))
       virtual_child = mapped;
@@ -1885,6 +2010,40 @@ forbidden:
   return true;
 }
 
+static bool syscall_exits_process(const prototype_counters_t *counters,
+                                  int sysnum) {
+  evidence_sender_state_t *sender;
+  bool last_thread;
+  if (!evidence_is_enabled())
+    return false;
+  // DynamoRIO-owned client threads are not application lifecycle members.
+  // Their SYS_exit must not finalize an application image.
+  if (counters == NULL ||
+      counters->evidence_thread_process != dr_get_process_id())
+    return false;
+  if (sysnum == SYS_exit_group)
+    return true;
+  if (sysnum != SYS_exit)
+    return false;
+
+  // DynamoRIO client threads share /proc/self/task with application threads,
+  // so a kernel task count cannot identify the last guest thread. The sender
+  // count is updated only by application thread_init/thread_exit callbacks and
+  // therefore describes the lifecycle whose FINAL frame we owe.
+  dr_mutex_lock(evidence_lock);
+  sender = evidence_sender_locked();
+  if (sender == NULL || sender->active_threads == 0) {
+    dr_mutex_unlock(evidence_lock);
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: protected evidence exit thread was uncounted\n");
+    exit_runtime_tree(101);
+    return false;
+  }
+  last_thread = sender->active_threads == 1;
+  dr_mutex_unlock(evidence_lock);
+  return last_thread;
+}
+
 static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
                               const uint64_t *args) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
@@ -1915,6 +2074,8 @@ static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
     return result;
   if (is_exec_syscall((int)sysnum))
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
+  if (syscall_exits_process(counters, (int)sysnum))
+    finalize_runtime_process();
   result = invoke_raw_syscall(context, sysnum, translated);
   if (is_exec_syscall((int)sysnum) && result < 0)
     require_evidence_flush(EVIDENCE_FRAME_EXEC_CANCEL);
@@ -2735,6 +2896,62 @@ static bool is_copied_vfork_process(void) {
              (int32_t)dr_get_process_id();
 }
 
+static void finalize_runtime_process(void) {
+  evidence_sender_state_t *sender = NULL;
+  if (!has_copied_runtime()) {
+    int attempts = 0;
+    int32_t state =
+        atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+    while ((state == 1 || state == 2) && attempts++ != 5000) {
+      dr_sleep(1);
+      state =
+          atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+    }
+    if (state == 1 || state == 2) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: runtime background did not quiesce before exit\n");
+      return;
+    }
+  }
+  if (evidence_is_enabled()) {
+    dr_mutex_lock(evidence_lock);
+    sender = evidence_sender_locked();
+    if (sender == NULL) {
+      dr_mutex_unlock(evidence_lock);
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: protected evidence finalization failed\n");
+      exit_runtime_tree(101);
+      return;
+    }
+    if (sender->finalization_started) {
+      dr_mutex_unlock(evidence_lock);
+      return;
+    }
+    sender->finalization_started = true;
+    dr_mutex_unlock(evidence_lock);
+  }
+  if (!has_copied_runtime() ||
+      (runtime_uses_external_global() && !is_copied_vfork_process())) {
+    evidence_callback_enter();
+    reverie_dbt_runtime_process_exit();
+    evidence_callback_leave();
+  }
+  if (evidence_is_enabled())
+    require_evidence_flush(EVIDENCE_FRAME_FINAL);
+}
+
+static bool evidence_current_process_finalized(void) {
+  evidence_sender_state_t *sender;
+  bool finalized;
+  if (!evidence_is_enabled())
+    return true;
+  dr_mutex_lock(evidence_lock);
+  sender = evidence_sender_locked();
+  finalized = sender != NULL && sender->finalized;
+  dr_mutex_unlock(evidence_lock);
+  return finalized;
+}
+
 static void report_copied_unsupported_syscall(int sysnum) {
   if (unsupported_report_file != INVALID_FILE)
     dr_fprintf(unsupported_report_file, "@%d\n", sysnum);
@@ -3139,6 +3356,11 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   // TODO-HUMAN-REVIEW(PR-134): Review post-application runtime bootstrap.
   if (!has_copied_runtime())
     ensure_runtime_background();
+  if (test_wait_for_background && !has_copied_runtime()) {
+    while (atomic_load_explicit(&runtime_background_state,
+                                memory_order_acquire) != 3)
+      dr_sleep(1);
+  }
 
   /* A delayed entry-block flush is not synchronous.  If a native child reaches
    * a syscall through an inherited fragment, start it here after the
@@ -3251,6 +3473,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
         prepare_original_identity_syscall(drcontext, counters, sysnum, args);
     if (execute && is_exec_syscall(sysnum))
       require_evidence_flush(EVIDENCE_FRAME_EXEC);
+    if (execute && syscall_exits_process(counters, sysnum))
+      finalize_runtime_process();
     return execute;
   }
   while (!reverie_dbt_runtime_ready(
@@ -3332,6 +3556,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
         prepare_original_identity_syscall(drcontext, counters, sysnum, args);
     if (execute && is_exec_syscall(sysnum))
       require_evidence_flush(EVIDENCE_FRAME_EXEC);
+    if (execute && syscall_exits_process(counters, sysnum))
+      finalize_runtime_process();
     return execute;
   }
 
@@ -3350,6 +3576,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       prepare_original_identity_syscall(drcontext, counters, sysnum, args);
   if (execute && is_exec_syscall(sysnum))
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
+  if (execute && syscall_exits_process(counters, sysnum))
+    finalize_runtime_process();
   return execute;
 }
 
@@ -3402,7 +3630,9 @@ static void thread_init(void *drcontext) {
       !has_copied_runtime() && dr_get_thread_id(drcontext) != dr_get_process_id() &&
       reverie_dbt_runtime_ready(
           atomic_load_explicit(&image_generation, memory_order_acquire));
+  evidence_thread_enter(counters);
   evidence_callback_enter();
+  evidence_emit_image_initialization();
   int32_t init_result = reverie_dbt_runtime_thread_init(
       counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
       (int32_t)dr_get_process_id(), in_tree_parent_pid(),
@@ -3439,18 +3669,24 @@ static void thread_init(void *drcontext) {
 static void thread_exit(void *drcontext) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
-  if (counters != NULL &&
-      (!has_copied_runtime() ||
-       (runtime_uses_external_global() && !is_copied_vfork_process()))) {
-    evidence_callback_enter();
-    reverie_dbt_runtime_thread_exit(counters, drcontext,
-                                    dr_get_thread_id(drcontext),
-                                    invoke_syscall);
-    evidence_callback_leave();
-    if (counters->preempt_mcontext != NULL)
-      dr_thread_free(drcontext, counters->preempt_mcontext,
-                     sizeof(dr_mcontext_t));
-    dr_thread_free(drcontext, counters, sizeof(*counters));
+  if (counters != NULL) {
+    bool owns_runtime =
+        !has_copied_runtime() ||
+        (runtime_uses_external_global() && !is_copied_vfork_process());
+    if (owns_runtime) {
+      evidence_callback_enter();
+      reverie_dbt_runtime_thread_exit(counters, drcontext,
+                                      dr_get_thread_id(drcontext),
+                                      invoke_syscall);
+      evidence_callback_leave();
+    }
+    evidence_thread_leave(counters);
+    if (owns_runtime) {
+      if (counters->preempt_mcontext != NULL)
+        dr_thread_free(drcontext, counters->preempt_mcontext,
+                       sizeof(dr_mcontext_t));
+      dr_thread_free(drcontext, counters, sizeof(*counters));
+    }
   }
 }
 
@@ -3554,40 +3790,8 @@ static void emit_stats_record(void) {
   dr_close_file(stats_file);
 }
 
-static _Atomic int32_t runtime_background_state;
-
 static void event_exit(void) {
-  bool evidence_state_quiesced = true;
-
-  if (!has_copied_runtime() ||
-      (runtime_uses_external_global() && !is_copied_vfork_process())) {
-    evidence_callback_enter();
-    reverie_dbt_runtime_process_exit();
-    evidence_callback_leave();
-  }
-  if (evidence_is_enabled()) {
-    if (!has_copied_runtime()) {
-      int attempts = 0;
-      int32_t state =
-          atomic_load_explicit(&runtime_background_state, memory_order_acquire);
-      while ((state == 1 || state == 2) && attempts++ != 5000) {
-        dr_sleep(1);
-        state = atomic_load_explicit(&runtime_background_state,
-                                     memory_order_acquire);
-      }
-      evidence_state_quiesced = state != 1 && state != 2;
-    }
-    if (evidence_state_quiesced)
-      require_evidence_flush(EVIDENCE_FRAME_FINAL);
-    else {
-      // The background can still be inside `emit_evidence` and can own the
-      // evidence mutex. Omitting FINAL makes the collector reject this run;
-      // leave the process-lifetime evidence state intact so that rejection
-      // cannot race with freeing storage that the background still accesses.
-      dr_fprintf(diagnostic_file,
-                 "reverie-dbt: evidence output did not quiesce before exit\n");
-    }
-  }
+  finalize_runtime_process();
   uint64_t branches;
   uint64_t syscalls;
   uint64_t rewritten;
@@ -3610,7 +3814,7 @@ static void event_exit(void) {
     unsupported_report_file = INVALID_FILE;
   }
   if (evidence_is_enabled() && !is_copied_vfork_process() &&
-      evidence_state_quiesced) {
+      evidence_current_process_finalized()) {
     dr_global_free(evidence_buffer, EVIDENCE_BUFFER_CAPACITY);
     evidence_buffer = NULL;
     dr_global_free(evidence_senders,
@@ -3635,8 +3839,6 @@ static void runtime_background_init(void *argument) {
   atomic_store_explicit(&runtime_background_state, 2, memory_order_release);
   evidence_callback_enter();
   reverie_dbt_runtime_background_init_v2(&runtime_callbacks_page.value);
-  if (evidence_is_enabled())
-    require_evidence_flush(EVIDENCE_FRAME_FINAL);
   evidence_callback_leave();
   atomic_store_explicit(&runtime_background_state, 3, memory_order_release);
 }
@@ -3676,6 +3878,10 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       test_direct_evidence_entry = true;
     else if (strcmp(argv[i], "-test-runtime-abi-mismatch") == 0)
       test_runtime_abi_mismatch = true;
+    else if (strcmp(argv[i], "-test-wait-for-background") == 0)
+      test_wait_for_background = true;
+    else if (strcmp(argv[i], "-test-kill-announced-child") == 0)
+      test_kill_announced_child = true;
     else if (strcmp(argv[i], "-diagnostic_fd") == 0) {
       int fd;
       DR_ASSERT(++i < argc);
@@ -3778,6 +3984,10 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     }
     else if (strcmp(argv[i], "-test-runtime-abi-mismatch") == 0) {
       /* Handled before application initialization. */
+    }
+    else if (strcmp(argv[i], "-test-wait-for-background") == 0 ||
+             strcmp(argv[i], "-test-kill-announced-child") == 0) {
+      /* Used only by native lifecycle regression tests. */
     }
     else if (strcmp(argv[i], "-isolated-process-group") == 0)
       runtime_process_group = (process_id_t)getpgrp();

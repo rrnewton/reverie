@@ -50,7 +50,8 @@ async fn protected_evidence_survives_fork_pthread_lifecycle() {
     let runner = DbtRunner::from_env()
         .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
         .evidence_file(&evidence_file)
-        .expect("configure protected evidence");
+        .expect("configure protected evidence")
+        .client_argument("-test-wait-for-background");
     let mut guest = Command::new(fixture);
     guest.env("HERMIT_DBT_COUNTER2", "1");
 
@@ -90,7 +91,8 @@ fn protected_evidence_covers_vfork_open_and_exec() {
     let runner = DbtRunner::from_env()
         .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
         .evidence_file(&evidence_file)
-        .expect("configure protected evidence");
+        .expect("configure protected evidence")
+        .client_argument("-test-wait-for-background");
     let output = runner
         .output(&Command::new(fixture))
         .expect("vfork/open/exec evidence run should complete");

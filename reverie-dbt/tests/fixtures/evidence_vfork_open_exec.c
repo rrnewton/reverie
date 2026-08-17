@@ -14,11 +14,37 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+static int wait_for_success(pid_t child) {
+  int status = 0;
+  pid_t waited;
+  do {
+    waited = waitpid(child, &status, 0);
+  } while (waited < 0 && errno == EINTR);
+  return waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
 int main(void) {
   pid_t child = vfork();
   if (child < 0) {
-    perror("vfork");
+    perror("vfork refusal case");
     return 2;
+  }
+  if (child == 0) {
+    errno = 0;
+    int descriptor = open("/proc/self/mem", O_RDONLY | O_CLOEXEC);
+    if (descriptor >= 0) {
+      close(descriptor);
+      _exit(81);
+    }
+    _exit(errno == EPERM ? 0 : 82);
+  }
+  if (!wait_for_success(child))
+    return 3;
+
+  child = vfork();
+  if (child < 0) {
+    perror("vfork open/exec case");
+    return 4;
   }
   if (child == 0) {
     int descriptor = open("/dev/null", O_RDONLY | O_CLOEXEC);
@@ -29,13 +55,8 @@ int main(void) {
     _exit(93);
   }
 
-  int status = 0;
-  pid_t waited;
-  do {
-    waited = waitpid(child, &status, 0);
-  } while (waited < 0 && errno == EINTR);
-  if (waited != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-    return 3;
+  if (!wait_for_success(child))
+    return 5;
   puts("vfork-open-exec-ok");
   return 0;
 }
