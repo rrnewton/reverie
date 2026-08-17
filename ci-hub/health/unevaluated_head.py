@@ -64,13 +64,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
+import tempfile
 import time
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote
 
 # FIVE STATES, AND ONLY ONE IS GOOD NEWS. Three was not enough, and the two it
 # was missing were both being reported as the good one or as the wrong bad one:
@@ -126,6 +128,13 @@ OWNER_DISABLED_ACTIONS = {
 # Conclusions that are a genuine negative VERDICT. `cancelled` is deliberately
 # NOT here: it is split by whether any job ran (see above).
 FAILING = {"failure", "timed_out", "startup_failure", "action_required"}
+
+
+class GitHubUnavailable(RuntimeError):
+    """The live GitHub census did not complete; no domain verdict exists."""
+
+
+_GH_TOKEN: str | None = None
 
 
 def _resolve(fn, run):
@@ -282,12 +291,119 @@ def likely_reason(pr: dict[str, Any], state: str, stale: bool,
 
 
 def gh_json(args: list[str]) -> Any:
-    out = subprocess.run(
-        ["with-proxy", "gh", *args], capture_output=True, text=True, timeout=300
-    )
+    try:
+        out = subprocess.run(
+            ["with-proxy", "gh", *args], capture_output=True, text=True, timeout=300
+        )
+    except subprocess.TimeoutExpired as error:
+        raise GitHubUnavailable(f"gh {' '.join(args)} timed out") from error
     if out.returncode != 0:
-        raise RuntimeError(f"gh {' '.join(args)} failed: {out.stderr.strip()[:300]}")
-    return json.loads(out.stdout or "null")
+        raise GitHubUnavailable(
+            f"gh {' '.join(args)} failed: {out.stderr.strip()[:300]}"
+        )
+    try:
+        return json.loads(out.stdout or "null")
+    except json.JSONDecodeError as error:
+        raise GitHubUnavailable(
+            f"gh {' '.join(args)} returned malformed JSON"
+        ) from error
+
+
+def _curl_config_value(value: str) -> str:
+    """Quote one curl config value without placing credentials in argv."""
+    return json.dumps(value)
+
+
+def gh_json_batch(
+    requests: dict[str, str], deadline: float | None = None
+) -> dict[str, Any]:
+    """Fetch independent GitHub REST paths in one parallel curl process.
+
+    The old live reader launched one ``gh`` process per PR. Its wall time and
+    process count therefore grew with ``--limit`` and eventually exceeded the
+    tick's fixed 30-second bound. curl's parallel transfer mode preserves every
+    exact REST request but multiplexes them through one process.
+    """
+    if not requests:
+        return {}
+    def remaining(cap: float) -> float:
+        if deadline is None:
+            return cap
+        left = deadline - time.monotonic()
+        if left <= 0.5:
+            raise GitHubUnavailable(
+                "live collection exhausted its 27-second internal budget"
+            )
+        return min(cap, left)
+
+    global _GH_TOKEN
+    if _GH_TOKEN is None:
+        try:
+            auth = subprocess.run(
+                ["gh", "auth", "token"],
+                capture_output=True,
+                text=True,
+                timeout=remaining(10),
+            )
+        except subprocess.TimeoutExpired as error:
+            raise GitHubUnavailable("gh auth token timed out") from error
+        token = auth.stdout.strip()
+        if auth.returncode != 0 or not token:
+            raise GitHubUnavailable(
+                f"gh auth token failed: {auth.stderr.strip()[:300]}"
+            )
+        _GH_TOKEN = token
+    token = _GH_TOKEN
+
+    with tempfile.TemporaryDirectory(prefix="unevaluated-head-") as directory:
+        paths: dict[str, str] = {}
+        config = [
+            "silent",
+            "show-error",
+            "fail-with-body",
+            "fail-early",
+            "compressed",
+            "parallel",
+            "parallel-immediate",
+            "parallel-max = 16",
+            "header = " + _curl_config_value("Accept: application/vnd.github+json"),
+            "header = " + _curl_config_value(f"Authorization: Bearer {token}"),
+            "header = " + _curl_config_value("X-GitHub-Api-Version: 2022-11-28"),
+        ]
+        for index, (key, api_path) in enumerate(requests.items()):
+            if not api_path.startswith("repos/"):
+                raise ValueError(f"GitHub batch path must start with repos/: {api_path}")
+            output = os.path.join(directory, f"{index}.json")
+            paths[key] = output
+            config.append("url = " + _curl_config_value(f"https://api.github.com/{api_path}"))
+            config.append("output = " + _curl_config_value(output))
+        try:
+            out = subprocess.run(
+                ["with-proxy", "curl", "--config", "-"],
+                input="\n".join(config) + "\n",
+                capture_output=True,
+                text=True,
+                timeout=remaining(25),
+            )
+        except subprocess.TimeoutExpired as error:
+            raise GitHubUnavailable(
+                f"batched GitHub request timed out for {len(requests)} exact endpoint(s)"
+            ) from error
+        if out.returncode != 0:
+            raise GitHubUnavailable(
+                f"batched GitHub request failed for {len(requests)} exact endpoint(s): "
+                f"{out.stderr.strip()[:300]}"
+            )
+        result: dict[str, Any] = {}
+        for key, path in paths.items():
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    result[key] = json.load(handle)
+            except (OSError, json.JSONDecodeError) as error:
+                raise GitHubUnavailable(
+                    f"batched GitHub response for {key} was absent or malformed"
+                ) from error
+        return result
 
 
 def actions_policy(repo: str) -> tuple[bool, str | None]:
@@ -295,14 +411,16 @@ def actions_policy(repo: str) -> tuple[bool, str | None]:
     payload = gh_json(["api", f"repos/{repo}/actions/permissions"]) or {}
     enabled = payload.get("enabled")
     if type(enabled) is not bool:
-        raise RuntimeError(
+        raise GitHubUnavailable(
             f"repos/{repo}/actions/permissions did not return a boolean enabled field"
         )
     directive = OWNER_DISABLED_ACTIONS.get(repo) if not enabled else None
     return enabled, directive
 
 
-def canonical_head_sha(repo: str, pr: dict[str, Any]) -> str:
+def canonical_head_sha(
+    repo: str, pr: dict[str, Any], live: dict[str, Any] | None = None
+) -> str:
     """Return a full exact PR-head SHA, resolving abbreviated reader output.
 
     The Actions runs endpoint treats ``head_sha`` as an exact 40-hex filter: a
@@ -310,82 +428,190 @@ def canonical_head_sha(repo: str, pr: dict[str, Any]) -> str:
     therefore not trustworthy until the input has been canonicalised.
     """
     claimed = str(pr.get("headRefOid") or "").strip().lower()
-    if re.fullmatch(r"[0-9a-f]{40}", claimed):
+    if re.fullmatch(r"[0-9a-f]{40}", claimed) and live is None:
         return claimed
 
-    live = gh_json(["api", f"repos/{repo}/pulls/{pr['number']}"]) or {}
+    live = live or gh_json(["api", f"repos/{repo}/pulls/{pr['number']}"]) or {}
     resolved = str(((live.get("head") or {}).get("sha") or "")).strip().lower()
     if not re.fullmatch(r"[0-9a-f]{40}", resolved):
-        raise RuntimeError(
+        raise GitHubUnavailable(
             f"PR #{pr['number']} head is not a full SHA: "
             f"listed={claimed or 'missing'} resolved={resolved or 'missing'}"
         )
     if claimed and not resolved.startswith(claimed):
-        raise RuntimeError(
+        raise GitHubUnavailable(
             f"PR #{pr['number']} head changed while collecting: "
             f"listed={claimed} resolved={resolved}"
         )
     return resolved
 
 
-def exact_head_check_runs(repo: str, head: str) -> list[dict[str, Any]]:
-    """Read independent exact-commit evidence when run-listing is empty."""
-    payload = gh_json([
-        "api",
-        f"repos/{repo}/commits/{head}/check-runs?per_page=100&filter=all",
-    ]) or {}
-    checks = [
-        check for check in payload.get("check_runs", [])
-        if ((check.get("app") or {}).get("slug") == "github-actions")
-    ]
-    # Check-runs call this timestamp ``started_at`` while workflow runs call it
-    # ``created_at``. Normalise it so a fallback PENDING can still become stale.
-    for check in checks:
-        check.setdefault("created_at", check.get("started_at"))
-    return checks
-
-
 def collect_live(repo: str, limit: int,
                  actions_enabled: bool | None = None,
                  actions_disabled_directive: str | None = None) -> list[dict[str, Any]]:
+    deadline = time.monotonic() + 27.0
+    if limit < 1:
+        return []
+    pages = (limit + 99) // 100
+    initial_requests = {
+        f"open-prs:{page}":
+            f"repos/{repo}/pulls?state=open&sort=created&direction=desc&per_page=100&page={page}"
+        for page in range(1, pages + 1)
+    }
     if actions_enabled is None:
-        actions_enabled, actions_disabled_directive = actions_policy(repo)
-    prs = gh_json(
-        [
-            "pr", "list", "--repo", repo, "--state", "open", "--limit", str(limit),
-            "--json", "number,headRefOid,mergeable,isDraft,title",
-        ]
-    ) or []
-    # ONE `gh` SUBPROCESS PER PR, RUN CONCURRENTLY RATHER THAN SERIALLY.
+        initial_requests["actions-policy"] = f"repos/{repo}/actions/permissions"
+    initial = gh_json_batch(initial_requests, deadline)
+    if actions_enabled is None:
+        enabled = (initial.get("actions-policy") or {}).get("enabled")
+        if type(enabled) is not bool:
+            raise GitHubUnavailable(
+                f"repos/{repo}/actions/permissions did not return a boolean enabled field"
+            )
+        actions_enabled = enabled
+        actions_disabled_directive = OWNER_DISABLED_ACTIONS.get(repo) if not enabled else None
+    raw_prs = [
+        item
+        for page in range(1, pages + 1)
+        for item in (initial.get(f"open-prs:{page}") or [])
+    ][:limit]
+    prs = [
+        {
+            "number": pr.get("number"),
+            "headRefOid": ((pr.get("head") or {}).get("sha")),
+            "mergeable": "UNKNOWN",
+            "isDraft": pr.get("draft"),
+            "title": pr.get("title"),
+        }
+        for pr in raw_prs
+    ]
+    if any(not isinstance(pr.get("number"), int) for pr in prs):
+        raise GitHubUnavailable("open-PR REST census returned a row without a number")
+    # ONE BATCHED REST PROCESS FOR ALL PR HEADS, NOT ONE `gh` PROCESS PER PR.
     #
     # Measured 2026-08-10: serially this was 18.11s wall for --limit 40 with only
     # 4.24s of user CPU and 57,446 context switches -- the signature of 41 short
-    # subprocesses waiting on the network one at a time, not of heavy work. That
-    # is 60% of the tick's 30s gate cap, warm, on a quiet box; a cold or contended
-    # tail would push this single gate over and it would report NOTHING, which is
-    # the detector going blind in the same way as the thing it monitors.
+    # subprocesses waiting on the network one at a time, not of heavy work. The
+    # later 8-way pool reduced ordinary wall time but retained a variable number
+    # of processes and still crossed the 30-second tick bound under contention.
     #
     # *** THIS SKIPS NOTHING. *** Same calls, same population, same per-head SHA
-    # matching -- the queries are independent and were merely serialised. An
+    # matching -- the requests are independent and are merely multiplexed. An
     # optimisation that decided some heads were "probably unchanged" and skipped
     # them would be the correct-but-unscheduled defect wearing a performance hat,
     # and is exactly what is NOT done here. If a query fails it raises, rather
     # than being treated as "no runs" -- absence of an answer must never read as
     # absence of runs.
-    def one(pr: dict[str, Any]) -> dict[str, Any]:
-        head = canonical_head_sha(repo, pr)
-        runs = (
-            gh_json(["api", f"repos/{repo}/actions/runs?head_sha={head}&per_page=100"]) or {}
-        ).get("workflow_runs", [])
-        # Two independent readers must agree on absence. A full-SHA Actions run
-        # query returning zero is cross-checked against exact-commit check-runs;
-        # dispatching another workflow would merely hide this reader bug.
-        check_runs = exact_head_check_runs(repo, head) if not runs else []
+    abbreviated = [
+        pr for pr in prs
+        if not re.fullmatch(r"[0-9a-f]{40}", str(pr.get("headRefOid") or ""))
+    ]
+    abbreviated_details = gh_json_batch({
+        f"pull:{pr['number']}": f"repos/{repo}/pulls/{pr['number']}"
+        for pr in abbreviated
+    }, deadline)
+    heads: dict[int, str] = {
+        pr["number"]: canonical_head_sha(
+            repo,
+            pr,
+            abbreviated_details.get(f"pull:{pr['number']}")
+            if pr in abbreviated else None,
+        )
+        for pr in prs
+    }
+    run_payloads = gh_json_batch({
+        f"runs:{number}":
+            f"repos/{repo}/actions/runs?head_sha={head}&per_page=100"
+        for number, head in heads.items()
+    }, deadline)
+    runs_by_pr = {
+        pr["number"]: (run_payloads.get(f"runs:{pr['number']}") or {}).get(
+            "workflow_runs", []
+        )
+        for pr in prs
+    }
+
+    # Two independent readers must agree on absence. Only heads whose exact
+    # workflow-run query was empty need the exact-commit check-run reader.
+    empty_prs = [pr for pr in prs if not runs_by_pr[pr["number"]]]
+    check_payloads = gh_json_batch({
+        f"checks:{pr['number']}":
+            f"repos/{repo}/commits/{heads[pr['number']]}/check-runs?per_page=100&filter=all"
+        for pr in empty_prs
+    }, deadline)
+    checks_by_pr: dict[int, list[dict[str, Any]]] = {}
+    for pr in empty_prs:
+        checks = [
+            check
+            for check in (check_payloads.get(f"checks:{pr['number']}") or {}).get(
+                "check_runs", []
+            )
+            if ((check.get("app") or {}).get("slug") == "github-actions")
+        ]
+        for check in checks:
+            check.setdefault("created_at", check.get("started_at"))
+        checks_by_pr[pr["number"]] = checks
+
+    # Mergeability is causal evidence only for a genuinely empty exact head.
+    # Do not pay forty detail requests merely to decorate rows that already
+    # carry a run verdict. Empty heads are re-read here so a moved head is never
+    # described using stale conflict evidence.
+    no_evidence_prs = [
+        pr for pr in empty_prs if not checks_by_pr.get(pr["number"])
+    ]
+    mergeability_error = ""
+    try:
+        no_evidence_details = gh_json_batch({
+            f"pull:{pr['number']}": f"repos/{repo}/pulls/{pr['number']}"
+            for pr in no_evidence_prs
+        }, min(deadline, time.monotonic() + 5.0))
+    except GitHubUnavailable as error:
+        # Mergeability explains some NEVER_RAN rows but does not decide whether
+        # an exact-head run/check exists. Preserve the domain verdict, state the
+        # cause as UNKNOWN, and do not let optional causal enrichment erase the
+        # two exact readers' completed answer.
+        no_evidence_details = {}
+        mergeability_error = " ".join(str(error).split())
+    for pr in no_evidence_prs:
+        detail = no_evidence_details.get(f"pull:{pr['number']}") or {}
+        if detail:
+            canonical_head_sha(repo, pr, detail)
+        mergeable = detail.get("mergeable")
+        pr["mergeable"] = (
+            "MERGEABLE" if mergeable is True
+            else "CONFLICTING" if mergeable is False
+            else "UNKNOWN"
+        )
+        if mergeability_error:
+            pr["mergeability_error"] = mergeability_error
+
+    cancelled = [
+        run
+        for runs in runs_by_pr.values()
+        for run in runs
+        if (run.get("conclusion") or "").strip() == "cancelled"
+    ]
+    cancelled_payloads = gh_json_batch({
+        **{
+            f"jobs:{run['id']}": f"repos/{repo}/actions/runs/{run['id']}/jobs"
+            for run in cancelled
+        },
+        **{
+            f"branch:{run['id']}":
+                f"repos/{repo}/actions/runs?branch={quote(str(run.get('head_branch') or ''), safe='')}&per_page=20"
+            for run in cancelled
+        },
+    }, deadline)
+
+    rows: list[dict[str, Any]] = []
+    for pr in prs:
+        head = heads[pr["number"]]
+        runs = runs_by_pr[pr["number"]]
+        check_runs = checks_by_pr.get(pr["number"], [])
 
         def jobs_of(run: dict[str, Any]) -> int:
-            # Only ever called for a `cancelled` run, so this stays rare.
-            return int((gh_json(["api",
-                f"repos/{repo}/actions/runs/{run['id']}/jobs"]) or {}).get("total_count", 0))
+            return int((cancelled_payloads.get(f"jobs:{run['id']}") or {}).get(
+                "total_count", 0
+            ))
 
         row = {
             "number": pr["number"],
@@ -396,14 +622,15 @@ def collect_live(repo: str, limit: int,
             "check_run_count": len(check_runs),
             "actions_enabled": actions_enabled,
             "actions_disabled_directive": actions_disabled_directive,
+            "mergeability_error": pr.get("mergeability_error"),
         }
         def successor_of(run: dict[str, Any]):
             """Visible successor evidence: a LATER run of the SAME workflow on the
             SAME branch. Absence of evidence is returned as None, never as a
             cause."""
-            same = (gh_json(["api", f"repos/{repo}/actions/runs"
-                             f"?branch={run.get('head_branch','')}&per_page=20"]) or {}
-                    ).get("workflow_runs", [])
+            same = (cancelled_payloads.get(f"branch:{run['id']}") or {}).get(
+                "workflow_runs", []
+            )
             for other in same:
                 if (other.get("workflow_id") == run.get("workflow_id")
                         and other.get("id") != run.get("id")
@@ -430,10 +657,7 @@ def collect_live(repo: str, limit: int,
         row["reason"] = likely_reason(
             pr, st, stale, ev, actions_enabled, actions_disabled_directive
         )
-        return row
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        rows = list(pool.map(one, prs))
+        rows.append(row)
     # Deterministic order regardless of completion order, so tick output is
     # stable and diffable across cycles.
     rows.sort(key=lambda r: r["number"], reverse=True)
@@ -487,7 +711,20 @@ def main() -> int:
     ap.add_argument("--json", dest="as_json", action="store_true")
     a = ap.parse_args()
 
-    rows = collect_fixture(a.fixture) if a.fixture else collect_live(a.repo, a.limit)
+    try:
+        rows = collect_fixture(a.fixture) if a.fixture else collect_live(a.repo, a.limit)
+    except GitHubUnavailable as error:
+        summary = (
+            "open-PR exact-head evaluation could not be determined: "
+            + " ".join(str(error).split()).replace("{", "(").replace("}", ")")
+        )
+        if a.gate and not a.as_json:
+            print("state=unavailable")
+            print(f"summary={summary}")
+        elif a.as_json:
+            print(json.dumps({"state": "unavailable", "summary": summary}))
+        print(f"NO RESULT: {summary}", file=sys.stderr)
+        return 75 if a.gate else 1
     # NO VERDICT: a fresh PENDING is deliberately excluded --
     # alarming on it fires after every push and is an alarm no coordinator can
     # satisfy. EVALUATED_FAIL is deliberately not here either: a red gate is a
@@ -503,6 +740,7 @@ def main() -> int:
     ]
     holes = [r for r in no_verdict if r not in expected_no_verdict]
     unevaluated = no_verdict
+    mergeability_unavailable = sum(bool(r.get("mergeability_error")) for r in rows)
 
     # tick-hub capture consumes key=value fields. Keep the human table below,
     # but also give the scheduled emitter a fully rendered one-line summary so
@@ -571,6 +809,7 @@ def main() -> int:
             print(f"not_evaluated={len(no_verdict)}")
             print(f"actionable_not_evaluated={len(holes)}")
             print(f"expected_not_evaluated={len(expected_no_verdict)}")
+            print(f"mergeability_unavailable={mergeability_unavailable}")
             print(f"summary={tick_summary}")
 
     if a.gate and holes:

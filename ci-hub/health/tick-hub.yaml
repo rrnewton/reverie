@@ -649,8 +649,8 @@ reminders:
   #
   # GATED ON `superseded`, WHICH ALSO COVERS THE COMBINED STATE, deliberately NOT
   # on `unverifiable`: see the daily entry below for why. Nothing is ever deleted
-  # by this check -- a superseded approval simply stops satisfying the gate and
-  # stays visible as the record of what was reviewed and when.
+  # by this check -- a superseded review or local-validation cache simply stops
+  # satisfying the gate and stays visible with its exact-head evidence.
   - name: approval_no_longer_binds_to_head
     cadence_secs: 1800
     gate:
@@ -662,7 +662,7 @@ reminders:
       skill: hard-warn-coordinator
       fields:
         component: approval-binding
-      title: "approval(s) earned against a different head, or approved-and-unevaluated: {summary}"
+      title: "passed-review-* or locally-validated label(s) bound to a different head, including a head with no workflow run: {summary}"
 
   # THE STANDING BLOCKER behind the gate above, surfaced ONCE A DAY so it stays
   # visible instead of the check being silently inert -- the same treatment

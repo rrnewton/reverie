@@ -23,7 +23,7 @@ The ambiguous-tag case is the real #1727 shape: a Codex-family reviewer tagged
 `gpt-5.6-sol`, which says neither "codex" nor "claude". The explicit lane makes
 the binding deterministic without guessing from that model-name prose.
 """
-import os, sys, importlib.util
+import contextlib, importlib.util, io, os, sys
 tool = os.environ.get("APPROVAL_BINDING_TOOL", "ci-hub/health/approval_binding.py")
 spec = importlib.util.spec_from_file_location("ab", tool)
 ab = importlib.util.module_from_spec(spec); spec.loader.exec_module(ab)
@@ -137,6 +137,41 @@ same_comment_shas = ab.lane_shas(same_comment, "claude", mal4, 1847, mal4_prs)
 cases.append((same_comment_shas == [CUR] and len(mal4) == 1 and mal4_prs.get(mal4[0]) == 1847,
               "same comment preserves canonical authority AND malformed syntax debt",
               f"bound={same_comment_shas} malformed={len(mal4)} pr={mal4_prs.get(mal4[0]) if mal4 else None}"))
+
+receipt_comment = C(
+    "<!-- locally-validated-receipt "
+    f"commit={OLD} path=validation-receipts/rrnewton/hermit/{CUR}/"
+    f"{'a' * 64}.json sha256={'b' * 64} -->"
+)
+cases.append((ab.local_receipt_heads(receipt_comment, "rrnewton/hermit") == [CUR],
+              "locally-validated marker binds to the head in its receipt path",
+              str(ab.local_receipt_heads(receipt_comment, "rrnewton/hermit"))))
+wrong_repo = ab.local_receipt_heads(receipt_comment, "rrnewton/reverie")
+cases.append((wrong_repo == [],
+              "a receipt marker for another repository does not bind",
+              str(wrong_repo)))
+
+# Collection can fail before the ordinary verdict summary is constructed. That
+# is a NO RESULT, and tick-hub still needs concrete capture fields to render it.
+old_collect, old_argv = ab.collect_live, sys.argv
+try:
+    ab.collect_live = lambda *args, **kwargs: (_ for _ in ()).throw(
+        ab.GitHubUnavailable("HTTP 503 {request}")
+    )
+    sys.argv = ["approval_binding.py", "--gate", "--gate-on", "superseded"]
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        unavailable_rc = ab.main()
+finally:
+    ab.collect_live, sys.argv = old_collect, old_argv
+unavailable_out = stdout.getvalue()
+cases.append((unavailable_rc == 75
+              and "state=unavailable" in unavailable_out
+              and "summary=" in unavailable_out
+              and "{summary}" not in unavailable_out
+              and "{request}" not in unavailable_out,
+              "live collection failure emits renderable NO RESULT fields",
+              f"rc={unavailable_rc} out={unavailable_out.strip()}"))
 
 p=sum(1 for ok,_,_ in cases if ok); f=len(cases)-p
 for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")

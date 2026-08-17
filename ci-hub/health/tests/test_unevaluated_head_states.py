@@ -11,7 +11,7 @@ EVALUATED_FAIL, conflating supersession (a hole) with a real failure.
 Supersession itself is CORRECT and is not what is being fixed -- cancelling an
 obsolete run in favour of a newer one is right. Only the naming was wrong.
 """
-import importlib.util, sys, time
+import contextlib, importlib.util, io, sys, time
 
 spec = importlib.util.spec_from_file_location("uh", "ci-hub/health/unevaluated_head.py")
 uh = importlib.util.module_from_spec(spec); spec.loader.exec_module(uh)
@@ -134,11 +134,36 @@ FULL = "348a8b686262f6cb4aa4dc70c6a5e4613eb90361"
 
 def collect_with(fake):
     old = uh.gh_json
+    old_batch = uh.gh_json_batch
     uh.gh_json = fake
+    def fake_batch(requests, deadline=None):
+        result = {}
+        listed = fake(["pr", "list"])
+        for key, path in requests.items():
+            if key.startswith("open-prs:"):
+                result[key] = [
+                    {"number": pr["number"], "head": {"sha": pr["headRefOid"]},
+                     "draft": pr.get("isDraft"), "title": pr.get("title")}
+                    for pr in listed
+                ]
+            elif key.startswith("pull:"):
+                number = int(key.split(":", 1)[1])
+                listed_pr = next(pr for pr in listed if pr["number"] == number)
+                try:
+                    detail = fake(["api", path])
+                except AssertionError:
+                    detail = {"head": {"sha": listed_pr["headRefOid"]},
+                              "mergeable": listed_pr.get("mergeable") != "CONFLICTING"}
+                result[key] = detail
+            else:
+                result[key] = fake(["api", path])
+        return result
+    uh.gh_json_batch = fake_batch
     try:
         return uh.collect_live("rrnewton/hermit", 1, actions_enabled=True)[0]
     finally:
         uh.gh_json = old
+        uh.gh_json_batch = old_batch
 
 def pr_list(head=FULL):
     return [{"number": 2123, "headRefOid": head, "mergeable": "MERGEABLE",
@@ -219,6 +244,101 @@ cases.append((zero_row["run_count"] == 0 and zero_row["check_run_count"] == 0
               and zero_row["state"] == uh.NEVER_RAN,
               "both exact-head readers empty remains NEVER_RAN",
               str(zero_row)))
+
+old_batch = uh.gh_json_batch
+try:
+    def enrichment_failure(requests, deadline=None):
+        if any(key.startswith("open-prs:") for key in requests):
+            return {
+                next(iter(requests)): [
+                    {"number": 2123, "head": {"sha": FULL},
+                     "draft": False, "title": "fixture"}
+                ]
+            }
+        if any(key.startswith("runs:") for key in requests):
+            return {key: {"workflow_runs": []} for key in requests}
+        if any(key.startswith("checks:") for key in requests):
+            return {key: {"check_runs": []} for key in requests}
+        if any(key.startswith("pull:") for key in requests):
+            raise uh.GitHubUnavailable("mergeability HTTP 504")
+        return {}
+    uh.gh_json_batch = enrichment_failure
+    enrichment_row = uh.collect_live(
+        "rrnewton/hermit", 1, actions_enabled=True
+    )[0]
+finally:
+    uh.gh_json_batch = old_batch
+cases.append((enrichment_row["state"] == uh.NEVER_RAN
+              and enrichment_row["mergeable"] == "UNKNOWN"
+              and "HTTP 504" in enrichment_row["mergeability_error"],
+              "mergeability enrichment failure preserves the two-reader verdict",
+              str(enrichment_row)))
+
+# Forty exact-head queries are one nonempty batch, not forty child processes.
+old_gh_json, old_batch = uh.gh_json, uh.gh_json_batch
+batch_calls = []
+try:
+    many_prs = [
+        {"number": number, "headRefOid": f"{number:040x}",
+         "mergeable": "MERGEABLE", "isDraft": False, "title": "fixture"}
+        for number in range(1, 41)
+    ]
+    def many_batch(requests, deadline=None):
+        if requests:
+            batch_calls.append(dict(requests))
+        result = {}
+        for key in requests:
+            if key.startswith("open-prs:"):
+                result[key] = [
+                    {"number": pr["number"], "head": {"sha": pr["headRefOid"]},
+                     "draft": False, "title": "fixture"}
+                    for pr in many_prs
+                ]
+            elif key.startswith("pull:"):
+                number = int(key.split(":", 1)[1])
+                result[key] = {"head": {"sha": f"{number:040x}"}, "mergeable": True}
+            elif key.startswith("runs:"):
+                result[key] = {"workflow_runs": [{"conclusion": "success"}]}
+        return result
+    uh.gh_json_batch = many_batch
+    many_rows = uh.collect_live("rrnewton/hermit", 40, actions_enabled=True)
+finally:
+    uh.gh_json, uh.gh_json_batch = old_gh_json, old_batch
+cases.append((len(many_rows) == 40 and len(batch_calls) == 2
+              and list(map(len, batch_calls)) == [1, 40],
+              "40 PR heads use fixed REST batches, not one process per head",
+              f"rows={len(many_rows)} batches={list(map(len, batch_calls))}"))
+
+# A completed collection error is NO RESULT with renderable capture fields,
+# never an ordinary rc=1 domain failure with a missing {summary}.
+old_collect, old_argv = uh.collect_live, sys.argv
+try:
+    uh.collect_live = lambda repo, limit: (_ for _ in ()).throw(
+        uh.GitHubUnavailable("HTTP 503 {request}")
+    )
+    sys.argv = ["unevaluated_head.py", "--gate"]
+    stdout, stderr = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        unavailable_rc = uh.main()
+finally:
+    uh.collect_live, sys.argv = old_collect, old_argv
+unavailable_out = stdout.getvalue()
+cases.append((unavailable_rc == 75
+              and "state=unavailable" in unavailable_out
+              and "summary=" in unavailable_out
+              and "{summary}" not in unavailable_out
+              and "{request}" not in unavailable_out,
+              "live collection failure emits renderable NO RESULT fields",
+              f"rc={unavailable_rc} out={unavailable_out.strip()}"))
+
+try:
+    uh.gh_json_batch({"late": "repos/rrnewton/hermit"}, time.monotonic() - 1)
+    internal_deadline_closed = False
+except uh.GitHubUnavailable as error:
+    internal_deadline_closed = "27-second internal budget" in str(error)
+cases.append((internal_deadline_closed,
+              "internal budget returns NO RESULT before tick-hub's 30-second kill",
+              str(internal_deadline_closed)))
 
 p = sum(1 for ok,_,_ in cases if ok); f = len(cases)-p
 for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")

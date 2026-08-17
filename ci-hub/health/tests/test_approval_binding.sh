@@ -68,7 +68,7 @@ out="$(run "$tmp/superseded.json" --gate)"; rc=$?
 [[ $rc -eq 1 ]] && ok "superseded approval: gate FAILS (rc=1)" || bad "superseded: expected rc=1, got $rc"
 grep -q "SUPERSEDED    PR 1864" <<<"$out" && ok "superseded names the PR, the label and both SHAs" \
   || bad "superseded not named: $out"
-grep -q "^summary=1/1 approval labels fail the all binding check; affected=#1864;" <<<"$out" \
+grep -q "^summary=1/1 passed-review-\* / locally-validated labels fail the all binding check; affected=#1864;" <<<"$out" \
   && ok "gate emits a concrete scheduled-tick summary" \
   || bad "scheduled-tick summary missing or unrendered: $out"
 
@@ -82,7 +82,7 @@ out="$(run "$tmp/unbound.json" --gate)"; rc=$?
 grep -q "no APPROVED-AT binding" <<<"$out" \
   && ok "undetermined says WHY -- no APPROVED-AT binding -- rather than just failing" \
   || bad "undetermined gave no reason: $out"
-grep -q "authoritative at current head: 0; authority absent: 1" <<<"$out" \
+grep -q "bound to current head: 0; authority absent: 1" <<<"$out" \
   && ok "unbound label counts as 0/1 authority, not present-but-unverified" \
   || bad "unbound authority count is not explicit: $out"
 
@@ -94,14 +94,40 @@ cat >"$tmp/current.json" <<JSON
 JSON
 out="$(run "$tmp/current.json" --pr 1666 --gate)"; rc=$?
 [[ $rc -eq 0 ]] && ok "current approvals: selected PR gate PASSES (rc=0)" || bad "current: expected rc=0, got $rc"
-grep -q "every approval label is bound to the current head" <<<"$out" \
+grep -q "every passed-review-\* / locally-validated label is bound to the current head" <<<"$out" \
   && ok "current approvals reported as holding" || bad "current approvals not reported clean: $out"
-grep -q "authoritative at current head: 2; authority absent: 0" <<<"$out" \
+grep -q "bound to current head: 2; authority absent: 0" <<<"$out" \
   && ok "exact-head bindings count as 2/2 authority" \
   || bad "bound authority count is not explicit: $out"
 # The claude lane re-reviewed: an older SHA followed by the current one still holds.
 grep -qE "SUPERSEDED|UNDETERMINED" <<<"$out" && bad "a re-review (old SHA then current) was wrongly flagged" \
   || ok "a lane that re-reviewed at the new head holds, despite an older SHA in its history"
+
+# --- LOCALLY-VALIDATED USES ITS EXISTING EXACT-HEAD RECEIPT MARKER -----------
+cat >"$tmp/local-stale.json" <<JSON
+[{"number":2108,"head":"$CUR","labels":["locally-validated"],
+  "comments":["<!-- locally-validated-receipt commit=$CUR path=validation-receipts/rrnewton/hermit/$OLD/$(printf 'a%.0s' {1..64}).json sha256=$(printf 'b%.0s' {1..64}) -->"],
+  "runs_at_head":0,"mergeable":"CONFLICTING"}]
+JSON
+out="$(run "$tmp/local-stale.json" --gate --gate-on superseded)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q "SUPERSEDED    PR 2108  locally-validated" <<<"$out" \
+  && ok "stale locally-validated receipt marker FAILS at the moved head" \
+  || bad "stale locally-validated label was not reported (rc=$rc): $out"
+
+cat >"$tmp/local-current.json" <<JSON
+[{"number":2108,"head":"$CUR","labels":["locally-validated"],
+  "comments":["<!-- locally-validated-receipt commit=$OLD path=validation-receipts/rrnewton/hermit/$CUR/$(printf 'c%.0s' {1..64}).json sha256=$(printf 'd%.0s' {1..64}) -->"],
+  "runs_at_head":0,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/local-current.json" --gate --gate-on superseded)"; rc=$?
+[[ $rc -eq 0 ]] && grep -q "every passed-review-\* / locally-validated label is bound to the current head" <<<"$out" \
+  && ok "current-head locally-validated receipt marker does not false-fire" \
+  || bad "current locally-validated label was wrongly rejected (rc=$rc): $out"
+
+out="$(run "$tmp/local-current.json" --pr 2108 --gate)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q "PR #2108 has zero passed-review labels" <<<"$out" \
+  && ok "locally-validated alone cannot satisfy the selected-PR approval set" \
+  || bad "local validation cache bypassed the approval requirement (rc=$rc): $out"
 
 # --- OWNER CRITICAL PROTOCOL ------------------------------------------------
 # review-attest is the existing closed-enum critical classifier. Its exact-head
@@ -159,7 +185,7 @@ JSON
 out="$(run "$tmp/malformed-authoritative.json" --gate)"; rc=$?
 [[ $rc -eq 0 ]] && ok "malformed-but-authoritative: authority gate PASSES (rc=0)" \
   || bad "malformed-but-authoritative: expected advisory rc=0, got $rc: $out"
-grep -q "authoritative at current head: 1; authority absent: 0" <<<"$out" \
+grep -q "bound to current head: 1; authority absent: 0" <<<"$out" \
   && ok "malformed-but-authoritative remains 1/1 authoritative" \
   || bad "malformed-but-authoritative was reported as lost authority: $out"
 grep -q '^malformed_state=present$' <<<"$out" \
@@ -180,7 +206,7 @@ JSON
 out="$(run "$tmp/malformed-lost.json" --gate)"; rc=$?
 [[ $rc -eq 1 ]] && ok "malformed-plus-lost-authority: gate STILL FAILS (rc=1)" \
   || bad "malformed-plus-lost-authority was over-suppressed (rc=$rc): $out"
-grep -q "authoritative at current head: 0; authority absent: 1" <<<"$out" \
+grep -q "bound to current head: 0; authority absent: 1" <<<"$out" \
   && grep -q '^state=unbound$' <<<"$out" \
   && ok "genuinely lost binding remains a named 0/1 authority failure" \
   || bad "lost authority disappeared behind syntax reporting: $out"
@@ -205,7 +231,7 @@ out="$(run "$tmp/combined.json" --gate)"
 grep -q "APPROVED + UNEVALUATED" <<<"$out" \
   && ok "approved-and-unevaluated is called out specifically, not just as one more stale label" \
   || bad "composed state not distinguished: $out"
-grep -q "approved AND unevaluated: 1" <<<"$out" \
+grep -q "passed-review-\* / locally-validated AND unevaluated: 1" <<<"$out" \
   && ok "reports the crossed count with its population" || bad "no crossed count: $out"
 
 # --- Nothing is deleted ------------------------------------------------------
@@ -256,7 +282,7 @@ fi
 if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
   mutant="$tmp/approval_binding-without-zero-guard.py"
   sed \
-    's/approval_set_missing = a.pr is not None and not rows/approval_set_missing = False  # MUTANT: zero-approval guard removed/' \
+    's/approval_set_missing = a.pr is not None and not approval_rows/approval_set_missing = False  # MUTANT: zero-approval guard removed/' \
     "$tool" >"$mutant"
   if ! grep -q 'MUTANT: zero-approval guard removed' "$mutant"; then
     bad "mutation control could not locate the zero-approval guard"

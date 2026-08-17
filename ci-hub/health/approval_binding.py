@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind each `passed-review-*` approval to an exact head, and report the ones that no longer hold.
+"""Bind review and local-validation cache labels to an exact head.
 
 WHY. `scripts/core-review-protocol-lint.sh` (hermit) gates a
 `post-facto-human-review` merge on `has_label passed-review-codex` and
@@ -58,6 +58,11 @@ canonical BOUND_CURRENT authority into absence. Conversely, a malformed line
 with no canonical binding remains UNDETERMINED or SUPERSEDED and still fails
 the authority gate. Counts and remedies for the two conditions stay separate.
 
+`locally-validated` uses the same three head-binding states. Its existing
+receipt marker names an immutable receipt-repository commit and a path whose
+40-hex directory is the validated Hermit head. This tool compares that head to
+the live PR head; it does not replace the immutable receipt verifier.
+
 Usage:
   approval_binding.py --repo rrnewton/hermit [--gate] [--json]
   approval_binding.py --from-json FIXTURE [--pr N] [--gate]  # offline bracket
@@ -79,10 +84,15 @@ CRITICAL_CLASSES = frozenset(
     {"hermit-syscall", "detcore-scheduling", "reverie-api"}
 )
 POST_FACTO_LABEL = "post-facto-human-review"
+LOCALLY_VALIDATED_LABEL = "locally-validated"
 
 BOUND_CURRENT = "BOUND_CURRENT"
 SUPERSEDED = "SUPERSEDED"
 UNDETERMINED = "UNDETERMINED"
+
+
+class GitHubUnavailable(RuntimeError):
+    """The live GitHub census did not complete; no binding verdict exists."""
 
 
 def classify_approval(head: str, comment_shas: list[str]) -> str:
@@ -99,12 +109,22 @@ def classify_approval(head: str, comment_shas: list[str]) -> str:
 
 
 def gh_json(args: list[str]) -> Any:
-    out = subprocess.run(
-        ["with-proxy", "gh", *args], capture_output=True, text=True, timeout=300
-    )
+    try:
+        out = subprocess.run(
+            ["with-proxy", "gh", *args], capture_output=True, text=True, timeout=300
+        )
+    except subprocess.TimeoutExpired as error:
+        raise GitHubUnavailable(f"gh {' '.join(args)} timed out") from error
     if out.returncode != 0:
-        raise RuntimeError(f"gh {' '.join(args)} failed: {out.stderr.strip()[:300]}")
-    return json.loads(out.stdout or "null")
+        raise GitHubUnavailable(
+            f"gh {' '.join(args)} failed: {out.stderr.strip()[:300]}"
+        )
+    try:
+        return json.loads(out.stdout or "null")
+    except json.JSONDecodeError as error:
+        raise GitHubUnavailable(
+            f"gh {' '.join(args)} returned malformed JSON"
+        ) from error
 
 
 def lane_shas(
@@ -248,6 +268,32 @@ def lane_shas(
     return found
 
 
+def local_receipt_heads(comments: list[dict[str, Any]], repo: str) -> list[str]:
+    """Exact validated heads named by immutable receipt markers, oldest first.
+
+    The marker's ``commit`` is the receipt-repository commit, not the Hermit
+    head. The exact validated head is the 40-hex path component under
+    ``validation-receipts/<owner>/<repo>/``. This function establishes only the
+    mutable label's head binding. ``verify_receipt.sh`` remains the authority for
+    the immutable receipt's contents, hashes, producer coverage, and counts.
+    """
+    marker = re.compile(
+        r"^<!-- locally-validated-receipt "
+        r"commit=[0-9a-f]{40} "
+        r"path=validation-receipts/" + re.escape(repo) +
+        r"/(?P<head>[0-9a-f]{40})/[0-9a-f]{64}\.json "
+        r"sha256=[0-9a-f]{64} -->$",
+        re.IGNORECASE,
+    )
+    found: list[str] = []
+    for comment in comments:
+        for line in (comment.get("body") or "").splitlines():
+            match = marker.match(line.strip())
+            if match:
+                found.append(match.group("head").lower())
+    return found
+
+
 def critical_classes_at_head(
     comments: list[dict[str, Any]], head: str
 ) -> set[str]:
@@ -299,7 +345,10 @@ def collect_live(
     def fetch(pr: dict[str, Any]) -> dict[str, Any] | None:
         labels = [l["name"] for l in pr.get("labels", [])]
         approvals = [l for l in labels if l.startswith("passed-review-")]
-        if not approvals and pr_number is None:
+        tracked = approvals + (
+            [LOCALLY_VALIDATED_LABEL] if LOCALLY_VALIDATED_LABEL in labels else []
+        )
+        if not tracked and pr_number is None:
             return None
         head = pr["headRefOid"]
         comments = gh_json(
@@ -308,7 +357,7 @@ def collect_live(
         runs = (gh_json(["api", f"repos/{repo}/actions/runs?head_sha={head}"]) or {}).get(
             "workflow_runs", []
         )
-        return {"pr": pr, "approvals": approvals, "head": head,
+        return {"pr": pr, "tracked": tracked, "head": head,
                 "comments": comments, "runs": runs}
 
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -316,13 +365,17 @@ def collect_live(
 
     rows = []
     for f in sorted(fetched, key=lambda f: f["pr"]["number"], reverse=True):
-        pr, approvals, head = f["pr"], f["approvals"], f["head"]
+        pr, tracked, head = f["pr"], f["tracked"], f["head"]
         comments, runs = f["comments"], f["runs"]
-        for label in approvals:
-            lane = label.rsplit("-", 1)[-1]
-            shas = lane_shas(
-                comments, lane, malformed, pr["number"], malformed_prs
-            )
+        for label in tracked:
+            if label == LOCALLY_VALIDATED_LABEL:
+                lane = "local-validation"
+                shas = local_receipt_heads(comments, repo)
+            else:
+                lane = label.rsplit("-", 1)[-1]
+                shas = lane_shas(
+                    comments, lane, malformed, pr["number"], malformed_prs
+                )
             rows.append(
                 {
                     "number": pr["number"],
@@ -378,10 +431,18 @@ def collect_fixture(
                 ),
             }
         for label in pr["labels"]:
-            if not label.startswith("passed-review-"):
+            if not (
+                label.startswith("passed-review-")
+                or label == LOCALLY_VALIDATED_LABEL
+            ):
                 continue
-            lane = label.rsplit("-", 1)[-1]
-            if "comments" in pr:
+            lane = (
+                "local-validation" if label == LOCALLY_VALIDATED_LABEL
+                else label.rsplit("-", 1)[-1]
+            )
+            if label == LOCALLY_VALIDATED_LABEL and "comments" in pr:
+                shas = local_receipt_heads(comments, pr.get("repo", "rrnewton/hermit"))
+            elif "comments" in pr:
                 shas = lane_shas(
                     comments,
                     lane,
@@ -441,18 +502,32 @@ def main() -> int:
 
     malformed: list[tuple[str, str]] = []
     malformed_pr_by_source: dict[tuple[str, str], int] = {}
-    rows, selected = (
-        collect_fixture(a.fixture, malformed, malformed_pr_by_source, a.pr)
-        if a.fixture
-        else collect_live(a.repo, malformed, malformed_pr_by_source, a.pr)
-    )
+    try:
+        rows, selected = (
+            collect_fixture(a.fixture, malformed, malformed_pr_by_source, a.pr)
+            if a.fixture
+            else collect_live(a.repo, malformed, malformed_pr_by_source, a.pr)
+        )
+    except GitHubUnavailable as error:
+        summary = (
+            "approval binding could not be determined: "
+            + " ".join(str(error).split()).replace("{", "(").replace("}", ")")
+        )
+        if a.gate and not a.as_json:
+            print("state=unavailable")
+            print(f"summary={summary}")
+        elif a.as_json:
+            print(json.dumps({"state": "unavailable", "summary": summary}))
+        print(f"NO RESULT: {summary}", file=sys.stderr)
+        return 75 if a.gate else 1
     # The final landing boundary always selects exactly one PR with --pr.  An
     # empty row set there means the PR supplied no passed-review-* cache label
     # at all.  That is absence of review evidence, not a population with zero
     # defects.  Fleet-wide scans deliberately retain their historical scope:
     # they audit approval labels that exist and do not infer which open PRs
     # require review.
-    approval_set_missing = a.pr is not None and not rows
+    approval_rows = [row for row in rows if row["label"].startswith("passed-review-")]
+    approval_set_missing = a.pr is not None and not approval_rows
     selected_labels = set(selected["labels"]) if selected is not None else set()
     selected_critical_classes = (
         set(selected["critical_classes"]) if selected is not None else set()
@@ -465,7 +540,7 @@ def main() -> int:
     authoritative_lanes = {
         str(row["lane"])
         for row in rows
-        if row["state"] == BOUND_CURRENT
+        if row["state"] == BOUND_CURRENT and row["lane"] in LANES
     }
     critical_lanes_missing = (
         sorted(set(LANES) - authoritative_lanes) if critical_required else []
@@ -474,14 +549,21 @@ def main() -> int:
     authoritative = len(rows) - len(bad)
     malformed_prs = set(malformed_pr_by_source.values())
     malformed_affected_labels = {
-        (r["number"], r["label"]) for r in rows if r["number"] in malformed_prs
+        (r["number"], r["label"])
+        for r in rows
+        if r["number"] in malformed_prs and r["label"].startswith("passed-review-")
     }
-    # The composed state: an approval that no longer holds, on a head nothing
-    # evaluated. Approved, unevaluated, and indistinguishable from ready.
+    # The composed state: a review/local-validation cache that no longer holds,
+    # on a head nothing evaluated.
     combined = [r for r in bad if r["runs_at_head"] == 0]
+    approved_and_unevaluated = [
+        r for r in combined if r["label"].startswith("passed-review-")
+    ]
 
     if a.as_json:
-        print(json.dumps({"approvals": len(rows), "authoritative": authoritative,
+        print(json.dumps({"approvals": len(approval_rows),
+                          "binding_labels": len(rows),
+                          "authoritative": authoritative,
                           "approval_set_missing": approval_set_missing,
                           "critical_required": critical_required,
                           "critical_classes": sorted(selected_critical_classes),
@@ -490,7 +572,8 @@ def main() -> int:
                           "required_approval_sets": 1 if a.pr is not None else 0,
                           "approval_sets_missing": int(approval_set_missing),
                           "authority_absent": len(bad), "not_holding": len(bad),
-                          "approved_and_unevaluated": len(combined),
+                          "approved_and_unevaluated": len(approved_and_unevaluated),
+                          "binding_labels_and_unevaluated": len(combined),
                           "malformed_source_lines": len(malformed),
                           "malformed_affected_labels": len(malformed_affected_labels),
                           "malformed_affected_prs": sorted(malformed_prs),
@@ -504,14 +587,26 @@ def main() -> int:
                           ],
                           "rows": rows}, indent=2))
     else:
-        print(f"inspected {len(rows)} approval label(s); authoritative at current head: "
+        print(f"inspected {len(rows)} passed-review-* / locally-validated label(s); bound to current head: "
               f"{authoritative}; authority absent: {len(bad)}; "
-              f"approved AND unevaluated: {len(combined)}")
+              f"passed-review-* / locally-validated AND unevaluated: {len(combined)}")
         for r in rows:
             if r["state"] == BOUND_CURRENT:
                 continue
-            bound = r["bound_to"][:12] if r["bound_to"] else "<no APPROVED-AT binding>"
-            flag = "  *** APPROVED + UNEVALUATED ***" if r["runs_at_head"] == 0 else ""
+            if r["bound_to"]:
+                bound = r["bound_to"][:12]
+            elif r["label"] == LOCALLY_VALIDATED_LABEL:
+                bound = "<no locally-validated receipt marker>"
+            else:
+                bound = "<no APPROVED-AT binding>"
+            if r["runs_at_head"] == 0:
+                flag = (
+                    "  *** LOCALLY-VALIDATED + UNEVALUATED ***"
+                    if r["label"] == LOCALLY_VALIDATED_LABEL
+                    else "  *** APPROVED + UNEVALUATED ***"
+                )
+            else:
+                flag = ""
             print(f"  {r['state']:<13} PR {r['number']}  {r['label']}  "
                   f"bound-to {bound}  head {r['head'][:12]}  runs={r['runs_at_head']}{flag}")
         if approval_set_missing:
@@ -527,7 +622,7 @@ def main() -> int:
                 f"{','.join(critical_lanes_missing)} approval"
             )
         elif not bad:
-            print("  every approval label is bound to the current head")
+            print("  every passed-review-* / locally-validated label is bound to the current head")
         for where, line in malformed:
             # LOUD, never ignored: something tried to be a binding and is not one.
             pr = malformed_pr_by_source.get((where, line))
@@ -563,11 +658,22 @@ def main() -> int:
             )
         else:
             state = "unbound" if gating else "ok"
+            remedies = []
+            if any(r["label"].startswith("passed-review-") for r in gating):
+                remedies.append(
+                    "re-review the exact head and emit APPROVED-AT: <lane> <40-hex-head>"
+                )
+            if any(r["label"] == LOCALLY_VALIDATED_LABEL for r in gating):
+                remedies.append(
+                    "validate the exact head and publish its counted receipt before "
+                    "reapplying locally-validated"
+                )
+            if not remedies:
+                remedies.append("no binding repair is required")
             summary = (
-                f"{len(gating)}/{len(rows)} approval labels fail the "
+                f"{len(gating)}/{len(rows)} passed-review-* / locally-validated labels fail the "
                 f"{a.gate_on} binding check; affected={affected}; they do not bind "
-                "the current head and are not deleted; remedy: re-review the exact "
-                "head and emit APPROVED-AT: <lane> <40-hex-head>"
+                f"the current head and are not deleted; remedy: {'; '.join(remedies)}"
             )
         print(f"state={state}")
         print(f"summary={summary}")
@@ -603,9 +709,9 @@ def main() -> int:
         return 1
     if a.gate and gating:
         print(
-            f"GATE FAIL ({a.gate_on}): {len(gating)} of {len(rows)} approval label(s) do not bind "
+            f"GATE FAIL ({a.gate_on}): {len(gating)} of {len(rows)} passed-review-* / locally-validated label(s) do not bind "
             "to the current head. They are NOT deleted -- they simply must not satisfy the review "
-            "gate.",
+            "or local-validation head-binding gate.",
             file=sys.stderr,
         )
         return 1
