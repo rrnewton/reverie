@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::ffi::OsStr;
 use std::ffi::OsString;
+use std::io::ErrorKind;
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::io::AsRawFd;
@@ -900,20 +901,26 @@ impl Container {
                 // process will be waited on in the other cases.
                 Err(RunError::ExitStatus(child.wait()?))
             }
-            Ok(n) => {
-                // FIXME: Handle errors
-                let value: Result<T, Error> =
-                    bincode::serde::decode_from_slice(&buf[0..n], bincode::config::legacy())
-                        .unwrap()
-                        .0;
-                Ok(value.unwrap())
-            }
-            Err(err) => {
-                // FIXME: Handle this error
-                panic!("Got unexpected error: {}", err)
-            }
+            Ok(n) => decode_child_result(&buf[0..n]),
+            Err(err) => Err(RunError::Read {
+                kind: err.kind(),
+                message: err.to_string(),
+            }),
         }
     }
+}
+
+fn decode_child_result<T>(buf: &[u8]) -> Result<T, RunError>
+where
+    T: DeserializeOwned,
+{
+    let (value, _): (Result<T, Error>, _) =
+        bincode::serde::decode_from_slice(buf, bincode::config::legacy())
+            .map_err(|err| RunError::Decode(err.to_string()))?;
+    value.map_err(|error| match error.errno() {
+        Errno::EPERM | Errno::EACCES => RunError::SetupPermissionDenied(error),
+        _ => RunError::Setup(error),
+    })
 }
 
 pub(super) struct ChildContext<'a> {
@@ -948,6 +955,29 @@ pub enum RunError {
     /// An error that occurred while spawning the container.
     #[error("Process failed to spawn: {0}")]
     Spawn(#[from] Error),
+
+    /// An error that occurred while setting up the container in the child.
+    #[error("Container setup failed in child: {0}")]
+    Setup(Error),
+
+    /// Required container setup was denied by the current environment.
+    #[error(
+        "Required container setup was denied: {0}The backend may be available, but this environment denied required container setup."
+    )]
+    SetupPermissionDenied(Error),
+
+    /// Reading the child's return value from the pipe failed.
+    #[error("Failed to read child result ({kind:?}): {message}")]
+    Read {
+        /// The kind of I/O error returned while reading the pipe.
+        kind: ErrorKind,
+        /// The operating system's error message.
+        message: String,
+    },
+
+    /// Decoding the child's return value failed.
+    #[error("Failed to decode child result: {0}")]
+    Decode(String),
 
     /// The function exited prematurely. This can happen if the function called
     /// `std::process::exit(0)`, preventing the return value from being sent to
@@ -1051,6 +1081,72 @@ mod tests {
             Container::new().run(|| String::from("foobar")),
             Ok("foobar".into())
         );
+    }
+
+    #[test]
+    fn child_setup_permission_error_is_returned() {
+        for errno in [Errno::EPERM, Errno::EACCES] {
+            let expected = Error::new(errno, Context::Mount);
+            let encoded = bincode::serde::encode_to_vec(
+                Result::<(), Error>::Err(expected),
+                bincode::config::legacy(),
+            )
+            .unwrap();
+
+            let error = decode_child_result::<()>(&encoded).unwrap_err();
+            assert_eq!(error, RunError::SetupPermissionDenied(expected));
+
+            let diagnostic = error.to_string();
+            assert!(diagnostic.contains("mount failed"), "{diagnostic}");
+            assert!(
+                diagnostic.contains(errno.name().expect("known errno")),
+                "{diagnostic}"
+            );
+            assert!(
+                diagnostic.contains(
+                    "The backend may be available, but this environment denied required container setup."
+                ),
+                "{diagnostic}"
+            );
+        }
+    }
+
+    #[test]
+    fn other_child_setup_error_is_returned() {
+        let expected = Error::new(Errno::ENOENT, Context::Mount);
+        let encoded = bincode::serde::encode_to_vec(
+            Result::<(), Error>::Err(expected),
+            bincode::config::legacy(),
+        )
+        .unwrap();
+
+        let error = decode_child_result::<()>(&encoded).unwrap_err();
+        assert_eq!(error, RunError::Setup(expected));
+        assert!(!error.to_string().contains("backend may be available"));
+    }
+
+    #[test]
+    fn container_run_returns_child_setup_error() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let missing = tempdir.path().join("does-not-exist");
+        let mut container = Container::new();
+        container.current_dir(missing);
+
+        let error = container.run(|| ()).unwrap_err();
+        assert_eq!(
+            error,
+            RunError::Setup(Error::new(Errno::ENOENT, Context::Chdir))
+        );
+
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("chdir failed"), "{diagnostic}");
+        assert!(diagnostic.contains("ENOENT"), "{diagnostic}");
+    }
+
+    #[test]
+    fn malformed_child_result_is_returned() {
+        let error = decode_child_result::<()>(&[0xff]).unwrap_err();
+        assert!(matches!(error, RunError::Decode(_)), "{error:?}");
     }
 
     #[test]
