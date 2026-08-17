@@ -276,6 +276,9 @@ extern void reverie_dbt_runtime_totals(uint64_t *branches, uint64_t *syscalls,
 static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
 static _Atomic uint64_t pending_thread_starts;
+// 0: absent, 1: starting, 2: running, 3: completed normally, 4: stopped
+// before exec so the old image's client process could publish FINAL. A failed
+// exec changes 4 back to 0 and starts a new client process for the same image.
 static _Atomic int32_t runtime_background_state;
 static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
 static _Atomic uint64_t image_generation;
@@ -288,6 +291,8 @@ static bool report_summary;
 static bool test_wait_for_background;
 static bool test_kill_announced_child;
 static bool test_thread_exit_evidence;
+static bool test_hold_runtime_background;
+static _Atomic bool test_runtime_background_release;
 // Typed backend-statistics sink path. When the launcher passes
 // `-stats_path <path>`, each real runtime image appends exactly one fixed-size
 // binary record to this file at `event_exit`, using DynamoRIO's own
@@ -329,6 +334,9 @@ static process_id_t runtime_owner_pid;
 static bool has_copied_runtime(void);
 static bool is_copied_vfork_process(void);
 static void finalize_runtime_process(void);
+static void quiesce_runtime_background_for_exec(void);
+static void restart_runtime_background_after_failed_exec(
+    prototype_counters_t *counters);
 static void complete_runtime_thread_exit(prototype_counters_t *counters,
                                          void *drcontext,
                                          bool explicit_exit);
@@ -2075,14 +2083,18 @@ static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
   is_clone = prepare_clone_identity(counters, (int)sysnum, translated);
   if (preserve_internal_descriptors(context, (int)sysnum, translated, &result))
     return result;
-  if (is_exec_syscall((int)sysnum))
+  if (is_exec_syscall((int)sysnum)) {
+    quiesce_runtime_background_for_exec();
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
+  }
   if (sysnum == SYS_exit || sysnum == SYS_exit_group)
     complete_runtime_thread_exit(counters, (void *)context,
                                  sysnum == SYS_exit);
   result = invoke_raw_syscall(context, sysnum, translated);
-  if (is_exec_syscall((int)sysnum) && result < 0)
+  if (is_exec_syscall((int)sysnum) && result < 0) {
     require_evidence_flush(EVIDENCE_FRAME_EXEC_CANCEL);
+    restart_runtime_background_after_failed_exec(counters);
+  }
   if (reject_opened_proc_mem(context, (int)sysnum, result))
     return -EPERM;
   if (is_clone) {
@@ -2863,9 +2875,7 @@ static void post_syscall(void *drcontext, int sysnum) {
     counters->pending_thread_clone = 0;
   }
   if (is_exec_syscall(sysnum)) {
-    evidence_callback_enter();
-    reverie_dbt_runtime_exec_failed(counters, (int32_t)dr_get_process_id());
-    evidence_callback_leave();
+    restart_runtime_background_after_failed_exec(counters);
     return;
   }
 
@@ -2919,6 +2929,9 @@ static void finalize_runtime_process(void) {
   }
   if (!has_copied_runtime() ||
       (runtime_uses_external_global() && !is_copied_vfork_process())) {
+    if (test_hold_runtime_background)
+      atomic_store_explicit(&test_runtime_background_release, true,
+                            memory_order_release);
     evidence_callback_enter();
     reverie_dbt_runtime_process_exit();
     evidence_callback_leave();
@@ -3478,8 +3491,10 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       complete_runtime_thread_exit(counters, drcontext, sysnum == SYS_exit);
     bool execute =
         prepare_original_identity_syscall(drcontext, counters, sysnum, args);
-    if (execute && is_exec_syscall(sysnum))
+    if (execute && is_exec_syscall(sysnum)) {
+      quiesce_runtime_background_for_exec();
       require_evidence_flush(EVIDENCE_FRAME_EXEC);
+    }
     return execute;
   }
   while (!reverie_dbt_runtime_ready(
@@ -3552,8 +3567,10 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       complete_runtime_thread_exit(counters, drcontext, sysnum == SYS_exit);
     bool execute =
         prepare_original_identity_syscall(drcontext, counters, sysnum, args);
-    if (execute && is_exec_syscall(sysnum))
+    if (execute && is_exec_syscall(sysnum)) {
+      quiesce_runtime_background_for_exec();
       require_evidence_flush(EVIDENCE_FRAME_EXEC);
+    }
     return execute;
   }
 
@@ -3572,8 +3589,10 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     complete_runtime_thread_exit(counters, drcontext, sysnum == SYS_exit);
   bool execute =
       prepare_original_identity_syscall(drcontext, counters, sysnum, args);
-  if (execute && is_exec_syscall(sysnum))
+  if (execute && is_exec_syscall(sysnum)) {
+    quiesce_runtime_background_for_exec();
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
+  }
   return execute;
 }
 
@@ -3859,6 +3878,10 @@ static void runtime_background_init(void *argument) {
   evidence_callback_enter();
   reverie_dbt_runtime_background_init_v2(&runtime_callbacks_page.value);
   evidence_callback_leave();
+  while (test_hold_runtime_background &&
+         !atomic_load_explicit(&test_runtime_background_release,
+                               memory_order_acquire))
+    dr_sleep(1);
   // DynamoRIO implements a client thread as a distinct process sharing the
   // application address space. Protected evidence emitted by the external
   // scheduler is therefore admitted under this process's SO_PEERCRED identity,
@@ -3886,6 +3909,93 @@ static void ensure_runtime_background(void) {
   }
 }
 
+static int32_t wait_for_runtime_background_completion(const char *operation) {
+  int attempts = 0;
+  int32_t state =
+      atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+  while ((state == 1 || state == 2) && attempts++ != 5000) {
+    dr_sleep(1);
+    state =
+        atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+  }
+  if (state == 1 || state == 2) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: runtime background did not quiesce %s\n",
+               operation);
+    exit_runtime_tree(101);
+  }
+  return state;
+}
+
+static void quiesce_runtime_background_for_exec(void) {
+  int32_t state;
+  int32_t completed = 3;
+  if (has_copied_runtime())
+    return;
+  state =
+      atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+  if (state != 1 && state != 2)
+    return;
+
+  // DynamoRIO implements dr_create_client_thread as a distinct process. Exec
+  // kills that process without running event_exit, so stop the scheduler while
+  // its SO_PEERCRED identity is still alive and let runtime_background_init
+  // publish this process image's FINAL before the application executes exec.
+  if (test_hold_runtime_background)
+    atomic_store_explicit(&test_runtime_background_release, true,
+                          memory_order_release);
+  evidence_callback_enter();
+  reverie_dbt_runtime_process_exit();
+  evidence_callback_leave();
+  state = wait_for_runtime_background_completion("before exec");
+  if (state != 3 || !atomic_compare_exchange_strong_explicit(
+                        &runtime_background_state, &completed, 4,
+                        memory_order_acq_rel, memory_order_acquire)) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: runtime background changed while preparing exec\n");
+    exit_runtime_tree(101);
+  }
+}
+
+static void restart_runtime_background_after_failed_exec(
+    prototype_counters_t *counters) {
+  int32_t quiesced = 4;
+  int attempts = 0;
+  uint64_t generation;
+
+  if (has_copied_runtime())
+    return;
+  evidence_callback_enter();
+  reverie_dbt_runtime_exec_failed(counters, (int32_t)dr_get_process_id());
+  evidence_callback_leave();
+  if (!atomic_compare_exchange_strong_explicit(
+          &runtime_background_state, &quiesced, 0, memory_order_acq_rel,
+          memory_order_acquire))
+    return;
+
+  if (test_hold_runtime_background)
+    atomic_store_explicit(&test_runtime_background_release, false,
+                          memory_order_release);
+  ensure_runtime_background();
+  generation = atomic_load_explicit(&image_generation, memory_order_acquire);
+  while (!reverie_dbt_runtime_ready(generation) && attempts++ != 5000) {
+    int32_t state =
+        atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+    if (state == 3) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: restarted runtime background exited before becoming ready\n");
+      exit_runtime_tree(101);
+      return;
+    }
+    dr_sleep(1);
+  }
+  if (!reverie_dbt_runtime_ready(generation)) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: restarted runtime background did not become ready\n");
+    exit_runtime_tree(101);
+  }
+}
+
 DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   drreg_options_t register_options = {sizeof(register_options), 1, false};
   bool external_global = false;
@@ -3910,6 +4020,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       test_kill_announced_child = true;
     else if (strcmp(argv[i], "-test-thread-exit-evidence") == 0)
       test_thread_exit_evidence = true;
+    else if (strcmp(argv[i], "-test-hold-runtime-background") == 0)
+      test_hold_runtime_background = true;
     else if (strcmp(argv[i], "-diagnostic_fd") == 0) {
       int fd;
       DR_ASSERT(++i < argc);
@@ -4015,7 +4127,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
     }
     else if (strcmp(argv[i], "-test-wait-for-background") == 0 ||
              strcmp(argv[i], "-test-kill-announced-child") == 0 ||
-             strcmp(argv[i], "-test-thread-exit-evidence") == 0) {
+             strcmp(argv[i], "-test-thread-exit-evidence") == 0 ||
+             strcmp(argv[i], "-test-hold-runtime-background") == 0) {
       /* Used only by native lifecycle regression tests. */
     }
     else if (strcmp(argv[i], "-isolated-process-group") == 0)

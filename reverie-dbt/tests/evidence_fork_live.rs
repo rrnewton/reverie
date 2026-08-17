@@ -128,6 +128,43 @@ fn protected_evidence_covers_vfork_open_and_exec() {
 
 #[test]
 #[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_finalizes_each_scheduler_across_failed_and_successful_exec() {
+    let directory = tempfile::tempdir().expect("fixture tempdir");
+    let fixture = directory.path().join("exec-chain");
+    compile_fixture("evidence_exec_chain.c", &fixture, &[]);
+
+    let mut evidence_file = tempfile::tempfile().expect("evidence tempfile");
+    let runner = DbtRunner::from_env()
+        .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .evidence_file(&evidence_file)
+        .expect("configure protected evidence")
+        .client_argument("-test-hold-runtime-background");
+    let output = runner
+        .output(&Command::new(fixture))
+        .expect("exec-chain evidence run should complete");
+    assert!(
+        output.status.success(),
+        "exec-chain guest exited unsuccessfully: {output:?}"
+    );
+    assert_eq!(output.stdout, b"exec-chain-ok\n");
+
+    evidence_file
+        .seek(std::io::SeekFrom::Start(0))
+        .expect("rewind evidence artifact");
+    let mut evidence_bytes = Vec::new();
+    evidence_file
+        .read_to_end(&mut evidence_bytes)
+        .expect("read evidence artifact");
+    let evidence = reverie_dbt::decode_evidence(&evidence_bytes)
+        .expect("every scheduler image in the exec chain must publish FINAL");
+    assert!(
+        !evidence.records().is_empty(),
+        "exec-chain run must publish protected evidence"
+    );
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
 fn protected_evidence_follows_last_thread_explicit_exit() {
     let directory = tempfile::tempdir().expect("fixture tempdir");
     let fixture = directory.path().join("explicit-exit");
