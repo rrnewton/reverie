@@ -1915,6 +1915,102 @@ mod tests {
 
     #[test]
     #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_refuses_a_valid_frame_from_outside_the_guest_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = compile_evidence_forge_fixture(directory.path());
+        let mut file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .client_argument("-test-wait-for-background");
+        let mut guest = Command::new("/bin/sleep");
+        guest.arg("30");
+        let mut command = runner.command(&guest, None);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = runner.spawn_command(&mut command).unwrap();
+        let process_group = child.id() as i32;
+
+        let mut outside = Command::new(fixture);
+        outside.env("EVIDENCE_FORGE_MODE", "outside-tree");
+        disclose_evidence_credentials(&runner, &mut outside);
+        let outside_output = outside.output().unwrap();
+        assert!(
+            outside_output.status.success(),
+            "outside-tree probe failed: {outside_output:?}"
+        );
+        assert_eq!(outside_output.stdout, b"outside-tree-evidence-refused\n");
+
+        terminate_process_group(process_group).unwrap();
+        wait_for_process_group_no_live_members(process_group).unwrap();
+        let _ = child.wait();
+        let error = runner.finish_evidence(true).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            error.to_string(),
+            "DBT evidence peer is outside the launched process tree"
+        );
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        assert!(
+            bytes.is_empty(),
+            "refused outside-tree frame published evidence"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
+    fn protected_evidence_retries_after_a_dropped_acknowledgement() {
+        let mut file = tempfile::tempfile().unwrap();
+        let runner = DbtRunner::from_env()
+            .expect("DYNAMORIO_HOME and REVERIE_DBT_CLIENT must select the live native client")
+            .evidence_file(&file)
+            .unwrap()
+            .client_argument("-test-wait-for-background");
+        runner
+            .evidence
+            .as_ref()
+            .unwrap()
+            .drop_next_acknowledgement();
+        let guest = Command::new("/bin/true");
+        let mut command = runner.command(&guest, None);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let child = runner.spawn_command(&mut command).unwrap();
+        let process_group = child.id() as i32;
+        let output = child.wait_with_output().unwrap();
+        wait_for_process_group_no_live_members(process_group).unwrap();
+        if let Err(error) = runner.finish_evidence(true) {
+            panic!(
+                "protected evidence retry run failed: {error}; stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        assert!(
+            output.status.success(),
+            "retry guest failed: status={:?} stdout={} stderr={}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        let evidence = crate::decode_evidence(&bytes).unwrap();
+        assert!(
+            !evidence.records().is_empty(),
+            "retry run produced no canonical evidence records"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires built DynamoRIO and native client; run explicitly with --ignored"]
     fn protected_evidence_refuses_an_announced_child_killed_before_start() {
         let directory = tempfile::tempdir().unwrap();
         let fixture = compile_evidence_forge_fixture(directory.path());

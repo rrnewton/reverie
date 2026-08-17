@@ -193,6 +193,25 @@ static void send_valid_forge_if_connected(int descriptor) {
   close(descriptor);
 }
 
+static void test_outside_tree_refusal(void) {
+  unsigned char header[CHANNEL_HEADER_LEN] = {0};
+  unsigned char token[TOKEN_LEN];
+  unsigned char acknowledgement = 0;
+  int descriptor = connect_evidence();
+  if (descriptor < 0)
+    fail("outside-tree connect");
+  decode_hex(getenv("EVIDENCE_TOKEN"), token, sizeof(token));
+  memcpy(header, channel_magic, sizeof(channel_magic));
+  memcpy(header + 8, token, sizeof(token));
+  header[40] = 1;
+  finish_header(header, 1, 0, 0, NULL);
+  write_all(descriptor, header, sizeof(header));
+  if (read(descriptor, &acknowledgement, 1) != 1 || acknowledgement != 1)
+    fail("outside-tree refusal acknowledgement");
+  close(descriptor);
+  puts("outside-tree-evidence-refused");
+}
+
 static void test_socket_guards(void) {
   socklen_t length;
   struct sockaddr_un address = evidence_address(&length);
@@ -468,6 +487,10 @@ int main(void) {
   const char *mode = getenv("EVIDENCE_FORGE_MODE");
   if (mode != NULL && strcmp(mode, "killed-child") == 0) {
     test_killed_child_control();
+    return 0;
+  }
+  if (mode != NULL && strcmp(mode, "outside-tree") == 0) {
+    test_outside_tree_refusal();
     return 0;
   }
   test_socket_guards();

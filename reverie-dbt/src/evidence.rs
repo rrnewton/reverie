@@ -59,6 +59,33 @@ const SESSION_RUNNING: u8 = 1;
 const SESSION_FINISHING: u8 = 2;
 const SESSION_FINISHED: u8 = 3;
 
+#[derive(Clone, Debug, Default)]
+struct AcknowledgementDropControl {
+    #[cfg(test)]
+    remaining: Arc<AtomicU8>,
+}
+
+impl AcknowledgementDropControl {
+    #[cfg(test)]
+    fn should_drop(&self) -> bool {
+        self.remaining
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
+    #[cfg(not(test))]
+    fn should_drop(&self) -> bool {
+        false
+    }
+
+    #[cfg(test)]
+    fn drop_next(&self) {
+        self.remaining.store(1, Ordering::Release);
+    }
+}
+
 /// Protected tracing verbosity requested from the external DBT runtime.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 #[repr(i32)]
@@ -174,6 +201,8 @@ pub(crate) struct EvidenceSession {
     token_hex: String,
     root_process: Arc<Mutex<Option<ProcessKey>>>,
     stop: Arc<AtomicBool>,
+    #[cfg(test)]
+    acknowledgement_drops: AcknowledgementDropControl,
     lifecycle: AtomicU8,
     finish_lock: Mutex<()>,
     output: Mutex<Option<File>>,
@@ -203,15 +232,27 @@ impl EvidenceSession {
         let stop = Arc::new(AtomicBool::new(false));
         let worker_root_process = Arc::clone(&root_process);
         let worker_stop = Arc::clone(&stop);
+        let acknowledgement_drops = AcknowledgementDropControl::default();
+        let worker_acknowledgement_drops = acknowledgement_drops.clone();
         let worker = std::thread::Builder::new()
             .name("reverie-dbt-evidence".into())
-            .spawn(move || serve(listener, token, worker_root_process, worker_stop))?;
+            .spawn(move || {
+                serve(
+                    listener,
+                    token,
+                    worker_root_process,
+                    worker_stop,
+                    worker_acknowledgement_drops,
+                )
+            })?;
 
         Ok(Self {
             address_hex: encode_hex(address),
             token_hex: encode_hex(&token),
             root_process,
             stop,
+            #[cfg(test)]
+            acknowledgement_drops,
             lifecycle: AtomicU8::new(SESSION_NEW),
             finish_lock: Mutex::new(()),
             output: Mutex::new(Some(output)),
@@ -227,6 +268,11 @@ impl EvidenceSession {
             "-evidence-token".into(),
             self.token_hex.clone(),
         ]
+    }
+
+    #[cfg(test)]
+    pub(crate) fn drop_next_acknowledgement(&self) {
+        self.acknowledgement_drops.drop_next();
     }
 
     pub(crate) fn claim_run(&self) -> io::Result<()> {
@@ -636,6 +682,7 @@ fn serve(
     token: [u8; CHANNEL_TOKEN_LEN],
     root_process: Arc<Mutex<Option<ProcessKey>>>,
     stop: Arc<AtomicBool>,
+    acknowledgement_drops: AcknowledgementDropControl,
 ) -> io::Result<CollectedEvidence> {
     let mut collector = Collector::new();
     let mut shutdown_connections = 0_u32;
@@ -653,9 +700,13 @@ fn serve(
                 }
                 stream.set_read_timeout(Some(Duration::from_millis(250)))?;
                 stream.set_write_timeout(Some(Duration::from_millis(250)))?;
-                if let Err(error) =
-                    handle_connection(&mut stream, &token, &root_process, &mut collector)
-                {
+                if let Err(error) = handle_connection(
+                    &mut stream,
+                    &token,
+                    &root_process,
+                    &mut collector,
+                    &acknowledgement_drops,
+                ) {
                     let _ = stream.write_all(&[1]);
                     return Err(error);
                 }
@@ -677,6 +728,7 @@ fn handle_connection(
     token: &[u8; CHANNEL_TOKEN_LEN],
     root_process: &Mutex<Option<ProcessKey>>,
     collector: &mut Collector,
+    acknowledgement_drops: &AcknowledgementDropControl,
 ) -> io::Result<()> {
     let mut header = [0_u8; CHANNEL_HEADER_LEN];
     if stream.read_exact(&mut header).is_err() {
@@ -739,6 +791,9 @@ fn handle_connection(
     collector.absorb_or_acknowledge_retry(kind, process, sequence, digest, &payload)?;
     // The frame is durable in collector state before the ACK. If the peer
     // times out and closes here, its exact retry is acknowledged idempotently.
+    if acknowledgement_drops.should_drop() {
+        return Ok(());
+    }
     let _ = stream.write_all(&[0]);
     Ok(())
 }
