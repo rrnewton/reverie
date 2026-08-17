@@ -438,16 +438,9 @@ pub struct Assessment {
     /// subset/dirty runs, truncated and needs-rerun records, and environment
     /// faults (command-not-found storms, sub-second collapses).
     ///
-    /// The ledger does NOT latch: a later clean full PASS supersedes an earlier
-    /// clean full FAIL and the verdict flips to VALIDATED. That is correct — but
-    /// a VALIDATED banner that says nothing about the superseded failure claims
-    /// more than it verified. The same commit both passing and failing a clean
-    /// full run is a FLAKE SIGNAL, and it is exactly the evidence a green would
-    /// otherwise bury. Counted here so the print path can surface it rather than
-    /// each caller re-deriving it (and re-deriving it differently).
-    ///
-    /// This is a raw count, not a judgement: whether these failures are
-    /// "superseded" depends on the verdict, which is the caller's to read.
+    /// The ledger latches these failures for the exact commit: a later PASS does
+    /// not turn the commit green. Counted here so callers can explain the
+    /// refusal without re-deriving the failure classifier.
     pub failed_records: usize,
     /// Clean full-coverage NON-PASS records that the classifier deliberately
     /// WITHHELD from [`Self::failed_records`] — contended reds, reds whose
@@ -511,10 +504,10 @@ pub fn assess(rows: &[HistoryRow], sha: &str) -> Assessment {
             disqualified.push(row.clone());
         }
     }
-    let verdict = if !qualifying.is_empty() {
-        Verdict::Validated
-    } else if saw_failed {
+    let verdict = if saw_failed {
         Verdict::FailedOnRecord
+    } else if !qualifying.is_empty() {
+        Verdict::Validated
     } else if saw_needs_rerun {
         Verdict::NeedsRerun
     } else if saw_truncated {
@@ -691,25 +684,24 @@ mod tests {
         ))
     }
 
-    // ---- SUPERSEDED-FAIL SURFACING -------------------------------------
-    // The ledger does not latch, so a later clean full PASS flips the verdict to
-    // VALIDATED. `failed_records` is what stops that green from silently burying
-    // the same commit's clean full FAIL. Bracketed BOTH ways: it must count a
-    // genuine superseded failure, and must NOT fire on a green with no failure
-    // or on a red that carries no information about the product.
+    // ---- SAME-COMMIT FAILURE LATCH -------------------------------------
+    // A genuine failure wins over a sibling PASS for the exact same commit.
+    // Non-verdict environment and contention rows remain non-poisoning.
 
     #[test]
-    fn validated_commit_counts_its_superseded_clean_full_failures() {
-        let rows = vec![complete_failure(PASS_SHA), clean_full_pass(PASS_SHA)];
-        let assessment = assess(&rows, PASS_SHA);
-        // The pass supersedes the fail -- the verdict is genuinely VALIDATED ...
-        assert_eq!(assessment.verdict, Verdict::Validated);
-        // ... and the failure is still SURFACED rather than buried.
-        assert_eq!(assessment.failed_records, 1);
+    fn genuine_failure_prevents_same_commit_pass_from_qualifying() {
+        for rows in [
+            vec![complete_failure(PASS_SHA), clean_full_pass(PASS_SHA)],
+            vec![clean_full_pass(PASS_SHA), complete_failure(PASS_SHA)],
+        ] {
+            let assessment = assess(&rows, PASS_SHA);
+            assert_eq!(assessment.verdict, Verdict::FailedOnRecord);
+            assert_eq!(assessment.failed_records, 1);
+        }
     }
 
     #[test]
-    fn a_clean_green_reports_no_superseded_failures() {
+    fn a_clean_green_reports_no_latched_failures() {
         // POSITIVE CONTROL: without this, a counter that always returned >0
         // would pass the test above and warn on every green.
         let rows = vec![clean_full_pass(PASS_SHA)];
@@ -719,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn an_environment_fault_is_not_counted_as_a_superseded_failure() {
+    fn an_environment_fault_is_not_counted_as_a_latched_failure() {
         // A command-not-found storm exercised nothing about the product, so it is
         // not a flake signal and must not raise the alarm on a legitimate green.
         let rows = vec![command_not_found_row(PASS_SHA), clean_full_pass(PASS_SHA)];
@@ -729,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn superseded_failures_are_counted_not_merely_flagged() {
+    fn latched_failures_are_counted_not_merely_flagged() {
         // The banner prints N; a boolean would under-report a repeatedly-flaking
         // commit as indistinguishable from a single blip.
         let rows = vec![
@@ -1537,13 +1529,12 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_wins_over_a_sibling_failure() {
-        // Two records for one commit: an earlier fail and a later clean pass.
-        let mut fail = clean_full_pass(PASS_SHA);
-        fail.result = Some("fail".into());
+    fn a_pass_does_not_override_a_sibling_failure() {
+        // Two records for one commit: an earlier durable fail and a later clean pass.
+        let mut fail = complete_failure(PASS_SHA);
         fail.finished_at = Some("2026-08-03T10:00:00Z".into());
         let rows = vec![fail, clean_full_pass(PASS_SHA)];
-        assert_eq!(assess(&rows, PASS_SHA).verdict, Verdict::Validated);
+        assert_eq!(assess(&rows, PASS_SHA).verdict, Verdict::FailedOnRecord);
     }
 
     #[test]

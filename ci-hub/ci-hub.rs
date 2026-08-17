@@ -31,6 +31,8 @@
 
 #[path = "lib/history_queries.rs"]
 mod history_queries;
+#[path = "lib/failure_obligations.rs"]
+mod failure_obligations;
 #[path = "lib/landing_lock.rs"]
 mod landing_lock;
 #[path = "lib/lease.rs"]
@@ -3834,6 +3836,7 @@ struct CanonicalReceiptAssessment {
     disqualified: Vec<HistoryRow>,
     failed_records: usize,
     withheld_nonpass_records: usize,
+    unresolved_failure_obligations: Vec<failure_obligations::UnresolvedFailureObligation>,
 }
 
 fn is_oid(value: &str) -> bool {
@@ -4201,7 +4204,7 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
 }
 
 fn assess_canonical_receipts(
-    _root: &Path,
+    root: &Path,
     rows: &[HistoryRow],
     sha: &str,
     repo: &str,
@@ -4244,10 +4247,59 @@ fn assess_canonical_receipts(
             disqualified.push(row.clone());
         }
     }
-    let verdict = if !qualifying.is_empty() {
-        validate_status::Verdict::Validated
-    } else if saw_failed {
+    let repo_rows = rows
+        .iter()
+        .filter(|row| row_matches_validation_repo(row, repo))
+        .cloned()
+        .collect::<Vec<_>>();
+    let qualifying_target_rows = qualifying
+        .iter()
+        .map(|receipt| receipt.row.clone())
+        .collect::<Vec<_>>();
+    let product_checkout = root.join(if repo == CANONICAL_REVERIE_REPO {
+        "reverie"
+    } else {
+        "hermit"
+    });
+    let mut ancestry_cache: BTreeMap<(String, String), Result<bool, String>> = BTreeMap::new();
+    let unresolved_failure_obligations = failure_obligations::unresolved(
+        &repo_rows,
+        sha,
+        &qualifying_target_rows,
+        |ancestor, target| {
+            if ancestor == target {
+                return Ok(true);
+            }
+            if let Some(result) = ancestry_cache.get(&(ancestor.to_owned(), target.to_owned())) {
+                return result.clone();
+            }
+            let result = match Command::new("git")
+                .arg("-C")
+                .arg(&product_checkout)
+                .args(["merge-base", "--is-ancestor", ancestor, target])
+                .status()
+            {
+                Ok(status) if status.success() => Ok(true),
+                Ok(status) if status.code() == Some(1) => Ok(false),
+                Ok(status) => Err(format!(
+                    "cannot establish commit ancestry {ancestor} -> {target}: git exited {status}"
+                )),
+                Err(error) => Err(format!(
+                    "cannot establish commit ancestry {ancestor} -> {target}: {error}"
+                )),
+            };
+            ancestry_cache.insert((ancestor.to_owned(), target.to_owned()), result.clone());
+            result
+        },
+    )?;
+    // A genuine same-commit failure and a durable per-cell obligation both win
+    // over a lucky PASS. Withheld non-verdicts remain non-poisoning.
+    let verdict = if saw_failed {
         validate_status::Verdict::FailedOnRecord
+    } else if !unresolved_failure_obligations.is_empty() {
+        validate_status::Verdict::NeedsRerun
+    } else if !qualifying.is_empty() {
+        validate_status::Verdict::Validated
     } else if saw_needs_rerun {
         validate_status::Verdict::NeedsRerun
     } else if saw_truncated {
@@ -4259,11 +4311,6 @@ fn assess_canonical_receipts(
     };
     // Retain the current-main adverse-record accounting while the canonical
     // receipt predicate above remains the stricter positive authority.
-    let repo_rows = rows
-        .iter()
-        .filter(|row| row_matches_validation_repo(row, repo))
-        .cloned()
-        .collect::<Vec<_>>();
     let status_assessment = validate_status::assess(&repo_rows, sha);
     Ok(CanonicalReceiptAssessment {
         sha: sha.to_string(),
@@ -4272,6 +4319,7 @@ fn assess_canonical_receipts(
         disqualified,
         failed_records: status_assessment.failed_records,
         withheld_nonpass_records: status_assessment.withheld_nonpass_records,
+        unresolved_failure_obligations,
     })
 }
 
@@ -5625,12 +5673,11 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
             "ledger_freshness": freshness_json,
             "qualifying_count": assessment.qualifying.len(),
             "disqualified_count": assessment.disqualified.len(),
-            // Genuine clean full-coverage FAILs on this same commit. When the
-            // verdict is VALIDATED these are SUPERSEDED (the ledger does not
-            // latch) -- a machine consumer must be able to see them rather than
-            // read a bare green.
+            // Genuine clean full-coverage FAILs on this same commit. Any
+            // positive count prevents VALIDATED; the count explains the latch.
             "failed_record_count": assessment.failed_records,
             "withheld_nonpass_record_count": assessment.withheld_nonpass_records,
+            "unresolved_failure_obligations": assessment.unresolved_failure_obligations,
             "newest_qualifying": newest.map(describe_receipt),
             "qualifying_receipts": qualifying_receipts,
             "ledger": path.display().to_string(),
@@ -5657,17 +5704,7 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
                         producer.paths.join(",")
                     );
                 }
-                // The ledger does not latch: this PASS supersedes any earlier
-                // clean full FAIL on the same commit. Surface those loudly --
-                // a green that silently buries a same-commit failure claims
-                // more than it verified, and the pass/fail pair on identical
-                // clean full conditions is a FLAKE SIGNAL, not noise.
-                if assessment.failed_records > 0 {
-                    println!(
-                        "# validate WARNING {} -- {} SUPERSEDED clean full-coverage FAIL record(s) on this same commit; the green above did not disprove them. Same commit passing AND failing a clean full run is a FLAKE SIGNAL: investigate before trusting this green for landing.",
-                        assessment.sha, assessment.failed_records,
-                    );
-                }
+                debug_assert_eq!(assessment.failed_records, 0);
                 // Withheld reds are not FAILURES, but neither are they nothing.
                 // Measured on the live ledger: 20 of 105 VALIDATED commits carry
                 // a same-commit `fail` record and EVERY one is withheld, so a
@@ -5699,10 +5736,33 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
                 );
             }
             validate_status::Verdict::NeedsRerun => {
-                println!(
-                    "# validate NEEDS-RERUN {} -- red evidence lacks complete solo execution conditions or is known-flaky/contended; rerun solo at -j 4",
-                    assessment.sha,
-                );
+                if assessment.unresolved_failure_obligations.is_empty() {
+                    println!(
+                        "# validate NEEDS-RERUN {} -- red evidence lacks complete solo execution conditions or is known-flaky/contended; rerun solo at -j 4",
+                        assessment.sha,
+                    );
+                } else {
+                    println!(
+                        "# validate NEEDS-RERUN {} -- {} durable per-cell failure obligation(s) remain unresolved",
+                        assessment.sha,
+                        assessment.unresolved_failure_obligations.len(),
+                    );
+                    for obligation in &assessment.unresolved_failure_obligations {
+                        println!(
+                            "#   {}/{} {} {}: target has {} clean leg(s), {} failure(s); needs {} clean leg(s) after {}/{} baseline failures at {}",
+                            obligation.category,
+                            obligation.test,
+                            obligation.mode,
+                            obligation.backend,
+                            obligation.observed_clean_legs_at_target,
+                            obligation.target_failures,
+                            obligation.required_clean_legs,
+                            obligation.baseline_failures,
+                            obligation.baseline_legs,
+                            obligation.failing_commit,
+                        );
+                    }
+                }
             }
             validate_status::Verdict::NoResult => {
                 println!(
@@ -7298,6 +7358,45 @@ mod tests {
         assert_eq!(report["coverage_status"], "grandfathered-unknown");
         assert_eq!(report["receipt_identity"]["digest_algorithm"], "sha256");
         assert_eq!(report["receipt_identity"]["tuple"]["sha"], RECEIPT_SHA);
+    }
+
+    #[test]
+    fn canonical_assessment_latches_a_genuine_same_commit_failure() {
+        let pass = history_row(schema4_receipt_value());
+        let mut fail = schema4_receipt_value();
+        fail["finished_at"] = serde_json::json!("2026-08-01T12:00:30Z");
+        fail["result"] = serde_json::json!("fail");
+        fail["raw_result"] = serde_json::json!("fail");
+        fail["exit_code"] = serde_json::json!(1);
+        fail["failures"] = serde_json::json!(1);
+        fail["dag_jobs"] = serde_json::json!(4);
+        fail["concurrent_validates"] = serde_json::json!(0);
+        fail["known_flaky_failure"] = serde_json::json!(false);
+        fail["solo_rerun_confirmation"] = serde_json::json!(false);
+        fail["gates"] = serde_json::json!([
+            {
+                "name": "fmt",
+                "result": "pass",
+                "exit_code": 0,
+                "real_seconds": 5.0
+            },
+            {
+                "name": "test",
+                "result": "fail",
+                "exit_code": 1,
+                "real_seconds": 30.0,
+                "failure_origin": "outer_gate"
+            }
+        ]);
+        let assessment = assess_canonical_receipts(
+            Path::new("."),
+            &[history_row(fail), pass],
+            RECEIPT_SHA,
+            CANONICAL_VALIDATE_REPO,
+        )
+        .unwrap();
+        assert_eq!(assessment.verdict, validate_status::Verdict::FailedOnRecord);
+        assert_eq!(assessment.failed_records, 1);
     }
 
     #[test]

@@ -1,0 +1,858 @@
+//! Durable per-cell requalification after a canonical divergence.
+//!
+//! Schema-6 validation rows already bind typed per-cell results to retained
+//! artifacts.  Those append-only rows are the obligation store: a canonical
+//! divergence opens an obligation for that exact cell, and a later commit
+//! closes it only after enough clean canonical legs have been retained to make
+//! a repeat of the measured failure rate sufficiently unlikely.
+//!
+//! Cells with no recorded canonical divergence do not enter this path.  Their
+//! ordinary full validation is neither repeated nor slowed down.
+
+use crate::records::{
+    CellIdentity, CellResult, CellResultsEvidence, CellVerdict, ComparisonStrictness,
+    ComparisonTier, HistoryRow, RequiredNullable,
+};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path};
+
+/// A clean candidate must make recurrence of the measured failure rate less
+/// likely than 1 in 400 (99.75% confidence).  This is deliberately a policy
+/// constant rather than a fixed repetition count: a PASS/FAIL/FAIL cell and a
+/// 1-in-270 startup race require radically different budgets.
+const REQUIRED_CONFIDENCE: f64 = 0.9975;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct CellKey {
+    lane: String,
+    category: String,
+    test: String,
+    mode: String,
+    backend: String,
+}
+
+impl From<&CellIdentity> for CellKey {
+    fn from(cell: &CellIdentity) -> Self {
+        Self {
+            lane: cell.lane.clone(),
+            category: cell.category.clone(),
+            test: cell.test.clone(),
+            mode: cell.mode.clone(),
+            backend: cell.backend.clone(),
+        }
+    }
+}
+
+impl From<&CellResult> for CellKey {
+    fn from(cell: &CellResult) -> Self {
+        Self {
+            lane: cell.lane.clone(),
+            category: cell.category.clone(),
+            test: cell.test.clone(),
+            mode: cell.mode.clone(),
+            backend: cell.backend.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Observation {
+    legs: u64,
+    failures: u64,
+}
+
+#[derive(Clone, Debug)]
+struct CommitObservation {
+    first_seen: String,
+    commit: String,
+    tree: String,
+    toolchain: String,
+    observation: Observation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct UnresolvedFailureObligation {
+    pub lane: String,
+    pub category: String,
+    pub test: String,
+    pub mode: String,
+    pub backend: String,
+    pub failing_commit: String,
+    pub baseline_failures: u64,
+    pub baseline_legs: u64,
+    pub required_clean_legs: u64,
+    pub observed_clean_legs_at_target: u64,
+    pub target_failures: u64,
+}
+
+/// Return the number of consecutive clean legs needed to observe no recurrence
+/// with [`REQUIRED_CONFIDENCE`] at the measured failure probability.
+///
+/// The result is fail-closed for malformed or certain-failure observations.
+fn required_clean_legs(failures: u64, legs: u64) -> Option<u64> {
+    if failures == 0 || legs == 0 || failures > legs {
+        return None;
+    }
+    if failures == legs {
+        return Some(u64::MAX);
+    }
+    let failure_probability = failures as f64 / legs as f64;
+    let miss_probability = 1.0 - REQUIRED_CONFIDENCE;
+    let required = (miss_probability.ln() / (1.0 - failure_probability).ln()).ceil();
+    if !required.is_finite() || required <= 0.0 || required > u64::MAX as f64 {
+        None
+    } else {
+        // Verification produces pairs of legs, and the measured startup-race
+        // budget was operated in ten-leg batches. Round up rather than letting
+        // a floating-point boundary admit a smaller, unmeasured budget.
+        let required = required as u64;
+        required.checked_add(9).map(|value| value / 10 * 10)
+    }
+}
+
+/// A comparison contributes to requalification only when it is the canonical,
+/// non-stripped, nonempty INFO comparison that the scorecard claims.  Output-
+/// only matches, stripped comparisons, 0/0 reports and unavailable cells never
+/// become clean legs.
+fn canonical_observation(cell: &CellResult) -> Option<Observation> {
+    let (matched, tier, comparison, bitwise_parity, counts) = match &cell.cell_verdict {
+        CellVerdict::ComparedAndMatched {
+            comparison_tier,
+            comparison,
+            bitwise_parity,
+            compared_log_messages,
+        } => (
+            true,
+            comparison_tier,
+            comparison,
+            *bitwise_parity,
+            compared_log_messages,
+        ),
+        CellVerdict::ComparedAndDiverged {
+            comparison_tier,
+            comparison,
+            bitwise_parity,
+            compared_log_messages,
+        } => (
+            false,
+            comparison_tier,
+            comparison,
+            *bitwise_parity,
+            compared_log_messages,
+        ),
+        CellVerdict::PerformsNoComparisonByDesign { .. }
+        | CellVerdict::UnavailableWithReason { .. } => return None,
+    };
+    let RequiredNullable::Value(counts) = counts else {
+        return None;
+    };
+    if *tier != ComparisonTier::CanonicalBitwise
+        || comparison.strictness != ComparisonStrictness::Canonical
+        || !comparison.compare_logs
+        || comparison.compare_io_buffers == Some(false)
+        || comparison
+            .record_envelope
+            .as_deref()
+            .is_some_and(|value| value != "all_records_v1")
+        || comparison.log_scope != crate::records::ComparedLogScope::Info
+        || comparison.strip_lines
+        || !comparison.canonicalize_addresses
+        || !comparison.full_trace
+        || !comparison.exact_remainder
+        || comparison.ignore_lines
+        || comparison.skip_commit
+        || comparison.skip_detlog
+        || counts.left == 0
+        || counts.right == 0
+        || bitwise_parity != matched
+    {
+        return None;
+    }
+    Some(Observation {
+        legs: 2,
+        failures: u64::from(!matched),
+    })
+}
+
+fn nonblank(value: &str) -> bool {
+    !value.trim().is_empty()
+}
+
+fn sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn population_sha256(selected: &[CellIdentity]) -> String {
+    let mut selected = selected.to_vec();
+    selected.sort_by(|left, right| CellKey::from(left).cmp(&CellKey::from(right)));
+    // Match qualifying_receipt.py exactly: sorted identities, sorted object
+    // keys, compact JSON. Serializing the Rust struct directly would preserve
+    // declaration order and disagree with the canonical cross-language digest.
+    let canonical = selected
+        .iter()
+        .map(|cell| {
+            serde_json::json!({
+                "backend": cell.backend,
+                "category": cell.category,
+                "lane": cell.lane,
+                "mode": cell.mode,
+                "test": cell.test,
+            })
+        })
+        .collect::<Vec<_>>();
+    let bytes = serde_json::to_vec(&canonical).expect("cell identities serialize");
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn retained_artifact_path(value: &str) -> bool {
+    let path = Path::new(value);
+    !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+        && path.starts_with("ignored/validate/artifacts")
+}
+
+fn cell_key_nonblank(cell: &CellKey) -> bool {
+    nonblank(&cell.lane)
+        && nonblank(&cell.category)
+        && nonblank(&cell.test)
+        && nonblank(&cell.mode)
+        && nonblank(&cell.backend)
+}
+
+/// Validate the typed schema-6 summary before using it as repetition evidence.
+/// The canonical ledger adapter additionally binds the retained artifact bytes;
+/// this check prevents any direct caller from bypassing the summary contract.
+fn validated_evidence(row: &HistoryRow) -> Result<Option<&CellResultsEvidence>, String> {
+    let schema = row.schema_version.unwrap_or(0);
+    let evidence = row.cell_results.as_ref();
+    if schema < 6 {
+        return if evidence.is_none() {
+            Ok(None)
+        } else {
+            Err("legacy row illegally claims cell_results".into())
+        };
+    }
+    let evidence = evidence.ok_or_else(|| "schema-6 row omits cell_results".to_string())?;
+    let run_id = row
+        .run_id
+        .as_deref()
+        .filter(|value| nonblank(value))
+        .ok_or_else(|| "schema-6 row omits stable run_id".to_string())?;
+    if evidence.run_id != run_id {
+        return Err("cell_results run_id differs from row run_id".into());
+    }
+    if row.commit.as_deref() != Some(evidence.hermit_sha.as_str()) {
+        return Err("cell_results hermit_sha differs from row commit".into());
+    }
+    if evidence.source_tree_dirty {
+        return Err("cell_results came from a dirty source tree".into());
+    }
+    if evidence.selected_count == 0
+        || evidence.recorded_count == 0
+        || evidence.selected_count != evidence.selected.len() as u64
+        || evidence.recorded_count != evidence.cells.len() as u64
+        || evidence.artifact.row_count != evidence.recorded_count
+        || !retained_artifact_path(&evidence.artifact.path)
+        || !sha256(&evidence.artifact.sha256)
+        || !sha256(&evidence.population_sha256)
+    {
+        return Err("cell_results counts or artifact identity are malformed".into());
+    }
+    let selected: Vec<CellKey> = evidence.selected.iter().map(CellKey::from).collect();
+    let cells: Vec<CellKey> = evidence.cells.iter().map(CellKey::from).collect();
+    if selected.iter().any(|cell| !cell_key_nonblank(cell))
+        || cells.iter().any(|cell| !cell_key_nonblank(cell))
+        || selected.iter().collect::<BTreeSet<_>>().len() != selected.len()
+        || cells.iter().collect::<BTreeSet<_>>().len() != cells.len()
+    {
+        return Err("cell_results contain blank or duplicate identities".into());
+    }
+    let mut selected_sorted = selected;
+    let mut cells_sorted = cells;
+    selected_sorted.sort();
+    cells_sorted.sort();
+    if selected_sorted != cells_sorted {
+        return Err("cell_results selected population differs from recorded cells".into());
+    }
+    if population_sha256(&evidence.selected) != evidence.population_sha256 {
+        return Err("cell_results population_sha256 does not bind selected identities".into());
+    }
+    if evidence.cells.iter().any(|cell| match &cell.cell_verdict {
+        CellVerdict::ComparedAndMatched { .. } | CellVerdict::ComparedAndDiverged { .. } => {
+            canonical_observation(cell).is_none()
+                && matches!(
+                    &cell.cell_verdict,
+                    CellVerdict::ComparedAndMatched {
+                        comparison_tier: ComparisonTier::CanonicalBitwise,
+                        ..
+                    } | CellVerdict::ComparedAndDiverged {
+                        comparison_tier: ComparisonTier::CanonicalBitwise,
+                        ..
+                    }
+                )
+        }
+        CellVerdict::PerformsNoComparisonByDesign { reason, .. }
+        | CellVerdict::UnavailableWithReason { reason, .. } => !nonblank(reason),
+    }) {
+        return Err("cell_results contain an invalid typed verdict".into());
+    }
+    Ok(Some(evidence))
+}
+
+/// Reviewed calibration policy for cells whose observed failure is rarer than
+/// one ordinary verify pair can measure. Ledger rows cannot self-declare this:
+/// changing the budget is a code-reviewed policy change bound to an exact cell.
+fn trusted_calibration(cell: &CellKey) -> Option<Observation> {
+    (cell.lane == "portable"
+        && cell.category == "c-programs"
+        && cell.test == "c-programs/perf-event-open-enosys"
+        && cell.mode == "verify"
+        && cell.backend == "ptrace")
+        .then_some(Observation {
+            failures: 1,
+            legs: 270,
+        })
+}
+
+fn target_cutoff(rows: &[HistoryRow], target_sha: &str) -> Option<String> {
+    rows.iter()
+        .filter(|row| row.commit.as_deref() == Some(target_sha))
+        .filter_map(|row| row.finished_at.as_deref())
+        .max()
+        .map(str::to_owned)
+}
+
+/// Evaluate every per-cell failure obligation visible no later than the target
+/// run.  A divergence on the target commit is never cleared by a lucky sibling
+/// pass on that same commit.  An older obligation is cleared only by a later
+/// commit carrying the calibrated number of clean canonical legs.
+pub fn unresolved<F>(
+    rows: &[HistoryRow],
+    target_sha: &str,
+    qualifying_target_rows: &[HistoryRow],
+    mut is_ancestor: F,
+) -> Result<Vec<UnresolvedFailureObligation>, String>
+where
+    F: FnMut(&str, &str) -> Result<bool, String>,
+{
+    let Some(cutoff) = target_cutoff(rows, target_sha) else {
+        return Ok(Vec::new());
+    };
+    // Only obligations for cells selected by this candidate can block it. A
+    // disabled/red cell remains visible in the scorecard but must not multiply
+    // unrelated validation work. Schema-6 binds this exact selected set.
+    let mut target_selected = BTreeSet::new();
+    for row in qualifying_target_rows
+        .iter()
+        .filter(|row| row.commit.as_deref() == Some(target_sha))
+    {
+        if let Some(evidence) = validated_evidence(row)? {
+            target_selected.extend(evidence.selected.iter().map(CellKey::from));
+        }
+    }
+    let mut by_cell_commit: BTreeMap<(CellKey, String, String, String), CommitObservation> =
+        BTreeMap::new();
+    let mut runs: BTreeMap<String, (String, String, String, CellResultsEvidence)> = BTreeMap::new();
+
+    for row in rows {
+        let Some(at) = row.finished_at.as_deref() else {
+            continue;
+        };
+        if at > cutoff.as_str() {
+            continue;
+        }
+        let Some(commit) = row.commit.as_deref() else {
+            continue;
+        };
+        let Some(tree) = row.extra.get("tree").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some(toolchain) = row.extra.get("toolchain").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some(evidence) = validated_evidence(row)? else {
+            continue;
+        };
+        let run_id = row.run_id.as_deref().expect("validated schema-6 run_id");
+        let fingerprint = (
+            commit.to_owned(),
+            tree.to_owned(),
+            toolchain.to_owned(),
+            evidence.clone(),
+        );
+        if let Some(existing) = runs.get(run_id) {
+            if existing != &fingerprint {
+                return Err(format!("conflicting correction rows for run_id {run_id}"));
+            }
+            continue;
+        }
+        runs.insert(run_id.to_owned(), fingerprint);
+        for cell in &evidence.cells {
+            let Some(observation) = canonical_observation(cell) else {
+                continue;
+            };
+            let key = (
+                CellKey::from(cell),
+                commit.to_owned(),
+                tree.to_owned(),
+                toolchain.to_owned(),
+            );
+            let aggregate = by_cell_commit
+                .entry(key)
+                .or_insert_with(|| CommitObservation {
+                    first_seen: at.to_owned(),
+                    commit: commit.to_owned(),
+                    tree: tree.to_owned(),
+                    toolchain: toolchain.to_owned(),
+                    observation: Observation::default(),
+                });
+            if at < aggregate.first_seen.as_str() {
+                aggregate.first_seen = at.to_owned();
+            }
+            aggregate.observation.legs += observation.legs;
+            aggregate.observation.failures += observation.failures;
+        }
+    }
+
+    let mut by_cell: BTreeMap<CellKey, Vec<CommitObservation>> = BTreeMap::new();
+    for ((cell, _, _, _), observation) in by_cell_commit {
+        by_cell.entry(cell).or_default().push(observation);
+    }
+
+    let mut unresolved = Vec::new();
+    for (cell, observations) in &mut by_cell {
+        // With a schema-6 selected set, only selected cells carry forward. If
+        // the candidate has no typed selected set at all, fail closed: absence
+        // cannot prove that a previously failing cell is no longer selected.
+        if !target_selected.is_empty() && !target_selected.contains(cell) {
+            continue;
+        }
+        observations.sort_by(|left, right| {
+            left.first_seen
+                .cmp(&right.first_seen)
+                .then_with(|| left.commit.cmp(&right.commit))
+                .then_with(|| left.tree.cmp(&right.tree))
+                .then_with(|| left.toolchain.cmp(&right.toolchain))
+        });
+        let mut failing = None;
+        for observation in observations.iter().rev() {
+            if observation.observation.failures > 0 && is_ancestor(&observation.commit, target_sha)?
+            {
+                failing = Some(observation);
+                break;
+            }
+        }
+        let Some(failing) = failing else {
+            continue;
+        };
+        let rate = trusted_calibration(cell).unwrap_or(failing.observation);
+        let required = required_clean_legs(rate.failures, rate.legs).unwrap_or(u64::MAX);
+        let mut resolved = false;
+        for observation in observations.iter() {
+            if observation.first_seen >= failing.first_seen
+                && observation.commit != failing.commit
+                && observation.observation.failures == 0
+                && observation.observation.legs >= required
+                && is_ancestor(&failing.commit, &observation.commit)?
+                && is_ancestor(&observation.commit, target_sha)?
+            {
+                resolved = true;
+                break;
+            }
+        }
+        if resolved {
+            continue;
+        }
+        let target = observations
+            .iter()
+            .filter(|observation| observation.commit == target_sha)
+            .max_by_key(|observation| observation.observation.legs);
+        unresolved.push(UnresolvedFailureObligation {
+            lane: cell.lane.clone(),
+            category: cell.category.clone(),
+            test: cell.test.clone(),
+            mode: cell.mode.clone(),
+            backend: cell.backend.clone(),
+            failing_commit: failing.commit.clone(),
+            baseline_failures: rate.failures,
+            baseline_legs: rate.legs,
+            required_clean_legs: required,
+            observed_clean_legs_at_target: target.map_or(0, |value| {
+                value
+                    .observation
+                    .legs
+                    .saturating_sub(value.observation.failures)
+            }),
+            target_failures: target.map_or(0, |value| value.observation.failures),
+        });
+    }
+    Ok(unresolved)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::records::{
+        CellResultsArtifact, CellResultsEvidence, ComparedLogCounts, ComparedLogScope,
+        ComparisonSpec,
+    };
+
+    const BAD: &str = "1111111111111111111111111111111111111111";
+    const FIX: &str = "2222222222222222222222222222222222222222";
+    const OTHER: &str = "3333333333333333333333333333333333333333";
+    const OLD: &str = "0000000000000000000000000000000000000000";
+
+    fn comparison() -> ComparisonSpec {
+        ComparisonSpec {
+            strictness: ComparisonStrictness::Canonical,
+            compare_logs: true,
+            compare_io_buffers: Some(true),
+            record_envelope: Some("all_records_v1".into()),
+            log_scope: ComparedLogScope::Info,
+            strip_lines: false,
+            canonicalize_addresses: true,
+            full_trace: true,
+            exact_remainder: true,
+            stripped_prefixes: Vec::new(),
+            canonicalizations: vec!["bitwise-info-v1".into()],
+            ignore_lines: false,
+            skip_commit: false,
+            skip_detlog: false,
+        }
+    }
+
+    fn row(commit: &str, ordinal: u64, matched: bool) -> HistoryRow {
+        let verdict = if matched {
+            CellVerdict::ComparedAndMatched {
+                comparison_tier: ComparisonTier::CanonicalBitwise,
+                comparison: comparison(),
+                bitwise_parity: true,
+                compared_log_messages: RequiredNullable::Value(ComparedLogCounts {
+                    left: 120,
+                    right: 120,
+                }),
+            }
+        } else {
+            CellVerdict::ComparedAndDiverged {
+                comparison_tier: ComparisonTier::CanonicalBitwise,
+                comparison: comparison(),
+                bitwise_parity: false,
+                compared_log_messages: RequiredNullable::Value(ComparedLogCounts {
+                    left: 120,
+                    right: 121,
+                }),
+            }
+        };
+        let identity = CellIdentity {
+            lane: "portable".into(),
+            category: "c-programs".into(),
+            test: "c-programs/perf-event-open-enosys".into(),
+            mode: "verify".into(),
+            backend: "ptrace".into(),
+        };
+        let population_sha256 = population_sha256(std::slice::from_ref(&identity));
+        serde_json::from_value(serde_json::json!({
+            "schema_version": 6,
+            "run_id": format!("run-{commit}-{ordinal}"),
+            "finished_at": format!("2026-08-17T{:02}:{:02}:00Z", ordinal / 60, ordinal % 60),
+            "commit": commit,
+            "tree": format!("tree-{commit}"),
+            "toolchain": "rustc-test",
+            "cell_results": CellResultsEvidence {
+                run_id: format!("run-{commit}-{ordinal}"),
+                hermit_sha: commit.into(),
+                source_tree_dirty: false,
+                selected_count: 1,
+                recorded_count: 1,
+                population_sha256,
+                artifact: CellResultsArtifact {
+                    path: "ignored/validate/artifacts/test/results.jsonl".into(),
+                    sha256: "b".repeat(64),
+                    row_count: 1,
+                },
+                selected: vec![identity.clone()],
+                cells: vec![CellResult {
+                    lane: identity.lane,
+                    category: identity.category,
+                    test: identity.test,
+                    mode: identity.mode,
+                    backend: identity.backend,
+                    cell_verdict: verdict,
+                }],
+            }
+        }))
+        .unwrap()
+    }
+
+    fn target_rows(rows: &[HistoryRow], target: &str) -> Vec<HistoryRow> {
+        rows.iter()
+            .filter(|row| row.commit.as_deref() == Some(target))
+            .cloned()
+            .collect()
+    }
+
+    fn uncalibrated_row(commit: &str, ordinal: u64, matched: bool) -> HistoryRow {
+        let mut value = row(commit, ordinal, matched);
+        let evidence = value.cell_results.as_mut().unwrap();
+        evidence.selected[0].test = "c-programs/ordinary-cell".into();
+        evidence.cells[0].test = "c-programs/ordinary-cell".into();
+        evidence.population_sha256 = population_sha256(&evidence.selected);
+        value
+    }
+
+    fn targeted_producer_row(commit: &str, ordinal: u64, matched: bool) -> HistoryRow {
+        let mut value = row(commit, ordinal, matched);
+        let run_id = format!(
+            "validate-cell-requalification-{}-20260817T{:06}Z-pid{}--portable-c-programs-c-programs-perf-event-open-enosys-verify-ptrace-repetition-0001",
+            &commit[..commit.len().min(12)],
+            ordinal,
+            10_000 + ordinal,
+        );
+        value.run_id = Some(run_id.clone());
+        value
+            .extra
+            .insert("selection_mode".into(), serde_json::json!("targeted"));
+        let evidence = value.cell_results.as_mut().unwrap();
+        evidence.run_id = run_id.clone();
+        evidence.artifact.path = format!("ignored/validate/artifacts/{run_id}/cell-results.jsonl");
+        value
+    }
+
+    fn evaluate(
+        rows: &[HistoryRow],
+        target: &str,
+    ) -> Result<Vec<UnresolvedFailureObligation>, String> {
+        let target_receipts = target_rows(rows, target);
+        unresolved(rows, target, &target_receipts, |ancestor, descendant| {
+            Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+        })
+    }
+
+    #[test]
+    fn unaffected_cell_needs_no_extra_repetitions() {
+        let rows = vec![row(FIX, 1, true)];
+        assert!(evaluate(&rows, FIX).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unselected_failed_cell_does_not_slow_an_unrelated_candidate() {
+        let failed = row(BAD, 1, false);
+        let mut unrelated = row(FIX, 2, true);
+        let evidence = unrelated.cell_results.as_mut().unwrap();
+        evidence.selected[0].test = "unrelated-cell".into();
+        evidence.cells[0].test = "unrelated-cell".into();
+        evidence.population_sha256 = population_sha256(&evidence.selected);
+        let rows = [failed, unrelated];
+        assert!(evaluate(&rows, FIX).unwrap().is_empty());
+    }
+
+    #[test]
+    fn missing_target_cell_evidence_cannot_bypass_an_open_obligation() {
+        let failed = row(BAD, 1, false);
+        let mut untyped_target = row(FIX, 2, true);
+        untyped_target.schema_version = Some(5);
+        untyped_target.run_id = None;
+        untyped_target.cell_results = None;
+        let rows = [failed, untyped_target.clone()];
+        let obligations = unresolved(&rows, FIX, &[untyped_target], |ancestor, descendant| {
+            Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+        })
+        .unwrap();
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 0);
+    }
+
+    #[test]
+    fn same_commit_failure_cannot_be_overridden_by_a_lucky_pass() {
+        let rows = vec![row(BAD, 1, false), row(BAD, 2, true)];
+        let obligations = evaluate(&rows, BAD).unwrap();
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].target_failures, 1);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 3);
+    }
+
+    #[test]
+    fn historical_startup_race_cannot_qualify_on_one_pass() {
+        // The measured unfixed fixture: 5 reordered legs in 1,080.  Each typed
+        // verify observation represents two legs, so 540 comparisons carry five
+        // divergences.  A subsequent one-comparison pass is still far below the
+        // calibrated budget.
+        let mut rows = Vec::new();
+        for ordinal in 0..540 {
+            rows.push(row(BAD, ordinal, ordinal >= 5));
+        }
+        rows.push(row(FIX, 600, true));
+        let obligations = evaluate(&rows, FIX).unwrap();
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].baseline_failures, 1);
+        assert_eq!(obligations[0].baseline_legs, 270);
+        assert_eq!(obligations[0].required_clean_legs, 1620);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 2);
+    }
+
+    #[test]
+    fn measured_fixed_budget_clears_the_startup_race_obligation() {
+        let mut rows = Vec::new();
+        for ordinal in 0..540 {
+            rows.push(row(BAD, ordinal, ordinal >= 5));
+        }
+        let required = required_clean_legs(1, 270).unwrap();
+        assert_eq!(required, 1620);
+        for ordinal in 0..809 {
+            rows.push(targeted_producer_row(FIX, 600 + ordinal, true));
+        }
+        assert_eq!(evaluate(&rows, FIX).unwrap().len(), 1);
+        rows.clear();
+        for ordinal in 0..540 {
+            rows.push(row(BAD, ordinal, ordinal >= 5));
+        }
+        for ordinal in 0..810 {
+            rows.push(targeted_producer_row(FIX, 600 + ordinal, true));
+        }
+        assert!(evaluate(&rows, FIX).unwrap().is_empty());
+    }
+
+    #[test]
+    fn repeated_physical_run_id_cannot_fake_the_1620_leg_budget() {
+        let failed = row(BAD, 1, false);
+        let one_physical_run = targeted_producer_row(FIX, 600, true);
+        let mut rows = vec![failed];
+        rows.extend(std::iter::repeat_n(one_physical_run, 810));
+        let obligations = evaluate(&rows, FIX).unwrap();
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].required_clean_legs, 1620);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 2);
+    }
+
+    #[test]
+    fn calibration_scales_with_the_observed_rate() {
+        let frequent = required_clean_legs(2, 6).unwrap();
+        let rare = required_clean_legs(1, 270).unwrap();
+        assert!(
+            frequent <= 20,
+            "PASS/FAIL/FAIL must take a small targeted budget"
+        );
+        assert_eq!(rare, 1620);
+    }
+
+    #[test]
+    fn correction_rows_do_not_double_count_one_physical_run() {
+        let failed = uncalibrated_row(BAD, 1, false);
+        let mut correction = failed.clone();
+        correction.finished_at = Some("2026-08-17T00:02:00Z".into());
+        let target = uncalibrated_row(FIX, 3, true);
+        let rows = [failed, correction, target];
+        let obligations = evaluate(&rows, FIX).unwrap();
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].baseline_failures, 1);
+        assert_eq!(obligations[0].baseline_legs, 2);
+    }
+
+    #[test]
+    fn conflicting_correction_rows_are_refused() {
+        let failed = uncalibrated_row(BAD, 1, false);
+        let mut conflict = uncalibrated_row(BAD, 1, true);
+        conflict.finished_at = Some("2026-08-17T00:02:00Z".into());
+        let target = uncalibrated_row(FIX, 3, true);
+        assert!(evaluate(&[failed, conflict, target], FIX).is_err());
+    }
+
+    #[test]
+    fn unrelated_branch_repetitions_cannot_clear_an_obligation() {
+        let mut rows = vec![row(BAD, 1, false)];
+        for ordinal in 0..810 {
+            rows.push(row(OTHER, 10 + ordinal, true));
+        }
+        rows.push(row(FIX, 900, true));
+        let target_receipts = target_rows(&rows, FIX);
+        let obligations = unresolved(&rows, FIX, &target_receipts, |ancestor, descendant| {
+            Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+        })
+        .unwrap();
+        assert_eq!(obligations.len(), 1);
+        assert_eq!(obligations[0].observed_clean_legs_at_target, 2);
+    }
+
+    #[test]
+    fn selective_sibling_cannot_remove_a_full_receipts_selected_obligation() {
+        let failed = row(BAD, 1, false);
+        let full_target = row(FIX, 2, true);
+        let mut selective = row(FIX, 3, true);
+        let evidence = selective.cell_results.as_mut().unwrap();
+        evidence.selected[0].test = "unrelated-cell".into();
+        evidence.cells[0].test = "unrelated-cell".into();
+        evidence.population_sha256 = population_sha256(&evidence.selected);
+        let rows = [failed, full_target.clone(), selective];
+        let obligations = unresolved(&rows, FIX, &[full_target], |ancestor, descendant| {
+            Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+        })
+        .unwrap();
+        assert_eq!(obligations.len(), 1);
+    }
+
+    #[test]
+    fn malformed_schema6_summary_is_refused() {
+        let mut malformed = row(BAD, 1, false);
+        malformed.cell_results.as_mut().unwrap().run_id = "other-run".into();
+        let target = row(FIX, 2, true);
+        assert!(evaluate(&[malformed, target], FIX).is_err());
+    }
+
+    #[test]
+    fn targeted_schema6_repetitions_clear_only_the_selected_obligation() {
+        let mut rows = vec![row(BAD, 1, false)];
+        let mut full_target = row(FIX, 2, true);
+        full_target
+            .extra
+            .insert("selection_mode".into(), serde_json::json!("full"));
+        rows.push(full_target.clone());
+        for ordinal in 0..809 {
+            rows.push(targeted_producer_row(FIX, 10 + ordinal, true));
+        }
+        assert!(
+            unresolved(&rows, FIX, &[full_target], |ancestor, descendant| {
+                Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+            })
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn later_timestamp_on_an_older_ancestor_cannot_clear_a_descendant_failure() {
+        let mut rows = vec![row(BAD, 1, false)];
+        for ordinal in 0..810 {
+            rows.push(row(OLD, 10 + ordinal, true));
+        }
+        let target = row(FIX, 900, true);
+        rows.push(target.clone());
+        let obligations = unresolved(&rows, FIX, &[target], |ancestor, descendant| {
+            Ok(ancestor == descendant
+                || (ancestor == OLD && (descendant == BAD || descendant == FIX))
+                || (ancestor == BAD && descendant == FIX))
+        })
+        .unwrap();
+        assert_eq!(obligations.len(), 1);
+    }
+
+    #[test]
+    fn ancestry_lookup_error_fails_closed() {
+        let rows = [row(BAD, 1, false), row(FIX, 2, true)];
+        let error = unresolved(&rows, FIX, &[rows[1].clone()], |ancestor, descendant| {
+            if ancestor == BAD && descendant == FIX {
+                Err("missing commit object".into())
+            } else {
+                Ok(ancestor == descendant)
+            }
+        })
+        .unwrap_err();
+        assert!(error.contains("missing commit object"));
+    }
+}
