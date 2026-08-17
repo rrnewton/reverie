@@ -287,8 +287,13 @@ run_check() {
     else
         status=$?
         failures=$((failures + 1))
-        printf "FAIL: %s (exit %s; %ss; log: %s)\n" \
-            "$name" "$status" "$((SECONDS - started))" "$LOG_FILE" >&2
+        if [[ $name == "Backend maturity" && $status -eq 2 ]]; then
+            printf "UNMEASURABLE: %s (exit %s; %ss; log: %s)\n" \
+                "$name" "$status" "$((SECONDS - started))" "$LOG_FILE" >&2
+        else
+            printf "FAIL: %s (exit %s; %ss; log: %s)\n" \
+                "$name" "$status" "$((SECONDS - started))" "$LOG_FILE" >&2
+        fi
     fi
     record_ledger_gate "$name" "$status" "$((SECONDS - started))"
 }
@@ -365,6 +370,7 @@ run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discover
 run_check "Build workspace" cargo build --workspace --all-features
 run_check "DBT virtual identity and pidfd_open policy" \
     "$ROOT_DIR/reverie-dbt/scripts/test-identity-policy.sh"
+run_check "Backend maturity" "$ROOT_DIR/scripts/validate-backend-maturity.sh"
 run_check "Test regular workspace cases" cargo test --workspace --all-features \
     -- --test-threads=1 "${REGULAR_TEST_SKIP_ARGS[@]}"
 run_check "Documentation tests" cargo test --workspace --doc
