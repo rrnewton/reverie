@@ -1621,6 +1621,7 @@ static int64_t virtualize_identity_result(prototype_counters_t *counters,
   case SYS_clone:
   case SYS_clone3:
   case SYS_wait4:
+  case SYS_getpgrp:
   case SYS_getpgid:
   case SYS_getsid:
   case SYS_set_tid_address:

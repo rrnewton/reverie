@@ -18,6 +18,9 @@ int main(void) {
   char *const missing_argv[] = {(char *)"missing-evidence-exec", NULL};
   char *const echo_argv[] = {(char *)"echo", (char *)"exec-chain-ok", NULL};
 
+  printf("pgrp=%ld\n", (long)getpgrp());
+  fflush(stdout);
+
   execve("/definitely/missing-evidence-exec", missing_argv, environ);
   if (errno != ENOENT) {
     perror("failed exec did not return ENOENT");

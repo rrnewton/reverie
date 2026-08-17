@@ -146,7 +146,7 @@ fn protected_evidence_finalizes_each_scheduler_across_failed_and_successful_exec
         output.status.success(),
         "exec-chain guest exited unsuccessfully: {output:?}"
     );
-    assert_eq!(output.stdout, b"exec-chain-ok\n");
+    assert_eq!(output.stdout, b"pgrp=3\nexec-chain-ok\n");
 
     evidence_file
         .seek(std::io::SeekFrom::Start(0))
