@@ -1460,65 +1460,82 @@ impl KvmBackend {
                     .iter_syscalls()
                     .any(|number| number == syscall.number());
             let (result, handler_replaced_image, handler_process_completed) = if subscribed {
-                let handler_signal = Arc::new(Mutex::new(None));
-                let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-                let mut handler_process_completed = false;
-                expose_tool_scratch(&memory)?;
-                let outcome = {
-                    let mut guest_executor = StaticElfSyscallExecutor {
-                        backend: self,
-                        executor,
-                        memory: memory.clone(),
-                        process_context: ProcessExecutionContext::SyscallBoundary(
-                            ProcessBoundary {
-                                frame_address,
-                                return_slot,
-                            },
-                        ),
-                        last_result: None,
-                        process_completed: &mut handler_process_completed,
+                // The ERESTARTSYS restart protocol (Reverie #362).
+                // Detcore's internally polled blocking syscalls return the
+                // kernel-private ERESTARTSYS to mean "re-run me". The ptrace
+                // backend's kernel syscall-restart frame consumes it; this
+                // backend writes the handler result straight into the guest's
+                // return register, so without repeating the callback the
+                // private errno reaches the guest as errno 512.
+                loop {
+                    let handler_signal = Arc::new(Mutex::new(None));
+                    let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                    let mut handler_process_completed = false;
+                    expose_tool_scratch(&memory)?;
+                    let outcome = {
+                        let mut guest_executor = StaticElfSyscallExecutor {
+                            backend: self,
+                            executor,
+                            memory: memory.clone(),
+                            process_context: ProcessExecutionContext::SyscallBoundary(
+                                ProcessBoundary {
+                                    frame_address,
+                                    return_slot,
+                                },
+                            ),
+                            last_result: None,
+                            process_completed: &mut handler_process_completed,
+                        };
+                        let mut guest = KvmGuest::<T>::new(
+                            pid,
+                            tid,
+                            memory.clone(),
+                            &auxv,
+                            kvm_registers(registers, request.number()),
+                            &mut thread_state,
+                            &mut guest_executor,
+                            global_state.as_ref(),
+                            Some(global_state.clone()),
+                            config,
+                            subscriptions,
+                            handler_signal.clone(),
+                            pending_child_starts.clone(),
+                            stack_checked_out.clone(),
+                        );
+                        drive_handler(
+                            tool.handle_syscall_event(&mut guest, syscall),
+                            handler_signal,
+                            pending_child_starts,
+                        )
+                        .await
                     };
-                    let mut guest = KvmGuest::<T>::new(
-                        pid,
-                        tid,
-                        memory.clone(),
-                        &auxv,
-                        kvm_registers(registers, request.number()),
-                        &mut thread_state,
-                        &mut guest_executor,
-                        global_state.as_ref(),
-                        Some(global_state.clone()),
-                        config,
-                        subscriptions,
-                        handler_signal.clone(),
-                        pending_child_starts.clone(),
-                        stack_checked_out.clone(),
-                    );
-                    drive_handler(
-                        tool.handle_syscall_event(&mut guest, syscall),
-                        handler_signal,
-                        pending_child_starts,
-                    )
-                    .await
-                };
-                executor.start_pending_child_processes()?;
-                hide_tool_scratch(&memory)?;
-                match outcome {
-                    HandlerOutcome::Returned(result) => (
-                        handler_result_to_raw(result)?,
-                        false,
-                        handler_process_completed,
-                    ),
-                    HandlerOutcome::TailInjected {
-                        result,
-                        image_replaced,
-                        ..
-                    } => (
-                        result_to_raw(result),
-                        image_replaced,
-                        handler_process_completed,
-                    ),
-                    HandlerOutcome::RuntimeError(error) => return Err(error),
+                    executor.start_pending_child_processes()?;
+                    hide_tool_scratch(&memory)?;
+                    let outcome = match outcome {
+                        HandlerOutcome::Returned(Err(error)) => match error.into_errno() {
+                            Ok(Errno::ERESTARTSYS) => continue,
+                            Ok(errno) => HandlerOutcome::Returned(Err(errno.into())),
+                            Err(error) => HandlerOutcome::Returned(Err(error)),
+                        },
+                        other => other,
+                    };
+                    break match outcome {
+                        HandlerOutcome::Returned(result) => (
+                            handler_result_to_raw(result)?,
+                            false,
+                            handler_process_completed,
+                        ),
+                        HandlerOutcome::TailInjected {
+                            result,
+                            image_replaced,
+                            ..
+                        } => (
+                            result_to_raw(result),
+                            image_replaced,
+                            handler_process_completed,
+                        ),
+                        HandlerOutcome::RuntimeError(error) => return Err(error),
+                    };
                 }
             } else {
                 (executor.execute(&request, &memory), false, false)
