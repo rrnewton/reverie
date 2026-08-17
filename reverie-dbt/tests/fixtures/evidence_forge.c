@@ -35,12 +35,12 @@
 #define MREMAP_MAYMOVE 1
 #endif
 
-#define CHANNEL_HEADER_LEN 64
+#define CHANNEL_HEADER_LEN 80
 #define TOKEN_LEN 32
 #define ADDRESS_LEN 16
 
 static const unsigned char channel_magic[8] = {'R', 'V', 'D', 'B',
-                                                'T', 'E', '1', 0};
+                                                'T', 'E', '2', 0};
 static sigjmp_buf direct_store_jump;
 static volatile sig_atomic_t direct_store_faulted;
 
@@ -83,6 +83,40 @@ static void put_u32_le(unsigned char *out, uint32_t value) {
 static void put_u64_le(unsigned char *out, uint64_t value) {
   for (int byte = 0; byte != 8; ++byte)
     out[byte] = (unsigned char)(value >> (byte * 8));
+}
+
+static uint64_t frame_hash_update(uint64_t hash,
+                                  const unsigned char *bytes,
+                                  size_t length) {
+  while (length-- != 0)
+    hash = (hash ^ *bytes++) * UINT64_C(0x00000100000001b3);
+  return hash;
+}
+
+static uint64_t frame_hash(uint64_t seed, unsigned char kind,
+                           size_t payload_length, uint64_t sequence,
+                           const unsigned char *payload) {
+  unsigned char encoded_length[4];
+  unsigned char encoded_sequence[8];
+  put_u32_le(encoded_length, (uint32_t)payload_length);
+  put_u64_le(encoded_sequence, sequence);
+  seed = frame_hash_update(seed, &kind, 1);
+  seed = frame_hash_update(seed, encoded_length, sizeof(encoded_length));
+  seed = frame_hash_update(seed, encoded_sequence, sizeof(encoded_sequence));
+  return frame_hash_update(seed, payload, payload_length);
+}
+
+static void finish_header(unsigned char *header, unsigned char kind,
+                          size_t payload_length, uint64_t sequence,
+                          const unsigned char *payload) {
+  put_u32_le(header + 48, (uint32_t)payload_length);
+  put_u64_le(header + 56, sequence);
+  put_u64_le(header + 64,
+             frame_hash(UINT64_C(0xcbf29ce484222325), kind, payload_length,
+                        sequence, payload));
+  put_u64_le(header + 72,
+             frame_hash(UINT64_C(0x9e3779b97f4a7c15), kind, payload_length,
+                        sequence, payload));
 }
 
 static struct sockaddr_un evidence_address(socklen_t *length) {
@@ -136,6 +170,7 @@ static void send_valid_forge_if_connected(int descriptor) {
   memcpy(header, channel_magic, sizeof(channel_magic));
   memcpy(header + 8, token, sizeof(token));
   header[40] = 1;
+  finish_header(header, 1, 0, 0, NULL);
   write_all(descriptor, header, sizeof(header));
   if (read(descriptor, &acknowledgement, 1) != 1 || acknowledgement != 0)
     fail("forged START acknowledgement");
@@ -148,10 +183,9 @@ static void send_valid_forge_if_connected(int descriptor) {
   memcpy(header, channel_magic, sizeof(channel_magic));
   memcpy(header + 8, token, sizeof(token));
   header[40] = 2;
-  put_u32_le(header + 48, sizeof(payload));
-  put_u64_le(header + 56, 1);
   put_u32_le(payload, sizeof(record) - 1);
   memcpy(payload + 4, record, sizeof(record) - 1);
+  finish_header(header, 2, sizeof(payload), 1, payload);
   write_all(descriptor, header, sizeof(header));
   write_all(descriptor, payload, sizeof(payload));
   if (read(descriptor, &acknowledgement, 1) != 1 || acknowledgement != 0)
