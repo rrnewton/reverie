@@ -103,6 +103,13 @@ pub type RuntimeEmitter = unsafe extern "C" fn(*const u8, usize);
 pub type RuntimeIdler = unsafe extern "C" fn();
 
 /// Version of the native-client/external-runtime callback ABI.
+///
+/// An external runtime used with this native client must export
+/// `reverie_dbt_runtime_abi_version`, `reverie_dbt_runtime_callbacks_size`,
+/// `reverie_dbt_runtime_thread_created_v2`, and
+/// `reverie_dbt_runtime_background_init_v2`. Advancing a consumer's Reverie
+/// revision without those matching exports is an incomplete cross-repository
+/// update and fails at link or at the pre-callback ABI check.
 pub const DBT_RUNTIME_ABI_VERSION: u32 = 2;
 
 #[repr(C)]

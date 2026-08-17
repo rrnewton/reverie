@@ -746,15 +746,8 @@ static bool evidence_announce_child(process_id_t child) {
   bool ok;
   if (!evidence_is_enabled())
     return true;
-  if (child <= 0)
+  if (child <= 0 || !evidence_process_start_time(child, &child_start_time))
     return false;
-  // A short-lived child can finish its authenticated START/FINAL exchange and
-  // disappear before the parent resumes from clone. In that case the
-  // collector already owns the exact pid+starttime identity, so send a zero
-  // start time and require it to resolve one unique admitted image. An unseen
-  // or pid-reused child is still refused rather than guessed.
-  if (!evidence_process_start_time(child, &child_start_time))
-    child_start_time = 0;
   put_u32_le(payload, (uint32_t)child);
   put_u64_le(payload + 4, child_start_time);
   dr_mutex_lock(evidence_lock);
@@ -826,7 +819,7 @@ static void evidence_count_fork_child_thread(prototype_counters_t *counters) {
 static void evidence_emit_image_initialization(void) {
   static const char record[] =
       "1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: "
-      "prototype evidence initialized\n";
+      "protected evidence initialized\n";
   evidence_sender_state_t *sender;
   bool emit = false;
   if (!evidence_is_enabled() ||
@@ -2022,7 +2015,7 @@ static bool syscall_exits_process(const prototype_counters_t *counters,
       counters->evidence_thread_process != dr_get_process_id())
     return false;
   if (sysnum == SYS_exit_group)
-    return true;
+    return false;
   if (sysnum != SYS_exit)
     return false;
 
@@ -2898,21 +2891,6 @@ static bool is_copied_vfork_process(void) {
 
 static void finalize_runtime_process(void) {
   evidence_sender_state_t *sender = NULL;
-  if (!has_copied_runtime()) {
-    int attempts = 0;
-    int32_t state =
-        atomic_load_explicit(&runtime_background_state, memory_order_acquire);
-    while ((state == 1 || state == 2) && attempts++ != 5000) {
-      dr_sleep(1);
-      state =
-          atomic_load_explicit(&runtime_background_state, memory_order_acquire);
-    }
-    if (state == 1 || state == 2) {
-      dr_fprintf(diagnostic_file,
-                 "reverie-dbt: runtime background did not quiesce before exit\n");
-      return;
-    }
-  }
   if (evidence_is_enabled()) {
     dr_mutex_lock(evidence_lock);
     sender = evidence_sender_locked();
@@ -2936,8 +2914,26 @@ static void finalize_runtime_process(void) {
     reverie_dbt_runtime_process_exit();
     evidence_callback_leave();
   }
-  if (evidence_is_enabled())
-    require_evidence_flush(EVIDENCE_FRAME_FINAL);
+  if (!evidence_is_enabled())
+    return;
+
+  if (!has_copied_runtime()) {
+    int attempts = 0;
+    int32_t state =
+        atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+    while ((state == 1 || state == 2) && attempts++ != 5000) {
+      dr_sleep(1);
+      state =
+          atomic_load_explicit(&runtime_background_state, memory_order_acquire);
+    }
+    if (state == 1 || state == 2) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: runtime background did not quiesce after shutdown\n");
+      exit_runtime_tree(101);
+      return;
+    }
+  }
+  require_evidence_flush(EVIDENCE_FRAME_FINAL);
 }
 
 static bool evidence_current_process_finalized(void) {

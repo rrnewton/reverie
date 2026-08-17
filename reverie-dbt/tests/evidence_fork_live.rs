@@ -116,8 +116,8 @@ fn protected_evidence_covers_vfork_open_and_exec() {
         .iter()
         .filter(|record| {
             record
-                .windows(b"prototype evidence initialized".len())
-                .any(|window| window == b"prototype evidence initialized")
+                .windows(b"protected evidence initialized".len())
+                .any(|window| window == b"protected evidence initialized")
         })
         .count();
     assert!(
