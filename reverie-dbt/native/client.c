@@ -284,6 +284,7 @@ static ptr_uint_t rdtscp_marker_note;
 static bool report_summary;
 static bool test_wait_for_background;
 static bool test_kill_announced_child;
+static bool test_thread_exit_evidence;
 // Typed backend-statistics sink path. When the launcher passes
 // `-stats_path <path>`, each real runtime image appends exactly one fixed-size
 // binary record to this file at `event_exit`, using DynamoRIO's own
@@ -324,8 +325,6 @@ static _Atomic uint64_t virtual_tsc __attribute__((aligned(64)));
 static process_id_t runtime_owner_pid;
 static bool is_copied_vfork_process(void);
 static void finalize_runtime_process(void);
-static bool syscall_exits_process(const prototype_counters_t *counters,
-                                  int sysnum);
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-84): Review isolation-aware process-group termination.
 static process_id_t runtime_process_group;
@@ -2003,40 +2002,6 @@ forbidden:
   return true;
 }
 
-static bool syscall_exits_process(const prototype_counters_t *counters,
-                                  int sysnum) {
-  evidence_sender_state_t *sender;
-  bool last_thread;
-  if (!evidence_is_enabled())
-    return false;
-  // DynamoRIO-owned client threads are not application lifecycle members.
-  // Their SYS_exit must not finalize an application image.
-  if (counters == NULL ||
-      counters->evidence_thread_process != dr_get_process_id())
-    return false;
-  if (sysnum == SYS_exit_group)
-    return false;
-  if (sysnum != SYS_exit)
-    return false;
-
-  // DynamoRIO client threads share /proc/self/task with application threads,
-  // so a kernel task count cannot identify the last guest thread. The sender
-  // count is updated only by application thread_init/thread_exit callbacks and
-  // therefore describes the lifecycle whose FINAL frame we owe.
-  dr_mutex_lock(evidence_lock);
-  sender = evidence_sender_locked();
-  if (sender == NULL || sender->active_threads == 0) {
-    dr_mutex_unlock(evidence_lock);
-    dr_fprintf(diagnostic_file,
-               "reverie-dbt: protected evidence exit thread was uncounted\n");
-    exit_runtime_tree(101);
-    return false;
-  }
-  last_thread = sender->active_threads == 1;
-  dr_mutex_unlock(evidence_lock);
-  return last_thread;
-}
-
 static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
                               const uint64_t *args) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
@@ -2067,8 +2032,6 @@ static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
     return result;
   if (is_exec_syscall((int)sysnum))
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
-  if (syscall_exits_process(counters, (int)sysnum))
-    finalize_runtime_process();
   result = invoke_raw_syscall(context, sysnum, translated);
   if (is_exec_syscall((int)sysnum) && result < 0)
     require_evidence_flush(EVIDENCE_FRAME_EXEC_CANCEL);
@@ -3469,8 +3432,6 @@ static bool pre_syscall(void *drcontext, int sysnum) {
         prepare_original_identity_syscall(drcontext, counters, sysnum, args);
     if (execute && is_exec_syscall(sysnum))
       require_evidence_flush(EVIDENCE_FRAME_EXEC);
-    if (execute && syscall_exits_process(counters, sysnum))
-      finalize_runtime_process();
     return execute;
   }
   while (!reverie_dbt_runtime_ready(
@@ -3552,8 +3513,6 @@ static bool pre_syscall(void *drcontext, int sysnum) {
         prepare_original_identity_syscall(drcontext, counters, sysnum, args);
     if (execute && is_exec_syscall(sysnum))
       require_evidence_flush(EVIDENCE_FRAME_EXEC);
-    if (execute && syscall_exits_process(counters, sysnum))
-      finalize_runtime_process();
     return execute;
   }
 
@@ -3572,8 +3531,6 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       prepare_original_identity_syscall(drcontext, counters, sysnum, args);
   if (execute && is_exec_syscall(sysnum))
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
-  if (execute && syscall_exits_process(counters, sysnum))
-    finalize_runtime_process();
   return execute;
 }
 
@@ -3674,6 +3631,15 @@ static void thread_exit(void *drcontext) {
       reverie_dbt_runtime_thread_exit(counters, drcontext,
                                       dr_get_thread_id(drcontext),
                                       invoke_syscall);
+      evidence_callback_leave();
+    }
+    if (test_thread_exit_evidence && evidence_is_enabled() &&
+        counters->evidence_thread_process == dr_get_process_id()) {
+      static const char record[] =
+          "1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: "
+          "thread exit callback completed\n";
+      evidence_callback_enter();
+      reverie_dbt_emit_evidence(record, sizeof(record) - 1);
       evidence_callback_leave();
     }
     evidence_thread_leave(counters);
@@ -3878,6 +3844,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       test_wait_for_background = true;
     else if (strcmp(argv[i], "-test-kill-announced-child") == 0)
       test_kill_announced_child = true;
+    else if (strcmp(argv[i], "-test-thread-exit-evidence") == 0)
+      test_thread_exit_evidence = true;
     else if (strcmp(argv[i], "-diagnostic_fd") == 0) {
       int fd;
       DR_ASSERT(++i < argc);
@@ -3982,7 +3950,8 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
       /* Handled before application initialization. */
     }
     else if (strcmp(argv[i], "-test-wait-for-background") == 0 ||
-             strcmp(argv[i], "-test-kill-announced-child") == 0) {
+             strcmp(argv[i], "-test-kill-announced-child") == 0 ||
+             strcmp(argv[i], "-test-thread-exit-evidence") == 0) {
       /* Used only by native lifecycle regression tests. */
     }
     else if (strcmp(argv[i], "-isolated-process-group") == 0)

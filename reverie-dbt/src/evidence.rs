@@ -1281,16 +1281,27 @@ mod tests {
     }
 
     #[test]
-    fn native_exit_group_defers_final_to_thread_and_process_exit() {
+    fn native_syscall_exit_defers_final_to_thread_and_process_exit() {
         let source = include_str!("../native/client.c");
-        let predicate = source
-            .rsplit_once("static bool syscall_exits_process(")
+        assert!(!source.contains("syscall_exits_process"));
+
+        let invoke_syscall = source
+            .split_once("static int64_t invoke_syscall(")
             .unwrap()
             .1
-            .split_once("static int64_t invoke_syscall")
+            .split_once("static int32_t read_registers")
             .unwrap()
             .0;
-        assert!(predicate.contains("if (sysnum == SYS_exit_group)\n    return false;"));
+        assert!(!invoke_syscall.contains("finalize_runtime_process();"));
+
+        let pre_syscall = source
+            .split_once("static bool pre_syscall(")
+            .unwrap()
+            .1
+            .split_once("static void thread_init")
+            .unwrap()
+            .0;
+        assert!(!pre_syscall.contains("finalize_runtime_process();"));
 
         let thread_leave = source
             .split_once("static void evidence_thread_leave(")

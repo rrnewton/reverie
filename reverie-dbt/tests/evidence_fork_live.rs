@@ -51,7 +51,8 @@ async fn protected_evidence_survives_fork_pthread_lifecycle() {
         .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
         .evidence_file(&evidence_file)
         .expect("configure protected evidence")
-        .client_argument("-test-wait-for-background");
+        .client_argument("-test-wait-for-background")
+        .client_argument("-test-thread-exit-evidence");
     let mut guest = Command::new(fixture);
     guest.env("HERMIT_DBT_COUNTER2", "1");
 
@@ -77,6 +78,14 @@ async fn protected_evidence_survives_fork_pthread_lifecycle() {
     assert!(
         !evidence.records().is_empty(),
         "fork/pthread run must publish protected evidence"
+    );
+    assert!(
+        evidence.records().iter().any(|record| {
+            record
+                .windows(b"thread exit callback completed".len())
+                .any(|window| window == b"thread exit callback completed")
+        }),
+        "explicit SYS_exit must publish thread-exit evidence before FINAL"
     );
 }
 
