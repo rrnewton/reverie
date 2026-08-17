@@ -44,6 +44,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import statistics
 from datetime import datetime
 import subprocess
@@ -118,25 +120,58 @@ def main_commits(repo: Path, commits: Iterable[str], ref: str = "origin/main") -
     that later landed, and a label recorded at run time cannot know that. Asking
     git at read time is the only thing that stays true as history moves.
 
-    Read the reachable history once and intersect it with the requested commits.
+    Read main once, then batch-check only requested IDs that are not in that
+    history. The second query distinguishes valid off-main commits from missing
+    objects; any missing or non-commit object refuses the whole population.
+
     A subprocess per ledger commit made this gate grow linearly with retained
     evidence until tick-hub's 30-second bound killed it before it emitted a
-    verdict. ``rev-list`` answers the same ancestry question for every commit in
-    one Git process, independent of the ledger population size.
+    verdict. One ``rev-list`` plus one batch object check answers the ancestry
+    question for every commit in a fixed two Git processes, independent of the
+    ledger population size.
     """
     requested = {commit for commit in commits if commit}
     if not requested:
         return set()
+    # --stdin accepts rev-list options as well as revisions. Ledger commit IDs
+    # are full lowercase object IDs; refusing anything else prevents a row from
+    # changing the query and also makes malformed IDs fail closed.
+    if any(re.fullmatch(r"[0-9a-f]{40}", commit) is None for commit in requested):
+        raise RuntimeError("main ancestry check refused malformed commit ID")
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo), "rev-list", ref],
             capture_output=True, text=True, timeout=60,
         )
-    except (OSError, subprocess.SubprocessError):
-        return set()
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"main ancestry check refused: {error}") from error
     if proc.returncode != 0:
-        return set()
-    return requested.intersection(proc.stdout.splitlines())
+        raise RuntimeError(
+            f"main ancestry check refused: rev-list exited {proc.returncode}")
+    on_main = requested.intersection(proc.stdout.splitlines())
+    outside_main = requested.difference(on_main)
+    if not outside_main:
+        return on_main
+    try:
+        checked = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "--batch-check=%(objecttype)"],
+            input="\n".join(sorted(outside_main)) + "\n",
+            capture_output=True, text=True, timeout=60,
+            env=os.environ | {"GIT_NO_LAZY_FETCH": "1"},
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"main ancestry check refused: {error}") from error
+    object_types = checked.stdout.splitlines()
+    if checked.returncode != 0 or len(object_types) != len(outside_main):
+        raise RuntimeError(
+            "main ancestry check refused: batch object check was incomplete")
+    invalid = [commit for commit, object_type in zip(sorted(outside_main), object_types)
+               if object_type != "commit"]
+    if invalid:
+        raise RuntimeError(
+            f"main ancestry check refused {len(invalid)} unavailable or non-commit "
+            f"object(s): {', '.join(invalid[:4])}")
+    return on_main
 
 
 def to_points(rows: Sequence[dict], keep: set[str] | None) -> list[Point]:
@@ -321,8 +356,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--min-days", type=float, default=90.0)
     ap.add_argument("--min-conditioned-frac", type=float, default=0.9)
     args = ap.parse_args(argv)
-    rep = build(DEFAULT_LEDGER, Path(args.repo), not args.all_commits,
-                args.profile or None, args.result or None)
+    try:
+        rep = build(DEFAULT_LEDGER, Path(args.repo), not args.all_commits,
+                    args.profile or None, args.result or None)
+    except RuntimeError as error:
+        if args.gate_regression or args.readiness:
+            _emit("refused", f"REFUSED: {error}")
+            return 1
+        print(f"wall-series: REFUSED: {error}", file=sys.stderr)
+        return 2
 
     if args.gate_regression or args.readiness:
         return _gate(rep, args)

@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import wall_series as ws  # noqa: E402
@@ -197,12 +199,24 @@ def test_only_main_filter_drops_non_ancestors():
     assert [p.commit for p in pts] == ["onmain"]
 
 
-def test_main_commits_admits_on_main_and_refuses_off_main_and_invalid(monkeypatch):
+def test_main_commits_admits_on_main_and_refuses_off_main(monkeypatch):
+    onmain = "1" * 40
+    offmain = "2" * 40
+    calls = []
+
     def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if "rev-list" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout=onmain + "\n",
+                stderr="",
+            )
         return subprocess.CompletedProcess(
             argv,
             0,
-            stdout="onmain\nanother-main-commit\n",
+            stdout="commit\n",
             stderr="",
         )
 
@@ -210,32 +224,58 @@ def test_main_commits_admits_on_main_and_refuses_off_main_and_invalid(monkeypatc
 
     found = ws.main_commits(
         Path("/repo"),
-        {"onmain", "offmain", "not-a-commit", ""},
+        {onmain, offmain, ""},
     )
 
-    assert found == {"onmain"}
+    assert found == {onmain}
+    assert len(calls) == 2
 
 
-def test_main_commits_uses_one_subprocess_for_the_whole_population(monkeypatch):
+def test_main_commits_refuses_malformed_commit_without_running_git(monkeypatch):
+    def run(*_args, **_kwargs):
+        raise AssertionError("malformed commit must refuse before invoking git")
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="refused malformed commit ID"):
+        ws.main_commits(Path("/repo"), {"not-a-commit"})
+
+
+def test_main_commits_uses_two_subprocesses_for_the_whole_population(monkeypatch):
     calls = []
+    commits = {f"{index:040x}" for index in range(1_000)}
+    onmain = {f"{0:040x}", f"{999:040x}"}
+    offmain = commits - onmain
 
     def run(argv, **kwargs):
         calls.append((argv, kwargs))
+        if "rev-list" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout="\n".join(sorted(onmain)) + "\n",
+                stderr="",
+            )
         return subprocess.CompletedProcess(
             argv,
             0,
-            stdout="commit-0000\ncommit-0999\n",
+            stdout="commit\n" * len(offmain),
             stderr="",
         )
 
     monkeypatch.setattr(ws.subprocess, "run", run)
-    commits = {f"commit-{index:04d}" for index in range(1_000)}
 
     found = ws.main_commits(Path("/repo"), commits)
 
-    assert found == {"commit-0000", "commit-0999"}
-    assert len(calls) == 1
-    assert calls[0][0] == ["git", "-C", "/repo", "rev-list", "origin/main"]
+    assert found == onmain
+    assert len(calls) == 2
+    assert calls[0][0] == [
+        "git", "-C", "/repo", "rev-list", "origin/main",
+    ]
+    assert calls[1][0] == [
+        "git", "-C", "/repo", "cat-file", "--batch-check=%(objecttype)",
+    ]
+    assert set(calls[1][1]["input"].splitlines()) == offmain
 
 
 def test_main_commits_refuses_when_the_ancestry_query_fails(monkeypatch):
@@ -249,7 +289,48 @@ def test_main_commits_refuses_when_the_ancestry_query_fails(monkeypatch):
 
     monkeypatch.setattr(ws.subprocess, "run", run)
 
-    assert ws.main_commits(Path("/repo"), {"claimed-main-commit"}) == set()
+    claimed_main = "1" * 40
+    with pytest.raises(RuntimeError, match="rev-list exited 128"):
+        ws.main_commits(Path("/repo"), {claimed_main})
+
+
+def test_main_commits_refuses_whole_population_when_one_object_is_absent(monkeypatch):
+    claimed_main = "1" * 40
+    absent = "f" * 40
+
+    def run(argv, **kwargs):
+        if "rev-list" in argv:
+            return subprocess.CompletedProcess(
+                argv,
+                0,
+                stdout=claimed_main + "\n",
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout=absent + " missing\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError, match="refused 1 unavailable"):
+        ws.main_commits(Path("/repo"), {claimed_main, absent})
+
+
+@pytest.mark.parametrize("option", ["--gate-regression", "--readiness"])
+def test_both_gate_commands_emit_refusal_when_ancestry_refuses(monkeypatch, capsys,
+                                                               option):
+    def build(*_args, **_kwargs):
+        raise RuntimeError("main ancestry check refused 1 unavailable object")
+
+    monkeypatch.setattr(ws, "build", build)
+
+    assert ws.main([option]) == 1
+    output = capsys.readouterr().out
+    assert "state=refused" in output
+    assert "summary=REFUSED: main ancestry check refused" in output
 
 
 # ------------------------------------------------- readiness / wireable gate
