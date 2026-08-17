@@ -337,6 +337,8 @@ static void finalize_runtime_process(void);
 static void quiesce_runtime_background_for_exec(void);
 static void restart_runtime_background_after_failed_exec(
     prototype_counters_t *counters);
+static void evidence_confirm_wait_result(int sysnum, const uint64_t *args,
+                                         int64_t result);
 static void complete_runtime_thread_exit(prototype_counters_t *counters,
                                          void *drcontext,
                                          bool explicit_exit);
@@ -368,6 +370,7 @@ static void exit_runtime_tree(int exit_code) {
 #define EVIDENCE_FRAME_FINAL 5
 #define EVIDENCE_FRAME_ERROR 6
 #define EVIDENCE_FRAME_CHILD 7
+#define EVIDENCE_FRAME_CHILD_FINAL 8
 #define EVIDENCE_CONFIG_PAGE_SIZE 4096
 
 static const unsigned char evidence_channel_magic[8] = {'R', 'V', 'D', 'B',
@@ -428,10 +431,19 @@ typedef struct {
   uint32_t active_threads;
 } evidence_sender_state_t;
 
+typedef struct {
+  process_id_t parent;
+  uint64_t parent_start_time;
+  process_id_t child;
+  uint64_t child_start_time;
+  bool confirmed;
+} evidence_child_state_t;
+
 static unsigned char *evidence_buffer;
 static size_t evidence_buffer_length;
 static void *evidence_lock;
 static evidence_sender_state_t *evidence_senders;
+static evidence_child_state_t *evidence_children;
 static _Thread_local uint32_t evidence_callback_depth;
 
 static bool evidence_is_enabled(void) {
@@ -674,6 +686,31 @@ static evidence_sender_state_t *evidence_sender_locked(void) {
   return empty;
 }
 
+static evidence_child_state_t *evidence_child_locked(
+    const evidence_sender_state_t *parent, process_id_t child,
+    uint64_t child_start_time, bool create) {
+  evidence_child_state_t *empty = NULL;
+  size_t index;
+  for (index = 0; index != EVIDENCE_MAX_SENDERS; ++index) {
+    evidence_child_state_t *candidate = &evidence_children[index];
+    if (candidate->parent == parent->process &&
+        candidate->parent_start_time == parent->start_time &&
+        candidate->child == child &&
+        candidate->child_start_time == child_start_time)
+      return candidate;
+    if (candidate->child == 0 && empty == NULL)
+      empty = candidate;
+  }
+  if (!create || empty == NULL)
+    return NULL;
+  empty->parent = parent->process;
+  empty->parent_start_time = parent->start_time;
+  empty->child = child;
+  empty->child_start_time = child_start_time;
+  empty->confirmed = false;
+  return empty;
+}
+
 static bool evidence_flush_locked(evidence_sender_state_t *sender,
                                   unsigned char terminal_kind) {
   if (sender == NULL || sender->finalized)
@@ -793,6 +830,7 @@ static void reverie_dbt_emit_evidence(const char *buf, size_t len) {
 
 static bool evidence_announce_child(process_id_t child) {
   unsigned char payload[12];
+  evidence_child_state_t *child_state;
   evidence_sender_state_t *sender;
   uint64_t child_start_time;
   bool ok;
@@ -808,6 +846,9 @@ static bool evidence_announce_child(process_id_t child) {
     ok = evidence_flush_locked(sender, 0);
   else
     ok = sender != NULL;
+  child_state = ok ? evidence_child_locked(sender, child, child_start_time, true)
+                   : NULL;
+  ok = ok && child_state != NULL && !child_state->confirmed;
   if (ok)
     ok = !sender->transport_failed &&
          evidence_send_frame(EVIDENCE_FRAME_CHILD, payload, sizeof(payload),
@@ -824,6 +865,59 @@ static void require_evidence_child(process_id_t child) {
                "reverie-dbt: protected child evidence announcement failed\n");
     exit_runtime_tree(101);
   }
+}
+
+static bool evidence_confirm_child_final(process_id_t child) {
+  unsigned char payload[12];
+  evidence_child_state_t *child_state = NULL;
+  evidence_sender_state_t *sender;
+  bool already_confirmed = false;
+  bool ok;
+  size_t index;
+  if (!evidence_is_enabled())
+    return true;
+  dr_mutex_lock(evidence_lock);
+  sender = evidence_sender_locked();
+  if (sender == NULL) {
+    dr_mutex_unlock(evidence_lock);
+    return false;
+  }
+  for (index = 0; index != EVIDENCE_MAX_SENDERS; ++index) {
+    evidence_child_state_t *candidate = &evidence_children[index];
+    if (candidate->parent == sender->process &&
+        candidate->parent_start_time == sender->start_time &&
+        candidate->child == child && candidate->confirmed) {
+      already_confirmed = true;
+    } else if (candidate->parent == sender->process &&
+               candidate->parent_start_time == sender->start_time &&
+               candidate->child == child) {
+      if (child_state != NULL) {
+        dr_mutex_unlock(evidence_lock);
+        return false;
+      }
+      child_state = candidate;
+    }
+  }
+  if (child_state == NULL) {
+    dr_mutex_unlock(evidence_lock);
+    return already_confirmed;
+  }
+  put_u32_le(payload, (uint32_t)child_state->child);
+  put_u64_le(payload + 4, child_state->child_start_time);
+  if (!sender->started)
+    ok = evidence_flush_locked(sender, 0);
+  else
+    ok = true;
+  if (ok)
+    ok = !sender->transport_failed &&
+         evidence_send_frame(EVIDENCE_FRAME_CHILD_FINAL, payload,
+                             sizeof(payload), sender->sequence++);
+  if (ok)
+    child_state->confirmed = true;
+  else
+    sender->transport_failed = true;
+  dr_mutex_unlock(evidence_lock);
+  return ok;
 }
 
 static void evidence_thread_enter(prototype_counters_t *counters) {
@@ -927,10 +1021,14 @@ static void initialize_evidence_transport(void) {
       (unsigned char *)dr_global_alloc(EVIDENCE_BUFFER_CAPACITY);
   evidence_senders = (evidence_sender_state_t *)dr_global_alloc(
       sizeof(evidence_sender_state_t) * EVIDENCE_MAX_SENDERS);
+  evidence_children = (evidence_child_state_t *)dr_global_alloc(
+      sizeof(evidence_child_state_t) * EVIDENCE_MAX_SENDERS);
   DR_ASSERT(evidence_lock != NULL && evidence_buffer != NULL &&
-            evidence_senders != NULL);
+            evidence_senders != NULL && evidence_children != NULL);
   memset(evidence_senders, 0,
          sizeof(evidence_sender_state_t) * EVIDENCE_MAX_SENDERS);
+  memset(evidence_children, 0,
+         sizeof(evidence_child_state_t) * EVIDENCE_MAX_SENDERS);
 }
 static int32_t virtual_process_id = VIRTUAL_ROOT_PID;
 static int32_t virtual_parent_process_id = VIRTUAL_INIT_PID;
@@ -2092,6 +2190,7 @@ static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
     complete_runtime_thread_exit(counters, (void *)context,
                                  sysnum == SYS_exit);
   result = invoke_raw_syscall(context, sysnum, translated);
+  evidence_confirm_wait_result((int)sysnum, translated, result);
   if (is_exec_syscall((int)sysnum) && result < 0) {
     require_evidence_flush(EVIDENCE_FRAME_EXEC_CANCEL);
     restart_runtime_background_after_failed_exec(counters);
@@ -2736,6 +2835,37 @@ static void zero_wait_rusage(void *address) {
   }
 }
 
+static void evidence_confirm_wait_result(int sysnum, const uint64_t *args,
+                                         int64_t result) {
+  process_id_t child = 0;
+  if (!evidence_is_enabled())
+    return;
+  if (sysnum == SYS_wait4 && result > 0) {
+    int status;
+    int options = (int)args[2];
+    if ((options & (WUNTRACED | WCONTINUED)) == 0) {
+      child = (process_id_t)result;
+    } else if (args[1] != 0 &&
+               read_app((const void *)(uintptr_t)args[1], &status,
+                        sizeof(status)) &&
+               (WIFEXITED(status) || WIFSIGNALED(status))) {
+      child = (process_id_t)result;
+    }
+  } else if (sysnum == SYS_waitid && result == 0 &&
+             (args[3] & WNOWAIT) == 0 && args[2] != 0) {
+    siginfo_t info;
+    if (read_app((const void *)(uintptr_t)args[2], &info, sizeof(info)) &&
+        (info.si_code == CLD_EXITED || info.si_code == CLD_KILLED ||
+         info.si_code == CLD_DUMPED))
+      child = (process_id_t)info.si_pid;
+  }
+  if (child > 0 && !evidence_confirm_child_final(child)) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: protected child FINAL confirmation failed\n");
+    exit_runtime_tree(101);
+  }
+}
+
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-106): emulate getpid/getppid/gettid in copied children
 // from the shared virtual-identity map so forks never observe host PIDs.
@@ -2793,6 +2923,7 @@ static bool prepare_original_identity_syscall(void *drcontext,
 static void post_syscall(void *drcontext, int sysnum) {
   ptr_int_t syscall_result = (ptr_int_t)dr_syscall_get_result(drcontext);
   ptr_int_t host_syscall_result = syscall_result;
+  uint64_t wait_args[6] = {0};
   int32_t completed_virtual_child = 0;
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
@@ -2802,6 +2933,11 @@ static void post_syscall(void *drcontext, int sysnum) {
                              host_syscall_result)) {
     dr_syscall_set_result(drcontext, (reg_t)-EPERM);
     return;
+  }
+  if (sysnum == SYS_wait4 || sysnum == SYS_waitid) {
+    for (int index = 0; index != 6; ++index)
+      wait_args[index] = (uint64_t)dr_syscall_get_param(drcontext, index);
+    evidence_confirm_wait_result(sysnum, wait_args, host_syscall_result);
   }
 
   // Re-arm the guest-stack scrub (see `scrub_guest_stack_residue`). Servicing a
@@ -3859,6 +3995,9 @@ static void event_exit(void) {
     dr_global_free(evidence_senders,
                    sizeof(evidence_sender_state_t) * EVIDENCE_MAX_SENDERS);
     evidence_senders = NULL;
+    dr_global_free(evidence_children,
+                   sizeof(evidence_child_state_t) * EVIDENCE_MAX_SENDERS);
+    evidence_children = NULL;
     dr_mutex_destroy(evidence_lock);
     evidence_lock = NULL;
   }

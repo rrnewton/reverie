@@ -165,6 +165,42 @@ fn protected_evidence_finalizes_each_scheduler_across_failed_and_successful_exec
 
 #[test]
 #[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_accepts_parent_confirmation_after_sigkill_reap() {
+    let directory = tempfile::tempdir().expect("fixture tempdir");
+    let fixture = directory.path().join("sigkill-wait");
+    compile_fixture("evidence_sigkill_wait.c", &fixture, &[]);
+
+    let mut evidence_file = tempfile::tempfile().expect("evidence tempfile");
+    let runner = DbtRunner::from_env()
+        .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .evidence_file(&evidence_file)
+        .expect("configure protected evidence");
+    let output = runner
+        .output(&Command::new(fixture))
+        .expect("SIGKILL/wait evidence run should complete");
+    assert!(
+        output.status.success(),
+        "SIGKILL/wait guest exited unsuccessfully: {output:?}"
+    );
+    assert_eq!(output.stdout, b"sigkill-wait-ok\n");
+
+    evidence_file
+        .seek(std::io::SeekFrom::Start(0))
+        .expect("rewind evidence artifact");
+    let mut evidence_bytes = Vec::new();
+    evidence_file
+        .read_to_end(&mut evidence_bytes)
+        .expect("read evidence artifact");
+    let evidence = reverie_dbt::decode_evidence(&evidence_bytes)
+        .expect("reaped SIGKILL child must be terminal in protected evidence");
+    assert!(
+        !evidence.records().is_empty(),
+        "SIGKILL/wait run must publish protected evidence"
+    );
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
 fn protected_evidence_follows_last_thread_explicit_exit() {
     let directory = tempfile::tempdir().expect("fixture tempdir");
     let fixture = directory.path().join("explicit-exit");

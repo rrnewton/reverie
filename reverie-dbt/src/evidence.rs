@@ -47,6 +47,7 @@ const FRAME_EXEC_CANCEL: u8 = 4;
 const FRAME_FINAL: u8 = 5;
 const FRAME_ERROR: u8 = 6;
 const FRAME_CHILD: u8 = 7;
+const FRAME_CHILD_FINAL: u8 = 8;
 
 const FILE_MAGIC: &[u8; 8] = b"RVDBTEF1";
 const FILE_VERSION: u16 = 1;
@@ -399,7 +400,7 @@ struct CollectedEvidence {
 
 struct Collector {
     images: BTreeMap<ProcessKey, ImageState>,
-    expected_processes: BTreeSet<ProcessKey>,
+    expected_processes: BTreeMap<ProcessKey, ProcessKey>,
     terminal_processes: BTreeSet<ProcessKey>,
     last_receipts: BTreeMap<ProcessKey, FrameReceipt>,
     encoded_records: Vec<u8>,
@@ -413,7 +414,7 @@ impl Collector {
     fn new() -> Self {
         Self {
             images: BTreeMap::new(),
-            expected_processes: BTreeSet::new(),
+            expected_processes: BTreeMap::new(),
             terminal_processes: BTreeSet::new(),
             last_receipts: BTreeMap::new(),
             encoded_records: Vec::new(),
@@ -539,7 +540,7 @@ impl Collector {
                     ));
                 }
                 image.next_sequence += 1;
-                if self.expected_processes.contains(&child) {
+                if self.expected_processes.contains_key(&child) {
                     return Err(invalid_data("DBT evidence announced a child twice"));
                 }
                 if !self.has_known_process(child)
@@ -549,7 +550,47 @@ impl Collector {
                         "DBT evidence exceeded its process/image state bound",
                     ));
                 }
-                self.expected_processes.insert(child);
+                self.expected_processes.insert(child, process);
+            }
+            FRAME_CHILD_FINAL => {
+                if payload.len() != 12 {
+                    return Err(invalid_data("malformed DBT evidence child FINAL frame"));
+                }
+                let child = ProcessKey {
+                    pid: u32::from_le_bytes(payload[..4].try_into().unwrap()),
+                    start_time: u64::from_le_bytes(payload[4..].try_into().unwrap()),
+                };
+                let image = self.image_for(process, sequence)?;
+                if image.pending_exec {
+                    return Err(invalid_data(
+                        "DBT evidence confirmed a child while exec was pending",
+                    ));
+                }
+                image.next_sequence += 1;
+                match self.expected_processes.get(&child) {
+                    Some(parent) if *parent == process => {}
+                    Some(_) => {
+                        return Err(invalid_data(
+                            "DBT evidence child FINAL came from a process other than its announcer",
+                        ));
+                    }
+                    None => {
+                        return Err(invalid_data(
+                            "DBT evidence child FINAL preceded its child announcement",
+                        ));
+                    }
+                }
+                if self
+                    .images
+                    .get(&child)
+                    .is_some_and(|image| image.pending_exec)
+                {
+                    return Err(invalid_data(
+                        "DBT evidence child was reaped with an exec transition pending",
+                    ));
+                }
+                self.images.remove(&child);
+                self.terminal_processes.insert(child);
             }
             _ => return Err(invalid_data("DBT evidence frame kind is unknown")),
         }
@@ -600,13 +641,13 @@ impl Collector {
     }
 
     fn has_known_process(&self, process: ProcessKey) -> bool {
-        self.has_admitted(process) || self.expected_processes.contains(&process)
+        self.has_admitted(process) || self.expected_processes.contains_key(&process)
     }
 
     fn process_state_count(&self) -> usize {
         self.images
             .keys()
-            .chain(&self.expected_processes)
+            .chain(self.expected_processes.keys())
             .chain(&self.terminal_processes)
             .copied()
             .collect::<BTreeSet<_>>()
@@ -663,7 +704,11 @@ impl Collector {
                 ),
             ));
         }
-        if !self.expected_processes.is_subset(&self.terminal_processes) {
+        if !self
+            .expected_processes
+            .keys()
+            .all(|process| self.terminal_processes.contains(process))
+        {
             return Err(invalid_data(
                 "DBT evidence is missing a child process START or FINAL frame",
             ));
@@ -1269,6 +1314,64 @@ mod tests {
             .unwrap();
         collector.absorb(FRAME_FINAL, root, 2, &[]).unwrap();
         assert!(collector.finish().is_err());
+    }
+
+    #[test]
+    fn collector_accepts_the_announcing_parent_reaping_a_child_without_final() {
+        let root = ProcessKey {
+            pid: 107,
+            start_time: 109,
+        };
+        let child = ProcessKey {
+            pid: 113,
+            start_time: 127,
+        };
+        let mut child_payload = Vec::from(child.pid.to_le_bytes());
+        child_payload.extend_from_slice(&child.start_time.to_le_bytes());
+
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
+        collector
+            .absorb(FRAME_CHILD, root, 1, &child_payload)
+            .unwrap();
+        collector.absorb(FRAME_START, child, 0, &[]).unwrap();
+        collector
+            .absorb(FRAME_CHILD_FINAL, root, 2, &child_payload)
+            .unwrap();
+        collector.absorb(FRAME_FINAL, root, 3, &[]).unwrap();
+        collector.finish().unwrap();
+    }
+
+    #[test]
+    fn collector_refuses_child_final_from_a_process_other_than_the_announcer() {
+        let root = ProcessKey {
+            pid: 131,
+            start_time: 137,
+        };
+        let other = ProcessKey {
+            pid: 139,
+            start_time: 149,
+        };
+        let child = ProcessKey {
+            pid: 151,
+            start_time: 157,
+        };
+        let mut child_payload = Vec::from(child.pid.to_le_bytes());
+        child_payload.extend_from_slice(&child.start_time.to_le_bytes());
+
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
+        collector.absorb(FRAME_START, other, 0, &[]).unwrap();
+        collector
+            .absorb(FRAME_CHILD, root, 1, &child_payload)
+            .unwrap();
+        let error = collector
+            .absorb(FRAME_CHILD_FINAL, other, 1, &child_payload)
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "DBT evidence child FINAL came from a process other than its announcer"
+        );
     }
 
     #[test]
