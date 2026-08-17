@@ -10,6 +10,7 @@ than as an error branch.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -194,6 +195,61 @@ def test_only_main_filter_drops_non_ancestors():
             {"commit": "offmain", "real_seconds": 10, "user_seconds": 5, "sys_seconds": 5}]
     pts = ws.to_points(rows, {"onmain"})
     assert [p.commit for p in pts] == ["onmain"]
+
+
+def test_main_commits_admits_on_main_and_refuses_off_main_and_invalid(monkeypatch):
+    def run(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout="onmain\nanother-main-commit\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+
+    found = ws.main_commits(
+        Path("/repo"),
+        {"onmain", "offmain", "not-a-commit", ""},
+    )
+
+    assert found == {"onmain"}
+
+
+def test_main_commits_uses_one_subprocess_for_the_whole_population(monkeypatch):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(
+            argv,
+            0,
+            stdout="commit-0000\ncommit-0999\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+    commits = {f"commit-{index:04d}" for index in range(1_000)}
+
+    found = ws.main_commits(Path("/repo"), commits)
+
+    assert found == {"commit-0000", "commit-0999"}
+    assert len(calls) == 1
+    assert calls[0][0] == ["git", "-C", "/repo", "rev-list", "origin/main"]
+
+
+def test_main_commits_refuses_when_the_ancestry_query_fails(monkeypatch):
+    def run(argv, **kwargs):
+        return subprocess.CompletedProcess(
+            argv,
+            128,
+            stdout="",
+            stderr="fatal: bad revision",
+        )
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+
+    assert ws.main_commits(Path("/repo"), {"claimed-main-commit"}) == set()
 
 
 # ------------------------------------------------- readiness / wireable gate

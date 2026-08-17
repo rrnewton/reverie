@@ -117,21 +117,26 @@ def main_commits(repo: Path, commits: Iterable[str], ref: str = "origin/main") -
     Ancestry, not a branch label on the row: a row can be produced from a branch
     that later landed, and a label recorded at run time cannot know that. Asking
     git at read time is the only thing that stays true as history moves.
+
+    Read the reachable history once and intersect it with the requested commits.
+    A subprocess per ledger commit made this gate grow linearly with retained
+    evidence until tick-hub's 30-second bound killed it before it emitted a
+    verdict. ``rev-list`` answers the same ancestry question for every commit in
+    one Git process, independent of the ledger population size.
     """
-    found: set[str] = set()
-    for c in commits:
-        if not c:
-            continue
-        try:
-            p = subprocess.run(
-                ["git", "-C", str(repo), "merge-base", "--is-ancestor", c, ref],
-                capture_output=True, timeout=60,
-            )
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if p.returncode == 0:
-            found.add(c)
-    return found
+    requested = {commit for commit in commits if commit}
+    if not requested:
+        return set()
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "rev-list", ref],
+            capture_output=True, text=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if proc.returncode != 0:
+        return set()
+    return requested.intersection(proc.stdout.splitlines())
 
 
 def to_points(rows: Sequence[dict], keep: set[str] | None) -> list[Point]:
