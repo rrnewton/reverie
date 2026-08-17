@@ -135,7 +135,7 @@ run_case() {
     shift
     local stdout="$WORK_DIR/$label.stdout"
     local stderr="$WORK_DIR/$label.stderr"
-    local status=0
+    local status=0 denied=0 line log
 
     if timeout --signal=TERM --kill-after=5s "${CASE_TIMEOUT}s" "$@" \
         >"$stdout" 2>"$stderr"; then
@@ -144,13 +144,22 @@ run_case() {
         status=$?
     fi
     printf '%s' "$status" >"$WORK_DIR/$label.status"
-    if grep -Eq \
-        'bpfjailer|Bunnylol.*security|Operation not permitted|Permission denied|Cannot fork|Resource temporarily unavailable' \
-        "$stdout" "$stderr"; then
-        CASE_INFRASTRUCTURE_DENIED["$label"]=1
-    else
-        CASE_INFRASTRUCTURE_DENIED["$label"]=0
-    fi
+    for log in "$stdout" "$stderr"; do
+        if [[ ! -e $log ]]; then
+            denied=1
+            continue
+        fi
+        while IFS= read -r line || [[ -n $line ]]; do
+            case "$line" in
+                *bpfjailer*|*'Bunnylol'*security*|*'Operation not permitted'*|\
+                *'Permission denied'*|*'Cannot fork'*|*'Resource temporarily unavailable'*)
+                    denied=1
+                    break
+                    ;;
+            esac
+        done <"$log"
+    done
+    CASE_INFRASTRUCTURE_DENIED["$label"]=$denied
     return "$status"
 }
 
