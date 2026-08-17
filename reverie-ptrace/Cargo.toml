@@ -32,7 +32,7 @@ async-trait = "0.1.92"
 bincode = { version = "2", features = ["serde"] }
 bytes = { version = "1.12.1", features = ["serde"] }
 close-err = "1.0.2"
-futures = { version = "0.3.31", features = ["async-await", "compat"] }
+futures = { version = "0.3.34", features = ["async-await", "compat"] }
 goblin = { version = "0.10.7", features = ["elf32", "elf64", "endian_fd"] }
 # Exactly 1.21.0: liteinst_census.rs works around its 4 GiB overflow panic, and
 # its test one_decoder_panics_on_an_instruction_ending_at_4_gib fails once a
