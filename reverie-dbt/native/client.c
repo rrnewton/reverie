@@ -97,6 +97,9 @@ typedef struct {
   // client-owned thread state. Fork-child duplicate exit callbacks retain the
   // parent's identity and therefore cannot decrement the child's count.
   process_id_t evidence_thread_process;
+  // One-shot guard for the runtime thread-exit hook. Some exit syscalls do not
+  // receive a DynamoRIO thread_exit callback; others can receive both paths.
+  uint64_t runtime_thread_exit_called;
 } prototype_counters_t;
 
 #define VIRTUAL_ROOT_PID INT32_C(3)
@@ -323,8 +326,12 @@ static bool preempt_gate_main_only = true;
 static _Atomic uint64_t virtual_tsc __attribute__((aligned(64)));
 #define VIRTUAL_TSC_STRIDE UINT64_C(100)
 static process_id_t runtime_owner_pid;
+static bool has_copied_runtime(void);
 static bool is_copied_vfork_process(void);
 static void finalize_runtime_process(void);
+static void complete_runtime_thread_exit(prototype_counters_t *counters,
+                                         void *drcontext,
+                                         bool explicit_exit);
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-84): Review isolation-aware process-group termination.
 static process_id_t runtime_process_group;
@@ -338,7 +345,7 @@ static void exit_runtime_tree(int exit_code) {
   dr_exit_process(exit_code);
 }
 
-#define EVIDENCE_CHANNEL_HEADER_LEN 64
+#define EVIDENCE_CHANNEL_HEADER_LEN 80
 #define EVIDENCE_TOKEN_LEN 32
 #define EVIDENCE_ADDRESS_LEN 16
 #define EVIDENCE_BUFFER_CAPACITY (1024 * 1024)
@@ -356,7 +363,7 @@ static void exit_runtime_tree(int exit_code) {
 #define EVIDENCE_CONFIG_PAGE_SIZE 4096
 
 static const unsigned char evidence_channel_magic[8] = {'R', 'V', 'D', 'B',
-                                                        'T', 'E', '1', 0};
+                                                        'T', 'E', '2', 0};
 typedef union {
   struct {
     unsigned char enabled;
@@ -467,6 +474,27 @@ static void put_u64_le(unsigned char *out, uint64_t value) {
     out[byte] = (unsigned char)((value >> (byte * 8)) & 0xff);
 }
 
+static uint64_t evidence_hash_update(uint64_t hash,
+                                     const unsigned char *bytes,
+                                     size_t length) {
+  while (length-- != 0)
+    hash = (hash ^ *bytes++) * UINT64_C(0x00000100000001b3);
+  return hash;
+}
+
+static uint64_t evidence_frame_hash(uint64_t seed, unsigned char kind,
+                                    size_t payload_length, uint64_t sequence,
+                                    const unsigned char *payload) {
+  unsigned char encoded_length[4];
+  unsigned char encoded_sequence[8];
+  put_u32_le(encoded_length, (uint32_t)payload_length);
+  put_u64_le(encoded_sequence, sequence);
+  seed = evidence_hash_update(seed, &kind, 1);
+  seed = evidence_hash_update(seed, encoded_length, sizeof(encoded_length));
+  seed = evidence_hash_update(seed, encoded_sequence, sizeof(encoded_sequence));
+  return evidence_hash_update(seed, payload, payload_length);
+}
+
 static bool evidence_write_all(int descriptor, const unsigned char *buffer,
                                size_t length) {
   while (length != 0) {
@@ -485,35 +513,18 @@ static bool evidence_send_frame(unsigned char kind, const unsigned char *payload
                                 size_t payload_length, uint64_t sequence) {
   struct sockaddr_un address;
   unsigned char header[EVIDENCE_CHANNEL_HEADER_LEN] = {0};
-  unsigned char acknowledgement = 1;
   socklen_t address_length;
-  int descriptor;
-  bool ok;
   const struct timeval timeout = {.tv_sec = 0, .tv_usec = 250000};
+  int attempt;
 
   if (payload_length > EVIDENCE_BUFFER_CAPACITY)
     return false;
-  descriptor = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-  if (descriptor < 0)
-    return false;
-  if (setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout,
-                 sizeof(timeout)) != 0 ||
-      setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout,
-                 sizeof(timeout)) != 0) {
-    close(descriptor);
-    return false;
-  }
   memset(&address, 0, sizeof(address));
   address.sun_family = AF_UNIX;
   memcpy(address.sun_path + 1, evidence_config_page.value.address,
          sizeof(evidence_config_page.value.address));
   address_length = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 +
                                sizeof(evidence_config_page.value.address));
-  if (connect(descriptor, (const struct sockaddr *)&address, address_length) !=
-      0) {
-    close(descriptor);
-    return false;
-  }
 
   memcpy(header, evidence_channel_magic, sizeof(evidence_channel_magic));
   memcpy(header + 8, evidence_config_page.value.token,
@@ -521,12 +532,46 @@ static bool evidence_send_frame(unsigned char kind, const unsigned char *payload
   header[40] = kind;
   put_u32_le(header + 48, (uint32_t)payload_length);
   put_u64_le(header + 56, sequence);
-  ok = evidence_write_all(descriptor, header, sizeof(header)) &&
-       evidence_write_all(descriptor, payload, payload_length);
-  while (ok && read(descriptor, &acknowledgement, 1) < 0 && errno == EINTR) {
+  put_u64_le(header + 64,
+             evidence_frame_hash(UINT64_C(0xcbf29ce484222325), kind,
+                                 payload_length, sequence, payload));
+  put_u64_le(header + 72,
+             evidence_frame_hash(UINT64_C(0x9e3779b97f4a7c15), kind,
+                                 payload_length, sequence, payload));
+
+  // A frame is applied only once by sequence plus its two payload hashes. If
+  // the collector accepted it but its ACK was lost, resend the identical frame
+  // instead of converting scheduler delay into evidence failure.
+  for (attempt = 0; attempt != 20; ++attempt) {
+    unsigned char acknowledgement = 1;
+    ssize_t received;
+    bool ok;
+    int descriptor = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (descriptor < 0) {
+      dr_sleep(1);
+      continue;
+    }
+    if (setsockopt(descriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout,
+                   sizeof(timeout)) != 0 ||
+        setsockopt(descriptor, SOL_SOCKET, SO_RCVTIMEO, &timeout,
+                   sizeof(timeout)) != 0 ||
+        connect(descriptor, (const struct sockaddr *)&address, address_length) !=
+            0) {
+      close(descriptor);
+      dr_sleep(1);
+      continue;
+    }
+    ok = evidence_write_all(descriptor, header, sizeof(header)) &&
+         evidence_write_all(descriptor, payload, payload_length);
+    do {
+      received = ok ? read(descriptor, &acknowledgement, 1) : -1;
+    } while (received < 0 && errno == EINTR);
+    close(descriptor);
+    if (received == 1)
+      return acknowledgement == 0;
+    dr_sleep(1);
   }
-  close(descriptor);
-  return ok && acknowledgement == 0;
+  return false;
 }
 
 static bool evidence_process_start_time(process_id_t process,
@@ -2032,6 +2077,9 @@ static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
     return result;
   if (is_exec_syscall((int)sysnum))
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
+  if (sysnum == SYS_exit || sysnum == SYS_exit_group)
+    complete_runtime_thread_exit(counters, (void *)context,
+                                 sysnum == SYS_exit);
   result = invoke_raw_syscall(context, sysnum, translated);
   if (is_exec_syscall((int)sysnum) && result < 0)
     require_evidence_flush(EVIDENCE_FRAME_EXEC_CANCEL);
@@ -2633,8 +2681,6 @@ static bool syscall_reads_stdin(void *drcontext, int sysnum,
 
 static bool filter_syscall(void *drcontext, int sysnum) { return true; }
 
-static bool has_copied_runtime(void);
-static bool is_copied_vfork_process(void);
 static void ensure_runtime_background(void);
 static void runtime_background_init(void *argument);
 
@@ -3428,6 +3474,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       dr_syscall_set_result(drcontext, (reg_t)result);
       return false;
     }
+    if (sysnum == SYS_exit || sysnum == SYS_exit_group)
+      complete_runtime_thread_exit(counters, drcontext, sysnum == SYS_exit);
     bool execute =
         prepare_original_identity_syscall(drcontext, counters, sysnum, args);
     if (execute && is_exec_syscall(sysnum))
@@ -3500,15 +3548,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       dr_syscall_set_result(drcontext, (reg_t)result);
       return false;
     }
-    // AUTONOMOUS-BOT-IMPLEMENTED
-    // TODO-HUMAN-REVIEW(PR-255): Review pre-exit guest-transport deregistration.
-    if (runtime_uses_external_global() && sysnum == SYS_exit_group) {
-      evidence_callback_enter();
-      reverie_dbt_runtime_thread_exit(
-          counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
-          invoke_syscall);
-      evidence_callback_leave();
-    }
+    if (sysnum == SYS_exit || sysnum == SYS_exit_group)
+      complete_runtime_thread_exit(counters, drcontext, sysnum == SYS_exit);
     bool execute =
         prepare_original_identity_syscall(drcontext, counters, sysnum, args);
     if (execute && is_exec_syscall(sysnum))
@@ -3527,6 +3568,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     dr_syscall_set_result(drcontext, (reg_t)result);
     return false;
   }
+  if (sysnum == SYS_exit || sysnum == SYS_exit_group)
+    complete_runtime_thread_exit(counters, drcontext, sysnum == SYS_exit);
   bool execute =
       prepare_original_identity_syscall(drcontext, counters, sysnum, args);
   if (execute && is_exec_syscall(sysnum))
@@ -3619,6 +3662,35 @@ static void thread_init(void *drcontext) {
   }
 }
 
+static void complete_runtime_thread_exit(prototype_counters_t *counters,
+                                         void *drcontext,
+                                         bool explicit_exit) {
+  bool owns_runtime;
+  if (counters->runtime_thread_exit_called != 0)
+    return;
+  counters->runtime_thread_exit_called = 1;
+  owns_runtime = !has_copied_runtime() ||
+                 (runtime_uses_external_global() &&
+                  !is_copied_vfork_process());
+  if (owns_runtime) {
+    evidence_callback_enter();
+    reverie_dbt_runtime_thread_exit(counters, drcontext,
+                                    dr_get_thread_id(drcontext),
+                                    invoke_syscall);
+    evidence_callback_leave();
+    if (test_thread_exit_evidence && explicit_exit &&
+        evidence_is_enabled() &&
+        counters->evidence_thread_process == dr_get_process_id()) {
+      static const char record[] =
+          "1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: "
+          "explicit SYS_exit thread callback completed\n";
+      evidence_callback_enter();
+      reverie_dbt_emit_evidence(record, sizeof(record) - 1);
+      evidence_callback_leave();
+    }
+  }
+}
+
 static void thread_exit(void *drcontext) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
@@ -3626,22 +3698,7 @@ static void thread_exit(void *drcontext) {
     bool owns_runtime =
         !has_copied_runtime() ||
         (runtime_uses_external_global() && !is_copied_vfork_process());
-    if (owns_runtime) {
-      evidence_callback_enter();
-      reverie_dbt_runtime_thread_exit(counters, drcontext,
-                                      dr_get_thread_id(drcontext),
-                                      invoke_syscall);
-      evidence_callback_leave();
-    }
-    if (test_thread_exit_evidence && evidence_is_enabled() &&
-        counters->evidence_thread_process == dr_get_process_id()) {
-      static const char record[] =
-          "1970-01-01T00:00:00.000000Z INFO reverie_dbt::evidence: "
-          "thread exit callback completed\n";
-      evidence_callback_enter();
-      reverie_dbt_emit_evidence(record, sizeof(record) - 1);
-      evidence_callback_leave();
-    }
+    complete_runtime_thread_exit(counters, drcontext, false);
     evidence_thread_leave(counters);
     if (owns_runtime) {
       if (counters->preempt_mcontext != NULL)

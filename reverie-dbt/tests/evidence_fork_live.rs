@@ -51,8 +51,7 @@ async fn protected_evidence_survives_fork_pthread_lifecycle() {
         .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
         .evidence_file(&evidence_file)
         .expect("configure protected evidence")
-        .client_argument("-test-wait-for-background")
-        .client_argument("-test-thread-exit-evidence");
+        .client_argument("-test-wait-for-background");
     let mut guest = Command::new(fixture);
     guest.env("HERMIT_DBT_COUNTER2", "1");
 
@@ -78,14 +77,6 @@ async fn protected_evidence_survives_fork_pthread_lifecycle() {
     assert!(
         !evidence.records().is_empty(),
         "fork/pthread run must publish protected evidence"
-    );
-    assert!(
-        evidence.records().iter().any(|record| {
-            record
-                .windows(b"thread exit callback completed".len())
-                .any(|window| window == b"thread exit callback completed")
-        }),
-        "explicit SYS_exit must publish thread-exit evidence before FINAL"
     );
 }
 
@@ -132,5 +123,45 @@ fn protected_evidence_covers_vfork_open_and_exec() {
     assert!(
         initialized_images >= 2,
         "parent and exec child must both contribute protected evidence; got {initialized_images} initialization records"
+    );
+}
+
+#[test]
+#[ignore = "requires a built DynamoRIO and the reverie-dbt native client; run with --ignored"]
+fn protected_evidence_follows_last_thread_explicit_exit() {
+    let directory = tempfile::tempdir().expect("fixture tempdir");
+    let fixture = directory.path().join("explicit-exit");
+    compile_fixture("evidence_explicit_exit.c", &fixture, &[]);
+
+    let mut evidence_file = tempfile::tempfile().expect("evidence tempfile");
+    let runner = DbtRunner::from_env()
+        .expect("DYNAMORIO_HOME (or DynamoRIO_DIR) and REVERIE_DBT_CLIENT must be set")
+        .evidence_file(&evidence_file)
+        .expect("configure protected evidence")
+        .client_argument("-test-thread-exit-evidence");
+    let output = runner
+        .output(&Command::new(fixture))
+        .expect("explicit SYS_exit evidence run should complete");
+    assert!(
+        output.status.success(),
+        "explicit SYS_exit guest exited unsuccessfully: {output:?}"
+    );
+
+    evidence_file
+        .seek(std::io::SeekFrom::Start(0))
+        .expect("rewind evidence artifact");
+    let mut evidence_bytes = Vec::new();
+    evidence_file
+        .read_to_end(&mut evidence_bytes)
+        .expect("read evidence artifact");
+    let evidence = reverie_dbt::decode_evidence(&evidence_bytes)
+        .expect("explicit SYS_exit evidence artifact must decode");
+    assert!(
+        evidence.records().iter().any(|record| {
+            record
+                .windows(b"explicit SYS_exit thread callback completed".len())
+                .any(|window| window == b"explicit SYS_exit thread callback completed")
+        }),
+        "last-thread SYS_exit must publish thread-exit evidence before FINAL"
     );
 }

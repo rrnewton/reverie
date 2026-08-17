@@ -32,8 +32,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 
-const CHANNEL_MAGIC: &[u8; 8] = b"RVDBTE1\0";
-const CHANNEL_HEADER_LEN: usize = 64;
+const CHANNEL_MAGIC: &[u8; 8] = b"RVDBTE2\0";
+const CHANNEL_HEADER_LEN: usize = 80;
 const CHANNEL_TOKEN_LEN: usize = 32;
 const CHANNEL_NAME_LEN: usize = 16;
 const MAX_FRAME_PAYLOAD: usize = 1024 * 1024;
@@ -337,6 +337,13 @@ struct ImageState {
     pending_exec: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FrameReceipt {
+    kind: u8,
+    sequence: u64,
+    digest: [u8; 16],
+}
+
 struct CollectedEvidence {
     encoded_records: Vec<u8>,
     record_count: u64,
@@ -348,6 +355,7 @@ struct Collector {
     images: BTreeMap<ProcessKey, ImageState>,
     expected_processes: BTreeSet<ProcessKey>,
     terminal_processes: BTreeSet<ProcessKey>,
+    last_receipts: BTreeMap<ProcessKey, FrameReceipt>,
     encoded_records: Vec<u8>,
     record_count: u64,
     payload_bytes: u64,
@@ -361,6 +369,7 @@ impl Collector {
             images: BTreeMap::new(),
             expected_processes: BTreeSet::new(),
             terminal_processes: BTreeSet::new(),
+            last_receipts: BTreeMap::new(),
             encoded_records: Vec::new(),
             record_count: 0,
             payload_bytes: 0,
@@ -498,6 +507,34 @@ impl Collector {
             }
             _ => return Err(invalid_data("DBT evidence frame kind is unknown")),
         }
+        Ok(())
+    }
+
+    fn absorb_or_acknowledge_retry(
+        &mut self,
+        kind: u8,
+        process: ProcessKey,
+        sequence: u64,
+        digest: [u8; 16],
+        payload: &[u8],
+    ) -> io::Result<()> {
+        let receipt = FrameReceipt {
+            kind,
+            sequence,
+            digest,
+        };
+        if self.last_receipts.get(&process) == Some(&receipt) {
+            return Ok(());
+        }
+        if self
+            .last_receipts
+            .get(&process)
+            .is_some_and(|previous| previous.sequence == sequence)
+        {
+            return Err(invalid_data("DBT evidence retry changed an accepted frame"));
+        }
+        self.absorb(kind, process, sequence, payload)?;
+        self.last_receipts.insert(process, receipt);
         Ok(())
     }
 
@@ -658,6 +695,7 @@ fn handle_connection(
     }
     let payload_len = u32::from_le_bytes(header[48..52].try_into().unwrap()) as usize;
     let sequence = u64::from_le_bytes(header[56..64].try_into().unwrap());
+    let digest: [u8; 16] = header[64..80].try_into().unwrap();
     if payload_len > MAX_FRAME_PAYLOAD {
         return Err(invalid_data("DBT evidence frame payload is too large"));
     }
@@ -682,9 +720,26 @@ fn handle_connection(
         ));
     }
     let mut payload = vec![0; payload_len];
-    stream.read_exact(&mut payload)?;
-    collector.absorb(kind, process, sequence, &payload)?;
-    stream.write_all(&[0])?;
+    if let Err(error) = stream.read_exact(&mut payload) {
+        if matches!(
+            error.kind(),
+            io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::TimedOut
+                | io::ErrorKind::ConnectionReset
+        ) {
+            return Ok(());
+        }
+        return Err(error);
+    }
+    let expected_digest = frame_digest(kind, sequence, &payload);
+    if !constant_time_equal(&digest, &expected_digest) {
+        return Err(invalid_data("DBT evidence frame digest is invalid"));
+    }
+    collector.absorb_or_acknowledge_retry(kind, process, sequence, digest, &payload)?;
+    // The frame is durable in collector state before the ACK. If the peer
+    // times out and closes here, its exact retry is acknowledged idempotently.
+    let _ = stream.write_all(&[0]);
     Ok(())
 }
 
@@ -944,6 +999,23 @@ fn fnv_update(mut hash: u64, bytes: &[u8]) -> u64 {
     hash
 }
 
+fn frame_digest(kind: u8, sequence: u64, payload: &[u8]) -> [u8; 16] {
+    let length = (payload.len() as u32).to_le_bytes();
+    let sequence = sequence.to_le_bytes();
+    let mut first = fnv_update(FNV_OFFSET, &[kind]);
+    first = fnv_update(first, &length);
+    first = fnv_update(first, &sequence);
+    first = fnv_update(first, payload);
+    let mut second = fnv_update(0x9e37_79b9_7f4a_7c15, &[kind]);
+    second = fnv_update(second, &length);
+    second = fnv_update(second, &sequence);
+    second = fnv_update(second, payload);
+    let mut digest = [0; 16];
+    digest[..8].copy_from_slice(&first.to_le_bytes());
+    digest[8..].copy_from_slice(&second.to_le_bytes());
+    digest
+}
+
 fn invalid_data(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -1028,6 +1100,55 @@ mod tests {
         collector.absorb(FRAME_START, process, 0, &[]).unwrap();
         collector.absorb(FRAME_FINAL, process, 1, &[]).unwrap();
         assert!(collector.absorb(FRAME_FINAL, process, 2, &[]).is_err());
+    }
+
+    #[test]
+    fn collector_acknowledges_only_an_exact_transport_retry() {
+        let process = ProcessKey {
+            pid: 33,
+            start_time: 39,
+        };
+        let start_digest = frame_digest(FRAME_START, 0, &[]);
+        let mut collector = Collector::new();
+        collector
+            .absorb_or_acknowledge_retry(FRAME_START, process, 0, start_digest, &[])
+            .unwrap();
+        collector
+            .absorb_or_acknowledge_retry(FRAME_START, process, 0, start_digest, &[])
+            .unwrap();
+
+        let final_digest = frame_digest(FRAME_FINAL, 1, &[]);
+        collector
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 1, final_digest, &[])
+            .unwrap();
+        collector
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 1, final_digest, &[])
+            .unwrap();
+        collector.finish().unwrap();
+    }
+
+    #[test]
+    fn collector_refuses_a_changed_same_sequence_retry() {
+        let process = ProcessKey {
+            pid: 35,
+            start_time: 41,
+        };
+        let start_digest = frame_digest(FRAME_START, 0, &[]);
+        let mut collector = Collector::new();
+        collector
+            .absorb_or_acknowledge_retry(FRAME_START, process, 0, start_digest, &[])
+            .unwrap();
+
+        let changed_digest = frame_digest(FRAME_FINAL, 0, &[]);
+        let error = collector
+            .absorb_or_acknowledge_retry(FRAME_FINAL, process, 0, changed_digest, &[])
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("retry changed an accepted frame"),
+            "unexpected refusal: {error}"
+        );
     }
 
     #[test]
