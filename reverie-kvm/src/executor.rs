@@ -306,7 +306,7 @@ fn execute_basic_syscall_with_output(
         // AUTONOMOUS-BOT-IMPLEMENTED
         sendfile(memory, state, args, output)
     } else if number == libc::SYS_lseek as u64 {
-        lseek(state, args)
+        lseek(state, args, capture_output)
     } else if number == libc::SYS_ftruncate as u64 {
         ftruncate(state, args)
     } else if number == libc::SYS_truncate as u64 {
@@ -2746,10 +2746,16 @@ fn memfd_create(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 
     insert_file_with_flags(state, file, close_on_exec, None)
 }
 
-fn lseek(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    if capture_output && output_alias(state, fd).is_some() {
+        // Captured stdout/stderr are modeled as pipes: writes go to the
+        // in-memory capture sink, and fstat exposes S_IFIFO. Do not leak the
+        // unrelated file position of the supervisor's inherited descriptor.
+        return negative_errno(libc::ESPIPE);
+    }
     let Some(host_fd) = host_fd(state, fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -11393,6 +11399,61 @@ mod tests {
         }
 
         assert_ne!(stats[0].st_ino, stats[1].st_ino);
+    }
+
+    #[test]
+    fn captured_output_lseek_is_pipe_for_standard_and_alias_fds() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+        let mut output = CapturedOutput::default();
+
+        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
+            let action = execute_basic_syscall_with_output(
+                &mut memory,
+                &mut state,
+                &SyscallRequest::new(
+                    libc::SYS_lseek as u64,
+                    [fd as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0],
+                ),
+                Some(&mut output),
+            );
+            assert!(matches!(
+                action,
+                SyscallAction::Continue {
+                    result,
+                    segment: None
+                } if result == negative_errno(libc::ESPIPE)
+            ));
+        }
+
+        let alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [libc::STDERR_FILENO as u64, 0, 0, 0, 0, 0],
+        );
+        assert_eq!(alias, 3);
+        assert!(matches!(
+            output_alias(&state, alias as libc::c_int),
+            Some(OutputAlias::Stderr)
+        ));
+        let action = execute_basic_syscall_with_output(
+            &mut memory,
+            &mut state,
+            &SyscallRequest::new(
+                libc::SYS_lseek as u64,
+                [alias as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0],
+            ),
+            Some(&mut output),
+        );
+        assert!(matches!(
+            action,
+            SyscallAction::Continue {
+                result,
+                segment: None
+            } if result == negative_errno(libc::ESPIPE)
+        ));
     }
 
     #[test]
