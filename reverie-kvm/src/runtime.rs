@@ -1076,42 +1076,54 @@ impl KvmBackend {
                         .iter_syscalls()
                         .any(|number| number == syscall.number());
                     let result = if subscribed {
-                        let handler_signal = Arc::new(Mutex::new(None));
-                        let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-                        expose_tool_scratch(&memory)?;
-                        let outcome = {
-                            let mut guest_executor = DirectSyscallExecutor {
-                                executor: &mut executor,
+                        // Same `ERESTARTSYS` restart protocol as the
+                        // process-syscall path below; see
+                        // `classify_handler_result`.
+                        loop {
+                            let handler_signal = Arc::new(Mutex::new(None));
+                            let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                            expose_tool_scratch(&memory)?;
+                            let outcome = {
+                                let mut guest_executor = DirectSyscallExecutor {
+                                    executor: &mut executor,
+                                };
+                                let mut guest = KvmGuest::<T>::new(
+                                    pid,
+                                    // run_with_tool drives a single root thread.
+                                    pid,
+                                    memory.clone(),
+                                    &auxv,
+                                    kvm_registers(registers, request.number()),
+                                    &mut thread_state,
+                                    &mut guest_executor,
+                                    &global_state,
+                                    None,
+                                    &config,
+                                    &subscriptions,
+                                    handler_signal.clone(),
+                                    pending_child_starts.clone(),
+                                    stack_checked_out.clone(),
+                                );
+                                drive_handler(
+                                    tool.handle_syscall_event(&mut guest, syscall),
+                                    handler_signal,
+                                    pending_child_starts,
+                                )
+                                .await
                             };
-                            let mut guest = KvmGuest::<T>::new(
-                                pid,
-                                // run_with_tool drives a single root thread.
-                                pid,
-                                memory.clone(),
-                                &auxv,
-                                kvm_registers(registers, request.number()),
-                                &mut thread_state,
-                                &mut guest_executor,
-                                &global_state,
-                                None,
-                                &config,
-                                &subscriptions,
-                                handler_signal.clone(),
-                                pending_child_starts.clone(),
-                                stack_checked_out.clone(),
-                            );
-                            drive_handler(
-                                tool.handle_syscall_event(&mut guest, syscall),
-                                handler_signal,
-                                pending_child_starts,
-                            )
-                            .await
-                        };
-                        hide_tool_scratch(&memory)?;
-                        match outcome {
-                            HandlerOutcome::Returned(result) => handler_result_to_raw(result)?,
-                            HandlerOutcome::TailInjected { result, .. } => result_to_raw(result),
-                            HandlerOutcome::RuntimeError(error) => return Err(error),
+                            hide_tool_scratch(&memory)?;
+                            break match outcome {
+                                HandlerOutcome::Returned(result) => {
+                                    match classify_handler_result(result)? {
+                                        Some(raw) => raw,
+                                        None => continue,
+                                    }
+                                }
+                                HandlerOutcome::TailInjected { result, .. } => {
+                                    result_to_raw(result)
+                                }
+                                HandlerOutcome::RuntimeError(error) => return Err(error),
+                            };
                         }
                     } else {
                         executor.execute(&request, &memory)
@@ -1461,65 +1473,80 @@ impl KvmBackend {
                     .iter_syscalls()
                     .any(|number| number == syscall.number());
             let (result, handler_replaced_image, handler_process_completed) = if subscribed {
-                let handler_signal = Arc::new(Mutex::new(None));
-                let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
                 let mut handler_process_completed = false;
-                expose_tool_scratch(&memory)?;
-                let outcome = {
-                    let mut guest_executor = StaticElfSyscallExecutor {
-                        backend: self,
-                        executor,
-                        memory: memory.clone(),
-                        process_context: ProcessExecutionContext::SyscallBoundary(
-                            ProcessBoundary {
-                                frame_address,
-                                return_slot,
-                            },
-                        ),
-                        last_result: None,
-                        process_completed: &mut handler_process_completed,
+                // The `ERESTARTSYS` restart protocol (Reverie #362) on the KVM
+                // side: a Tool may ask for the syscall to be re-run rather than
+                // completed. `classify_handler_result` owns that policy; this
+                // loop owns only the re-invocation, rebuilding the guest view
+                // each attempt exactly as a fresh syscall event would.
+                loop {
+                    let handler_signal = Arc::new(Mutex::new(None));
+                    let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                    expose_tool_scratch(&memory)?;
+                    let outcome = {
+                        let mut guest_executor = StaticElfSyscallExecutor {
+                            backend: self,
+                            executor,
+                            memory: memory.clone(),
+                            process_context: ProcessExecutionContext::SyscallBoundary(
+                                ProcessBoundary {
+                                    frame_address,
+                                    return_slot,
+                                },
+                            ),
+                            last_result: None,
+                            process_completed: &mut handler_process_completed,
+                        };
+                        let mut guest = KvmGuest::<T>::new(
+                            pid,
+                            tid,
+                            memory.clone(),
+                            &auxv,
+                            kvm_registers(registers, request.number()),
+                            &mut thread_state,
+                            &mut guest_executor,
+                            global_state.as_ref(),
+                            Some(global_state.clone()),
+                            config,
+                            subscriptions,
+                            handler_signal.clone(),
+                            pending_child_starts.clone(),
+                            stack_checked_out.clone(),
+                        );
+                        drive_handler(
+                            tool.handle_syscall_event(&mut guest, syscall),
+                            handler_signal,
+                            pending_child_starts,
+                        )
+                        .await
                     };
-                    let mut guest = KvmGuest::<T>::new(
-                        pid,
-                        tid,
-                        memory.clone(),
-                        &auxv,
-                        kvm_registers(registers, request.number()),
-                        &mut thread_state,
-                        &mut guest_executor,
-                        global_state.as_ref(),
-                        Some(global_state.clone()),
-                        config,
-                        subscriptions,
-                        handler_signal.clone(),
-                        pending_child_starts.clone(),
-                        stack_checked_out.clone(),
-                    );
-                    drive_handler(
-                        tool.handle_syscall_event(&mut guest, syscall),
-                        handler_signal,
-                        pending_child_starts,
-                    )
-                    .await
-                };
-                executor.start_pending_child_processes()?;
-                hide_tool_scratch(&memory)?;
-                match outcome {
-                    HandlerOutcome::Returned(result) => (
-                        handler_result_to_raw(result)?,
-                        false,
-                        handler_process_completed,
-                    ),
-                    HandlerOutcome::TailInjected {
-                        result,
-                        image_replaced,
-                        ..
-                    } => (
-                        result_to_raw(result),
-                        image_replaced,
-                        handler_process_completed,
-                    ),
-                    HandlerOutcome::RuntimeError(error) => return Err(error),
+                    executor.start_pending_child_processes()?;
+                    hide_tool_scratch(&memory)?;
+                    break match outcome {
+                        HandlerOutcome::Returned(result) => {
+                            match classify_handler_result(result)? {
+                                Some(raw) => (raw, false, handler_process_completed),
+                                // A restart is only meaningful while the process
+                                // is still live to re-run the syscall.
+                                None if !handler_process_completed => continue,
+                                None => (
+                                    -(i64::from(Errno::ERESTARTSYS.into_raw())),
+                                    false,
+                                    handler_process_completed,
+                                ),
+                            }
+                        }
+                        HandlerOutcome::TailInjected {
+                            result,
+                            image_replaced,
+                            ..
+                        } => (
+                            result_to_raw(result),
+                            image_replaced,
+                            handler_process_completed,
+                        ),
+                        HandlerOutcome::RuntimeError(error) => return Err(error),
+                    };
                 }
             } else {
                 (executor.execute(&request, &memory), false, false)
@@ -1622,13 +1649,32 @@ impl KvmBackend {
     }
 }
 
-fn handler_result_to_raw(result: std::result::Result<i64, reverie::Error>) -> Result<i64> {
+/// Resolve a Tool handler's return value into the raw word written to the
+/// guest's syscall frame, or `None` when the `ERESTARTSYS` restart protocol
+/// (Reverie #362) requires re-running the Tool callback.
+///
+/// `ERESTARTSYS` is kernel-private: Linux never delivers it to userspace. It
+/// either re-issues the interrupted syscall or reports `EINTR`. Detcore returns
+/// it from `signal_interrupt_errno()` for the syscalls it models as restartable
+/// (`read`, `futex`, ...) to mean exactly "re-run me". Under `reverie-ptrace`
+/// the host kernel consumes it: the tracee's return register is set to
+/// `-ERESTARTSYS` alongside a pending signal and Linux's signal-delivery path
+/// rewinds and re-issues the syscall. A KVM guest is not a host process resumed
+/// through that path, so this backend must repeat the callback itself — the same
+/// resolution `reverie-preload::drive_tool_syscall` applies for the ld-preload
+/// backends. Without it the private 512 reaches the guest as an
+/// application-visible errno.
+///
+/// Isolating the policy in one pure function keeps it directly testable.
+fn classify_handler_result(
+    result: std::result::Result<i64, reverie::Error>,
+) -> Result<Option<i64>> {
     match result {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            let errno = error.into_errno().map_err(Error::Reverie)?;
-            Ok(-(i64::from(errno.into_raw())))
-        }
+        Ok(value) => Ok(Some(value)),
+        Err(error) => match error.into_errno().map_err(Error::Reverie)? {
+            Errno::ERESTARTSYS => Ok(None),
+            errno => Ok(Some(-(i64::from(errno.into_raw())))),
+        },
     }
 }
 
@@ -1750,6 +1796,43 @@ mod tests {
             )),
             HandlerOutcome::Returned(true)
         ));
+    }
+
+    #[test]
+    fn erestartsys_requests_a_restart_and_every_other_result_is_returned() {
+        // The whole point of the protocol: the kernel-private 512 must never
+        // become the guest's syscall result, so it maps to "re-run", not to a
+        // raw word.
+        assert_eq!(
+            classify_handler_result(Err(Errno::ERESTARTSYS.into())).unwrap(),
+            None
+        );
+
+        // Ordinary errnos still reach the guest, negated, exactly as before.
+        assert_eq!(
+            classify_handler_result(Err(Errno::EINTR.into())).unwrap(),
+            Some(-(libc::EINTR as i64))
+        );
+        assert_eq!(
+            classify_handler_result(Err(Errno::EBADF.into())).unwrap(),
+            Some(-(libc::EBADF as i64))
+        );
+
+        // Success values pass through untouched, including 0 and large reads.
+        assert_eq!(classify_handler_result(Ok(0)).unwrap(), Some(0));
+        assert_eq!(classify_handler_result(Ok(4096)).unwrap(), Some(4096));
+
+        // A guard against the defect this replaced: no input may produce the
+        // private restart value as a guest-visible result.
+        let private = -(i64::from(Errno::ERESTARTSYS.into_raw()));
+        for result in [
+            Err(Errno::ERESTARTSYS.into()),
+            Err(Errno::EINTR.into()),
+            Err(Errno::EAGAIN.into()),
+            Ok(0),
+        ] {
+            assert_ne!(classify_handler_result(result).unwrap(), Some(private));
+        }
     }
 
     #[test]
