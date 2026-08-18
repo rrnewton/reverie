@@ -33,6 +33,7 @@ use reverie::Guest;
 use reverie::Never;
 use reverie::Pid;
 use reverie::Rdtsc;
+use reverie::Signal;
 use reverie::Stack;
 use reverie::TimerSchedule;
 use reverie::Tool as ReverieTool;
@@ -495,6 +496,45 @@ where
             Poll::Pending => {
                 crate::eprintln!(
                     "reverie-sabre: remote Tool::handle_rdtsc_event suspended and was dropped"
+                );
+                Err(Errno::EIO)
+            }
+        }
+    }
+
+    /// Forwards a delivered signal through the shared tool and remote
+    /// GlobalTool, returning the signal the tool wants the guest to see.
+    ///
+    /// Without this the tool never learns that a signal arrived. A tool that
+    /// emulates blocking syscalls needs that fact: it is what makes its own
+    /// scheduler report the blocked call as interrupted, and it is what lets
+    /// the interrupted call be finished the way Linux finishes it. `Ok(None)`
+    /// means the tool suppressed the signal.
+    pub fn handle_signal(&self, signal: Signal) -> Result<Option<Signal>, Errno> {
+        let tid = current_tid();
+        let pid = current_pid();
+        let state = self.thread_state(tid).map_err(remote_rpc_error)?;
+        let mut state = state.lock();
+        let RemoteThreadState {
+            thread_state,
+            rpc,
+            exit_handled,
+        } = &mut *state;
+        let mut guest = SabreGuest::new(
+            tid,
+            pid,
+            thread_state,
+            rpc.as_ref(),
+            Some((&self.tool, exit_handled, None)),
+            None,
+            None,
+        );
+
+        match poll_once(self.tool.handle_signal_event(&mut guest, signal)) {
+            Poll::Ready(result) => result,
+            Poll::Pending => {
+                crate::eprintln!(
+                    "reverie-sabre: remote Tool::handle_signal_event suspended and was dropped"
                 );
                 Err(Errno::EIO)
             }
