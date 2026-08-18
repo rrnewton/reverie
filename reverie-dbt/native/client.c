@@ -313,11 +313,13 @@ static char stats_path[4096];
 // is supplied.
 static bool preemption_enabled;
 static uint64_t preemption_quantum;
-// When true, preemption is delivered only at PCs in the guest's main executable
-// (see `pc_in_main_executable`). Default true (conservative). Set to false via
-// the `HERMIT_DBT_PREEMPT_ANYPC` environment variable to allow delivery at any
-// PC, which is needed for guests whose starving loop runs inside libc.
-static bool preempt_gate_main_only = true;
+// When true, preemption is delivered only at PCs in application-owned code:
+// either the guest's main executable or an executable, non-image mapping such as
+// a QEMU TCG translated-code mapping. Loaded images remain excluded, preserving
+// the guard against interrupting arbitrary libc/loader instruction sequences.
+// Set to false via `HERMIT_DBT_PREEMPT_ANYPC` only for retained compatibility
+// with the explicitly unsafe diagnostic mode.
+static bool preempt_gate_safe_pc_only = true;
 
 // Deterministic virtual timestamp counter. Under DBT only one guest thread runs
 // at a time (guest threads are cooperatively serialized by Detcore at syscall
@@ -1563,8 +1565,7 @@ static dr_emit_flags_t instrument_instruction(void *drcontext, void *tag,
     // makes DynamoRIO save/restore the floating-point/vector state around the
     // call; we do not declare WRITES_APP_CONTEXT. We pass the block's
     // application PC so `maybe_preempt` can deliver the yield only at a SAFE
-    // POINT (a PC in the guest's own main executable, never mid-sequence inside
-    // libc/ld).
+    // POINT in application-owned code, never mid-sequence inside libc/ld.
     dr_insert_clean_call(drcontext, bb, instruction, (void *)maybe_preempt,
                          /*save_fpstate=*/true, 1,
                          OPND_CREATE_INTPTR(block_pc));
@@ -3154,11 +3155,11 @@ static void report_copied_unsupported_syscall(int sysnum) {
 // runs of `--verify` execute the same stream, take the same preemptions, and
 // inject the same yields.
 //
-// SAFE-POINT gate refinement: we additionally require the interrupted PC to lie
-// in the guest's MAIN EXECUTABLE (its own code). The busy-wait/tight loop that
-// starves the scheduler spins there, not inside libc; restricting delivery to
-// the guest's own code keeps the redirect/return away from partially-executed
-// libc/ld sequences. We cache the main module's address range once.
+// SAFE-POINT gate refinement: require the interrupted PC to lie in
+// application-owned code: the main executable or an executable mapping outside
+// every loaded image. This covers ordinary guest loops and generated code while
+// keeping redirect/return away from partially-executed libc/ld sequences. We
+// cache the main module's address range once.
 static app_pc main_module_start;
 static app_pc main_module_end;
 static bool main_module_resolved;
@@ -3174,6 +3175,34 @@ static bool pc_in_main_executable(app_pc pc) {
     dr_free_module_data(main_module);
   }
   return pc >= main_module_start && pc < main_module_end;
+}
+
+// Dynamically generated application code is outside every loaded ELF image.
+// DynamoRIO reports those executable mappings as DR_MEMTYPE_DATA and returns
+// NULL from dr_lookup_module(). This admits QEMU TCG translated code without
+// admitting libc, the dynamic loader, or any other loaded image. The predicate
+// runs only after the branch quantum has elapsed, not on every basic block.
+static bool pc_in_executable_non_image_mapping(app_pc pc) {
+  if (dr_memory_is_dr_internal(pc) || dr_memory_is_in_client(pc))
+    return false;
+
+  module_data_t *module = dr_lookup_module(pc);
+  if (module != NULL) {
+    dr_free_module_data(module);
+    return false;
+  }
+
+  dr_mem_info_t info;
+  if (!dr_query_memory_ex(pc, &info))
+    return false;
+  return info.type == DR_MEMTYPE_DATA &&
+         (info.prot & DR_MEMPROT_EXEC) != 0 &&
+         (info.prot & DR_MEMPROT_VDSO) == 0;
+}
+
+static bool pc_is_safe_preemption_point(app_pc pc) {
+  return pc_in_main_executable(pc) ||
+         pc_in_executable_non_image_mapping(pc);
 }
 
 static void maybe_preempt(app_pc pc) {
@@ -3202,11 +3231,11 @@ static void maybe_preempt(app_pc pc) {
   uint64_t branches = atomic_load_explicit(&branch_count, memory_order_relaxed);
   if (branches - counters->last_yield_branch < preemption_quantum)
     return;
-  // Defer until the quantum elapses AND the interrupted PC is in the guest's own
-  // code. Do NOT advance last_yield_branch when deferring, so delivery lands at
-  // the first main-executable block after the quantum -- a deterministic
+  // Defer until the quantum elapses AND the interrupted PC is in
+  // application-owned code. Do NOT advance last_yield_branch when deferring, so
+  // delivery lands at the first safe block after the quantum -- a deterministic
   // function of the deterministic instruction stream.
-  if (preempt_gate_main_only && !pc_in_main_executable(pc))
+  if (preempt_gate_safe_pc_only && !pc_is_safe_preemption_point(pc))
     return;
   counters->last_yield_branch = branches;
   // Capture the full interrupted context (integer + control + FP/SIMD) so
@@ -4302,7 +4331,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
   // a `preempt_return` clean call, so the `ud2` only executes (and traps) if the
   // return path is ever bypassed.
   if (preemption_enabled && getenv("HERMIT_DBT_PREEMPT_ANYPC") != NULL)
-    preempt_gate_main_only = false;
+    preempt_gate_safe_pc_only = false;
 
   if (preemption_enabled) {
     preempt_stub = (byte *)dr_nonheap_alloc(
