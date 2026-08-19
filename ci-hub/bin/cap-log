@@ -1,0 +1,292 @@
+#!/usr/bin/env python3
+"""Run a command with a HARD byte ceiling on its captured stderr/stdout.
+
+WHY A CAP AND NOT A QUIETER LOGGER
+==================================
+On 2026-08-17 three `hermit --log=info` processes wrote ~4.5 TB of stderr each
+and filled /data, crashing ORC and killing every running agent. The emitter was
+one scheduler banner per scheduling turn, and the runaway property is that the
+emission rate is decoupled from the work rate: the banner at
+detcore/src/scheduler.rs:2877 fires once per POLL ATTEMPT on an ALREADY-BLOCKED
+thread, so output rises exactly as useful work falls and a fully wedged run
+writes fastest of all.
+
+Quieting that one emitter does not bound anything -- the next verbose target
+nobody has thought of reproduces it. This is the other half: a ceiling on the
+SINK, which holds regardless of level, target, or who added a new log line.
+
+WHY THIS DRAINS INSTEAD OF JUST CLOSING THE PIPE
+================================================
+The obvious implementation -- stop reading once the cap is hit -- reproduces the
+exact failure it is meant to prevent. Measured on this box: when hermit's log
+sink stops accepting bytes, hermit does NOT die. It blocks in `anon_pipe_read`
+at zero CPU and never exits: an identical run finished in 27s unbounded and was
+still alive at 300s when SIGKILL reaped it. It wedges the same way for ENOSPC
+(errno 28) as for a full-pipe stall, so "let the writes fail" is not a safe
+design either.
+
+So this ALWAYS keeps draining. Past the cap the bytes are counted and dropped,
+never written. The child continues to run and exit normally; only the disk cost
+is bounded.
+
+WHY TRUNCATION IS RECORDED IN THREE PLACES
+==========================================
+A capped log that reads as complete is worse than a missing one: someone
+debugging the tail of a run would silently be reading the head, and would
+conclude the run stopped where the file stops. So truncation is recorded
+
+  * IN the file, as the last line, so anyone reading it cannot miss it;
+  * in a sidecar `<out>.truncated.json`, so a harness can detect it without
+    parsing the log;
+  * on this wrapper's own stderr, so it appears in the parent's output.
+
+The in-file marker is written INSIDE the budget -- writing stops early enough to
+leave room -- so the file never exceeds --max-bytes. A cap that overshoots to
+report itself is not a cap.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+MARKER_RESERVE = 512  # bytes held back so the truncation notice always fits
+
+
+def parse_size(text: str) -> int:
+    """Accept 1024, 64K, 512M, 2G. Plain integers are bytes."""
+    units = {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}
+    raw = text.strip().upper().rstrip("B") or "0"
+    if raw and raw[-1] in units:
+        return int(float(raw[:-1]) * units[raw[-1]])
+    return int(raw)
+
+
+class CappedSink:
+    """Writes up to ``cap`` bytes to ``path``, counts and discards the rest."""
+
+    def __init__(self, path: Path, cap: int, label: str, command: list[str]) -> None:
+        self.path = path
+        self.cap = cap
+        self.label = label
+        self.command = command
+        self.budget = max(0, cap - MARKER_RESERVE)
+        self.written = 0
+        self.dropped = 0
+        self.handle = open(path, "wb")
+        self._lock = threading.Lock()
+        self._marked = False
+
+    def feed(self, chunk: bytes) -> None:
+        with self._lock:
+            room = self.budget - self.written
+            if room > 0:
+                take = chunk[:room]
+                self.handle.write(take)
+                self.written += len(take)
+                chunk = chunk[len(take):]
+            if chunk:
+                self.dropped += len(chunk)
+                # Record truncation THE MOMENT it starts, not at close.
+                #
+                # A capped run is exactly the run most likely to be SIGKILLed
+                # later -- by a watchdog, a wall-clock bound, or an operator --
+                # and SIGKILL runs no cleanup. Measured: an earlier version of
+                # this tool wrote the notice only in close(), the wrapper was
+                # SIGKILLed, and the capped file was left with NO marker and no
+                # sidecar, ending mid-line and reading exactly like a run that
+                # simply stopped. That is the failure this tool exists to
+                # prevent, reproduced by the tool itself.
+                if not self._marked:
+                    self._marked = True
+                    self._finalize_locked()
+
+    @property
+    def truncated(self) -> bool:
+        return self.dropped > 0
+
+    def _record_locked(self) -> dict:
+        return {
+            "stream": self.label,
+            "path": str(self.path),
+            "cap_bytes": self.cap,
+            "written_bytes": self.written,
+            "dropped_bytes": self.dropped,
+            "total_bytes_produced": self.written + self.dropped,
+            "truncated": self.truncated,
+            "command": self.command,
+        }
+
+    def _finalize_locked(self) -> dict:
+        """Stamp the in-file notice and sidecar with the counts known right now.
+
+        Idempotent and re-runnable: the notice is always rewritten at the same
+        offset, so calling this at first truncation AND again at close leaves one
+        notice carrying final numbers, and a kill in between leaves one carrying
+        partial numbers. Either way the file cannot read as complete.
+        """
+        record = self._record_locked()
+        if not self.truncated:
+            return record
+        total = self.written + self.dropped
+        notice = (
+            f"\n[cap-log] *** TRUNCATED *** this {self.label} was capped at "
+            f"{self.cap} bytes. {self.written} bytes kept, at least {self.dropped} bytes "
+            f"DISCARDED of at least {total} produced. THE TAIL OF THIS RUN IS NOT BELOW; "
+            f"the run continued past this point and this file ends early.\n"
+        ).encode()[:MARKER_RESERVE]
+        self.handle.seek(self.written)
+        self.handle.write(notice)
+        self.handle.truncate(self.written + len(notice))
+        self.handle.flush()
+        os.fsync(self.handle.fileno())
+        side = self.path.with_name(self.path.name + ".truncated.json")
+        tmp = side.with_suffix(side.suffix + ".tmp")
+        tmp.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        os.replace(tmp, side)  # atomic: a reader never sees a half-written sidecar
+        return record
+
+    def close(self) -> dict:
+        with self._lock:
+            record = self._finalize_locked()
+            if not self.truncated:
+                self.handle.flush()
+                os.fsync(self.handle.fileno())
+            try:
+                self.handle.close()
+            except OSError:
+                pass
+        return record
+
+
+def pump(fd: int, sink: CappedSink, passthrough: int | None) -> None:
+    """Drain ``fd`` to exhaustion. Never stops early -- see module docstring."""
+    while True:
+        try:
+            chunk = os.read(fd, 1 << 16)
+        except OSError:
+            break
+        if not chunk:
+            break
+        sink.feed(chunk)
+        if passthrough is not None:
+            try:
+                os.write(passthrough, chunk)
+            except OSError:
+                passthrough = None
+    os.close(fd)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--max-bytes", required=True,
+        help="hard ceiling per captured stream (e.g. 512M, 2G). The file never exceeds this.",
+    )
+    parser.add_argument("--stderr", dest="err_path", default=None, help="capture child stderr here")
+    parser.add_argument("--stdout", dest="out_path", default=None, help="capture child stdout here")
+    parser.add_argument(
+        "--passthrough", action="store_true",
+        help="also forward captured streams to this process's own stdout/stderr (uncapped)",
+    )
+    parser.add_argument(
+        "--fail-on-truncate", action="store_true",
+        help=(
+            "exit 79 if anything was truncated, EVEN IF the child succeeded. Off by "
+            "default: the child's own status is usually what a caller wants, and the "
+            "sidecar records truncation either way."
+        ),
+    )
+    parser.add_argument("command", nargs=argparse.REMAINDER, help="-- COMMAND [ARGS...]")
+    args = parser.parse_args(argv)
+
+    cmd = args.command[1:] if args.command and args.command[0] == "--" else args.command
+    if not cmd:
+        parser.error("no command given; use: cap-log --max-bytes 512M --stderr F -- CMD ...")
+    if not args.err_path and not args.out_path:
+        parser.error("nothing to capture; pass --stderr and/or --stdout")
+
+    cap = parse_size(args.max_bytes)
+    if cap <= MARKER_RESERVE:
+        parser.error(f"--max-bytes must exceed {MARKER_RESERVE} (room for the truncation notice)")
+
+    sinks: dict[str, CappedSink] = {}
+    popen_kwargs: dict = {}
+    if args.err_path:
+        sinks["stderr"] = CappedSink(Path(args.err_path), cap, "stderr", cmd)
+        popen_kwargs["stderr"] = subprocess.PIPE
+    if args.out_path:
+        sinks["stdout"] = CappedSink(Path(args.out_path), cap, "stdout", cmd)
+        popen_kwargs["stdout"] = subprocess.PIPE
+
+    try:
+        child = subprocess.Popen(cmd, **popen_kwargs)
+    except OSError as exc:
+        for sink in sinks.values():
+            sink.close()
+        print(f"cap-log: cannot run {cmd[0]!r}: {exc}", file=sys.stderr)
+        return 127
+
+    threads = []
+    for name, sink in sinks.items():
+        stream = child.stderr if name == "stderr" else child.stdout
+        fd = os.dup(stream.fileno())
+        stream.close()
+        through = None
+        if args.passthrough:
+            through = sys.stderr.fileno() if name == "stderr" else sys.stdout.fileno()
+        thread = threading.Thread(target=pump, args=(fd, sink, through), daemon=True)
+        thread.start()
+        threads.append(thread)
+
+    # Catchable signals still get a clean finalize; SIGKILL cannot, which is why
+    # truncation is already recorded at the moment it starts (see feed()).
+    def _handle_signal(signum, _frame):
+        try:
+            child.send_signal(signum)
+        except (OSError, ProcessLookupError):
+            pass
+        for sink in sinks.values():
+            sink.close()
+        raise SystemExit(128 + signum)
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        try:
+            signal.signal(sig, _handle_signal)
+        except (ValueError, OSError):
+            pass
+
+    rc = child.wait()
+    for thread in threads:
+        thread.join()
+
+    records = {name: sink.close() for name, sink in sinks.items()}
+    truncated_any = any(r["truncated"] for r in records.values())
+
+    for name, rec in records.items():
+        if not rec["truncated"]:
+            continue
+        side = Path(rec["path"]).with_name(Path(rec["path"]).name + ".truncated.json")
+        print(
+            f"cap-log: TRUNCATED {name} -> {rec['path']}: kept {rec['written_bytes']} of "
+            f"{rec['total_bytes_produced']} bytes (dropped {rec['dropped_bytes']}); "
+            f"see {side}",
+            file=sys.stderr,
+        )
+
+    if args.fail_on_truncate and truncated_any:
+        return 79
+    return rc
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
