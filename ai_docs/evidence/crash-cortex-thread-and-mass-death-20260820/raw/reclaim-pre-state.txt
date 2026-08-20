@@ -1,0 +1,11 @@
+# pre-reclaim snapshot, captured 2026-08-20T19:20:10Z by hermit-902
+--- pollrevents
+    disk      8.8G
+    branch    fix/poll-partial-revents-copyout
+    HEAD      e8511b270d7005c3e08db0cebd6f74c0b4b30ca3
+    dirty     0
+--- revents-measure
+    disk      13G
+    branch    diag/measure-replay-partial-revents-copyout
+    HEAD      2ba0ff09794da7d9bc57cc2a14938487d5881e83
+    dirty     0

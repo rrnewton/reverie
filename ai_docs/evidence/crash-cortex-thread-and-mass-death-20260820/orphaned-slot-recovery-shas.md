@@ -104,6 +104,98 @@ HEAD, all three working trees are clean, and the total unbacked content across t
 
 Reclaiming the three would return roughly **25.3 GB**.
 
+---
+
+# Reclaim record — `pollrevents` and `revents-measure`, 2026-08-20
+
+**Reclaimer:** `hermit-902` (claude, opus-5), passed as `--actor hermit-902`.
+**Authorised by:** the owner, on the evidence above, after retiring the freeze's original
+justification. **`slot10` was explicitly held and was not touched.** The 19 unassessable
+slots were explicitly excluded and were not touched.
+
+## What was run
+
+```
+./scripts/release-worktree.rs --slot pollrevents --clean --stale-clear \
+  --expected-generation 3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3419300:31290638 \
+  --actor hermit-902                                                        # rc=0
+
+./scripts/release-worktree.rs --slot revents-measure --clean --stale-clear \
+  --expected-generation 3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3522131:33580787 \
+  --actor hermit-902                                                        # rc=0
+```
+
+No `--force`. No `--push` (nothing needed pushing). Both leases were expired — by 109.1 h
+and 110.9 h respectively — `state=active`, not quarantined.
+
+**The tool proved reachability itself rather than trusting this document.** Both runs
+printed:
+
+> `pre-recycle guardrail: verifying every outer and initialized nested HEAD is reachable from its own origin...`
+> `✓ verified 1 outer/nested repository HEAD(s) on origin`
+
+That is an independent confirmation of the push status recorded above, taken by the
+release path at the moment of removal.
+
+## Recovery handoff
+
+Everything needed to restore either slot's work:
+
+| slot | branch | recovery SHA | where it lives now |
+| --- | --- | --- | --- |
+| `pollrevents` | `fix/poll-partial-revents-copyout` | `e8511b270d7005c3e08db0cebd6f74c0b4b30ca3` | `origin refs/heads/fix/poll-partial-revents-copyout`, `origin refs/pull/2272/head`, and the local branch in the primary `hermit/` checkout |
+| `revents-measure` | `diag/measure-replay-partial-revents-copyout` | `2ba0ff09794da7d9bc57cc2a14938487d5881e83` | `origin refs/heads/fix/verify-report-says-what-a-verdict-means`, `origin refs/pull/2269/head`, and the local branch in the primary `hermit/` checkout |
+
+All four remote refs were re-queried **after** the reclaim and still hold those exact
+SHAs. Both feature branches also still exist in the primary checkout at the same SHAs —
+`release-worktree.rs` never deletes a feature branch, so recovery does not even require
+the network.
+
+## What was actually destroyed
+
+`revents-measure/hermit/ignored/e2e` — 1.1 MB, 9 single-cell chaos-mode run directories,
+294 files, dated pre-reboot. Gitignored, therefore on no branch and no remote. Accepted
+knowingly: it is the by-product of iterating on a fix and re-runnable. Nothing else in
+either slot was outside git except `target/`, which is build output.
+
+## Verified after
+
+```
+worktrees/pollrevents        removed        registry row ABSENT
+worktrees/revents-measure    removed        registry row ABSENT
+worktrees/slot10             PRESENT 3.5G   status=active      <- untouched, as instructed
+```
+
+Health tick, before → after: `dead_owner_slots` 4 → **2** (`claude-exitgate` and `slot10`
+remain), `reclaimable_slots` 14 → 13, `reclaimable_gib` 63.06 → 60.23,
+`unassessable_owner_slots` **19 → 19** (untouched, as instructed).
+
+**Disk returned: an upper bound of 21.8 GiB** (8.8 + 13). It is an upper bound, not a
+measurement: slots are seeded with `cp -a --reflink=auto`, so extents are shared and the
+true figure is lower. No before-reading of `df` was captured, so the actual figure is not
+established here.
+
+## Advisory surfaced by both runs, not acted on
+
+The canonical registry verifier reports **6 drift rows**, unrelated to this reclaim and
+outside its scope:
+
+```
+cadence2              hermit recorded=lane/chaos-ptrace-strict-ratchet  actual=lane/chaos-ptrace-fp-reduction
+ci                    hermit recorded=feature/bind-local-full-e2e-kvm-coverage  actual=land-2280
+claude-fixtureassert  hermit recorded=fix/umask-mode-setup-failure-is-not-a-pass  actual=fix/assert-expected-values-in-three-parity-fixtures
+codex-hostsweep907    OWNERS must have exactly one mutating owner, found 0
+dbt-symbol            hermit recorded=diag/dbt-undefined-symbol-640d  actual=fix/dbt-abi-v2-exports-640d
+fix-futex             hermit recorded=replay/ratchet-ptrace  actual=rebase/pr2251
+```
+
+The suggested remedy is `scripts/allocate-worktree.rs --repair`. **Not run** — it is
+another agent's territory and outside this authorisation.
+
+---
+
+## Original pre-reclaim note, retained
+
 **Nothing here reclaims, releases or pushes anything** — that is the owner's decision, and
 there are reasons to hold that are independent of data loss: all three branches are
 unlanded and each is the head of an open PR (**#2281**, **#2272**, **#2269**), and
