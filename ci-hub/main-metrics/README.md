@@ -27,7 +27,11 @@ Two refusals are deliberate:
 - **Ancestry, not a branch label.** "Is this commit on main" is answered by
   `git merge-base --is-ancestor` at read time, not by a label the row recorded
   when it ran. A row produced on a branch that later landed *is* main history;
-  a label written at run time cannot know that.
+  a label written at run time cannot know that. Each row is checked against its
+  own repository: legacy/missing and `hermit` repo values use
+  `rrnewton/hermit`, while `reverie` values use `rrnewton/reverie`. An unknown
+  repository, unavailable object, or non-commit object refuses the whole
+  population; the refusal names the repository with every object ID.
 - **`INSUFFICIENT` instead of a guess.** A wall time without its concurrency is
   uninterpretable. Median wall measured **490s at 0–3 concurrent validates and
   852s at 14+**, so comparing two unconditioned samples can manufacture a 74%
@@ -103,3 +107,7 @@ So retention has two independent requirements, and raising only one does not hel
   code an alarm needs; nothing calls it yet.
 - **No per-commit alarm at land time.** `compare()` is the primitive; binding it
   to "fires at the commit that caused it" requires the tick-hub wiring above.
+- **Rebased commits are still matched only by object ID.** A patch can land
+  under a different commit ID after rebase. Patch-identity matching is a
+  separate owner decision; this repository-routing correction does not infer
+  ancestry from equivalent content.

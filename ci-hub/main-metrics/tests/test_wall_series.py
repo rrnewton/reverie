@@ -225,6 +225,7 @@ def test_main_commits_admits_on_main_and_refuses_off_main(monkeypatch):
     found = ws.main_commits(
         Path("/repo"),
         {onmain, offmain, ""},
+        ws.HERMIT_REPOSITORY,
     )
 
     assert found == {onmain}
@@ -238,7 +239,7 @@ def test_main_commits_refuses_malformed_commit_without_running_git(monkeypatch):
     monkeypatch.setattr(ws.subprocess, "run", run)
 
     with pytest.raises(RuntimeError, match="refused malformed commit ID"):
-        ws.main_commits(Path("/repo"), {"not-a-commit"})
+        ws.main_commits(Path("/repo"), {"not-a-commit"}, ws.HERMIT_REPOSITORY)
 
 
 def test_main_commits_uses_two_subprocesses_for_the_whole_population(monkeypatch):
@@ -265,7 +266,7 @@ def test_main_commits_uses_two_subprocesses_for_the_whole_population(monkeypatch
 
     monkeypatch.setattr(ws.subprocess, "run", run)
 
-    found = ws.main_commits(Path("/repo"), commits)
+    found = ws.main_commits(Path("/repo"), commits, ws.HERMIT_REPOSITORY)
 
     assert found == onmain
     assert len(calls) == 2
@@ -291,7 +292,7 @@ def test_main_commits_refuses_when_the_ancestry_query_fails(monkeypatch):
 
     claimed_main = "1" * 40
     with pytest.raises(RuntimeError, match="rev-list exited 128"):
-        ws.main_commits(Path("/repo"), {claimed_main})
+        ws.main_commits(Path("/repo"), {claimed_main}, ws.HERMIT_REPOSITORY)
 
 
 def test_main_commits_refuses_whole_population_when_one_object_is_absent(monkeypatch):
@@ -315,8 +316,125 @@ def test_main_commits_refuses_whole_population_when_one_object_is_absent(monkeyp
 
     monkeypatch.setattr(ws.subprocess, "run", run)
 
-    with pytest.raises(RuntimeError, match="refused 1 unavailable"):
-        ws.main_commits(Path("/repo"), {claimed_main, absent})
+    with pytest.raises(RuntimeError, match="refused 1 unavailable") as exc:
+        ws.main_commits(
+            Path("/repo"), {claimed_main, absent}, ws.HERMIT_REPOSITORY)
+
+    assert f"{ws.HERMIT_REPOSITORY}:{absent}" in str(exc.value)
+
+
+def test_rows_on_main_queries_each_commit_in_its_own_repository(monkeypatch):
+    hermit_sha = "1" * 40
+    reverie_sha = "2" * 40
+    calls = []
+
+    def main_commits(repo, commits, repository, ref="origin/main"):
+        calls.append((repo, commits, repository, ref))
+        return set(commits)
+
+    monkeypatch.setattr(ws, "main_commits", main_commits)
+    rows = [
+        {"commit": hermit_sha},
+        {"commit": hermit_sha, "repo": "rrnewton/hermit"},
+        {"commit": reverie_sha, "repo": "reverie"},
+        {"commit": reverie_sha, "repo": "rrnewton/reverie"},
+    ]
+
+    assert ws.rows_on_main(rows, {
+        ws.HERMIT_REPOSITORY: Path("/hermit"),
+        ws.REVERIE_REPOSITORY: Path("/reverie"),
+    }) == rows
+    assert calls == [
+        (Path("/hermit"), {hermit_sha}, ws.HERMIT_REPOSITORY, "origin/main"),
+        (Path("/reverie"), {reverie_sha}, ws.REVERIE_REPOSITORY, "origin/main"),
+    ]
+
+
+def test_rows_on_main_keeps_same_sha_separate_between_repositories(monkeypatch):
+    shared_sha = "3" * 40
+
+    def main_commits(_repo, commits, repository, ref="origin/main"):
+        assert commits == {shared_sha}
+        return set() if repository == ws.HERMIT_REPOSITORY else {shared_sha}
+
+    monkeypatch.setattr(ws, "main_commits", main_commits)
+    hermit_row = {"commit": shared_sha, "repo": "hermit"}
+    reverie_row = {"commit": shared_sha, "repo": "reverie"}
+
+    assert ws.rows_on_main([hermit_row, reverie_row], {
+        ws.HERMIT_REPOSITORY: Path("/hermit"),
+        ws.REVERIE_REPOSITORY: Path("/reverie"),
+    }) == [reverie_row]
+
+
+def test_rows_on_main_checks_every_repository_before_refusing(monkeypatch):
+    hermit_sha = "7" * 40
+    reverie_sha = "8" * 40
+    calls = []
+
+    def main_commits(_repo, commits, repository, ref="origin/main"):
+        calls.append((repository, commits))
+        raise RuntimeError(
+            f"main ancestry check refused 1 unavailable object(s): "
+            f"{repository}:{next(iter(commits))}")
+
+    monkeypatch.setattr(ws, "main_commits", main_commits)
+
+    with pytest.raises(RuntimeError) as exc:
+        ws.rows_on_main([
+            {"commit": hermit_sha, "repo": "hermit"},
+            {"commit": reverie_sha, "repo": "reverie"},
+        ], {
+            ws.HERMIT_REPOSITORY: Path("/hermit"),
+            ws.REVERIE_REPOSITORY: Path("/reverie"),
+        })
+
+    assert calls == [
+        (ws.HERMIT_REPOSITORY, {hermit_sha}),
+        (ws.REVERIE_REPOSITORY, {reverie_sha}),
+    ]
+    message = str(exc.value)
+    assert f"{ws.HERMIT_REPOSITORY}:{hermit_sha}" in message
+    assert f"{ws.REVERIE_REPOSITORY}:{reverie_sha}" in message
+
+
+def test_rows_on_main_refuses_an_unknown_repository_without_querying_git(monkeypatch):
+    def main_commits(*_args, **_kwargs):
+        raise AssertionError("unknown repository must refuse before invoking git")
+
+    monkeypatch.setattr(ws, "main_commits", main_commits)
+    sha = "4" * 40
+
+    with pytest.raises(RuntimeError, match="unsupported repository") as exc:
+        ws.rows_on_main(
+            [{"commit": sha, "repo": "rrnewton/unknown"}],
+            {ws.HERMIT_REPOSITORY: Path("/hermit")},
+        )
+
+    assert f"rrnewton/unknown:{sha}" in str(exc.value)
+
+
+def test_main_commits_distinguishes_non_commit_from_unavailable(monkeypatch):
+    unavailable = "5" * 40
+    blob = "6" * 40
+
+    def run(argv, **kwargs):
+        if "rev-list" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=f"{unavailable} missing\nblob\n", stderr="")
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError) as exc:
+        ws.main_commits(
+            Path("/reverie"), {unavailable, blob}, ws.REVERIE_REPOSITORY)
+
+    message = str(exc.value)
+    assert "1 unavailable object(s)" in message
+    assert f"{ws.REVERIE_REPOSITORY}:{unavailable}" in message
+    assert "1 non-commit object(s)" in message
+    assert f"{ws.REVERIE_REPOSITORY}:{blob}" in message
 
 
 @pytest.mark.parametrize("option", ["--gate-regression", "--readiness"])

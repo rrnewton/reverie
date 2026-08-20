@@ -71,6 +71,17 @@ UNKNOWN = "unknown"
 # it -- gating is ci/wall-budget-600s's job -- it reports where the series sits.
 WALL_BUDGET_SECONDS = 600
 
+HERMIT_REPOSITORY = "rrnewton/hermit"
+REVERIE_REPOSITORY = "rrnewton/reverie"
+REPOSITORY_ALIASES = {
+    None: HERMIT_REPOSITORY,
+    "": HERMIT_REPOSITORY,
+    "hermit": HERMIT_REPOSITORY,
+    HERMIT_REPOSITORY: HERMIT_REPOSITORY,
+    "reverie": REVERIE_REPOSITORY,
+    REVERIE_REPOSITORY: REVERIE_REPOSITORY,
+}
+
 
 def bucket_of(n: int | None) -> str:
     if n is None:
@@ -113,7 +124,8 @@ def load_population(path: Path) -> tuple[list[dict], int, int]:
     return qualified_rows(rows), len(rows), malformed
 
 
-def main_commits(repo: Path, commits: Iterable[str], ref: str = "origin/main") -> set[str]:
+def main_commits(repo: Path, commits: Iterable[str], repository: str,
+                 ref: str = "origin/main") -> set[str]:
     """Which commits are ancestors of main.
 
     Ancestry, not a branch label on the row: a row can be produced from a branch
@@ -126,9 +138,9 @@ def main_commits(repo: Path, commits: Iterable[str], ref: str = "origin/main") -
 
     A subprocess per ledger commit made this gate grow linearly with retained
     evidence until tick-hub's 30-second bound killed it before it emitted a
-    verdict. One ``rev-list`` plus one batch object check answers the ancestry
-    question for every commit in a fixed two Git processes, independent of the
-    ledger population size.
+    verdict. Per repository, one ``rev-list`` plus one batch object check
+    answers the ancestry question for every commit in a fixed two Git
+    processes, independent of the ledger population size.
     """
     requested = {commit for commit in commits if commit}
     if not requested:
@@ -137,17 +149,20 @@ def main_commits(repo: Path, commits: Iterable[str], ref: str = "origin/main") -
     # are full lowercase object IDs; refusing anything else prevents a row from
     # changing the query and also makes malformed IDs fail closed.
     if any(re.fullmatch(r"[0-9a-f]{40}", commit) is None for commit in requested):
-        raise RuntimeError("main ancestry check refused malformed commit ID")
+        raise RuntimeError(
+            f"main ancestry check refused malformed commit ID in {repository}")
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo), "rev-list", ref],
             capture_output=True, text=True, timeout=60,
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError(f"main ancestry check refused: {error}") from error
+        raise RuntimeError(
+            f"main ancestry check refused for {repository}: {error}") from error
     if proc.returncode != 0:
         raise RuntimeError(
-            f"main ancestry check refused: rev-list exited {proc.returncode}")
+            f"main ancestry check refused for {repository}: "
+            f"rev-list exited {proc.returncode}")
     on_main = requested.intersection(proc.stdout.splitlines())
     outside_main = requested.difference(on_main)
     if not outside_main:
@@ -160,18 +175,82 @@ def main_commits(repo: Path, commits: Iterable[str], ref: str = "origin/main") -
             env=os.environ | {"GIT_NO_LAZY_FETCH": "1"},
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError(f"main ancestry check refused: {error}") from error
+        raise RuntimeError(
+            f"main ancestry check refused for {repository}: {error}") from error
     object_types = checked.stdout.splitlines()
     if checked.returncode != 0 or len(object_types) != len(outside_main):
         raise RuntimeError(
-            "main ancestry check refused: batch object check was incomplete")
-    invalid = [commit for commit, object_type in zip(sorted(outside_main), object_types)
-               if object_type != "commit"]
-    if invalid:
-        raise RuntimeError(
-            f"main ancestry check refused {len(invalid)} unavailable or non-commit "
-            f"object(s): {', '.join(invalid[:4])}")
+            f"main ancestry check refused for {repository}: "
+            "batch object check was incomplete")
+    unavailable = []
+    non_commits = []
+    for commit, object_type in zip(sorted(outside_main), object_types):
+        if object_type == "commit":
+            continue
+        qualified = f"{repository}:{commit}"
+        if object_type == "missing" or object_type.endswith(" missing"):
+            unavailable.append(qualified)
+        else:
+            non_commits.append(qualified)
+    if unavailable or non_commits:
+        problems = []
+        if unavailable:
+            problems.append(
+                f"{len(unavailable)} unavailable object(s): "
+                f"{', '.join(unavailable[:4])}")
+        if non_commits:
+            problems.append(
+                f"{len(non_commits)} non-commit object(s): "
+                f"{', '.join(non_commits[:4])}")
+        raise RuntimeError("main ancestry check refused " + "; ".join(problems))
     return on_main
+
+
+def repository_name(row: dict) -> str:
+    """Return the canonical repository named by a ledger row.
+
+    Historical Hermit rows predate the ``repo`` field, so absence retains its
+    established Hermit meaning. Anything outside the two repositories that
+    produce this ledger is refused rather than guessed.
+    """
+    raw = row.get("repo")
+    try:
+        return REPOSITORY_ALIASES[raw]
+    except (KeyError, TypeError) as error:
+        commit = row.get("commit") or "<missing-commit>"
+        qualified_repository = raw if isinstance(raw, str) else repr(raw)
+        raise RuntimeError(
+            "main ancestry check refused unsupported repository "
+            f"{raw!r} for {qualified_repository}:{commit}") from error
+
+
+def rows_on_main(rows: Sequence[dict], repositories: dict[str, Path]) -> list[dict]:
+    """Filter rows by ancestry in the repository that owns each commit."""
+    commits_by_repository: dict[str, set[str]] = {}
+    keys = []
+    for row in rows:
+        repository = repository_name(row)
+        commit = row.get("commit") or ""
+        keys.append((repository, commit))
+        commits_by_repository.setdefault(repository, set()).add(commit)
+
+    keep: set[tuple[str, str]] = set()
+    failures = []
+    for repository, commits in commits_by_repository.items():
+        checkout = repositories.get(repository)
+        if checkout is None:
+            failures.append(
+                f"main ancestry check refused: no checkout configured for {repository}")
+            continue
+        try:
+            on_main = main_commits(checkout, commits, repository)
+        except RuntimeError as error:
+            failures.append(str(error))
+            continue
+        keep.update((repository, commit) for commit in on_main)
+    if failures:
+        raise RuntimeError(" | ".join(failures))
+    return [row for row, key in zip(rows, keys) if key in keep]
 
 
 def to_points(rows: Sequence[dict], keep: set[str] | None) -> list[Point]:
@@ -281,22 +360,25 @@ def compare(baseline: Sequence[Point], candidate: Sequence[Point],
 
 
 def build(ledger: Path, repo: Path, only_main: bool, profile: str | None,
-          result: str | None) -> dict:
+          result: str | None, reverie_repo: Path = Path("reverie")) -> dict:
     rows, total, malformed = load_population(ledger)
     sel = rows
     if profile:
         sel = [r for r in sel if r.get("profile") == profile]
     if result:
         sel = [r for r in sel if r.get("result") == result]
-    keep = None
+    rows_after_profile_result_filter = len(sel)
     if only_main:
-        keep = main_commits(repo, {r.get("commit") for r in sel})
-    pts = to_points(sel, keep)
+        sel = rows_on_main(sel, {
+            HERMIT_REPOSITORY: repo,
+            REVERIE_REPOSITORY: reverie_repo,
+        })
+    pts = to_points(sel, None)
     rep = {
         "ledger_rows_total": total,
         "ledger_rows_malformed": malformed,
         "qualified_rows_total": len(rows),
-        "rows_after_profile_result_filter": len(sel),
+        "rows_after_profile_result_filter": rows_after_profile_result_filter,
         "rows_on_main": len(pts) if only_main else None,
         "only_main": only_main,
         "summary": summarize(pts),
@@ -336,7 +418,10 @@ def render(rep: dict) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--repo", default="hermit", help="product checkout for ancestry checks")
+    ap.add_argument("--repo", default="hermit",
+                    help="Hermit checkout for Hermit ancestry checks")
+    ap.add_argument("--reverie-repo", default="reverie",
+                    help="Reverie checkout for Reverie ancestry checks")
     ap.add_argument("--all-commits", action="store_true",
                     help="do NOT restrict to main (default is main-only)")
     ap.add_argument("--profile", default="full")
@@ -358,7 +443,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         rep = build(DEFAULT_LEDGER, Path(args.repo), not args.all_commits,
-                    args.profile or None, args.result or None)
+                    args.profile or None, args.result or None,
+                    Path(args.reverie_repo))
     except RuntimeError as error:
         if args.gate_regression or args.readiness:
             _emit("refused", f"REFUSED: {error}")
