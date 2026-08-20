@@ -195,3 +195,40 @@ unit or timer in `systemctl --user list-timers --all`, and
 `~/.local/state/hermit-health-tick-invocations.log` does not exist, so it has never run
 here. The tick is still ORC-session-bound, which is why 26 gates went 4.5 days without
 firing and then all fired within five seconds of the resume.
+
+## One shape, three instruments — and it will recur at the next restart
+
+Everything in this directory is the same defect wearing different clothes: **state that was
+true before a restart, read as current after it.** Three instruments on this host showed it
+on 2026-08-20:
+
+1. **The residue tick's reboot-spanning delta** — `slots_occupied` 11 → 0, `zombie_pids`
+   59 → 9. The prior sample predates the boot and the tick records no boot identity, so it
+   cannot tell a delta from an incident. *Produced a false alarm.*
+2. **The resumed coordinator** — it read a four-day-old `Unreachable` row as a two-minute-old
+   death, because it marked agents unreachable as it shut down and never revisited it.
+   *Produced a false alarm.*
+3. **Two designed refusals that now permanently block two slots** — see
+   `claude-exitgate-refused-rebase-merge-breaks-durability.md` and
+   `slot10-refused-codex-sentinel-absent-after-reboot.md`. *Produces permanent refusals.*
+
+Each is an absence the instrument cannot attribute. Two produced false alarms; the third
+produces permanent refusals. Recognise it by shape rather than rediscovering it.
+
+**The prediction, which is why this section exists.** Both refusals in (3) are
+**reboot-shaped**: a sentinel identity that no longer matches, and a rebase-merged SHA that
+no longer resolves to a branch. **They will recur every time this host restarts.** Whoever
+meets two permanently stuck slots after the next boot will find no explanation unless they
+find this.
+
+**Neither refusal is a bug and neither should be filed as one.** A fail-closed allocator
+refusing a case it cannot verify is the safety property working. The reflex to treat a
+refusal as breakage is how a working guard gets weakened. Both causes are named in the two
+documents above; the fix is not to relax the gate.
+
+The two candidate repairs are **behaviour changes to refusals and therefore owner
+decisions**, recorded but not filed as defects: teach `remote_durable()` about
+rebase-landed changes (patch identity against `main`), and let the sentinel path use the
+recorded `boot_id` to distinguish *absent because the host rebooted* from *absent, might be
+live elsewhere* — the same evidence `slot-owner-authority.py` already uses to answer
+`owner-boot-id-mismatch` for `slot10` itself.
