@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import contextlib
 import io
+import time
+import subprocess
 import json
 import os
 import stat
@@ -197,6 +199,45 @@ raise SystemExit(2)
         self.assertEqual(2, rc)
         self.assertEqual("unavailable", fields["state"])
         self.assertIn("timeout", fields["summary"])
+
+    def test_a_timed_out_checker_leaves_no_process_behind(self) -> None:
+        """A timeout must kill what it timed out on.
+
+        Regression guard for a measured leak: nine spinners from the test above
+        had accumulated as PPID=1 orphans, 899% of a core between them, the
+        oldest running 18.9 hours. `subprocess.run(timeout=...)` kills only the
+        direct child, which is not the surviving process when the checker is
+        reached through a shebang.
+        """
+        marker = "leak-probe-slow-checker"
+        sleeper = self._write_executable(
+            marker, "#!/usr/bin/env python3\nwhile True:\n    pass\n"
+        )
+
+        def survivors() -> int:
+            found = subprocess.run(
+                ["pgrep", "-f", f"{marker}"], capture_output=True, text=True
+            )
+            # Do not count this test's own pgrep: -f matches its command line too.
+            return len(
+                [
+                    line
+                    for line in found.stdout.split()
+                    if line.strip() and line.strip() != str(os.getpid())
+                ]
+            )
+
+        before = survivors()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            operational_health.merge_gate_authority_gate(checker=sleeper, timeout=0.05)
+        time.sleep(0.3)
+        self.assertEqual(
+            before,
+            survivors(),
+            "the timed-out checker is still running: a timeout that abandons its "
+            "child leaks a whole core per invocation",
+        )
 
     def test_wrapper_zero_without_verifier_pass_is_unknown(self) -> None:
         empty_success = self._write_executable(

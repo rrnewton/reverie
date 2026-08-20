@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -1416,22 +1417,47 @@ MEMORY_SKILL_SCANNER = ROOT / "scripts" / "memory-skill-contradiction-scan.rs"
 def _run_tool(
     cmd: Sequence[str], *, timeout: float = 300
 ) -> tuple[int, str, str]:
-    """Run a checker; return (returncode, stdout, stderr). Non-runnable -> rc 127."""
+    """Run a checker; return (returncode, stdout, stderr). Non-runnable -> rc 127.
+
+    A TIMEOUT KILLS THE WHOLE PROCESS GROUP, not just the direct child.
+    `subprocess.run(timeout=...)` kills only what it spawned, and a checker
+    reached through a shebang is frequently not the process that keeps running:
+    measured 2026-08-20, nine `slow-checker` spinners from
+    ci-hub/health/tests/test_merge_gate_authority.py had accumulated as PPID=1
+    orphans, each holding a whole core, the oldest for 18.9 hours -- 899% of a
+    core in total on a box where other agents measure timings. Reproduced
+    deterministically: one run of that test leaked exactly one more.
+
+    The same path runs in production, so a real checker that hangs would leave
+    the same residue. `start_new_session` puts the child in its own group so the
+    group can be killed as a unit.
+    """
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             list(cmd),
             cwd=ROOT,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
+            start_new_session=True,
         )
     except FileNotFoundError as error:
         return 127, "", str(error)
     except OSError as error:  # e.g. not executable, rust-script missing
         return 127, "", str(error)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        # `start_new_session` makes the child a group leader, so its pid is the
+        # process-group id. Kill the group, then reap, so nothing is left behind
+        # and no pipe stays open.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()
+        proc.communicate()
         return 124, "", f"timeout after {timeout:g}s"
-    return proc.returncode, proc.stdout, proc.stderr
+    return proc.returncode, stdout, stderr
 
 
 def _single_line_detail(stdout: str, stderr: str) -> str:
