@@ -47,3 +47,25 @@
       fields:
         component: orphaned-hermit-reaper
       title: "orphaned Hermit/test processes are running unowned: {summary}"
+
+# ---------------------------------------------------------------------------
+# THE {summary} CONTRACT, and the third route to silence that this entry cannot
+# close on its own.
+#
+# tick_hub/probes.py runs the gate with `bash -c` and captures STDOUT ONLY --
+# stderr is read into a discarded local. render_emit then REFUSES the whole
+# emission if {summary} is unresolved. So any path that writes nothing to stdout
+# makes this gate silent in exactly the situation where something is wrong.
+#
+# Three routes, two now closed IN THE TOOL rather than here, because a YAML-side
+# `|| echo summary=...` would only protect this one caller:
+#   1. argparse refusal  -> CLOSED: _SummaryParser.error() prints summary= first.
+#   2. unhandled crash   -> CLOSED: main() wraps _main() and prints summary=.
+#   3. gate TIMEOUT      -> NOT CLOSABLE from the tool. probes.py returns
+#                           stdout="" on TimeoutExpired by construction, so a
+#                           timed-out reaper is silent no matter what it would
+#                           have printed. Mitigated only by being fast: one
+#                           /proc walk, and NO sleep at all when the box is
+#                           clean, because the write-rate sample is skipped for
+#                           an empty candidate set. Worth fixing in probes.py so
+#                           a timeout emits its own summary; not this task.

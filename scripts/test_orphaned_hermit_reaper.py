@@ -482,6 +482,43 @@ class CommandLineSafetyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("requires --confirm", result.stderr)
 
+    def test_a_refusal_still_prints_a_summary_line(self) -> None:
+        """THE SILENT-GATE HOLE. tick-hub captures STDOUT ONLY.
+
+        argparse writes its refusal to stderr and exits 2. Without the
+        _SummaryParser override, stdout would be empty, {summary} would not
+        resolve, and the emission would be REFUSED -- the gate silent in exactly
+        the case where something is wrong with it. Two gates died this way on
+        2026-08-19.
+        """
+        result = self.run_script("--not-a-real-flag")
+        self.assertNotEqual(result.returncode, 0)
+        summary = [
+            line for line in result.stdout.splitlines() if line.startswith("summary=")
+        ]
+        self.assertTrue(summary, f"refusal produced no summary= on stdout: {result.stdout!r}")
+        self.assertIn("refused:", summary[0])
+
+    def test_a_crash_still_prints_a_summary_line(self) -> None:
+        """The other route to silence: a traceback goes to stderr, which is discarded."""
+        import io
+        import contextlib
+
+        original = reaper._main
+        try:
+            def boom(_argv=None):
+                raise RuntimeError("simulated /proc explosion")
+
+            reaper._main = boom
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer), contextlib.redirect_stderr(io.StringIO()):
+                code = reaper.main([])
+        finally:
+            reaper._main = original
+        self.assertNotEqual(code, 0)
+        self.assertIn("summary=crashed:", buffer.getvalue())
+        self.assertIn("simulated /proc explosion", buffer.getvalue())
+
     def test_report_orphans_cannot_be_combined_with_apply(self) -> None:
         """Detection reports everything orphaned; the kill path demands proof.
 

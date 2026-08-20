@@ -38,6 +38,7 @@ import select
 import signal
 import sys
 import time
+import traceback
 from collections.abc import Callable, Iterable
 
 
@@ -599,8 +600,29 @@ def _snapshot_record(decision: Decision) -> dict[str, object]:
     }
 
 
+class _SummaryParser(argparse.ArgumentParser):
+    """An ArgumentParser that still emits a ``summary=`` line when it refuses.
+
+    tick_hub.probes runs a gate with ``bash -c`` and captures STDOUT ONLY --
+    stderr is read into a discarded local. argparse writes its refusal to stderr
+    and exits 2, so a malformed invocation would produce an empty stdout, no
+    ``summary`` key, an unresolved ``{summary}`` placeholder, and a REFUSED
+    emission. The gate would then be silent in exactly the situation where
+    something is wrong with it.
+
+    Two gates died that way on 2026-08-19. A detection that cannot report is the
+    same defect as no detection, so the summary contract is honoured on the
+    refusal path too.
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        print(f"summary=refused: {message}")
+        sys.stdout.flush()
+        super().error(message)
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _SummaryParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="signal eligible PIDs")
     parser.add_argument(
         "--confirm",
@@ -645,6 +667,26 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Entry point. Guarantees a ``summary=`` line on stdout on EVERY exit path.
+
+    See _SummaryParser for why: the tick-hub gate runner captures stdout only,
+    and an emission whose {summary} cannot be resolved is refused outright. A
+    crash that produced a bare traceback on stderr would therefore read as
+    silence, which is indistinguishable from "no orphans found".
+    """
+    try:
+        return _main(argv)
+    except SystemExit:
+        # argparse and explicit exits already honoured the contract.
+        raise
+    except BaseException as exc:  # noqa: BLE001 - the whole point is to catch everything
+        print(f"summary=crashed: {type(exc).__name__}: {exc}")
+        sys.stdout.flush()
+        traceback.print_exc(file=sys.stderr)
+        return 5
+
+
+def _main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     numeric = (
         args.min_age_seconds,
