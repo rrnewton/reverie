@@ -933,12 +933,36 @@ def attach(
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Launch scripts/validate.rs as a detached systemd user service whose only admission "
             "path is ci-hub validate-lock."
-        )
+        ),
+        epilog=(
+            "example, run from the checkout you want validated:\n"
+            "  ci-hub validate-run --checkout=\"$PWD\" --agent=human \\\n"
+            "                      --target=\"$(git rev-parse HEAD)\" -- full\n"
+            "\n"
+            "--checkout is the DIRECTORY and --target is the SHA. Two readers guessed\n"
+            "the opposite before reading the source, so the pairing is spelled out here.\n"
+            "The trailing word after -- is the validate profile (full, only-portable,\n"
+            "strict-compat-only, envelope-only); it defaults to full.\n"
+            "\n"
+            "The run is DETACHED: this returns a validate-* unit handle rather than\n"
+            "running in your terminal. Reattach with --attach VALIDATE-UNIT. The result\n"
+            "is appended to ledger/<repo>/<host>/<month>.jsonl ON PARENT MAIN, so read it\n"
+            "with `git show origin/main:ledger/...`, not from your working tree."
+        ),
     )
-    result.add_argument("--checkout", type=Path)
+    result.add_argument(
+        "--checkout",
+        type=Path,
+        metavar="DIR",
+        help=(
+            "DIRECTORY of the checkout to validate, normally \"$PWD\". "
+            "This is a path, NOT a commit -- the SHA goes in --target."
+        ),
+    )
     result.add_argument(
         "--repo",
         default="rrnewton/hermit",
@@ -955,8 +979,24 @@ def parser() -> argparse.ArgumentParser:
             "commit PLUS that unrecorded local state."
         ),
     )
-    result.add_argument("--agent")
-    result.add_argument("--target")
+    result.add_argument(
+        "--agent",
+        metavar="NAME",
+        help=(
+            "who is launching this run; recorded in the ledger row and used "
+            "in the generated unit name. Any unit-safe string, e.g. human."
+        ),
+    )
+    result.add_argument(
+        "--target",
+        metavar="SHA",
+        help=(
+            "commit SHA to validate, normally \"$(git rev-parse HEAD)\". This is a "
+            "commit, NOT a path, and it must be the commit that --checkout DIR "
+            "currently has checked out, or admission refuses with "
+            "'refusing to validate a stale base'."
+        ),
+    )
     result.add_argument("--pr", type=int)
     result.add_argument(
         "--attach",
