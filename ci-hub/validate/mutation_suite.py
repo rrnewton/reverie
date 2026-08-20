@@ -173,6 +173,10 @@ def _fixture_path(name: str) -> Path:
     return _hermit_checkout() / "tests" / "backend-parity" / "fixtures" / name
 
 
+# The bounded entry point every hermit run in this file goes through.
+_SAFEHERMIT = PARENT / "bin" / "safehermit"
+
+
 def _hermit_binary() -> Optional[Path]:
     """A built `hermit`, or None. `HERMIT_BIN` wins; then conventional builds."""
     env = os.environ.get("HERMIT_BIN")
@@ -228,8 +232,30 @@ def _run_c_fixture_under_hermit(source: Path, negative: bool) -> int:
             raise FixtureUnavailable(
                 f"cannot compile {source.name}: {build.stderr.strip()[:300]}")
         # --base-env=minimal keeps the host environment out of the comparison.
+        #
+        # Run hermit through bin/safehermit rather than bare. The existing
+        # timeout=300 below reads like a bound and is not one: hermit's guest runs as
+        # a namespace PID 1 with no SIGTERM handler, and the kernel DISCARDS
+        # default-disposition signals to it, so the SIGKILL subprocess.run sends on
+        # timeout cannot reap this process shape. safehermit's deadline is a cgroup
+        # kill, which can.
+        #
+        # THE DEADLINE IS SET BELOW subprocess.run's SO IT FIRES FIRST. At 240s
+        # safehermit cgroup-kills the run and returns 124 while python is still
+        # waiting; if python's 300s fired first it would kill only the wrapper and
+        # leave the transient unit running. The order matters more than either value.
+        #
+        # THE BYTE CAP IS NOT DERIVED FROM A HEALTHY RUN'S SIZE, because a healthy run
+        # here writes 5 bytes (measured, 3 of 3 identical) and 3x of that is not a
+        # cap, it is a tripwire on any diagnostic line. It is set so it CANNOT fire on
+        # a good run -- 16 MiB is over three million times the measured output -- while
+        # still bounding a wedged run: at the 5.32 MiB/s this hermit sustains when its
+        # emitter is loud (measured on this box), 16 MiB is about three seconds of
+        # runaway rather than the hours that filled the filesystem on 2026-08-17.
         proc = subprocess.run(
-            [str(hermit), "run", "--strict", "--base-env=minimal", "--", str(exe)],
+            [str(_SAFEHERMIT), "--sh-report", os.devnull,
+             "--sh-deadline", "240", "--sh-max-log-bytes", str(16 * 1024 * 1024),
+             str(hermit), "run", "--strict", "--base-env=minimal", "--", str(exe)],
             capture_output=True, text=True, timeout=300)
         return proc.returncode
 
