@@ -322,6 +322,17 @@ struct PrStatusArgs {
 }
 
 #[derive(Args, Clone, Debug)]
+/// A subcommand whose real argument surface lives in the tool it forwards to.
+///
+/// `disable_help_flag` is deliberate. clap has nothing to print for these --
+/// the arguments are a `trailing_var_arg` catch-all -- so with clap's own help
+/// enabled, `-h` printed a stub reading only `[ARGS]...` while the actual
+/// surface sat in the forwarded tool's parser. Measured 2026-08-20: the owner
+/// could not find `--checkout`, `--agent` or `--target` for `validate-run`
+/// because `-h` did not mention them, and the requirement is enforced only in
+/// ci-hub/validate/start_unit.py. Disabling clap's flag lets `-h` and `--help`
+/// travel through to the parser that actually knows the answer.
+#[command(disable_help_flag = true)]
 struct PassthroughArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<OsString>,
