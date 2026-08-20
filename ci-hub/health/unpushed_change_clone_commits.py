@@ -40,26 +40,103 @@ every one of them false.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
+import os
+import signal
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 MANIFEST = "ci-hub-change-manifest.json"
-# One clone's remote must not be able to stall the tick. Measured 2026-08-15, a
-# no-op fetch of these clones took 0.3s-2.7s, so this is a hang bound and not a
-# budget anyone should hit.
-FETCH_TIMEOUT_SECS = 60
+# The enclosing tick gives this gate 30 seconds.  A per-clone timeout longer
+# than that is not a bound: one slow clone can consume the whole gate.  On
+# 2026-08-20, 30 manifested clones took 30.01 seconds sequentially, while their
+# local-only inspection took 4.70 seconds and warm fetches took 0.39-0.96
+# seconds.  The whole inspection also has its own deadline below the outer
+# timeout, so growth beyond today's population produces explicit undetermined
+# rows instead of making the enclosing gate kill the process without a report.
+OUTER_TIMEOUT_SECS = 30
+INSPECTION_DEADLINE_SECS = 25
+MAX_PARALLEL_CLONES = 12
+FETCH_TIMEOUT_SECS = 5
+LOCAL_GIT_TIMEOUT_SECS = 1
+PROCESS_GROUP_TERM_GRACE_SECS = 0.2
 # `ci-hub-clone-change.py create` defaults its destination to ~/temp/dev-hermit,
 # so sibling clones land beside it. Scanning that one directory is what makes
 # this tractable at all: the creation path knows where it puts clones.
 DEFAULT_SEARCH_ROOT = Path("~/temp").expanduser()
 
 
-def git(repo: Path, *args: str) -> str:
-    out = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True)
+class InspectionDeadlineExceeded(RuntimeError):
+    pass
+
+
+class MalformedManifest(RuntimeError):
+    pass
+
+
+def remaining_timeout(deadline: float, per_command_limit: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise InspectionDeadlineExceeded("whole-inspection deadline expired")
+    return min(per_command_limit, remaining)
+
+
+def terminate_process_group(process: subprocess.Popen[str]) -> None:
+    """Stop and reap a timed-out command and descendants in its process group."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=PROCESS_GROUP_TERM_GRACE_SECS)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate()
+        return
+    # Reaping the direct wrapper does not prove every descendant exited: one
+    # may ignore TERM and close the inherited stdout/stderr pipes.  The group
+    # is unique because Popen used start_new_session, so a final group-directed
+    # KILL cannot target another gate command.
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def run_bounded(command: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run one command in a killable process group and reap it on timeout."""
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        terminate_process_group(process)
+        raise subprocess.TimeoutExpired(
+            command, timeout, output=error.output, stderr=error.stderr
+        ) from error
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def git(repo: Path, *args: str, deadline: float) -> str:
+    out = run_bounded(
+        ["git", "-C", str(repo), *args],
+        remaining_timeout(deadline, LOCAL_GIT_TIMEOUT_SECS),
+    )
+    if out.returncode != 0:
+        raise RuntimeError(out.stderr.strip() or f"git {' '.join(args)} failed")
     return out.stdout.strip()
 
 
@@ -74,7 +151,7 @@ def change_clones(root: Path) -> list[Path]:
     return found
 
 
-def refresh_remote_tracking(clone: Path) -> bool:
+def refresh_remote_tracking(clone: Path, deadline: float) -> tuple[bool, str | None]:
     """Update `refs/remotes/origin/*` from the remote; report whether it worked.
 
     Same refspec as the disposal tool, for the same reason: a clone's work may
@@ -87,13 +164,27 @@ def refresh_remote_tracking(clone: Path) -> bool:
     if shutil.which("with-proxy"):
         command.insert(0, "with-proxy")
     try:
-        return subprocess.run(command, capture_output=True, text=True,
-                              timeout=FETCH_TIMEOUT_SECS).returncode == 0
-    except (subprocess.TimeoutExpired, OSError):
-        return False
+        result = run_bounded(
+            command, remaining_timeout(deadline, FETCH_TIMEOUT_SECS)
+        )
+        if result.returncode == 0:
+            return True, None
+        return False, "remote fetch failed"
+    except subprocess.TimeoutExpired:
+        return False, "remote fetch timed out"
 
 
-def inspect(clone: Path) -> dict[str, Any]:
+def read_manifest(clone: Path) -> dict[str, Any]:
+    try:
+        value = json.loads((clone / ".git" / MANIFEST).read_text())
+    except (OSError, ValueError) as error:
+        raise MalformedManifest(f"cannot read change manifest: {error}") from error
+    if not isinstance(value, dict):
+        raise MalformedManifest("change manifest is not a JSON object")
+    return value
+
+
+def inspect(clone: Path, deadline: float) -> dict[str, Any]:
     """Describe one clone, altering no work in it.
 
     The enumeration is `--branches` plus `HEAD`, matching
@@ -107,24 +198,67 @@ def inspect(clone: Path) -> dict[str, Any]:
     against a snapshot of unknown age. That is reported as undetermined, not as
     a number: a count nobody can date is not a measurement.
     """
-    manifest: dict[str, Any] = {}
-    try:
-        manifest = json.loads((clone / ".git" / MANIFEST).read_text())
-    except (OSError, ValueError):
-        pass
-    reachable = refresh_remote_tracking(clone)
+    manifest = read_manifest(clone)
+    reachable, fetch_reason = refresh_remote_tracking(clone, deadline)
     shas = [s for s in git(clone, "rev-list", "--branches", "HEAD",
-                           "--not", "--remotes").splitlines() if s]
-    dirty = [line for line in git(clone, "status", "--porcelain").splitlines() if line]
+                           "--not", "--remotes", deadline=deadline).splitlines() if s]
+    dirty = [line for line in git(
+        clone, "status", "--porcelain", deadline=deadline
+    ).splitlines() if line]
+    branch = git(clone, "rev-parse", "--abbrev-ref", "HEAD", deadline=deadline)
     return {
         "clone": str(clone),
         "task": manifest.get("task"),
-        "branch": git(clone, "rev-parse", "--abbrev-ref", "HEAD"),
-        "unpushed_count": len(shas),
-        "tip": shas[0] if shas else None,
+        "branch": branch,
+        # A stale snapshot may look unpushed in either direction.  Publish no
+        # remote-containment claim unless the refresh that dates it succeeded.
+        "unpushed_count": len(shas) if reachable else None,
+        "tip": shas[0] if reachable and shas else None,
         "uncommitted_paths": len(dirty),
         "remote_reachable": reachable,
+        "undetermined_reason": fetch_reason,
     }
+
+
+def unfinished(clone: Path, reason: str) -> dict[str, Any]:
+    """Represent an inspection failure without rounding it down to clean."""
+    task = None
+    try:
+        value = json.loads((clone / ".git" / MANIFEST).read_text())
+        if isinstance(value, dict):
+            task = value.get("task")
+    except (OSError, ValueError):
+        pass
+    return {
+        "clone": str(clone),
+        "task": task,
+        "branch": None,
+        "unpushed_count": None,
+        "tip": None,
+        "uncommitted_paths": None,
+        "remote_reachable": False,
+        "undetermined_reason": reason,
+    }
+
+
+def inspect_or_undetermined(clone: Path, deadline: float) -> dict[str, Any]:
+    try:
+        return inspect(clone, deadline)
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        return unfinished(clone, f"inspection did not finish: {type(error).__name__}")
+
+
+def inspect_all(
+    clones: list[Path], inspection_budget: float = INSPECTION_DEADLINE_SECS
+) -> list[dict[str, Any]]:
+    """Inspect every manifested clone by one deadline, in deterministic order."""
+    if not clones:
+        return []
+    deadline = time.monotonic() + inspection_budget
+    workers = min(MAX_PARALLEL_CLONES, len(clones))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(inspect_or_undetermined, clone, deadline) for clone in clones]
+        return [future.result() for future in futures]
 
 
 def main() -> int:
@@ -135,8 +269,13 @@ def main() -> int:
     a = ap.parse_args()
 
     root = Path(a.search_root).expanduser()
-    rows = [inspect(c) for c in change_clones(root)]
-    holding = [r for r in rows if r["unpushed_count"] or r["uncommitted_paths"]]
+    clones = change_clones(root)
+    rows = inspect_all(clones)
+    holding = [
+        r for r in rows
+        if (r["uncommitted_paths"] or 0)
+        or (r["remote_reachable"] and (r["unpushed_count"] or 0))
+    ]
     # A clone whose remote could not be reached is neither holding nor clean;
     # it is unmeasured, and saying so is the only honest report.
     undetermined = [r for r in rows if not r["remote_reachable"]]
@@ -151,29 +290,34 @@ def main() -> int:
               f"clones={len(rows)} holding={len(holding)} "
               f"undetermined={len(undetermined)}")
         for r in holding:
+            unpushed = r["unpushed_count"]
+            rendered_unpushed = unpushed if unpushed is not None else "UNDETERMINED"
             print(f"  {r['clone']}  task={r['task']} branch={r['branch']} "
-                  f"unpushed={r['unpushed_count']} uncommitted={r['uncommitted_paths']} "
+                  f"unpushed={rendered_unpushed} "
+                  f"uncommitted={r['uncommitted_paths']} "
                   f"tip={r['tip']}")
         for r in undetermined:
             print(f"  {r['clone']}  task={r['task']} branch={r['branch']} "
-                  "UNDETERMINED: remote unreachable, so its counts are against a "
-                  "snapshot of unknown age")
+                  f"UNDETERMINED: {r['undetermined_reason']}; counts cannot be "
+                  "treated as current")
         if not rows:
             print("  (no change clones present)")
         elif not holding and not undetermined:
             print("  (every change clone is clean and fully pushed)")
         # Reporting only. Disposal and preservation are separate operations with
         # their own refusals; nothing here mutates a clone.
-        if holding:
-            print("summary=change clone(s) hold work that exists on no remote ref; "
-                  "inspect and preserve or land it -- `dispose` will refuse them")
-        elif undetermined:
+        if undetermined:
             # `bounded_gate.py`'s spelling, so a reader already knows what it
-            # means: the gate ran and could not determine its condition.
+            # means: the gate ran and could not determine its condition.  This
+            # takes precedence over local dirty facts; stale remote refs cannot
+            # support a definite remote-noncontainment claim.
             print("state=NO_RESULT")
             print(f"summary=NO_RESULT/remote-unreachable gate="
                   f"unpushed_change_clone_commits undetermined={len(undetermined)} "
-                  f"clones={len(rows)}")
+                  f"holding_local={len(holding)} clones={len(rows)}")
+        elif holding:
+            print("summary=change clone(s) hold work that exists on no remote ref; "
+                  "inspect and preserve or land it -- `dispose` will refuse them")
         else:
             print("summary=no change clone holds unpushed work")
     return 1 if holding or undetermined else 0

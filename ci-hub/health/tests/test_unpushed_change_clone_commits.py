@@ -30,16 +30,24 @@ reaches the network or touches a real change clone.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 HEALTH = Path(__file__).resolve().parents[1]
 GATE = HEALTH / "unpushed_change_clone_commits.py"
 MANIFEST = "ci-hub-change-manifest.json"
+
+SPEC = importlib.util.spec_from_file_location("unpushed_change_clone_commits", GATE)
+assert SPEC is not None and SPEC.loader is not None
+gate_module = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(gate_module)
 
 
 def run(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
@@ -62,15 +70,15 @@ class Fixture(unittest.TestCase):
         self.search.mkdir()
         self.origin = self.root / "origin.git"
         run("git", "init", "-q", "--bare", str(self.origin))
-        seed = self.root / "seed"
-        run("git", "init", "-q", "-b", "main", str(seed))
-        git(seed, "config", "user.email", "t@example.invalid")
-        git(seed, "config", "user.name", "t")
-        (seed / "f.txt").write_text("seed\n")
-        git(seed, "add", "--", "f.txt")
-        git(seed, "commit", "-q", "-m", "seed")
-        git(seed, "remote", "add", "origin", str(self.origin))
-        git(seed, "push", "-q", "origin", "main")
+        self.seed = self.root / "seed"
+        run("git", "init", "-q", "-b", "main", str(self.seed))
+        git(self.seed, "config", "user.email", "t@example.invalid")
+        git(self.seed, "config", "user.name", "t")
+        (self.seed / "f.txt").write_text("seed\n")
+        git(self.seed, "add", "--", "f.txt")
+        git(self.seed, "commit", "-q", "-m", "seed")
+        git(self.seed, "remote", "add", "origin", str(self.origin))
+        git(self.seed, "push", "-q", "origin", "main")
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -91,6 +99,21 @@ class Fixture(unittest.TestCase):
         git(repo, "commit", "-q", "-m", text)
         return git(repo, "rev-parse", "HEAD")
 
+    def assert_process_stopped(self, pid: int) -> None:
+        """Accept a reaped process or zombie without a check-then-read race."""
+        proc_stat = Path(f"/proc/{pid}/stat")
+        for _ in range(50):
+            try:
+                state = proc_stat.read_text().split()[2]
+            except (FileNotFoundError, ProcessLookupError):
+                return
+            # A zombie is dead and cannot continue mutating refs; PID 1 may
+            # reap it shortly after the timed-out group leader is collected.
+            if state == "Z":
+                return
+            time.sleep(0.01)
+        self.fail(f"process {pid} remained live after group teardown")
+
     def gate(self) -> tuple[int, str]:
         out = run(sys.executable, str(GATE), "--search-root", str(self.search))
         return out.returncode, out.stdout
@@ -104,11 +127,21 @@ class Fixture(unittest.TestCase):
     def test_reports_an_unpushed_commit_on_the_checked_out_branch(self) -> None:
         repo = self.clone()
         head = self.commit(repo, "unpushed\n")
+        remote_before = git(repo, "rev-parse", "refs/remotes/origin/main")
+        (self.seed / "remote.txt").write_text("remote advanced\n")
+        git(self.seed, "add", "--", "remote.txt")
+        git(self.seed, "commit", "-q", "-m", "advance remote")
+        remote_after = git(self.seed, "rev-parse", "HEAD")
+        git(self.seed, "push", "-q", "origin", "main")
         code, text = self.gate()
         self.assertEqual(code, 1)
         self.assertIn("holding=1", text)
         self.assertIn(head, text)
         self.assertIn("exists on no remote ref", text)
+        # The report follows a real refresh, rather than preserving the result
+        # by quietly skipping the operation whose cost this change bounds.
+        self.assertNotEqual(remote_after, remote_before)
+        self.assertEqual(git(repo, "rev-parse", "refs/remotes/origin/main"), remote_after)
 
     def test_reports_unpushed_work_on_a_branch_that_is_not_head(self) -> None:
         repo = self.clone()
@@ -179,6 +212,114 @@ class Fixture(unittest.TestCase):
         self.assertIn("NO_RESULT/remote-unreachable", text)
         self.assertNotIn("no change clone holds unpushed work", text)
 
+    def test_population_above_thirty_six_finishes_before_the_outer_bound(self) -> None:
+        clones = [self.search / f"clone-{number:02d}" for number in range(49)]
+        inspection_budget = 0.35
+
+        def blocked_until_deadline(_clone: Path, deadline: float) -> dict:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise gate_module.InspectionDeadlineExceeded("fixture deadline")
+                time.sleep(min(remaining, 0.01))
+
+        started = time.monotonic()
+        with mock.patch.object(gate_module, "inspect", side_effect=blocked_until_deadline):
+            rows = gate_module.inspect_all(clones, inspection_budget=inspection_budget)
+        elapsed = time.monotonic() - started
+
+        # The budget is scaled down from the production 25s/30s inner/outer
+        # ladder. All 49 clones still receive rows, including queued work that
+        # could not begin before the common deadline.
+        scaled_outer_bound = inspection_budget * (
+            gate_module.OUTER_TIMEOUT_SECS / gate_module.INSPECTION_DEADLINE_SECS
+        )
+        self.assertLess(elapsed, scaled_outer_bound)
+        self.assertEqual([row["clone"] for row in rows], [str(clone) for clone in clones])
+        self.assertTrue(all(not row["remote_reachable"] for row in rows))
+        self.assertTrue(all("InspectionDeadlineExceeded" in row["undetermined_reason"]
+                            for row in rows))
+
+    def test_an_unfinished_inspection_is_undetermined_not_clean(self) -> None:
+        clone = self.clone()
+        with mock.patch.object(
+            gate_module,
+            "inspect",
+            side_effect=subprocess.TimeoutExpired(["git", "status"], 1),
+        ):
+            row = gate_module.inspect_or_undetermined(clone, time.monotonic() + 1)
+        self.assertFalse(row["remote_reachable"])
+        self.assertIn("inspection did not finish", row["undetermined_reason"])
+        self.assertIsNone(row["unpushed_count"])
+
+    def test_timeout_kills_and_reaps_a_background_helper(self) -> None:
+        helper = self.root / "git-with-helper"
+        pid_file = self.root / "helper.pid"
+        helper.write_text(
+            "#!/bin/sh\n"
+            "sleep 30 &\n"
+            "child=$!\n"
+            "printf '%s\\n' \"$child\" > \"$1\"\n"
+            "wait \"$child\"\n"
+        )
+        helper.chmod(0o755)
+
+        with self.assertRaises(subprocess.TimeoutExpired):
+            gate_module.run_bounded([str(helper), str(pid_file)], 0.1)
+
+        child = int(pid_file.read_text().strip())
+        self.assert_process_stopped(child)
+
+    def test_timeout_kills_term_ignoring_helper_after_leader_exits(self) -> None:
+        helper = self.root / "git-with-term-ignoring-helper"
+        pid_file = self.root / "term-ignoring-helper.pid"
+        helper.write_text(
+            "#!/bin/sh\n"
+            "trap 'exit 0' TERM\n"
+            "(\n"
+            "  trap '' TERM\n"
+            "  exec </dev/null >/dev/null 2>&1\n"
+            "  sleep 30\n"
+            ") &\n"
+            "child=$!\n"
+            "printf '%s\\n' \"$child\" > \"$1\"\n"
+            "while :; do sleep 1; done\n"
+        )
+        helper.chmod(0o755)
+
+        with self.assertRaises(subprocess.TimeoutExpired):
+            gate_module.run_bounded([str(helper), str(pid_file)], 0.1)
+
+        child = int(pid_file.read_text().strip())
+        self.assert_process_stopped(child)
+
+    def test_non_object_manifest_is_undetermined_and_does_not_abort_pool(self) -> None:
+        malformed = self.clone("dev-hermit-malformed")
+        self.clone("dev-hermit-good")
+        (malformed / ".git" / MANIFEST).write_text("[]\n")
+        code, payload = self.gate_json()
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["clones"], 2)
+        self.assertEqual(payload["undetermined"], 1)
+        row = next(row for row in payload["rows"] if row["clone"] == str(malformed))
+        self.assertIn("MalformedManifest", row["undetermined_reason"])
+
+    def test_unreachable_stale_unpushed_shape_is_no_result_not_containment(self) -> None:
+        repo = self.clone()
+        head = self.commit(repo, "looks unpushed against stale refs\n")
+        (repo / "dirty.txt").write_text("local dirty fact\n")
+        git(repo, "remote", "set-url", "origin", str(self.root / "absent.git"))
+        code, text = self.gate()
+        self.assertEqual(code, 1)
+        self.assertIn("holding=1", text)
+        self.assertIn("undetermined=1", text)
+        self.assertIn("unpushed=UNDETERMINED", text)
+        self.assertIn("uncommitted=1", text)
+        self.assertIn("state=NO_RESULT", text)
+        self.assertIn("holding_local=1", text)
+        self.assertNotIn(head, text)
+        self.assertNotIn("exists on no remote ref", text)
+
     def test_json_carries_reachability_per_clone(self) -> None:
         repo = self.clone()
         code, payload = self.gate_json()
@@ -190,6 +331,7 @@ class Fixture(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(payload["undetermined"], 1)
         self.assertFalse(payload["rows"][0]["remote_reachable"])
+        self.assertIsNone(payload["rows"][0]["unpushed_count"])
 
     def test_a_clone_with_no_manifest_is_not_inspected(self) -> None:
         repo = self.clone()
