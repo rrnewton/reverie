@@ -1,0 +1,67 @@
+# captured 2026-08-20T19:16:51Z on devbig030 by hermit-902, READ-ONLY (ls-remote only; no fetch, no push)
+
+===== slot10
+contents:      hermit 
+local branch:  fix/bump-reverie-pin-ee6716a
+local HEAD:    27526f68f4d7ce526a6f5f7749d28c2252aee629
+dirty paths:   0
+disk:          3.5G
+ignored paths: target/ 
+  remote origin = https://github.com/rrnewton/hermit.git
+    control refs/heads/main : 72e453808194c84173570045d66147202a552363
+    refs/heads/fix/bump-reverie-pin-ee6716a : 27526f68f4d7ce526a6f5f7749d28c2252aee629
+    refs whose VALUE is the local HEAD:
+      27526f68f4d7ce526a6f5f7749d28c2252aee629	refs/heads/fix/bump-reverie-pin-ee6716a
+      27526f68f4d7ce526a6f5f7749d28c2252aee629	refs/pull/2281/head
+  remote fbexp = https://github.com/facebookexperimental/hermit.git
+    control refs/heads/main : 9084dca5c7476d83354a7462ee3cf45bff630cbd
+    refs/heads/fix/bump-reverie-pin-ee6716a : 
+    refs whose VALUE is the local HEAD:
+  remote upstream = https://github.com/facebookexperimental/hermit.git
+    control refs/heads/main : 9084dca5c7476d83354a7462ee3cf45bff630cbd
+    refs/heads/fix/bump-reverie-pin-ee6716a : 
+    refs whose VALUE is the local HEAD:
+
+===== pollrevents
+contents:      hermit 
+local branch:  fix/poll-partial-revents-copyout
+local HEAD:    e8511b270d7005c3e08db0cebd6f74c0b4b30ca3
+dirty paths:   0
+disk:          8.8G
+ignored paths: target/ 
+  remote origin = https://github.com/rrnewton/hermit.git
+    control refs/heads/main : 72e453808194c84173570045d66147202a552363
+    refs/heads/fix/poll-partial-revents-copyout : e8511b270d7005c3e08db0cebd6f74c0b4b30ca3
+    refs whose VALUE is the local HEAD:
+      e8511b270d7005c3e08db0cebd6f74c0b4b30ca3	refs/heads/fix/poll-partial-revents-copyout
+      e8511b270d7005c3e08db0cebd6f74c0b4b30ca3	refs/pull/2272/head
+  remote fbexp = https://github.com/facebookexperimental/hermit.git
+    control refs/heads/main : 9084dca5c7476d83354a7462ee3cf45bff630cbd
+    refs/heads/fix/poll-partial-revents-copyout : 
+    refs whose VALUE is the local HEAD:
+  remote upstream = https://github.com/facebookexperimental/hermit.git
+    control refs/heads/main : 9084dca5c7476d83354a7462ee3cf45bff630cbd
+    refs/heads/fix/poll-partial-revents-copyout : 
+    refs whose VALUE is the local HEAD:
+
+===== revents-measure
+contents:      hermit 
+local branch:  diag/measure-replay-partial-revents-copyout
+local HEAD:    2ba0ff09794da7d9bc57cc2a14938487d5881e83
+dirty paths:   0
+disk:          13G
+ignored paths: ignored/ target/ 
+  remote origin = https://github.com/rrnewton/hermit.git
+    control refs/heads/main : 72e453808194c84173570045d66147202a552363
+    refs/heads/diag/measure-replay-partial-revents-copyout : 
+    refs whose VALUE is the local HEAD:
+      2ba0ff09794da7d9bc57cc2a14938487d5881e83	refs/heads/fix/verify-report-says-what-a-verdict-means
+      2ba0ff09794da7d9bc57cc2a14938487d5881e83	refs/pull/2269/head
+  remote fbexp = https://github.com/facebookexperimental/hermit.git
+    control refs/heads/main : 9084dca5c7476d83354a7462ee3cf45bff630cbd
+    refs/heads/diag/measure-replay-partial-revents-copyout : 
+    refs whose VALUE is the local HEAD:
+  remote upstream = https://github.com/facebookexperimental/hermit.git
+    control refs/heads/main : 9084dca5c7476d83354a7462ee3cf45bff630cbd
+    refs/heads/diag/measure-replay-partial-revents-copyout : 
+    refs whose VALUE is the local HEAD:
