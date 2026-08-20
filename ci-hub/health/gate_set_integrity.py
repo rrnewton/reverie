@@ -129,6 +129,59 @@ def main_reminder_names(path: Path, ref: str) -> tuple[set[str] | None, str]:
         return None, f"{ref} copy did not parse: {exc}"
 
 
+def unrunnable_required_gates(path: Path) -> tuple[list[str], str]:
+    """Required reminders whose gate command names a script that is not there.
+
+    WHY THIS EXISTS, and it is the defect that produced it. On 2026-08-19
+    btrfs_headroom -- the only safety mechanism proven firing that day -- went
+    silent with "refusing emission with unresolved placeholder(s): {summary}".
+    The gate had not regressed and its summary construction was fine: its SCRIPT
+    HAD BEEN DELETED from the working tree while the reminder stayed in the
+    config. A missing script produces zero stdout, tick-hub finds no fields to
+    substitute into the title, and refuses. A hard failure becomes silence.
+
+    That is a SHARED failure mode, not a property of one gate: it happens to any
+    reminder whose command cannot run, for any reason. Checking that a reminder
+    is CONFIGURED is not the same as checking that it CAN RUN, and only the
+    second would have caught this.
+
+    Returns (unrunnable, why-unavailable). Inability to inspect is reported, not
+    silently treated as fine.
+    """
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        reminders = doc.get("reminders") if isinstance(doc, dict) else None
+        if not isinstance(reminders, list):
+            return [], f"{path} has no reminders list"
+    except (OSError, yaml.YAMLError) as exc:
+        return [], f"could not re-read {path}: {' '.join(str(exc).split())}"
+
+    root = Path.cwd()
+    broken: list[str] = []
+    for r in reminders:
+        if not isinstance(r, dict) or r.get("name") not in REQUIRED:
+            continue
+        cmd = ((r.get("gate") or {}).get("cmd") or "").strip()
+        if not cmd:
+            # A reminder with no gate command is not necessarily broken -- it may
+            # legitimately emit without gating. Only a NAMED script that is
+            # absent is evidence of the failure this checks for. Flagging the
+            # absence of a command instead produced false positives against
+            # minimal configs, which is how this was caught.
+            continue
+        # The script is the first token that looks like a repo-relative path.
+        # Deliberately conservative: only a token we can resolve is judged, so an
+        # exotic command line is left alone rather than reported as broken.
+        for tok in cmd.split():
+            if "/" not in tok or tok.startswith("-"):
+                continue
+            candidate = root / tok
+            if candidate.suffix in {".py", ".sh", ".rs"} and not candidate.exists():
+                broken.append(f"{r['name']} -> {tok} DOES NOT EXIST")
+            break
+    return broken, ""
+
+
 def field(key: str, value: object) -> None:
     # tick-hub substitutes {placeholders} in a reminder title from the gate's
     # captured key=value fields. A gate that prints only prose is refused with
@@ -164,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     missing = sorted(k for k in REQUIRED if k not in live)
+    unrunnable, unrunnable_note = unrunnable_required_gates(path)
 
     drift: list[str] = []
     drift_note = ""
@@ -185,6 +239,15 @@ def main(argv: list[str] | None = None) -> int:
             "REQUIRED GATE(S) NOT CONFIGURED: "
             + "; ".join(f"{k} -- nothing is watching {REQUIRED[k]}" for k in missing)
         )
+    if unrunnable:
+        state = "actionable"
+        parts.append(
+            "CONFIGURED BUT CANNOT RUN: " + "; ".join(unrunnable)
+            + " -- a gate whose script is missing emits nothing, so tick-hub"
+              " refuses on an unresolved placeholder and the failure reads as silence"
+        )
+    if unrunnable_note:
+        parts.append(f"runnability check UNAVAILABLE ({unrunnable_note})")
     if drift:
         state = "actionable"
         parts.append(
@@ -210,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         "drift_from_main": ",".join(drift) or "none",
         "live_reminders": len(live),
         "drift_check": drift_status,
+        "unrunnable_required": ",".join(unrunnable) or "none",
     }
     if args.as_json:
         print(json.dumps(report, sort_keys=True))
