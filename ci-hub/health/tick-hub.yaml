@@ -783,4 +783,31 @@ reminders:
         component: btrfs-headroom
       title: "filesystem headroom is below floor: {summary}"
 
+  # GATE-SET INTEGRITY. Nothing watched whether the watchers were configured,
+  # and on 2026-08-19 three gates silently un-deployed: the reverie pin gate
+  # lasted one tick, btrfs_headroom was absent from the live config for thirteen
+  # hours after the disk filled, and it stayed losable by a revert or a stale
+  # checkout. Each was found by a person, not by a machine.
+  #
+  # A gate that disappears produces SILENCE, and silence reads as health. This
+  # asserts the small set of reminders whose absence is an incident, and
+  # separately diffs the live set against origin/main -- which needs no
+  # hardcoded list and catches the stale-checkout case a list cannot.
+  #
+  # It refuses (exit 2) rather than passing when its OWN expectations are empty
+  # or the config cannot be read, because an expectation list that reads as
+  # satisfied because it is empty is the exact defect it exists to detect.
+  - name: gate_set_integrity
+    cadence_secs: 900
+    gate:
+      cmd: python3 ci-hub/health/gate_set_integrity.py
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: gate-set-integrity
+      title: "a gate that should be watching is not configured: {summary}"
+
 health_checks: []
