@@ -107,6 +107,22 @@
 /experiments/icount-smp_20260820/rootfs/*
 !/experiments/icount-smp_20260820/rootfs/init
 
+# Per-run QEMU outputs from the 2026-08-17/20 measurement campaigns. These
+# directories contain multi-gigabyte stderr/log captures and extracted run
+# trees; the durable scripts, README files, and compact result tables remain
+# visible to Git alongside them.
+/experiments/first-divergence_20260820/bwork/
+/experiments/first-divergence_20260820/keep/
+/experiments/first-divergence_20260820/runs/
+/experiments/kvm-canonical-measurement-2026-08-17/original-69-run-measurement/build/
+/experiments/kvm-canonical-measurement-2026-08-17/original-69-run-measurement/results/runs/
+
+# Compiled guest fixtures for the vCPU-steering experiment. Their C sources
+# and the scripts that rebuild them are the durable inputs.
+/experiments/vcpu-steering_20260820/guest/advance
+/experiments/vcpu-steering_20260820/guest/preempt
+/experiments/vcpu-steering_20260820/guest/pingpong
+
 # ai_docs contains durable text, not binary or archive attachments.
 /ai_docs/**/*.a
 /ai_docs/**/*.bin
