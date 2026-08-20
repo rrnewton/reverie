@@ -173,6 +173,51 @@ cases.append((unavailable_rc == 75
               "live collection failure emits renderable NO RESULT fields",
               f"rc={unavailable_rc} out={unavailable_out.strip()}"))
 
+# --- landing observability: surfacing only, and it must not flag everything ----
+# The reporter earns its place only if it stays quiet about the path that IS
+# observed. A reporter that flags every landing is ignored within a week, so
+# both directions are bracketed here.
+
+direct = [{"sha": "a"*40, "prs": []}]
+r = ab.landing_observability(direct)
+cases.append((r["landed_without_pr"] == 1 and r["landed_via_pr"] == 0,
+              "a direct-to-main landing is reported as unobserved",
+              f"without_pr={r['landed_without_pr']} via_pr={r['landed_via_pr']}"))
+
+bound_pr = [{"sha": "b"*40, "prs": [{"number": 7, "approved_at": ["c"*40]}]}]
+r = ab.landing_observability(bound_pr)
+cases.append((r["landed_without_pr"] == 0 and r["pr_landings_carrying_a_binding"] == 1,
+              "a properly bound PR landing is NOT flagged",
+              f"without_pr={r['landed_without_pr']} bound={r['pr_landings_carrying_a_binding']}"))
+
+# A squash merge gives main a different sha from the PR head. Requiring equality
+# would report every squash as unbound; the binding is counted per-PR, not per-sha.
+squashed = [{"sha": "d"*40, "prs": [{"number": 9, "approved_at": ["e"*40]}]}]
+r = ab.landing_observability(squashed)
+cases.append((r["pr_landings_carrying_a_binding"] == 1,
+              "a squash merge whose sha differs from the bound head is not a false alarm",
+              f"bound={r['pr_landings_carrying_a_binding']}"))
+
+mixed = ab.landing_observability(direct + bound_pr)
+cases.append((mixed["window_commits"] == 2 and mixed["landed_without_pr"] == 1
+              and mixed["landed_via_pr"] == 1,
+              "a mixed window separates the two populations",
+              mixed["summary"][:70]))
+
+cases.append(("unobserved" in mixed["summary"] and "unreviewed" in mixed["summary"]
+              and "not a review verdict" in mixed["summary"],
+              "the wording says unobserved and explicitly disclaims unreviewed",
+              "summary carries the disclaimer"))
+
+empty_refused = False
+try:
+    ab.landing_observability([])
+except ab.EmptyLandingWindow:
+    empty_refused = True
+cases.append((empty_refused,
+              "an empty window REFUSES instead of reporting a clean 0 of 0",
+              "EmptyLandingWindow raised" if empty_refused else "returned a count over nothing"))
+
 p=sum(1 for ok,_,_ in cases if ok); f=len(cases)-p
 for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
 print(f"assertions: {p} passed, {f} failed")

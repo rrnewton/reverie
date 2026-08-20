@@ -77,6 +77,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from typing import Sequence
 
 SHA40 = re.compile(r"\b[0-9a-f]{40}\b")
 LANES = ("claude", "codex")
@@ -106,6 +107,59 @@ def classify_approval(head: str, comment_shas: list[str]) -> str:
     if comment_shas[-1] == head:
         return BOUND_CURRENT
     return SUPERSEDED
+
+
+class EmptyLandingWindow(RuntimeError):
+    """A window with no commits is no measurement, and must not read as clean."""
+
+
+def landing_observability(landings: "Sequence[dict[str, Any]]") -> dict[str, Any]:
+    """How much of a landing window this check can see at all.
+
+    REPORTS OBSERVER COVERAGE, NOT REVIEW QUALITY. Review bindings live on pull
+    requests, so a commit that reached main without one is UNOBSERVED BY THIS
+    CHECK -- which is not the same claim as unreviewed, and the wording here is
+    deliberately kept away from that. Measured 2026-08-20 on hermit: 21 of 29
+    commits since 2026-08-19 carried no associated PR, so this check could speak
+    to 8 of them. Reporting nothing in that situation reads as healthy, which is
+    the condition this function exists to end.
+
+    `landings` is a sequence of {"sha": str, "prs": [pr, ...]} where each pr may
+    carry "approved_at": [sha, ...]. Taking the association as an argument keeps
+    the arithmetic testable without a network.
+
+    REFUSES AN EMPTY WINDOW. Zero commits is not zero unobserved landings; a
+    check that returns a clean count over nothing is the failure this repository
+    found repeatedly on 2026-08-20.
+    """
+    if not landings:
+        raise EmptyLandingWindow(
+            "landing observability refuses an empty window: zero commits measured "
+            "is not zero unobserved landings, it is no measurement"
+        )
+    total = len(landings)
+    via_pr = [l for l in landings if l.get("prs")]
+    without_pr = [l for l in landings if not l.get("prs")]
+    # "carried a binding" is deliberately NOT "bound to the landed sha": a
+    # squash merge gives the commit on main a different sha from the PR head it
+    # came from, so requiring equality here would report every squash as
+    # unbound and the line would be ignored within a week.
+    with_binding = [
+        l for l in via_pr if any(pr.get("approved_at") for pr in l["prs"])
+    ]
+    return {
+        "window_commits": total,
+        "landed_via_pr": len(via_pr),
+        "landed_without_pr": len(without_pr),
+        "pr_landings_carrying_a_binding": len(with_binding),
+        "summary": (
+            f"{len(without_pr)} of {total} commits landed without a pull request, so this "
+            f"check could not observe them; {len(via_pr)} took the PR path, of which "
+            f"{len(with_binding)} came from a PR carrying an APPROVED-AT binding. "
+            "This is observer coverage, not a review verdict: a landing with no PR is "
+            "unobserved here, not unreviewed."
+        ),
+    }
 
 
 def gh_json(args: list[str]) -> Any:
@@ -467,6 +521,61 @@ def collect_fixture(
     return rows, selected
 
 
+def report_landing_observability(
+    repo: str, since: str, as_json: bool, checkout: str = "."
+) -> int:
+    """Collect the window live and print the surfacing line. Never gates.
+
+    REFUSES IF THE CHECKOUT AND --repo DISAGREE. The commit window comes from
+    `git log` in the current directory while the PR association comes from the
+    GitHub API for --repo. If those name different repositories the output is
+    arithmetic about two unrelated populations, reported with a confident label
+    -- the exact shape of defect this file exists to surface. Caught while
+    demonstrating this function, so the guard is here rather than in a caller.
+    """
+    remote = subprocess.run(
+        ["git", "-C", checkout, "remote", "get-url", "origin"],
+        capture_output=True, text=True,
+    )
+    origin = remote.stdout.strip()
+    if remote.returncode != 0 or repo.lower() not in origin.lower():
+        print(
+            f"NO RESULT: refusing to mix repositories: the checkout's origin is "
+            f"{origin or '<unreadable>'} but --repo is {repo}; run this from a "
+            f"checkout of {repo}",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        log = subprocess.run(
+            ["git", "-C", checkout, "log", f"--since={since}", "--format=%H",
+             "origin/main"],
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        print("NO RESULT: git log timed out", file=sys.stderr)
+        return 1
+    if log.returncode != 0:
+        print(f"NO RESULT: git log failed: {log.stderr.strip()[:200]}", file=sys.stderr)
+        return 1
+    shas = [line.strip() for line in log.stdout.splitlines() if line.strip()]
+    landings = []
+    for sha in shas:
+        prs = gh_json(["api", f"repos/{repo}/commits/{sha}/pulls", "--jq",
+                       "[.[] | {number: .number}]"]) or []
+        landings.append({"sha": sha, "prs": prs})
+    try:
+        report = landing_observability(landings)
+    except EmptyLandingWindow as error:
+        print(f"NO RESULT: {error}", file=sys.stderr)
+        return 1
+    if as_json:
+        print(json.dumps(report))
+    else:
+        print(f"landing-observability: {report['summary']}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--repo", default="rrnewton/hermit")
@@ -497,7 +606,33 @@ def main() -> int:
         ),
     )
     ap.add_argument("--json", dest="as_json", action="store_true")
+    ap.add_argument(
+        "--landing-observability",
+        action="store_true",
+        help=(
+            "SURFACING ONLY, never gates: report how many commits on the default "
+            "branch since --since landed without a pull request, and are therefore "
+            "outside anything this check can observe. Reports observer coverage, "
+            "not review quality."
+        ),
+    )
+    ap.add_argument(
+        "--since",
+        default="1 day ago",
+        help="window start for --landing-observability, any git --since expression",
+    )
+    ap.add_argument(
+        "--checkout",
+        metavar="DIR",
+        default=".",
+        help=(
+            "DIRECTORY of the checkout whose commits form the window. A path, not "
+            "a commit. Must be a checkout of --repo; mixing them is refused."
+        ),
+    )
     a = ap.parse_args()
+    if a.landing_observability:
+        return report_landing_observability(a.repo, a.since, a.as_json, a.checkout)
     a.gate_on = getattr(a, "gate_on", "all")
 
     malformed: list[tuple[str, str]] = []

@@ -708,6 +708,28 @@ reminders:
         component: approval-binding-readiness
       title: "approval(s) cannot be bound to any head; reviewers emit no APPROVED-AT line: {summary}"
 
+  # SURFACING ONLY, AND DELIBERATELY NOT A GATE. Review bindings live on pull
+  # requests, so a commit that reached main without one is outside anything this
+  # check can see. Measured 2026-08-20 on hermit: 21 of 29 commits since 08-19
+  # carried no associated PR, so the binding checks above could speak to 8 of
+  # them and said nothing about the other 21 -- which reads as healthy. This
+  # reports that coverage as a number instead. It does NOT gate: landing
+  # directly on main is the owner's explicit working policy, local validate is
+  # canonical, and making that path harder is a policy change, not a health
+  # check. The wording keeps unobserved-by-this-check apart from unreviewed,
+  # because they are different claims and only the first is being made.
+  - name: landing_observability
+    cadence_secs: 86400
+    gate:
+      cmd: python3 ci-hub/health/approval_binding.py --repo rrnewton/hermit --checkout hermit --landing-observability --since "1 day ago"
+      when: always
+      capture: true
+    emit:
+      kind: note
+      fields:
+        component: approval-binding-coverage
+      title: "review-binding coverage of yesterday's landings: {summary}"
+
   # THE GATE RUNNER WAS GONE FOR TWO DAYS AND NOTHING SAID SO. On 2026-08-08 the
   # The gate-runner installation and credentials were deleted; the user
   # service stayed ENABLED and failed 203/EXEC for ~two days, and the missing
