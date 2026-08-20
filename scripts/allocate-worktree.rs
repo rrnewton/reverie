@@ -1294,8 +1294,65 @@ fn owner_snapshot_implausibility(agents: &[Value]) -> Option<String> {
 /// newly provisioned slot may precede agent startup; in that case allocation
 /// succeeds but release remains fail-closed until the coordinator re-runs this
 /// allocator adoption after the owner is live.
-fn process_start_ticks(pid: u32) -> Result<u64, String> {
-    let path = PathBuf::from(format!("/proc/{pid}/stat"));
+/// Resolve the process tree to read identity from.  Real `/proc` in production;
+/// a disposable fixture's copy when one is explicitly provided.
+///
+/// WHY THIS IS HERE AT ALL.  This allocator validates a recorded supervisor
+/// identity against the kernel, and it is RIGHT to do so -- that check is what
+/// makes a sidecar unforgeable.  But it also made the check untestable: the
+/// sentinel fixture in ci-hub/tests writes a complete fake process entry (stat,
+/// cgroup, cwd) under its own root and points HERMIT_RELEASE_TEST_PROC_ROOT at
+/// it, and this file was reading absolute `/proc` regardless.  So the fixture's
+/// fabricated pid was checked against the real kernel, which of course does not
+/// have it, and `test_allocator_preserves_legacy_authority_and_recovers_failed_launch`
+/// -- the ONLY test of the `--recover-legacy-unbound-owner` path -- failed with
+/// `read /proc/41000/stat: No such file or directory`.  That path is the named
+/// remedy for a slot whose owner evidence is missing, and it could not be
+/// exercised at all.
+///
+/// release-worktree.rs already reads process identity exactly this way, through
+/// the same variable and the same guard; this file was the outlier.  The guard is
+/// copied, not invented: the override is accepted ONLY when the workspace is a
+/// canonicalized path under the temp directory whose ancestry contains a
+/// `release-worktree-test.` fixture directory AND the override points inside that
+/// workspace.  Anything else is an ERROR, not a silent fall-back to real `/proc`,
+/// so a stray variable in a production environment cannot quietly redirect the
+/// one check that makes ownership evidence unforgeable.
+fn restricted_fixture_path(root: &Path, variable: &str) -> Result<Option<PathBuf>, String> {
+    let Some(test_path) = std::env::var_os(variable) else {
+        return Ok(None);
+    };
+    let workspace = fs::canonicalize(root)
+        .map_err(|error| format!("could not canonicalize fixture workspace: {error}"))?;
+    let temp = fs::canonicalize(std::env::temp_dir())
+        .map_err(|error| format!("could not canonicalize temporary directory: {error}"))?;
+    let fixture_workspace = workspace.starts_with(&temp)
+        && workspace.ancestors().any(|ancestor| {
+            ancestor
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.starts_with("release-worktree-test."))
+                .unwrap_or(false)
+        });
+    let test_path = fs::canonicalize(PathBuf::from(test_path))
+        .map_err(|error| format!("could not canonicalize {variable}: {error}"))?;
+    if !fixture_workspace || !test_path.starts_with(&workspace) {
+        return Err(format!(
+            "{variable} is restricted to disposable release fixtures"
+        ));
+    }
+    Ok(Some(test_path))
+}
+
+fn process_root(root: &Path) -> Result<PathBuf, String> {
+    Ok(
+        restricted_fixture_path(root, "HERMIT_RELEASE_TEST_PROC_ROOT")?
+            .unwrap_or_else(|| PathBuf::from("/proc")),
+    )
+}
+
+fn process_start_ticks(root: &Path, pid: u32) -> Result<u64, String> {
+    let path = process_root(root)?.join(pid.to_string()).join("stat");
     let raw =
         fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let close = raw
@@ -1390,6 +1447,7 @@ fn observed_owner_sidecar(
 }
 
 fn codex_owner_sidecar(
+    root: &Path,
     slot: &str,
     agent: &str,
     task: &str,
@@ -1410,7 +1468,7 @@ fn codex_owner_sidecar(
         .as_u64()
         .filter(|value| *value > 0)
         .ok_or_else(|| "Codex coordinator lease has no supervisor start_ticks".to_string())?;
-    let observed_ticks = process_start_ticks(pid)?;
+    let observed_ticks = process_start_ticks(root, pid)?;
     if observed_ticks != recorded_ticks {
         return Err(format!(
             "Codex coordinator supervisor {pid} was reused: recorded start_ticks={recorded_ticks}, observed={observed_ticks}"
@@ -1547,10 +1605,14 @@ fn observe_owner_lease(root: &Path, agent: &str) -> Result<ObservedOwnerLease, S
         return Err(format!("tmux pane {pane} resolves {} times", pids.len()));
     }
     let supervisor_pid = pids[0];
-    let start_ticks_before = process_start_ticks(supervisor_pid)?;
+    let start_ticks_before = process_start_ticks(root, supervisor_pid)?;
     let boot_id = current_boot_id()?;
-    let cgroup_text = fs::read_to_string(format!("/proc/{supervisor_pid}/cgroup"))
-        .map_err(|error| format!("read pane {pane} cgroup: {error}"))?;
+    let cgroup_text = fs::read_to_string(
+        process_root(root)?
+            .join(supervisor_pid.to_string())
+            .join("cgroup"),
+    )
+    .map_err(|error| format!("read pane {pane} cgroup: {error}"))?;
     let groups: Vec<&str> = cgroup_text
         .lines()
         .filter_map(|line| line.strip_prefix("0::"))
@@ -1565,7 +1627,7 @@ fn observe_owner_lease(root: &Path, agent: &str) -> Result<ObservedOwnerLease, S
     {
         return Err(format!("pane {pane} cgroup is not normalized"));
     }
-    let start_ticks_after = process_start_ticks(supervisor_pid)?;
+    let start_ticks_after = process_start_ticks(root, supervisor_pid)?;
     if start_ticks_before != start_ticks_after {
         return Err(format!(
             "pane {pane} supervisor pid {supervisor_pid} changed identity while binding"
@@ -2617,7 +2679,7 @@ fn main() {
             .to_string();
         let owner_task = mutating[0]["task"].as_str().unwrap_or("").to_string();
         entry["owner_sidecar"] =
-            codex_owner_sidecar(&slot, &owner_agent, &owner_task, &now_iso(), &lease)
+            codex_owner_sidecar(&root, &slot, &owner_agent, &owner_task, &now_iso(), &lease)
                 .unwrap_or_else(|error| die(&format!("publish Codex slot-owner sidecar: {error}")));
     }
 
