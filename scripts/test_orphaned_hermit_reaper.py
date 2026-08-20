@@ -87,6 +87,290 @@ class SelectionTests(unittest.TestCase):
         self.assertFalse(self.decision(item).eligible)
 
 
+class DiskCriterionTests(unittest.TestCase):
+    """The low-CPU disk writer -- the orphan the CPU gate was blind to.
+
+    Every suppression case below has a twin that asserts the reaper still acts,
+    because a criterion that only ever says no is not a fix.
+    """
+
+    # A real orphan measured on 2026-08-19: 3h50m old, 41.6s CPU, ratio 0.003
+    # against a 0.80 gate. It was writing to a log the whole time.
+    LOW_CPU = {"cpu_seconds": 41.6, "age_seconds": 13808.0}
+
+    def decision(self, rate, **overrides):
+        values = dict(self.LOW_CPU)
+        values.update(overrides)
+        return reaper.decide(
+            snapshot(**values),
+            caller_uid=UID,
+            workspace=WORKSPACE,
+            bounds=reaper.Bounds(),
+            write_bytes_per_second=rate,
+        )
+
+    def test_low_cpu_disk_writer_is_now_a_candidate(self) -> None:
+        """THE POINT. ratio 0.003 against a 0.80 gate, qualified by bytes."""
+        verdict = self.decision(5.0 * reaper.MIB)
+        self.assertTrue(verdict.eligible, verdict.reasons)
+
+    def test_low_cpu_quiet_orphan_is_still_refused(self) -> None:
+        """THE TWIN. Same process, not writing -- must stay untouched.
+
+        This is what stops the criterion becoming "kill every idle process",
+        which is what lowering 0.80 to 0.003 would have done.
+        """
+        verdict = self.decision(0.0)
+        self.assertFalse(verdict.eligible)
+        self.assertIn("write 0.00 MiB/s < 1.00 MiB/s", verdict.reasons)
+
+    def test_a_write_that_already_finished_reads_zero_and_is_refused(self) -> None:
+        """A bounded emitter is zero across the window, so it cannot qualify.
+
+        The liveness property is intrinsic to sampling twice in one invocation;
+        there is no state file to hold a stale interval.
+        """
+        self.assertFalse(self.decision(0.0).eligible)
+
+    def test_cpu_path_is_unchanged_when_nothing_was_measured(self) -> None:
+        """Unmeasured must behave exactly as before this criterion existed."""
+        self.assertTrue(
+            reaper.decide(
+                snapshot(), caller_uid=UID, workspace=WORKSPACE, bounds=reaper.Bounds()
+            ).eligible
+        )
+        verdict = self.decision(None)
+        self.assertFalse(verdict.eligible)
+        self.assertIn("disk write rate not measured", verdict.reasons)
+
+    def test_cpu_thresholds_are_not_widened(self) -> None:
+        """Guard against anyone 'fixing' this by loosening the ratio instead."""
+        self.assertEqual(reaper.Bounds().min_core_ratio, 0.80)
+        self.assertEqual(reaper.Bounds().min_cpu_seconds, 600.0)
+
+    def test_a_busy_writer_below_the_age_bound_is_still_refused(self) -> None:
+        """The disk path widens WHAT counts as damage, never how new a process may be."""
+        self.assertFalse(
+            self.decision(500.0 * reaper.MIB, age_seconds=10.0).eligible
+        )
+
+    def _fake_proc(self, root: Path, pid: int, ppid: int, write_bytes: int) -> None:
+        base = root / str(pid)
+        base.mkdir(exist_ok=True)
+        fields = ["S", str(ppid)] + ["0"] * 9 + ["0", "0"] + ["0"] * 6 + ["0"]
+        (base / "stat").write_text(f"{pid} (proc) " + " ".join(fields))
+        (base / "io").write_text(
+            "rchar: 0\nwchar: 0\nwrite_bytes: {}\n".format(write_bytes)
+        )
+
+    def test_write_bytes_are_summed_over_the_TREE_not_the_root(self) -> None:
+        """The trap. Writes land on the guest child; the hermit root reads zero.
+
+        Measured 2026-08-19 on an orphaned tree: the hermit process showed
+        write_bytes 0 -> 0 while its guest child showed 84.80 MiB/s. A gate
+        reading /proc/<hermit>/io alone reproduces the old blindness.
+        """
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._fake_proc(root, 100, 1, 0)            # hermit root: writes NOTHING
+            self._fake_proc(root, 101, 100, 5_000_000)  # guest child: the writer
+            self._fake_proc(root, 102, 101, 3_000_000)  # grandchild, also counted
+            kids = reaper._children_map(root)
+            # root sees the whole tree: 0 + 5M + 3M
+            self.assertEqual(reaper.tree_write_bytes(100, kids, root), 8_000_000)
+            # and a subtree sees only itself and below: 5M + 3M
+            self.assertEqual(reaper.tree_write_bytes(101, kids, root), 8_000_000)
+            self.assertEqual(reaper.tree_write_bytes(102, kids, root), 3_000_000)
+
+    def test_root_only_read_would_have_seen_zero(self) -> None:
+        """Pins the trap itself, so a later refactor cannot quietly reintroduce it."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._fake_proc(root, 100, 1, 0)
+            self._fake_proc(root, 101, 100, 5_000_000)
+            no_kids: dict[int, list[int]] = {}
+            self.assertEqual(reaper.tree_write_bytes(100, no_kids, root), 0)
+            kids = reaper._children_map(root)
+            self.assertEqual(reaper.tree_write_bytes(100, kids, root), 5_000_000)
+
+    def test_an_unreadable_child_contributes_zero_rather_than_failing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._fake_proc(root, 100, 1, 7)
+            (root / "101").mkdir()  # no io file at all
+            kids = {100: [101]}
+            self.assertEqual(reaper.tree_write_bytes(100, kids, root), 7)
+
+    def test_rate_is_a_delta_over_the_window_not_a_total(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._fake_proc(root, 100, 1, 1_000_000)
+            state = {"advanced": False}
+
+            def advance(_seconds: float) -> None:
+                self._fake_proc(root, 100, 1, 5_000_000)
+                state["advanced"] = True
+
+            rates = reaper.sample_write_rates(
+                [100], interval_seconds=2.0, proc_root=root, sleep=advance
+            )
+            self.assertTrue(state["advanced"])
+            self.assertEqual(rates[100], 2_000_000.0)
+
+    def test_a_tree_that_stopped_writing_rates_zero(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self._fake_proc(root, 100, 1, 9_999_999)
+            rates = reaper.sample_write_rates(
+                [100], interval_seconds=2.0, proc_root=root, sleep=lambda _s: None
+            )
+            self.assertEqual(rates[100], 0.0)
+
+
+class DetectionModeTests(unittest.TestCase):
+    """--report-orphans: ORPHANHOOD is the signal, with no busy-ness threshold.
+
+    The three orphans that contaminated measurements on 2026-08-19 sat at core
+    ratios of 0.003 to 0.14. One was writing roughly FOUR BYTES A SECOND to a
+    log. No busy threshold reports that: the 1 MiB/s disk gate misses it by six
+    orders of magnitude, and the 0.80 CPU gate by two. Asking "is this orphaned
+    and old" needs no threshold and catches all three.
+    """
+
+    def judge(self, item, *, detection: bool, rate=None):
+        bounds = reaper.Bounds()
+        if detection:
+            bounds = __import__("dataclasses").replace(
+                bounds, min_cpu_seconds=0.0, min_core_ratio=0.0
+            )
+        return reaper.decide(
+            item,
+            caller_uid=UID,
+            workspace=WORKSPACE,
+            bounds=bounds,
+            write_bytes_per_second=rate,
+        )
+
+    def test_the_orphan_that_no_busy_threshold_would_report(self) -> None:
+        """3h50m old, ratio 0.003, writing ~4 bytes/s. Reported; not killable."""
+        item = snapshot(cpu_seconds=41.6, age_seconds=13808.0)
+        four_bytes_per_second = 4.0
+
+        self.assertTrue(
+            self.judge(item, detection=True, rate=four_bytes_per_second).eligible,
+            "detection must report it",
+        )
+        self.assertFalse(
+            self.judge(item, detection=False, rate=four_bytes_per_second).eligible,
+            "the KILL path must still refuse it -- 4 B/s is not proof of damage",
+        )
+
+    def test_detection_reports_a_completely_idle_orphan(self) -> None:
+        """Zero CPU, zero writes. Still wrong, still reported."""
+        item = snapshot(cpu_seconds=0.0, age_seconds=13808.0)
+        self.assertTrue(self.judge(item, detection=True, rate=0.0).eligible)
+        self.assertFalse(self.judge(item, detection=False, rate=0.0).eligible)
+
+    def test_detection_does_NOT_relax_the_safety_gates(self) -> None:
+        """Only the two CPU bounds are zeroed. Everything identity-shaped holds.
+
+        If detection widened these it would report other agents' live runs, and
+        a report that names innocent processes gets ignored, which is how a
+        detector becomes noise.
+        """
+        cases = {
+            "live-parent": snapshot(ppid=42, cpu_seconds=0.0),
+            "other-user": snapshot(uid=UID + 1, cpu_seconds=0.0),
+            "other-cgroup": snapshot(cgroup="/user.slice/untrusted.scope", cpu_seconds=0.0),
+            "outside-workspace": snapshot(exe=Path("/tmp/hermit"), cpu_seconds=0.0),
+            "not-a-run": snapshot(argv=("hermit", "coordinator"), cpu_seconds=0.0),
+            "zombie": snapshot(state="Z", cpu_seconds=0.0),
+            "too-young": snapshot(age_seconds=10.0, cpu_seconds=0.0),
+        }
+        for label, item in cases.items():
+            with self.subTest(label=label):
+                self.assertFalse(self.judge(item, detection=True, rate=0.0).eligible)
+
+    def test_detection_summary_names_the_pid_and_how_to_reap_it(self) -> None:
+        decision = self.judge(
+            snapshot(cpu_seconds=41.6, age_seconds=13808.0), detection=True, rate=4.0
+        )
+        text = reaper.summary_line(
+            [decision],
+            scanned=1,
+            disk_sampled=1,
+            disk_criterion="on",
+            scan_errors=0,
+            detection=True,
+        )
+        self.assertIn("pid 1234", text)
+        self.assertIn("orphaned 230m", text)
+        self.assertIn("--apply", text)          # the operator's next step
+        self.assertIn(reaper.CONFIRMATION, text)
+        self.assertNotIn("\n", text)
+
+
+class SummaryRenderingTests(unittest.TestCase):
+    """{summary} must ALWAYS resolve, or the gate silently never emits.
+
+    Two gates were silenced exactly this way on 2026-08-19. These tests use the
+    real tick-hub parser semantics: split each line on its FIRST '='.
+    """
+
+    @staticmethod
+    def parse_kv_lines(text: str) -> dict[str, str]:
+        """Mirror of tick_hub.engine.parse_kv_lines."""
+        out: dict[str, str] = {}
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                if key.strip():
+                    out[key.strip()] = value.strip()
+        return out
+
+    def test_zero_candidates_still_produces_a_summary(self) -> None:
+        """The path most likely to be forgotten, and the one that runs every tick."""
+        text = reaper.summary_line(
+            [], scanned=900, disk_sampled=0, disk_criterion="on", scan_errors=0
+        )
+        self.assertTrue(text)
+        self.assertIn("no eligible orphans", text)
+        self.assertNotIn("\n", text)
+
+    def test_summary_names_the_pid_and_the_qualifying_evidence(self) -> None:
+        decision = reaper.decide(
+            snapshot(cpu_seconds=41.6, age_seconds=13808.0),
+            caller_uid=UID,
+            workspace=WORKSPACE,
+            bounds=reaper.Bounds(),
+            write_bytes_per_second=5.0 * reaper.MIB,
+        )
+        text = reaper.summary_line(
+            [decision], scanned=1, disk_sampled=1, disk_criterion="on", scan_errors=0
+        )
+        self.assertIn("pid 1234", text)
+        self.assertIn("5.00MiB/s", text)   # WHY it qualified
+        self.assertIn("ratio 0.003", text)  # and that CPU did not
+        self.assertNotIn("\n", text)
+
+    def test_the_summary_survives_the_tick_hub_parser(self) -> None:
+        """The header line alone would NOT yield a summary key -- pin that."""
+        header = "orphaned-hermit-reaper: mode=dry-run candidates=2 scanned=9"
+        self.assertNotIn("summary", self.parse_kv_lines(header))
+
+        body = reaper.summary_line(
+            [], scanned=9, disk_sampled=0, disk_criterion="on", scan_errors=0
+        )
+        stdout = f"summary={body}\n{header}\nCANDIDATE pid=1 kind=hermit-run\n"
+        parsed = self.parse_kv_lines(stdout)
+        self.assertIn("summary", parsed)
+        self.assertEqual(parsed["summary"], body)
+        self.assertTrue(parsed["summary"], "an empty summary renders as a blank title")
+
+
 class ProcParsingTests(unittest.TestCase):
     def test_stat_parser_handles_spaces_and_parentheses(self) -> None:
         # field 2 deliberately contains both spaces and a right parenthesis.
@@ -197,6 +481,18 @@ class CommandLineSafetyTests(unittest.TestCase):
         result = self.run_script("--apply", "--pid", "1234")
         self.assertEqual(result.returncode, 2)
         self.assertIn("requires --confirm", result.stderr)
+
+    def test_report_orphans_cannot_be_combined_with_apply(self) -> None:
+        """Detection reports everything orphaned; the kill path demands proof.
+
+        Letting --apply run against the detection set would signal exactly the
+        processes the strict gates exist to protect.
+        """
+        result = self.run_script(
+            "--report-orphans", "--apply", "--pid", "1", "--confirm", reaper.CONFIRMATION
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot be combined with --apply", result.stderr)
 
     def test_apply_requires_explicit_pid(self) -> None:
         result = self.run_script("--apply", "--confirm", reaper.CONFIRMATION)

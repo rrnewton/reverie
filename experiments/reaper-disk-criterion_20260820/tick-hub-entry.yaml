@@ -1,0 +1,49 @@
+# STAGED, NOT YET INSTALLED. Append to the `reminders:` list in
+# ci-hub/health/tick-hub.yaml after the reaper has been executed once and its
+# `summary=` line confirmed to parse. Installing an unverified gate into a live
+# 900 s config is how the reverie pin gate and the headroom monitor were
+# silenced on 2026-08-19.
+#
+# NOTE ON OWNERSHIP: tick-hub.yaml is tracked but currently carries another
+# agent's UNCOMMITTED 84-line btrfs_headroom registration. Whoever installs this
+# must not sweep that into their commit.
+
+  # ORPHAN REAPER, DETECTION ONLY. The reaper (scripts/orphaned-hermit-reaper.py)
+  # was demonstrated working, precise and well-guarded under --apply on
+  # 2026-08-19 -- and was SCHEDULED BY NOTHING. It ran only when a human invoked
+  # it, which is why three orphans survived up to 3h50m that night while the tool
+  # that would have reported them sat in the tree unrun.
+  #
+  # IT REPORTS; IT DOES NOT KILL, and that is structural rather than a policy
+  # choice here: --apply refuses without at least one explicit --pid from a prior
+  # dry-run, so a scheduled invocation CANNOT signal anything. That guard is
+  # deliberate and must not be relaxed to make this "more useful". An automatic
+  # killer of processes it identifies by heuristic is exactly the mechanism that
+  # should not exist on a box where eight agents run experiments concurrently.
+  # The kill stays a deliberate act by whoever reads this report.
+  #
+  # Exit 1 means "candidates found" in dry-run, so `when: failure` fires exactly
+  # then. Exit 3 (a named PID could not be read) also fires, which is correct --
+  # an unreadable process in an explicit set is not a normal race.
+  #
+  # No --json: tick_hub.engine.parse_kv_lines reads `key=value` lines and would
+  # mangle a JSON document. The reaper prints a bare `summary=` line as its own
+  # first line precisely so {summary} resolves; its human header cannot serve,
+  # because "orphaned-hermit-reaper: mode=dry-run ..." parses to the key
+  # "orphaned-hermit-reaper: mode".
+  #
+  # Cost when the box is clean is ~one /proc walk and NO sleep: the write-rate
+  # sample is only taken for processes that already pass identity, scope, kind
+  # and age, and sample_write_rates returns immediately on an empty set.
+  - name: orphaned_hermit_reaper
+    cadence_secs: 900
+    gate:
+      cmd: python3 scripts/orphaned-hermit-reaper.py --report-orphans
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: orphaned-hermit-reaper
+      title: "orphaned Hermit/test processes are running unowned: {summary}"

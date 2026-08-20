@@ -14,7 +14,11 @@ hold:
 * its executable resolves below this dev-hermit workspace;
 * it is either ``hermit ... run ...`` or a Cargo test executable under
   ``target/{debug,release}/deps``;
-* age, consumed CPU time, and lifetime CPU/age ratio all exceed their bounds.
+* it is older than the age bound; AND
+* it is BUSY, by either of two independent measures -- consumed CPU time and
+  lifetime CPU/age ratio both above their bounds, OR its process TREE writing to
+  disk above the write-rate bound.  The disk measure exists because every other
+  gate is CPU-based, so an orphan that writes and sleeps was invisible.
 
 This is cleanup containment.  New ad-hoc runs should instead use
 ``scripts/hermit-box-run``, whose cgroup owns and reaps the complete process
@@ -33,6 +37,7 @@ import re
 import select
 import signal
 import sys
+import time
 from collections.abc import Callable, Iterable
 
 
@@ -41,6 +46,30 @@ DEFAULT_MIN_CPU_SECONDS = 10 * 60.0
 DEFAULT_MIN_CORE_RATIO = 0.80
 DEFAULT_GRACE_SECONDS = 5.0
 CONFIRMATION = "signal-only-the-reported-pids"
+
+MIB = 1 << 20
+# THE DISK CRITERION, added 2026-08-20.
+#
+# Every gate above except age is CPU-based, so an orphan that writes and sleeps
+# was invisible BY CONSTRUCTION. Measured on 2026-08-19, three real orphans that
+# survived up to 3h50m had core ratios of 0.003, 0.083 and 0.0000 against the
+# 0.80 gate; relaxing age+cpu without the ratio still yielded zero candidates.
+# A low-CPU steady log writer is precisely what filled 4.5 TB on 2026-08-19.
+#
+# The answer is NOT a looser CPU threshold -- 0.003 would match every idle
+# process on the box. It is a different quantity: bytes actually written.
+#
+# 1 MiB/s is ~84 GiB/day, far above the ~0 that an idle orphan writes and far
+# below a runaway. It is a floor for "this process is doing damage while
+# nobody is watching", not an attempt to characterise normal I/O.
+DEFAULT_MIN_WRITE_BYTES_PER_SECOND = 1.0 * MIB
+# Two samples inside ONE invocation, rather than a state file compared across
+# runs. That choice is deliberate and it buys the liveness property for free:
+# a bounded emitter that already finished reads zero across the window, so it
+# cannot trip the gate. A cross-run state file would instead measure an
+# interval that is already history -- the exact false positive that escalated a
+# completed 240 MiB write as "23.6 GiB/h" on 2026-08-19.
+DEFAULT_DISK_SAMPLE_SECONDS = 3.0
 
 
 class ProcReadError(RuntimeError):
@@ -70,6 +99,7 @@ class Bounds:
     min_age_seconds: float = DEFAULT_MIN_AGE_SECONDS
     min_cpu_seconds: float = DEFAULT_MIN_CPU_SECONDS
     min_core_ratio: float = DEFAULT_MIN_CORE_RATIO
+    min_write_bytes_per_second: float = DEFAULT_MIN_WRITE_BYTES_PER_SECOND
 
 
 @dataclasses.dataclass(frozen=True)
@@ -78,6 +108,10 @@ class Decision:
     eligible: bool
     reasons: tuple[str, ...]
     kind: str | None = None
+    # None means NOT MEASURED, which is not the same as measured-and-zero. Only
+    # a measured rate can qualify a process; an unmeasured one falls back to the
+    # CPU path exactly as before this criterion existed.
+    write_bytes_per_second: float | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -228,12 +262,104 @@ def _process_kind(snapshot: ProcessSnapshot, workspace: Path) -> str | None:
     return None
 
 
+def _children_map(proc_root: Path) -> dict[int, list[int]]:
+    """ppid -> [pid]. One /proc walk, reused for every root in a sample."""
+    kids: dict[int, list[int]] = {}
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError:
+        return kids
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            _state, ppid, *_rest = _parse_stat(_read_text(entry / "stat"))
+        except (ProcReadError, OSError):
+            continue  # a process that vanished mid-walk contributes nothing
+        kids.setdefault(ppid, []).append(int(entry.name))
+    return kids
+
+
+def tree_write_bytes(root_pid: int, kids: dict[int, list[int]], proc_root: Path) -> int:
+    """Sum ``write_bytes`` over the process TREE rooted at ``root_pid``.
+
+    THE TREE, not the process. This is the whole reason the criterion works.
+    Measured on 2026-08-19 against an orphaned Hermit tree whose guest was doing
+    64 KiB writes in a loop:
+
+        pid 3207650  hermit (ppid=1)        write_bytes 0 -> 0            0.00 MiB/s
+        pid 3207653  sh (guest, state 't')  1,115,701,248 -> 1,560,297,472  84.80 MiB/s
+
+    The writes do not appear on the Hermit process AT ALL; they are attributed
+    entirely to the guest child. A gate reading /proc/<hermit>/io would always
+    see zero and would reproduce the CPU gate's blindness in a new form.
+
+    Note the guest was in state 't' -- ptrace-stopped -- while writing at
+    84.8 MiB/s. A stopped process is still a disk writer, which is also how the
+    real orphans presented.
+
+    An unreadable child contributes 0 rather than failing the sum: partial
+    attribution understates, and understating can only ever make the reaper
+    less likely to act.
+    """
+    total = 0
+    seen: set[int] = set()
+    stack = [root_pid]
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            for line in _read_text(proc_root / str(pid) / "io").splitlines():
+                if line.startswith("write_bytes:"):
+                    total += int(line.split()[1])
+                    break
+        except (ProcReadError, OSError, ValueError, IndexError):
+            pass
+        stack.extend(kids.get(pid, ()))
+    return total
+
+
+def sample_write_rates(
+    pids: Iterable[int],
+    *,
+    interval_seconds: float,
+    proc_root: Path = Path("/proc"),
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[int, float]:
+    """Tree write rate in bytes/second, from two samples inside ONE invocation.
+
+    Self-contained on purpose. Because both samples are taken here, a rate above
+    zero means the tree is writing NOW -- there is no stale interval to
+    misinterpret and no state file to go stale. A bounded emitter that has
+    already finished reads exactly zero.
+
+    It also sidesteps the fd-holder trap by construction: ``write_bytes`` only
+    advances when a process actually writes, so unlike an open-fd size delta
+    there is no holder to misattribute and no read-only holder to mistake for a
+    writer.
+    """
+    pids = list(pids)
+    if not pids or interval_seconds <= 0:
+        return {}
+    first_kids = _children_map(proc_root)
+    first = {pid: tree_write_bytes(pid, first_kids, proc_root) for pid in pids}
+    sleep(interval_seconds)
+    second_kids = _children_map(proc_root)
+    second = {pid: tree_write_bytes(pid, second_kids, proc_root) for pid in pids}
+    return {
+        pid: max(0.0, (second[pid] - first[pid]) / interval_seconds) for pid in pids
+    }
+
+
 def decide(
     snapshot: ProcessSnapshot,
     *,
     caller_uid: int,
     workspace: Path,
     bounds: Bounds,
+    write_bytes_per_second: float | None = None,
 ) -> Decision:
     reasons: list[str] = []
     if snapshot.uid != caller_uid:
@@ -251,15 +377,48 @@ def decide(
         reasons.append(
             f"age {snapshot.age_seconds:.1f}s < {bounds.min_age_seconds:.1f}s"
         )
-    if snapshot.cpu_seconds < bounds.min_cpu_seconds:
-        reasons.append(
-            f"cpu {snapshot.cpu_seconds:.1f}s < {bounds.min_cpu_seconds:.1f}s"
-        )
-    if snapshot.core_ratio < bounds.min_core_ratio:
-        reasons.append(
-            f"cpu/age {snapshot.core_ratio:.3f} < {bounds.min_core_ratio:.3f}"
-        )
-    return Decision(snapshot=snapshot, eligible=not reasons, reasons=tuple(reasons), kind=kind)
+    # BUSY is now a disjunction: burning CPU, or writing to disk. Age still
+    # applies to both -- this widens WHAT counts as damage, not how new a
+    # process may be.
+    #
+    # The CPU thresholds are deliberately UNCHANGED. Lowering 0.80 far enough to
+    # catch a 0.003 orphan would match every idle process on the box; the fix is
+    # a second quantity, not a looser bound on the wrong one.
+    cpu_busy = (
+        snapshot.cpu_seconds >= bounds.min_cpu_seconds
+        and snapshot.core_ratio >= bounds.min_core_ratio
+    )
+    disk_busy = (
+        write_bytes_per_second is not None
+        and write_bytes_per_second >= bounds.min_write_bytes_per_second
+    )
+    if not cpu_busy and not disk_busy:
+        # Same two messages as before, so the CPU-only path reads identically.
+        if snapshot.cpu_seconds < bounds.min_cpu_seconds:
+            reasons.append(
+                f"cpu {snapshot.cpu_seconds:.1f}s < {bounds.min_cpu_seconds:.1f}s"
+            )
+        if snapshot.core_ratio < bounds.min_core_ratio:
+            reasons.append(
+                f"cpu/age {snapshot.core_ratio:.3f} < {bounds.min_core_ratio:.3f}"
+            )
+        # Say WHY the disk path did not rescue it, distinguishing "measured and
+        # quiet" from "never measured". Silence about an unmeasured criterion is
+        # how a gate comes to look like coverage it does not have.
+        if write_bytes_per_second is None:
+            reasons.append("disk write rate not measured")
+        else:
+            reasons.append(
+                f"write {write_bytes_per_second / MIB:.2f} MiB/s < "
+                f"{bounds.min_write_bytes_per_second / MIB:.2f} MiB/s"
+            )
+    return Decision(
+        snapshot=snapshot,
+        eligible=not reasons,
+        reasons=tuple(reasons),
+        kind=kind,
+        write_bytes_per_second=write_bytes_per_second,
+    )
 
 
 def same_identity(left: ProcessSnapshot, right: ProcessSnapshot) -> bool:
@@ -297,6 +456,7 @@ def reap(
     workspace: Path,
     bounds: Bounds,
     grace_seconds: float,
+    write_bytes_per_second: float | None = None,
     pidfd_open: Callable[[int], int] = os.pidfd_open,
     pidfd_send: Callable[[int, signal.Signals], None] = signal.pidfd_send_signal,
     wait_pidfd: Callable[[int, float], bool] = _wait_pidfd,
@@ -314,8 +474,17 @@ def reap(
             current = reader.read(pid)
         except ProcReadError:
             return ReapResult(pid, "already-exited", False, False)
+        # The ORIGINAL measurement is reused here, deliberately. These
+        # revalidations exist to catch an identity change -- uid, ppid, exe,
+        # start time -- between report and signal. Re-sampling the disk rate
+        # would instead re-litigate the qualifying criterion, and a writer that
+        # happened to pause for the sample window would escape mid-reap.
         current_decision = decide(
-            current, caller_uid=caller_uid, workspace=workspace, bounds=bounds
+            current,
+            caller_uid=caller_uid,
+            workspace=workspace,
+            bounds=bounds,
+            write_bytes_per_second=write_bytes_per_second,
         )
         if not current_decision.eligible or not same_identity(candidate.snapshot, current):
             return ReapResult(pid, "refused-identity-changed-before-term", False, False)
@@ -330,7 +499,11 @@ def reap(
         except ProcReadError:
             return ReapResult(pid, "terminated", True, False)
         after_decision = decide(
-            after_term, caller_uid=caller_uid, workspace=workspace, bounds=bounds
+            after_term,
+            caller_uid=caller_uid,
+            workspace=workspace,
+            bounds=bounds,
+            write_bytes_per_second=write_bytes_per_second,
         )
         if not after_decision.eligible or not same_identity(candidate.snapshot, after_term):
             return ReapResult(pid, "refused-identity-changed-before-kill", True, False)
@@ -341,6 +514,63 @@ def reap(
         return ReapResult(pid, "killed-after-grace", True, True)
     finally:
         os.close(pidfd)
+
+
+def summary_line(
+    candidates: list[Decision],
+    *,
+    scanned: int,
+    disk_sampled: int,
+    disk_criterion: str,
+    scan_errors: int,
+    detection: bool = False,
+) -> str:
+    """The one line tick-hub interpolates into ``{summary}``.
+
+    THIS MUST ALWAYS RENDER, on every path -- zero candidates, refusals, scan
+    errors, --no-disk-criterion. tick_hub.engine.parse_kv_lines splits each
+    stdout line on its FIRST '=', and render_emit REFUSES the whole emission if
+    any {placeholder} is left unresolved. Two gates were silenced that way on
+    2026-08-19: the reverie pin gate for a full day, and the headroom monitor.
+
+    So it is emitted as its own line with a bare ``summary=`` prefix. The
+    reaper's human header is NOT usable for this -- "orphaned-hermit-reaper:
+    mode=dry-run candidates=2" parses to the key "orphaned-hermit-reaper: mode",
+    and no ``summary`` key would ever exist.
+    """
+    if not candidates:
+        return (
+            f"no eligible orphans (scanned={scanned}, disk_sampled={disk_sampled}, "
+            f"disk_criterion={disk_criterion}, scan_errors={scan_errors})"
+        )
+    if detection:
+        parts = []
+        for decision in candidates[:5]:
+            item = decision.snapshot
+            rate = decision.write_bytes_per_second
+            written = "unmeasured" if rate is None else f"{rate / MIB:.2f}MiB/s"
+            parts.append(
+                f"pid {item.pid} ({decision.kind or '?'}, orphaned {item.age_seconds / 60:.0f}m, "
+                f"ratio {item.core_ratio:.3f}, write {written}, {item.exe.name})"
+            )
+        more = "" if len(candidates) <= 5 else f" and {len(candidates) - 5} more"
+        return (
+            f"{len(candidates)} orphaned run(s) reparented to PID 1 in this agent scope: "
+            + "; ".join(parts)
+            + more
+            + " -- reap with --pid <pid> --apply --confirm " + CONFIRMATION
+        )
+    parts = []
+    for decision in candidates[:5]:
+        item = decision.snapshot
+        rate = decision.write_bytes_per_second
+        written = "unmeasured" if rate is None else f"{rate / MIB:.2f}MiB/s"
+        parts.append(
+            f"pid {item.pid} ({decision.kind or '?'}, age {item.age_seconds / 60:.0f}m, "
+            f"ratio {item.core_ratio:.3f}, write {written})"
+        )
+    more = "" if len(candidates) <= 5 else f" and {len(candidates) - 5} more"
+    return f"{len(candidates)} eligible orphan(s): " + "; ".join(parts) + more
 
 
 def _snapshot_record(decision: Decision) -> dict[str, object]:
@@ -357,6 +587,12 @@ def _snapshot_record(decision: Decision) -> dict[str, object]:
         "age_seconds": round(item.age_seconds, 3),
         "cpu_seconds": round(item.cpu_seconds, 3),
         "cpu_age_ratio": round(item.core_ratio, 6),
+        # null distinguishes NOT MEASURED from measured-and-zero.
+        "write_bytes_per_second": (
+            None
+            if decision.write_bytes_per_second is None
+            else round(decision.write_bytes_per_second, 1)
+        ),
         "exe": str(item.exe),
         "argv": item.argv,
         "cgroup": item.cgroup,
@@ -375,6 +611,31 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-age-seconds", type=float, default=DEFAULT_MIN_AGE_SECONDS)
     parser.add_argument("--min-cpu-seconds", type=float, default=DEFAULT_MIN_CPU_SECONDS)
     parser.add_argument("--min-core-ratio", type=float, default=DEFAULT_MIN_CORE_RATIO)
+    parser.add_argument(
+        "--min-write-mib-per-second",
+        type=float,
+        default=DEFAULT_MIN_WRITE_BYTES_PER_SECOND / MIB,
+        help="tree write rate that qualifies a low-CPU orphan (default %(default).2f)",
+    )
+    parser.add_argument(
+        "--disk-sample-seconds",
+        type=float,
+        default=DEFAULT_DISK_SAMPLE_SECONDS,
+        help="width of the two-sample write-rate window (default %(default).1f)",
+    )
+    parser.add_argument(
+        "--report-orphans",
+        action="store_true",
+        help=(
+            "DETECTION mode: report every orphaned workspace Hermit/test process "
+            "past --min-age-seconds, regardless of how busy it is. Never signals."
+        ),
+    )
+    parser.add_argument(
+        "--no-disk-criterion",
+        action="store_true",
+        help="skip the write-rate sample; CPU gates only, as before this criterion existed",
+    )
     parser.add_argument("--grace-seconds", type=float, default=DEFAULT_GRACE_SECONDS)
     parser.add_argument("--json", action="store_true", help="emit one JSON document")
     parser.add_argument(
@@ -390,31 +651,91 @@ def main(argv: list[str] | None = None) -> int:
         args.min_cpu_seconds,
         args.min_core_ratio,
         args.grace_seconds,
+        args.min_write_mib_per_second,
+        args.disk_sample_seconds,
     )
     if any(value < 0 for value in numeric) or args.min_core_ratio > 1.0:
         _parser().error("bounds must be nonnegative and --min-core-ratio must be <= 1")
     if args.apply and args.confirm != CONFIRMATION:
         _parser().error(f"--apply requires --confirm {CONFIRMATION}")
+    if args.apply and args.report_orphans:
+        # These modes disagree about what "eligible" means. Detection reports
+        # everything orphaned; the kill path deliberately demands proof of
+        # damage. Letting --apply run against the detection set would signal
+        # processes the strict gates exist to protect.
+        _parser().error("--report-orphans is a reporting mode and cannot be combined with --apply")
     if args.apply and not args.pid:
         _parser().error("--apply requires at least one explicit --pid from a prior dry-run")
 
     workspace = Path(__file__).resolve().parent.parent
     reader = ProcReader()
     caller_uid = os.getuid()
-    bounds = Bounds(args.min_age_seconds, args.min_cpu_seconds, args.min_core_ratio)
+    bounds = Bounds(
+        args.min_age_seconds,
+        args.min_cpu_seconds,
+        args.min_core_ratio,
+        args.min_write_mib_per_second * MIB,
+    )
     requested = sorted(set(args.pid)) if args.pid else sorted(reader.pids())
     decisions: list[Decision] = []
     scan_errors: list[dict[str, object]] = []
+
+    # PHASE 1 -- read every requested process once.
+    snapshots: dict[int, ProcessSnapshot] = {}
     for pid in requested:
         try:
-            snapshot = reader.read(pid)
+            snapshots[pid] = reader.read(pid)
         except ProcReadError as exc:
             # Races are normal in a /proc scan.  An explicitly named PID is not.
             if args.pid:
                 scan_errors.append({"pid": pid, "error": str(exc)})
+
+    # PHASE 2 -- measure the write rate, but ONLY for processes that already
+    # clear every other gate.  The sample costs a sleep, and on a box with
+    # thousands of PIDs it must not be paid per process.  Zeroing just the two
+    # CPU bounds makes "eligible" mean "passes identity, scope, kind and age",
+    # which is exactly the set worth sampling.
+    # Identity, scope, kind, ppid==1 and age, with the two CPU bounds zeroed.
+    # Used twice: to choose what is worth sampling, and -- in --report-orphans --
+    # as the judging bounds themselves.
+    safety_only = dataclasses.replace(bounds, min_cpu_seconds=0.0, min_core_ratio=0.0)
+    rates: dict[int, float] = {}
+    if not args.no_disk_criterion:
+        worth_sampling = [
+            pid
+            for pid, snap in snapshots.items()
+            if decide(
+                snap, caller_uid=caller_uid, workspace=workspace, bounds=safety_only
+            ).eligible
+        ]
+        rates = sample_write_rates(
+            worth_sampling, interval_seconds=args.disk_sample_seconds
+        )
+
+    # PHASE 3 -- decide for real, with the rate where one was measured.
+    #
+    # DETECTION MODE uses safety_only, and that is the whole point of it.
+    # ORPHANHOOD IS THE SIGNAL. An agent's Hermit run reparented to PID 1 inside
+    # that agent's own scope is always wrong, whatever it is doing -- the three
+    # orphans that contaminated measurements on 2026-08-19 sat at core ratios of
+    # 0.003 to 0.14, and one of them was writing roughly four bytes a second to a
+    # log. No busy-ness threshold, CPU or disk, would have reported that one:
+    # a 1 MiB/s disk gate misses it by six orders of magnitude. Asking "is this
+    # orphaned and old" needs no threshold and would have caught all three.
+    #
+    # The kill path keeps its strict gates. Detecting is not the same act as
+    # signalling, and only one of them has to be sure.
+    judging_bounds = safety_only if args.report_orphans else bounds
+    for pid in requested:
+        snapshot = snapshots.get(pid)
+        if snapshot is None:
             continue
         decision = decide(
-            snapshot, caller_uid=caller_uid, workspace=workspace, bounds=bounds
+            snapshot,
+            caller_uid=caller_uid,
+            workspace=workspace,
+            bounds=judging_bounds,
+            write_bytes_per_second=rates.get(pid),
         )
         # Explicit PID inspection always reports a refusal.  In apply mode an
         # unreadable or ineligible member of the requested set blocks the
@@ -435,17 +756,31 @@ def main(argv: list[str] | None = None) -> int:
                     workspace=workspace,
                     bounds=bounds,
                     grace_seconds=args.grace_seconds,
+                    write_bytes_per_second=rates.get(candidate.snapshot.pid),
                 )
             )
 
     payload = {
         "schema": "orphaned-hermit-reaper/v1",
         "observed_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "mode": "apply" if args.apply else "dry-run",
+        "mode": (
+            "apply" if args.apply else ("report-orphans" if args.report_orphans else "dry-run")
+        ),
         "workspace": str(workspace),
         "caller_uid": caller_uid,
         "bounds": dataclasses.asdict(bounds),
         "candidate_count": len(candidates),
+        "scanned": len(snapshots),
+        "disk_criterion": "off" if args.no_disk_criterion else "on",
+        "disk_sampled": len(rates),
+        "summary": summary_line(
+            candidates,
+            scanned=len(snapshots),
+            disk_sampled=len(rates),
+            disk_criterion="off" if args.no_disk_criterion else "on",
+            scan_errors=len(scan_errors),
+            detection=args.report_orphans,
+        ),
         "processes": [_snapshot_record(decision) for decision in decisions],
         "scan_errors": scan_errors,
         "results": [dataclasses.asdict(result) for result in results],
@@ -453,9 +788,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.json:
         print(json.dumps(payload, sort_keys=True))
     else:
+        # EVERY field here resolves on EVERY path -- zero candidates, refusals,
+        # scan errors, --no-disk-criterion. tick-hub refuses to emit a reminder
+        # whose {summary} still contains an unresolved placeholder, and that
+        # silenced two gates on 2026-08-19 (the reverie pin gate for a full day,
+        # and the headroom monitor). A detection that cannot render is a
+        # detection that does not exist.
+        # Own line, bare key, first. See summary_line().
+        print(f"summary={payload['summary']}")
         print(
             f"orphaned-hermit-reaper: mode={payload['mode']} "
-            f"candidates={len(candidates)} bounds={dataclasses.asdict(bounds)}"
+            f"candidates={len(candidates)} scanned={payload['scanned']} "
+            f"disk_criterion={payload['disk_criterion']} "
+            f"disk_sampled={payload['disk_sampled']} "
+            f"scan_errors={len(scan_errors)} "
+            f"bounds={dataclasses.asdict(bounds)}"
         )
         for decision in decisions:
             item = decision.snapshot
@@ -463,7 +810,9 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"{status} pid={item.pid} kind={decision.kind or '-'} "
                 f"age={item.age_seconds:.1f}s cpu={item.cpu_seconds:.1f}s "
-                f"ratio={item.core_ratio:.3f} exe={item.exe} cgroup={item.cgroup}"
+                f"ratio={item.core_ratio:.3f} "
+                f"write={'unmeasured' if decision.write_bytes_per_second is None else f'{decision.write_bytes_per_second / MIB:.2f}MiB/s'} "
+                f"exe={item.exe} cgroup={item.cgroup}"
             )
             if decision.reasons:
                 print("  reasons: " + "; ".join(decision.reasons))
