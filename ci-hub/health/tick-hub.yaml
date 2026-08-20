@@ -477,6 +477,23 @@ reminders:
     cadence_secs: 900
     gate:
       cmd: ./ci-hub/health/operational_health.py pull-requests
+      # 90s, against a measured 19.49s wall. Raised from the 30s
+      # DEFAULT_GATE_TIMEOUT_SECS on 2026-08-20 after per-gate measurement
+      # (experiments/tick-cost-budget_20260820/) found this gate had a 1.5x
+      # margin where every other gate had more than 4x -- and it is
+      # simultaneously HALF the entire tick budget, 31.8 of 63.7 millicores.
+      #
+      # The margin matters more than the cost because of HOW this gate fails.
+      # tick_hub/probes.py returns stdout="" on TimeoutExpired, so {summary}
+      # cannot resolve and render_emit REFUSES the whole emission. A timeout
+      # here is not a loud failure; it is the gate going quiet, which reads
+      # identically to "no problems found". Two gates were silenced exactly that
+      # way on 2026-08-19.
+      #
+      # It talks to the GitHub API, so its wall time is upstream latency plus
+      # pagination, neither of which this box controls. 90s is ~4.6x the
+      # measured wall, bringing it in line with the rest of the set.
+      timeout_secs: 90
       when: failure
       capture: true
     emit:
