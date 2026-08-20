@@ -1,0 +1,49 @@
+# captured 2026-08-20T19:10:25Z on devbig030 by hermit-902, read-only
+
+## process parentage -- every agent is a child of the tmux server, none of any orc
+PID       PPID      STARTED                    COMM
+30515     1         Sat Aug 15 21:18:44 2026   systemd
+35997     30515     Sat Aug 15 21:18:45 2026   tmux:
+683755    35997     Thu Aug 20 10:55:07 2026   orc
+1002072   35997     Thu Aug 20 11:01:31 2026   codex
+1105199   35997     Thu Aug 20 11:03:17 2026   claude
+1161448   35997     Thu Aug 20 11:03:57 2026   codex
+1233935   35997     Thu Aug 20 11:04:39 2026   claude
+4045741   35997     Tue Aug 18 07:55:01 2026   orc
+4107505   35997     Tue Aug 18 07:57:33 2026   claude
+4107507   35997     Tue Aug 18 07:57:33 2026   claude
+4107510   35997     Tue Aug 18 07:57:33 2026   claude
+782910    35997     Tue Aug 18 14:03:11 2026   claude
+782919    35997     Tue Aug 18 14:03:11 2026   claude
+966928    35997     Tue Aug 18 14:07:26 2026   claude
+1015958   35997     Tue Aug 18 14:08:24 2026   claude
+1051888   35997     Tue Aug 18 14:09:09 2026   claude
+3592579   35997     Tue Aug 18 17:09:23 2026   claude
+3118246   35997     Wed Aug 19 14:16:43 2026   claude
+2034067   35997     Thu Aug 20 08:09:47 2026   claude
+2045489   35997     Thu Aug 20 08:10:01 2026   claude
+2062923   35997     Thu Aug 20 08:10:15 2026   claude
+2921058   35997     Thu Aug 20 08:30:05 2026   claude
+2379445   35997     Tue Aug 18 09:02:12 2026   orc
+942378    35997     Wed Aug 19 14:47:21 2026   claude
+942381    35997     Wed Aug 19 14:47:21 2026   claude
+942384    35997     Wed Aug 19 14:47:21 2026   claude
+4015299   35997     Wed Aug 19 15:39:57 2026   claude
+3431154   35997     Tue Aug 18 09:29:55 2026   bash
+307385    35997     Thu Aug 20 07:27:36 2026   claude
+947320    35997     Thu Aug 20 07:41:21 2026   orc
+
+## tmux options relevant to pane survival
+destroy-unattached off
+detach-on-destroy on
+remain-on-exit off
+
+## slot10: the Reverie pin bump IS pushed
+origin      = https://github.com/rrnewton/hermit.git
+branch      = fix/bump-reverie-pin-ee6716a
+local HEAD  = 27526f68f4d7ce526a6f5f7749d28c2252aee629
+remote ref  = 27526f68f4d7ce526a6f5f7749d28c2252aee629	refs/heads/fix/bump-reverie-pin-ee6716a
+dirty paths = 0
+ahead of remote = 0
+fbexp control (main) = 9084dca5c7476d83354a7462ee3cf45bff630cbd	refs/heads/main
+fbexp branch         =   <- empty: not on fbexp
