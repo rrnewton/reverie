@@ -569,11 +569,22 @@ def report_landing_observability(
     except EmptyLandingWindow as error:
         print(f"NO RESULT: {error}", file=sys.stderr)
         return 1
+    emit_landing_observability(report, as_json)
+    return 0
+
+
+def emit_landing_observability(report: dict[str, Any], as_json: bool) -> None:
+    """Print the measured report in the format selected by the caller.
+
+    Tick capture is line-oriented ``key=value``. Printing a prose prefix here
+    leaves the configured ``{summary}`` unresolved even though the report
+    contains a real summary, so every non-JSON field is emitted explicitly.
+    """
     if as_json:
         print(json.dumps(report))
     else:
-        print(f"landing-observability: {report['summary']}")
-    return 0
+        for key, value in report.items():
+            print(f"{key}={value}")
 
 
 def main() -> int:

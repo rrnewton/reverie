@@ -24,6 +24,17 @@ The ambiguous-tag case is the real #1727 shape: a Codex-family reviewer tagged
 the binding deterministic without guessing from that model-name prose.
 """
 import contextlib, importlib.util, io, os, sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "agent-utils" / "py"))
+from tick_hub.engine import (  # noqa: E402
+    UnresolvedPlaceholderError,
+    parse_kv_lines,
+    render_emit,
+)
+from tick_hub.io import config_from_yaml  # noqa: E402
+
 tool = os.environ.get("APPROVAL_BINDING_TOOL", "ci-hub/health/approval_binding.py")
 spec = importlib.util.spec_from_file_location("ab", tool)
 ab = importlib.util.module_from_spec(spec); spec.loader.exec_module(ab)
@@ -208,6 +219,34 @@ cases.append(("unobserved" in mixed["summary"] and "unreviewed" in mixed["summar
               and "not a review verdict" in mixed["summary"],
               "the wording says unobserved and explicitly disclaims unreviewed",
               "summary carries the disclaimer"))
+
+# The production tick path is capture -> interpolate. The reporter used to
+# print `landing-observability: ...`, which computed the right value but gave
+# parse_kv_lines no `summary` field, so the renderer correctly refused the
+# unresolved placeholder. Exercise the actual configured emit in both
+# directions: computed output renders, missing output still refuses.
+stdout = io.StringIO()
+with contextlib.redirect_stdout(stdout):
+    ab.emit_landing_observability(mixed, False)
+captured = parse_kv_lines(stdout.getvalue())
+config = config_from_yaml((ROOT / "ci-hub" / "health" / "tick-hub.yaml").read_text())
+landing_reminder = config.by_name()["landing_observability"]
+rendered = render_emit(landing_reminder.emit, captured)
+cases.append((captured.get("summary") == mixed["summary"]
+              and mixed["summary"] in rendered
+              and "{summary}" not in rendered,
+              "computed landing summary survives capture and renders in the live template",
+              rendered[:100]))
+
+missing_summary_refused = False
+try:
+    render_emit(landing_reminder.emit, {})
+except UnresolvedPlaceholderError:
+    missing_summary_refused = True
+cases.append((missing_summary_refused,
+              "the live template still refuses when the producer omits summary",
+              "UnresolvedPlaceholderError raised" if missing_summary_refused
+              else "missing summary rendered"))
 
 empty_refused = False
 try:
