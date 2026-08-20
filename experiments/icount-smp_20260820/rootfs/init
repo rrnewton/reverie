@@ -1,0 +1,61 @@
+#!/bin/sh
+# Guest-side evidence for: does -icount alone permit multiple vCPUs, and does
+# the guest kernel actually USE the second one?
+#
+# Everything printed here is the GUEST's own view.  A guest that is TOLD about
+# a second CPU and never runs anything on it is useless for kernel-concurrency
+# work, so the load phases and the per-CPU counters are the point, not the
+# fact that QEMU accepted -smp 2.
+mount -t proc     none /proc  2>/dev/null
+mount -t sysfs    none /sys   2>/dev/null
+mount -t devtmpfs none /dev   2>/dev/null
+
+ITERS=50000000
+grep -q 'iters=' /proc/cmdline 2>/dev/null && \
+    ITERS=$(sed -n 's/.*iters=\([0-9]*\).*/\1/p' /proc/cmdline)
+
+echo "ICOUNT-SMP-GUEST-START"
+echo "NPROC=$(nproc)"
+echo "CPUINFO-PROCESSOR-COUNT=$(grep -c '^processor' /proc/cpuinfo)"
+echo "--- /proc/cpuinfo processor/model lines ---"
+grep -E '^(processor|model name|physical id|core id|apicid)' /proc/cpuinfo
+echo "SYS-CPU-ONLINE=$(cat /sys/devices/system/cpu/online 2>/dev/null)"
+echo "SYS-CPU-POSSIBLE=$(cat /sys/devices/system/cpu/possible 2>/dev/null)"
+
+echo "--- per-CPU kernel threads the kernel spawned (the ones ending /1 are CPU1's) ---"
+ps -eo comm 2>/dev/null | grep -E '/(0|1)$' | sort | tr '\n' ' '
+echo ""
+
+echo "--- /proc/stat BEFORE the load ---"
+grep '^cpu' /proc/stat
+echo "--- /proc/interrupts BEFORE (columns are CPU0 CPU1) ---"
+cat /proc/interrupts
+
+# Phase 1: two workers PINNED, one per CPU.  Can guest code be made to run on
+# CPU1 at all?
+echo "PHASE1-PINNED-START iters=$ITERS"
+/bin/spin 0 "$ITERS" &
+/bin/spin 1 "$ITERS" &
+wait
+echo "PHASE1-PINNED-DONE"
+echo "--- /proc/stat AFTER phase 1 ---"
+grep '^cpu' /proc/stat
+
+# Phase 2: four workers UNPINNED.  A different question: does the kernel's own
+# placement put work on CPU1 without being told to?
+echo "PHASE2-UNPINNED-START"
+/bin/spin -1 "$ITERS" &
+/bin/spin -1 "$ITERS" &
+/bin/spin -1 "$ITERS" &
+/bin/spin -1 "$ITERS" &
+wait
+echo "PHASE2-UNPINNED-DONE"
+echo "--- /proc/stat AFTER phase 2 ---"
+grep '^cpu' /proc/stat
+echo "--- /proc/interrupts AFTER (columns are CPU0 CPU1) ---"
+cat /proc/interrupts
+echo "--- /proc/schedstat (per-CPU scheduler counters) ---"
+grep -E '^cpu' /proc/schedstat 2>/dev/null | head -4
+
+echo "ICOUNT-SMP-GUEST-DONE"
+poweroff -f

@@ -98,6 +98,15 @@
 /experiments/btrfs_userspace_fuzz_cases_20260728/runs/
 /experiments/btrfs_userspace_logic_20260728/runs/
 
+# A busybox initramfs staging tree: 413 files, almost all symlinks to one
+# `bin/busybox`, rebuilt in seconds by re-running the experiment. Only `init`
+# below is authored, and REPORT.md quotes it. Committing the tree would add 413
+# paths of noise for 3 KiB of content.
+# The trailing `/*` is load-bearing: git does not descend into an excluded
+# DIRECTORY, so `rootfs/` followed by `!rootfs/init` silently drops init too.
+/experiments/icount-smp_20260820/rootfs/*
+!/experiments/icount-smp_20260820/rootfs/init
+
 # ai_docs contains durable text, not binary or archive attachments.
 /ai_docs/**/*.a
 /ai_docs/**/*.bin
