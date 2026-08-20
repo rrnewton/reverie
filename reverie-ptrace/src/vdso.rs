@@ -150,20 +150,20 @@ mod vdso_syms {
 }
 
 #[cfg(target_arch = "x86_64")]
-const VDSO_SYMBOLS: &[(&str, &[u8])] = &[
-    ("__vdso_time", vdso_syms::time),
-    ("__vdso_clock_gettime", vdso_syms::clock_gettime),
-    ("__vdso_getcpu", vdso_syms::getcpu),
-    ("__vdso_gettimeofday", vdso_syms::gettimeofday),
-    ("__vdso_clock_getres", vdso_syms::clock_getres),
+const VDSO_SYMBOLS: &[(&str, &[u8], Sysno)] = &[
+    ("__vdso_time", vdso_syms::time, Sysno::time),
+    ("__vdso_clock_gettime", vdso_syms::clock_gettime, Sysno::clock_gettime),
+    ("__vdso_getcpu", vdso_syms::getcpu, Sysno::getcpu),
+    ("__vdso_gettimeofday", vdso_syms::gettimeofday, Sysno::gettimeofday),
+    ("__vdso_clock_getres", vdso_syms::clock_getres, Sysno::clock_getres),
 ];
 
 #[cfg(target_arch = "aarch64")]
-const VDSO_SYMBOLS: &[(&str, &[u8])] = &[
-    ("__kernel_clock_getres", vdso_syms::clock_getres),
-    ("__kernel_clock_gettime", vdso_syms::clock_gettime),
-    ("__kernel_gettimeofday", vdso_syms::gettimeofday),
-    ("__kernel_rt_sigreturn", vdso_syms::rt_sigreturn),
+const VDSO_SYMBOLS: &[(&str, &[u8], Sysno)] = &[
+    ("__kernel_clock_getres", vdso_syms::clock_getres, Sysno::clock_getres),
+    ("__kernel_clock_gettime", vdso_syms::clock_gettime, Sysno::clock_gettime),
+    ("__kernel_gettimeofday", vdso_syms::gettimeofday, Sysno::gettimeofday),
+    ("__kernel_rt_sigreturn", vdso_syms::rt_sigreturn, Sysno::rt_sigreturn),
 ];
 
 /// Rounds up `value` so that it is a multiple of `alignment`.
@@ -172,13 +172,13 @@ fn align_up(value: usize, alignment: usize) -> usize {
 }
 
 /// Per-symbol VDSO patch info: `symbol name -> (base offset, size, replacement bytes)`.
-type VdsoPatchInfo = BTreeMap<&'static str, (u64, usize, &'static [u8])>;
+type VdsoPatchInfo = BTreeMap<&'static str, (u64, usize, &'static [u8], Sysno)>;
 
 static VDSO_PATCH_INFO: LazyLock<VdsoPatchInfo> = LazyLock::new(|| {
     let info = vdso_get_symbols_info();
     let mut res = BTreeMap::new();
 
-    for (k, v) in VDSO_SYMBOLS {
+    for (k, v, sysno) in VDSO_SYMBOLS {
         if let Some(&(base, size)) = info.get(*k) {
             // NOTE: There is padding at the end of every VDSO entry to
             // bring it up to a 16-byte size alignment. The dynamic symbol
@@ -193,25 +193,29 @@ static VDSO_PATCH_INFO: LazyLock<VdsoPatchInfo> = LazyLock::new(|| {
                 size,
                 v.len()
             );
-            res.insert(*k, (base, aligned_size, *v));
+            res.insert(*k, (base, aligned_size, *v, *sysno));
         }
     }
 
     res
 });
 
+/// Is this individual vDSO entry point's syscall subscribed?
+///
+/// Patching is per-symbol because subscription is per-syscall. Rewriting an entry
+/// point nobody subscribed to converts a pure userspace vDSO call into a real
+/// syscall for no gain: the tool never sees it, and the guest pays the kernel
+/// crossing anyway. That cost is not hypothetical -- QEMU's main loop calls
+/// `clock_gettime` continuously *while holding the Big QEMU Lock*, so every
+/// needless crossing is taken with a lock held that vCPU threads are waiting on.
+fn is_symbol_patch_required(subscriptions: &Subscription, sysno: Sysno) -> bool {
+    subscriptions.iter_syscalls().any(|syscall| syscall == sysno)
+}
+
 pub fn is_patch_required(subscriptions: &Subscription) -> bool {
-    subscriptions.iter_syscalls().any(|syscall| {
-        matches!(
-            syscall,
-            Sysno::time
-                | Sysno::clock_gettime
-                | Sysno::clock_getres
-                | Sysno::getcpu
-                | Sysno::gettimeofday
-                | Sysno::rt_sigreturn
-        )
-    })
+    VDSO_PATCH_INFO
+        .values()
+        .any(|(_, _, _, sysno)| is_symbol_patch_required(subscriptions, *sysno))
 }
 
 /// One vDSO entry point rewritten for an in-guest syscall hook.
@@ -261,7 +265,10 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
     })?;
 
     let mut syscall_sites = Vec::new();
-    for (name, (offset, size, _bytes)) in VDSO_PATCH_INFO.iter() {
+    for (name, (offset, size, _bytes, sysno)) in VDSO_PATCH_INFO.iter() {
+        if !is_symbol_patch_required(subscriptions, *sysno) {
+            continue;
+        }
         let symbol = start + *offset as usize;
         let number = match *name {
             "__vdso_time" => libc::SYS_time,
@@ -323,8 +330,8 @@ fn vdso_get_symbols_info() -> BTreeMap<&'static str, (u64, usize)> {
                     let strtab = elf.dynstrtab;
                     elf.dynsyms.iter().for_each(|sym| {
                         let sym_name = &strtab[sym.st_name];
-                        if let Some((name, _)) =
-                            VDSO_SYMBOLS.iter().find(|&(name, _)| name == &sym_name)
+                        if let Some((name, _, _)) =
+                            VDSO_SYMBOLS.iter().find(|&(name, _, _)| name == &sym_name)
                         {
                             // __kernel_rt_sigreturn on ARM64 unfortunately is
                             // not marked as a function in VDSO, but as
@@ -342,7 +349,7 @@ fn vdso_get_symbols_info() -> BTreeMap<&'static str, (u64, usize)> {
 /// patch VDSOs when enabled
 ///
 /// `guest` must be in one of ptrace's stopped states.
-pub async fn vdso_patch<G, T>(guest: &mut G) -> Result<(), Error>
+pub async fn vdso_patch<G, T>(guest: &mut G, subscriptions: &Subscription) -> Result<(), Error>
 where
     G: Guest<T>,
     T: Tool,
@@ -372,7 +379,10 @@ where
             )
             .await?;
 
-        for (name, (offset, size, bytes)) in VDSO_PATCH_INFO.iter() {
+        for (name, (offset, size, bytes, sysno)) in VDSO_PATCH_INFO.iter() {
+            if !is_symbol_patch_required(subscriptions, *sysno) {
+                continue;
+            }
             let start = vdso.address.0 + offset;
             assert!(bytes.len() <= *size);
             let rptr = AddrMut::from_raw(start as usize).ok_or(Errno::EFAULT)?;
