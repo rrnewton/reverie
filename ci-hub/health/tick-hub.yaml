@@ -726,4 +726,61 @@ reminders:
         component: gate-runner-presence
       title: "gate runner is not confirmably present on all four surfaces: {summary}"
 
+  # FILESYSTEM HEADROOM. The 2026-08-17 out-of-disk incident took down ORC and
+  # every running agent, and was found by an agent tripping over it -- nothing
+  # was watching. This is the thing that watches.
+  #
+  # It deliberately does NOT use du, unlike worktree_disk_residue above (which
+  # measures a different quantity, per-slot residue, and shells out to
+  # `du -s --one-file-system`). On this filesystem a tree walk misleads in three
+  # INDEPENDENT ways that do not cancel, so there is no correction factor:
+  #   - files inside a process's mount namespace, and unlinked-but-held files,
+  #     are invisible to du/ncdu/find (~9 TB was unfindable during the incident);
+  #   - st_blocks is LOGICAL under compress=zstd:3, so du OVERSTATES
+  #     (`du -x /data` reported 6.2T on a 3.42 TiB device);
+  #   - every subvolume has its own st_dev, so `du -x` prunes at each one and
+  #     UNDERSTATES (one path: 142G by `du -sh`, 0 by `du -shx`, same instant).
+  # Measured together on a test filesystem: 393M, 16K, and a true 12.25M.
+  # This gate reads btrfs's own allocator counters instead, which are
+  # subvolume-agnostic, post-compression, and namespace-blind by construction.
+  #
+  # df is also the wrong number: btrfs types its chunks, so metadata can exhaust
+  # while df reports the data pool's terabytes. On 2026-08-19 /data showed
+  # 1018 GiB free by df and had 42.6 GiB of real metadata headroom. Headroom is
+  # therefore (free inside the pool's own chunks) + (unallocated / redundancy),
+  # and the redundancy divisor -- 2x for DUP metadata -- is the term people drop.
+  #
+  # Floors are absolute, not rate-projected, ON PURPOSE. Data burn was a firm
+  # +142 GiB/day, but the metadata trend over 11.5 minutes was +0.019 GiB against
+  # a 0.064 GiB sample swing: noise 3x signal. A rate that untrustworthy must not
+  # be allowed to arm or disarm a gate.
+  #
+  # THE RUNAWAY-WRITER TRIGGERS ARE INDEPENDENT OF ALL OF THAT. The first version
+  # of this gate computed the /proc writers walk every tick and then discarded it
+  # unless headroom was already below floor, which coupled detection to
+  # exhaustion: it reported the fire, not the smoke. The incident it exists for
+  # was three processes writing ~4.5 TB each over 28 hours while the filesystem
+  # still had room, and a 767 GiB runaway sitting on a filesystem with 1 TB free
+  # raised nothing. Now a single fd at/above --writer-alert-gib (50), or growing
+  # at/above --writer-growth-gib-per-hour (20), fails the gate on its own no
+  # matter how much space remains. Verified firing at 0.36 GiB with 1007 GiB free.
+  - name: btrfs_headroom
+    cadence_secs: 900
+    gate:
+      # Reads ~8 small sysfs files; no subprocess, no tree walk, no root. Cost is
+      # flat regardless of how full or how fragmented the filesystem is, which is
+      # the property `du`-based sizing cannot offer.
+      # --writers-state is what makes the GROWTH trigger work: it remembers each
+      # fd's size between ticks. Without it only the size trigger is live, and a
+      # runaway is caught late rather than early.
+      cmd: python3 ci-hub/health/btrfs_headroom.py --gate --mount /data --writers --writers-min-gib 8 --writers-state .tick-hub/btrfs-headroom-writers.json
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: btrfs-headroom
+      title: "filesystem headroom is below floor: {summary}"
+
 health_checks: []
