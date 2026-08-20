@@ -30,14 +30,16 @@ definitions and the dual-review gate:
 - Building on a feature branch = in progress.
 - PR opened = in review.
 - Merged to main + `hermit run --backend X` works = DONE.
-- Never close a backend milestone task for work on an unlanded branch.
+- Never report a backend milestone as delivered for work on an unlanded branch.
+  Closing the task is not the claim — the tags are.
 - At implementation handoff, post the PR and exact SHA, add the `implemented`
   tag, then close your own task (`tg update <task> --status closed`). The
   `implemented` tag — not a nonterminal status — is what keeps the unlanded
-  backend visible in the drain. Once the commit is on `main`, close through
-  `./ci-hub/bin/close-task <task> --code <PR-or-full-SHA> --repo <owner/repo>
-  --source <checkout>` so the `CLOSURE-VERIFIED` note discharges the landing
-  debt. A closed task still tagged `implemented` is NOT a delivered backend.
+  backend visible in the drain. Once the commit is on `main`, add `landed`;
+  recording it through `./ci-hub/bin/close-task <task> --code <PR-or-full-SHA>
+  --repo <owner/repo> --source <checkout>` also writes the `CLOSURE-VERIFIED`
+  note that discharges the landing debt. A closed task still tagged
+  `implemented` and not `landed` is NOT a delivered backend.
 
 ## Deep Code-Path Audit
 

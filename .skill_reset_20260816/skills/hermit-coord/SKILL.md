@@ -23,8 +23,9 @@ is the operational summary of the coordinator role.
   registries, and submodule pins.
 - Slot lifecycle: provision, assign, park, reclaim (≤12 active, ≤5 parked,
   ≤15 agents; canonical named-agent or `slotNN` slots only).
-- Task closure follows `AGENTS.md` rule 15: the author keeps ownership through
-  landing and closes only after fresh ancestry confirmation.
+- Task closure follows `AGENTS.md` rule 15: the author closes its own task on
+  publication and keeps ownership through landing, with `implemented` and
+  `landed` carrying the unlanded debt.
 
 ## Constraints
 
@@ -32,11 +33,14 @@ is the operational summary of the coordinator role.
   primary; never detach or branch-switch it. After any op touching a primary,
   verify `git branch --show-current` == `main`.
 - **Task lifecycle:** an implementation agent publishes the PR or durable
-  artifact, records its exact SHA and evidence, adds `implemented`, and keeps
-  the task `in_progress` while shepherding review, validation, and landing.
-  After fresh ancestry confirmation, the author closes through
-  `./ci-hub/bin/close-task`. Do not close at publication or hand unfinished
-  landing work to another agent.
+  artifact, records its exact SHA and evidence, adds `implemented`, and closes
+  its own task (`tg update <id> --status closed`). Closure is not routed
+  through the coordinator. The author still shepherds review, validation, and
+  landing; `implemented` without `landed` is what keeps that debt visible.
+  After fresh ancestry confirmation, whoever lands the change adds `landed` —
+  recording it through `./ci-hub/bin/close-task` also writes the
+  `CLOSURE-VERIFIED` note the health tick reads. Do not claim `landed` at
+  publication or hand unfinished landing work to another agent.
 - **Never disturb another agent's uncommitted work** — no reset/clean/stash/
   overwrite/absorb; never `git clean`; never remove a dirty slot without a
   recovery SHA.
