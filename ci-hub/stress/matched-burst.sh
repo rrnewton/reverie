@@ -77,6 +77,9 @@ fi
 BUILD_S=$(( $(date +%s)-bstart ))
 
 # Newest built test binary (skip .d depfiles); copy to a stable subject path.
+# ls -t is deliberate: this needs the NEWEST build artifact and a glob cannot order
+# by mtime. cargo names these <bin>-<hex>, so there is no whitespace to split on.
+# shellcheck disable=SC2010
 SUBJ_SRC="$(ls -t "$WT"/target/debug/deps/"$BIN_NAME"-* 2>/dev/null | grep -v '\.d$' | head -1)"
 [ -x "$SUBJ_SRC" ] || { row_err "$BUILD_S" NOBIN; exit 0; }
 SUBJ_BIN="$CALIBDIR/subject-$(short)"

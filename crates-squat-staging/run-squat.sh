@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runner for the remaining squat publishes (liteinst2 already done).
 # Logs per-crate PASS/FAIL to LOG; breaks on rate-limit to avoid hammering.
-cd "$(dirname "$0")/crates"
+cd "$(dirname "$0")/crates" || exit 1
 LOG=../squat-run.log
 : > "$LOG"
 

@@ -20,7 +20,6 @@
 set -uo pipefail
 HERE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ENV_DIR=$(dirname "$HERE")
-ROOT=$(dirname "$ENV_DIR")
 GUARD="$ENV_DIR/check_unimplemented_comparisons.py"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 checks=0; fails=0

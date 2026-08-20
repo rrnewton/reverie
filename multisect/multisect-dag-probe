@@ -49,8 +49,14 @@
 set -uo pipefail
 
 if [[ -z "${PROBE_REPO:-}" && -n "${PROBE_CONFIG:-}" && -f "${PROBE_CONFIG}" ]]; then
+  # The path comes from the caller, so it cannot be followed statically.
+  # The directive must sit on the `source` itself: previously it preceded
+  # `set -a; source ...` on one line, so it bound to `set -a` and never
+  # applied -- the suppression was present and inert, and SC1090 still fired.
+  set -a
   # shellcheck disable=SC1090
-  set -a; source "${PROBE_CONFIG}"; set +a
+  source "${PROBE_CONFIG}"
+  set +a
 fi
 : "${PROBE_REPO:?configured probe must set PROBE_REPO}"
 : "${PROBE_POOL_DIR:?configured probe must set PROBE_POOL_DIR}"

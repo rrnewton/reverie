@@ -495,6 +495,8 @@ export BIN BOX_RUN ROWS RUN_UTC HSHA RSHA TMO_RUN TMO_VERIFY
 # --- compile C guests once (shared build tree) -------------------------------
 echo "== compiling/reusing C guests =="
 mkdir -p "$BUILD"
+# cstate names the last corpus column so the split stays self-documenting; unread here.
+# shellcheck disable=SC2034
 while IFS='|' read -r id prog cflags extra lane cstate; do
   [ -n "$id" ] || continue
   key="${id//\//_}"; cell="$BUILD/$key"; mkdir -p "$cell"
@@ -617,7 +619,7 @@ for backend in $order; do
     rm -rf "$ROWS"
     exit 3
   fi
-  nto=$(ls "$ROWS/${backend}"_*.row 2>/dev/null | xargs -r grep -l ',timeout,' 2>/dev/null | wc -l)
+  nto=$(grep -l ',timeout,' "$ROWS/${backend}"_*.row 2>/dev/null | wc -l)
   if [ "$nto" -gt 0 ]; then
     echo "   repair: re-running $nto timed-out $backend cell(s) serially"
     if ! sweep_backend "$backend" 1 1; then

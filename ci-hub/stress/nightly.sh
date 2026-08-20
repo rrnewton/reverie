@@ -42,6 +42,14 @@ STORE_PY="$ROOT/ci-hub/stress/stress_store.py"
 WIDTH="${STRESS_WIDTH:-64}"
 TIMEOUT="${STRESS_TIMEOUT:-20}"
 REPO="${STRESS_REPO:-rrnewton/hermit}"
+# SUPPRESSED BUT NOT RESOLVED, AND THE DIFFERENCE MATTERS. shellcheck is right: AGENT
+# is assigned here and read nowhere. Line 36 above documents CI_HUB_AGENT as the "agent
+# tag recorded on each run", and the CSV row this script emits (line 19) is
+# sha,short,build_s,burst_N,hangs,passes,other,hang_rate,STATUS -- no agent column. So
+# the documented tag is not recorded on any run. Deleting the variable would remove the
+# only remaining trace of that, so it stays with this note; implementing the column is
+# a change to the stress-run store's schema and belongs in its own task.
+# shellcheck disable=SC2034
 AGENT="${CI_HUB_AGENT:-hermit-250}"
 # Alarm sink: a STANDING open task, NOT the (closable) setup task — else a closed
 # task swallows every future nightly P0 and the alarm goes silently invisible.
@@ -105,7 +113,8 @@ raise_alarm() {
     return 2
   fi
 
-  local marker="$ROOT/ignored/ci-hub/stress-alarm-$(TZ=UTC date +%Y%m%dT%H%M%SZ)-$$.json"
+  local marker
+  marker="$ROOT/ignored/ci-hub/stress-alarm-$(TZ=UTC date +%Y%m%dT%H%M%SZ)-$$.json"
   mkdir -p "$(dirname "$marker")"
   local attr; attr="$(attribute_capture "${4:-}" "$marker")"
   local detail="$3"; [ -n "$attr" ] && detail="$3 | ATTRIBUTION: $attr"

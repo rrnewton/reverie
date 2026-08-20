@@ -38,7 +38,6 @@ set -uo pipefail
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
-R=rrnewton/hermit
 SLOTS=6                       # concurrency; <= active-worktree policy cap (12)
 VAL_MEM_GIB=2                 # MEASURED validate footprint, NOT jobs_footprint_bytes
 DO_LAND=0
@@ -207,7 +206,6 @@ run_one(){
 say "batch=${#PAIRS[@]} PRs, concurrency=$SLOTS slots, footprint=${VAL_MEM_GIB}GiB/box, land=$DO_LAND"
 declare -A INUSE=()
 next_slot(){ for i in $(seq 1 "$SLOTS"); do [ -z "${INUSE[val$i]:-}" ] && { echo "val$i"; return; }; done; }
-declare -a PIDS=()
 i=0
 for pair in "${PAIRS[@]}"; do
   pr="${pair%%:*}"; br="${pair#*:}"

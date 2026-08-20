@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Paced runner for remaining squat publishes. Honors crates.io 429 retry-after,
 # skips names already live, works through the full list. Safe to re-run.
-cd "$(dirname "$0")/crates"
+cd "$(dirname "$0")/crates" || exit 1
 LOG=../squat-paced.log
 UA="hermit-squat-verify (hermit@rrnewton.github.io)"
 

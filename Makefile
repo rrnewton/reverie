@@ -5,26 +5,20 @@ PKG_CONFIG_MODULES := libunwind-ptrace liblzma
 SUBMODULE_PROXY ?= $(shell command -v with-proxy 2>/dev/null)
 SUBMODULE_GIT = $(SUBMODULE_PROXY) git
 
-# The shellcheck gate's inputs, named ONCE. They used to be spelled out twice on
-# the same line -- once to count the files and once to check them -- so the count
-# and the check could disagree and the log would still read as authoritative.
-SHELLCHECK_FIXED_TARGETS = scripts/*.sh scripts/parent-main-write \
-  .githooks/pre-commit .githooks/pre-push .githooks/reference-transaction \
-  .githooks/commit-msg .githooks/dev-hermit-hook-dispatch \
-  .orc/plugins/hermit-dev/gh-issue-create .orc/plugins/hermit-dev/gh-coord-comment \
-  .orc/plugins/hermit-dev/gh-coord-pr-create
-# bin/ IS SELECTED BY SHEBANG, NOT BY NAME OR EXTENSION, for two reasons.
-# `bin/*` would hand shellcheck the 58 MB hermit ELF that sits untracked in bin/ on
-# working checkouts, and `bin/*.sh` would miss bin/safehermit, which has no
-# extension and is the file this gap was found through. Naming the two files
-# explicitly would cover them and silently miss the NEXT script added to bin/,
-# which is the same "covered four of five" shape this repo keeps hitting.
-# `grep -I` rejects the binary on the first block: measured at 0.004s against the
-# real 58 MB artifact, so this costs nothing.
-# The `\#` is escaped for MAKE, not for grep. Unescaped, make treats the rest of
-# the line as a comment, and the pattern silently truncates to `"^` -- which took
-# the whole gate to "zero files to check" rather than to an error.
-SHELLCHECK_BIN_TARGETS = $$(grep -lIE "^\#!.*\b(bash|sh)\b" bin/* 2>/dev/null)
+# The shellcheck gate's inputs are DERIVED FROM THE REPOSITORY, not listed here.
+#
+# They used to be a hand-maintained list of ten path patterns, and it covered 51 of
+# the 161 live shell scripts in this repo. The 110 it missed were not exotic: they
+# included scripts/hermit-box-run, the cgroup-boxing wrapper wired at four call sites
+# and referenced by 31 tracked files, and all four .githooks/tests/*.sh -- the tests
+# for the very hooks the gate did check. So the list did not just miss new
+# directories, it missed files inside directories it already claimed to cover, and
+# nothing reported that: the gate passed, having looked at ten patterns rather than
+# at the repository.
+#
+# scripts/list-shell-scripts.sh owns the selection rule and the exclusions, each of
+# which is named and justified there rather than being an unexplained absence.
+SHELLCHECK_TARGETS = $$(scripts/list-shell-scripts.sh)
 
 .PHONY: build build-full build-hermit check-agent-utils-pin check-claude-md-size check-codex-setup check-compat-envelope-tests check-deps check-harness-help check-portability check-primary-freshness check-rust-error-string-proxies clean \
 	restore-primary-freshness \
@@ -292,7 +286,7 @@ lint: ## Lint parent-repository scripts, tests, paths, and submodule policy
 	  fi; \
 	}; \
 	counted rustfmt      files 'ls scripts/*.rs 2>/dev/null | wc -l' 'rustfmt --edition 2021 --check scripts/*.rs'; \
-	counted shellcheck   files 'ls $(SHELLCHECK_FIXED_TARGETS) $(SHELLCHECK_BIN_TARGETS) 2>/dev/null | wc -l' 'shellcheck --severity=warning $(SHELLCHECK_FIXED_TARGETS) $(SHELLCHECK_BIN_TARGETS)'; \
+	counted shellcheck   files 'scripts/list-shell-scripts.sh | wc -l' 'shellcheck --severity=warning $(SHELLCHECK_TARGETS)'; \
 	counted py-compile   files 'ls scripts/*.py 2>/dev/null | wc -l' 'python3 -m py_compile scripts/*.py'; \
 	counted py-unittest  tests 'python3 -m unittest discover -s scripts -p "test_*.py" 2>&1 | sed -n "s/^Ran \([0-9]*\) test.*/\1/p"' 'python3 -m unittest discover -s scripts -p "test_*.py"'; \
 	gate error-proxies   '$(MAKE) --no-print-directory check-rust-error-string-proxies'; \

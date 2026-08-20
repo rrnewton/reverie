@@ -50,8 +50,14 @@ fail_infra() { echo "multisect-probe: INFRA: $*" >&2; }
 # sandboxes scrub env), source it from PROBE_CONFIG. The orchestrator always
 # exports both the PROBE_* vars and PROBE_CONFIG.
 if [[ -z "${PROBE_REPO:-}" && -n "${PROBE_CONFIG:-}" && -f "${PROBE_CONFIG}" ]]; then
+  # The path comes from the caller, so it cannot be followed statically.
+  # The directive must sit on the `source` itself: previously it preceded
+  # `set -a; source ...` on one line, so it bound to `set -a` and never
+  # applied -- the suppression was present and inert, and SC1090 still fired.
+  set -a
   # shellcheck disable=SC1090
-  set -a; source "${PROBE_CONFIG}"; set +a
+  source "${PROBE_CONFIG}"
+  set +a
 fi
 
 : "${MULTISECT_COMMIT:?engine must set MULTISECT_COMMIT}"
@@ -132,6 +138,8 @@ build_end=$(date +%s.%N)
 # the newest executable that is not a depfile/dSYM/dwo artifact.
 shopt -s nullglob
 testbin=""
+# ls -t is deliberate: newest-first is the point, and a glob cannot order by mtime.
+# shellcheck disable=SC2045
 for cand in $(ls -t "$wt"/${PROBE_TEST_BIN_GLOB} 2>/dev/null); do
   case "$cand" in
     *.d | *.dwo | *.dSYM) continue ;;
