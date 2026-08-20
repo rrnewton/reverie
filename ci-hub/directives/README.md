@@ -47,7 +47,27 @@ drift, so the signal does not cry wolf:
   tests existence, and a closed task exists; measured 2026-08-08, 3 of 21 rows sat in
   this state. A closed task on a `satisfied` row is expected; a closed task with
   no ancestry-confirmed implementation is unaccountable even if historical
-  gate text remains in the ledger;
+  gate text remains in the ledger.
+
+  **`CLOSED` is one bit with two meanings, so the report also says which.** A task
+  closes because the work was finished, and a task closes because its tracking moved
+  elsewhere, was superseded, or was reconciled after its agent died — and on
+  2026-08-20 BOTH drifting rows were the second kind, one closed by "Moved to
+  hermit issue #1857" and one by dead-agent slot reconciliation. The per-record
+  `closure_claim` field and the terminal `closure_claim=<id>:<recorded>` line carry
+  what the closure itself recorded, in the words `ci-hub/closure/verified_close.py`
+  writes: `landed`, `implemented-unlanded`, `n/a` (a `CLOSURE-VERIFIED` note
+  predating the landing field), `implemented` (the tag, no gateway note),
+  `none-recorded` (the closure asserted no completion), or `unread` (this run could
+  not look — a no-result, never reported as if the closure had been silent).
+
+  **Both remain one state, deliberately.** A closure claiming completion contradicts
+  fresh ancestry and needs the claim withdrawn or the work re-landed; a closure
+  claiming nothing retired the tracking and needs the obligation re-tasked. Two
+  remedies, but equally unmet — giving one its own state is how it later gets
+  filtered out of the drift count. Neither value can satisfy a row:
+  `ci-hub/closure/README.md` lists both the `closed` status and the `implemented`
+  tag as NON-AUTHORITATIVE, and only fresh ancestry satisfies a directive;
 - `needs_owner` — no accountable owner recorded (genuine drift);
 - `missing_task` — no resolvable accountable task (genuine drift);
 - `not_landed` — claimed evidence is not an ancestor of fresh main (genuine
@@ -62,8 +82,12 @@ drift, so the signal does not cry wolf:
   read as green, which is worse than an error.
 
 The `drift=` field of the terminal summary counts `unaccountable`, `needs_owner`,
-`missing_task`, `not_landed`, `invalid`, `unverifiable`, and `fetch_failed`;
-`open` and `gated` are reported separately as in-progress and deferred work.
+`missing_task`, `task_not_found`, `not_landed`, and `invalid`; `open` and `gated`
+are reported separately as in-progress and deferred work. `unverifiable` and
+`fetch_failed` are counted as `no_result`, NOT as drift — they mean the checker
+could not look, which needs the opposite response to work that regressed. (This
+paragraph listed them as drift, and had done since `7af17d80` on 2026-08-09 removed
+them from `DRIFT_STATES`; `task_not_found` was likewise missing from the list.)
 
 The hourly `owner_tooling_directives` health tick runs the same command and
 wakes the coordinator for every state other than complete fresh-main ancestry.

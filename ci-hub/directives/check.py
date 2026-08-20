@@ -138,6 +138,12 @@ class DirectiveResult:
     resolved_sha: str | None
     target_tip: str | None
     issues: tuple[str, ...]
+    # What the accountable task's own closure recorded, in the vocabulary
+    # `ci-hub/closure/verified_close.py` writes: `landed`, `implemented-unlanded`, `n/a`,
+    # the `implemented` tag, or the empty string for a closure that claimed nothing.
+    # `None` means the task is not closed, or the lookup never answered for it -- a
+    # no-result, which is not the same as a closure with no claim.
+    closure_claim: str | None
     reason: str
 
 
@@ -269,8 +275,8 @@ def _assert_acyclic(directives: Sequence[Directive]) -> None:
 
 def _query_known_tasks(
     directives: Sequence[Directive], run: Run, timeout: float
-) -> tuple[dict[str, str], str | None]:
-    """Accountable task id -> its TaskGraph status.
+) -> tuple[dict[str, str], dict[str, str], str | None]:
+    """Accountable task id -> its TaskGraph status, and what its closure claimed.
 
     Selecting `status` as well as `local_id` is load-bearing, not cosmetic. Existence alone
     answers "is there a task", which a CLOSED task satisfies exactly as well as a live one --
@@ -278,16 +284,73 @@ def _query_known_tasks(
     was done. Measured 2026-08-08 on the live ledger: 3 of 21 rows were non-satisfied with a
     CLOSED accountable task, including the `green-time-automatic-log` row that has neither an
     implementation nor a gate. See `closed_task` in `_metadata_issues`.
+
+    STATUS ALONE IS ONE BIT AND IT HAS TWO MEANINGS. A task closes because the work was
+    finished, and a task closes because its tracking moved somewhere else, was superseded, or
+    was reconciled after its agent died. Both arrive here as the single string `CLOSED`, so the
+    gate rendered them identically. Measured 2026-08-20 on the live ledger, that is exactly
+    what both drifting rows were: `dbi-to-dbt-rename-and-install-path-factoring` was closed by
+    "Moved to https://github.com/rrnewton/hermit/issues/1857", and `make_unsupported_syscall_panic`
+    was closed by dead-agent slot reconciliation. Neither was finished.
+
+    So this also reads what the closure itself recorded, in the vocabulary
+    `ci-hub/closure/verified_close.py` already writes and `ci-hub/directives/tg_landed.py`
+    already reads -- no new words are introduced here:
+
+      `landed`                the CLOSURE-VERIFIED note records `landing=landed`
+      `implemented-unlanded`  the CLOSURE-VERIFIED note records that
+      `n/a`                   a CLOSURE-VERIFIED note with no landing field (it predates it)
+      `implemented`           the `implemented` tag, with no gateway note behind it
+      `` (empty)              nothing: the closure asserted no completion at all
+
+    The empty case travels the wire as the literal `none-recorded`, never as an empty field:
+    `tg sql` renders a table and strips the trailing whitespace off each row, so an empty last
+    column arrives as a MISSING column -- which would make "the closure claimed nothing"
+    indistinguishable from "nobody asked". Measured on the live ledger with the sentinel
+    removed: 15 statuses came back with only 12 claims, and the 3 lost rows were exactly the
+    ones claiming nothing.
+
+    COST, measured on the live ledger over both databases, 3 runs each: 1.24-1.29s with the
+    two EXISTS subqueries, against 1.26-1.27s for the old status-only query. The wall time is
+    two `tg` process launches, not the query -- `task_notes` is indexed on `task_id`. That
+    matters because the lookup budget is `min(deadline, 5s)`, and exceeding it turns every row
+    `unverifiable`.
+
+    An id ABSENT from the returned mapping means the query never answered for it, which is not
+    the same as a closure that claimed nothing -- the distinction this whole function exists to
+    keep. Neither value is trusted as landing evidence: `ci-hub/closure/README.md` lists both
+    the `closed` status and the `implemented` tag as NON-AUTHORITATIVE, and only fresh ancestry
+    can satisfy a directive. This is read so the REASON can be stated, never to settle it.
     """
     tasks = sorted({item.task for item in directives if item.task})
     if not tasks:
-        return {}, None
+        return {}, {}, None
     if any(not TASK_RE.fullmatch(task) for task in tasks):
-        return {}, "task ids may contain only letters, digits, dot, underscore, hyphen"
+        return {}, {}, "task ids may contain only letters, digits, dot, underscore, hyphen"
     quoted = ",".join("'" + task.replace("'", "''") + "'" for task in tasks)
-    query = f"SELECT local_id || '\t' || status FROM tasks WHERE local_id IN ({quoted});"
+    # Every claim is reduced to one token IN SQL. Returning note bodies instead would put
+    # newlines and pipes into a line-oriented parse, which is how one multi-line note becomes
+    # several phantom rows.
+    verified = (
+        "SELECT 1 FROM task_notes n WHERE n.task_id = t.local_id"
+        " AND n.content LIKE '%CLOSURE-VERIFIED%'"
+    )
+    claim = (
+        "CASE"
+        f" WHEN EXISTS({verified} AND n.content LIKE '%landing=landed%') THEN 'landed'"
+        f" WHEN EXISTS({verified} AND n.content LIKE '%landing=implemented-unlanded%')"
+        " THEN 'implemented-unlanded'"
+        f" WHEN EXISTS({verified}) THEN 'n/a'"
+        " WHEN t.tags LIKE '%\"implemented\"%' THEN 'implemented'"
+        " ELSE 'none-recorded' END"
+    )
+    query = (
+        f"SELECT t.local_id || '\t' || t.status || '\t' || ({claim})"
+        f" FROM tasks t WHERE t.local_id IN ({quoted});"
+    )
 
     known: dict[str, str] = {}
+    claims: dict[str, str] = {}
     first_error: str | None = None
     for index, db in enumerate(task_databases()):
         env = dict(os.environ)
@@ -303,21 +366,34 @@ def _query_known_tasks(
                 ).strip()
             continue
         for line in result.stdout.splitlines():
-            local_id, _, status = line.strip().partition("\t")
+            local_id, _, rest = line.strip().partition("\t")
             local_id = local_id.strip()
             if not TASK_RE.fullmatch(local_id) or local_id == "local_id":
                 continue
+            # `tg sql` renders a table, and its ASCII separator row is all hyphens -- which
+            # TASK_RE accepts, so it was being admitted as a task id with a blank status. No
+            # ledger row is named that today, so it is inert; a row whose id were all hyphens
+            # would resolve against the border instead of against data. Same predicate the
+            # sibling consumer `tg_landed.py` already applies to this output.
+            if set(local_id) == {"-"}:
+                continue
+            status, tab, claimed = rest.partition("\t")
             status = status.strip()
             # First database to answer wins, and the live one is queried first, so
             # a task that still exists live is never reported from an archive.
             if local_id in known:
                 continue
             known[local_id] = status if index == 0 else f"{status}{ARCHIVED_SUFFIX}"
+            # No third field means the emitter did not answer the question, which must not
+            # read as "the closure claimed nothing". Absence stays absent.
+            if tab:
+                claimed = claimed.strip()
+                claims[local_id] = "" if claimed == "none-recorded" else claimed
         if len(known) == len(tasks):
             break
     if first_error is not None and not known:
-        return {}, first_error
-    return known, None
+        return {}, {}, first_error
+    return known, claims, None
 
 
 def task_databases() -> list[Path | None]:
@@ -484,7 +560,7 @@ def evaluate(
 ) -> Report:
     schema_version, directives = load_ledger(ledger_path)
     started = time.monotonic()
-    known_tasks, task_lookup_error = _query_known_tasks(
+    known_tasks, closure_claims, task_lookup_error = _query_known_tasks(
         directives, run, max(1.0, min(deadline_seconds, 5.0))
     )
     base: dict[str, DirectiveResult] = {}
@@ -592,13 +668,42 @@ def evaluate(
         # They stay NON-GREEN and still fail the run; they simply stop sharing a
         # bucket with drift, because the two need opposite responses: retry or
         # raise the deadline, versus re-land the work.
+        #
+        # `unaccountable` is still ONE state, deliberately, because both halves are equally
+        # unmet and equally undemonstrated -- splitting the state would let one half be
+        # filtered out of the drift count, which is the invisible-gap failure this gate keeps
+        # being asked not to reintroduce. What differs is the REMEDY, so what differs in the
+        # report is the reason and the count: a closure that CLAIMED the work was done and a
+        # closure that claimed nothing are two different problems. The first contradicts fresh
+        # ancestry and needs the claim withdrawn or the work re-landed; the second retired the
+        # tracking without ever asserting completion and needs the obligation re-tasked.
+        closure_claim = (
+            closure_claims.get(directive.task)
+            if directive.task and "closed_task" in issues
+            else None
+        )
         if (
             state not in {"satisfied", "unverifiable", "fetch_failed"}
             and "closed_task" in issues
         ):
+            if closure_claim is None:
+                closure_detail = (
+                    "this run could not read what that closure recorded, so why it closed "
+                    "is unknown here"
+                )
+            elif closure_claim == "":
+                closure_detail = (
+                    "the closure recorded no completion claim -- no CLOSURE-VERIFIED note "
+                    "and no 'implemented' tag -- so the tracking was retired without anyone "
+                    "asserting the work was done"
+                )
+            else:
+                closure_detail = (
+                    f"the closure claims {closure_claim!r}, which fresh ancestry contradicts"
+                )
             reason = (
-                f"{reason}; accountable task {directive.task!r} is CLOSED, so nothing will "
-                f"surface this unmet obligation"
+                f"{reason}; accountable task {directive.task!r} is CLOSED and "
+                f"{closure_detail}. Nothing will surface this unmet obligation"
             )
             state = "unaccountable"
         base[directive.id] = DirectiveResult(
@@ -617,6 +722,7 @@ def evaluate(
             # an active gate so downstream agents cannot yield to a retired one.
             gate=directive.gate if gate_active else None,
             state=state,
+            closure_claim=closure_claim,
             landing_state=landing_state,
             ancestry=ancestry,
             resolved_sha=resolved,
@@ -701,6 +807,29 @@ def _field(value: object) -> str:
     return " ".join(str(value).split()) or "none"
 
 
+def _closure_claim_field(report: Report) -> str:
+    """`<id>:<what its closure recorded>` for every unaccountable row.
+
+    The words are the closure gateway's own (`landed`, `implemented-unlanded`, `n/a`,
+    `implemented`); the two descriptions are for the two things it cannot say. `none-recorded`
+    is a closure that asserted no completion. `unread` is this run failing to look, which must
+    never be reported as if the closure had been silent -- the no-result-is-not-a-negative rule
+    the rest of this file already enforces for `unverifiable` and `fetch_failed`.
+    """
+    rows = []
+    for item in report.directives:
+        if item.state != "unaccountable":
+            continue
+        if item.closure_claim is None:
+            recorded = "unread"
+        elif item.closure_claim == "":
+            recorded = "none-recorded"
+        else:
+            recorded = item.closure_claim
+        rows.append(f"{item.id}:{recorded}")
+    return ",".join(rows)
+
+
 def _print_fields(report: Report) -> None:
     drift = [item.id for item in report.directives if item.state in DRIFT_STATES]
     no_result = [item.id for item in report.directives if item.state in NO_RESULT_STATES]
@@ -741,6 +870,13 @@ def _print_fields(report: Report) -> None:
         "unverifiable": report.counts.get("unverifiable", 0),
         "no_result": len(no_result),
         "drift": len(drift),
+        # WHY EACH UNACCOUNTABLE ROW'S TASK CLOSED, which `unaccountable=N` cannot say. A
+        # closure that claimed the work was done and a closure that claimed nothing are the
+        # same count and different problems: the first contradicts fresh ancestry, the second
+        # retired the tracking without asserting anything. Printed as its own field rather
+        # than folded into `summary`, because `summary=drift=<ids>` is parsed by consumers
+        # this change cannot see and must keep emitting bare ids.
+        "closure_claim": _closure_claim_field(report),
         "summary": summary,
     }
     for key, value in fields.items():

@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -27,21 +30,33 @@ def completed(command, rc=0, stdout="", stderr=""):
 
 
 class FakeRunner:
-    def __init__(self, known_tasks: set[str], task_status: dict[str, str] | None = None):
+    def __init__(
+        self,
+        known_tasks: set[str],
+        task_status: dict[str, str] | None = None,
+        closure_claim: dict[str, str] | None = None,
+    ):
         self.known_tasks = known_tasks
         self.task_status = task_status or {}
+        # What each task's closure recorded, in the gateway's own words. A task left out
+        # here emits NO third column, which is how the production emitter behaves when it
+        # was never asked -- and is what the pre-existing tests rely on.
+        self.closure_claim = closure_claim or {}
         self.verifier_calls: list[str] = []
 
     def __call__(self, command, **_kwargs):
         command = tuple(str(item) for item in command)
         if command[:2] == ("tg", "sql"):
-            # The production query selects `local_id || '\t' || status`. Emitting a bare id
-            # (no tab) is still valid and reads as an unknown/blank status, which is what the
-            # pre-existing tests rely on.
-            rows = [
-                f"{task}\t{self.task_status.get(task, 'IN_PROGRESS')}"
-                for task in sorted(self.known_tasks)
-            ]
+            # The production query selects `local_id || '\t' || status || '\t' || <claim>`,
+            # where the claim is never empty on the wire -- `none-recorded` stands in for a
+            # closure that asserted nothing, because `tg sql` strips a trailing empty column.
+            # Emitting a bare id (no tab) is still valid and reads as an unknown/blank status.
+            rows = []
+            for task in sorted(self.known_tasks):
+                row = f"{task}\t{self.task_status.get(task, 'IN_PROGRESS')}"
+                if task in self.closure_claim:
+                    row += f"\t{self.closure_claim[task] or 'none-recorded'}"
+                rows.append(row)
             return completed(command, stdout="\n".join(rows) + "\n")
         if "protocol.py" in " ".join(command):
             identity = command[command.index("verify-landing") + 1]
@@ -393,6 +408,166 @@ class ClosedTaskAccountabilityTest(unittest.TestCase):
         item = report.directives[0]
         self.assertEqual("satisfied", item.state)
         self.assertIn("closed_task", item.issues)
+
+
+class ClosureReasonTest(unittest.TestCase):
+    """`CLOSED` is one bit with two meanings, and the gate used to render both the same.
+
+    A task closes because the work was finished, and a task closes because its tracking moved
+    elsewhere, was superseded, or was reconciled after its agent died. Measured 2026-08-20 on
+    the live ledger, BOTH drifting rows were the second kind:
+    `dbi-to-dbt-rename-and-install-path-factoring` closed with "Moved to
+    https://github.com/rrnewton/hermit/issues/1857", and `make_unsupported_syscall_panic`
+    closed by dead-agent slot reconciliation. Neither was finished, and the gate said the same
+    thing about both.
+
+    The state stays `unaccountable` for both ON PURPOSE -- they are equally unmet, and giving
+    one of them its own state is how it gets filtered out of the drift count later. What
+    differs is the REMEDY, so what differs is the reason and the reported claim.
+    """
+
+    def evaluate(self, directives, task_status, closure_claim):
+        tasks = {item["task"] for item in directives if item.get("task")}
+        runner = FakeRunner(tasks, task_status=task_status, closure_claim=closure_claim)
+        with tempfile.TemporaryDirectory() as temporary:
+            ledger = Path(temporary) / "ledger.json"
+            ledger.write_text(json.dumps({"schema_version": 1, "directives": directives}))
+            return directive_check.evaluate(
+                ledger_path=ledger,
+                run=runner,
+                checked_at="2026-08-20T00:00:00+00:00",
+            )
+
+    def test_moved_and_completed_closures_report_differently(self):
+        # THE WHOLE POINT, in one test: two rows identical except for what their closure
+        # recorded must not produce the same output.
+        moved = directive("moved", identity=None, task="t-moved")
+        claimed = directive("claimed", identity=None, task="t-claimed")
+        report = self.evaluate(
+            [moved, claimed],
+            {"t-moved": "CLOSED", "t-claimed": "CLOSED"},
+            {"t-moved": "", "t-claimed": "implemented"},
+        )
+        by_id = {item.id: item for item in report.directives}
+
+        # Same state, same severity, same count -- nothing was hidden or downgraded.
+        self.assertEqual("unaccountable", by_id["moved"].state)
+        self.assertEqual("unaccountable", by_id["claimed"].state)
+        self.assertEqual(2, report.counts["unaccountable"])
+        self.assertEqual(1, report.exit_code)
+
+        # Different recorded claim, and it is the closure gateway's own word.
+        self.assertEqual("", by_id["moved"].closure_claim)
+        self.assertEqual("implemented", by_id["claimed"].closure_claim)
+
+        # Different reason, naming the different remedy.
+        self.assertIn("no completion claim", by_id["moved"].reason)
+        self.assertIn("without anyone asserting the work was done", by_id["moved"].reason)
+        self.assertIn("claims 'implemented'", by_id["claimed"].reason)
+        self.assertIn("fresh ancestry contradicts", by_id["claimed"].reason)
+        self.assertNotEqual(by_id["moved"].reason, by_id["claimed"].reason)
+
+    def test_unread_closure_is_not_reported_as_a_silent_one(self):
+        # A NO-RESULT IS NOT A NEGATIVE, the rule this file already enforces for
+        # `unverifiable`. If the emitter never answered, the row must not read as "the
+        # closure asserted nothing" -- that would be an unmeasured claim about the closure.
+        row = directive("unread", identity=None, task="t-unknown")
+        report = self.evaluate([row], {"t-unknown": "CLOSED"}, {})
+
+        item = report.directives[0]
+        self.assertEqual("unaccountable", item.state)
+        self.assertIsNone(item.closure_claim)
+        self.assertIn("could not read what that closure recorded", item.reason)
+        self.assertNotIn("no completion claim", item.reason)
+
+    def test_printed_field_separates_the_two_without_touching_the_drift_line(self):
+        # `summary=drift=<ids>` is parsed by consumers this change cannot see, so the reason
+        # goes in its own field and the drift line keeps emitting bare ids.
+        moved = directive("moved", identity=None, task="t-moved")
+        claimed = directive("claimed", identity=None, task="t-claimed")
+        report = self.evaluate(
+            [moved, claimed],
+            {"t-moved": "CLOSED", "t-claimed": "CLOSED"},
+            {"t-moved": "", "t-claimed": "landed"},
+        )
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed):
+            directive_check._print_fields(report)
+        lines = dict(
+            line.split("=", 1) for line in printed.getvalue().splitlines() if "=" in line
+        )
+
+        self.assertEqual("moved:none-recorded,claimed:landed", lines["closure_claim"])
+        self.assertEqual("drift=moved,claimed", lines["summary"])
+        self.assertEqual("2", lines["drift"])
+
+    def test_the_query_survives_a_renderer_that_strips_trailing_whitespace(self):
+        """The claim must never travel the wire as an empty column.
+
+        `tg sql` renders a table and strips each row, so `... || '\\t' || ''` arrives as a row
+        with NO third column -- indistinguishable from an emitter that was never asked. It is
+        not hypothetical: with the sentinel removed, the live ledger returned 15 statuses and
+        only 12 claims, and the 3 lost rows were exactly the closures that recorded nothing.
+
+        This runs check.py's OWN query text against a real SQLite with the production schema,
+        then strips the rows the way the renderer does. Asserting on the query string instead
+        would only re-read the code.
+        """
+        database = sqlite3.connect(":memory:")
+        database.execute("CREATE TABLE tasks (local_id TEXT, status TEXT, tags TEXT)")
+        database.execute("CREATE TABLE task_notes (task_id TEXT, content TEXT)")
+        database.executemany(
+            "INSERT INTO tasks VALUES (?,?,?)",
+            [
+                ("t-moved", "CLOSED", '["owner-directive"]'),
+                ("t-claimed", "CLOSED", '["owner-directive","implemented"]'),
+                ("t-gateway", "CLOSED", "[]"),
+            ],
+        )
+        database.execute(
+            "INSERT INTO task_notes VALUES (?,?)",
+            ("t-gateway", "CLOSURE-VERIFIED: kind=code landing=landed verifier=x"),
+        )
+
+        def runner(command, **_kwargs):
+            command = tuple(str(item) for item in command)
+            if command[:2] != ("tg", "sql"):
+                return completed(command, rc=1)
+            rows = [
+                # The renderer's strip is the whole point of the test.
+                "\t".join(str(cell) for cell in row).rstrip()
+                for row in database.execute(command[2].rstrip(";"))
+            ]
+            return completed(command, stdout="\n".join(rows) + "\n")
+
+        rows = [
+            directive("moved", identity=None, task="t-moved"),
+            directive("claimed", identity=None, task="t-claimed"),
+            directive("gateway", identity=None, task="t-gateway"),
+        ]
+        parsed = [directive_check._parse_directive(row) for row in rows]
+        known, claims, error = directive_check._query_known_tasks(parsed, runner, 5.0)
+
+        self.assertIsNone(error)
+        self.assertEqual(3, len(known))
+        # Three tasks in, three claims out. The empty one is present AS empty, not missing.
+        self.assertEqual(
+            {"t-moved": "", "t-claimed": "implemented", "t-gateway": "landed"}, claims
+        )
+
+    def test_a_landed_directive_never_reads_its_closure_claim_as_satisfaction(self):
+        # The closure README lists both the `closed` status and the `implemented` tag as
+        # NON-AUTHORITATIVE. A row is satisfied by fresh ancestry and by nothing else, so a
+        # closure claiming `landed` on a row whose commit is NOT an ancestor must stay drift.
+        row = directive("lying-closure", identity="b" * 40, task="t-closed")
+        report = self.evaluate([row], {"t-closed": "CLOSED"}, {"t-closed": "landed"})
+
+        item = report.directives[0]
+        self.assertEqual("unaccountable", item.state)
+        self.assertIn(item.state, directive_check.DRIFT_STATES)
+        self.assertIn("claims 'landed'", item.reason)
+        self.assertIn("fresh ancestry contradicts", item.reason)
+        self.assertEqual(0, report.counts.get("satisfied", 0))
 
 
 class TaskDatabaseResolutionTest(unittest.TestCase):
