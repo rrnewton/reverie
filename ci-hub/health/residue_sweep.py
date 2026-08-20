@@ -491,6 +491,53 @@ def guarded_live_owner_slots(
     }
 
 
+def guarded_unassessable_owner_slots(
+    registry: dict[str, object], authorities: dict[str, dict[str, object]]
+) -> set[str]:
+    """Held slots whose owner liveness cannot be decided in EITHER direction.
+
+    THE THIRD OUTCOME, and until now the silent one.  ``guarded_dead_owner_slots``
+    names owners proven dead and ``guarded_live_owner_slots`` names owners proven
+    alive.  Everything else -- a slot with no ``owner_sidecar``, a sidecar that
+    fails its schema-exact check, an unreadable ``/proc`` or cgroup -- lands in
+    neither set and therefore reads to a caller exactly like an unowned slot.
+    It is not one.  It is a slot whose owner might be working in it right now.
+
+    WHY THIS IS KEYED ON THE TYPED ``indeterminate`` VERDICT rather than on a
+    re-derived "has it got lease fields" test: the authority already owns that
+    judgement, its reason codes distinguish the causes, and a second opinion
+    computed here could disagree with it.  ``indeterminate`` is a superset of
+    "the allocator recorded no owner evidence" -- it also covers a transient
+    unreadable ``/proc`` -- and every member of the difference is one more slot
+    this predicate declines to name.  Wider here is strictly safer.
+
+    THE PROPERTY THIS EXISTS FOR: a caller may only ever REMOVE slots from a
+    reclaim list on the strength of this set, never add one.  A wrong answer
+    therefore costs disk, and a wrong answer in the other design would cost
+    somebody's uncommitted work.  Those prices are not comparable.
+
+    ``read_only`` owners are ignored: an observer holding a slot open is not the
+    incarnation whose death would free it, and a row with no mutating owner has
+    nothing for the authority to have been unable to assess.
+    """
+
+    raw_slots = registry.get("slots")
+    if not isinstance(raw_slots, dict):
+        raise SweepUnavailable("worktree-state.json slots is not an object")
+    return {
+        str(slot)
+        for slot, raw in raw_slots.items()
+        if isinstance(raw, dict)
+        and raw.get("status") in {"active", "held"}
+        and isinstance(raw.get("agents"), list)
+        and any(
+            isinstance(agent, dict) and agent.get("read_only") is not True
+            for agent in raw["agents"]
+        )
+        and authorities[slot].get("state") == "indeterminate"
+    }
+
+
 def read_registry() -> dict[str, object]:
     try:
         value = json.loads(REGISTRY.read_text())

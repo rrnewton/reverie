@@ -385,8 +385,160 @@ class CapacityDenominatorTest(unittest.TestCase):
         self.assertIn("owner state remains INDETERMINATE", proc.stdout)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+class UndecidedOwnerSuppressionTest(unittest.TestCase):
+    """The shrink-only property, asserted rather than argued.
+
+    `suppress_undecided_owners` exists so this can be a test. The claim is not
+    "the predicates are right" -- it is "no input makes this add a candidate",
+    which holds even when they are wrong.
+    """
+
+    @staticmethod
+    def _residue(slot: str, reclaimable: bool) -> sdr.SlotResidue:
+        return sdr.SlotResidue(
+            slot=slot, procs=0, idle_since=None, idle_hours=99.0,
+            size_bytes=int(2 * GIB), reclaimable=reclaimable, reason="before")
+
+    def test_suppression_can_only_ever_remove_candidates(self) -> None:
+        """Every combination of membership and prior flag, exhaustively."""
+        memberships = ("live", "unassessable", "both", "neither")
+        for membership in memberships:
+            for was_reclaimable in (True, False):
+                with self.subTest(membership=membership, was=was_reclaimable):
+                    result = self._residue("s", was_reclaimable)
+                    live = {"s"} if membership in ("live", "both") else set()
+                    unk = {"s"} if membership in ("unassessable", "both") else set()
+                    sdr.suppress_undecided_owners([result], live, unk)
+                    self.assertFalse(
+                        result.reclaimable and not was_reclaimable,
+                        "suppression turned a non-candidate INTO a candidate")
+                    if membership == "neither":
+                        self.assertEqual(result.reclaimable, was_reclaimable,
+                                         "an unlisted slot must be untouched")
+                        self.assertEqual(result.reason, "before")
+                    else:
+                        self.assertFalse(result.reclaimable)
+
+    def test_candidate_set_after_is_a_subset_of_the_set_before(self) -> None:
+        results = [self._residue(f"s{i}", i % 2 == 0) for i in range(8)]
+        before = {r.slot for r in results if r.reclaimable}
+        sdr.suppress_undecided_owners(results, {"s0", "s3"}, {"s2", "s5", "s7"})
+        after = {r.slot for r in results if r.reclaimable}
+        self.assertTrue(after.issubset(before), f"{after} is not a subset of {before}")
+        self.assertEqual(after, {"s4", "s6"})
+
+
+class UnassessableOwnerBracketTest(unittest.TestCase):
+    """Both directions, because only one direction cannot tell this change apart
+    from the gate having simply stopped classifying.
+
+    POSITIVE: a proven-dead owner is STILL reported dead, and an unowned idle
+    slot is STILL a reclaim candidate -- the detection survives.
+    NEGATIVE: a held slot whose owner cannot be assessed is no longer named
+    reclaimable, and says so out loud instead of vanishing from the report.
+    """
+
+    REGISTRY = {
+        "slots": {
+            # A live agent's slot as the allocator actually writes one today:
+            # active, one mutating owner, and no owner_sidecar at all.
+            "unassessable": {
+                "status": "active",
+                "task": "t-live",
+                "agents": [{"name": "live-agent", "task": "t-live",
+                            "read_only": False}],
+            },
+            # A genuinely dead owner: sidecar present and identity-bound.
+            "deadowner": {
+                "status": "active",
+                "task": "t-gone",
+                "agents": [{"name": "gone-agent", "task": "t-gone",
+                            "read_only": False}],
+                "owner_sidecar": {"agent": "gone-agent",
+                                  "generation": "boot-a:1:2"},
+            },
+            # Nobody's: released, so status alone frees it.
+            "abandoned": {"status": "released"},
+        }
+    }
+
+    AUTHORITY = {
+        "schema_version": 1,
+        "authorities": {
+            "unassessable": {
+                "schema_version": 1, "state": "indeterminate",
+                "slot": "unassessable", "agent": None, "owner_identity": None,
+            },
+            "deadowner": {
+                "schema_version": 1, "state": "dead", "slot": "deadowner",
+                "agent": "gone-agent",
+                "owner_identity": {
+                    "source": "orc-tmux-pane-supervisor-v1",
+                    "generation": "boot-a:1:2", "supervisor_pid": 1,
+                    "boot_id": "boot-a", "start_ticks": 2,
+                },
+            },
+        },
+    }
+
+    SLOTS = ["unassessable", "deadowner", "abandoned"]
+
+    def _run(self) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), self.SLOTS)
+            registry = root / "worktree-state.json"
+            registry.write_text(json.dumps(self.REGISTRY), encoding="utf-8")
+            authority = root / "authority.json"
+            authority.write_text(json.dumps(self.AUTHORITY), encoding="utf-8")
+            # Every slot long-idle and materially large, so idleness alone would
+            # qualify all three. `reported: []` makes each survivor page as new.
+            stamp = sdr.fmt_ts(NOW - timedelta(hours=48))
+            state = root / "state.json"
+            state.write_text(json.dumps({
+                "reported": [],
+                "slots": {s: {"idle_since": stamp, "size_bytes": int(2 * GIB),
+                              "sized_at": stamp} for s in self.SLOTS},
+            }), encoding="utf-8")
+            return subprocess.run(
+                [sys.executable,
+                 str(REPO / "ci-hub/health/slot_disk_residue.py"),
+                 "--root", str(root), "--registry", str(registry),
+                 "--state", str(state),
+                 "--test-owner-authority-json", str(authority),
+                 "--active-slot-cap", "5", "--gate", "--no-measure"],
+                capture_output=True, text=True, timeout=30)
+
+    def test_positive_a_proven_dead_owner_is_still_reported_dead(self) -> None:
+        proc = self._run()
+        out = proc.stdout + proc.stderr
+        self.assertIn("dead_owner_slots=1", out, out)
+        self.assertIn("slot=deadowner DEAD_OWNER", out, out)
+        self.assertIn("authority_state=dead", out, out)
+
+    def test_positive_an_unowned_idle_slot_is_still_reclaimable(self) -> None:
+        """If this stops firing, the change stopped detecting rather than stopped
+        over-claiming, and the negative test below could not tell the difference."""
+        proc = self._run()
+        out = proc.stdout + proc.stderr
+        self.assertIn("slot=abandoned RECLAIMABLE", out, out)
+        self.assertIn("slot=deadowner RECLAIMABLE", out, out)
+        self.assertIn("reclaimable_slots=2", out, out)
+
+    def test_negative_an_unassessable_slot_is_no_longer_a_candidate(self) -> None:
+        proc = self._run()
+        out = proc.stdout + proc.stderr
+        self.assertNotIn("slot=unassessable RECLAIMABLE", out, out)
+        self.assertIn("INDETERMINATE and cannot be assessed", out, out)
+
+    def test_the_condition_is_a_finding_and_not_a_silence(self) -> None:
+        proc = self._run()
+        out = proc.stdout + proc.stderr
+        self.assertIn("unassessable_owner_slots=1", out, out)
+        self.assertIn("CANNOT BE ASSESSED", out, out)
+        self.assertIn("unassessable", out.split("summary=", 1)[1], out)
+        self.assertIn("state=actionable", out, out)
+        self.assertEqual(proc.returncode, 1,
+                         f"a finding must fail --gate, not just print: {out}")
 
 
 class OccupancyAgreesWithTheReleaseAuthorityTest(unittest.TestCase):
@@ -460,3 +612,11 @@ class OccupancyAgreesWithTheReleaseAuthorityTest(unittest.TestCase):
             set(sdr.SINGLE_LINK_SIGNALS) | set(sdr.DIRECTORY_LINK_SIGNALS) | {"maps"},
             {"cwd", "exe", "root", "fd", "map_files", "maps"},
             "signal set drifted from release-worktree.rs::live_process_users")
+
+
+if __name__ == "__main__":
+    # Deliberately the LAST statement in the file. It previously sat mid-file,
+    # above OccupancyAgreesWithTheReleaseAuthorityTest, so running this file as a
+    # script exited before those classes were even defined and silently ran a
+    # subset. `python3 -m unittest` was unaffected, which is why it went unseen.
+    unittest.main(verbosity=2)

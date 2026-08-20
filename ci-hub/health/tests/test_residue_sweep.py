@@ -74,6 +74,56 @@ class ResidueSweepTest(unittest.TestCase):
             residue_sweep.guarded_live_owner_slots(registry, authority), set()
         )
 
+    def test_sidecar_indeterminate_owner_is_named_unassessable(self) -> None:
+        """The third outcome is now reported instead of leaving no trace."""
+        registry = self._owner_registry()
+        authority = self._owner_authority("indeterminate")
+        self.assertEqual(
+            residue_sweep.guarded_unassessable_owner_slots(registry, authority),
+            {"owned"},
+        )
+
+    def test_a_decided_owner_is_never_also_unassessable(self) -> None:
+        """Both halves of the bracket: a decided verdict stays out of the set.
+
+        The failure this pins is a predicate that matched everything, which would
+        suppress the reclaim list wholesale and be indistinguishable from the gate
+        having stopped classifying.
+        """
+        registry = self._owner_registry()
+        for decided in ("dead", "alive"):
+            with self.subTest(state=decided):
+                self.assertEqual(
+                    residue_sweep.guarded_unassessable_owner_slots(
+                        registry, self._owner_authority(decided)
+                    ),
+                    set(),
+                )
+
+    def test_a_released_row_is_never_unassessable(self) -> None:
+        """Only a HELD row can be unassessable; a released row is free by status."""
+        registry = self._owner_registry()
+        registry["slots"]["owned"]["status"] = "released"
+        self.assertEqual(
+            residue_sweep.guarded_unassessable_owner_slots(
+                registry, self._owner_authority("indeterminate")
+            ),
+            set(),
+        )
+
+    def test_a_row_with_only_read_only_owners_is_never_unassessable(self) -> None:
+        """An observer is not the incarnation whose death would free the slot."""
+        registry = self._owner_registry()
+        registry["slots"]["owned"]["agents"] = [
+            {"name": "watcher", "task": "task-owner", "read_only": True}
+        ]
+        self.assertEqual(
+            residue_sweep.guarded_unassessable_owner_slots(
+                registry, self._owner_authority("indeterminate")
+            ),
+            set(),
+        )
+
     def _read_authority_fixture(
         self, *, state: str, exit_code: int, generation: str = "boot-a:123:456"
     ) -> dict[str, dict[str, object]]:

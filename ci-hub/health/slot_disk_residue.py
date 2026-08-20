@@ -13,12 +13,18 @@ named the agent with the freshest activity timestamp as dead.  This gate never
 uses that census or `agent_liveness_probe.py`.  It accepts a dead owner only when
 the canonical guarded authority says the recorded PID + boot_id + start_ticks is
 dead; `alive` suppresses disk-idleness reclaim for the matching registered slot,
-and unknown is never converted to dead.
+and unknown is never converted to dead.  Unknown ALSO suppresses reclaim: a held
+slot the authority cannot assess used to fall through both the dead finding and
+the alive suppression and reach the candidate list on idleness alone, which is
+how a live owner's slot could be named reclaimable.  It is now named as its own
+finding instead, because an absent signal reads exactly like a healthy one.
 
 The blast radii are not symmetric.  Every finding therefore authorizes nothing:
 
 * cap breach: active registry rows exceed the hard count, independent of age;
 * dead owner: exact guarded identity is dead and no live process uses the slot;
+* unassessable owner: a held slot whose guarded identity answers neither dead
+  nor alive, so it can be neither reclaimed here nor released by the authority;
 * disk candidate: it consumes space and has sustained process-free idleness.
 
 DETECT ONLY.  Nothing here removes, releases, resets, cleans, or prunes anything.
@@ -469,6 +475,44 @@ def evaluate(
     return results, next_state, occ
 
 
+def suppress_undecided_owners(
+    results: list[SlotResidue],
+    live_owner_slots: set[str],
+    unassessable_owner_slots: set[str],
+) -> None:
+    """Take slots OFF the candidate list when owner liveness is not "proven dead".
+
+    SHRINK-ONLY BY CONSTRUCTION, and that is the entire safety argument.  Every
+    branch below assigns ``reclaimable = False``; none can assign ``True``.  So
+    for any input, the candidate set afterwards is a subset of the candidate set
+    before, whatever the two predicates contain -- including if they are wrong.
+
+    That property is worth more than the predicates being correct.  A change that
+    is safe only when it is right has to be right.  If either predicate
+    over-matches here the cost is disk left unreclaimed, reported as a named
+    finding; there is no input for which it costs somebody's uncommitted work.
+    The reverse design -- inferring reclaimability from an absent verdict -- has
+    no such floor, and is the behaviour this replaces.
+
+    It is a separate function, not an inline loop, so the property can be
+    asserted directly rather than argued for in a comment.
+    """
+
+    for result in results:
+        if result.slot in live_owner_slots:
+            result.reclaimable = False
+            result.reason = (
+                "slot-owner-sidecar registered owner is alive; "
+                "idle time cannot qualify this slot"
+            )
+        elif result.slot in unassessable_owner_slots:
+            result.reclaimable = False
+            result.reason = (
+                "owner liveness is INDETERMINATE and cannot be assessed; "
+                "idle time cannot qualify this slot"
+            )
+
+
 def summarize(
     results: list[SlotResidue], occ: Occupancy, fresh: set[str], min_gib: float
 ) -> tuple[str, str, dict]:
@@ -597,6 +641,7 @@ def main(argv: list[str] | None = None) -> int:
                 "owner_census_status": "indeterminate",
                 "dead_owner_slots": 0,
                 "guarded_live_owner_slots": 0,
+                "unassessable_owner_slots": 0,
             }
             summary = "; ".join(summary_parts)
             if args.json:
@@ -622,19 +667,16 @@ def main(argv: list[str] | None = None) -> int:
         live_owner_slots = residue_sweep.guarded_live_owner_slots(
             registry, authorities
         )
+        unassessable_owner_slots = residue_sweep.guarded_unassessable_owner_slots(
+            registry, authorities
+        )
     except ResidueUnavailable as exc:
         # Never silent: an unreadable input is `unknown`, which is not `ok`.
         print(f"state={UNKNOWN}")
         print(f"summary=slot disk residue unavailable: {exc}")
         return 2
 
-    for result in results:
-        if result.slot in live_owner_slots:
-            result.reclaimable = False
-            result.reason = (
-                "slot-owner-sidecar registered owner is alive; "
-                "idle time cannot qualify this slot"
-            )
+    suppress_undecided_owners(results, live_owner_slots, unassessable_owner_slots)
 
     current = {r.slot for r in results if r.reclaimable}
     reported = prior.get("reported")
@@ -662,6 +704,7 @@ def main(argv: list[str] | None = None) -> int:
         "owner_census_status": "complete",
         "dead_owner_slots": len(dead_owner),
         "guarded_live_owner_slots": len(live_owner_slots),
+        "unassessable_owner_slots": len(unassessable_owner_slots),
     })
     findings: list[str] = []
     if active_excess:
@@ -674,6 +717,20 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(dead_owner)} slot(s) have a sidecar-bound owner proven dead "
             f"and no live process using the slot: "
             + ", ".join(item.key for item in dead_owner)
+        )
+    if unassessable_owner_slots:
+        # NOT A SILENCE. A held slot the authority cannot assess is invisible to
+        # both the dead-owner finding and the alive-owner suppression, so before
+        # this it left no trace at all -- and an absent signal reads exactly like
+        # a healthy one. It is reported as a finding for the same reason a cap
+        # breach is: the condition holds until somebody changes something.
+        findings.append(
+            f"{len(unassessable_owner_slots)} held slot(s) CANNOT BE ASSESSED: "
+            f"the guarded authority answers indeterminate, so this gate cannot "
+            f"name them reclaimable and release-worktree.rs will refuse them; "
+            f"they are neither usable nor recoverable until their owner evidence "
+            f"is restored by the allocator: "
+            + ", ".join(sorted(unassessable_owner_slots))
         )
     if findings:
         state = "actionable"
@@ -699,7 +756,20 @@ def main(argv: list[str] | None = None) -> int:
         for item in dead_owner:
             print(f"slot={item.key} DEAD_OWNER {item.evidence}")
 
-    return 1 if (args.gate and (fresh or active_excess or dead_owner)) else 0
+    # An unassessable held slot fails the gate for the same reason a cap breach
+    # does: `state` is already `actionable` once it is a finding, and a gate whose
+    # exit status disagrees with its own printed state is worse than either
+    # answer alone. It stays failed while the condition holds -- the dial that
+    # clears it is restoring owner evidence in the allocator, not reclassifying
+    # the finding here.
+    return (
+        1
+        if (
+            args.gate
+            and (fresh or active_excess or dead_owner or unassessable_owner_slots)
+        )
+        else 0
+    )
 
 
 if __name__ == "__main__":
