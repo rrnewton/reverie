@@ -263,6 +263,36 @@ def _process_kind(snapshot: ProcessSnapshot, workspace: Path) -> str | None:
     return None
 
 
+def _maybe_in_workspace(proc_root: Path, pid: int, workspace: Path) -> bool:
+    """Could this process's executable be under the workspace?
+
+    Used ONLY to exclude a process from the unreadable warning, never to qualify
+    one for signalling. `readlink /proc/<pid>/exe` still returns the original
+    path when the file has been unlinked -- it just appends " (deleted)" -- so a
+    process whose binary was replaced on disk can still be placed. Unknown
+    counts as in-scope, so nothing of ours is dropped on a guess.
+    """
+    try:
+        target = os.readlink(proc_root / str(pid) / "exe")
+    except OSError:
+        return True
+    return _inside(Path(target.removesuffix(" (deleted)")), workspace)
+
+
+def _readable_uid(proc_root: Path, pid: int) -> int | None:
+    """Real uid from /proc/<pid>/status, or None if that too is unreadable.
+
+    /proc/<pid>/status is world-readable where /proc/<pid>/exe is not, so this
+    answers "is this even mine?" for a process whose identity otherwise cannot
+    be read. None means genuinely unknown, and the caller treats unknown as
+    in-scope so an unreadable process of ours is never silently dropped.
+    """
+    try:
+        return _parse_uid(_read_text(proc_root / str(pid) / "status"))
+    except ProcReadError:
+        return None
+
+
 def _children_map(proc_root: Path) -> dict[int, list[int]]:
     """ppid -> [pid]. One /proc walk, reused for every root in a sample."""
     kids: dict[int, list[int]] = {}
@@ -525,6 +555,7 @@ def summary_line(
     disk_criterion: str,
     scan_errors: int,
     detection: bool = False,
+    vanished: int = 0,
 ) -> str:
     """The one line tick-hub interpolates into ``{summary}``.
 
@@ -539,10 +570,20 @@ def summary_line(
     mode=dry-run candidates=2" parses to the key "orphaned-hermit-reaper: mode",
     and no ``summary`` key would ever exist.
     """
+    # An incomplete list must SAY it is incomplete, in the one field an operator
+    # is guaranteed to read. Appended to every branch below, not just the empty
+    # one -- "1 orphan found" and "1 orphan found, 1 unreadable" are different
+    # statements and only the second is honest.
+    incomplete = (
+        f" -- WARNING {scan_errors} live process(es) UNREADABLE, list is INCOMPLETE"
+        if scan_errors
+        else ""
+    )
     if not candidates:
         return (
             f"no eligible orphans (scanned={scanned}, disk_sampled={disk_sampled}, "
-            f"disk_criterion={disk_criterion}, scan_errors={scan_errors})"
+            f"disk_criterion={disk_criterion}, unreadable={scan_errors}, "
+            f"vanished={vanished})" + incomplete
         )
     if detection:
         parts = []
@@ -559,7 +600,20 @@ def summary_line(
             f"{len(candidates)} orphaned run(s) reparented to PID 1 in this agent scope: "
             + "; ".join(parts)
             + more
-            + " -- reap with --pid <pid> --apply --confirm " + CONFIRMATION
+            + incomplete
+            # The relaxation is EXPLICIT and must be, because the kill path
+            # rightly refuses an orphan with no proof of damage -- which is most
+            # of them, and was pid 3569148 at ratio 0.000 and 0.00 MiB/s. An
+            # earlier version of this line told the operator to run plain
+            # `--apply`, which refuses; following my own instruction is how I
+            # found that. Naming the three bounds keeps the act auditable while
+            # every identity gate -- uid, ppid==1, agent scope, workspace exe,
+            # kind, age -- still applies untouched.
+            + (
+                " -- reap ONE with: --pid <pid> --apply --confirm "
+                + CONFIRMATION
+                + " --min-cpu-seconds 0 --min-core-ratio 0 --min-write-mib-per-second 0"
+            )
         )
     parts = []
     for decision in candidates[:5]:
@@ -571,7 +625,7 @@ def summary_line(
             f"ratio {item.core_ratio:.3f}, write {written})"
         )
     more = "" if len(candidates) <= 5 else f" and {len(candidates) - 5} more"
-    return f"{len(candidates)} eligible orphan(s): " + "; ".join(parts) + more
+    return f"{len(candidates)} eligible orphan(s): " + "; ".join(parts) + more + incomplete
 
 
 def _snapshot_record(decision: Decision) -> dict[str, object]:
@@ -723,13 +777,67 @@ def _main(argv: list[str] | None = None) -> int:
     scan_errors: list[dict[str, object]] = []
 
     # PHASE 1 -- read every requested process once.
+    #
+    # A FAILED READ IS A THIRD OUTCOME, not a silence. The earlier version
+    # recorded scan errors only when a PID was named explicitly, on the reasoning
+    # that races are normal in a /proc scan. That reasoning is right about races
+    # and wrong about everything else, and it conflated two different things
+    # under one silence: "this process went away mid-read" and "this process is
+    # ALIVE and I could not classify it".
+    #
+    # Found on a live box on 2026-08-20: pid 3089765, a hermit run orphaned for
+    # 6h51m, appeared in NEITHER the candidate nor the refused list. Its exe was
+    # `.../ignored/pdeathsig/target/debug/hermit (deleted)`, and the reader fails
+    # closed on a deleted executable because it can no longer verify the path
+    # lies under the workspace. The full scan reported `scanned=183 candidates=1`
+    # and dropped it without a word. A report-only tool's safety argument rests
+    # entirely on the list being COMPLETE, so an incomplete list that cannot say
+    # it is incomplete is worse than no list.
+    #
+    # The discriminator is whether the process still exists after the failure:
+    # gone means a benign race, still there means we genuinely could not tell.
     snapshots: dict[int, ProcessSnapshot] = {}
+    vanished = 0
+    foreign = 0
     for pid in requested:
         try:
             snapshots[pid] = reader.read(pid)
         except ProcReadError as exc:
-            # Races are normal in a /proc scan.  An explicitly named PID is not.
             if args.pid:
+                # An explicitly named PID always reports, whatever went wrong.
+                scan_errors.append({"pid": pid, "error": str(exc)})
+            elif not (reader.proc_root / str(pid)).exists():
+                vanished += 1  # benign race: it went away mid-read
+            elif _readable_uid(reader.proc_root, pid) not in (None, caller_uid):
+                # Another user's process. /proc/N/exe is Permission denied for
+                # these and the uid gate would refuse them anyway, so they are
+                # OUT OF SCOPE, not unclassifiable.
+                #
+                # This distinction is the whole difference between a useful
+                # warning and noise. A first cut recorded every failed read and
+                # reported 3403 unreadable processes on this box -- almost all
+                # of them root-owned kernel threads -- with the summary shouting
+                # "list is INCOMPLETE" on every tick. A warning that always
+                # fires teaches the reader to skip it, which is the same defect
+                # as staying silent, only louder.
+                foreign += 1
+            elif not _maybe_in_workspace(reader.proc_root, pid, workspace):
+                # Ours, unreadable, but its executable path -- still legible even
+                # when the file is gone -- lies outside this workspace, so the
+                # workspace gate would refuse it regardless. Out of scope.
+                #
+                # Narrowing ONLY ever excludes here. The path from a deleted exe
+                # is never used to qualify anything, and read() still fails
+                # closed on it, so the kill path is untouched. Without this the
+                # warning listed 53 processes on this box, almost all of them
+                # agent binaries replaced on disk by an upgrade, which is noise
+                # wearing the costume of a warning.
+                foreign += 1
+            else:
+                # Ours, still alive, plausibly in scope, and we could not
+                # classify it. THIS is the case worth a warning: pid 3089765 on
+                # 2026-08-20, a hermit run orphaned 6h51m whose exe read
+                # `.../ignored/pdeathsig/target/debug/hermit (deleted)`.
                 scan_errors.append({"pid": pid, "error": str(exc)})
 
     # PHASE 2 -- measure the write rate, but ONLY for processes that already
@@ -815,6 +923,9 @@ def _main(argv: list[str] | None = None) -> int:
         "scanned": len(snapshots),
         "disk_criterion": "off" if args.no_disk_criterion else "on",
         "disk_sampled": len(rates),
+        "unreadable": len(scan_errors),
+        "vanished_mid_scan": vanished,
+        "foreign_uid_skipped": foreign,
         "summary": summary_line(
             candidates,
             scanned=len(snapshots),
@@ -822,6 +933,7 @@ def _main(argv: list[str] | None = None) -> int:
             disk_criterion="off" if args.no_disk_criterion else "on",
             scan_errors=len(scan_errors),
             detection=args.report_orphans,
+            vanished=vanished,
         ),
         "processes": [_snapshot_record(decision) for decision in decisions],
         "scan_errors": scan_errors,
@@ -843,7 +955,7 @@ def _main(argv: list[str] | None = None) -> int:
             f"candidates={len(candidates)} scanned={payload['scanned']} "
             f"disk_criterion={payload['disk_criterion']} "
             f"disk_sampled={payload['disk_sampled']} "
-            f"scan_errors={len(scan_errors)} "
+            f"unreadable={len(scan_errors)} vanished={vanished} "
             f"bounds={dataclasses.asdict(bounds)}"
         )
         for decision in decisions:
@@ -858,6 +970,12 @@ def _main(argv: list[str] | None = None) -> int:
             )
             if decision.reasons:
                 print("  reasons: " + "; ".join(decision.reasons))
+        # Third named category, on STDOUT beside CANDIDATE and REFUSED. It used
+        # to go only to stderr, which the tick-hub gate runner DISCARDS -- so the
+        # one line saying "I could not classify a live process" was invisible to
+        # the very consumer that needs it.
+        for error in scan_errors:
+            print(f"UNREADABLE pid={error['pid']} reason={error['error']}")
         for error in scan_errors:
             print(f"ERROR pid={error['pid']}: {error['error']}", file=sys.stderr)
         for result in results:

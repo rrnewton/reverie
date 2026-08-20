@@ -310,6 +310,86 @@ class DetectionModeTests(unittest.TestCase):
         self.assertNotIn("\n", text)
 
 
+class UnreadableProcessTests(unittest.TestCase):
+    """A failed read is a THIRD OUTCOME, not a silence.
+
+    Found live on 2026-08-20: pid 3089765, a hermit run orphaned 6h51m, appeared
+    in NEITHER the candidate nor the refused list because its exe read
+    "... (deleted)". The scan said `scanned=183 candidates=1` and dropped it
+    without a word. A report-only tool's safety argument rests on the list being
+    COMPLETE, so it must be able to say when it is not.
+
+    The counter-defect is just as bad: a first cut reported 3403 unreadable
+    processes, mostly root-owned kernel threads, and shouted "INCOMPLETE" every
+    tick. These pin BOTH edges.
+    """
+
+    def test_a_deleted_exe_outside_the_workspace_is_out_of_scope(self) -> None:
+        """The narrowing that took 53 warnings down to 5. Excludes only."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "42").mkdir()
+            (root / "42" / "exe").symlink_to("/usr/lib/claude/claude")
+            self.assertFalse(reaper._maybe_in_workspace(root, 42, WORKSPACE))
+
+    def test_a_deleted_exe_INSIDE_the_workspace_stays_in_scope(self) -> None:
+        """pid 3089765's shape: readlink still yields the path when unlinked."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "43").mkdir()
+            target = WORKSPACE / "hermit/ignored/pdeathsig/target/debug/hermit"
+            (root / "43" / "exe").symlink_to(target)
+            self.assertTrue(reaper._maybe_in_workspace(root, 43, WORKSPACE))
+
+    def test_unknown_placement_counts_as_in_scope(self) -> None:
+        """Unknown must never silently drop one of ours."""
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertTrue(reaper._maybe_in_workspace(Path(temp), 99999, WORKSPACE))
+
+    def test_unreadable_uid_is_unknown_not_someone_elses(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            self.assertIsNone(reaper._readable_uid(Path(temp), 99999))
+
+    def test_the_summary_says_when_the_list_is_incomplete(self) -> None:
+        text = reaper.summary_line(
+            [], scanned=183, disk_sampled=0, disk_criterion="on", scan_errors=1
+        )
+        self.assertIn("unreadable=1", text)
+        self.assertIn("INCOMPLETE", text)
+
+    def test_incompleteness_is_stated_even_when_orphans_WERE_found(self) -> None:
+        """'1 orphan' and '1 orphan, 1 unreadable' are different statements."""
+        decision = reaper.decide(
+            snapshot(), caller_uid=UID, workspace=WORKSPACE, bounds=reaper.Bounds()
+        )
+        text = reaper.summary_line(
+            [decision], scanned=9, disk_sampled=1, disk_criterion="on",
+            scan_errors=2, detection=True,
+        )
+        self.assertIn("INCOMPLETE", text)
+        self.assertIn("2 live process(es) UNREADABLE", text)
+
+    def test_the_reap_instruction_it_prints_actually_works(self) -> None:
+        """Following my own guidance is how I found it was wrong.
+
+        The detection summary used to say 'reap with --pid <pid> --apply', which
+        the kill path REFUSES for exactly the orphans detection finds -- ratio
+        0.000, no writes, no proof of damage. It must name the relaxation.
+        """
+        decision = reaper.decide(
+            snapshot(cpu_seconds=4.6, age_seconds=17351.0),
+            caller_uid=UID, workspace=WORKSPACE, bounds=reaper.Bounds(),
+            write_bytes_per_second=0.0,
+        )
+        text = reaper.summary_line(
+            [decision], scanned=1, disk_sampled=1, disk_criterion="on",
+            scan_errors=0, detection=True,
+        )
+        for flag in ("--min-cpu-seconds 0", "--min-core-ratio 0",
+                     "--min-write-mib-per-second 0", "--apply", reaper.CONFIRMATION):
+            self.assertIn(flag, text)
+
+
 class SummaryRenderingTests(unittest.TestCase):
     """{summary} must ALWAYS resolve, or the gate silently never emits.
 
