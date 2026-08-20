@@ -29,6 +29,8 @@ pub enum Context {
     Stdio,
     /// Resetting signals failed.
     ResetSignals,
+    /// Arming the container-init parent-death signal failed.
+    PDeathSig,
     /// Changing `/proc/{pid}/uid_map` failed.
     MapUid,
     /// Changing `/proc/{pid}/setgroups` or `/proc/{pid}/gid_map` failed.
@@ -63,6 +65,7 @@ impl Context {
             Self::Tty => "Setting the controlling tty failed",
             Self::Stdio => "Setting up stdio file descriptors failed",
             Self::ResetSignals => "Reseting signal handlers failed",
+            Self::PDeathSig => "Arming the container-init parent-death signal failed",
             Self::MapUid => "Setting UID map failed",
             Self::MapGid => "Setting GID map failed",
             Self::Hostname => "Setting hostname failed",

@@ -630,6 +630,82 @@ impl Container {
         self
     }
 
+    /// Whether the calling thread is its process's thread-group leader.
+    ///
+    /// Sampled in the PARENT, before `clone`, because `PR_SET_PDEATHSIG` binds to
+    /// the specific parent THREAD that cloned -- not to the parent process. If a
+    /// non-leader thread clones and later exits while its process lives on, the
+    /// child is killed even though nothing it depends on has died. Arming only
+    /// for the leader makes "parent thread died" and "parent process died" the
+    /// same event, which is the property the guard actually wants.
+    pub(super) fn cloned_from_group_leader() -> bool {
+        // gettid() == getpid() exactly for the thread-group leader.
+        unsafe { libc::syscall(libc::SYS_gettid) as libc::pid_t == libc::getpid() }
+    }
+
+    /// Arm the parent-death signal when this container makes its child the init
+    /// of a new PID namespace.
+    ///
+    /// WHY THIS IS HERE AND NOT IN THE CALLERS. A process that is PID 1 of a PID
+    /// namespace does not get default signal dispositions: the kernel DISCARDS
+    /// any signal whose disposition the init has not explicitly set. So a guest
+    /// that becomes namespace-init ignores SIGTERM, and `timeout` -- even
+    /// `timeout --kill-after` -- cannot reap it. On 2026-08-17 that let three
+    /// runs survive 28 hours and fill the filesystem.
+    ///
+    /// The first fix armed this at every launch path someone could find: a
+    /// closure wrapper, six record hooks, and finally `--namespace-only`, which
+    /// an adversarial review turned up only after the first two were believed
+    /// complete. That works and stays correct exactly until the next launch
+    /// primitive is added. `setup` is on the path of BOTH `Container::run` and
+    /// `Command::spawn`, so arming here makes the guard something every path
+    /// passes through rather than something applied to every path someone
+    /// remembered.
+    ///
+    /// WHAT THIS DOES NOT DO, stated so it is not mistaken for more:
+    ///
+    /// * It is not a full race closure. The window between `clone` returning in
+    ///   the parent and this `prctl` running in the child is open; a parent that
+    ///   dies inside it leaves an unguarded child. Arming here shrinks that
+    ///   window to the few syscalls above rather than the lifetime of a run, but
+    ///   closing it needs a parent/child lifetime handshake, which is more
+    ///   machinery than a guard.
+    /// * A CREDENTIAL-CHANGING `execve` CLEARS the parent-death signal. For
+    ///   `Container::run` there is no exec and this is moot; for `Command::spawn`
+    ///   a setuid guest silently loses the guard. The durable answer is a
+    ///   non-execing PID 1 supervisor with the guest as PID 2, which is a change
+    ///   of process topology rather than a guard.
+    /// * `execve` also resets caught signals to `SIG_DFL`, so a handler armed
+    ///   before exec cannot help an exec'd namespace-init. Only the death signal
+    ///   survives, so only the death signal is set here.
+    ///
+    /// NOTE: called between `clone` and `execve`, so it may only use
+    /// async-signal-safe calls and must not allocate.
+    fn guard_pid_namespace_init(&self, context: &ChildContext) -> Result<(), Error> {
+        if !self.namespace.contains(Namespace::PID) {
+            // No new PID namespace: this child gets ordinary signal
+            // dispositions and needs no guard.
+            return Ok(());
+        }
+
+        if !context.cloned_from_group_leader {
+            // Deliberately NOT armed. Arming would bind the child's life to a
+            // thread whose death does not imply the parent process is gone, so
+            // a caller that spawns from a worker thread would see its container
+            // killed when that thread finishes. Leaving it unarmed preserves
+            // today's behaviour for such callers instead of introducing a new
+            // way to lose a running container.
+            return Ok(());
+        }
+
+        Error::result(
+            unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) },
+            Context::PDeathSig,
+        )?;
+
+        Ok(())
+    }
+
     /// Called by the child process after `clone` to get itself set up for either
     /// `execve` or running an arbitrary function.
     ///
@@ -669,6 +745,11 @@ impl Container {
         }
 
         unsafe { reset_signal_handling() }.context(Context::ResetSignals)?;
+
+        // As early as the child can manage: everything below here (uid maps,
+        // mounts, chroot, seccomp) can fail or block, and an unguarded
+        // namespace-init is exactly what we are trying not to leave behind.
+        self.guard_pid_namespace_init(context)?;
 
         // Set up UID and GID maps.
         if !context.uid_map.is_empty() {
@@ -824,6 +905,7 @@ impl Container {
             uid_map,
             gid_map,
             seccomp_fd: None,
+            cloned_from_group_leader: Container::cloned_from_group_leader(),
         };
 
         // Use a pipe for getting the result of the function out of the child
@@ -923,6 +1005,9 @@ pub(super) struct ChildContext<'a> {
     pub uid_map: &'a [u8],
     pub gid_map: &'a [u8],
     pub seccomp_fd: Option<&'a core::sync::atomic::AtomicI32>,
+    /// Whether the thread that called `clone` is its process's thread-group
+    /// leader. See `guard_pid_namespace_init` for why this is load-bearing.
+    pub cloned_from_group_leader: bool,
 }
 
 impl<'a> ChildContext<'a> {
@@ -1040,6 +1125,160 @@ mod tests {
                     assert_eq!(unsafe { libc::getpid() }, 1);
                 }),
             Ok(())
+        );
+    }
+
+    /// Reads back the calling thread's parent-death signal.
+    fn pdeathsig() -> libc::c_int {
+        let mut sig: libc::c_int = -1;
+        assert_eq!(unsafe { libc::prctl(libc::PR_GET_PDEATHSIG, &mut sig) }, 0);
+        sig
+    }
+
+    /// A PID-namespace init is guarded, end to end, through `setup`.
+    ///
+    /// THE HARNESS CANNOT HOST THIS DIRECTLY. libtest runs every `#[test]` on a
+    /// spawned thread -- even under `--test-threads=1`, which was tried -- so in
+    /// a plain unit test the cloning thread is not the group leader and the
+    /// guard correctly declines. A test written the obvious way therefore
+    /// asserts nothing.
+    ///
+    /// So it forks first. After `fork` the child process has exactly one thread
+    /// and that thread IS the thread-group leader, which is precisely the
+    /// condition the guard arms for and also the condition `Container::run`
+    /// documents that it wants. The child does the real thing and reports
+    /// through its exit status; the parent judges.
+    ///
+    /// The child must not assert: `setup` runs where allocation is forbidden,
+    /// and a failing `assert_eq!` formats its message -- which allocated and
+    /// turned a clean failure into a SIGSEGV while this was being written.
+    #[test]
+    fn pid_namespace_init_is_guarded_structurally() {
+        const OK: i32 = 0;
+        const NOT_LEADER: i32 = 2;
+        const RUN_FAILED: i32 = 3;
+        const NOT_INIT: i32 = 4;
+        const NOT_GUARDED: i32 = 5;
+
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+
+        if pid == 0 {
+            // Single-threaded child: the group leader by construction.
+            let code = if !Container::cloned_from_group_leader() {
+                NOT_LEADER
+            } else {
+                match Container::new()
+                    .unshare(Namespace::USER | Namespace::PID)
+                    .run(|| (unsafe { libc::getpid() }, pdeathsig()))
+                {
+                    Ok((1, sig)) if sig == libc::SIGKILL => OK,
+                    Ok((1, _)) => NOT_GUARDED,
+                    Ok(_) => NOT_INIT,
+                    Err(_) => RUN_FAILED,
+                }
+            };
+            unsafe { libc::_exit(code) };
+        }
+
+        let mut status: libc::c_int = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(
+            libc::WIFEXITED(status),
+            "guard probe died on a signal: {status:#x}"
+        );
+        let code = libc::WEXITSTATUS(status);
+        assert_eq!(
+            code,
+            OK,
+            "{}",
+            match code {
+                NOT_LEADER => "forked child was not the group leader (test bug)",
+                RUN_FAILED => "Container::run failed inside the probe",
+                NOT_INIT => "child was not PID 1 of a new namespace",
+                NOT_GUARDED =>
+                    "namespace init had NO parent-death signal -- setup did not guard it",
+                _ => "unexpected probe exit code",
+            }
+        );
+    }
+
+    /// The decision itself, on the arming branch, without needing the main
+    /// thread. This is what keeps coverage if the end-to-end test above is
+    /// skipped.
+    #[test]
+    fn guard_arms_for_a_group_leader_clone_into_a_pid_namespace() {
+        let before = pdeathsig();
+        let mut container = Container::new();
+        container.unshare(Namespace::USER | Namespace::PID);
+        let context = ChildContext {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            uid_map: &[],
+            gid_map: &[],
+            seccomp_fd: None,
+            cloned_from_group_leader: true,
+        };
+        assert_eq!(container.guard_pid_namespace_init(&context), Ok(()));
+        assert_eq!(pdeathsig(), libc::SIGKILL, "guard did not arm");
+        // Leave the harness thread as we found it.
+        unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, before) };
+    }
+
+    /// The guard is scoped to the case that needs it.
+    ///
+    /// A child that is NOT a namespace init keeps ordinary signal dispositions,
+    /// so it is reapable already and arming would only add a way to lose it.
+    #[test]
+    fn ordinary_child_is_not_guarded() {
+        assert_eq!(
+            Container::new().run(|| {
+                assert_ne!(unsafe { libc::getpid() }, 1);
+                assert_eq!(pdeathsig(), 0, "guard applied outside a PID namespace");
+            }),
+            Ok(())
+        );
+    }
+
+    /// Cloning from a non-leader thread must NOT arm the guard.
+    ///
+    /// `PR_SET_PDEATHSIG` fires when the cloning THREAD dies, not when the
+    /// parent process does, so arming for a worker thread would kill a healthy
+    /// container the moment that thread finished.
+    ///
+    /// This drives `guard_pid_namespace_init` directly rather than through
+    /// `Container::run`. That is not a shortcut: `run` documents that it must be
+    /// called before any other threads exist, and calling it from a spawned
+    /// thread HANGS -- observed here, a test binary stuck for 241s before it was
+    /// killed. Which is itself the point. The threading model of the caller is
+    /// real, so the guard decides rather than assumes.
+    #[test]
+    fn non_leader_thread_does_not_arm_the_guard() {
+        let observed = std::thread::spawn(Container::cloned_from_group_leader)
+            .join()
+            .expect("worker thread panicked");
+        assert!(!observed, "a spawned thread reported itself as group leader");
+
+        // The decision, exercised on this thread so the prctl side effect (if
+        // the guard wrongly fired) would be visible.
+        let before = pdeathsig();
+        let mut container = Container::new();
+        container.unshare(Namespace::USER | Namespace::PID);
+        let context = ChildContext {
+            stdin: None,
+            stdout: None,
+            stderr: None,
+            uid_map: &[],
+            gid_map: &[],
+            seccomp_fd: None,
+            cloned_from_group_leader: false,
+        };
+        assert_eq!(container.guard_pid_namespace_init(&context), Ok(()));
+        assert_eq!(
+            pdeathsig(),
+            before,
+            "guard armed despite being cloned from a non-leader thread"
         );
     }
 

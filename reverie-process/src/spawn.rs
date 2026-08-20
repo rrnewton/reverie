@@ -81,6 +81,8 @@ impl Command {
             uid_map,
             gid_map,
             seccomp_fd: seccomp_fd.as_ref().map(|x| x.as_ref()),
+            // Sampled HERE, in the parent, before clone -- see the helper.
+            cloned_from_group_leader: crate::Container::cloned_from_group_leader(),
         };
 
         let pid = clone(
