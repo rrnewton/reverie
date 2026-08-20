@@ -69,14 +69,14 @@ for p in "${PROGRAMS[@]}"; do
 done
 ok "each of the 6 programs has 5 rows (one per backend)"
 
-echo "== 2. header carries absence_reason, appended last =="
-head -1 "$CSV" | grep -q ',absence_reason$' || fail "absence_reason must be the LAST column"
-# Derive the width and the absence_reason index FROM THE HEADER rather than
-# hardcoding them. The literal 20 here was already stale: the collector had
-# grown to 24 columns (bitwise_parity, compared_log_messages, tier,
-# absence_reason), so this asserted a false width AND every `col 20` below was
-# silently reading verify_compare instead of absence_reason -- the checks passed
-# or failed on the wrong column. Duplicating a schema is how it drifts.
+echo "== 2. header carries exactly one named absence_reason column =="
+# Derive the width and absence field FROM THE HEADER rather than hardcoding
+# either its position or that it must be last. Parity fields may be appended to
+# the shared schema after absence_reason; requiring a trailing field made this
+# regression stale even though every reader below already resolves by name.
+absence_columns=$(head -1 "$CSV" | awk -F, '{ n=0; for (i=1; i<=NF; i++) n += ($i == "absence_reason"); print n }')
+[ "$absence_columns" -eq 1 ] \
+  || fail "header must contain exactly one absence_reason column, got $absence_columns"
 ncol=$(head -1 "$CSV" | awk -F, '{print NF}')
 expected=$(awk -F'"' '/^const HEADER: &str =/{print $2}' "$ROOT/collect-reverie-compat.rs" | awk -F, '{print NF}')
 [ -n "$expected" ] || fail "cannot read HEADER from collect-reverie-compat.rs"
