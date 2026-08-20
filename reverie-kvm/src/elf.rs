@@ -23,6 +23,7 @@ use goblin::elf::header::ET_EXEC;
 use goblin::elf::program_header::PF_X;
 use goblin::elf::program_header::PT_INTERP;
 use goblin::elf::program_header::PT_LOAD;
+use reverie::ExitStatus;
 
 use crate::Error;
 use crate::GuestMemory;
@@ -286,7 +287,7 @@ pub(crate) struct LoadedStaticElf {
     // TODO-HUMAN-REVIEW(#86): Review descriptor and signal inheritance across exec.
     pub cloexec_fds: std::collections::BTreeSet<i32>,
     pub closed_standard_fds: std::collections::BTreeSet<i32>,
-    pub children: std::collections::BTreeMap<i32, i32>,
+    pub children: std::collections::BTreeMap<i32, ExitStatus>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Track memfd-backed synthetic /proc descriptors.
     // TODO-HUMAN-REVIEW(reverie-kvm): Review synthetic /proc determinism.
     //
