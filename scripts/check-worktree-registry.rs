@@ -310,7 +310,9 @@ fn main() {
     }
     for slot in &excluded_slots {
         if !slots.contains_key(slot) && !active.contains_key(slot) {
-            die(&format!("excluded slot {slot:?} exists in neither registry"));
+            die(&format!(
+                "excluded slot {slot:?} exists in neither registry"
+            ));
         }
     }
     if !excluded_slots.is_empty() {
@@ -321,8 +323,7 @@ fn main() {
     }
 
     let in_scope = |slot: &str| {
-        only_slot.as_deref().map_or(true, |only| only == slot)
-            && !excluded_slots.contains(slot)
+        only_slot.as_deref().map_or(true, |only| only == slot) && !excluded_slots.contains(slot)
     };
 
     let mut issues: BTreeMap<String, Vec<String>> = BTreeMap::new();

@@ -40,7 +40,11 @@ set -euo pipefail
 readonly DEFAULT_DB="hermit"
 readonly DEFAULT_CODEX_MODEL="gpt-5.6-sol"
 readonly GATED_CODEX_SANDBOX_FLAG="--dangerously-disable-linux-sandbox"
-readonly DEV_HERMIT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+# Assigned before `readonly` on purpose: combining them makes the shell
+# report the assignment's status, not `cd`'s, so a failed cd would be masked
+# (SC2155).
+DEV_HERMIT_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly DEV_HERMIT_ROOT
 
 # Agents share the owner's GitHub credential, so their comments must be marked
 # at the mutation boundary.  Put the versioned gh shim ahead of the system gh
