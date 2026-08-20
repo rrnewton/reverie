@@ -24,6 +24,39 @@ cd "$ROOT"
 # spelling it here binds the running tick to the policy instead of ambient state.
 export DEV_HERMIT_ACTIVE_SLOT_CAP=12
 
+# A quiet evaluation does not necessarily clear text retained by the caller's
+# display.  Make every human-visible warning self-dating so retained output
+# cannot be mistaken for a claim about the current tree.  input_sha is the
+# parent commit that selected this tick configuration and its gate producers;
+# both values are captured once, before the evaluation starts.
+observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+input_sha=$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')
+evaluation_provenance="observed_at=$observed_at input_sha=$input_sha"
+
+emit_with_evaluation_provenance() {
+    local line
+    while IFS= read -r line || [[ -n $line ]]; do
+        case "$line" in
+            ACTION:*)
+                # tick-hub appends title="..." as the ACTION's displayed text.
+                # Put provenance inside that title, not only in machine fields
+                # that a coordinator UI may omit.
+                if [[ $line == *' title="'* && ${line: -1} == '"' ]]; then
+                    printf '%s %s"\n' "${line::-1}" "$evaluation_provenance"
+                else
+                    printf '%s title="%s"\n' "$line" "$evaluation_provenance"
+                fi
+                ;;
+            NOTE:*)
+                printf '%s %s\n' "$line" "$evaluation_provenance"
+                ;;
+            *)
+                printf '%s\n' "$line"
+                ;;
+        esac
+    done
+}
+
 # Carry the provenance verdict INTO the report rather than leaving it on stderr.
 #
 # "agent-utils is dirty" and "health could not be determined" are different
@@ -43,9 +76,20 @@ if [[ -n $(git -C "$ROOT/agent-utils" status --porcelain 2>/dev/null) ]]; then
          "not the reviewed pinned commit. Gate RESULTS below are parent-repo logic and stand."
 fi
 
-exec "$ROOT/ci-hub/bin/agent-tool" tick-hub tick \
+set +e
+"$ROOT/ci-hub/bin/agent-tool" tick-hub tick \
     --config "$ROOT/ci-hub/health/tick-hub.yaml" \
     --state "$ROOT/ci-hub/health/tick-hub-state.yaml" \
     --fired-state "$ROOT/.tick-hub/fired-state" \
     --current-tick-min 5 \
-    "$@"
+    "$@" | emit_with_evaluation_provenance
+pipeline_status=("${PIPESTATUS[@]}")
+set -e
+
+# The wrapper must not turn a failing evaluation into success.  If annotation
+# itself fails, surface that only when the producer succeeded; otherwise retain
+# the producer's exact nonzero status.
+if (( pipeline_status[0] != 0 )); then
+    exit "${pipeline_status[0]}"
+fi
+exit "${pipeline_status[1]}"
