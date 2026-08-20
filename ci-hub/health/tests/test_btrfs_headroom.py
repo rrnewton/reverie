@@ -244,3 +244,98 @@ def test_growth_survives_an_unreadable_state_file(tmp_path):
     bad.write_text("{ not json")
     rows, reasons = bh.writer_alarms([_row(size=GiB)], bad, 1.0, 50 * GiB, 20 * GiB)
     assert rows[0]["growth_bytes_per_hour"] is None and not reasons
+
+
+# --------------------------------------------------------------------------
+# The liveness gate on GROWTH, added 2026-08-19 after a false positive escalated
+# a completed 240 MiB write as "23.6 GiB/h, 1 TB in under two days".
+#
+# These come in pairs on purpose. Quieting the bounded case is only a fix if the
+# unbounded case still fires, so every suppression test below has a twin that
+# asserts the alarm survives.
+# --------------------------------------------------------------------------
+
+
+def _grew(state, *, writable, size_from=100 * 1024 * 1024, size_to=700 * 1024 * 1024, **kw):
+    """Two ticks 60s apart: 100 MiB -> 700 MiB is 35.2 GiB/h, over the 20 threshold."""
+    bh.writer_alarms([_row(size=size_from, **kw)], state, 0.0, 50 * GiB, 20 * GiB)
+    row = _row(size=size_to, **kw)
+    row["writable"] = writable
+    return bh.writer_alarms([row], state, 60.0, 50 * GiB, 20 * GiB)
+
+
+def test_completed_bounded_write_does_not_alarm_on_growth(tmp_path):
+    """THE FALSE POSITIVE. Same 35.2 GiB/h, but nothing holds it open for write.
+
+    A bounded emitter that finishes inside one inter-tick interval leaves exactly
+    one interval that looks like a runaway. It cannot keep growing, so it must
+    not raise a RUNAWAY WRITER gate failure.
+    """
+    rows, reasons = _grew(tmp_path / "s.json", writable=False)
+    assert reasons == [], "a write that has already finished is not a runaway"
+    assert not rows[0]["alarmed"]
+
+
+def test_live_unbounded_write_still_alarms_on_growth(tmp_path):
+    """THE TWIN. Identical rate, identical size, but still open for write."""
+    rows, reasons = _grew(tmp_path / "s.json", writable=True)
+    assert reasons, "a live writer at 35.2 GiB/h must still trip 20 GiB/h"
+    assert rows[0]["alarmed"]
+    assert rows[0]["logical_bytes"] < GiB, "must still fire while under 1 GiB"
+
+
+def test_a_finished_fast_write_is_still_reported_not_silently_dropped(tmp_path):
+    """Suppressing the ALARM must not suppress the EVIDENCE.
+
+    "grew at 35 GiB/h and then stopped" is what lets an operator tell a bounded
+    emitter from a runaway. The rate is still recorded and the row is flagged.
+    """
+    rows, _reasons = _grew(tmp_path / "s.json", writable=False)
+    assert rows[0]["growth_bytes_per_hour"] > 34 * GiB
+    assert rows[0]["growth_completed"] is True
+
+
+def test_unknown_writability_fails_open_and_alarms(tmp_path):
+    """No 'writable' key at all -- the pre-existing row shape. Must still fire.
+
+    Fail-open is the safety posture: the cost of a false negative here is the
+    4.5 TB incident this monitor exists for.
+    """
+    state = tmp_path / "s.json"
+    bh.writer_alarms([_row(size=100 * 1024 * 1024)], state, 0.0, 50 * GiB, 20 * GiB)
+    rows, reasons = bh.writer_alarms(
+        [_row(size=700 * 1024 * 1024)], state, 60.0, 50 * GiB, 20 * GiB
+    )
+    assert "writable" not in _row(), "guard: _row must stay writability-free for this test"
+    assert reasons and rows[0]["alarmed"]
+
+
+def test_size_trigger_is_not_gated_on_writability(tmp_path):
+    """An unlinked 80 GiB file holds its space whoever has it open, and however.
+
+    Gating SIZE on writability would have hidden exactly the class of file this
+    tool was built to find.
+    """
+    row = _row(size=80 * GiB, deleted=True)
+    row["writable"] = False
+    rows, reasons = bh.writer_alarms([row], tmp_path / "s.json", 1000.0, 50 * GiB, 20 * GiB)
+    assert reasons and rows[0]["alarmed"]
+    assert "unlinked" in reasons[0]
+
+
+def test_fd_writability_decodes_octal_flags_and_fails_open(tmp_path, monkeypatch):
+    """/proc fdinfo 'flags' is OCTAL. Decoding it as decimal misreads the mode."""
+    def fake_read(self, *a, **k):
+        return {"w": "pos:\t0\nflags:\t02100002\nmnt_id:\t29\n",     # O_RDWR
+                "r": "pos:\t0\nflags:\t02100000\nmnt_id:\t29\n",     # O_RDONLY
+                "a": "pos:\t0\nflags:\t02100001\nmnt_id:\t29\n",     # O_WRONLY
+                }[self.name]
+    monkeypatch.setattr(Path, "read_text", fake_read)
+    assert bh._fd_is_writable("1", "w") is True
+    assert bh._fd_is_writable("1", "a") is True
+    assert bh._fd_is_writable("1", "r") is False, "0o2100000 & 3 == 0 -> read-only"
+
+    def boom(self, *a, **k):
+        raise OSError("vanished mid-scan")
+    monkeypatch.setattr(Path, "read_text", boom)
+    assert bh._fd_is_writable("1", "3") is True, "unreadable fdinfo must fail OPEN"

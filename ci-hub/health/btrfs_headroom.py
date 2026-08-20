@@ -270,6 +270,38 @@ def device_map(mount_point: str) -> tuple[set[int], set[int]]:
     return ours, known
 
 
+def _comm_of(proc: Path) -> str:
+    try:
+        return (proc / "comm").read_text().strip()
+    except OSError:
+        return "?"
+
+
+# O_ACCMODE. An fd is a WRITER only if opened O_WRONLY or O_RDWR.
+_O_ACCMODE = 0o3
+_O_RDONLY = 0o0
+
+
+def _fd_is_writable(pid: str, fd: str) -> bool:
+    """Is this fd open for writing?
+
+    Read from ``/proc/PID/fdinfo/N``, whose ``flags`` field is OCTAL.
+
+    FAILS OPEN. Every unreadable, malformed or racing case returns True, so an
+    fd whose mode we cannot establish is still treated as a potential writer and
+    still alarms. The whole value of this monitor is catching a runaway that df
+    cannot see; trading a false negative for a quieter report would invert that.
+    Only a positively decoded O_RDONLY returns False.
+    """
+    try:
+        for line in Path(f"/proc/{pid}/fdinfo/{fd}").read_text().splitlines():
+            if line.startswith("flags:"):
+                return (int(line.split()[1], 8) & _O_ACCMODE) != _O_RDONLY
+    except (OSError, ValueError, IndexError):
+        return True
+    return True
+
+
 def large_open_writers(
     mount_point: str, min_bytes: int = 1 << 30, limit: int = 10, include_all: bool = False
 ) -> list[dict]:
@@ -300,7 +332,10 @@ def large_open_writers(
     """
     devices, known = device_map(mount_point)
     found: list[dict] = []
-    seen: set[tuple[int, int]] = set()  # (st_dev, st_ino): one row per inode
+    # (st_dev, st_ino) -> index into ``found``: one row per inode. This is a MAP
+    # and not a set because several processes hold the same inode and they are
+    # not interchangeable -- see the promotion below.
+    seen: dict[tuple[int, int], int] = {}
     for proc in Path("/proc").iterdir():
         if not proc.name.isdigit():
             continue
@@ -331,18 +366,31 @@ def large_open_writers(
                 on_target = "unknown"
             if on_target == "no" and not include_all:
                 continue
+            writable = _fd_is_writable(proc.name, fd.name)
             key = (st.st_dev, st.st_ino)
             if key in seen:
+                # PROMOTION, not a skip. Several processes hold the same inode
+                # and only a WRITABLE one can be growing it. The old code kept
+                # whichever /proc entry it met first, so a reader could be named
+                # as the culprit -- on 2026-08-19 a read-only holder was reported
+                # for a log it could not possibly have been writing, and the pid
+                # was dead by the time anyone looked. Worse, the growth gate in
+                # writer_alarms would then see "not writable" for a genuinely
+                # runaway file and stay silent. Keep the writable holder.
+                prior = found[seen[key]]
+                if writable and not prior["writable"]:
+                    prior.update(
+                        pid=int(proc.name),
+                        fd=int(fd.name),
+                        comm=_comm_of(proc),
+                        writable=True,
+                    )
                 continue
-            seen.add(key)
-            try:
-                cmd = (proc / "comm").read_text().strip()
-            except OSError:
-                cmd = "?"
+            seen[key] = len(found)
             found.append(
                 {
                     "pid": int(proc.name),
-                    "comm": cmd,
+                    "comm": _comm_of(proc),
                     "fd": int(fd.name),
                     "logical_bytes": st.st_size,
                     "deleted": target.endswith(" (deleted)"),
@@ -350,6 +398,7 @@ def large_open_writers(
                     "path_in_its_namespace": target,
                     "dev": st.st_dev,
                     "ino": st.st_ino,
+                    "writable": writable,
                 }
             )
     found.sort(key=lambda r: r["logical_bytes"], reverse=True)
@@ -390,12 +439,43 @@ def writer_alarms(
               from a completing run is 171 MB.
       GROWTH  one open fd gaining at least ``growth_bytes_per_hour``, measured
               against the previous tick via a small (dev, ino) -> (size, time)
-              state file. This catches a runaway LONG before it is large, which
-              is the whole difference between smoke and fire.
+              state file, AND still open for write by some process. This catches
+              a runaway LONG before it is large, which is the whole difference
+              between smoke and fire.
 
     Growth needs two observations, so the first tick after a fd appears can only
     ever trigger on size. That is stated rather than hidden: a fresh state file
     means growth is genuinely unknown, not zero.
+
+    The ``and still open for write`` clause was added on 2026-08-19 after a false
+    positive. The two observations give a correct rate for the interval, but an
+    interval is history. A BOUNDED emitter -- one that writes a large file
+    quickly and exits, which on this box is routine -- completes inside a single
+    inter-tick interval and leaves exactly one interval that looks like a
+    runaway. A demo-05 ``hermit-info.log`` wrote 240 MiB and stopped; it was
+    escalated as 23.6 GiB/h reaching 1 TB in two days, when every such log on the
+    box finishes at 239 MiB and the writing process had already exited.
+
+    Raising the threshold cannot fix that: a bounded 240 MiB write and the first
+    interval of an unbounded one are IDENTICAL observations at any threshold. The
+    discriminator is not how much was written, it is whether anyone can still be
+    writing. Requiring growth in two consecutive intervals would also work but
+    would delay a real runaway by a full tick; liveness costs nothing, because a
+    genuine runaway always has a live writable holder.
+
+    Two properties of the check matter and are easy to get wrong:
+
+      * It is "does SOME holder of this inode have it open for write", resolved
+        across all holders in ``large_open_writers``. It is NOT "is the reported
+        pid alive". The reported pid may be a reader -- in the incident above it
+        was -- and a live reader proves nothing either way.
+      * It fails OPEN. Unknown writability still alarms. Only a positively
+        established read-only-everywhere suppresses growth, and even then the row
+        is still reported, marked ``growth_completed``.
+
+    SIZE is deliberately NOT gated on writability: an unlinked multi-GiB file
+    occupies its space until the last fd closes, whoever holds it and however
+    they opened it.
     """
     prior: dict = {}
     if state_path and state_path.exists():
@@ -418,13 +498,33 @@ def writer_alarms(
                 rate = (row["logical_bytes"] - was.get("size", 0)) / dt * 3600.0
                 row["growth_bytes_per_hour"] = int(rate)
                 if rate >= growth_bytes_per_hour:
-                    row["alarmed"] = True
-                    reasons.append(
-                        f"pid {row['pid']} ({row['comm']}) fd {row['fd']} is growing at "
-                        f"{rate / GiB:.1f} GiB/h (threshold {growth_bytes_per_hour / GiB:.1f}), "
-                        f"now {row['logical_bytes'] / GiB:.1f} GiB: "
-                        f"{row['path_in_its_namespace']}"
-                    )
+                    # LIVENESS GATE. The rate above is a correct measurement of
+                    # the interval, but an interval is history: a bounded
+                    # emitter that writes fast and stops leaves exactly one
+                    # interval looking like a runaway. On 2026-08-19 a demo-05
+                    # hermit-info.log wrote 240 MiB during one interval and
+                    # exited; that was escalated as 23.6 GiB/h reaching 1 TB in
+                    # two days, when every such log on the box finishes at
+                    # 239 MiB. If no process still holds the inode open for
+                    # WRITE the growth cannot continue, so it is reported but
+                    # not alarmed.
+                    #
+                    # This costs no sensitivity: a genuine runaway always has a
+                    # live writable holder. Note the predicate is "some holder
+                    # of this inode is writable" (established across all holders
+                    # in large_open_writers), NOT "the named pid is alive" --
+                    # the named pid may be a reader, and a reader being alive
+                    # says nothing. Unknown writability counts as writable.
+                    if row.get("writable", True):
+                        row["alarmed"] = True
+                        reasons.append(
+                            f"pid {row['pid']} ({row['comm']}) fd {row['fd']} is growing at "
+                            f"{rate / GiB:.1f} GiB/h (threshold {growth_bytes_per_hour / GiB:.1f}), "
+                            f"now {row['logical_bytes'] / GiB:.1f} GiB: "
+                            f"{row['path_in_its_namespace']}"
+                        )
+                    else:
+                        row["growth_completed"] = True
         if row["logical_bytes"] >= alert_bytes:
             row["alarmed"] = True
             reasons.append(
@@ -635,11 +735,22 @@ def main(argv: list[str] | None = None) -> int:
         # Anything that ALARMED is always shown, however small; the rest of the
         # list is the largest fds above the display floor.
         alarming = [w for w in collected if w.get("alarmed")]
+        # A fast write that has already FINISHED is shown too, however small, and
+        # ranked above the merely-large. It did not alarm because nothing holds
+        # the inode open for write any more, but "this grew at 23 GiB/h and then
+        # stopped" is exactly the evidence an operator needs to tell a bounded
+        # emitter from a runaway -- and suppressing it silently is how the gate
+        # would appear to have missed something.
+        finished = [
+            w for w in collected if not w.get("alarmed") and w.get("growth_completed")
+        ]
         rest = [
             w for w in collected
-            if not w.get("alarmed") and w["logical_bytes"] >= int(args.writers_min_gib * GiB)
+            if not w.get("alarmed")
+            and not w.get("growth_completed")
+            and w["logical_bytes"] >= int(args.writers_min_gib * GiB)
         ]
-        ordered = alarming + rest
+        ordered = alarming + finished + rest
         writers = ordered[: args.writers_limit]
         suppressed = max(0, len(ordered) - len(writers))
         report["open_writers"] = writers
@@ -677,7 +788,9 @@ def main(argv: list[str] | None = None) -> int:
                         f"writer=pid:{w['pid']} comm:{w['comm']} fd:{w['fd']} "
                         f"logical_bytes:{w['logical_bytes']} deleted:{w['deleted']} "
                         f"on_target_fs:{w['on_target_fs']} "
+                        f"writable:{w.get('writable', True)} "
                         f"growth_bytes_per_hour:{w.get('growth_bytes_per_hour')} "
+                        f"growth_completed:{bool(w.get('growth_completed'))} "
                         f"path:{w['path_in_its_namespace']}"
                     )
                 continue
