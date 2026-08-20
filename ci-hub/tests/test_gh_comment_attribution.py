@@ -274,6 +274,97 @@ class FleetGhTest(unittest.TestCase):
         body = captured[captured.index("--comment") + 1]
         self.assertTrue(body.endswith("role=impl]\n--comment=words"))
 
+    def test_created_issue_and_pr_bodies_are_prefixed_without_the_author_doing_it(
+        self,
+    ) -> None:
+        """The author is a constant on this fork, so an unattributed issue reads
+        as the owner's own. Creation must stamp without anyone remembering to."""
+        machine = socket.gethostname().split(".", 1)[0]
+        for command in (["issue", "create"], ["pr", "create"]):
+            with self.subTest(command=" ".join(command)):
+                self.capture.unlink(missing_ok=True)
+                result = self.run_shim(
+                    *self.identity(),
+                    *command, "--title", "a title", "--body", "prose",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                body = self.captured()[self.captured().index("--body") + 1]
+                self.assertEqual(
+                    body,
+                    f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\nprose",
+                    "A CREATED ARTIFACT WENT OUT UNATTRIBUTED",
+                )
+
+    def test_created_body_from_a_file_is_prefixed_too(self) -> None:
+        """`--body-file` is how a long issue is actually filed; it must not be
+        the way around the boundary."""
+        source = self.root / "body.md"
+        source.write_text("filed from a file")
+        result = self.run_shim(
+            *self.identity(), "issue", "create", "--title", "t", "--body-file", str(source)
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        machine = socket.gethostname().split(".", 1)[0]
+        self.assertEqual(
+            body,
+            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\nfiled from a file",
+        )
+
+    def test_create_without_identity_is_refused_before_the_artifact_exists(self) -> None:
+        result = self.run_shim("issue", "create", "--title", "t", "--body", "anonymous")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("missing required --who", result.stderr)
+        self.assertFalse(self.capture.exists(), "AN UNATTRIBUTED ISSUE WAS CREATED")
+
+    def test_create_without_any_body_is_refused_rather_than_passed_through(self) -> None:
+        """Fail closed: a body-less create would otherwise be the hole this
+        boundary exists to close."""
+        result = self.run_shim(*self.identity(), "issue", "create", "--title", "t")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("no supported --body/--body-file", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+    def test_edit_with_a_body_is_prefixed(self) -> None:
+        result = self.run_shim(
+            *self.identity(), "issue", "edit", "7", "--body", "replacement prose"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body = self.captured()[self.captured().index("--body") + 1]
+        machine = socket.gethostname().split(".", 1)[0]
+        self.assertEqual(
+            body,
+            f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\nreplacement prose",
+        )
+
+    def test_edit_without_a_body_needs_no_identity_and_passes_through(self) -> None:
+        """A title-only edit writes no prose. Demanding identity for it would be
+        a regression, not extra safety."""
+        result = self.run_shim("issue", "edit", "7", "--title", "renamed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.captured(), ["issue", "edit", "7", "--title", "renamed"])
+
+    def test_creating_an_issue_through_the_raw_api_is_not_a_way_around_it(self) -> None:
+        result = self.run_shim(
+            *self.identity(),
+            "api", "-X", "POST", "repos/o/r/issues", "-f", "title=t", "-f", "body=via api",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        captured = self.captured()
+        machine = socket.gethostname().split(".", 1)[0]
+        self.assertIn(
+            f"body=[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\nvia api",
+            captured,
+        )
+
+    def test_reads_and_non_prose_commands_still_pass_through_untouched(self) -> None:
+        for command in (["issue", "list"], ["pr", "view", "42"], ["issue", "close", "7"]):
+            with self.subTest(command=" ".join(command)):
+                self.capture.unlink(missing_ok=True)
+                result = self.run_shim(*command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.captured(), command)
+
     def test_pr_close_without_comment_needs_no_identity_and_passes_through(self) -> None:
         result = self.run_shim("pr", "close", "42")
         self.assertEqual(result.returncode, 0, result.stderr)

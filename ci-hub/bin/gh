@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
-"""Fleet-aware boundary for GitHub CLI comment writes.
+"""Fleet-aware boundary for GitHub CLI prose writes.
 
-Every supported comment/review write requires caller-supplied ``--who``,
+Covers comment and review writes, and the writes that CREATE or REPLACE an
+issue or pull-request body: ``issue create``, ``pr create``, ``issue edit`` and
+``pr edit``, plus the equivalent REST endpoints.  The GitHub author is a
+constant on this fork, so an unattributed issue or pull request is
+indistinguishable from one the repository owner wrote himself; the disclosure
+prefix in the body is the only thing that separates them.
+
+Every supported write requires caller-supplied ``--who``,
 ``--team``, and ``--role`` arguments.  The boundary resolves the caller through
 the shared process-context authority (inherited agent identity, ancestry, cwd
 slot owner, pane, cgroup, sidecar, and TaskGraph where readable) and refuses
@@ -225,7 +232,7 @@ def rewrite_body_option(
     if found is None:
         if required:
             return args + ["--body", attributed("", disclosure)]
-        die("comment command has no supported --body/--body-file argument")
+        die("command has no supported --body/--body-file argument")
     index, consumed, body = found
     return args[:index] + ["--body", attributed(body, disclosure)] + args[index + consumed :]
 
@@ -275,6 +282,25 @@ def api_endpoint(args: list[str]) -> str:
     return ""
 
 
+# Subcommands whose body IS the artifact being created. The GitHub author is a
+# constant on this fork, so an unattributed issue or pull request is
+# indistinguishable from one the repository owner wrote himself. These fail
+# closed when no body option is supplied rather than creating an unattributed
+# artifact.
+CREATED_BODY_COMMANDS = (["issue", "create"], ["pr", "create"])
+
+# Subcommands that may REPLACE an existing body. Attributed only when a body
+# option is actually present: `gh issue edit 1 --title x` writes no prose and
+# must keep passing through untouched.
+EDITED_BODY_COMMANDS = (["issue", "edit"], ["pr", "edit"])
+
+
+def is_created_body_endpoint(endpoint: str) -> bool:
+    """The REST endpoints that create an issue or a pull request."""
+    endpoint = endpoint.split("?", 1)[0].strip("/")
+    return bool(re.fullmatch(r"repos/[^/]+/[^/]+/(issues|pulls)", endpoint))
+
+
 def is_comment_endpoint(endpoint: str) -> bool:
     endpoint = endpoint.split("?", 1)[0].strip("/")
     return bool(
@@ -286,13 +312,17 @@ def is_comment_endpoint(endpoint: str) -> bool:
     )
 
 
-def is_comment_write(args: list[str]) -> bool:
+def is_attributed_write(args: list[str]) -> bool:
     if len(args) >= 2 and args[:2] in (
         ["pr", "comment"],
         ["issue", "comment"],
         ["pr", "review"],
     ):
         return True
+    if len(args) >= 2 and args[:2] in CREATED_BODY_COMMANDS:
+        return True
+    if len(args) >= 2 and args[:2] in EDITED_BODY_COMMANDS:
+        return body_option(args) is not None
     if len(args) >= 2 and args[:2] == ["pr", "close"]:
         return close_comment_option(args) is not None
     if not args or args[0] != "api":
@@ -305,9 +335,13 @@ def is_comment_write(args: list[str]) -> bool:
             r"updatePullRequestReviewComment)\b",
             joined,
         ) is not None
-    return api_method(args) in {"POST", "PATCH", "PUT"} and is_comment_endpoint(
-        api_endpoint(args)
-    )
+    method = api_method(args)
+    endpoint = api_endpoint(args)
+    if method in {"POST", "PATCH", "PUT"} and is_comment_endpoint(endpoint):
+        return True
+    # Creating an issue or a pull request through the raw API is the same
+    # artifact as `issue create` / `pr create` and must not be a way around it.
+    return method == "POST" and is_created_body_endpoint(endpoint)
 
 
 def rewrite_api(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[str]:
@@ -315,7 +349,10 @@ def rewrite_api(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[
         die("raw GraphQL comment mutations cannot be attributed safely")
     method = api_method(args)
     endpoint = api_endpoint(args)
-    if method not in {"POST", "PATCH", "PUT"} or not is_comment_endpoint(endpoint):
+    attributable = is_comment_endpoint(endpoint) or (
+        method == "POST" and is_created_body_endpoint(endpoint)
+    )
+    if method not in {"POST", "PATCH", "PUT"} or not attributable:
         return args
     if "--input" in args or any(arg.startswith("--input=") for arg in args):
         die("raw API comment mutation via --input cannot be attributed safely")
@@ -337,6 +374,8 @@ def rewrite_api(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[
 def rewrite(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[str]:
     if len(args) >= 2 and args[:2] in (["pr", "comment"], ["issue", "comment"]):
         return rewrite_body_option(args, disclosure, required=False)
+    if len(args) >= 2 and args[:2] in CREATED_BODY_COMMANDS + EDITED_BODY_COMMANDS:
+        return rewrite_body_option(args, disclosure, required=False)
     if len(args) >= 2 and args[:2] == ["pr", "review"]:
         return rewrite_body_option(args, disclosure, required=True)
     if len(args) >= 2 and args[:2] == ["pr", "close"]:
@@ -348,7 +387,7 @@ def rewrite(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[str]
 
 def main() -> int:
     args, supplied = disclosure_options(sys.argv[1:])
-    if is_comment_write(args):
+    if is_attributed_write(args):
         claimed_agent, team, role = required_disclosure(supplied)
         disclosure = validate_disclosure(claimed_agent, team, role)
         args = rewrite(args, disclosure)
