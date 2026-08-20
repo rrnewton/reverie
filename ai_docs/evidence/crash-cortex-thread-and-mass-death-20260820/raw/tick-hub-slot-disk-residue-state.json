@@ -1,0 +1,342 @@
+{
+  "measure_cursor": "claude-diag2213b",
+  "reported": [
+    "census",
+    "claude-aggci",
+    "claude-cellcap",
+    "claude-cpuidfix",
+    "claude-diagmain",
+    "claude-f1-2213",
+    "claude-pr2182",
+    "claude-umaskfix",
+    "codex-verifyallow907",
+    "drain-corpus",
+    "flake1",
+    "lander-1",
+    "nounwind",
+    "pollrevents",
+    "pr2078",
+    "rebase1",
+    "rescreen1",
+    "xverify1"
+  ],
+  "slots": {
+    "agg1": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 297336832,
+      "sized_at": "2026-08-15T23:24:19Z"
+    },
+    "agg2129": {
+      "size_bytes": 14347149312,
+      "sized_at": "2026-08-15T23:40:45Z"
+    },
+    "cadence2": {
+      "size_bytes": 9285726208,
+      "sized_at": "2026-08-15T23:57:10Z"
+    },
+    "census": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 3186909184,
+      "sized_at": "2026-08-16T00:13:46Z"
+    },
+    "ci": {
+      "size_bytes": 12290568192,
+      "sized_at": "2026-08-13T02:06:38Z"
+    },
+    "claude-1": {
+      "size_bytes": 5227188224,
+      "sized_at": "2026-08-13T02:56:28Z"
+    },
+    "claude-5": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 14311424,
+      "sized_at": "2026-08-16T00:30:11Z"
+    },
+    "claude-7": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 14041088,
+      "sized_at": "2026-08-16T00:46:35Z"
+    },
+    "claude-aggci": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 1879625728,
+      "sized_at": "2026-08-16T01:03:02Z"
+    },
+    "claude-cellcap": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 5617344512,
+      "sized_at": "2026-08-16T03:32:07Z"
+    },
+    "claude-cpuidfix": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 2668400640,
+      "sized_at": "2026-08-16T03:48:33Z"
+    },
+    "claude-diag2129": {
+      "size_bytes": 267173888,
+      "sized_at": "2026-08-16T04:04:58Z"
+    },
+    "claude-diag2213": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 305885184,
+      "sized_at": "2026-08-20T17:55:28Z"
+    },
+    "claude-diag2213b": {
+      "idle_since": "2026-08-13T18:54:34Z",
+      "size_bytes": 214237184,
+      "sized_at": "2026-08-20T18:13:43Z"
+    },
+    "claude-diag3way": {
+      "idle_since": "2026-08-13T07:37:45Z",
+      "size_bytes": 1030148096,
+      "sized_at": "2026-08-15T15:18:25Z"
+    },
+    "claude-diagmain": {
+      "idle_since": "2026-08-13T11:46:01Z",
+      "size_bytes": 3193278464,
+      "sized_at": "2026-08-15T15:34:40Z"
+    },
+    "claude-exitgate": {
+      "size_bytes": 950468608,
+      "sized_at": "2026-08-16T01:19:59Z"
+    },
+    "claude-f1-2213": {
+      "idle_since": "2026-08-13T21:12:27Z",
+      "size_bytes": 1476788224,
+      "sized_at": "2026-08-15T02:42:00Z"
+    },
+    "claude-fixtureassert": {
+      "idle_since": "2026-08-15T20:39:13Z",
+      "size_bytes": 985624576,
+      "sized_at": "2026-08-16T01:36:29Z"
+    },
+    "claude-pr2161": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 21643264,
+      "sized_at": "2026-08-15T15:51:02Z"
+    },
+    "claude-pr2177": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 265248768,
+      "sized_at": "2026-08-15T16:07:00Z"
+    },
+    "claude-pr2181": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 14262272,
+      "sized_at": "2026-08-15T16:23:18Z"
+    },
+    "claude-pr2182": {
+      "idle_since": "2026-08-13T21:12:27Z",
+      "size_bytes": 10798288896,
+      "sized_at": "2026-08-15T16:39:32Z"
+    },
+    "claude-umaskfix": {
+      "idle_since": "2026-08-15T20:39:13Z",
+      "size_bytes": 4350382080,
+      "sized_at": "2026-08-16T01:52:53Z"
+    },
+    "codex-hostsweep907": {
+      "idle_since": "2026-08-20T17:55:28Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "codex-lsof908": {
+      "idle_since": "2026-08-20T17:55:28Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "codex-robust904": {
+      "idle_since": "2026-08-20T17:55:28Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "codex-verifyallow907": {
+      "idle_since": "2026-08-14T15:12:12Z",
+      "size_bytes": 5399973888,
+      "sized_at": "2026-08-15T16:55:51Z"
+    },
+    "consistency": {
+      "size_bytes": 4187058176,
+      "sized_at": "2026-08-15T17:11:47Z"
+    },
+    "coord": {
+      "size_bytes": 53938466816,
+      "sized_at": "2026-08-15T17:28:08Z"
+    },
+    "cpuid-recheck": {
+      "idle_since": "2026-08-20T18:13:43Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "derivable1": {
+      "idle_since": "2026-08-16T00:30:11Z",
+      "size_bytes": 950550528,
+      "sized_at": "2026-08-16T02:09:15Z"
+    },
+    "deslop": {
+      "size_bytes": 16272261120,
+      "sized_at": "2026-08-15T17:44:29Z"
+    },
+    "drain-budget": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 213880832,
+      "sized_at": "2026-08-15T18:00:52Z"
+    },
+    "drain-corpus": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 3366244352,
+      "sized_at": "2026-08-15T18:16:51Z"
+    },
+    "drain-landed": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 20062208,
+      "sized_at": "2026-08-15T18:33:16Z"
+    },
+    "drain-manifest": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 213868544,
+      "sized_at": "2026-08-15T18:49:37Z"
+    },
+    "drain-triage": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 14041088,
+      "sized_at": "2026-08-15T19:06:05Z"
+    },
+    "exitgate2": {
+      "idle_since": "2026-08-16T00:13:46Z",
+      "size_bytes": 950546432,
+      "sized_at": "2026-08-16T02:25:55Z"
+    },
+    "fix-drcache": {
+      "size_bytes": 5193539584,
+      "sized_at": "2026-08-15T19:22:05Z"
+    },
+    "fix-futex": {
+      "size_bytes": 21616951296,
+      "sized_at": "2026-08-15T19:38:30Z"
+    },
+    "fix-liteinst": {
+      "size_bytes": 9109430272,
+      "sized_at": "2026-08-15T19:54:43Z"
+    },
+    "fix-nanosleep": {
+      "size_bytes": 6176235520,
+      "sized_at": "2026-08-15T20:39:13Z"
+    },
+    "fix-privstall": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 214577152,
+      "sized_at": "2026-08-15T20:57:02Z"
+    },
+    "fix-qemupanic": {
+      "size_bytes": 12323532800,
+      "sized_at": "2026-08-15T21:14:10Z"
+    },
+    "fixture-align": {
+      "idle_since": "2026-08-20T17:55:28Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "flake1": {
+      "idle_since": "2026-08-16T02:25:55Z",
+      "size_bytes": 4247240704,
+      "sized_at": "2026-08-16T02:42:27Z"
+    },
+    "gchat-crash-902": {
+      "idle_since": "2026-08-20T18:13:43Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "lander": {
+      "size_bytes": 155557474304,
+      "sized_at": "2026-08-15T21:30:09Z"
+    },
+    "lander-1": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 13325099008,
+      "sized_at": "2026-08-15T21:46:24Z"
+    },
+    "liteinst-notifier-integrated-905": {
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "nounwind": {
+      "idle_since": "2026-08-15T04:22:37Z",
+      "size_bytes": 3463954432,
+      "sized_at": "2026-08-15T03:17:32Z"
+    },
+    "pollrevents": {
+      "idle_since": "2026-08-15T06:17:18Z",
+      "size_bytes": 3037884416,
+      "sized_at": "2026-08-15T06:17:18Z"
+    },
+    "pr2078": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 7714017280,
+      "sized_at": "2026-08-15T22:02:48Z"
+    },
+    "pr2263-901": {
+      "idle_since": "2026-08-20T18:13:43Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "qualnp1": {
+      "idle_since": "2026-08-16T03:48:33Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "rebase1": {
+      "idle_since": "2026-08-13T12:19:51Z",
+      "size_bytes": 6547927040,
+      "sized_at": "2026-08-15T22:18:58Z"
+    },
+    "rescreen1": {
+      "idle_since": "2026-08-16T02:42:27Z",
+      "size_bytes": 3034927104,
+      "sized_at": "2026-08-16T02:58:58Z"
+    },
+    "revents-measure": {
+      "idle_since": "2026-08-20T17:55:28Z",
+      "size_bytes": 3258150912,
+      "sized_at": "2026-08-15T04:38:51Z"
+    },
+    "scorecard": {
+      "size_bytes": 25950752768,
+      "sized_at": "2026-08-15T04:55:26Z"
+    },
+    "slot04": {
+      "size_bytes": 14365679616,
+      "sized_at": "2026-08-15T22:35:01Z"
+    },
+    "slot05": {
+      "idle_since": "2026-08-20T17:55:28Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "slot06": {
+      "idle_since": "2026-08-14T15:12:12Z",
+      "size_bytes": 33189888,
+      "sized_at": "2026-08-15T22:51:10Z"
+    },
+    "slot07": {
+      "idle_since": "2026-08-14T15:12:12Z",
+      "size_bytes": 14249984,
+      "sized_at": "2026-08-15T23:07:51Z"
+    },
+    "slot10": {
+      "idle_since": "2026-08-20T17:55:28Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "syscall66": {
+      "idle_since": "2026-08-20T17:55:28Z",
+      "size_bytes": null,
+      "sized_at": null
+    },
+    "xverify1": {
+      "idle_since": "2026-08-16T01:03:02Z",
+      "size_bytes": 1752068096,
+      "sized_at": "2026-08-16T03:15:24Z"
+    }
+  }
+}

@@ -1,0 +1,50 @@
+# captured 2026-08-20T18:17:07Z
+$ tmux ls
+orc-46e440f8: 18 windows (created Tue Aug 18 07:55:02 2026) (attached)
+orc-e7cabcde: 5 windows (created Tue Aug 18 09:02:13 2026) (attached)
+orc-headless-orcclaw-: 2 windows (created Tue Aug 18 09:29:55 2026) (attached)
+orc-hermit: 5 windows (created Thu Aug 20 10:55:08 2026) (attached)
+orc-orc-dev: 1 windows (created Thu Aug 20 07:41:21 2026) (attached)
+
+$ tmux list-panes -a
+orc-46e440f8 | win1:orc | %3 | pid=4045741 | orc
+orc-46e440f8 | win2:stack-jarvis | %5 | pid=4107505 | claude
+orc-46e440f8 | win3:awareness | %6 | pid=4107507 | claude
+orc-46e440f8 | win4:stack-hatch | %7 | pid=4107510 | claude
+orc-46e440f8 | win5:pr-17280 | %31 | pid=782910 | claude
+orc-46e440f8 | win6:hatch-tasks | %32 | pid=782919 | claude
+orc-46e440f8 | win7:cred-leak | %33 | pid=782924 | claude
+orc-46e440f8 | win8:clean-repo | %34 | pid=966928 | claude
+orc-46e440f8 | win9:gid924 | %35 | pid=1015958 | claude
+orc-46e440f8 | win10:push-stacks | %36 | pid=1051888 | claude
+orc-46e440f8 | win11:commit-all | %42 | pid=3592579 | claude
+orc-46e440f8 | win12:daily-sweep | %98 | pid=3118246 | claude
+orc-46e440f8 | win13:daily-deploy | %99 | pid=3118249 | claude
+orc-46e440f8 | win14:daily-rebase | %100 | pid=3118251 | claude
+orc-46e440f8 | win15:am-creds | %165 | pid=2034067 | claude
+orc-46e440f8 | win16:am-sweep | %166 | pid=2045489 | claude
+orc-46e440f8 | win17:am-rebase | %167 | pid=2062923 | claude
+orc-46e440f8 | win18:sev-triage | %168 | pid=2921058 | claude
+orc-e7cabcde | win1:orc | %15 | pid=2379445 | orc
+orc-e7cabcde | win2:refresh | %107 | pid=942378 | claude
+orc-e7cabcde | win3:prdrain | %108 | pid=942381 | claude
+orc-e7cabcde | win4:ktstrpr | %109 | pid=942384 | claude
+orc-e7cabcde | win5:docfix | %113 | pid=4015299 | claude
+orc-headless-orcclaw- | win1:bash | %16 | pid=3431154 | bash
+orc-headless-orcclaw- | win2:gchat-worker | %163 | pid=307385 | claude
+orc-hermit | win1:orc | %169 | pid=683755 | orc
+orc-hermit | win2:hermit-901 | %170 | pid=1002072 | codex
+orc-hermit | win3:hermit-902 | %171 | pid=1105199 | claude
+orc-hermit | win4:hermit-coord | %172 | pid=1161448 | codex
+orc-hermit | win5:hermit-cortex | %173 | pid=1233935 | claude
+orc-orc-dev | win1:orc | %164 | pid=947320 | orc
+
+$ ps -o pid,lstart,comm for orc-hermit pane pids
+ 683755 Thu Aug 20 10:55:07 2026 orc
+1002072 Thu Aug 20 11:01:31 2026 codex
+1105199 Thu Aug 20 11:03:17 2026 claude
+1161448 Thu Aug 20 11:03:57 2026 codex
+1233935 Thu Aug 20 11:04:39 2026 claude
+
+$ ps -o pid,lstart,comm -p 35997   # tmux server
+  35997 Sat Aug 15 21:18:45 2026 tmux: server

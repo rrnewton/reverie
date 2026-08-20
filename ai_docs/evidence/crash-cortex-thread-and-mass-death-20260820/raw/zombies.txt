@@ -1,0 +1,15 @@
+# captured 2026-08-20T18:17:07Z
+$ ps -eo pid,ppid,stat,lstart,comm  (zombies only)
+    PID    PPID STAT                  STARTED COMMAND
+ 418739  418702 Z    Sat Aug 15 21:31:18 2026 scm_telem_log <defunct>
+1009746 1009366 Zs   Sun Aug 16 13:21:41 2026 scribe_cat <defunct>
+ 301384 3472946 Z    Thu Aug 20 05:30:44 2026 meta-events-str <defunct>
+1053637 4045741 Z+   Thu Aug 20 05:55:04 2026 meta-events-str <defunct>
+3239753 2379445 Z+   Thu Aug 20 07:02:17 2026 meta-events-str <defunct>
+  64092 4169285 ZN   Thu Aug 20 07:23:29 2026 hg <defunct>
+  64094 4169285 ZN   Thu Aug 20 07:23:29 2026 hg <defunct>
+  64096 4169285 ZN   Thu Aug 20 07:23:29 2026 hg <defunct>
+1311335 1311286 Z    Wed Aug 19 18:10:19 2026 bash <defunct>
+
+zombie count = 9
+total procs  = 4091

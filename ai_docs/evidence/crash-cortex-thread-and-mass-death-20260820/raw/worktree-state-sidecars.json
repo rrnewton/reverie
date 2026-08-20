@@ -1,0 +1,221 @@
+{
+ "registry_updated": "2026-08-20T18:08:58Z",
+ "sidecars": {
+  "ci": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 2085324,
+   "start_ticks": 31522111,
+   "recorded_at": "2026-08-15T20:05:48Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:2085324:31522111"
+  },
+  "claude-1": {
+   "state": null,
+   "source": "codex-systemd-sentinel-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3607555,
+   "start_ticks": 29104699,
+   "recorded_at": "2026-08-14T15:53:24Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3607555:29104699"
+  },
+  "claude-exitgate": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3902265,
+   "start_ticks": 33623833,
+   "recorded_at": "2026-08-15T23:49:37Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3902265:33623833"
+  },
+  "claude-fixtureassert": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3902265,
+   "start_ticks": 33623833,
+   "recorded_at": "2026-08-15T20:17:37Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3902265:33623833"
+  },
+  "claude-umaskfix": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3902265,
+   "start_ticks": 33623833,
+   "recorded_at": "2026-08-15T20:41:14Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3902265:33623833"
+  },
+  "codex-lsof908": {
+   "state": null,
+   "source": "codex-systemd-sentinel-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 4086884,
+   "start_ticks": 15392776,
+   "recorded_at": "2026-08-13T08:03:47Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:4086884:15392776"
+  },
+  "codex-robust904": {
+   "state": null,
+   "source": "codex-systemd-sentinel-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 235561,
+   "start_ticks": 15259975,
+   "recorded_at": "2026-08-13T09:03:04Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:235561:15259975"
+  },
+  "codex-verifyallow907": {
+   "state": null,
+   "source": "codex-systemd-sentinel-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 2489033,
+   "start_ticks": 15337459,
+   "recorded_at": "2026-08-13T08:41:33Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:2489033:15337459"
+  },
+  "coord": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 186841,
+   "start_ticks": 32523524,
+   "recorded_at": "2026-08-15T20:00:19Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:186841:32523524"
+  },
+  "derivable1": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3305423,
+   "start_ticks": 40663401,
+   "recorded_at": "2026-08-16T00:24:57Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3305423:40663401"
+  },
+  "fixture-align": {
+   "state": null,
+   "source": "codex-systemd-sentinel-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 1763883,
+   "start_ticks": 16358276,
+   "recorded_at": "2026-08-13T04:30:15Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:1763883:16358276"
+  },
+  "flake1": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3305423,
+   "start_ticks": 40663401,
+   "recorded_at": "2026-08-16T01:34:10Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3305423:40663401"
+  },
+  "liteinst-notifier-integrated-905": {
+   "state": null,
+   "source": "codex-systemd-sentinel-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 265892,
+   "start_ticks": 16476675,
+   "recorded_at": "2026-08-13T07:44:31Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:265892:16476675"
+  },
+  "nounwind": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3419300,
+   "start_ticks": 31290638,
+   "recorded_at": "2026-08-15T03:13:39Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3419300:31290638"
+  },
+  "pollrevents": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3419300,
+   "start_ticks": 31290638,
+   "recorded_at": "2026-08-15T06:12:05Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3419300:31290638"
+  },
+  "qualnp1": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3305423,
+   "start_ticks": 40663401,
+   "recorded_at": "2026-08-16T03:39:43Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3305423:40663401"
+  },
+  "rescreen1": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3305423,
+   "start_ticks": 40663401,
+   "recorded_at": "2026-08-16T02:26:18Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3305423:40663401"
+  },
+  "revents-measure": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3522131,
+   "start_ticks": 33580787,
+   "recorded_at": "2026-08-15T04:24:10Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3522131:33580787"
+  },
+  "slot05": {
+   "state": null,
+   "source": "codex-systemd-sentinel-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3951652,
+   "start_ticks": 15240953,
+   "recorded_at": "2026-08-13T05:43:23Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3951652:15240953"
+  },
+  "slot06": {
+   "state": null,
+   "source": "codex-systemd-sentinel-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 2496222,
+   "start_ticks": 15494960,
+   "recorded_at": "2026-08-13T08:47:36Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:2496222:15494960"
+  },
+  "slot07": {
+   "state": null,
+   "source": "codex-systemd-sentinel-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 81739,
+   "start_ticks": 15557281,
+   "recorded_at": "2026-08-13T02:15:30Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:81739:15557281"
+  },
+  "slot10": {
+   "state": null,
+   "source": "codex-systemd-sentinel-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 1750257,
+   "start_ticks": 39103318,
+   "recorded_at": "2026-08-15T19:41:18Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:1750257:39103318"
+  },
+  "syscall66": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3305423,
+   "start_ticks": 40663401,
+   "recorded_at": "2026-08-16T03:49:41Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3305423:40663401"
+  },
+  "xverify1": {
+   "state": null,
+   "source": "orc-tmux-pane-supervisor-v1",
+   "boot_id": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e",
+   "supervisor_pid": 3305423,
+   "start_ticks": 40663401,
+   "recorded_at": "2026-08-16T01:00:34Z",
+   "generation": "3ac87f92-e589-489d-9e37-bc1ab32d6a3e:3305423:40663401"
+  }
+ }
+}

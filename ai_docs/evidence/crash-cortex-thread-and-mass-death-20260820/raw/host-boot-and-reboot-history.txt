@@ -1,0 +1,31 @@
+# captured 2026-08-20T18:17:07Z on devbig030.atn3.facebook.com by hermit-902
+
+$ uname -r
+6.19.2-0_fbk0_hardened_rc25_0_g1d99d2f6053c
+
+$ uptime
+ 11:17:07 up 4 days, 13:59, 40 users,  load average: 25.70, 28.79, 21.59
+
+$ cat /proc/sys/kernel/random/boot_id
+5dc71364-bd91-4260-8815-573614831137
+
+$ grep btime /proc/stat  (=> Sun Aug 16 04:17:54 AM UTC 2026)
+btime 1786853874
+
+$ last -x reboot
+reboot   system boot  6.19.2-0_fbk0_ha Sat Aug 15 21:18   still running
+reboot   system boot  6.13.2-0_fbk15_h Tue Aug 11 00:02 - 21:12 (4+21:09)
+reboot   system boot  6.13.2-0_fbk15_h Mon Aug 10 23:00 - 23:54  (00:54)
+
+wtmp begins Mon Aug 10 23:00:12 2026
+
+$ last -x shutdown
+shutdown system down  6.13.2-0_fbk15_h Sat Aug 15 21:12 - 21:18  (00:05)
+shutdown system down  6.13.2-0_fbk15_h Mon Aug 10 23:54 - 00:02  (00:08)
+
+wtmp begins Mon Aug 10 23:00:12 2026
+
+$ free -g
+               total        used        free      shared  buff/cache   available
+Mem:            1010         264          53           1         699         746
+Swap:            129          12         117
