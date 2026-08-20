@@ -163,7 +163,29 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     result = measure()
-    print(json.dumps(result, indent=2, sort_keys=True) if args.as_json else render(result))
+    if args.as_json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    else:
+        # EMIT key=value LINES, NOT A BARE STRING.
+        #
+        # tick-hub substitutes {placeholders} in a reminder's title from the
+        # captured `key=value` fields of its gate. Both reverie_pin_lag reminders
+        # title on "{summary}", and this producer printed only prose, so every
+        # tick all day refused with "refusing emission with unresolved
+        # placeholder(s): {summary}". The gate ran, judged correctly, exited with
+        # the right code -- and said nothing. Meanwhile the condition it exists to
+        # announce became the thing blocking the parent snapshot, and the warning
+        # reached the coordinator down a different path entirely.
+        #
+        # `summary` is the same prose render() always produced, so the human-facing
+        # text is unchanged; it is now merely addressable. The extra fields let a
+        # reader see the numbers without re-running with --json.
+        fields = {"state": result["state"], "summary": render(result)}
+        for key in ("pin", "main", "lag", "reason"):
+            if key in result:
+                fields[key] = result[key]
+        for key, value in fields.items():
+            print(f"{key}={value}")
     if not args.gate:
         return 0
 
