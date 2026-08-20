@@ -570,6 +570,93 @@ class ClosureReasonTest(unittest.TestCase):
         self.assertEqual(0, report.counts.get("satisfied", 0))
 
 
+
+class ArchiveLineageGapTest(unittest.TestCase):
+    """A pointer into a database that is not there must not read as a bad pointer.
+
+    The archive is found by an alphabetic-stem glob. Measured on a scratch copy of the
+    real databases: with `hermit.db` beside `hermit2.db`, 15 of 15 ledger task ids
+    resolve and no record is `task_not_found`; rename THE SAME FILE to
+    `hermit-archive-2026.db` and 1 of 15 resolve and 20 records become
+    `task_not_found`, which is in DRIFT_STATES. Nothing about the data changed.
+
+    That mislabel is expensive in a specific way: a reader would see twenty of the
+    owner's directives reported as drifted and go looking for directive drift that
+    does not exist.
+
+    The discriminator is the live database's own NAME. `hermit2.db` carries an ordinal
+    and therefore implies a predecessor; `hermit.db` does not. The two negative legs
+    below are the ones that matter -- they are what stops this from being a blanket
+    softening of `task_not_found`.
+    """
+
+    def setUp(self):
+        self._saved = {
+            key: os.environ.get(key)
+            for key in ("TG_DB_PATH", "DIRECTIVE_TASK_DBS")
+        }
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        for key, value in self._saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def _live(self, name: str, siblings=()):
+        root = Path(self.tmp.name)
+        (root / name).write_text("")
+        for sibling in siblings:
+            (root / sibling).write_text("")
+        os.environ.pop("DIRECTIVE_TASK_DBS", None)
+        os.environ["TG_DB_PATH"] = str(root / name)
+
+    def test_ordinal_live_database_with_no_predecessor_is_a_no_result(self):
+        self._live("hermit2.db")
+        gap = directive_check.archive_lineage_gap()
+        self.assertIsNotNone(gap)
+        self.assertIn("hermit2.db", gap)
+        self.assertIn("hermit.db", gap)
+
+        row = directive("orphan", identity=None, task="t-precutover")
+        parsed = directive_check._parse_directive(row)
+        issues = directive_check._metadata_issues(parsed, {}, None, gap)
+        self.assertIn("task_lookup_unavailable", issues)
+        self.assertNotIn("task_not_found", issues)
+        # Loud, but pointing at the lookup rather than at the owner's directives.
+        self.assertIn("unverifiable", directive_check.NO_RESULT_STATES)
+        self.assertNotIn("unverifiable", directive_check.DRIFT_STATES)
+
+    def test_predecessor_present_still_reports_a_genuinely_absent_pointer(self):
+        self._live("hermit2.db", siblings=("hermit.db",))
+        gap = directive_check.archive_lineage_gap()
+        self.assertIsNone(gap)
+
+        row = directive("orphan", identity=None, task="t-nowhere")
+        parsed = directive_check._parse_directive(row)
+        issues = directive_check._metadata_issues(parsed, {}, None, gap)
+        self.assertIn("task_not_found", issues)
+
+    def test_live_database_without_an_ordinal_implies_no_predecessor(self):
+        # A fleet that never had an archive must keep reporting a wrong pointer as
+        # wrong. This is the leg that stops the change from softening the check.
+        self._live("hermit.db")
+        gap = directive_check.archive_lineage_gap()
+        self.assertIsNone(gap)
+
+        row = directive("orphan", identity=None, task="t-nowhere")
+        parsed = directive_check._parse_directive(row)
+        issues = directive_check._metadata_issues(parsed, {}, None, gap)
+        self.assertIn("task_not_found", issues)
+
+    def test_an_explicitly_named_database_set_infers_no_lineage(self):
+        self._live("hermit2.db")
+        os.environ["DIRECTIVE_TASK_DBS"] = os.environ["TG_DB_PATH"]
+        self.assertIsNone(directive_check.archive_lineage_gap())
+
 class TaskDatabaseResolutionTest(unittest.TestCase):
     """Bracket the four task-resolution classes, one per class, with counts.
 

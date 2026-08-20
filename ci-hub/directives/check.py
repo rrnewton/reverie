@@ -396,6 +396,52 @@ def _query_known_tasks(
     return known, claims, None
 
 
+def archive_lineage_gap() -> str | None:
+    """Non-None when the live database's NAME implies a predecessor and none is found.
+
+    The archive is located by an alphabetic-stem glob (see `task_databases`). Rename
+    or move that file -- an ordinary cleanup -- and every pre-cutover pointer stops
+    resolving, with no code change and no warning. Measured on a scratch copy of the
+    real databases: with `hermit.db` present, 15 of 15 ledger task ids resolve and no
+    record is `task_not_found`; rename the SAME FILE to `hermit-archive-2026.db` and
+    1 of 15 resolve and 20 records become `task_not_found`, which IS a drift state.
+
+    THE COST OF GETTING THAT LABEL WRONG IS NOT THE LABEL. A reader would see twenty
+    of the owner's directives reported as drifted and go looking for directive drift
+    that does not exist, when a file moved. A signal that points confidently at the
+    wrong subsystem is worse than one that admits it could not look.
+
+    The discriminator is the live database's own NAME, not the mere absence of an
+    archive. `hermit2.db` carries an ordinal, so a predecessor is implied; `hermit.db`
+    does not, so a fleet that never had an archive is unaffected and a genuinely wrong
+    pointer there is still reported as `task_not_found`. That is deliberate: this must
+    narrow the case where the checker could not look, not soften the case where it
+    looked and found nothing.
+    """
+    if os.environ.get("DIRECTIVE_TASK_DBS") is not None:
+        # The caller named the set explicitly; there is no lineage to infer.
+        return None
+    live_raw = os.environ.get("TG_DB_PATH")
+    if not live_raw:
+        # `tg` picks its own default and we do not guess it, so we cannot say what
+        # lineage it belongs to either.
+        return None
+    live = Path(live_raw)
+    ordinal = re.match(r"^([A-Za-z_.-]+?)(\d+)$", live.stem)
+    if ordinal is None:
+        return None
+    others = [db for db in task_databases() if db is not None and db != live]
+    if others:
+        return None
+    return (
+        "the live TaskGraph database is {!r}, whose name implies an earlier {!r} in the "
+        "same lineage, and no such file is beside it -- so a pointer into the "
+        "pre-cutover database cannot be resolved either way from here".format(
+            live.name, ordinal.group(1) + ".db"
+        )
+    )
+
+
 def task_databases() -> list[Path | None]:
     """The live TaskGraph database first, then same-lineage archives.
 
@@ -439,7 +485,10 @@ def task_databases() -> list[Path | None]:
 
 
 def _metadata_issues(
-    directive: Directive, known_tasks: set[str], task_lookup_error: str | None
+    directive: Directive,
+    known_tasks: set[str],
+    task_lookup_error: str | None,
+    archive_gap: str | None = None,
 ) -> list[str]:
     issues: list[str] = []
     try:
@@ -460,7 +509,14 @@ def _metadata_issues(
     elif task_lookup_error:
         issues.append("task_lookup_unavailable")
     elif directive.task not in known_tasks:
-        issues.append("task_not_found")
+        # A NO-RESULT IS NOT A NEGATIVE, the rule this file already enforces for
+        # `unverifiable` and `fetch_failed`. When the database the pointer needs is
+        # not there to be read, "the pointer is wrong" is a claim the checker did not
+        # establish -- and it is the claim that would send a reader hunting for
+        # directive drift that does not exist.
+        issues.append(
+            "task_lookup_unavailable" if archive_gap else "task_not_found"
+        )
     elif known_tasks[directive.task].endswith(ARCHIVED_SUFFIX):
         # Real and accountable, but the pointer is into a database this fleet no
         # longer writes. Reported so the pointer can be migrated; deliberately NOT
@@ -560,12 +616,15 @@ def evaluate(
 ) -> Report:
     schema_version, directives = load_ledger(ledger_path)
     started = time.monotonic()
+    archive_gap = archive_lineage_gap()
     known_tasks, closure_claims, task_lookup_error = _query_known_tasks(
         directives, run, max(1.0, min(deadline_seconds, 5.0))
     )
     base: dict[str, DirectiveResult] = {}
     for directive in directives:
-        issues = _metadata_issues(directive, known_tasks, task_lookup_error)
+        issues = _metadata_issues(
+            directive, known_tasks, task_lookup_error, archive_gap
+        )
         implementation = directive.implementation
         landing_state = "not_checked"
         ancestry = "not_checked"
@@ -619,7 +678,11 @@ def evaluate(
             )
         elif "task_lookup_unavailable" in issues:
             state = "unverifiable"
-            reason = task_lookup_error or "TaskGraph lookup unavailable"
+            reason = (
+                task_lookup_error
+                or archive_gap
+                or "TaskGraph lookup unavailable"
+            )
         elif "missing_owner" in issues:
             state = "needs_owner"
             reason = "directive has no accountable owner"
