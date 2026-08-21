@@ -1,0 +1,217 @@
+
+==============================================================================
+1. PAUSE DURATION vs WHAT COMPLAINED  (4 vCPU, 2 NUMA nodes)
+==============================================================================
+guest_saw is the guest's own uptime step, sampled at 1 Hz, so any value
+at or below ~1.05 s is at the sampling floor and means 'nothing measurable'.
+
+-- pause=qmp  guest=icount  workload=spin
+        3s  guest_saw=1.2s     fired 0/1  -
+       10s  guest_saw=1.2s     fired 0/1  -
+       21s  guest_saw=1.3s     fired 0/1  -
+       30s  guest_saw=1.2s     fired 0/1  -
+       60s  guest_saw=1.2s     fired 0/1  -
+      125s  guest_saw=1.3s     fired 0/1  -
+      300s  guest_saw=1.3s     fired 0/1  -
+
+-- pause=qmp  guest=kvm  workload=spin
+        3s  guest_saw=1.0s     fired 0/1  -
+       10s  guest_saw=1.1s     fired 0/1  -
+       21s  guest_saw=1.0s     fired 0/1  -
+       30s  guest_saw=1.0s     fired 0/1  -
+       60s  guest_saw=1.0s     fired 0/1  -
+      125s  guest_saw=1.0s     fired 0/1  -
+      300s  guest_saw=1.0s     fired 0/1  -
+
+-- pause=qmp  guest=tcg  workload=spin
+        3s  guest_saw=1.1s     fired 0/1  -
+       10s  guest_saw=1.1s     fired 0/1  -
+       21s  guest_saw=1.1s     fired 0/1  -
+       30s  guest_saw=1.1s     fired 0/1  -
+       60s  guest_saw=1.0s     fired 0/1  -
+      125s  guest_saw=1.0s     fired 0/1  -
+      300s  guest_saw=1.1s     fired 0/1  -
+
+-- pause=sigstop  guest=kvm  workload=rcu
+       22s  guest_saw=22.7s    fired 1/1  RCU stall detector, soft-lockup detector
+       25s  guest_saw=25.3s    fired 1/1  RCU stall detector, soft-lockup detector
+       30s  guest_saw=30.7s    fired 1/1  RCU stall detector, soft-lockup detector
+       45s  guest_saw=45.1s    fired 1/1  RCU stall detector, soft-lockup detector
+       60s  guest_saw=61.3s    fired 1/1  RCU stall detector, soft-lockup detector
+      125s  guest_saw=126.5s   fired 1/1  RCU stall detector, soft-lockup detector
+
+-- pause=sigstop  guest=icount  workload=spin
+        5s  guest_saw=1.2s     fired 0/1  -
+       10s  guest_saw=1.2s     fired 0/1  -
+       15s  guest_saw=1.2s     fired 0/1  -
+       18s  guest_saw=1.2s     fired 0/1  -
+       20s  guest_saw=1.2s     fired 0/1  -
+       22s  guest_saw=1.3s     fired 0/1  -
+       25s  guest_saw=1.2s     fired 0/1  -
+       30s  guest_saw=1.3s     fired 0/1  -
+       45s  guest_saw=1.2s     fired 0/1  -
+       60s  guest_saw=1.3s     fired 0/1  -
+      125s  guest_saw=1.2s     fired 0/1  -
+
+-- pause=sigstop  guest=kvm  workload=spin
+        5s  guest_saw=6.0s     fired 0/1  -
+       10s  guest_saw=10.6s    fired 0/1  -
+       15s  guest_saw=15.1s    fired 0/1  -
+       18s  guest_saw=18.3s    fired 0/1  -
+       19s  guest_saw=19.8s    fired 0/3  -
+       20s  guest_saw=20.9s    fired 2/4  soft-lockup detector
+       21s  guest_saw=22.9s    fired 2/3  soft-lockup detector
+       22s  guest_saw=22.9s    fired 4/4  soft-lockup detector
+       23s  guest_saw=24.6s    fired 3/3  soft-lockup detector
+       25s  guest_saw=25.3s    fired 1/1  soft-lockup detector
+       30s  guest_saw=30.7s    fired 1/1  soft-lockup detector
+       45s  guest_saw=45.4s    fired 1/1  soft-lockup detector
+       60s  guest_saw=61.0s    fired 1/1  soft-lockup detector
+      125s  guest_saw=125.4s   fired 1/1  soft-lockup detector
+
+-- pause=sigstop  guest=tcg  workload=spin
+        5s  guest_saw=5.5s     fired 0/1  -
+       10s  guest_saw=10.6s    fired 0/1  -
+       15s  guest_saw=15.8s    fired 0/1  -
+       18s  guest_saw=18.1s    fired 0/1  -
+       19s  guest_saw=19.4s    fired 1/3  soft-lockup detector
+       20s  guest_saw=20.7s    fired 2/4  soft-lockup detector
+       21s  guest_saw=22.0s    fired 3/3  soft-lockup detector
+       22s  guest_saw=23.0s    fired 4/4  hrtimer overrun report, soft-lockup detector
+       23s  guest_saw=23.4s    fired 3/3  soft-lockup detector
+       25s  guest_saw=25.1s    fired 1/1  soft-lockup detector
+       30s  guest_saw=30.4s    fired 1/1  soft-lockup detector
+       43s  guest_saw=1.1s     fired 0/2  -
+       44s  guest_saw=1.4s     fired 0/1  -
+       45s  guest_saw=3.1s     fired 0/3  -
+       60s  guest_saw=17.8s    fired 0/3  -
+       86s  guest_saw=1.1s     fired 0/2  -
+       88s  guest_saw=2.8s     fired 0/1  -
+      125s  guest_saw=39.6s    fired 1/1  soft-lockup detector
+
+-- pause=sigstop  guest=tcg  workload=spin  cmdline=clocksource=acpi_pm
+        5s  guest_saw=1.1s     fired 0/1  -
+       10s  guest_saw=1.1s     fired 0/1  -
+       21s  guest_saw=2.3s     fired 0/1  -
+       30s  guest_saw=2.6s     fired 0/1  -
+
+==============================================================================
+2. EVERY TRIAL ACTUALLY STOPPED THE GUEST
+==============================================================================
+trials emitting a console byte while paused: 0 of 104
+trials recording the guest run-queue at the pause: 104
+runnable tasks at the pause: min 5, median 5, max 9 (4 spinners + the heartbeat shell is the intent)
+
+==============================================================================
+3. FIRST-FIRE BOUNDARY, 3 repetitions per point (SIGSTOP, spin)
+==============================================================================
+  kvm: 19s=0/3  20s=2/4  21s=2/3  22s=4/4  23s=3/3
+  tcg: 19s=1/3  20s=2/4  21s=3/3  22s=4/4  23s=3/3  45s=0/3  60s=0/3
+
+==============================================================================
+4. THE CLOCKSOURCE WRAP: predicted vs measured guest-visible time
+==============================================================================
+A pause longer than the clocksource's wrap period aliases to
+`pause mod wrap`, so a LONGER pause can look SHORTER to the guest.
+
+  clocksrc  wrap           pause  predicted   measured (1 Hz floor ~1.05 s)
+  hpet       42.950s         5s      5.00s   5.54s
+  hpet       42.950s        10s     10.00s   10.61s
+  hpet       42.950s        15s     15.00s   15.75s
+  hpet       42.950s        18s     18.00s   18.13s
+  hpet       42.950s        19s     19.00s   19.44s   <- soft-lockup detector
+  hpet       42.950s        19s     19.00s   19.06s
+  hpet       42.950s        19s     19.00s   19.26s
+  hpet       42.950s        20s     20.00s   20.15s
+  hpet       42.950s        20s     20.00s   20.73s   <- soft-lockup detector
+  hpet       42.950s        20s     20.00s   20.15s
+  hpet       42.950s        20s     20.00s   20.50s   <- soft-lockup detector
+  hpet       42.950s        21s     21.00s   21.63s   <- soft-lockup detector
+  hpet       42.950s        21s     21.00s   22.03s   <- soft-lockup detector
+  hpet       42.950s        21s     21.00s   21.55s   <- soft-lockup detector
+  hpet       42.950s        22s     22.00s   22.53s   <- soft-lockup detector
+  hpet       42.950s        22s     22.00s   22.15s   <- hrtimer overrun report,soft-lockup detector
+  hpet       42.950s        22s     22.00s   22.98s   <- soft-lockup detector
+  hpet       42.950s        22s     22.00s   22.37s   <- soft-lockup detector
+  hpet       42.950s        23s     23.00s   23.43s   <- soft-lockup detector
+  hpet       42.950s        23s     23.00s   23.34s   <- soft-lockup detector
+  hpet       42.950s        23s     23.00s   23.39s   <- soft-lockup detector
+  hpet       42.950s        25s     25.00s   25.07s   <- soft-lockup detector
+  hpet       42.950s        30s     30.00s   30.44s   <- soft-lockup detector
+  hpet       42.950s        43s      0.05s   1.05s
+  hpet       42.950s        43s      0.05s   1.05s
+  hpet       42.950s        44s      1.05s   1.44s
+  hpet       42.950s        45s      2.05s   3.07s
+  hpet       42.950s        45s      2.05s   2.11s
+  hpet       42.950s        45s      2.05s   2.11s
+  hpet       42.950s        60s     17.05s   17.84s
+  hpet       42.950s        60s     17.05s   17.40s
+  hpet       42.950s        60s     17.05s   17.73s
+  hpet       42.950s        86s      0.10s   1.05s
+  hpet       42.950s        86s      0.10s   1.05s
+  hpet       42.950s        88s      2.10s   2.80s
+  hpet       42.950s       125s     39.10s   39.56s   <- soft-lockup detector
+  acpi_pm     4.687s         5s      0.31s   1.05s
+  acpi_pm     4.687s        10s      0.63s   1.05s
+  acpi_pm     4.687s        21s      2.25s   2.34s
+  acpi_pm     4.687s        30s      1.88s   2.63s
+
+==============================================================================
+5. CLOCK MODES BY BACKEND: guest-visible time across a 30 s stop/cont
+==============================================================================
+  mode                   requested  in use      across pause complained
+  kvm-default            (guest def kvm-clock   0.001991     -  [qmp pause, sample 0.0025s]
+  kvm-default            tsc        kvm-clock   0.006864     -  [qmp pause, sample 0.0025s]
+  kvm-default            hpet       hpet        0.002434     -  [qmp pause, sample 0.0025s]
+  kvm-default            acpi_pm    acpi_pm     0.003971     -  [qmp pause, sample 0.0027s]
+  tcg-default            (guest def hpet        0.010845     -  [qmp pause, sample 0.0060s]
+  tcg-default            tsc        ?           0.007666     -  [qmp pause, sample 0.0060s]
+  tcg-default            hpet       ?           0.006004     -  [qmp pause, sample 0.0060s]
+  tcg-default            acpi_pm    acpi_pm     0.009574     -  [qmp pause, sample 0.0061s]
+  tcg-icount-sleep-off   (guest def hpet        0.052011     -  [qmp pause, sample 0.0407s]
+  tcg-icount-sleep-off   tsc        hpet        0.037573     -  [qmp pause, sample 0.0390s]
+  tcg-icount-sleep-off   hpet       hpet        0.037026     -  [qmp pause, sample 0.0390s]
+  tcg-icount-sleep-off   acpi_pm    acpi_pm     0.038889     -  [qmp pause, sample 0.0378s]
+  kvm-default            (guest def ?           0.003898     -  [qmp pause, sample 0.0025s]
+  kvm-rtc-clock-rt       (guest def kvm-clock   0.004442     -  [qmp pause, sample 0.0024s]
+  kvm-rtc-clock-vm       (guest def kvm-clock   0.002917     -  [qmp pause, sample 0.0025s]
+  kvm-rtc-driftfix-slew  (guest def ?           0.003832     -  [qmp pause, sample 0.0025s]
+  tcg-default            (guest def ?           0.010147     -  [qmp pause, sample 0.0060s]
+  tcg-mttcg              (guest def ?           0.015949     -  [qmp pause, sample 0.0070s]
+  tcg-rtc-clock-vm       (guest def ?           0.009175     -  [qmp pause, sample 0.0068s]
+  tcg-icount-sleep-off   (guest def hpet        0.058933     -  [qmp pause, sample 0.0566s]
+  tcg-icount-sleep-on    (guest def hpet        0.039658     -  [qmp pause, sample 0.0390s]
+  tcg-icount-align       (guest def REFUSED: RuntimeError: QEMU exited immediately (status 1): qemu-system-x86_64: -icount shift=3,sl
+  tcg-icount-auto        (guest def hpet        0.020609     hrtimer overrun report  [qmp pause, sample 0.0194s]
+  tcg-icount-rtc-host    (guest def hpet        0.04278      -  [qmp pause, sample 0.0415s]
+  kvm-default            (guest def kvm-clock   30.504602    RCU stall detector,soft-lockup detector  [sigstop pause, sample 0.0025s]
+  tcg-default            (guest def ?           30.553134    RCU stall detector,soft-lockup detector  [sigstop pause, sample 0.0062s]
+  tcg-mttcg              (guest def ?           30.520601    soft-lockup detector  [sigstop pause, sample 0.0065s]
+  tcg-icount-sleep-off   (guest def hpet        0.043513     -  [sigstop pause, sample 0.0400s]
+  tcg-icount-sleep-on    (guest def hpet        0.036959     -  [sigstop pause, sample 0.0416s]
+  tcg-icount-auto        (guest def hpet        0.074893     hrtimer overrun report  [sigstop pause, sample 0.0200s]
+  tcg-default            (guest def ?           5.1e-05      soft-lockup detector  [sigstop pause, sample 0.0001s]
+  kvm-default            (guest def kvm-clock   30.676193    -  [sigstop pause, sample 0.0004s]
+  tcg-icount-sleep-off   (guest def hpet        0.000871     -  [sigstop pause, sample 0.0006s]
+
+==============================================================================
+6. WHY 1.01 s: the same pause seen at three sampling resolutions
+==============================================================================
+  A_heartbeat_1hz  hold=  30.0s  sampling_period=1.0         across_pause=1.01       ratio_to_hold=3.37e-02
+  B_tight_loop     hold=  30.0s  sampling_period=0.0         across_pause=0.0        ratio_to_hold=0.00e+00
+  C_kernel_printk  hold=  30.0s  sampling_period=0.000406    across_pause=0.00043    ratio_to_hold=1.43e-05
+  C_kernel_printk  hold=   5.0s  sampling_period=0.000411    across_pause=0.000393   ratio_to_hold=7.86e-05
+  C_kernel_printk  hold=  30.0s  sampling_period=0.000409    across_pause=0.000425   ratio_to_hold=1.42e-05
+  C_kernel_printk  hold= 120.0s  sampling_period=0.000404    across_pause=0.000412   ratio_to_hold=3.43e-06
+  C_kernel_printk  hold= 300.0s  sampling_period=0.000432    across_pause=0.000404   ratio_to_hold=1.35e-06
+
+==============================================================================
+7. PAUSE, READ WITH drgn, RESUME  (the capability)
+==============================================================================
+  results/pause-and-read-smp-kvm.json  arm=kvm  kernel=6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79
+    pause 1: held 2.45s  tasks=125  reads=11027 (30.0 MiB)  quiet=0  last-ran-on cpu{'0': 28, '1': 17, '2': 42, '3': 38}
+    pause 2: held 2.04s  tasks=126  reads=11093 (27.2 MiB)  quiet=0  last-ran-on cpu{'0': 27, '1': 19, '2': 43, '3': 37}
+    pause 3: held 2.04s  tasks=126  reads=11093 (27.2 MiB)  quiet=0  last-ran-on cpu{'0': 26, '1': 19, '2': 44, '3': 37}
+    pause 4: held 2.03s  tasks=126  reads=11093 (27.2 MiB)  quiet=0  last-ran-on cpu{'0': 27, '1': 18, '2': 44, '3': 37}
+    pause 5: held 2.04s  tasks=126  reads=11103 (27.2 MiB)  quiet=0  last-ran-on cpu{'0': 27, '1': 17, '2': 43, '3': 39}
+    max guest uptime step over the session: 1.01   complaints: none

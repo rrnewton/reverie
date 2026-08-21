@@ -1,0 +1,296 @@
+[
+  {
+    "arm": "kvm",
+    "pause_seconds": 22.0,
+    "mode": "sigstop",
+    "workload": "rcu",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-rcu/kvm/t00-d22",
+    "boot_seconds": 6.34,
+    "settle_seconds": 5.65,
+    "heartbeats_before": 6,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 22.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 46,
+    "loadavg_at_pause": "0.48",
+    "runqueue_at_pause": "9/126",
+    "max_guest_uptime_step_seconds": 22.74,
+    "max_guest_wall_step_seconds": 23,
+    "median_guest_uptime_step_seconds": 1.0,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   31.295287] watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   31.295320] watchdog: BUG: soft lockup - CPU#1 stuck for 22s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   31.295352] watchdog: BUG: soft lockup - CPU#3 stuck for 22s! [ls:10816]"
+      },
+      {
+        "mechanism": "RCU stall detector",
+        "line": "[   31.295270] rcu: INFO: rcu_sched self-detected stall on CPU"
+      }
+    ],
+    "mechanisms": [
+      "RCU stall detector",
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 74.1,
+    "trial_index": 0
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 25.0,
+    "mode": "sigstop",
+    "workload": "rcu",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-rcu/kvm/t01-d25",
+    "boot_seconds": 4.71,
+    "settle_seconds": 7.18,
+    "heartbeats_before": 8,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 25.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 48,
+    "loadavg_at_pause": "0.92",
+    "runqueue_at_pause": "7/126",
+    "max_guest_uptime_step_seconds": 25.29,
+    "max_guest_wall_step_seconds": 26,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   35.517396] watchdog: BUG: soft lockup - CPU#0 stuck for 26s! [ls:11018]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   35.517481] watchdog: BUG: soft lockup - CPU#1 stuck for 26s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   35.517515] watchdog: BUG: soft lockup - CPU#2 stuck for 26s! [sh:131]"
+      },
+      {
+        "mechanism": "RCU stall detector",
+        "line": "[   35.517397] rcu: INFO: rcu_sched self-detected stall on CPU"
+      }
+    ],
+    "mechanisms": [
+      "RCU stall detector",
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 77.0,
+    "trial_index": 1
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 30.0,
+    "mode": "sigstop",
+    "workload": "rcu",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-rcu/kvm/t02-d30",
+    "boot_seconds": 4.91,
+    "settle_seconds": 10.52,
+    "heartbeats_before": 11,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 30.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 51,
+    "loadavg_at_pause": "0.92",
+    "runqueue_at_pause": "7/126",
+    "max_guest_uptime_step_seconds": 30.73,
+    "max_guest_wall_step_seconds": 31,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   43.983409] watchdog: BUG: soft lockup - CPU#2 stuck for 29s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   43.983437] watchdog: BUG: soft lockup - CPU#0 stuck for 29s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   43.983462] watchdog: BUG: soft lockup - CPU#3 stuck for 29s! [sh:131]"
+      },
+      {
+        "mechanism": "RCU stall detector",
+        "line": "[   43.983398] rcu: INFO: rcu_sched self-detected stall on CPU"
+      }
+    ],
+    "mechanisms": [
+      "RCU stall detector",
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 85.5,
+    "trial_index": 2
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 45.0,
+    "mode": "sigstop",
+    "workload": "rcu",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-rcu/kvm/t03-d45",
+    "boot_seconds": 4.91,
+    "settle_seconds": 5.89,
+    "heartbeats_before": 7,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 45.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 47,
+    "loadavg_at_pause": "0.48",
+    "runqueue_at_pause": "7/125",
+    "max_guest_uptime_step_seconds": 45.15,
+    "max_guest_wall_step_seconds": 46,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   54.436567] watchdog: BUG: soft lockup - CPU#2 stuck for 43s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   54.436595] watchdog: BUG: soft lockup - CPU#3 stuck for 43s! [sh:131]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   54.436619] watchdog: BUG: soft lockup - CPU#1 stuck for 43s! [sh:130]"
+      },
+      {
+        "mechanism": "RCU stall detector",
+        "line": "[   54.436556] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:"
+      }
+    ],
+    "mechanisms": [
+      "RCU stall detector",
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 95.9,
+    "trial_index": 3
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 60.0,
+    "mode": "sigstop",
+    "workload": "rcu",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-rcu/kvm/t04-d60",
+    "boot_seconds": 4.91,
+    "settle_seconds": 10.1,
+    "heartbeats_before": 11,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 60.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 50,
+    "loadavg_at_pause": "0.92",
+    "runqueue_at_pause": "7/125",
+    "max_guest_uptime_step_seconds": 61.32,
+    "max_guest_wall_step_seconds": 62,
+    "median_guest_uptime_step_seconds": 1.0,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   73.643765] watchdog: BUG: soft lockup - CPU#2 stuck for 57s! [sh:129]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   73.643799] watchdog: BUG: soft lockup - CPU#3 stuck for 57s! [sh:131]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   73.643834] watchdog: BUG: soft lockup - CPU#1 stuck for 57s! [ls:16602]"
+      },
+      {
+        "mechanism": "RCU stall detector",
+        "line": "[   73.643767] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:"
+      }
+    ],
+    "mechanisms": [
+      "RCU stall detector",
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 115.1,
+    "trial_index": 4
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 125.0,
+    "mode": "sigstop",
+    "workload": "rcu",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-rcu/kvm/t05-d125",
+    "boot_seconds": 4.91,
+    "settle_seconds": 6.31,
+    "heartbeats_before": 7,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 125.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 46,
+    "loadavg_at_pause": "0.48",
+    "runqueue_at_pause": "7/126",
+    "max_guest_uptime_step_seconds": 126.53,
+    "max_guest_wall_step_seconds": 127,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[  134.842535] watchdog: BUG: soft lockup - CPU#0 stuck for 118s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[  134.842571] watchdog: BUG: soft lockup - CPU#3 stuck for 118s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[  134.842604] watchdog: BUG: soft lockup - CPU#2 stuck for 118s! [sh:131]"
+      },
+      {
+        "mechanism": "RCU stall detector",
+        "line": "[  134.842533] rcu: INFO: rcu_sched self-detected stall on CPU"
+      }
+    ],
+    "mechanisms": [
+      "RCU stall detector",
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 176.3,
+    "trial_index": 5
+  }
+]

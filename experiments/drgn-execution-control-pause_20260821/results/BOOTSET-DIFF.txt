@@ -1,0 +1,94 @@
+serial logs scanned: 104
+messages present in EVERY run (the boot set): 323
+
+non-boot messages, register/stack-dump body lines collapsed:
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] tsc: Fast TSC calibration using PIT
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] Booting paravirtualized kernel on bare hardware
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] x#apic: IRQ remapping doesn't support X#APIC mode
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] Calibrating delay loop (skipped), value calculated using timer frequency.. #.# BogoMIPS (lpj=#)
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] Speculative Store Bypass: Vulnerable
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] Spectre V# : Mitigation: Retpolines
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] Spectre V# : Spectre v# / SpectreRSB: Filling RSB on context switch and VMEXIT
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] x#/fpu: Supporting XSAVE feature #: 'MPX bounds registers'
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] x#/fpu: Supporting XSAVE feature #: 'MPX CSR'
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] x#/fpu: xstate_offset[#]: #, xstate_sizes[#]:   #
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] x#/fpu: Enabled xstate features #, context size is # bytes, using 'standard' format.
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] smpboot: CPU#: AMD QEMU TCG CPU version #.#+ (family: #, model: #, stepping: #)
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] Performance Events: PMU not available due to virtualization, using software events only.
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] NMI watchdog: Perf NMI watchdog permanently disabled
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] mtrr: your CPUs had inconsistent fixed MTRR settings
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] mtrr: your CPUs had inconsistent variable MTRR settings
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] mtrr: your CPUs had inconsistent MTRRdefType settings
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] mtrr: probably your BIOS does not setup all CPUs.
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] mtrr: corrected configuration.
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] raid#: avx#x#   gen()  # MB/s
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] clocksource: Switched to clocksource hpet
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] Unstable clock detected, switching default tracing clock to "global"
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] If you want to keep using the local clock, then add:
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] "trace_clock=local"
+  [smp-fine,smp-qmp,smp-sig,smp-sig-long,wrap,wrap-acpi] on the kernel command line
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] Hypervisor detected: KVM
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] kvm-clock: Using msrs #b#d# and #b#d#
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] kvm-clock: using sched offset of # cycles
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] clocksource: kvm-clock: mask: # max_cycles: #, max_idle_ns: # ns
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] TSC deadline timer available
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] kvm-guest: APIC: eoi() replaced with kvm_guest_apic_eoi_write()
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] kvm-guest: KVM setup pv remote TLB flush
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] kvm-guest: setup PV sched yield
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] Booting paravirtualized kernel on KVM
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] x#apic enabled
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] APIC: Switched APIC routing to: physical x#apic
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] kvm-guest: APIC: send_IPI_mask() replaced with kvm_send_ipi_mask()
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] kvm-guest: APIC: send_IPI_mask_allbutself() replaced with kvm_send_ipi_mask_allbutself()
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] kvm-guest: setup PV IPIs
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] Calibrating delay loop (skipped) preset value.. #.# BogoMIPS (lpj=#)
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] Speculative Store Bypass: Mitigation: Speculative Store Bypass disabled via prctl
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] Spectre V# : Mitigation: Enhanced / Automatic IBRS
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] Speculative Return Stack Overflow: Mitigation: IBPB on VMEXIT only
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] Spectre V# : WARNING: Unprivileged eBPF is enabled with eIBRS on, data leaks possible via Spectre v# BHB attacks!
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] Spectre V# : mitigation: Enabling conditional Indirect Branch Prediction Barrier
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] x#/fpu: Supporting XSAVE feature #: 'AVX-# opmask'
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] x#/fpu: Supporting XSAVE feature #: 'AVX-# Hi#'
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] x#/fpu: Supporting XSAVE feature #: 'AVX-# ZMM_Hi#'
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] x#/fpu: xstate_offset[#]: #, xstate_sizes[#]: #
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] x#/fpu: Enabled xstate features #, context size is # bytes, using 'compacted' format.
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] smpboot: CPU#: AMD EPYC #D# #-Core Processor (family: #, model: #, stepping: #)
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] Performance Events: Fam#h+ core perfctr, AMD PMU driver.
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] ... version:                #
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] ... bit width:              #
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] ... generic registers:      #
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] ... value mask:             #ffffffffffff
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] ... max period:             #fffffffffff
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] ... fixed-purpose events:   #
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] ... event mask:             #f
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] raid#: avx#x# gen() # MB/s
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] raid#: avx#x#   gen() # MB/s
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] clocksource: Switched to clocksource kvm-clock
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] amd_pstate: The CPPC feature is supported but currently disabled by the BIOS.
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] Please enable it if your BIOS has the CPPC option.
+  [smp-fine,smp-qmp,smp-rcu,smp-sig] sched_clock: Marking stable (#, #)->(#, -#)
+  [smp-fine,smp-rcu,smp-sig] watchdog: BUG: soft lockup - CPU## stuck for #s! [sh:#]
+  [smp-fine,smp-rcu,smp-sig] CPU## Utilization every #s during lockup:
+  [smp-fine,smp-rcu,smp-sig] ##:   #% system,	  #% softirq,	  #% hardirq,	  #% idle
+  [smp-fine,smp-rcu,smp-sig] ##:   #% system,	  #% softirq,	  #% hardirq,	 #% idle
+  [smp-fine,smp-rcu,smp-sig] Tainted: [L]=SOFTLOCKUP
+  [smp-fine,smp-rcu,smp-sig] ##:  #% system,	  #% softirq,	  #% hardirq,	 #% idle
+  [smp-qmp,smp-sig] raid#: avx#x#   gen()   # MB/s
+  [smp-fine] ##:  #% system,	  #% softirq,	  #% hardirq,	  #% idle
+  [smp-fine] hrtimer: interrupt took # ns
+  [smp-qmp] raid#: avx#x#   gen()    # MB/s
+  [smp-rcu] rcu: INFO: rcu_sched self-detected stall on CPU
+  [smp-rcu] watchdog: BUG: soft lockup - CPU## stuck for #s! [ls:#]
+  [smp-rcu] CR#: #f#d# CR#: #a# CR#: #ef#
+  [smp-rcu] __se_sys_getdents#+#/#
+  [smp-rcu] do_syscall_#+#/#
+  [smp-rcu] entry_SYSCALL_#_after_hwframe+#/#
+  [smp-rcu] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:
+  [smp-rcu] rcu: INFO: Stall ended during stack backtracing.
+  [smp-rcu] CR#: #be# CR#: #bc# CR#: #ef#
+  [smp-rcu] rcu: rcu_sched kthread timer wakeup didn't happen for # jiffies! g# f# RCU_GP_WAIT_FQS(#) ->state=#
+  [smp-rcu] rcu: rcu_sched kthread starved for # jiffies! g# f# RCU_GP_WAIT_FQS(#) ->state=# ->cpu=#
+  [smp-rcu] rcu: RCU grace-period kthread stack dump:
+  [wrap-acpi] clocksource: Switched to clocksource acpi_pm
+
+(504 further lines were register/stack-dump bodies of the reports above)

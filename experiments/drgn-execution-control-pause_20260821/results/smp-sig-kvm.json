@@ -1,0 +1,454 @@
+[
+  {
+    "arm": "kvm",
+    "pause_seconds": 5.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t00-d5",
+    "boot_seconds": 4.91,
+    "settle_seconds": 11.9,
+    "heartbeats_before": 12,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 5.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 42,
+    "loadavg_at_pause": "0.62",
+    "runqueue_at_pause": "5/123",
+    "max_guest_uptime_step_seconds": 6.0,
+    "max_guest_wall_step_seconds": 6,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [],
+    "mechanisms": [],
+    "ok": true,
+    "trial_wall_seconds": 51.9,
+    "trial_index": 0
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 10.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t01-d10",
+    "boot_seconds": 4.91,
+    "settle_seconds": 4.62,
+    "heartbeats_before": 5,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 10.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 35,
+    "loadavg_at_pause": "0.32",
+    "runqueue_at_pause": "5/122",
+    "max_guest_uptime_step_seconds": 10.59,
+    "max_guest_wall_step_seconds": 11,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [],
+    "mechanisms": [],
+    "ok": true,
+    "trial_wall_seconds": 49.6,
+    "trial_index": 1
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 15.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t02-d15",
+    "boot_seconds": 4.91,
+    "settle_seconds": 11.95,
+    "heartbeats_before": 13,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 15.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 43,
+    "loadavg_at_pause": "0.89",
+    "runqueue_at_pause": "5/122",
+    "max_guest_uptime_step_seconds": 15.06,
+    "max_guest_wall_step_seconds": 15,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [],
+    "mechanisms": [],
+    "ok": true,
+    "trial_wall_seconds": 61.9,
+    "trial_index": 2
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 18.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t03-d18",
+    "boot_seconds": 4.91,
+    "settle_seconds": 6.23,
+    "heartbeats_before": 7,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 18.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 37,
+    "loadavg_at_pause": "0.32",
+    "runqueue_at_pause": "5/122",
+    "max_guest_uptime_step_seconds": 18.28,
+    "max_guest_wall_step_seconds": 19,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [],
+    "mechanisms": [],
+    "ok": true,
+    "trial_wall_seconds": 59.2,
+    "trial_index": 3
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 20.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t04-d20",
+    "boot_seconds": 4.71,
+    "settle_seconds": 7.6,
+    "heartbeats_before": 8,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 20.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 38,
+    "loadavg_at_pause": "0.62",
+    "runqueue_at_pause": "5/120",
+    "max_guest_uptime_step_seconds": 20.69,
+    "max_guest_wall_step_seconds": 21,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   30.972136] watchdog: BUG: soft lockup - CPU#1 stuck for 21s! [sh:128]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   30.972168] watchdog: BUG: soft lockup - CPU#0 stuck for 21s! [sh:130]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   30.972191] watchdog: BUG: soft lockup - CPU#2 stuck for 21s! [sh:129]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   30.972215] watchdog: BUG: soft lockup - CPU#3 stuck for 21s! [sh:131]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 62.4,
+    "trial_index": 4
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 22.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t05-d22",
+    "boot_seconds": 4.91,
+    "settle_seconds": 6.38,
+    "heartbeats_before": 7,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 22.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 37,
+    "loadavg_at_pause": "0.32",
+    "runqueue_at_pause": "5/122",
+    "max_guest_uptime_step_seconds": 22.57,
+    "max_guest_wall_step_seconds": 23,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   31.898006] watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [sh:134]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   31.898042] watchdog: BUG: soft lockup - CPU#2 stuck for 22s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   31.898067] watchdog: BUG: soft lockup - CPU#1 stuck for 22s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   31.898102] watchdog: BUG: soft lockup - CPU#3 stuck for 22s! [sh:131]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 63.3,
+    "trial_index": 5
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 25.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t06-d25",
+    "boot_seconds": 4.91,
+    "settle_seconds": 6.11,
+    "heartbeats_before": 7,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 25.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 37,
+    "loadavg_at_pause": "0.32",
+    "runqueue_at_pause": "5/122",
+    "max_guest_uptime_step_seconds": 25.32,
+    "max_guest_wall_step_seconds": 26,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   34.640517] watchdog: BUG: soft lockup - CPU#2 stuck for 25s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   34.640547] watchdog: BUG: soft lockup - CPU#0 stuck for 25s! [sh:131]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   34.640572] watchdog: BUG: soft lockup - CPU#3 stuck for 25s! [sh:134]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   34.640632] watchdog: BUG: soft lockup - CPU#1 stuck for 25s! [sh:133]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 66.1,
+    "trial_index": 6
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 30.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t07-d30",
+    "boot_seconds": 4.91,
+    "settle_seconds": 5.48,
+    "heartbeats_before": 6,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 30.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 36,
+    "loadavg_at_pause": "0.32",
+    "runqueue_at_pause": "5/121",
+    "max_guest_uptime_step_seconds": 30.72,
+    "max_guest_wall_step_seconds": 31,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   38.942437] watchdog: BUG: soft lockup - CPU#2 stuck for 29s! [sh:129]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   38.942471] watchdog: BUG: soft lockup - CPU#0 stuck for 29s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   38.942508] watchdog: BUG: soft lockup - CPU#1 stuck for 29s! [sh:130]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   38.942543] watchdog: BUG: soft lockup - CPU#3 stuck for 29s! [sh:131]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 70.5,
+    "trial_index": 7
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 45.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t08-d45",
+    "boot_seconds": 4.91,
+    "settle_seconds": 6.17,
+    "heartbeats_before": 7,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 45.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 37,
+    "loadavg_at_pause": "0.32",
+    "runqueue_at_pause": "5/120",
+    "max_guest_uptime_step_seconds": 45.44,
+    "max_guest_wall_step_seconds": 46,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   54.707591] watchdog: BUG: soft lockup - CPU#2 stuck for 43s! [sh:131]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   54.707622] watchdog: BUG: soft lockup - CPU#3 stuck for 43s! [sh:129]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   54.707658] watchdog: BUG: soft lockup - CPU#1 stuck for 43s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   54.707692] watchdog: BUG: soft lockup - CPU#0 stuck for 43s! [sh:130]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 86.1,
+    "trial_index": 8
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 60.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t09-d60",
+    "boot_seconds": 4.91,
+    "settle_seconds": 9.78,
+    "heartbeats_before": 10,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 60.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 40,
+    "loadavg_at_pause": "0.62",
+    "runqueue_at_pause": "5/121",
+    "max_guest_uptime_step_seconds": 61.02,
+    "max_guest_wall_step_seconds": 61,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   73.257576] watchdog: BUG: soft lockup - CPU#2 stuck for 57s! [sh:131]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   73.257608] watchdog: BUG: soft lockup - CPU#3 stuck for 57s! [sh:129]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   73.257633] watchdog: BUG: soft lockup - CPU#1 stuck for 57s! [sh:130]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   73.257668] watchdog: BUG: soft lockup - CPU#0 stuck for 57s! [sh:132]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 104.8,
+    "trial_index": 9
+  },
+  {
+    "arm": "kvm",
+    "pause_seconds": 125.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/kvm/t10-d125",
+    "boot_seconds": 4.71,
+    "settle_seconds": 5.42,
+    "heartbeats_before": 6,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 125.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 36,
+    "loadavg_at_pause": "0.32",
+    "runqueue_at_pause": "5/120",
+    "max_guest_uptime_step_seconds": 125.4,
+    "max_guest_wall_step_seconds": 126,
+    "median_guest_uptime_step_seconds": 1.01,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[  133.763090] watchdog: BUG: soft lockup - CPU#3 stuck for 117s! [sh:131]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[  133.763121] watchdog: BUG: soft lockup - CPU#0 stuck for 117s! [sh:130]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[  133.763158] watchdog: BUG: soft lockup - CPU#1 stuck for 117s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[  133.763192] watchdog: BUG: soft lockup - CPU#2 stuck for 117s! [sh:129]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 165.2,
+    "trial_index": 10
+  }
+]

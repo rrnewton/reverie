@@ -1,0 +1,416 @@
+[
+  {
+    "arm": "tcg",
+    "pause_seconds": 5.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t00-d5",
+    "boot_seconds": 11.71,
+    "settle_seconds": 11.9,
+    "heartbeats_before": 12,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 5.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 41,
+    "loadavg_at_pause": "0.89",
+    "runqueue_at_pause": "5/124",
+    "max_guest_uptime_step_seconds": 5.54,
+    "max_guest_wall_step_seconds": 5,
+    "median_guest_uptime_step_seconds": 1.04,
+    "complaints": [],
+    "mechanisms": [],
+    "ok": true,
+    "trial_wall_seconds": 58.6,
+    "trial_index": 0
+  },
+  {
+    "arm": "tcg",
+    "pause_seconds": 10.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t01-d10",
+    "boot_seconds": 10.91,
+    "settle_seconds": 4.62,
+    "heartbeats_before": 5,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 10.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 34,
+    "loadavg_at_pause": "0.32",
+    "runqueue_at_pause": "5/121",
+    "max_guest_uptime_step_seconds": 10.61,
+    "max_guest_wall_step_seconds": 11,
+    "median_guest_uptime_step_seconds": 1.04,
+    "complaints": [],
+    "mechanisms": [],
+    "ok": true,
+    "trial_wall_seconds": 55.5,
+    "trial_index": 1
+  },
+  {
+    "arm": "tcg",
+    "pause_seconds": 15.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t02-d15",
+    "boot_seconds": 11.11,
+    "settle_seconds": 11.95,
+    "heartbeats_before": 12,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 15.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 42,
+    "loadavg_at_pause": "0.89",
+    "runqueue_at_pause": "5/122",
+    "max_guest_uptime_step_seconds": 15.75,
+    "max_guest_wall_step_seconds": 16,
+    "median_guest_uptime_step_seconds": 1.03,
+    "complaints": [],
+    "mechanisms": [],
+    "ok": true,
+    "trial_wall_seconds": 68.1,
+    "trial_index": 2
+  },
+  {
+    "arm": "tcg",
+    "pause_seconds": 18.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t03-d18",
+    "boot_seconds": 10.71,
+    "settle_seconds": 6.23,
+    "heartbeats_before": 7,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 18.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 36,
+    "loadavg_at_pause": "0.62",
+    "runqueue_at_pause": "5/123",
+    "max_guest_uptime_step_seconds": 18.13,
+    "max_guest_wall_step_seconds": 18,
+    "median_guest_uptime_step_seconds": 1.04,
+    "complaints": [],
+    "mechanisms": [],
+    "ok": true,
+    "trial_wall_seconds": 64.9,
+    "trial_index": 3
+  },
+  {
+    "arm": "tcg",
+    "pause_seconds": 20.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t04-d20",
+    "boot_seconds": 10.51,
+    "settle_seconds": 7.6,
+    "heartbeats_before": 8,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 20.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 37,
+    "loadavg_at_pause": "0.62",
+    "runqueue_at_pause": "5/123",
+    "max_guest_uptime_step_seconds": 20.5,
+    "max_guest_wall_step_seconds": 21,
+    "median_guest_uptime_step_seconds": 1.03,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   32.191030] watchdog: BUG: soft lockup - CPU#0 stuck for 22s! [sh:135]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   32.191034] watchdog: BUG: soft lockup - CPU#1 stuck for 21s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   32.191394] watchdog: BUG: soft lockup - CPU#3 stuck for 21s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   32.191053] watchdog: BUG: soft lockup - CPU#2 stuck for 21s! [sh:134]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 68.1,
+    "trial_index": 4
+  },
+  {
+    "arm": "tcg",
+    "pause_seconds": 22.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t05-d22",
+    "boot_seconds": 10.71,
+    "settle_seconds": 6.38,
+    "heartbeats_before": 7,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 22.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 37,
+    "loadavg_at_pause": "0.62",
+    "runqueue_at_pause": "5/122",
+    "max_guest_uptime_step_seconds": 22.37,
+    "max_guest_wall_step_seconds": 23,
+    "median_guest_uptime_step_seconds": 1.03,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   33.085870] watchdog: BUG: soft lockup - CPU#3 stuck for 22s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   33.086162] watchdog: BUG: soft lockup - CPU#1 stuck for 22s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   33.085870] watchdog: BUG: soft lockup - CPU#2 stuck for 22s! [sh:131]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   33.085904] watchdog: BUG: soft lockup - CPU#0 stuck for 23s! [sh:134]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 69.1,
+    "trial_index": 5
+  },
+  {
+    "arm": "tcg",
+    "pause_seconds": 25.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t06-d25",
+    "boot_seconds": 10.71,
+    "settle_seconds": 6.11,
+    "heartbeats_before": 7,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 25.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 36,
+    "loadavg_at_pause": "0.62",
+    "runqueue_at_pause": "5/123",
+    "max_guest_uptime_step_seconds": 25.07,
+    "max_guest_wall_step_seconds": 25,
+    "median_guest_uptime_step_seconds": 1.03,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   35.817003] watchdog: BUG: soft lockup - CPU#0 stuck for 26s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   35.817003] watchdog: BUG: soft lockup - CPU#1 stuck for 25s! [sh:131]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   35.817003] watchdog: BUG: soft lockup - CPU#3 stuck for 25s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   35.817270] watchdog: BUG: soft lockup - CPU#2 stuck for 25s! [sh:134]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 71.8,
+    "trial_index": 6
+  },
+  {
+    "arm": "tcg",
+    "pause_seconds": 30.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t07-d30",
+    "boot_seconds": 11.11,
+    "settle_seconds": 5.48,
+    "heartbeats_before": 6,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 30.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 35,
+    "loadavg_at_pause": "0.32",
+    "runqueue_at_pause": "5/123",
+    "max_guest_uptime_step_seconds": 30.44,
+    "max_guest_wall_step_seconds": 31,
+    "median_guest_uptime_step_seconds": 1.04,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   40.421894] watchdog: BUG: soft lockup - CPU#0 stuck for 30s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   40.421894] watchdog: BUG: soft lockup - CPU#2 stuck for 29s! [sh:134]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   40.421921] watchdog: BUG: soft lockup - CPU#3 stuck for 29s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   40.422166] watchdog: BUG: soft lockup - CPU#1 stuck for 29s! [sh:135]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 76.6,
+    "trial_index": 7
+  },
+  {
+    "arm": "tcg",
+    "pause_seconds": 45.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t08-d45",
+    "boot_seconds": 10.91,
+    "settle_seconds": 6.17,
+    "heartbeats_before": 7,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 45.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 36,
+    "loadavg_at_pause": "0.62",
+    "runqueue_at_pause": "5/122",
+    "max_guest_uptime_step_seconds": 2.11,
+    "max_guest_wall_step_seconds": 2,
+    "median_guest_uptime_step_seconds": 1.04,
+    "complaints": [],
+    "mechanisms": [],
+    "ok": true,
+    "trial_wall_seconds": 92.1,
+    "trial_index": 8
+  },
+  {
+    "arm": "tcg",
+    "pause_seconds": 60.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t09-d60",
+    "boot_seconds": 10.91,
+    "settle_seconds": 9.78,
+    "heartbeats_before": 10,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 60.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 39,
+    "loadavg_at_pause": "0.62",
+    "runqueue_at_pause": "5/121",
+    "max_guest_uptime_step_seconds": 17.73,
+    "max_guest_wall_step_seconds": 18,
+    "median_guest_uptime_step_seconds": 1.03,
+    "complaints": [],
+    "mechanisms": [],
+    "ok": true,
+    "trial_wall_seconds": 110.7,
+    "trial_index": 9
+  },
+  {
+    "arm": "tcg",
+    "pause_seconds": 125.0,
+    "mode": "sigstop",
+    "workload": "spin",
+    "append": "",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/smp-sig/tcg/t10-d125",
+    "boot_seconds": 10.91,
+    "settle_seconds": 5.42,
+    "heartbeats_before": 6,
+    "status_at_pause": "sigstopped",
+    "bytes_emitted_while_paused": 0,
+    "held_wall_seconds": 125.0,
+    "status_before_resume": "T",
+    "status_at_resume": "sigcont",
+    "heartbeats_after": 10,
+    "loadavg_at_pause": "0.32",
+    "runqueue_at_pause": "5/122",
+    "max_guest_uptime_step_seconds": 39.56,
+    "max_guest_wall_step_seconds": 1,
+    "median_guest_uptime_step_seconds": 1.04,
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   49.442166] watchdog: BUG: soft lockup - CPU#2 stuck for 38s! [sh:134]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   49.442200] watchdog: BUG: soft lockup - CPU#0 stuck for 39s! [sh:131]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   49.442250] watchdog: BUG: soft lockup - CPU#3 stuck for 38s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   49.442206] watchdog: BUG: soft lockup - CPU#1 stuck for 38s! [sh:133]"
+      }
+    ],
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "ok": true,
+    "trial_wall_seconds": 171.3,
+    "trial_index": 10
+  }
+]

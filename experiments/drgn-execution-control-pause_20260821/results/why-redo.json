@@ -1,0 +1,38 @@
+[
+  {
+    "arm": "kvm",
+    "hold_seconds": 30.0,
+    "samples_before": 6,
+    "sampling_period_median_seconds": 1.0,
+    "guest_time_last_before_pause": 6.08,
+    "guest_time_first_after_resume": 7.09,
+    "guest_seconds_across_pause": 1.01,
+    "bytes_emitted_while_paused": 37,
+    "max_step_over_whole_run": 1.01,
+    "observable": "A_heartbeat_1hz"
+  },
+  {
+    "arm": "kvm",
+    "hold_seconds": 30.0,
+    "samples_before": 14137,
+    "sampling_period_median_seconds": 0.0,
+    "guest_time_last_before_pause": 7.2,
+    "guest_time_first_after_resume": 7.2,
+    "guest_seconds_across_pause": 0.0,
+    "bytes_emitted_while_paused": 84866,
+    "max_step_over_whole_run": 0.01,
+    "observable": "B_tight_loop"
+  },
+  {
+    "arm": "kvm",
+    "hold_seconds": 30.0,
+    "samples_before": 14644,
+    "sampling_period_median_seconds": 0.000406,
+    "guest_time_last_before_pause": 7.34352,
+    "guest_time_first_after_resume": 7.34395,
+    "guest_seconds_across_pause": 0.00043,
+    "bytes_emitted_while_paused": 188284,
+    "max_step_over_whole_run": 0.001789,
+    "observable": "C_kernel_printk"
+  }
+]

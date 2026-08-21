@@ -1,0 +1,74 @@
+[
+  {
+    "mode": "tcg-default",
+    "flags": "-accel tcg -cpu max",
+    "requested_clocksource": "(guest default)",
+    "hold_seconds": 30.0,
+    "pause_mode": "sigstop",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "settle_bytes": 1715632,
+    "clocksource_in_use": "?",
+    "clocksources_available": "?",
+    "cpus_seen_by_guest": null,
+    "bytes_emitted_while_paused": 1291378,
+    "sampling_period_median_seconds": 5.1e-05,
+    "guest_seconds_across_pause": 5.1e-05,
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   39.541795] watchdog: BUG: soft lockup - CPU#0 stuck for 29s! [sh:132]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   39.541816] watchdog: BUG: soft lockup - CPU#1 stuck for 28s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   39.542172] watchdog: BUG: soft lockup - CPU#3 stuck for 28s! [sh:131]"
+      }
+    ],
+    "ok": true
+  },
+  {
+    "mode": "kvm-default",
+    "flags": "-accel kvm -cpu host",
+    "requested_clocksource": "(guest default)",
+    "hold_seconds": 30.0,
+    "pause_mode": "sigstop",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "settle_bytes": 246351,
+    "clocksource_in_use": "kvm-clock",
+    "clocksources_available": "kvm-clock hpet acpi_pm",
+    "cpus_seen_by_guest": 4,
+    "bytes_emitted_while_paused": 183867,
+    "sampling_period_median_seconds": 0.000433,
+    "guest_seconds_across_pause": 30.676193,
+    "mechanisms": [],
+    "complaints": [],
+    "ok": true
+  },
+  {
+    "mode": "tcg-icount-sleep-off",
+    "flags": "-accel tcg -cpu max -icount shift=3,sleep=off -rtc base=2022-01-01T00:00:00,clock=vm",
+    "requested_clocksource": "(guest default)",
+    "hold_seconds": 30.0,
+    "pause_mode": "sigstop",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "settle_bytes": 251858,
+    "clocksource_in_use": "hpet",
+    "clocksources_available": "hpet acpi_pm",
+    "cpus_seen_by_guest": 4,
+    "bytes_emitted_while_paused": 204966,
+    "sampling_period_median_seconds": 0.000648,
+    "guest_seconds_across_pause": 0.000871,
+    "mechanisms": [],
+    "complaints": [],
+    "ok": true
+  }
+]
