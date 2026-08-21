@@ -50,6 +50,14 @@ pub fn sys_readlink(
 
 const MAX_EXEC_ARG_POINTERS: usize = 1 << 18;
 
+fn exec_filename<'a>(filename: &'a CStr, client_path: &'a CStr) -> &'a CStr {
+    if filename.to_bytes() == b"/proc/self/exe" {
+        client_path
+    } else {
+        filename
+    }
+}
+
 /// Read one pointer from guest memory without risking a process-local fault.
 fn read_guest_pointer(address: usize) -> Result<*const libc::c_char, Errno> {
     let mut pointer = MaybeUninit::<*const libc::c_char>::uninit();
@@ -115,6 +123,12 @@ pub fn sys_execve(
     // argv. This also prevents a null filename from truncating the new list.
     unsafe { syscall!(Sysno::access, filename as usize, libc::F_OK as usize)? };
 
+    // SaBRe is the kernel-visible executable, so a native exec of
+    // /proc/self/exe would otherwise re-enter the loader with SaBRe itself as
+    // the client. Preserve the guest-visible meaning already used by
+    // sys_readlink and execute the current client image instead.
+    let filename = exec_filename(unsafe { CStr::from_ptr(filename) }, paths::client_path());
+
     let arguments = collect_exec_arguments(argv)?;
     let environment = collect_exec_arguments(envp)?;
     let sabre = paths::sabre_path().as_ptr();
@@ -122,7 +136,7 @@ pub fn sys_execve(
     new_argv.push(sabre);
     new_argv.push(paths::plugin_path().as_ptr());
     new_argv.push(c"--".as_ptr());
-    new_argv.push(filename);
+    new_argv.push(filename.as_ptr());
     new_argv.extend(arguments.into_iter().skip(1));
     new_argv.push(core::ptr::null());
 
@@ -447,6 +461,13 @@ mod vfork_tests {
 #[cfg(test)]
 mod exec_tests {
     use super::*;
+
+    #[test]
+    fn proc_self_exe_executes_the_client_image() {
+        let client = c"/tmp/reverie-sabre-client";
+        assert_eq!(exec_filename(c"/proc/self/exe", client), client);
+        assert_eq!(exec_filename(c"/bin/echo", client), c"/bin/echo");
+    }
 
     #[test]
     fn execve_rejects_invalid_filename_without_replacing_the_process() {
