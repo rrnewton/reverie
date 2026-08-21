@@ -195,9 +195,33 @@ def main_commits(repo: Path, commits: Iterable[str], repository: str,
     if unavailable or non_commits:
         problems = []
         if unavailable:
+            # NAME THE REMEDY, NOT JUST THE PROBLEM. Refusing here is correct and
+            # stays correct -- an object this checkout cannot classify makes the
+            # whole population untrustworthy. But on 2026-08-20 this gate refused
+            # on EVERY tick for an entire session and produced no wall-time verdict
+            # at all, because the message said which objects were missing and
+            # nothing about what to do, so nobody acted on an alarm that was firing
+            # correctly all day.
+            #
+            # What it turned out to be, and why a reader could not guess it: the
+            # objects were on the server the whole time and this checkout had simply
+            # never fetched them, because they are off-main branch states produced
+            # on another host. `git cat-file` reports them as
+            # "upload-pack: not our ref", which reads like the server does not have
+            # them; it only means the SHA is not an advertised ref tip, and an
+            # explicit fetch by SHA succeeds. Reading that message as an existence
+            # claim is what makes the condition look unfixable.
             problems.append(
                 f"{len(unavailable)} unavailable object(s): "
-                f"{', '.join(unavailable[:4])}")
+                f"{', '.join(unavailable[:4])}"
+                f" -- absent from this checkout, which does NOT mean absent"
+                f" upstream. Try `git -C <checkout> fetch --no-tags origin <sha>`"
+                f" for each; that succeeds for an off-main commit that was pushed,"
+                f" even though `git cat-file` calls it \"not our ref\". If the fetch"
+                f" also fails, confirm with"
+                f" `gh api repos/<owner>/<repo>/commits/<sha>`: a \"No commit found\""
+                f" there means the commit never left the host that validated it, and"
+                f" the row cannot be resolved from here")
         if non_commits:
             problems.append(
                 f"{len(non_commits)} non-commit object(s): "

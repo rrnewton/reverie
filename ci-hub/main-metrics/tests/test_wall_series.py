@@ -437,6 +437,39 @@ def test_main_commits_distinguishes_non_commit_from_unavailable(monkeypatch):
     assert f"{ws.REVERIE_REPOSITORY}:{blob}" in message
 
 
+def test_unavailable_object_refusal_names_the_remedy(monkeypatch):
+    """A correct refusal that nobody can act on still stops the series.
+
+    On 2026-08-20 this gate refused on every tick for a whole session and produced
+    no wall-time verdict, because the message listed the missing objects and said
+    nothing about what to do. The objects were on the server the entire time and the
+    checkout had simply never fetched them. This asserts the refusal keeps carrying
+    the two facts that made it resolvable in minutes: that a fetch by SHA is worth
+    trying, and that `git cat-file`'s "not our ref" is not a statement about whether
+    the object exists upstream.
+    """
+    unavailable = "5" * 40
+
+    def run(argv, **kwargs):
+        if "rev-list" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=f"{unavailable} missing\n", stderr="")
+
+    monkeypatch.setattr(ws.subprocess, "run", run)
+
+    with pytest.raises(RuntimeError) as exc:
+        ws.main_commits(
+            Path("/reverie"), {unavailable}, ws.REVERIE_REPOSITORY)
+
+    message = str(exc.value)
+    # The object is still named -- the remedy is added, it does not replace anything.
+    assert f"{ws.REVERIE_REPOSITORY}:{unavailable}" in message
+    assert "fetch --no-tags origin" in message, message
+    assert "not our ref" in message, message
+    assert "No commit found" in message, message
+
+
 @pytest.mark.parametrize("option", ["--gate-regression", "--readiness"])
 def test_both_gate_commands_emit_refusal_when_ancestry_refuses(monkeypatch, capsys,
                                                                option):
